@@ -39,6 +39,8 @@
 //! loop. Process owners call [`LifecycleOutbox::flush`] before runtime teardown
 //! to give queued terminal events a bounded opportunity to finish delivery.
 
+use std::collections::BTreeMap;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -50,12 +52,13 @@ use codewhale_app_server_protocol::runtime::{
     RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION, RuntimeEventEnvelope,
 };
 use serde_json::{Value, json};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
 
 use crate::WebhookHookSink;
+
+const OUTBOX_NONCE_FIELD: &str = "outbox_nonce";
 
 /// Text-length ceilings for outbox payload fields. Mirrors the desktop
 /// notification payload limits so the outbox never carries more than the
@@ -280,8 +283,8 @@ impl OutboxInner {
         let mut state = WriterState {
             path: self.path.clone(),
             webhook: self.webhook.clone(),
-            next_seq: 0,
-            recovered: false,
+            next_seq: 1,
+            fallback_nonce: uuid::Uuid::new_v4().simple().to_string(),
             receiver,
         };
         self.writer_spawned.store(true, Ordering::Release);
@@ -295,10 +298,23 @@ impl OutboxInner {
 struct WriterState {
     path: PathBuf,
     webhook: Option<WebhookHookSink>,
-    /// Next seq to assign; filled in by [`Self::recover_seq`] on first use.
+    /// Fallback seq used only if local outbox recovery fails so webhook
+    /// fan-out still proceeds monotonically.
     next_seq: u64,
-    recovered: bool,
+    fallback_nonce: String,
     receiver: Receiver<OutboxCommand>,
+}
+
+struct OutboxTailState {
+    next_seq: u64,
+    nonce: Option<String>,
+    needs_leading_newline: bool,
+}
+
+struct LockedAppendOutcome {
+    next_seq: u64,
+    webhook_posts: Vec<(String, Value)>,
+    append_result: Result<()>,
 }
 
 impl WriterState {
@@ -342,9 +358,9 @@ impl WriterState {
         }
     }
 
-    /// Assign a seq per event, build the envelopes, append the whole batch in
-    /// one file open/write/flush, then fan the batch's webhook posts out
-    /// concurrently (independently of the append result).
+    /// Assign monotonic seqs under a sibling advisory lock, append and fsync
+    /// the batch locally, and fan out webhook posts with stable idempotency
+    /// keys independently of whether the local write succeeded.
     async fn deliver_batch(
         &mut self,
         events: &[LifecycleEvent],
@@ -353,51 +369,35 @@ impl WriterState {
         if events.is_empty() {
             return Ok(());
         }
-        if !self.recovered {
-            self.next_seq = recover_last_seq(&self.path).await?;
-            self.recovered = true;
-        }
 
-        let mut lines = Vec::with_capacity(events.len());
-        let mut webhook_posts = Vec::new();
-        for event in events {
-            let seq = self.next_seq;
-            self.next_seq = self.next_seq.saturating_add(1);
+        let path = self.path.clone();
+        let events_owned = events.to_vec();
+        let fallback_next_seq = self.next_seq;
+        let fallback_nonce = self.fallback_nonce.clone();
+        let include_webhooks = self.webhook.is_some();
 
-            let envelope = RuntimeEventEnvelope {
-                schema_version: RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION,
-                seq,
-                event: event.event.clone(),
-                kind: event.kind.clone(),
-                thread_id: event.thread_id.clone(),
-                turn_id: event.turn_id.clone(),
-                item_id: event.item_id.clone(),
-                timestamp: Utc::now().to_rfc3339(),
-                created_at: Some(Utc::now().to_rfc3339()),
-                payload: event.payload.clone(),
-                extra: Default::default(),
-            };
-            if self.webhook.is_some() {
-                webhook_posts.push(json!({
-                    "at": envelope.timestamp,
-                    "event": envelope,
-                }));
-            }
-            lines.push(serde_json::to_string(&envelope).context("failed to encode outbox event")?);
-        }
+        let outcome = tokio::task::spawn_blocking(move || {
+            append_batch_locked_sync(
+                &path,
+                &events_owned,
+                fallback_next_seq,
+                &fallback_nonce,
+                include_webhooks,
+            )
+        })
+        .await
+        .context("lifecycle outbox writer task panicked")?;
 
-        // Appends land before any webhook work so the audit log never waits
-        // on a slow remote.
-        let append_result = self.append_lines(&lines).await;
+        self.next_seq = outcome.next_seq;
 
         if let Some(webhook) = &self.webhook {
-            for payload in webhook_posts {
+            for (idempotency_key, payload) in outcome.webhook_posts {
                 while webhooks.len() >= WEBHOOK_MAX_INFLIGHT {
                     let _ = webhooks.join_next().await;
                 }
                 let sink = webhook.clone();
                 webhooks.spawn(async move {
-                    if let Err(error) = sink.post_payload(payload).await {
+                    if let Err(error) = sink.post_payload(payload, &idempotency_key).await {
                         tracing::warn!(
                             target: "lifecycle_outbox",
                             %error,
@@ -408,87 +408,291 @@ impl WriterState {
             }
         }
 
-        append_result
-    }
-
-    /// Append complete JSONL lines:
-    /// lazy parent directories, append mode, flush before returning. The
-    /// writer task is the only appender for this outbox, so no extra lock is
-    /// needed here; the queue already serializes. The whole batch shares one
-    /// open and one flush; each line still lands as its own complete record.
-    async fn append_lines(&mut self, lines: &[String]) -> Result<()> {
-        let mut file = crate::open_private_append(&self.path).await?;
-        // Line + newline in a single `write_all` per record: with O_APPEND
-        // each `write` lands contiguously, so even a second process appending
-        // to the same file can interleave lines but can never splice one
-        // mid-line.
-        let mut records = Vec::with_capacity(lines.len());
-        for line in lines {
-            let mut record = Vec::with_capacity(line.len() + 1);
-            record.extend_from_slice(line.as_bytes());
-            record.push(b'\n');
-            records.push(record);
-        }
-        for record in &records {
-            file.write_all(record)
-                .await
-                .context("failed to write outbox event")?;
-        }
-        file.flush().await.context("failed to flush outbox event")
+        outcome.append_result
     }
 }
 
-/// Recover the seq to continue from: the `seq` of the outbox file's last
-/// complete line, plus 1 — or 1 for a missing/empty file.
-///
-/// Only the tail of the file is read (bounded by [`SEQ_RECOVERY_TAIL_BYTES`]);
-/// outbox lines are bounded far below that window, so the last complete line
-/// is always within it. A partial trailing line from a crash mid-write is
-/// ignored (the previous newline-terminated line wins).
-async fn recover_last_seq(path: &Path) -> Result<u64> {
-    let mut file = match tokio::fs::File::open(path).await {
+struct OutboxLockGuard(std::fs::File);
+
+impl Drop for OutboxLockGuard {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+fn acquire_outbox_lock_sync(outbox_path: &Path) -> Result<Option<OutboxLockGuard>> {
+    let lock_file = crate::open_private_lock_file_sync(outbox_path)?;
+    match lock_file.lock() {
+        Ok(()) => Ok(Some(OutboxLockGuard(lock_file))),
+        #[cfg(unix)]
+        Err(error)
+            if !codewhale_util::lock::is_contention(&error)
+                && codewhale_util::lock::advisory_locking_unavailable(&error) =>
+        {
+            tracing::debug!(
+                target: "lifecycle_outbox",
+                %error,
+                path = %outbox_path.display(),
+                "advisory locking unavailable on filesystem; appending without lock"
+            );
+            Ok(None)
+        }
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to acquire outbox lock for {}",
+                outbox_path.display()
+            )
+        }),
+    }
+}
+
+struct BuiltBatch {
+    next_seq: u64,
+    lines: Vec<String>,
+    webhook_posts: Vec<(String, Value)>,
+}
+
+fn build_batch_envelopes(
+    path: &Path,
+    events: &[LifecycleEvent],
+    start_seq: u64,
+    nonce: &str,
+    include_webhooks: bool,
+) -> Result<BuiltBatch> {
+    let path_hash = codewhale_paths::stable_hex(path);
+    let mut next_seq = start_seq;
+    let mut lines = Vec::with_capacity(events.len());
+    let mut webhook_posts = Vec::new();
+    for event in events {
+        let seq = next_seq;
+        next_seq = next_seq.saturating_add(1);
+
+        let mut extra = BTreeMap::new();
+        extra.insert(
+            OUTBOX_NONCE_FIELD.to_string(),
+            Value::String(nonce.to_string()),
+        );
+        let now = Utc::now().to_rfc3339();
+        let envelope = RuntimeEventEnvelope {
+            schema_version: RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION,
+            seq,
+            event: event.event.clone(),
+            kind: event.kind.clone(),
+            thread_id: event.thread_id.clone(),
+            turn_id: event.turn_id.clone(),
+            item_id: event.item_id.clone(),
+            timestamp: now.clone(),
+            created_at: Some(now),
+            payload: event.payload.clone(),
+            extra,
+        };
+        if include_webhooks {
+            let key = format!("outbox-{path_hash}-{nonce}:{seq}");
+            webhook_posts.push((
+                key,
+                json!({
+                    "at": envelope.timestamp,
+                    "event": envelope,
+                }),
+            ));
+        }
+        lines.push(serde_json::to_string(&envelope).context("failed to encode outbox event")?);
+    }
+    Ok(BuiltBatch {
+        next_seq,
+        lines,
+        webhook_posts,
+    })
+}
+
+fn append_batch_locked_sync(
+    path: &Path,
+    events: &[LifecycleEvent],
+    fallback_next_seq: u64,
+    fallback_nonce: &str,
+    include_webhooks: bool,
+) -> LockedAppendOutcome {
+    let lock_guard = match acquire_outbox_lock_sync(path) {
+        Ok(guard) => guard,
+        Err(error) => {
+            let BuiltBatch {
+                next_seq,
+                webhook_posts,
+                ..
+            } = build_batch_envelopes(
+                path,
+                events,
+                fallback_next_seq,
+                fallback_nonce,
+                include_webhooks,
+            )
+            .unwrap_or_else(|_| BuiltBatch {
+                next_seq: fallback_next_seq,
+                lines: Vec::new(),
+                webhook_posts: Vec::new(),
+            });
+            return LockedAppendOutcome {
+                next_seq,
+                webhook_posts,
+                append_result: Err(error),
+            };
+        }
+    };
+
+    let (start_seq, nonce, needs_leading_newline, recover_error) =
+        match recover_tail_state_sync(path) {
+            Ok(tail) => (
+                tail.next_seq,
+                tail.nonce
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()),
+                tail.needs_leading_newline,
+                None,
+            ),
+            Err(error) => (
+                fallback_next_seq,
+                fallback_nonce.to_string(),
+                false,
+                Some(error),
+            ),
+        };
+
+    let BuiltBatch {
+        next_seq,
+        lines,
+        webhook_posts,
+    } = match build_batch_envelopes(path, events, start_seq, &nonce, include_webhooks) {
+        Ok(built) => built,
+        Err(error) => {
+            drop(lock_guard);
+            return LockedAppendOutcome {
+                next_seq: fallback_next_seq,
+                webhook_posts: Vec::new(),
+                append_result: Err(error),
+            };
+        }
+    };
+
+    let append_result = if let Some(error) = recover_error {
+        Err(error)
+    } else {
+        (|| -> Result<()> {
+            let mut file = crate::open_private_append_sync(path)?;
+            if needs_leading_newline {
+                file.write_all(b"\n")
+                    .context("failed to terminate torn outbox line")?;
+            }
+            for line in &lines {
+                let mut record = Vec::with_capacity(line.len() + 1);
+                record.extend_from_slice(line.as_bytes());
+                record.push(b'\n');
+                file.write_all(&record)
+                    .context("failed to write outbox event")?;
+            }
+            file.flush().context("failed to flush outbox event")?;
+            file.sync_all().context("failed to sync outbox event")?;
+            Ok(())
+        })()
+    };
+
+    drop(lock_guard);
+    LockedAppendOutcome {
+        next_seq,
+        webhook_posts,
+        append_result,
+    }
+}
+
+/// Recover the seq and per-file nonce from the tail of `path`, skipping any
+/// torn or corrupt trailing lines so a partial write can never wedge future
+/// appends.
+fn recover_tail_state_sync(path: &Path) -> Result<OutboxTailState> {
+    let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(1),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(OutboxTailState {
+                next_seq: 1,
+                nonce: None,
+                needs_leading_newline: false,
+            });
+        }
         Err(error) => {
             return Err(error).with_context(|| format!("failed to open outbox {}", path.display()));
         }
     };
     let len = file
         .metadata()
-        .await
         .with_context(|| format!("failed to stat outbox {}", path.display()))?
         .len();
     if len == 0 {
-        return Ok(1);
+        return Ok(OutboxTailState {
+            next_seq: 1,
+            nonce: None,
+            needs_leading_newline: false,
+        });
     }
     let start = len.saturating_sub(SEQ_RECOVERY_TAIL_BYTES);
-    file.seek(std::io::SeekFrom::Start(start)).await?;
+    file.seek(SeekFrom::Start(start))?;
     let mut tail = vec![0u8; (len - start) as usize];
-    file.read_exact(&mut tail).await?;
+    file.read_exact(&mut tail)?;
 
-    let line = match tail.iter().rposition(|byte| *byte == b'\n') {
-        // The bytes after the final newline are a torn trailing line from a
-        // crash mid-write; drop them. What remains ends at a newline, so the
-        // last complete line is the bytes after the previous newline.
-        Some(last_nl) => {
-            let body = &tail[..last_nl];
-            match body.iter().rposition(|byte| *byte == b'\n') {
-                Some(idx) => &body[idx + 1..],
-                None => body,
+    let needs_leading_newline = tail.last() != Some(&b'\n');
+    let mut scan = match tail.iter().rposition(|byte| *byte == b'\n') {
+        // Bytes after the final newline are a torn trailing line from a crash
+        // mid-write; scan only complete newline-terminated lines before it.
+        Some(last_nl) => &tail[..last_nl],
+        None => {
+            return Ok(OutboxTailState {
+                next_seq: 1,
+                nonce: None,
+                needs_leading_newline,
+            });
+        }
+    };
+
+    loop {
+        let (line_bytes, rest) = match scan.iter().rposition(|byte| *byte == b'\n') {
+            Some(idx) => (&scan[idx + 1..], Some(&scan[..idx])),
+            None => (scan, None),
+        };
+        if let Ok(line) = std::str::from_utf8(line_bytes) {
+            let trimmed = line.trim();
+            if !trimmed.is_empty()
+                && let Ok(envelope) = serde_json::from_str::<RuntimeEventEnvelope>(trimmed)
+            {
+                let nonce = envelope
+                    .extra
+                    .get(OUTBOX_NONCE_FIELD)
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned);
+                return Ok(OutboxTailState {
+                    next_seq: envelope.seq.saturating_add(1),
+                    nonce,
+                    needs_leading_newline,
+                });
             }
         }
-        // No newline at all: no complete line inside this tail (a line can
-        // only exceed the tail window by violating the bounded-line
-        // invariant). Treat the file as not-yet-writable.
-        None => return Ok(1),
-    };
-    let line = std::str::from_utf8(line).context("outbox tail is not UTF-8")?;
-    if line.trim().is_empty() {
-        return Ok(1);
+        match rest {
+            Some(next_scan) => scan = next_scan,
+            None => {
+                return Ok(OutboxTailState {
+                    next_seq: 1,
+                    nonce: None,
+                    needs_leading_newline,
+                });
+            }
+        }
     }
-    let envelope: RuntimeEventEnvelope =
-        serde_json::from_str(line).context("failed to parse last outbox line")?;
-    Ok(envelope.seq.saturating_add(1))
+}
+
+/// Recover the seq to continue from: the `seq` of the outbox file's last
+/// complete line, plus 1 — or 1 for a missing/empty file.
+#[cfg(test)]
+async fn recover_last_seq(path: &Path) -> Result<u64> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || recover_tail_state_sync(&path).map(|tail| tail.next_seq))
+        .await
+        .context("recover_last_seq task panicked")?
 }
 
 /// Bound free-form text to at most `max_chars` characters, stripping control
@@ -701,7 +905,7 @@ mod tests {
             path: path.clone(),
             webhook: None,
             next_seq: 0,
-            recovered: false,
+            fallback_nonce: "test-nonce".to_string(),
             receiver: tokio::sync::mpsc::channel(OUTBOX_QUEUE_CAPACITY).1,
         };
         deliver_all(&mut state, vec![event("turn_start", "turn.started")]).await;
@@ -731,7 +935,7 @@ mod tests {
             path: path.clone(),
             webhook: None,
             next_seq: 0,
-            recovered: false,
+            fallback_nonce: "test-nonce".to_string(),
             receiver: tokio::sync::mpsc::channel(OUTBOX_QUEUE_CAPACITY).1,
         };
         let workspace = "/home/cw/wt-lane";
@@ -846,7 +1050,7 @@ mod tests {
             path: path.clone(),
             webhook: None,
             next_seq: 0,
-            recovered: false,
+            fallback_nonce: "test-nonce".to_string(),
             receiver: tokio::sync::mpsc::channel(OUTBOX_QUEUE_CAPACITY).1,
         };
         deliver_all(
@@ -864,7 +1068,7 @@ mod tests {
             path: path.clone(),
             webhook: None,
             next_seq: 0,
-            recovered: false,
+            fallback_nonce: "test-nonce".to_string(),
             receiver: tokio::sync::mpsc::channel(OUTBOX_QUEUE_CAPACITY).1,
         };
         deliver_all(&mut reopened, vec![event("turn_start", "turn.started")]).await;
@@ -1016,14 +1220,24 @@ mod tests {
             Some("secret-token".to_string()),
         );
         webhook
-            .post_payload(json!(
-                {"at": "2026-08-19T00:00:00Z", "event": {"kind": "turn.started"}}
-            ))
+            .post_payload(
+                json!(
+                    {"at": "2026-08-19T00:00:00Z", "event": {"kind": "turn.started"}}
+                ),
+                "test-idempotency-key-1",
+            )
             .await
             .expect("webhook delivery");
 
         let requests = server.received_requests().await.expect("requests");
         assert_eq!(requests.len(), 1, "exactly one webhook POST");
+        assert_eq!(
+            requests[0]
+                .headers
+                .get(crate::WEBHOOK_IDEMPOTENCY_KEY_HEADER)
+                .and_then(|v| v.to_str().ok()),
+            Some("test-idempotency-key-1")
+        );
     }
 
     /// A webhook that always fails must surface its error to the caller
@@ -1037,7 +1251,160 @@ mod tests {
             .await;
 
         let webhook = WebhookHookSink::new_with_token(format!("{}/hook", server.uri()), None);
-        let result = webhook.post_payload(json!({})).await;
+        let result = webhook.post_payload(json!({}), "test-fail-key").await;
         assert!(result.is_err(), "expected the failure to be reported");
+    }
+
+    #[tokio::test]
+    async fn interleaved_writers_assign_monotonic_unique_seqs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("events.jsonl");
+
+        let outbox_a = LifecycleOutbox::new(Some(path.clone()), None, None);
+        let outbox_b = LifecycleOutbox::new(Some(path.clone()), None, None);
+
+        outbox_a.emit(event("a_1", "turn.started"));
+        outbox_a.flush(Duration::from_secs(5)).await.expect("flush");
+        outbox_b.emit(event("b_1", "turn.started"));
+        outbox_b.flush(Duration::from_secs(5)).await.expect("flush");
+        outbox_a.emit(event("a_2", "turn.completed"));
+        outbox_a.flush(Duration::from_secs(5)).await.expect("flush");
+        outbox_b.emit(event("b_2", "turn.completed"));
+        outbox_b.flush(Duration::from_secs(5)).await.expect("flush");
+
+        let raw = std::fs::read_to_string(&path).expect("read outbox");
+        let seqs: Vec<u64> = raw
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<RuntimeEventEnvelope>(line)
+                    .expect("parse envelope")
+                    .seq
+            })
+            .collect();
+        assert_eq!(seqs, vec![1, 2, 3, 4]);
+    }
+
+    #[tokio::test]
+    async fn torn_trailing_line_does_not_glue_or_wedge_later_appends() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("events.jsonl");
+
+        let first = LifecycleOutbox::new(Some(path.clone()), None, None);
+        first.emit(event("turn_start", "turn.started"));
+        first.flush(Duration::from_secs(5)).await.expect("flush");
+
+        // Simulate a crash leaving an unterminated torn JSON fragment at EOF.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open for torn write");
+        file.write_all(br#"{"schema_version":1,"seq":2,"trun"#)
+            .expect("write torn tail");
+        drop(file);
+
+        let second = LifecycleOutbox::new(Some(path.clone()), None, None);
+        second.emit(event("turn_end", "turn.completed"));
+        second.flush(Duration::from_secs(5)).await.expect("flush");
+        second.emit(event("turn_end_2", "turn.completed"));
+        second.flush(Duration::from_secs(5)).await.expect("flush");
+
+        let raw = std::fs::read_to_string(&path).expect("read outbox");
+        let parsed: Vec<RuntimeEventEnvelope> = raw
+            .lines()
+            .filter_map(|line| serde_json::from_str::<RuntimeEventEnvelope>(line).ok())
+            .collect();
+        let seqs: Vec<u64> = parsed.iter().map(|env| env.seq).collect();
+        assert_eq!(seqs, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn webhook_delivery_still_fires_when_local_outbox_append_fails() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Pointing the outbox path at an existing directory forces local open/append to fail.
+        let dir_as_file = dir.path().join("cannot-open-as-file");
+        std::fs::create_dir(&dir_as_file).expect("create blocking dir");
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/hook"))
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let outbox = LifecycleOutbox::new(
+            Some(dir_as_file),
+            Some(format!("{}/hook", server.uri())),
+            None,
+        );
+        outbox.emit(event("turn_start", "turn.started"));
+        outbox.flush(Duration::from_secs(5)).await.expect("flush");
+
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(
+            requests.len(),
+            1,
+            "webhook must still fire on local write error"
+        );
+        assert!(
+            requests[0]
+                .headers
+                .get(crate::WEBHOOK_IDEMPOTENCY_KEY_HEADER)
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn webhook_retries_reuse_key_and_file_rotation_generates_distinct_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("events.jsonl");
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/hook"))
+            .respond_with(wiremock::ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/hook"))
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let outbox = LifecycleOutbox::new(
+            Some(path.clone()),
+            Some(format!("{}/hook", server.uri())),
+            None,
+        );
+        outbox.emit(event("turn_start", "turn.started"));
+        outbox.flush(Duration::from_secs(5)).await.expect("flush");
+
+        // Rotate/remove the outbox file; seq restarts at 1 with a fresh nonce.
+        std::fs::remove_file(&path).expect("rotate outbox file");
+        outbox.emit(event("turn_start", "turn.started"));
+        outbox.flush(Duration::from_secs(5)).await.expect("flush");
+
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(
+            requests.len(),
+            3,
+            "2 attempts for first event + 1 for rotated"
+        );
+        let key = |idx: usize| {
+            requests[idx]
+                .headers
+                .get(crate::WEBHOOK_IDEMPOTENCY_KEY_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .expect("Idempotency-Key header")
+                .to_string()
+        };
+        assert_eq!(key(0), key(1), "retry must reuse identical Idempotency-Key");
+        assert!(key(0).ends_with(":1"));
+        assert!(key(2).ends_with(":1"));
+        assert_ne!(
+            key(0),
+            key(2),
+            "file rotation must generate a fresh nonce so seq=1 gets a new Idempotency-Key"
+        );
     }
 }

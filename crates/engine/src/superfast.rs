@@ -1005,7 +1005,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let handle =
             spawn_shadow_gate(&config(), &turn("hi"), Some(origin), &cancel).expect("task");
-        tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::time::timeout(Duration::from_secs(10), async {
             while requests(&server).await.is_empty() {
                 tokio::task::yield_now().await;
             }

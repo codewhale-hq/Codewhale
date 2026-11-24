@@ -48,7 +48,7 @@ fn is_unsupported_dir_sync_error(err: &std::io::Error) -> bool {
 }
 
 #[cfg(unix)]
-pub(crate) fn sync_parent_dir(dir: &Path) -> Result<()> {
+pub fn sync_parent_dir(dir: &Path) -> Result<()> {
     match fs::File::open(dir).and_then(|file| file.sync_all()) {
         Ok(()) => Ok(()),
         Err(err) if is_unsupported_dir_sync_error(&err) => Ok(()),
@@ -57,7 +57,7 @@ pub(crate) fn sync_parent_dir(dir: &Path) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-pub(crate) fn sync_parent_dir(_dir: &Path) -> Result<()> {
+pub fn sync_parent_dir(_dir: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -343,14 +343,17 @@ impl SetupTransaction {
                 }
             };
 
-            match atomic_write(&write.path, &write.bytes) {
-                Ok(()) => snapshots.push(Snapshot {
+            let result = atomic_write(&write.path, &write.bytes);
+            let landed = result.is_ok() || fs::read(&write.path).ok() != original;
+            if landed {
+                snapshots.push(Snapshot {
                     path: write.path.clone(),
                     original,
-                }),
+                });
+            }
+            match result {
+                Ok(()) => {}
                 Err(err) => {
-                    // This write did not land (atomic_write is all-or-nothing),
-                    // so roll back only the writes that came before it.
                     rollback(&snapshots);
                     return Err(err).with_context(|| {
                         format!(

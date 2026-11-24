@@ -2117,6 +2117,9 @@ pub struct Config {
     pub environment_model_applied: bool,
 
     #[serde(skip)]
+    pub project_model: Option<String>,
+
+    #[serde(skip)]
     pub route_provenance: RouteProvenance,
 
     /// Atomic migration receipt: provider/model selections now belong to this
@@ -2430,6 +2433,7 @@ pub struct RuntimeApiConfig {
 
 /// `[skills]` table — discovery, ambient index and installer configuration.
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct SkillsConfig {
     #[serde(default)]
     pub bundled: BundledSkillsConfig,
@@ -2468,6 +2472,7 @@ pub enum BundledSkillsInstall {
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq, Hash, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BundledSkillsConfig {
     pub install: Option<BundledSkillsInstall>,
     pub selected: Option<Vec<String>>,
@@ -9751,6 +9756,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
             .or(base.route_preferences_version),
         environment_model_applied: override_cfg.environment_model_applied
             || base.environment_model_applied,
+        project_model: override_cfg.project_model.or(base.project_model),
         route_provenance: base.route_provenance,
         auth_mode: override_cfg.auth_mode.or(base.auth_mode),
         reasoning_effort: override_cfg.reasoning_effort.or(base.reasoning_effort),

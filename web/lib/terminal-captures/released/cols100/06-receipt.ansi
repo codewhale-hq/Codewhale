@@ -1,30 +1,30 @@
-[1m[38;5;221m[48;5;234m▎ [0m[38;5;255m[48;5;234mAdd a --json flag to ls.py so the tests pass, then run the tests.[39m
-[38;5;103m▏    [3m[38;5;109mParent turns: $0.0015[0m[48;5;234m                                                                         [38;5;239m│
-[38;5;103m▏    [3m[38;5;109mThis is an estimate, not a bill: it is computed locally from provider-reported token usage[0m[48;5;234m    [38;5;239m│
-[38;5;103m▏    [3m[38;5;109mand published rates, and can differ from your invoice.[0m[48;5;234m                                        [38;5;239m│
-[38;5;103m▏    [3m[38;5;109mCovered: 4 of 4 money-metered turn(s) priced.[0m[48;5;234m                                                 [38;5;239m│
-[38;5;103m▏    [3m[38;5;109mPricing sources used: provider_docs.[0m[48;5;234m                                                          [38;5;239m│
-[38;5;103m▏    [3m[38;5;109mAudited routes (redacted):[0m[48;5;234m                                                                    [38;5;239m│
-[38;5;103m▏    [3m[38;5;109mprovider=deepseek identity=deepseek model=deepseek-flash surface=first-party-payg endpoint_[0m[48;5;234m   [38;5;239m│
-[38;5;103m▏    [3m[38;5;109mfp=812b1f7c4a8b1af438d207c4d010794296f83296c29dcd10b8b6dd22f64c79db billing_mode=metered[0m[48;5;234m      [38;5;239m│
-[38;5;103m▏    [3m[38;5;109mcurrency=usd+cny[0m[48;5;234m                                                                              [38;5;239m│
-[38;5;103m▏    [39m                                                                                              [38;5;239m│
-[38;5;103m▏    [38;5;74m1. [3m[38;5;109medited [48;5;17mls.py[48;5;234m (+4 −0)[0m[48;5;234m                                                                       [38;5;239m│
-[38;5;103m▏    [38;5;74m2. [3m[38;5;109mran [48;5;17mpython3 -m unittest -v test_ls.py 2>&1[48;5;234m · approved by you[0m[48;5;234m                               [38;5;239m│
-[38;5;103m▏    [39m                                                                                              [38;5;239m│
-[38;5;103m▏    [3m[38;5;109mNot recorded:[0m[48;5;234m                                                                                 [38;5;239m│
-[38;5;103m▏    [38;5;74m- [3m[38;5;109mExit codes: calls that saved no structured result (terminal sessions) show pass or fail,[0m[48;5;234m    [38;5;239m│
-[38;5;103m▏    [39m  [3m[38;5;109mnot the exit code.[0m[48;5;234m                                                                          [38;5;239m│
-[38;5;103m▏    [38;5;74m- [3m[38;5;109mFiles changed outside file tools come from the workspace snapshots taken before and after[0m[48;5;234m   [38;5;239m│
-[38;5;103m▏    [39m  [3m[38;5;109meach turn, so they include anything that wrote to the workspace during the turn, not only[0m[48;5;234m   [38;5;80m┃
-[38;5;103m▏    [39m  [3m[38;5;109mCodewhale. They leave out what snapshots do not track: ignored and skipped paths[0m[48;5;234m            [38;5;80m┃
-[38;5;103m▏    [39m  [3m[38;5;109m(.gitignore entries, .env, node_modules, target, and the like) and anything outside the[0m[48;5;234m     [38;5;80m┃
-[38;5;103m▏    [39m  [3m[38;5;109mworkspace.[0m[48;5;234m                                                                                  [38;5;80m┃
-[38;5;103m▏    [38;5;74m- [3m[38;5;109mPlugin changes are not itemized for a terminal session yet[0m[48;5;234m                                  [38;5;80m┃
-[38;5;103m▏    [38;5;74m- [3m[38;5;109mTimestamps: a terminal session saves calls in order, not when each one ran.[0m[48;5;234m                 [38;5;80m┃
-[38;5;74m[48;5;235m╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│❯[39m [38;5;146mType a message…[39m                                                                                 [38;5;74m│
-│[39m                                                                                              [38;5;103m[·][39m [38;5;74m│
+[1m[38;2;246;196;83m[48;2;9;35;67m▎ [0m[38;2;246;242;232m[48;2;9;35;67mAdd a --json flag to ls.py so the tests pass, then run python3 -m unittest -v test_ls.py.[39m
+[38;2;138;153;179m[48;2;9;35;66m▏    [3m[38;2;147;160;184mAudited routes (redacted):[0m[48;2;9;35;66m                                                                    [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;9;34;64m▏    [3m[38;2;147;160;184mprovider=ollama identity=ollama model=qwen3:4b surface=local-no-bill endpoint_[0m[48;2;9;34;64m                [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;9;33;62m▏    [3m[38;2;147;160;184mfp=89caf70a6a58a082c8bd16cc0a4ad72d0a2ab0a8d0f495421057ebb5ce6460ee billing_mode=local[0m[48;2;9;33;62m        [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;8;32;61m▏    [3m[38;2;147;160;184mcurrency=unpriced[0m[48;2;8;32;61m                                                                             [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;8;31;59m▏    [39m                                                                                              [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;8;30;57m▏    [38;2;106;166;220m1. [3m[38;2;147;160;184mwrote [48;2;26;44;99mls.py[0m[48;2;8;30;57m                                                                                [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;8;30;55m▏    [38;2;106;166;220m2. [3m[38;2;147;160;184mran [48;2;26;44;99mpython3 -m unittest -v test_ls.py[48;2;8;30;55m in /Volumes/VIXinSSD/CW/tmp/v0.10.4-capture/repo-100[0m[48;2;8;30;55m [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;8;28;53m▏    [39m   [3m[38;2;147;160;184m— exit 1 — failed: test_json (test_ls.LsTest.test_json) ... FAIL · approved by you[0m[48;2;8;28;53m         [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;8;28;51m▏    [38;2;106;166;220m3. [3m[38;2;147;160;184medited [48;2;26;44;99mls.py[48;2;8;28;51m (+1 −1)[0m[48;2;8;28;51m                                                                       [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;8;27;49m▏    [38;2;106;166;220m4. [3m[38;2;147;160;184mran [48;2;26;44;99mpython3 -m unittest -v test_ls.py[48;2;8;27;49m in /Volumes/VIXinSSD/CW/tmp/v0.10.4-capture/repo-100[0m[48;2;8;27;49m [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;7;26;47m▏    [39m   [3m[38;2;147;160;184m· approved by you[0m[48;2;7;26;47m                                                                          [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;7;25;45m▏    [39m                                                                                              [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;7;24;43m▏    [3m[38;2;147;160;184mNot recorded:[0m[48;2;7;24;43m                                                                                 [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;6;23;41m▏    [38;2;106;166;220m- [3m[38;2;147;160;184mExit codes: calls that saved no structured result (terminal sessions) show pass or fail,[0m[48;2;6;23;41m    [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;6;22;38m▏    [39m  [3m[38;2;147;160;184mnot the exit code.[0m[48;2;6;22;38m                                                                          [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;6;21;36m▏    [38;2;106;166;220m- [3m[38;2;147;160;184mFiles changed outside file tools come from the workspace snapshots taken before and after[0m[48;2;6;21;36m   [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;6;20;34m▏    [39m  [3m[38;2;147;160;184meach turn, so they include anything that wrote to the workspace during the turn, not only[0m[48;2;6;20;34m   [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;6;19;32m▏    [39m  [3m[38;2;147;160;184mCodewhale. They leave out what snapshots do not track: ignored and skipped paths[0m[48;2;6;19;32m            [38;2;42;63;114m│
+[38;2;138;153;179m▏    [39m  [3m[38;2;147;160;184m(.gitignore entries, .env, node_modules, target, and the like) and anything outside the[0m[48;2;6;19;32m     [38;2;79;209;197m┃
+[38;2;138;153;179m▏    [39m  [3m[38;2;147;160;184mworkspace.[0m[48;2;6;19;32m                                                                                  [38;2;79;209;197m┃
+[38;2;138;153;179m▏    [38;2;106;166;220m- [3m[38;2;147;160;184mLine counts: some file changes have no saved diff, so their +/- counts are not recorded.[0m[48;2;6;19;32m    [38;2;79;209;197m┃
+[38;2;138;153;179m▏    [38;2;106;166;220m- [3m[38;2;147;160;184mPlugin changes are not itemized for a terminal session yet[0m[48;2;6;19;32m                                  [38;2;79;209;197m┃
+[38;2;138;153;179m▏    [38;2;106;166;220m- [3m[38;2;147;160;184mTimestamps: a terminal session saves calls in order, not when each one ran.[0m[48;2;6;19;32m                 [38;2;79;209;197m┃
+[38;2;106;166;220m╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│❯[39m [38;2;182;192;212mType a message…[39m                                                                                 [38;2;106;166;220m│
+│[39m                                                                                              [38;2;138;153;179m[·][39m [38;2;106;166;220m│
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-[39m[48;5;233m [1m[38;5;173m● accept edits[0m[38;5;103m[48;5;233m  Shift+Tab to change[39m
- [38;5;146mdeepseek-flash · thinking: high[38;5;103m   [38;5;109mcontext[39m [38;5;74m1%[38;5;103m   [38;5;146m$0.0015[38;5;103m   [38;5;109mttft[39m [38;5;146m820ms[38;5;103m   [38;5;146m97 avg tok/s[38;5;103m   [38;5;109mcache[39m [38;5;146m79%[39m
+[39m [1m[38;2;224;153;72m● accept edits[0m[38;2;138;153;179m[48;2;6;19;32m  Shift+Tab to change   [38;2;182;192;212mworked 2m 25s[39m
+ [38;2;182;192;212mOllama · qwen3:4b · thinking: auto[38;2;138;153;179m   [38;2;147;160;184mcontext[39m [38;2;106;166;220m38%[38;2;138;153;179m   [38;2;147;160;184mttft[39m [38;2;182;192;212m1.6s[38;2;138;153;179m   [38;2;182;192;212m64 avg tok/s[38;2;138;153;179m   [38;2;147;160;184mcache[39m [38;2;182;192;212m0%[39m

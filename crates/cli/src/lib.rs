@@ -1042,14 +1042,7 @@ fn start_lane(request: LaneStartRequest) -> Result<()> {
         worktree,
     };
     let backend = resolve_backend(kind);
-    if let Err(error) = backend.start(&reg, &mut record, &spec) {
-        // A start that failed before launch (worktree provisioning, the
-        // first log write) left the lane `pending` forever; reconcile skips
-        // pending lanes. Close it as failed. A lane a backend already made
-        // terminal is left as it is.
-        let _ = reg.mark_terminal_if_active(&mut record, LaneStatus::Failed);
-        return Err(error);
-    }
+    start_lane_with_backend(backend.as_ref(), &reg, &mut record, &spec)?;
     println!("started {}", record.id);
     println!("status:  {}", record.status.as_str());
     println!("runtime: {}", record.runtime.as_str());
@@ -1068,6 +1061,24 @@ fn start_lane(request: LaneStartRequest) -> Result<()> {
             record.status.as_str(),
             record.log_path.display()
         );
+    }
+    Ok(())
+}
+
+fn start_lane_with_backend(
+    backend: &dyn codewhale_lane::RuntimeBackend,
+    reg: &codewhale_lane::LaneRegistry,
+    record: &mut codewhale_lane::LaneRecord,
+    spec: &codewhale_lane::LaneStartSpec,
+) -> Result<()> {
+    if let Err(error) = backend.start(reg, record, spec) {
+        if let Err(mark) = reg.mark_terminal_if_active(record, codewhale_lane::LaneStatus::Failed) {
+            return Err(error.context(format!(
+                "lane {} start failed and could not be closed as failed: {mark:#}",
+                record.id
+            )));
+        }
+        return Err(error);
     }
     Ok(())
 }
@@ -1517,9 +1528,24 @@ fn resolve_against_workspace(path: &Path, workspace: &Path) -> PathBuf {
     }
 }
 
+const MAX_WORKFLOW_SOURCE_BYTES: u64 = 1024 * 1024;
+
 fn validate_workflow_source_file(path: &Path) -> Result<()> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|file| {
+            file.take(MAX_WORKFLOW_SOURCE_BYTES + 1)
+                .read_to_end(&mut bytes)
+        })
+        .with_context(|| format!("read {}", path.display()))?;
+    if bytes.len() as u64 > MAX_WORKFLOW_SOURCE_BYTES {
+        bail!(
+            "workflow source {} exceeds {MAX_WORKFLOW_SOURCE_BYTES} bytes",
+            path.display()
+        );
+    }
     let source =
-        std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        String::from_utf8(bytes).with_context(|| format!("read {} as UTF-8", path.display()))?;
     if source.trim_start().starts_with("export default workflow(")
         || source.trim_start().starts_with("workflow(")
         || source.contains("\nworkflow(")
@@ -2881,11 +2907,20 @@ fn run() -> Result<()> {
             // read-only path `doctor` uses rather than looking only at flags.
             let resolved_runtime =
                 resolve_runtime_for_diagnostic_dispatch(&store, &runtime_overrides);
+            let project_model = if cli.no_project_config {
+                None
+            } else {
+                let workspace = cli.workspace.clone().unwrap_or_else(|| {
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                });
+                project_config_model(&workspace)?
+            };
             run_model_command(
                 &mut store,
                 args.command,
                 runtime_overrides.provider,
                 &resolved_runtime,
+                project_model,
             )
         }
         Some(Commands::Thread(args)) => {
@@ -6052,11 +6087,24 @@ fn model_set_route(
     }))
 }
 
+fn project_config_model(workspace: &Path) -> Result<Option<String>> {
+    match codewhale_config::load_project_config_outcome(workspace) {
+        codewhale_config::ProjectConfigOutcome::Missing => Ok(None),
+        codewhale_config::ProjectConfigOutcome::Loaded(config) => {
+            Ok(config.model.filter(|model| !model.is_empty()))
+        }
+        codewhale_config::ProjectConfigOutcome::Invalid { path, reason } => {
+            bail!("project config {} {reason}", path.display())
+        }
+    }
+}
+
 fn run_model_command(
     store: &mut ConfigStore,
     command: ModelCommand,
     top_level_provider: Option<ProviderKind>,
     resolved_runtime: &ResolvedRuntimeOptions,
+    project_model: Option<String>,
 ) -> Result<()> {
     match command {
         ModelCommand::List { provider } => {
@@ -6076,8 +6124,17 @@ fn run_model_command(
             let queried = raw_query.map(str::trim).filter(|m| !m.is_empty());
 
             if raw_query.is_none() && subcommand_provider.is_none() {
-                resolved_runtime.ensure_valid_model()?;
-                let saved = if matches!(resolved_runtime.provider_source, ProviderSource::Config)
+                let project_model = project_model.filter(|_| {
+                    !matches!(
+                        resolved_runtime.model_source,
+                        codewhale_config::ModelSource::Cli | codewhale_config::ModelSource::Env
+                    )
+                });
+                if project_model.is_none() {
+                    resolved_runtime.ensure_valid_model()?;
+                }
+                let saved = if project_model.is_none()
+                    && matches!(resolved_runtime.provider_source, ProviderSource::Config)
                     && !matches!(
                         resolved_runtime.model_source,
                         codewhale_config::ModelSource::Cli | codewhale_config::ModelSource::Env
@@ -6093,14 +6150,17 @@ fn run_model_command(
                     .map_or(resolved_runtime.provider.as_str(), |(provider, _, _)| {
                         provider.as_str()
                     });
-                let model = saved
-                    .as_ref()
-                    .map_or(resolved_runtime.model.as_str(), |(_, model, _)| {
-                        model.as_str()
-                    });
-                let source = saved
-                    .as_ref()
-                    .map_or(resolved_runtime.model_source, |(_, _, source)| *source);
+                let model = project_model
+                    .as_deref()
+                    .or_else(|| saved.as_ref().map(|(_, model, _)| model.as_str()))
+                    .unwrap_or(resolved_runtime.model.as_str());
+                let source = if project_model.is_some() {
+                    codewhale_config::ModelSource::RootModel
+                } else {
+                    saved
+                        .as_ref()
+                        .map_or(resolved_runtime.model_source, |(_, _, source)| *source)
+                };
                 let kind = ProviderKind::parse(provider).unwrap_or(ProviderKind::Custom);
                 let identity = if kind == ProviderKind::Custom {
                     store.config.named_custom_provider_id().unwrap_or(provider)
@@ -6176,8 +6236,16 @@ fn run_model_command(
                     "provider_source: {}",
                     provider_source_label(resolved_runtime.provider_source)
                 );
-                println!("model_source: {}", source.as_str());
+                println!(
+                    "model_source: {}",
+                    if project_model.is_some() {
+                        "project config model"
+                    } else {
+                        source.as_str()
+                    }
+                );
                 if saved.is_none()
+                    && project_model.is_none()
                     && let Err(error) = &resolved_runtime.route
                 {
                     println!("route_error: {error}");
@@ -8138,6 +8206,7 @@ verbosity = "concise"
             },
             None,
             &runtime,
+            None,
         )
         .unwrap();
         assert_eq!(store.config.provider, ProviderKind::Zai);
@@ -8232,6 +8301,7 @@ verbosity = "concise"
                 },
                 None,
                 &runtime,
+                None,
             )
             .unwrap();
             assert_eq!(store.config.provider, provider);
@@ -8280,6 +8350,7 @@ verbosity = "concise"
                 },
                 None,
                 &runtime,
+                None,
             )
             .unwrap();
             let saved = std::fs::read_to_string(&path).unwrap();
@@ -8329,12 +8400,43 @@ verbosity = "concise"
                 },
                 None,
                 &runtime,
+                None,
             )
             .expect_err("rejected model must fail loud")
             .to_string();
             assert!(err.contains(expected_provider), "{err}");
             assert!(err.contains(expected_model), "{err}");
         }
+    }
+
+    #[test]
+    fn model_resolve_reports_the_project_config_model() {
+        let _env = env_lock();
+        let home = tempfile::tempdir().expect("isolated home");
+        let _home = ScopedEnvVar::set("CODEWHALE_HOME", &home.path().to_string_lossy());
+        let path = home.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "provider = \"deepseek\"\n\n[providers.deepseek]\napi_key = \"k\"\nmodel = \"deepseek-v4-pro\"\n",
+        )
+        .unwrap();
+        let mut store = ConfigStore::load(Some(path)).unwrap();
+        let runtime = store
+            .config
+            .resolve_runtime_options(&CliRuntimeOverrides::default());
+        let err = run_model_command(
+            &mut store,
+            ModelCommand::Resolve {
+                model: None,
+                provider: None,
+            },
+            None,
+            &runtime,
+            Some("totally-unknown-model-x".to_string()),
+        )
+        .expect_err("the project model, not the global one, is resolved")
+        .to_string();
+        assert!(err.contains("totally-unknown-model-x"), "{err}");
     }
 
     #[test]
@@ -8719,6 +8821,64 @@ verbosity = "concise"
         let error = start_lane(request("exit 3")).expect_err("a failed inline lane must fail");
         assert!(format!("{error:#}").contains(" failed"), "{error:#}");
         start_lane(request("exit 0")).expect("a completed inline lane succeeds");
+    }
+
+    #[test]
+    fn start_lane_reports_mark_terminal_error_when_start_and_close_both_fail() {
+        use codewhale_lane::{
+            LaneRecord, LaneRegistry, LaneStartSpec, RuntimeBackend, RuntimeBackendKind,
+            TerminalTransition,
+        };
+
+        struct FailingBackend;
+
+        impl RuntimeBackend for FailingBackend {
+            fn kind(&self) -> RuntimeBackendKind {
+                RuntimeBackendKind::Inline
+            }
+
+            fn start(
+                &self,
+                _registry: &LaneRegistry,
+                _record: &mut LaneRecord,
+                _spec: &LaneStartSpec,
+            ) -> Result<()> {
+                bail!("simulated backend start failure")
+            }
+
+            fn attach_command(&self, _record: &LaneRecord) -> Option<String> {
+                None
+            }
+
+            fn stop(
+                &self,
+                _registry: &LaneRegistry,
+                _record: &mut LaneRecord,
+                _fence: Option<u64>,
+            ) -> Result<TerminalTransition> {
+                Ok(TerminalTransition::AlreadyTerminal)
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let reg = LaneRegistry::open(dir.path()).unwrap();
+        let mut record = reg
+            .create_pending(None, None, None, None, RuntimeBackendKind::Inline, None)
+            .unwrap();
+        // Replace the lock file path with a directory so opening the lane lock fails.
+        std::fs::create_dir(dir.path().join(format!("{}.lock", record.id))).unwrap();
+        let spec = LaneStartSpec {
+            command: vec!["true".into()],
+            cwd: None,
+            environment: Vec::new(),
+            log_proxy: None,
+            worktree: None,
+        };
+        let err = start_lane_with_backend(&FailingBackend, &reg, &mut record, &spec)
+            .expect_err("combined start + mark-terminal failure must error");
+        let text = format!("{err:#}");
+        assert!(text.contains("could not be closed as failed"), "{text}");
+        assert!(text.contains("simulated backend start failure"), "{text}");
     }
 
     #[test]
@@ -9885,6 +10045,22 @@ verbosity = "concise"
             resolve_workflow_source_path("workflows/stopship.workflow.js", None, &workspace)
                 .expect("explicit workflow path");
         assert!(explicit.ends_with("workflows/stopship.workflow.js"));
+    }
+
+    #[test]
+    fn workflow_source_validation_refuses_an_oversized_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.workflow.js");
+        std::fs::write(&path, vec![b' '; MAX_WORKFLOW_SOURCE_BYTES as usize + 1]).unwrap();
+        let err = validate_workflow_source_file(&path).unwrap_err();
+        assert!(err.to_string().contains("exceeds"), "{err}");
+
+        // Multi-byte UTF-8 straddling the cap must still report the size limit.
+        let utf8_path = dir.path().join("big-utf8.workflow.js");
+        let repeated = "中".repeat((MAX_WORKFLOW_SOURCE_BYTES as usize / 3) + 2);
+        std::fs::write(&utf8_path, repeated).unwrap();
+        let utf8_err = validate_workflow_source_file(&utf8_path).unwrap_err();
+        assert!(utf8_err.to_string().contains("exceeds"), "{utf8_err}");
     }
 
     #[test]

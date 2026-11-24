@@ -246,7 +246,9 @@ fn read_readme_excerpt(workspace: &Path, entries: &[String]) -> Option<ReadmePac
             lower == "readme.md" || lower == "readme.txt" || lower == "readme"
         })?
         .clone();
-    let raw = fs::read_to_string(workspace.join(&path)).ok()?;
+    let file = fs::File::open(workspace.join(&path)).ok()?;
+    let (raw, _) =
+        crate::prompts::read_prompt_text_bounded(file, PACK_README_MAX_CHARS * 4).ok()?;
     let excerpt = truncate_chars(raw.trim(), PACK_README_MAX_CHARS);
     if excerpt.is_empty() {
         None
@@ -256,9 +258,6 @@ fn read_readme_excerpt(workspace: &Path, entries: &[String]) -> Option<ReadmePac
 }
 
 fn truncate_chars(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.to_string();
-    }
     value.chars().take(max_chars).collect::<String>()
 }
 
@@ -477,5 +476,24 @@ mod tests {
             Some("src/main.rs".to_string())
         );
         assert_eq!(normalize_pack_relative_path("../secret.txt"), None);
+    }
+
+    #[test]
+    fn project_context_pack_bounds_oversized_multibyte_readme() {
+        let tmp = tempdir().expect("tempdir");
+        // Exceed the 16 KiB + 4 KiB bounded read window with 3-byte UTF-8 chars
+        // so the window splits a character, then append invalid UTF-8 beyond the
+        // window to prove the reader stops before the tail.
+        let mut readme_bytes = "中".repeat(7_000).into_bytes();
+        readme_bytes.extend_from_slice(&[0xff, 0xfe, 0xff, 0xfe]);
+        fs::write(tmp.path().join("README.md"), &readme_bytes).expect("write oversized readme");
+
+        let pack = build_project_context_pack(tmp.path()).expect("pack");
+        let readme = pack
+            .readme
+            .expect("bounded read should ignore bytes past cap");
+        assert_eq!(readme.path, "README.md");
+        assert_eq!(readme.excerpt.chars().count(), PACK_README_MAX_CHARS);
+        assert!(readme.excerpt.chars().all(|ch| ch == '中'));
     }
 }

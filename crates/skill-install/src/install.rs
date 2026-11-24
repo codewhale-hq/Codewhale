@@ -310,8 +310,8 @@ pub enum InstallError {
 /// 3. Stream the tarball into a tempfile (capped at `max_size`).
 /// 4. Validate the archive (path-traversal, size, no symlinks in the selected
 ///    skill subtree, SKILL.md present with required frontmatter fields) into a
-///    sibling `<name>.tmp/` directory.
-/// 5. Atomic-rename `<name>.tmp/` → `<name>/`.
+///    fresh hidden sibling staging directory.
+/// 5. Atomic-rename the staging directory → `<name>/`.
 /// 6. Write `.installed-from` and return [`InstalledSkill`].
 ///
 /// `update = false` rejects an existing destination. Pass `update = true`
@@ -368,7 +368,12 @@ pub async fn install_with_registry(
     // no-op changes without redoing the extract.
     let checksum = sha256_hex(&bytes);
 
-    let staged = stage_tarball(&bytes, skills_dir, max_size)?;
+    let staged = {
+        let skills_dir = skills_dir.to_path_buf();
+        tokio::task::spawn_blocking(move || stage_tarball(&bytes, &skills_dir, max_size))
+            .await
+            .context("skill staging task failed")??
+    };
 
     // Move the staged dir into its final location. If `update` is set and the
     // destination exists, replace it; otherwise reject.
@@ -421,34 +426,38 @@ pub async fn install_with_registry(
     // Write the marker last so a partial install never leaves a stale
     // .installed-from on disk. Prefer v2 with package content digest.
     let spec = source_spec_string(&source);
-    let content_digest = match crate::package_digest::compute_package_digest(&final_path) {
-        Ok(digest) => digest,
-        Err(err) => {
-            let _ = tokio::fs::remove_dir_all(&final_path).await;
-            if let Some(backup) = backup_path.take() {
-                let _ = tokio::fs::rename(&backup, &final_path).await;
+    {
+        let final_path = final_path.clone();
+        let source_url = source_url.clone();
+        let checksum = checksum.clone();
+        let skill_name = staged.skill_name.clone();
+        tokio::task::spawn_blocking(move || {
+            let finalized = crate::package_digest::compute_package_digest(&final_path)
+                .map_err(|err| {
+                    anyhow::anyhow!("installed package failed content digest validation: {err}")
+                })
+                .and_then(|content_digest| {
+                    write_installed_from_v2(
+                        &final_path,
+                        &spec,
+                        Some(&source_url),
+                        &checksum,
+                        &content_digest,
+                        &skill_name,
+                    )
+                });
+            if finalized.is_err() {
+                let _ = fs::remove_dir_all(&final_path);
+                if let Some(backup) = &backup_path {
+                    let _ = fs::rename(backup, &final_path);
+                }
+            } else if let Some(backup) = &backup_path {
+                let _ = fs::remove_dir_all(backup);
             }
-            return Err(anyhow::anyhow!(
-                "installed package failed content digest validation: {err}"
-            ));
-        }
-    };
-    if let Err(err) = write_installed_from_v2(
-        &final_path,
-        &spec,
-        Some(&source_url),
-        &checksum,
-        &content_digest,
-        &staged.skill_name,
-    ) {
-        let _ = tokio::fs::remove_dir_all(&final_path).await;
-        if let Some(backup) = backup_path.take() {
-            let _ = tokio::fs::rename(&backup, &final_path).await;
-        }
-        return Err(err);
-    }
-    if let Some(backup) = backup_path {
-        tokio::fs::remove_dir_all(&backup).await.ok();
+            finalized
+        })
+        .await
+        .context("skill finalize task failed")??;
     }
 
     Ok(InstallOutcome::Installed(InstalledSkill {
@@ -839,7 +848,13 @@ async fn sync_one_skill(
 
         let final_path: PathBuf = if is_tarball {
             // Extract into a temp staging dir, then rename atomically.
-            let staged = match stage_tarball(&bytes, cache_dir, max_size) {
+            let staging = {
+                let (bytes, cache_dir) = (bytes.clone(), cache_dir.to_path_buf());
+                tokio::task::spawn_blocking(move || stage_tarball(&bytes, &cache_dir, max_size))
+                    .await
+                    .unwrap_or_else(|err| Err(anyhow::anyhow!("skill staging task failed: {err}")))
+            };
+            let staged = match staging {
                 Ok(s) => s,
                 Err(err) => {
                     return SkillSyncOutcome::Failed {
@@ -885,8 +900,21 @@ async fn sync_one_skill(
             sha256,
             url: url.clone(),
         };
-        let meta_json = serde_json::to_string(&meta).unwrap_or_default();
-        let _ = tokio::fs::write(final_path.join(".cache-meta.json"), meta_json).await;
+        let meta_json = match serde_json::to_string(&meta) {
+            Ok(json) => json,
+            Err(err) => {
+                return SkillSyncOutcome::Failed {
+                    name: name.to_string(),
+                    reason: format!("failed to serialize cache metadata: {err:#}"),
+                };
+            }
+        };
+        if let Err(err) = tokio::fs::write(final_path.join(".cache-meta.json"), meta_json).await {
+            return SkillSyncOutcome::Failed {
+                name: name.to_string(),
+                reason: format!("failed to write cache metadata: {err:#}"),
+            };
+        }
 
         return SkillSyncOutcome::Downloaded {
             name: name.to_string(),
@@ -1010,7 +1038,11 @@ fn write_installed_from_marker_v2(
             serde_json::Value::String(nonce.to_string()),
         );
     }
-    fs::write(skill_dir.join(INSTALLED_FROM_MARKER), body.to_string()).with_context(|| {
+    codewhale_util::utils::write_atomic(
+        &skill_dir.join(INSTALLED_FROM_MARKER),
+        body.to_string().as_bytes(),
+    )
+    .with_context(|| {
         format!(
             "failed to write {} for {}",
             INSTALLED_FROM_MARKER,
@@ -1026,7 +1058,11 @@ pub fn write_trust_v2(skill_dir: &Path, content_digest: &str) -> Result<()> {
         "schema_version": 2,
         "content_digest": content_digest,
     });
-    fs::write(skill_dir.join(TRUSTED_MARKER), body.to_string()).with_context(|| {
+    codewhale_util::utils::write_atomic(
+        &skill_dir.join(TRUSTED_MARKER),
+        body.to_string().as_bytes(),
+    )
+    .with_context(|| {
         format!(
             "failed to write {} for {}",
             TRUSTED_MARKER,
@@ -1264,7 +1300,7 @@ struct StagedSkill {
     staged_path: PathBuf,
 }
 
-/// Validate a tarball and extract it into `<skills_dir>/<name>.tmp/`.
+/// Validate a tarball and extract it into a fresh hidden staging dir under `skills_dir`.
 fn stage_tarball(bytes: &[u8], skills_dir: &Path, max_size: u64) -> Result<StagedSkill> {
     fs::create_dir_all(skills_dir)
         .with_context(|| format!("failed to create skills directory {}", skills_dir.display()))?;
@@ -1276,20 +1312,11 @@ fn stage_tarball(bytes: &[u8], skills_dir: &Path, max_size: u64) -> Result<Stage
 
     let scan = scan_tarball(bytes, max_size)?;
 
-    // Prepare staged directory. Use a `.tmp` suffix so a crashed install
-    // never collides with a real name; remove any leftover from a prior
-    // failed attempt.
-    let staged_path = skills_dir.join(format!("{}.tmp", scan.skill_name));
-    if staged_path.exists() {
-        fs::remove_dir_all(&staged_path).with_context(|| {
-            format!(
-                "failed to clean stale staging dir {}",
-                staged_path.display()
-            )
-        })?;
-    }
-    fs::create_dir_all(&staged_path)
-        .with_context(|| format!("failed to create staging dir {}", staged_path.display()))?;
+    let staged_path = tempfile::Builder::new()
+        .prefix(".staging-")
+        .tempdir_in(skills_dir)
+        .with_context(|| format!("failed to create staging dir in {}", skills_dir.display()))?
+        .keep();
 
     // Second pass — extract.
     let result = extract_into(&scan, bytes, &staged_path, max_size);
@@ -1962,6 +1989,38 @@ mod tests {
         fs::rename(&staged.staged_path, skills.join("demo")).unwrap();
     }
 
+    #[test]
+    fn concurrent_stages_of_one_skill_use_distinct_hidden_dirs() {
+        let bytes = skill_tarball(&[(
+            "repo/SKILL.md",
+            b"---\nname: demo\ndescription: test\n---\nbody",
+            0o644,
+        )]);
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir(tmp.path().join("demo.tmp")).unwrap();
+        fs::write(tmp.path().join("demo.tmp/keep"), b"other").unwrap();
+        let first = stage_tarball(&bytes, tmp.path(), DEFAULT_MAX_SIZE_BYTES).unwrap();
+        let second = stage_tarball(&bytes, tmp.path(), DEFAULT_MAX_SIZE_BYTES).unwrap();
+        assert_ne!(first.staged_path, second.staged_path);
+        for staged in [&first, &second] {
+            assert!(staged.staged_path.join("SKILL.md").is_file());
+            let name = staged.staged_path.file_name().unwrap().to_string_lossy();
+            assert!(name.starts_with(".staging-"), "{name}");
+        }
+        assert!(tmp.path().join("demo.tmp/keep").is_file());
+    }
+
+    #[test]
+    fn stage_accepts_a_skill_name_near_the_component_limit() {
+        let name = "a".repeat(250);
+        let skill_md = format!("---\nname: {name}\ndescription: test\n---\nbody");
+        let bytes = skill_tarball(&[("repo/SKILL.md", skill_md.as_bytes(), 0o644)]);
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = stage_tarball(&bytes, tmp.path(), DEFAULT_MAX_SIZE_BYTES).unwrap();
+        assert_eq!(staged.skill_name, name);
+        assert!(staged.staged_path.join("SKILL.md").is_file());
+    }
+
     #[cfg(unix)]
     #[test]
     fn remote_skill_stage_preserves_only_owner_executable_intent() {
@@ -2179,6 +2238,90 @@ mod tests {
             "the hop to an allow-listed local name must be refused"
         );
         assert_eq!(internal_hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn sync_one_skill_reports_failure_when_cache_meta_cannot_be_written() {
+        let skill_body = "---\nname: demo\ndescription: test\n---\nbody\n";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nETag: \"v1\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            skill_body.len(),
+            skill_body
+        );
+        let (addr, _hits) = counting_server(response).await;
+        let root = tempfile::tempdir().unwrap();
+        let cache_dir = root.path().join("cache");
+        // Occupy `.cache-meta.json` with a directory so writing the file fails portably.
+        std::fs::create_dir_all(cache_dir.join("demo/.cache-meta.json")).unwrap();
+        let entry = RegistryEntry {
+            source: format!("http://{addr}/SKILL.md"),
+            description: None,
+            keywords: Vec::new(),
+            domains: Vec::new(),
+        };
+        let policy = NetworkPolicy {
+            default: Decision::Allow.into(),
+            allow: Vec::new(),
+            deny: Vec::new(),
+            proxy: Vec::new(),
+            proxy_fake_ip_cidrs: Vec::new(),
+            audit: false,
+        };
+        let outcome = sync_one_skill("demo", &entry, &policy, &cache_dir, 64 * 1024).await;
+        assert!(
+            matches!(
+                outcome,
+                SkillSyncOutcome::Failed { ref name, ref reason }
+                    if name == "demo" && reason.contains("cache metadata")
+            ),
+            "expected Failed when .cache-meta.json is unwritable, got: {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn marker_writes_are_atomic_and_truncated_marker_fails_closed_on_update() {
+        let root = tempfile::tempdir().unwrap();
+        let skill_dir = root.path().join("demo");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        write_installed_from_v2(
+            &skill_dir,
+            "https://example.invalid/demo.tar.gz",
+            Some("https://example.invalid/demo.tar.gz"),
+            "abc123",
+            "def456",
+            "demo",
+        )
+        .unwrap();
+        write_trust_v2(&skill_dir, "def456").unwrap();
+
+        let mut names: Vec<String> = std::fs::read_dir(&skill_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                INSTALLED_FROM_MARKER.to_string(),
+                TRUSTED_MARKER.to_string()
+            ]
+        );
+
+        // Truncated `.installed-from` must fail closed during update.
+        std::fs::write(skill_dir.join(INSTALLED_FROM_MARKER), "").unwrap();
+        let err = update_with_registry(
+            "demo",
+            root.path(),
+            64 * 1024,
+            &NetworkPolicy::default(),
+            DEFAULT_REGISTRY_URL,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("malformed .installed-from"),
+            "unexpected error: {err:#}"
+        );
     }
 
     #[test]

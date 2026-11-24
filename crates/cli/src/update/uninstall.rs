@@ -168,25 +168,13 @@ fn remove(yes: bool) -> Result<bool> {
     println!(
         "Program removal preserves user state, credentials, sessions, workspaces and services. For a receipted release copy it also removes this install's exact Codewhale PATH block from your shell profiles and Codewhale-generated completion files at the documented paths; nothing else in a profile is touched."
     );
-    if !method.supports_self_update() {
+    if !method.supports_self_update() || method == InstallMethod::WindowsInstaller {
         println!(
             "This copy belongs to {}. Remove it with: {}",
             method.label(),
             codewhale_release::installs::manager_command(method, &identity.path)
         );
         return Ok(false);
-    }
-    if let Some(uninstaller) = windows_installer_uninstaller(&identity.path) {
-        println!(
-            "This copy belongs to the Codewhale Windows installer. Remove it from Settings > Apps > CodeWhale, or run: \"{}\"",
-            uninstaller.display()
-        );
-        return Ok(false);
-    }
-    if protected_update_path(&identity.path) {
-        bail!(
-            "System/package path was preserved. Identify its owning package manager and remove it through that manager."
-        );
     }
     let primary_name = identity
         .path
@@ -914,22 +902,6 @@ fn curl_install_entries(identity: &UpdateExecutableIdentity) -> Result<Option<Cu
             .any(|(name, _)| file_name == std::ffi::OsStr::new(name))
     });
     Ok(selected_listed.then_some((directory, entries)))
-}
-
-fn windows_installer_uninstaller(executable: &Path) -> Option<PathBuf> {
-    let bin = executable.parent()?;
-    if !bin
-        .file_name()
-        .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
-    {
-        return None;
-    }
-    let root = bin.parent()?;
-    let uninstaller = root.join("Uninstall.exe");
-    [&uninstaller, &root.join("update-user-path.ps1")]
-        .iter()
-        .all(|path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file()))
-        .then_some(uninstaller)
 }
 
 #[cfg(windows)]

@@ -7284,6 +7284,9 @@ impl McpPool {
         config: McpServerConfig,
         runtime_added: bool,
     ) -> Result<(), String> {
+        if name.trim().is_empty() {
+            return Err("MCP server name must not be empty".to_string());
+        }
         self.require_server(&name)
             .map_err(|error| error.to_string())?;
         if self.config.servers.contains_key(&name) {
@@ -7744,7 +7747,7 @@ pub fn load_config(path: &Path) -> Result<McpConfig> {
 }
 
 /// Maximum bytes read from an MCP config file. Configs are kilobytes.
-const MAX_MCP_CONFIG_BYTES: u64 = 1024 * 1024;
+pub const MAX_MCP_CONFIG_BYTES: u64 = 1024 * 1024;
 
 fn read_mcp_config_file(path: &Path) -> Result<Option<String>> {
     read_bounded_mcp_config_file(path, MAX_MCP_CONFIG_BYTES)
@@ -7752,7 +7755,7 @@ fn read_mcp_config_file(path: &Path) -> Result<Option<String>> {
 
 /// [`read_mcp_config_file`] with a caller-chosen size bound, for foreign files
 /// such as `~/.claude.json` that carry far more than an MCP server map.
-fn read_bounded_mcp_config_file(path: &Path, max_bytes: u64) -> Result<Option<String>> {
+pub fn read_bounded_mcp_config_file(path: &Path, max_bytes: u64) -> Result<Option<String>> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -7764,6 +7767,13 @@ fn read_bounded_mcp_config_file(path: &Path, max_bytes: u64) -> Result<Option<St
     let file_type = metadata.file_type();
     if file_type.is_symlink() || !file_type.is_file() {
         anyhow::bail!("MCP config path must be a regular file: {}", path.display());
+    }
+    if metadata.len() > max_bytes {
+        anyhow::bail!(
+            "MCP config {} exceeds the {} MiB limit",
+            path.display(),
+            max_bytes / (1024 * 1024)
+        );
     }
 
     let file = open_mcp_config_file(path)
@@ -8730,7 +8740,11 @@ pub fn mutate_config<T>(
         }
         write_atomic(path, rendered.as_bytes())
             .with_context(|| format!("Failed to write MCP config {}", path.display()))?;
-        project_authority::carry_approval_across_product_edit(path, original.as_deref(), &rendered);
+        project_authority::carry_approval_across_product_edit(
+            path,
+            original.as_deref(),
+            &rendered,
+        )?;
         Ok((result, config_revision(Some(&rendered))))
     })
 }

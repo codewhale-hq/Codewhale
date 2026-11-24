@@ -112,7 +112,7 @@ use crate::tui::history::text::{history_cell_to_clipboard_text, history_cell_to_
 use crate::tui::selection::{SelectionAutoscroll, TranscriptSelectionPoint};
 use crate::tui::tideline::InteractionAction;
 use crate::tui::views::{ContextMenuAction, HelpView, ModalKind, ViewEvent};
-use codewhale_localization::MessageId;
+use codewhale_localization::{MessageId, tr};
 use codewhale_models::{ContentBlock, Message};
 use codewhale_tui_kit::scrolling::{ScrollDirection, TranscriptScroll};
 use codewhale_tui_kit::ui_text::{
@@ -513,7 +513,9 @@ pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent, now: Instant)
         } else {
             app.selected_text()
         };
-        let _ = app.clipboard.write_primary_text(&text);
+        if let Err(error) = app.clipboard.write_primary_text(&text) {
+            tracing::debug!(%error, "primary selection write failed");
+        }
     }
 
     // Topbar facts are typed controls, not decorative text. Route this before
@@ -905,20 +907,19 @@ pub(crate) fn apply_sidebar_row_action(app: &mut App, action: SidebarRowAction) 
                 _ => RailPanel::Agents,
             };
             crate::tui::work_surface::select_dock_panel(app, target);
-            app.status_message = Some(
-                match target {
-                    RailPanel::Agents => "Showing subagents",
-                    _ => "Showing tasks",
-                }
-                .to_string(),
-            );
+            let message = match target {
+                RailPanel::Agents => MessageId::SidebarShowingSubagents,
+                _ => MessageId::SidebarShowingTasks,
+            };
+            app.status_message = Some(tr(app.ui_locale, message).into_owned());
             app.needs_redraw = true;
             Vec::new()
         }
         SidebarRowAction::OpenAgentDetail { agent_id } => {
             if !crate::tui::agent_details::open_agent_details(app, &agent_id) {
                 crate::tui::work_surface::agent_details_closed(app, &agent_id);
-                app.status_message = Some("Agent details are unavailable".to_string());
+                app.status_message =
+                    Some(tr(app.ui_locale, MessageId::SidebarAgentDetailsUnavailable).into_owned());
             }
             app.needs_redraw = true;
             Vec::new()
@@ -1111,10 +1112,17 @@ fn agent_message_text(message: &Message) -> String {
                 is_error,
                 ..
             } => {
-                let label = if is_error.unwrap_or(false) {
-                    "← tool error"
-                } else {
-                    "← tool result"
+                let label = match is_error {
+                    Some(true) => "← tool error",
+                    Some(false) => "← tool result",
+                    None => {
+                        tracing::warn!(
+                            target: "codewhale_tui::mouse_ui",
+                            %tool_use_id,
+                            "worker tool result missing is_error flag"
+                        );
+                        "← tool result (status unknown)"
+                    }
                 };
                 text.push_str(&format!("{label} ({tool_use_id})\n{content}\n"));
             }
@@ -1723,25 +1731,25 @@ pub(crate) fn apply_context_menu_action(
         }
         ContextMenuAction::OpenSelection => {
             if !open_active_selection(app) {
-                app.status_message = Some("No selection to open".to_string());
+                app.status_message =
+                    Some(tr(app.ui_locale, MessageId::CtxMenuNoSelectionToOpen).into_owned());
             }
         }
         ContextMenuAction::ClearSelection => {
-            app.status_message = Some(
-                if clear_active_selection(app) {
-                    "Selection cleared"
-                } else {
-                    "No selection to clear"
-                }
-                .to_string(),
-            );
+            let message = if clear_active_selection(app) {
+                MessageId::CtxMenuSelectionCleared
+            } else {
+                MessageId::CtxMenuNoSelectionToClear
+            };
+            app.status_message = Some(tr(app.ui_locale, message).into_owned());
         }
         ContextMenuAction::CopyCell { cell_index } => {
             copy_cell_to_clipboard(app, cell_index);
         }
         ContextMenuAction::OpenDetails { cell_index } => {
             if !open_details_pager_for_cell(app, cell_index) {
-                app.status_message = Some("No details available for that line".to_string());
+                app.status_message =
+                    Some(tr(app.ui_locale, MessageId::CtxMenuNoDetailsForLine).into_owned());
             }
         }
         ContextMenuAction::Paste => {
@@ -1754,7 +1762,8 @@ pub(crate) fn apply_context_menu_action(
             match app.view_stack.extensions_menu_action(&item_id, verb) {
                 Some(events) => outcome = ContextMenuOutcome::Events(events),
                 None => {
-                    app.status_message = Some("That extension is no longer listed".to_string());
+                    app.status_message =
+                        Some(tr(app.ui_locale, MessageId::CtxMenuExtensionUnlisted).into_owned());
                 }
             }
         }
@@ -1800,16 +1809,19 @@ pub(crate) fn apply_context_menu_action(
         }
         ContextMenuAction::HideCell { cell_index } => {
             app.collapsed_cells.insert(cell_index);
-            app.status_message = Some("Cell hidden".to_string());
+            app.status_message = Some(tr(app.ui_locale, MessageId::CtxMenuCellHidden).into_owned());
         }
         ContextMenuAction::ShowCell { cell_index } => {
             app.collapsed_cells.remove(&cell_index);
-            app.status_message = Some("Cell shown".to_string());
+            app.status_message = Some(tr(app.ui_locale, MessageId::CtxMenuCellShown).into_owned());
         }
         ContextMenuAction::ShowAllHidden => {
             let count = app.collapsed_cells.len();
             app.collapsed_cells.clear();
-            app.status_message = Some(format!("{count} hidden cell(s) restored"));
+            app.status_message = Some(
+                tr(app.ui_locale, MessageId::CtxMenuHiddenCellsRestored)
+                    .replace("{count}", &count.to_string()),
+            );
         }
     }
     app.needs_redraw = true;
@@ -2129,7 +2141,8 @@ pub(crate) fn copy_active_selection(app: &mut App) {
         }
     } else {
         clear_transcript_selection(app);
-        app.status_message = Some("No selection to copy".to_string());
+        app.status_message =
+            Some(tr(app.ui_locale, MessageId::CtxMenuNoSelectionToCopy).into_owned());
     }
 }
 
@@ -3606,6 +3619,98 @@ mod tests {
         assert!(transcript.contains("→ list_dir"));
         assert!(transcript.contains("I found the workspace."));
         assert!(!transcript.contains("private chain of thought"));
+    }
+
+    #[test]
+    fn worker_tool_result_missing_is_error_renders_as_unknown() {
+        let transcript = agent_transcript_text(&json!({
+            "message_count": 1,
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "call_ok", "content": "done", "is_error": false},
+                    {"type": "tool_result", "tool_use_id": "call_err", "content": "boom", "is_error": true},
+                    {"type": "tool_result", "tool_use_id": "call_unknown", "content": "maybe"}
+                ]}
+            ]
+        }));
+
+        assert!(transcript.contains("← tool result (call_ok)\ndone"));
+        assert!(transcript.contains("← tool error (call_err)\nboom"));
+        assert!(transcript.contains("← tool result (status unknown) (call_unknown)\nmaybe"));
+    }
+
+    #[test]
+    fn sidebar_and_context_menu_status_messages_respect_ui_locale() {
+        use codewhale_localization::{Locale, MessageId, tr};
+
+        let mut app = create_test_app();
+        app.ui_locale = Locale::Fr;
+
+        super::apply_sidebar_row_action(&mut app, SidebarRowAction::ShowSubagentsPanel);
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some(tr(Locale::Fr, MessageId::SidebarShowingSubagents).as_ref())
+        );
+
+        super::apply_context_menu_action(&mut app, ContextMenuAction::OpenSelection);
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some(tr(Locale::Fr, MessageId::CtxMenuNoSelectionToOpen).as_ref())
+        );
+
+        super::apply_context_menu_action(&mut app, ContextMenuAction::ClearSelection);
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some(tr(Locale::Fr, MessageId::CtxMenuNoSelectionToClear).as_ref())
+        );
+
+        super::apply_context_menu_action(
+            &mut app,
+            ContextMenuAction::OpenDetails { cell_index: 99 },
+        );
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some(tr(Locale::Fr, MessageId::CtxMenuNoDetailsForLine).as_ref())
+        );
+
+        super::apply_context_menu_action(&mut app, ContextMenuAction::HideCell { cell_index: 0 });
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some(tr(Locale::Fr, MessageId::CtxMenuCellHidden).as_ref())
+        );
+
+        super::apply_context_menu_action(&mut app, ContextMenuAction::ShowCell { cell_index: 0 });
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some(tr(Locale::Fr, MessageId::CtxMenuCellShown).as_ref())
+        );
+
+        app.collapsed_cells.insert(0);
+        super::apply_context_menu_action(&mut app, ContextMenuAction::ShowAllHidden);
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some(
+                tr(Locale::Fr, MessageId::CtxMenuHiddenCellsRestored)
+                    .replace("{count}", "1")
+                    .as_str()
+            )
+        );
+
+        app.viewport.transcript_selection.anchor =
+            Some(crate::tui::selection::TranscriptSelectionPoint {
+                line_index: 0,
+                column: 0,
+            });
+        app.viewport.transcript_selection.head =
+            Some(crate::tui::selection::TranscriptSelectionPoint {
+                line_index: 0,
+                column: 1,
+            });
+        super::apply_context_menu_action(&mut app, ContextMenuAction::CopySelection);
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some(tr(Locale::Fr, MessageId::CtxMenuNoSelectionToCopy).as_ref())
+        );
     }
 
     #[test]

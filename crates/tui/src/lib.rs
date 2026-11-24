@@ -1106,6 +1106,33 @@ fn resolve_exec_prompt(args: &ExecArgs) -> Result<String> {
 
 const EXEC_STDIN_GRACE: Duration = Duration::from_secs(2);
 
+#[cfg(unix)]
+fn read_stdin_context(grace: Duration) -> Result<Option<String>> {
+    use std::os::fd::AsRawFd;
+    let stdin = io::stdin();
+    let mut poll_fd = libc::pollfd {
+        fd: stdin.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let timeout = i32::try_from(grace.as_millis()).unwrap_or(i32::MAX);
+    let ready = loop {
+        let rc = unsafe { libc::poll(&mut poll_fd, 1, timeout) };
+        if rc >= 0 {
+            break rc;
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error.into());
+        }
+    };
+    if ready == 0 {
+        return Ok(None);
+    }
+    read_capped_text(stdin.lock(), MAX_EXEC_PROMPT_BYTES, "exec prompt on stdin").map(Some)
+}
+
+#[cfg(not(unix))]
 fn read_stdin_context(grace: Duration) -> Result<Option<String>> {
     let (tx, rx) = std::sync::mpsc::channel::<Result<Option<String>, String>>();
     let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
@@ -2787,7 +2814,7 @@ async fn run_async_main_dispatch(
                     return crate::doctor::run_restore(stamp);
                 }
                 if args.installs {
-                    return crate::doctor::run_installs_report(args.json, args.brief);
+                    return run_doctor_installs_report(&cli, &args);
                 }
                 let config = match load_doctor_config_from_cli(&cli, &args) {
                     Ok(config) => config,
@@ -11105,6 +11132,17 @@ fn load_config_from_cli(cli: &Cli) -> Result<Config> {
 /// a provider endpoint. Keep credential-bearing environment values out of the
 /// regular diagnostic configuration so an unrelated renderer or error path
 /// cannot disclose them.
+/// Kept out of line so the config it loads never widens the debug poll frame
+/// of the top-level dispatch future, which runs at near-zero stack margin.
+#[inline(never)]
+fn run_doctor_installs_report(cli: &Cli, args: &DoctorArgs) -> Result<()> {
+    let update = (args.brief && !args.json)
+        .then(|| load_doctor_config_from_cli(cli, args).ok())
+        .flatten()
+        .map(|config| config.update_config());
+    crate::doctor::run_installs_report(args.json, args.brief, update.as_ref())
+}
+
 fn load_doctor_config_from_cli(cli: &Cli, args: &DoctorArgs) -> Result<Config> {
     if args.probe_api || args.probe_local {
         return load_config_from_cli(cli);
@@ -11950,7 +11988,7 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
     let config = &config;
     validate_review_receipt_args(&args)?;
 
-    if args.pr.is_some() && !is_command_available("gh") {
+    if args.pr.is_some() && !tokio::task::spawn_blocking(|| is_command_available("gh")).await? {
         bail!(
             "`gh` CLI not found on PATH. Install GitHub CLI \
              (https://cli.github.com) and authenticate (`gh auth login`) \
@@ -11960,7 +11998,12 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
     // Fetched before the diff so a missing/hidden PR fails before any model
     // route is resolved or billed.
     let pr_view = match args.pr {
-        Some(number) => Some((number, run_gh_pr_view(number, args.repo.as_deref())?)),
+        Some(number) => {
+            let repo = args.repo.clone();
+            let view = tokio::task::spawn_blocking(move || run_gh_pr_view(number, repo.as_deref()))
+                .await??;
+            Some((number, view))
+        }
         None => None,
     };
     if let Some(base) = args.base.as_deref() {
@@ -11969,11 +12012,14 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
             "--base must name a commit or ref, not an option: {base}"
         );
     }
-    let diff = collect_diff(
-        &args,
-        pr_view.as_ref().map(|(_, view)| view),
-        &std::env::current_dir()?,
-    )?;
+    let workspace = std::env::current_dir()?;
+    let diff = {
+        let args = args.clone();
+        let view = pr_view.as_ref().map(|(_, view)| view.clone());
+        let workspace = workspace.clone();
+        tokio::task::spawn_blocking(move || collect_diff(&args, view.as_ref(), &workspace))
+            .await??
+    };
     if diff.trim().is_empty() {
         bail!("No diff to review.");
     }
@@ -11982,7 +12028,12 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
     }
     let commits = match (&args.base, args.pr) {
         (Some(base), None) => {
-            collect_base_commit_messages(base, args.path.as_deref(), &std::env::current_dir()?)?
+            let base = base.clone();
+            let path = args.path.clone();
+            tokio::task::spawn_blocking(move || {
+                collect_base_commit_messages(&base, path.as_deref(), &workspace)
+            })
+            .await??
         }
         _ => String::new(),
     };
@@ -15014,6 +15065,7 @@ fn merge_project_config_with_approval_baseline(
             .set_provider_model_override(&identity, Some(model.to_string()))
             .map_err(anyhow::Error::msg)?;
         config.remembered_selection_scope = Some(false);
+        config.project_model = Some(model.to_string());
     }
     if let Some(v) = table.get("reasoning_effort").and_then(toml::Value::as_str)
         && !v.is_empty()

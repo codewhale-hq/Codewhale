@@ -486,7 +486,7 @@ fn label(value: Option<&Value>, fallback: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or(fallback)
         .chars()
-        .filter(|ch| !ch.is_control())
+        .filter(|ch| !ch.is_control() && !crate::session_manager::is_title_format_char(*ch))
         .take(MAX_LABEL_CHARS)
         .collect();
     let text = text.trim();
@@ -499,12 +499,17 @@ fn label(value: Option<&Value>, fallback: &str) -> String {
 
 fn clean_text(text: &str) -> String {
     text.chars()
-        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+        .filter(|ch| {
+            (!ch.is_control() || matches!(ch, '\n' | '\t'))
+                && !crate::session_manager::is_title_format_char(*ch)
+        })
         .collect()
 }
 
+const TRUNCATED_MARKER: &str = "\n[truncated]";
+
 fn push_bounded(detail: &mut String, text: &str) {
-    if detail.len() >= MAX_DETAIL_BYTES {
+    if detail.len() >= MAX_DETAIL_BYTES || detail.ends_with(TRUNCATED_MARKER) {
         return;
     }
     let room = MAX_DETAIL_BYTES - detail.len();
@@ -512,23 +517,49 @@ fn push_bounded(detail: &mut String, text: &str) {
         detail.push_str(text);
         return;
     }
-    let mut cut = room;
-    while !text.is_char_boundary(cut) {
-        cut -= 1;
+    let max_body = MAX_DETAIL_BYTES.saturating_sub(TRUNCATED_MARKER.len());
+    if detail.len() > max_body {
+        let mut keep = max_body;
+        while !detail.is_char_boundary(keep) {
+            keep -= 1;
+        }
+        detail.truncate(keep);
+    } else {
+        let mut cut = max_body - detail.len();
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        detail.push_str(&text[..cut]);
     }
-    detail.push_str(&text[..cut]);
-    detail.push_str("\n[truncated]");
+    detail.push_str(TRUNCATED_MARKER);
+}
+
+struct CappedByteCount {
+    bytes: usize,
+}
+
+impl std::io::Write for CappedByteCount {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.bytes = self.bytes.saturating_add(buf.len());
+        if self.bytes > MAX_INPUT_BYTES {
+            return Err(std::io::Error::other("over cap"));
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 fn bounded_json(value: Option<&Value>) -> Option<Value> {
     let value = value.filter(|value| !value.is_null())?;
-    let encoded = serde_json::to_string(value).ok()?;
-    if encoded.len() <= MAX_INPUT_BYTES {
+    let mut counter = CappedByteCount { bytes: 0 };
+    if serde_json::to_writer(&mut counter, value).is_ok() {
         Some(value.clone())
     } else {
         Some(Value::String(format!(
-            "[{} bytes of tool input omitted]",
-            encoded.len()
+            "[more than {MAX_INPUT_BYTES} bytes of tool input omitted]"
         )))
     }
 }
@@ -1193,6 +1224,7 @@ impl RuntimeThreadManager {
             bail!("the agent session ended before the turn could start");
         };
         if state.active_turn.is_some() {
+            drop(active);
             if let Some(operation) = operation.as_ref() {
                 let manager = self.clone();
                 let operation = operation.clone();
@@ -2183,7 +2215,10 @@ pub(super) async fn await_agent_settlement(
     match result {
         Ok(Ok(Some(true))) => Ok(true),
         Ok(Ok(Some(false))) => bail!("the agent's approval decision could not be recorded"),
-        Ok(Ok(None) | Err(_)) => Ok(false),
+        Ok(Ok(None)) => Ok(false),
+        Ok(Err(_)) => {
+            bail!("the agent's approval settlement channel closed before a decision was recorded")
+        }
         Err(_) => bail!("the agent's approval decision was not recorded in time"),
     }
 }
@@ -2229,5 +2264,89 @@ mod tests {
         assert_eq!(posture_choice(yolo.as_ref(), &ask), None);
         assert_eq!(posture_choice(None, &ask), None);
         assert!(posture_modes(ApprovalMode::Bypass, false).is_none());
+    }
+
+    #[test]
+    fn push_bounded_keeps_the_marker_inside_the_cap() {
+        let mut detail = String::new();
+        push_bounded(&mut detail, &"x".repeat(MAX_DETAIL_BYTES * 2));
+        assert!(detail.len() <= MAX_DETAIL_BYTES, "{}", detail.len());
+        assert!(detail.ends_with(TRUNCATED_MARKER));
+    }
+
+    #[test]
+    fn push_bounded_truncates_near_cap_without_exceeding_limit() {
+        let mut detail = "a".repeat(MAX_DETAIL_BYTES - 1);
+        push_bounded(&mut detail, "中文补充内容");
+        assert!(detail.len() <= MAX_DETAIL_BYTES, "{}", detail.len());
+        assert!(detail.ends_with(TRUNCATED_MARKER));
+
+        let mut multibyte_detail = "中".repeat((MAX_DETAIL_BYTES - 4) / 3);
+        assert!(multibyte_detail.len() > MAX_DETAIL_BYTES - TRUNCATED_MARKER.len());
+        assert!(multibyte_detail.len() < MAX_DETAIL_BYTES);
+        push_bounded(&mut multibyte_detail, "更多文本");
+        assert!(
+            multibyte_detail.len() <= MAX_DETAIL_BYTES,
+            "{}",
+            multibyte_detail.len()
+        );
+        assert!(multibyte_detail.ends_with(TRUNCATED_MARKER));
+    }
+
+    #[test]
+    fn push_bounded_multibyte_truncation_stays_idempotent() {
+        let mut detail = String::new();
+        push_bounded(&mut detail, &"中".repeat(MAX_DETAIL_BYTES));
+        assert!(detail.len() <= MAX_DETAIL_BYTES, "{}", detail.len());
+        assert!(detail.ends_with(TRUNCATED_MARKER));
+        let after_first = detail.clone();
+
+        push_bounded(&mut detail, "follow-up update");
+        push_bounded(&mut detail, "!");
+        assert_eq!(detail, after_first);
+        assert_eq!(detail.matches(TRUNCATED_MARKER).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn await_agent_settlement_errors_when_channel_closes_without_outcome() {
+        let (tx, rx) = watch::channel(None);
+        drop(tx);
+        let error = await_agent_settlement(rx)
+            .await
+            .expect_err("closed settlement channel must fail")
+            .to_string();
+        assert!(error.contains("closed"), "{error}");
+
+        let (tx, rx) = watch::channel(Some(true));
+        assert!(await_agent_settlement(rx).await.expect("settled true"));
+        drop(tx);
+
+        let (tx, rx) = watch::channel(Some(false));
+        let failed = await_agent_settlement(rx)
+            .await
+            .expect_err("settled false must fail")
+            .to_string();
+        assert!(failed.contains("could not be recorded"), "{failed}");
+        drop(tx);
+    }
+
+    #[test]
+    fn bounded_json_omits_oversized_input() {
+        let big = serde_json::json!({ "text": "y".repeat(MAX_INPUT_BYTES * 4) });
+        assert_eq!(
+            bounded_json(Some(&big)),
+            Some(Value::String(format!(
+                "[more than {MAX_INPUT_BYTES} bytes of tool input omitted]"
+            )))
+        );
+        let small = serde_json::json!({ "text": "ok" });
+        assert_eq!(bounded_json(Some(&small)), Some(small.clone()));
+    }
+
+    #[test]
+    fn labels_and_text_drop_bidi_and_format_characters() {
+        let value = Value::String("safe\u{202e}txt.exe\u{200b}".to_string());
+        assert_eq!(label(Some(&value), "agent"), "safetxt.exe");
+        assert_eq!(clean_text("a\u{2066}b\nc"), "ab\nc");
     }
 }

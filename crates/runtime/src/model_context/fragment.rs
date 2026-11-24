@@ -225,7 +225,11 @@ fn enforce_byte_cap(raw: String, max_bytes: usize) -> String {
     let omitted = raw.len().saturating_sub(max_bytes);
     let marker = format!("\n[…truncated: {omitted} bytes omitted]");
     if marker.len() >= max_bytes {
-        return marker.chars().take(max_bytes).collect();
+        let mut cut = max_bytes;
+        while !marker.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        return marker[..cut].to_string();
     }
     let keep = max_bytes.saturating_sub(marker.len());
     // Truncate on a char boundary.
@@ -241,6 +245,13 @@ fn enforce_byte_cap(raw: String, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tiny_byte_cap_never_exceeds_its_bytes() {
+        for max in 1..48 {
+            assert!(enforce_byte_cap("x".repeat(100), max).len() <= max);
+        }
+    }
 
     #[test]
     fn render_diff_detects_change_and_retain() {

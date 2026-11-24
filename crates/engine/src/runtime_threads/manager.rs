@@ -218,54 +218,110 @@ fn agent_mail_address(owner_id: &str, thread: &ThreadRecord) -> Result<AgentMail
     Ok(address)
 }
 
+fn ascii_starts_with_ignore_case(value: &str, prefix: &[u8]) -> bool {
+    value
+        .as_bytes()
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+}
+
+fn ascii_contains_ignore_case(haystack: &str, needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
+fn normalized_key_ends_with(name: &str, suffix: &[u8]) -> bool {
+    let bytes = name.as_bytes();
+    if bytes.len() < suffix.len() {
+        return false;
+    }
+    bytes[bytes.len() - suffix.len()..]
+        .iter()
+        .zip(suffix)
+        .all(|(&actual, &expected)| {
+            let normalized = if actual == b'-' {
+                b'_'
+            } else {
+                actual.to_ascii_lowercase()
+            };
+            normalized == expected
+        })
+}
+
 pub(super) fn agent_mail_token_is_credential(token: &str) -> bool {
     let trimmed = token
         .trim_matches(|ch: char| ch.is_ascii_punctuation() && !matches!(ch, '_' | '-' | '=' | ':'));
-    let lower = trimmed.to_ascii_lowercase();
     if [
-        "sk-",
-        "sk_",
-        "rk-",
-        "pk-",
-        "ghp_",
-        "gho_",
-        "ghu_",
-        "ghs_",
-        "github_pat_",
-        "xoxb-",
-        "xoxp-",
-        "xoxa-",
-        "akia",
-        "aiza",
-        "eyj",
+        b"sk-".as_slice(),
+        b"sk_",
+        b"rk-",
+        b"pk-",
+        b"ghp_",
+        b"gho_",
+        b"ghu_",
+        b"ghs_",
+        b"github_pat_",
+        b"xoxb-",
+        b"xoxp-",
+        b"xoxa-",
+        b"akia",
+        b"aiza",
+        b"eyj",
     ]
     .iter()
-    .any(|prefix| lower.starts_with(prefix))
+    .any(|prefix| ascii_starts_with_ignore_case(trimmed, prefix))
     {
         return true;
     }
-    let Some((name, _)) = lower.split_once(['=', ':']) else {
+    let Some((name, _)) = trimmed.split_once(['=', ':']) else {
         return false;
     };
-    let normalized = name.replace('-', "_");
-    normalized.ends_with("api_key")
-        || normalized.ends_with("token")
-        || normalized.ends_with("secret")
-        || normalized.ends_with("password")
-        || normalized.ends_with("passwd")
+    [
+        b"api_key".as_slice(),
+        b"token",
+        b"secret",
+        b"password",
+        b"passwd",
+    ]
+    .iter()
+    .any(|suffix| normalized_key_ends_with(name, suffix))
+}
+
+async fn runtime_receipt_locale() -> codewhale_localization::Locale {
+    #[cfg(any(test, feature = "test-support"))]
+    let ticket = crate::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = crate::test_support::join_env_scope(ticket);
+        codewhale_localization::resolve_locale(
+            &codewhale_runtime::settings::Settings::load()
+                .unwrap_or_default()
+                .locale,
+        )
+    })
+    .await
+    .unwrap_or(codewhale_localization::Locale::En)
 }
 
 pub(super) fn sanitize_agent_mail_text(raw: &str, max_bytes: usize) -> String {
     let mut out = String::new();
     let mut redact_next_credential = false;
     for token in raw.split_whitespace() {
-        let lower = token.to_ascii_lowercase();
+        if out.len() >= max_bytes {
+            break;
+        }
         let replacement = if redact_next_credential || agent_mail_token_is_credential(token) {
             redact_next_credential = false;
             "[redacted-credential]"
-        } else if matches!(lower.as_str(), "bearer" | "basic" | "digest" | "apikey")
-            || lower.contains("authorization:")
-            || lower.contains("proxy-authorization:")
+        } else if ["bearer", "basic", "digest", "apikey"]
+            .iter()
+            .any(|scheme| token.eq_ignore_ascii_case(scheme))
+            || ascii_contains_ignore_case(token, b"authorization:")
         {
             redact_next_credential = true;
             "[redacted-credential]"
@@ -304,30 +360,35 @@ pub(super) fn sanitize_agent_mail_text(raw: &str, max_bytes: usize) -> String {
             break;
         }
     }
-    out.trim().to_string()
+    let trimmed_len = out.trim_end().len();
+    out.truncate(trimmed_len);
+    out
 }
 
 pub(super) fn agent_mail_looks_like_raw_transcript(raw: &str) -> bool {
-    let lower = raw.to_ascii_lowercase();
     if [
-        "<turn_meta>",
-        "<assistant",
-        "<tool_result",
-        "\"messages\":",
-        "\"role\":\"assistant\"",
-        "\"role\": \"assistant\"",
+        b"<turn_meta>".as_slice(),
+        b"<assistant",
+        b"<tool_result",
+        b"\"messages\":",
+        b"\"role\":\"assistant\"",
+        b"\"role\": \"assistant\"",
     ]
     .iter()
-    .any(|marker| lower.contains(marker))
+    .any(|marker| ascii_contains_ignore_case(raw, marker))
     {
         return true;
     }
-    lower.lines().any(|line| {
+    raw.lines().any(|line| {
         let line = line.trim_start();
-        line.starts_with("assistant:")
-            || line.starts_with("system:")
-            || line.starts_with("tool:")
-            || line.starts_with("tool_result:")
+        [
+            b"assistant:".as_slice(),
+            b"system:",
+            b"tool:",
+            b"tool_result:",
+        ]
+        .iter()
+        .any(|prefix| ascii_starts_with_ignore_case(line, prefix))
     })
 }
 
@@ -4816,6 +4877,44 @@ impl RuntimeThreadManager {
         }
     }
 
+    /// Requests waiting on a decision from outside this process: tool
+    /// approvals, user-input prompts, and client-executed dynamic tools.
+    ///
+    /// These live only in memory (`pending_approvals` and its siblings), so no
+    /// restart recovers them and no store directory lists them. A host that
+    /// drops the threads they belong to leaves every waiter without an owner,
+    /// which is why they must be settled before the store is released.
+    pub fn has_unsettled_requests(&self) -> bool {
+        !self.pending_approvals.lock().is_empty()
+            || !self.pending_user_inputs.lock().is_empty()
+            || !self.pending_dynamic_tools.lock().is_empty()
+    }
+
+    /// Whether this host can let go of the store it currently holds.
+    ///
+    /// This is *not* [`RuntimeStoreBinding::adoption_refusal`]. That predicate
+    /// answers "may a host take this store over?", and a store any host ever
+    /// opened fails it: opening one writes `owner.json`, `state.json` and the
+    /// work directories, so even a store that has never run a turn reports
+    /// `HasDurableWork`. Asking it about the store being left would refuse
+    /// every switch out of a host that merely started.
+    ///
+    /// What makes a store undroppable is work still in flight *in this
+    /// process*: a loaded engine with an active turn, or a request waiting on a
+    /// decision nobody else can answer ([`Self::has_unsettled_requests`]).
+    /// Finished history is not work — it stays on disk for whichever process
+    /// opens the store next, exactly as it would after a clean exit.
+    pub async fn current_store_is_disposable(&self) -> Result<bool> {
+        if self.has_unsettled_requests() {
+            return Ok(false);
+        }
+        let active = self.active.lock().await;
+        Ok(active
+            .engines
+            .values()
+            .all(|state| state.active_turn.is_none()))
+    }
+
     pub async fn close_execution_admission(&self) {
         let _admission = self.config_admission.write().await;
         self.cancel_token.cancel();
@@ -6004,6 +6103,14 @@ impl RuntimeThreadManager {
             json!({ "grant": grant.clone() }),
         )
         .await
+        .inspect_err(|error| {
+            tracing::warn!(
+                target: "approval",
+                thread_id,
+                turn_id,
+                "session grant event was not recorded: {error:#}"
+            );
+        })
         .ok();
         Some(grant)
     }
@@ -9018,9 +9125,13 @@ impl RuntimeThreadManager {
     /// tell it, because an item's filename carries the item id and not its turn.
     /// That pass is the same one every open used to pay. Paid here, while the
     /// Runtime API is starting and no client is waiting, it is paid once
-    /// instead. See [`RuntimeThreadStore::ensure_item_index`].
+    /// instead — and, because this is the deliberate caller, the answer is also
+    /// cached for the next process. See [`RuntimeThreadStore::cache_item_index`].
     pub fn warm_item_index(&self) -> Result<()> {
-        self.store.ensure_item_index()
+        // Cached as well as built: this is the one caller that has decided the
+        // read is worth paying for, so it is also the one that leaves the answer
+        // on disk for the next process instead of paying it again.
+        self.store.cache_item_index()
     }
 
     /// The [`ThreadListFacts`] for every id in `thread_ids`, read in one pass.
@@ -10179,17 +10290,7 @@ impl RuntimeThreadManager {
             } else {
                 None
             };
-            let permission_receipt = policy_patch.map(|policy| {
-                let label = |policy: RuntimePolicyProjection| {
-                    crate::core::authority::permission_label_for(
-                        codewhale_localization::Locale::En,
-                        policy.mode,
-                        policy.permission,
-                    )
-                    .into_owned()
-                };
-                (label(previous_policy), label(policy))
-            });
+            let permission_receipt = policy_patch.map(|policy| (previous_policy, policy));
             // Archiving ends the conversation's session grants: unarchiving
             // later starts from a clean slate and the next call prompts.
             let ended_grants = if changes.get("archived") == Some(&json!(true)) {
@@ -10261,11 +10362,8 @@ impl RuntimeThreadManager {
             .await?;
         }
 
-        if let Some((from, to)) = permission_receipt
-            && from != to
-        {
-            self.publish_permissions_changed(&thread, &from, &to)
-                .await?;
+        if let Some((from, to)) = permission_receipt {
+            self.publish_permissions_changed(&thread, from, to).await?;
         }
 
         Ok(thread)
@@ -10274,14 +10372,26 @@ impl RuntimeThreadManager {
     pub(super) async fn publish_permissions_changed(
         &self,
         thread: &ThreadRecord,
-        from: &str,
-        to: &str,
+        from: RuntimePolicyProjection,
+        to: RuntimePolicyProjection,
     ) -> Result<()> {
+        let label = |locale, policy: RuntimePolicyProjection| {
+            crate::core::authority::permission_label_for(locale, policy.mode, policy.permission)
+                .into_owned()
+        };
+        let english_from = label(codewhale_localization::Locale::En, from);
+        let english_to = label(codewhale_localization::Locale::En, to);
+        if english_from == english_to {
+            return Ok(());
+        }
+        let receipt_locale = runtime_receipt_locale().await;
+        let localized_to = label(receipt_locale, to);
+        let (from, to) = (english_from, english_to);
         let message = codewhale_localization::tr(
-            codewhale_localization::Locale::En,
+            receipt_locale,
             codewhale_localization::MessageId::PermissionsChangedReceipt,
         )
-        .replace("{label}", to);
+        .replace("{label}", &localized_to);
         if let Some(turn_id) = thread.latest_turn_id.as_deref() {
             let item = TurnItemRecord {
                 schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
@@ -20126,7 +20236,7 @@ source_usage_records: Default::default(),
                     tools_removed,
                 } => {
                     let mut message = codewhale_localization::tr(
-                        codewhale_localization::Locale::En,
+                        runtime_receipt_locale().await,
                         match decided_by.as_deref().filter(|value| !value.is_empty()) {
                             Some(_) => {
                                 codewhale_localization::MessageId::PluginChangedWithDeciderReceipt

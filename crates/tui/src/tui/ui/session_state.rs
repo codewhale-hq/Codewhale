@@ -528,6 +528,9 @@ pub(crate) fn reconcile_turn_liveness_with(
 /// written to disk, so `--continue` loads the *previous* save — effectively
 /// losing the entire in-progress turn.
 pub(crate) fn persist_recovery_snapshot(app: &mut App) {
+    if app.dispatch_in_flight {
+        return;
+    }
     if let Ok(manager) = SessionManager::default_location()
         && let Ok(mut session) = build_session_snapshot(app, &manager)
     {
@@ -559,9 +562,22 @@ pub(crate) fn persist_recovery_snapshot(app: &mut App) {
             PersistRequest::SaveCheckpoint { session },
             &projection,
         ) {
-            app.status_message = Some(format!(
-                "To-do list update pending while saving recovery snapshot ({err})"
-            ));
+            tracing::error!(%err, "recovery snapshot save failed; in-progress turn not durably persisted");
+            let id = app
+                .current_session_id
+                .as_deref()
+                .map(codewhale_engine::session_manager::truncate_id)
+                .unwrap_or("—");
+            let message = app
+                .tr(MessageId::SessionSaveFailed)
+                .replace("{id}", id)
+                .replace("{error}", &err.to_string());
+            app.add_message(HistoryCell::Error {
+                message: message.clone(),
+                severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+                code: None,
+            });
+            app.set_sticky_status(message, StatusToastLevel::Error, None);
         }
     }
 }
@@ -609,7 +625,9 @@ pub(crate) fn maybe_throttled_recovery_snapshot(
     now: Instant,
     last_snapshot_at: &mut Option<Instant>,
 ) {
-    if !app.is_loading && !matches!(app.runtime_turn_status.as_deref(), Some("in_progress")) {
+    if app.dispatch_in_flight
+        || (!app.is_loading && !matches!(app.runtime_turn_status.as_deref(), Some("in_progress")))
+    {
         return;
     }
     if last_snapshot_at

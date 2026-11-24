@@ -67,8 +67,11 @@ pub(crate) fn display_description(locale: Locale, mode: &ConversationMode) -> St
     }
 }
 
-pub(crate) fn display_reason(_locale: Locale, reason: &str) -> String {
-    reason.to_string()
+pub(crate) fn display_reason(locale: Locale, reason: Option<&str>) -> String {
+    match reason.map(str::trim).filter(|reason| !reason.is_empty()) {
+        Some(reason) => reason.to_string(),
+        None => tr(locale, MessageId::ConversationModeUnavailableDefault).into_owned(),
+    }
 }
 
 fn clean(text: &str) -> String {
@@ -107,12 +110,7 @@ pub(crate) fn unavailable_reason(
 ) -> Option<String> {
     let id = conversation_modes::effective_id(stored);
     match table.modes.iter().find(|mode| mode.id == id) {
-        Some(mode) => mode
-            .reason
-            .as_deref()
-            .filter(|_| !mode.available)
-            .map(|reason| display_reason(locale, reason))
-            .or_else(|| (!mode.available).then(|| "unavailable".to_string())),
+        Some(mode) => (!mode.available).then(|| display_reason(locale, mode.reason.as_deref())),
         None => Some(
             tr(locale, MessageId::ConversationModeUnknown)
                 .replace("{id}", &clean(id))
@@ -188,12 +186,7 @@ pub(crate) fn resolve(locale: Locale, table: &ConversationModeTable, id: &str) -
         ),
         Some(mode) if !mode.available => Resolution::Unavailable {
             name: display_name(locale, mode),
-            reason: display_reason(
-                locale,
-                mode.reason
-                    .as_deref()
-                    .unwrap_or("This mode is unavailable."),
-            ),
+            reason: display_reason(locale, mode.reason.as_deref()),
         },
         Some(mode) => Resolution::Ready {
             stored: conversation_modes::stored_form(&mode.id),
@@ -235,8 +228,10 @@ pub(crate) async fn set_in_place(
             if app.conversation_mode_locked() {
                 return Err(locked_refusal(locale, id.trim()));
             }
+            let previous = app.conversation_mode.clone();
+            let previous_unavailable = app.conversation_mode_unavailable.clone();
             app.install_conversation_mode(stored, None);
-            let _ = engine
+            let synced = engine
                 .send(codewhale_engine::core::ops::Op::SyncSession {
                     expected: None,
                     control: app.session_sync_control(),
@@ -250,6 +245,11 @@ pub(crate) async fn set_in_place(
                     agent_preset: app.agent_preset(),
                 })
                 .await;
+            if let Err(error) = synced {
+                tracing::warn!(%error, "conversation mode session sync failed");
+                app.install_conversation_mode(previous, previous_unavailable);
+                return Err(tr(locale, MessageId::ConversationModeSyncFailed).into_owned());
+            }
             Ok(done)
         }
     }
@@ -302,4 +302,63 @@ pub(crate) fn load_saved_for_resume(
             }
         })
         .ok_or_else(|| tr(locale, MessageId::ConversationModeResumeUnreadable).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn table_with_unavailable(reason: Option<String>) -> ConversationModeTable {
+        ConversationModeTable {
+            default: STANDARD,
+            modes: vec![ConversationMode {
+                id: "unavailable-id".to_string(),
+                name: "Unavailable".to_string(),
+                description: "Unavailable test mode".to_string(),
+                source: "builtin",
+                available: false,
+                reason,
+            }],
+        }
+    }
+
+    #[test]
+    fn display_reason_localizes_missing_or_blank_reason() {
+        let expected = tr(
+            Locale::ZhHans,
+            MessageId::ConversationModeUnavailableDefault,
+        );
+        for raw in [None, Some(""), Some("   ")] {
+            let reason = display_reason(Locale::ZhHans, raw);
+            assert_eq!(reason, expected.as_ref());
+            assert!(!reason.contains("This mode is unavailable."));
+            assert!(!reason.contains("unavailable"));
+        }
+        assert_eq!(
+            display_reason(Locale::ZhHans, Some("custom extension reason")),
+            "custom extension reason"
+        );
+    }
+
+    #[test]
+    fn resolve_and_unavailable_reason_localize_default_reason() {
+        let table = table_with_unavailable(None);
+        let expected = tr(
+            Locale::ZhHans,
+            MessageId::ConversationModeUnavailableDefault,
+        );
+
+        let Resolution::Unavailable { reason, .. } =
+            resolve(Locale::ZhHans, &table, "unavailable-id")
+        else {
+            panic!("expected Resolution::Unavailable");
+        };
+        assert_eq!(reason, expected.as_ref());
+        assert!(!reason.contains("This mode is unavailable."));
+
+        let fallback = unavailable_reason(Some("unavailable-id"), &table, Locale::ZhHans)
+            .expect("unavailable reason");
+        assert_eq!(fallback, expected.as_ref());
+        assert!(!fallback.contains("unavailable"));
+    }
 }

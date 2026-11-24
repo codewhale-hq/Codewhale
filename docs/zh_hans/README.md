@@ -30,6 +30,7 @@
 7. [ACCESSIBILITY.md](./ACCESSIBILITY.md) —— 无障碍与低动态模式、对比度与屏幕阅读器
 8. [PET_MODE.md](./PET_MODE.md) —— Pet 模式：每个终端一头鲸鱼，一眼看清工作中、等你、完成或失败，按需查看回复与智能体
 9. [RECEIPTS.md](./RECEIPTS.md) —— 回执：查看一个会话改了哪些文件、运行了哪些命令、谁批准了什么，以及哪些操作未经询问就运行
+10. [AUTO_REVIEW.md](./AUTO_REVIEW.md) —— Auto-Review：让 Codewhale 自己审查工具调用，安全的直接运行、危险的带理由阻断、拿不准的交给第二个模型
 
 ## 三、进阶用户（已经有充足了解，追求效率、安全与定制）
 

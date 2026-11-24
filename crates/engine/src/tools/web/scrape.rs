@@ -78,6 +78,11 @@ pub fn parse_duckduckgo_results(html: &str, max_results: usize) -> Vec<ScrapedSe
         .filter_map(|cap| cap.get(1).or_else(|| cap.get(2)))
         .map(|m| normalize_text(m.as_str()))
         .collect();
+    let snippets = if snippets.len() == title_re.captures_iter(html).count() {
+        snippets
+    } else {
+        Vec::new()
+    };
 
     let mut results = Vec::new();
     for (idx, cap) in title_re.captures_iter(html).enumerate() {
@@ -314,6 +319,18 @@ fn extract_query_param(url: &str, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duckduckgo_snippets_are_dropped_when_counts_diverge() {
+        let html = r#"
+            <a class="result__a" href="https://one.example/">One</a>
+            <a class="result__a" href="https://two.example/">Two</a>
+            <a class="result__snippet">Snippet that belongs to two</a>
+        "#;
+        let results = parse_duckduckgo_results(html, 5);
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|result| result.snippet.is_none()));
+    }
 
     // Regression guard: Bing /ck/a redirect hrefs are HTML-entity-encoded
     // (`&amp;`). normalize_bing_url must decode entities before extracting the
