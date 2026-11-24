@@ -549,6 +549,7 @@ pub enum MessageId {
     PermissionsPostureAuto,
     PermissionsPostureBypass,
     PermissionsPostureNever,
+    AcpFullAccessHint,
     PermissionsReceiptsNote,
     PermissionsOperationFailed,
     CmdAuthDescription,
@@ -3476,6 +3477,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::PermissionsPostureAuto,
     MessageId::PermissionsPostureBypass,
     MessageId::PermissionsPostureNever,
+    MessageId::AcpFullAccessHint,
     MessageId::PermissionsReceiptsNote,
     MessageId::PermissionsOperationFailed,
     MessageId::CmdAuthDescription,
@@ -6318,6 +6320,7 @@ mod tests {
             MessageId::CmdTurnInspectDescription,
             MessageId::CmdAdvisorDescription,
             MessageId::ModelChangedSessionNote,
+            MessageId::AcpFullAccessHint,
         ];
         for locale in Locale::shipped_complete() {
             if *locale == Locale::En {
