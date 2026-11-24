@@ -270,6 +270,9 @@ pub(crate) fn apply_engine_error_to_app(
     }
     app.turn_error_posted = true;
     app.turn_error_notice = Some(turn_error_notice);
+    app.turn_error_cause = Some(
+        codewhale_engine::llm_error_envelope::ProviderFailureCause::from_envelope(&envelope, None),
+    );
     if credential_rejected_before_output {
         // #6566: the provider refused the key before any model output, so the
         // engine takes the question back out of the session. Give it back to

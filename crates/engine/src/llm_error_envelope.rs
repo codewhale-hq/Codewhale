@@ -2,6 +2,161 @@ use crate::llm_client::{LlmError, RequestTransmission};
 use codewhale_error_taxonomy::{
     ErrorCategory, ErrorEnvelope, ErrorSeverity, classify_error_message,
 };
+use serde::{Deserialize, Serialize};
+
+/// Structured, secret-free failure cause attached to provider request receipts
+/// and persisted turn outcomes so downstream tools do not have to parse English
+/// error prose (#7328).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderFailureCause {
+    pub code: String,
+    pub category: ErrorCategory,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transmission: Option<RequestTransmission>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+}
+
+fn llm_error_http_status(error: &LlmError) -> Option<u16> {
+    match error {
+        LlmError::ServerError { status, .. } | LlmError::InvalidRequest { status, .. } => {
+            Some(*status)
+        }
+        _ => None,
+    }
+}
+
+fn llm_error_timeout_ms(error: &LlmError) -> Option<u64> {
+    match error {
+        LlmError::Timeout(duration) if !duration.is_zero() => {
+            Some(u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+        }
+        LlmError::HeaderTimeout { waited, .. } => {
+            Some(u64::try_from(waited.as_millis()).unwrap_or(u64::MAX))
+        }
+        _ => None,
+    }
+}
+
+impl ProviderFailureCause {
+    #[must_use]
+    pub fn from_llm_error(error: &anyhow::Error, phase: Option<&str>) -> Self {
+        if let Some(llm) = error.downcast_ref::<LlmError>() {
+            let (code, category, default_phase) = match llm {
+                LlmError::QuotaWindow { .. } => (
+                    "llm_quota_window".to_string(),
+                    ErrorCategory::RateLimit,
+                    None,
+                ),
+                LlmError::RateLimited { .. } => (
+                    "llm_rate_limited".to_string(),
+                    ErrorCategory::RateLimit,
+                    None,
+                ),
+                LlmError::QuotaExhausted(_) => (
+                    "llm_quota_exhausted".to_string(),
+                    ErrorCategory::RateLimit,
+                    None,
+                ),
+                LlmError::ServerError { status, .. } => (
+                    format!("llm_server_{status}"),
+                    ErrorCategory::Internal,
+                    None,
+                ),
+                LlmError::NetworkError(_) => (
+                    "llm_network_error".to_string(),
+                    ErrorCategory::Network,
+                    None,
+                ),
+                LlmError::HeaderTimeout { .. } => (
+                    "llm_network_error".to_string(),
+                    ErrorCategory::Network,
+                    Some("header_timeout"),
+                ),
+                LlmError::ConnectError { .. } => (
+                    "llm_connect_before_dispatch".to_string(),
+                    ErrorCategory::Network,
+                    Some("connect"),
+                ),
+                LlmError::Timeout(_) => (
+                    "llm_timeout".to_string(),
+                    ErrorCategory::Timeout,
+                    Some("timeout"),
+                ),
+                LlmError::AuthenticationError(_) => (
+                    "llm_auth_error".to_string(),
+                    ErrorCategory::Authentication,
+                    None,
+                ),
+                LlmError::AuthorizationError(_) => (
+                    "llm_authorization_error".to_string(),
+                    ErrorCategory::Authorization,
+                    None,
+                ),
+                LlmError::InvalidRequest { .. } => (
+                    "llm_invalid_request".to_string(),
+                    ErrorCategory::InvalidInput,
+                    None,
+                ),
+                LlmError::ModelError(_) => (
+                    "llm_model_error".to_string(),
+                    ErrorCategory::InvalidInput,
+                    None,
+                ),
+                LlmError::ContentPolicyError(_) => (
+                    "llm_content_policy".to_string(),
+                    ErrorCategory::Authorization,
+                    None,
+                ),
+                LlmError::ParseError(_) => {
+                    ("llm_parse_error".to_string(), ErrorCategory::Parse, None)
+                }
+                LlmError::ContextLengthError(_) => (
+                    "llm_context_length".to_string(),
+                    ErrorCategory::InvalidInput,
+                    None,
+                ),
+                LlmError::Other(message) => {
+                    let envelope = envelope_for_other_llm_error(message.clone());
+                    (envelope.code, envelope.category, None)
+                }
+            };
+            return Self {
+                code,
+                category,
+                transmission: Some(llm.transmission()),
+                http_status: llm_error_http_status(llm),
+                timeout_ms: llm_error_timeout_ms(llm),
+                phase: default_phase.or(phase).map(str::to_string),
+            };
+        }
+        let envelope = ErrorEnvelope::classify(error.to_string(), false);
+        Self {
+            code: envelope.code,
+            category: envelope.category,
+            transmission: Some(RequestTransmission::OutcomeUnknown),
+            http_status: None,
+            timeout_ms: None,
+            phase: phase.map(str::to_string),
+        }
+    }
+
+    #[must_use]
+    pub fn from_envelope(envelope: &ErrorEnvelope, phase: Option<&str>) -> Self {
+        Self {
+            code: envelope.code.clone(),
+            category: envelope.category,
+            transmission: envelope.request_transmission,
+            http_status: None,
+            timeout_ms: None,
+            phase: phase.map(str::to_string),
+        }
+    }
+}
 
 /// Classify a boundary error from the typed [`LlmError`] when one is
 /// available, keeping the caller's display message.
@@ -19,17 +174,8 @@ use codewhale_error_taxonomy::{
 pub fn envelope_for_llm_error(error: anyhow::Error, display_message: String) -> ErrorEnvelope {
     let llm = error.downcast_ref::<LlmError>();
     let transmission = llm.map_or(RequestTransmission::OutcomeUnknown, LlmError::transmission);
-    let http_status = llm.and_then(|error| match error {
-        LlmError::ServerError { status, .. } | LlmError::InvalidRequest { status, .. } => {
-            Some(*status)
-        }
-        _ => None,
-    });
-    let timeout_ms = llm.and_then(|error| match error {
-        LlmError::Timeout(duration) if !duration.is_zero() => Some(duration.as_millis()),
-        LlmError::HeaderTimeout { waited, .. } => Some(waited.as_millis()),
-        _ => None,
-    });
+    let http_status = llm.and_then(llm_error_http_status);
+    let timeout_ms = llm.and_then(llm_error_timeout_ms);
     let mut envelope = match error.downcast::<LlmError>() {
         Ok(llm) => {
             let mut envelope = ErrorEnvelope::from(llm);
@@ -502,5 +648,49 @@ mod tests {
             "{}",
             measured.message
         );
+    }
+
+    #[test]
+    fn provider_failure_cause_extracts_structured_fields_from_llm_errors() {
+        let header_timeout: anyhow::Error = LlmError::HeaderTimeout {
+            waited: std::time::Duration::from_secs(45),
+            http1: false,
+            retried: 0,
+        }
+        .into();
+        let cause = ProviderFailureCause::from_llm_error(&header_timeout, Some("open"));
+        assert_eq!(cause.code, "llm_network_error");
+        assert_eq!(cause.category, ErrorCategory::Network);
+        assert_eq!(
+            cause.transmission,
+            Some(RequestTransmission::OutcomeUnknown)
+        );
+        assert_eq!(cause.http_status, None);
+        assert_eq!(cause.timeout_ms, Some(45_000));
+        assert_eq!(cause.phase.as_deref(), Some("header_timeout"));
+
+        let server_502: anyhow::Error = LlmError::ServerError {
+            status: 502,
+            message: "bad gateway".to_string(),
+        }
+        .into();
+        let cause = ProviderFailureCause::from_llm_error(&server_502, Some("open"));
+        assert_eq!(cause.code, "llm_server_502");
+        assert_eq!(cause.category, ErrorCategory::Internal);
+        assert_eq!(cause.http_status, Some(502));
+        assert_eq!(cause.phase.as_deref(), Some("open"));
+
+        let envelope = envelope_for_llm_error(
+            LlmError::Timeout(std::time::Duration::from_secs(12)).into(),
+            "Request timed out after 12s".to_string(),
+        );
+        let from_env = ProviderFailureCause::from_envelope(&envelope, Some("idle_timeout"));
+        assert_eq!(from_env.code, "llm_timeout");
+        assert_eq!(from_env.category, ErrorCategory::Timeout);
+        assert_eq!(
+            from_env.transmission,
+            Some(RequestTransmission::OutcomeUnknown)
+        );
+        assert_eq!(from_env.phase.as_deref(), Some("idle_timeout"));
     }
 }

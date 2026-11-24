@@ -1743,6 +1743,7 @@ pub struct App {
     /// `turn_error_posted`. A turn that then ends `Failed` persists exactly
     /// this text, so resume shows what the live transcript showed.
     pub(crate) turn_error_notice: Option<String>,
+    pub(crate) turn_error_cause: Option<codewhale_engine::llm_error_envelope::ProviderFailureCause>,
     /// Legacy status text sink retained for compatibility with existing call sites.
     pub status_message: Option<String>,
     /// Recent status toasts (ephemeral, newest at back).
