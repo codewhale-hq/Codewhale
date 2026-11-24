@@ -832,7 +832,7 @@
   "KbCycleThinking": "सक्रिय प्रोवाइडर के लिए रीज़निंग स्तर बदलें (Ctrl+T)",
   "KbCyclePermissions": "एक्सेस बदलें: पूछें → बदलाव स्वीकारें → Plan → स्वतः समीक्षा → पूर्ण एक्सेस (Shift+Tab)",
   "KbJumpPlanAgentYolo": "Hotbar स्लॉट ट्रिगर करें",
-  "KbAltJumpPlanAgentYolo": "Plan / Work पर जाएँ या Full Access का अनुरोध करें (लेगेसी उपनाम)",
+  "KbAltJumpPlanAgentYolo": "Plan / Work पर जाएँ",
   "KbFocusSidebar": "Tasks / Agents / Context / Pinned वर्क बार पैनल फ़ोकस करें",
   "KbSessionPicker": "सत्र चयनकर्ता खोलें",
   "KbUpdateInstall": "नवीनतम Codewhale अपडेट जाँचें और इंस्टॉल करें (`/update install`)",

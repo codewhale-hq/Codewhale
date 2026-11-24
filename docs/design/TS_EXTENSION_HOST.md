@@ -498,7 +498,7 @@ never-reused handle) → adapter → call → teardown.
   `revoke_all` remove an owner's commands with its tools; a stale
   `unregister` is a no-op. Admission (`register_command`): DSH's grammar
   (`^[a-z][a-z0-9_-]*$`, ≤ 64). If a built-in command or alias (including the
-  fixed `jihua`/`zidong`) answers to a plugin name, the plugin registration
+  fixed `jihua`) answers to a plugin name, the plugin registration
   receives a deterministic plugin-specific name; a built-in-tier collision or
   an unavailable namespaced name is refused. Another plugin cannot take an
   existing unscoped registration;

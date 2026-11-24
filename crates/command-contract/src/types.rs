@@ -27,7 +27,6 @@ impl CommandMode {
             "agent" | "act" | "work" | "auto" | "1" => Some(Self::Agent),
             "plan" | "2" => Some(Self::Plan),
             other if Self::is_retired_operate_alias(other) => Some(Self::Agent),
-            other if Self::is_legacy_bypass_alias(other) => Some(Self::Agent),
             _ => None,
         }
     }

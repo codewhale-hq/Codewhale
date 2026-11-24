@@ -832,7 +832,7 @@
   "KbCycleThinking": "Ganti upaya penalaran untuk penyedia aktif (Ctrl+T)",
   "KbCyclePermissions": "Ubah akses: Tanya → Terima suntingan → Plan → Tinjauan otomatis → Akses penuh (Shift+Tab)",
   "KbJumpPlanAgentYolo": "Picu slot hotbar",
-  "KbAltJumpPlanAgentYolo": "Lompat ke Plan / Work atau minta akses penuh (alias lama)",
+  "KbAltJumpPlanAgentYolo": "Lompat ke Plan / Work",
   "KbFocusSidebar": "Fokuskan panel bilah kerja Tasks / Agents / Context / Pinned",
   "KbSessionPicker": "Buka pemilih sesi",
   "KbUpdateInstall": "Periksa dan pasang pembaruan Codewhale terbaru (`/update install`)",

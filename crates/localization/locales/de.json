@@ -832,7 +832,7 @@
   "KbCycleThinking": "Reasoning-Stufe des aktiven Providers wechseln (Ctrl+T)",
   "KbCyclePermissions": "Zugriff wechseln: Nachfragen → Änderungen annehmen → Plan → Auto-Review → Voller Zugriff (Umschalt+Tab)",
   "KbJumpPlanAgentYolo": "Hotbar-Slots auslösen",
-  "KbAltJumpPlanAgentYolo": "Zu Plan / Work springen oder Full Access anfordern (Legacy-Alias)",
+  "KbAltJumpPlanAgentYolo": "Zu Plan / Work springen",
   "KbFocusSidebar": "Leisten-Panel Tasks / Agents / Context / Pinned fokussieren",
   "KbSessionPicker": "Sitzungsauswahl öffnen",
   "KbUpdateInstall": "Nach dem neuesten Codewhale-Update suchen und es installieren (`/update install`)",

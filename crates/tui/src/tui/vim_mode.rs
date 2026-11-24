@@ -1,6 +1,6 @@
 //! Composer vim Normal-mode keybindings.
 
-use crate::tui::app::{App, VimMode};
+use crate::tui::app::App;
 
 /// Handle a plain character key press when the composer is in vim Normal mode.
 ///
@@ -14,7 +14,6 @@ use crate::tui::app::{App, VimMode};
 /// - `i`        — enter Insert before cursor
 /// - `a`        — enter Insert after cursor
 /// - `o`        — open new line below and enter Insert
-/// - `v`        — enter Visual mode
 /// - `G`        — move to end of buffer
 pub(super) fn handle_vim_normal_key(app: &mut App, c: char) {
     // Handle pending `d` (waiting for second `d` to complete `dd`).
@@ -44,10 +43,6 @@ pub(super) fn handle_vim_normal_key(app: &mut App, c: char) {
         'i' => app.vim_enter_insert(),
         'a' => app.vim_enter_append(),
         'o' => app.vim_open_line_below(),
-        'v' => {
-            app.composer.vim_mode = VimMode::Visual;
-            app.needs_redraw = true;
-        }
         'G' => app.move_cursor_end(),
         _ => {
             // Unknown normal-mode key — silently ignored in Normal mode.

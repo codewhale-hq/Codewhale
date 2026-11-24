@@ -14,10 +14,7 @@ struct StubBuiltinCommands;
 
 impl CommandCatalog for StubBuiltinCommands {
     fn answers_to(&self, name: &str) -> bool {
-        matches!(
-            name,
-            "help" | "trust" | "model" | "jihua" | "zidong" | "stub-alias"
-        )
+        matches!(name, "help" | "trust" | "model" | "jihua" | "stub-alias")
     }
     fn builtins(&self) -> Vec<BuiltinCommand> {
         Vec::new()

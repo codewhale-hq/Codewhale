@@ -832,7 +832,7 @@
   "KbCycleThinking": "Canvia l'esforç de raonament del proveïdor actiu (Ctrl+T)",
   "KbCyclePermissions": "Canvia l'accés: Pregunta → Accepta edicions → Plan → Revisió automàtica → Accés complet (Maj+Tab)",
   "KbJumpPlanAgentYolo": "Activa les ranures de la Hotbar",
-  "KbAltJumpPlanAgentYolo": "Salta a Plan / Work o demana Full Access (àlies heretat)",
+  "KbAltJumpPlanAgentYolo": "Salta a Plan / Work",
   "KbFocusSidebar": "Enfoca el panell de la barra de treball Tasks / Agents / Context / Pinned",
   "KbSessionPicker": "Obre el selector de sessions",
   "KbUpdateInstall": "Comprova i instal·la l'última actualització de Codewhale (`/update install`)",

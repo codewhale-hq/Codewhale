@@ -847,7 +847,7 @@
   "KbCycleThinking": "Luân phiên mức suy luận của nhà cung cấp đang hoạt động (Ctrl+T)",
   "KbCyclePermissions": "Chuyển quyền truy cập: Hỏi → Chấp nhận chỉnh sửa → Plan → Tự động xem lại → Toàn quyền (Shift+Tab)",
   "KbJumpPlanAgentYolo": "Kích hoạt các ô hotbar",
-  "KbAltJumpPlanAgentYolo": "Nhảy sang Plan / Work hoặc yêu cầu toàn quyền (bí danh cũ)",
+  "KbAltJumpPlanAgentYolo": "Nhảy sang Plan / Work",
   "KbFocusSidebar": "Focus vào bảng thanh làm việc Tasks / Agents / Context / Pinned",
   "KbSessionPicker": "Mở bảng chọn phiên làm việc",
   "KbUpdateInstall": "Kiểm tra và cài đặt bản cập nhật Codewhale mới nhất (`/update install`)",

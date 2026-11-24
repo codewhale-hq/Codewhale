@@ -83,9 +83,6 @@ impl CommandModePolicyContext for Policy {
     fn select_mode(&mut self, _mode: CommandMode) -> crate::facets::CommandModeSelection {
         crate::facets::CommandModeSelection::Changed
     }
-    fn select_yolo_compat(&mut self) -> crate::facets::CommandModeSelection {
-        crate::facets::CommandModeSelection::Changed
-    }
     fn mode_startup_default_receipt(&self, _mode: CommandMode) -> String {
         String::new()
     }
@@ -94,10 +91,6 @@ impl CommandModePolicyContext for Policy {
     }
     fn mode_label(&self, mode: CommandMode) -> String {
         format!("{mode:?}")
-    }
-
-    fn yolo_compat_label(&self) -> String {
-        "Full Access (Work)".to_string()
     }
 }
 

@@ -847,7 +847,7 @@
   "KbCycleThinking": "轮换当前提供商的思考强度 (Ctrl+T)",
   "KbCyclePermissions": "切换访问级别：询问 → 接受编辑 → Plan → 自动审核 → 完全访问（Shift+Tab）",
   "KbJumpPlanAgentYolo": "触发快捷栏槽位",
-  "KbAltJumpPlanAgentYolo": "跳转到 Plan / Work，或请求 Full Access（旧版别名）",
+  "KbAltJumpPlanAgentYolo": "跳转到 Plan / Work",
   "KbFocusSidebar": "聚焦 Tasks / Agents / Context / Pinned 任务面板",
   "KbSessionPicker": "打开会话选择器",
   "KbUpdateInstall": "检查并安装最新的 Codewhale 更新（`/update install`）",

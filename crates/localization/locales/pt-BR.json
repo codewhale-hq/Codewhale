@@ -847,7 +847,7 @@
   "KbCycleThinking": "Alternar o esforço de raciocínio do provedor ativo (Ctrl+T)",
   "KbCyclePermissions": "Alternar acesso: Perguntar → Aceitar edições → Plan → Revisão automática → Acesso total (Shift+Tab)",
   "KbJumpPlanAgentYolo": "Acionar slots da hotbar",
-  "KbAltJumpPlanAgentYolo": "Ir para Plan / Work ou solicitar acesso total (apelido herdado)",
+  "KbAltJumpPlanAgentYolo": "Ir para Plan / Work",
   "KbFocusSidebar": "Focar o painel da barra de trabalho Tasks / Agents / Context / Pinned",
   "KbSessionPicker": "Abrir seletor de sessões",
   "KbUpdateInstall": "Verificar e instalar a atualização mais recente do Codewhale (`/update install`)",
