@@ -934,26 +934,32 @@ pub fn history_cells_from_message_with_results(
                 }
             }
             ContentBlock::ToolUse { name, input, .. } if name == "update_plan" => {
-                let key = block.tool_call_key();
-                let failed = messages
-                    .iter()
-                    .flat_map(|message| &message.content)
-                    .find_map(|candidate| match candidate {
-                        ContentBlock::ToolResult { is_error, .. }
-                            if key.is_some() && candidate.tool_call_key() == key =>
-                        {
-                            Some(is_error.unwrap_or(false))
-                        }
-                        _ => None,
-                    })
-                    .unwrap_or(false);
+                let status = if messages.is_empty() {
+                    ToolStatus::Success
+                } else {
+                    let key = block
+                        .tool_call_key()
+                        .filter(|key| !key.as_str().trim().is_empty());
+                    match key.and_then(|key| {
+                        messages
+                            .iter()
+                            .flat_map(|message| &message.content)
+                            .find_map(|candidate| match candidate {
+                                ContentBlock::ToolResult { is_error, .. }
+                                    if candidate.tool_call_key() == Some(key) =>
+                                {
+                                    Some(is_error.unwrap_or(false))
+                                }
+                                _ => None,
+                            })
+                    }) {
+                        Some(false) => ToolStatus::Success,
+                        Some(true) | None => ToolStatus::Failed,
+                    }
+                };
                 cells.push(HistoryCell::Tool(ToolCell::PlanUpdate(PlanUpdateCell {
                     snapshot: PlanSnapshot::from_tool_input(input),
-                    status: if failed {
-                        ToolStatus::Failed
-                    } else {
-                        ToolStatus::Success
-                    },
+                    status,
                 })));
             }
             ContentBlock::ToolUse { name, input, .. } if name == "show_data" => {

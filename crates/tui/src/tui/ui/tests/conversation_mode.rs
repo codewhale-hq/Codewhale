@@ -327,3 +327,34 @@ async fn a_resync_of_the_open_conversation_keeps_its_mode() {
     let _ = handle.send(Op::Shutdown).await;
     run.abort();
 }
+
+#[tokio::test]
+async fn set_in_place_returns_err_and_rolls_back_when_engine_channel_is_closed() {
+    let mut app = create_test_app();
+    app.install_conversation_mode(
+        Some("creator".to_string()),
+        Some("saved unavailable reason".to_string()),
+    );
+    let engine = mock_engine_handle();
+    drop(engine.rx_op);
+    let config = Config::default();
+
+    let err =
+        crate::tui::conversation_mode::set_in_place(&mut app, &config, &engine.handle, "standard")
+            .await
+            .expect_err("closed engine channel must report sync failure");
+
+    assert_eq!(
+        err,
+        codewhale_localization::tr(
+            app.ui_locale,
+            codewhale_localization::MessageId::ConversationModeSyncFailed,
+        )
+        .as_ref()
+    );
+    assert_eq!(app.conversation_mode.as_deref(), Some("creator"));
+    assert_eq!(
+        app.conversation_mode_unavailable.as_deref(),
+        Some("saved unavailable reason")
+    );
+}
