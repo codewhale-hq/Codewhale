@@ -120,19 +120,6 @@ impl SkillListingConfig {
         budget_fraction: SKILL_BUDGET_CONTEXT_PERCENT / 100.0,
     };
 
-    pub fn from_config(config: &codewhale_runtime::config::SkillsConfig) -> Self {
-        Self {
-            max_description_chars: config
-                .listing_max_description_chars
-                .filter(|value| (1..=40_000).contains(value))
-                .unwrap_or(Self::DEFAULT.max_description_chars),
-            budget_fraction: config
-                .listing_budget_fraction
-                .filter(|value| value.is_finite() && *value > 0.0 && *value <= 1.0)
-                .unwrap_or(Self::DEFAULT.budget_fraction),
-        }
-    }
-
     pub const fn max_description_chars(self) -> usize {
         self.max_description_chars
     }
@@ -1673,7 +1660,7 @@ pub fn render_index(
             SkillRootKind::Configured
         )
     });
-    let listing = SkillListingConfig::from_config(config);
+    let listing = SkillListingConfig::DEFAULT;
     render_skills_block_with_configured_root(
         &registry,
         locale,
@@ -1684,11 +1671,8 @@ pub fn render_index(
     )
 }
 
-pub fn description_index_cap_if_shortened(
-    description: &str,
-    config: &SkillsConfig,
-) -> Option<usize> {
-    let cap = SkillListingConfig::from_config(config).max_description_chars();
+pub fn description_index_cap_if_shortened(description: &str) -> Option<usize> {
+    let cap = SkillListingConfig::DEFAULT.max_description_chars();
     description_exceeds_index_cap(description, cap).then_some(cap)
 }
 

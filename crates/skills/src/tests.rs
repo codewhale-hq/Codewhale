@@ -635,11 +635,10 @@ fn render_available_skills_context_truncates_long_descriptions() {
     create_skill_dir(&tmpdir, "bigdesc", &body);
     let registry = super::SkillRegistry::discover(&tmpdir.path().join("skills"));
     for cap in [80, super::DEFAULT_SKILL_DESCRIPTION_CHARS, 1024] {
-        let config = codewhale_runtime::config::SkillsConfig {
-            listing_max_description_chars: Some(cap),
+        let listing = super::SkillListingConfig {
+            max_description_chars: cap,
             ..Default::default()
         };
-        let listing = super::SkillListingConfig::from_config(&config);
         let rendered = super::render_skills_block_with_configured_root(
             &registry,
             "en",
@@ -783,11 +782,10 @@ fn skills_prompt_budget_scales_with_context_window() {
     assert_eq!(small, 2_400, "floor holds for tiny windows");
     assert_eq!(default, 2_400, "128k window × 4 chars × 0.2%, floored");
     assert_eq!(large, 8_000, "1M window × 4 chars × 0.2%");
-    let configured =
-        super::SkillListingConfig::from_config(&codewhale_runtime::config::SkillsConfig {
-            listing_budget_fraction: Some(0.01),
-            ..Default::default()
-        });
+    let configured = super::SkillListingConfig {
+        budget_fraction: 0.01,
+        ..Default::default()
+    };
     assert_eq!(configured.budget_chars(None), 5_120);
     assert_eq!(configured.budget_chars(Some(8_000)), 2_400);
     assert_eq!(configured.budget_chars(Some(1_000_000)), 40_000);

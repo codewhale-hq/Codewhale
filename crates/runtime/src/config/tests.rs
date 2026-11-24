@@ -5062,30 +5062,11 @@ fn skills_scan_codewhale_only_defaults_false_and_parses_true() -> Result<()> {
         r#"
 [skills]
 scan_codewhale_only = true
-listing_max_description_chars = 1024
-listing_budget_fraction = 0.01
 "#,
     )?;
 
     assert!(config.skills_config().scan_codewhale_only());
-    assert_eq!(
-        config.skills_config().listing_max_description_chars,
-        Some(1024)
-    );
-    assert_eq!(config.skills_config().listing_budget_fraction, Some(0.01));
     config.validate()?;
-    for value in [
-        "listing_max_description_chars = 0",
-        "listing_max_description_chars = 40001",
-        "listing_budget_fraction = 0",
-        "listing_budget_fraction = -0.1",
-        "listing_budget_fraction = 1.1",
-        "listing_budget_fraction = nan",
-        "listing_budget_fraction = inf",
-    ] {
-        let invalid: Config = toml::from_str(&format!("[skills]\n{value}"))?;
-        assert!(invalid.validate().is_err(), "accepted {value}");
-    }
 
     for (mode, writes) in [("auto", false), ("all", true), ("none", false)] {
         let config: Config = toml::from_str(&format!(
@@ -6375,7 +6356,6 @@ fn profile_skills_config_merges_individual_fields() {
         Config {
             skills: Some(SkillsConfig {
                 scan_codewhale_only: Some(true),
-                listing_max_description_chars: Some(80),
                 flat_workspace_root: Some(false),
                 ..Default::default()
             }),
@@ -6387,8 +6367,6 @@ fn profile_skills_config_merges_individual_fields() {
             skills: Some(SkillsConfig {
                 registry_url: Some("https://registry.example/skills.json".to_string()),
                 max_install_size_bytes: Some(1234),
-                listing_max_description_chars: Some(1024),
-                listing_budget_fraction: Some(0.01),
                 flat_workspace_root: Some(true),
                 ..Default::default()
             }),
@@ -6407,8 +6385,6 @@ fn profile_skills_config_merges_individual_fields() {
     assert_eq!(skills.max_install_size_bytes, Some(1234));
     assert_eq!(skills.scan_codewhale_only, Some(true));
     assert_eq!(skills.flat_workspace_root, Some(false));
-    assert_eq!(skills.listing_max_description_chars, Some(80));
-    assert_eq!(skills.listing_budget_fraction, Some(0.01));
     let base: Config = toml::from_str("[skills.bundled]\ninstall='all'\nselected=['debug']\ndisabled=['pdf']\nexplicit_only=['debug']").unwrap();
     let override_cfg: Config =
         toml::from_str("[skills.bundled]\nselected=[]\nexplicit_only=[]").unwrap();

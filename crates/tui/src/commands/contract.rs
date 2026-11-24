@@ -3314,7 +3314,6 @@ fn portable_skill_entry(
         description: skill.description_for_locale(locale.tag()).to_string(),
         index_note: codewhale_skills::description_index_cap_if_shortened(
             skill.description_for_locale(locale.tag()),
-            skills_config,
         )
         .map(|cap| {
             codewhale_localization::tr(

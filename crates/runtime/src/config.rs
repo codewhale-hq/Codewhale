@@ -2433,10 +2433,6 @@ pub struct RuntimeApiConfig {
 pub struct SkillsConfig {
     #[serde(default)]
     pub bundled: BundledSkillsConfig,
-    #[serde(default)]
-    pub listing_max_description_chars: Option<usize>,
-    #[serde(default)]
-    pub listing_budget_fraction: Option<f64>,
     /// Curated registry index. `/skill install <name>` looks up the spec here.
     /// Defaults to `codewhale_skill_install::install::DEFAULT_REGISTRY_URL`.
     #[serde(default)]
@@ -3870,22 +3866,6 @@ impl Config {
 
     /// Validate that critical config fields are present.
     pub fn validate(&self) -> Result<()> {
-        if let Some(skills) = &self.skills {
-            if skills
-                .listing_max_description_chars
-                .is_some_and(|value| !(1..=40_000).contains(&value))
-            {
-                anyhow::bail!("[skills] listing_max_description_chars must be between 1 and 40000");
-            }
-            if skills
-                .listing_budget_fraction
-                .is_some_and(|value| !value.is_finite() || value <= 0.0 || value > 1.0)
-            {
-                anyhow::bail!(
-                    "[skills] listing_budget_fraction must be finite and greater than 0 and at most 1"
-                );
-            }
-        }
         if let Some(retry) = &self.retry {
             for (key, value) in [
                 ("initial_delay", retry.initial_delay),
@@ -9974,12 +9954,6 @@ fn merge_skills_config(
                     .explicit_only
                     .or(base.bundled.explicit_only),
             },
-            listing_max_description_chars: override_cfg
-                .listing_max_description_chars
-                .or(base.listing_max_description_chars),
-            listing_budget_fraction: override_cfg
-                .listing_budget_fraction
-                .or(base.listing_budget_fraction),
             registry_url: override_cfg.registry_url.or(base.registry_url),
             max_install_size_bytes: override_cfg
                 .max_install_size_bytes
