@@ -63,6 +63,7 @@ pub async fn dispatch_plugin_route(
         format!("/{}", request.path)
     };
     let body_base64 = (!request.body.is_empty()).then(|| BASE64_STANDARD.encode(&request.body));
+    let plugin_id = owner.plugin_id.clone();
     let params = PluginRouteDispatchParams {
         owner,
         method: request.method,
@@ -77,11 +78,11 @@ pub async fn dispatch_plugin_route(
         deadline_ms: PLUGIN_ROUTE_DISPATCH_DEADLINE.as_millis() as u64,
     };
     let value = host
-        .call(CoreRequest::PluginRouteDispatch(params))
+        .call(CoreRequest::PluginRouteDispatch(params), Some(plugin_id))
         .await
         .map_err(|error| match error {
-            HostCallError::Timeout(_) => PluginRouteError::Timeout,
-            HostCallError::ChannelClosed(reason) => PluginRouteError::HostUnavailable(reason),
+            HostCallError::Timeout { .. } => PluginRouteError::Timeout,
+            HostCallError::Exited(reason) => PluginRouteError::HostUnavailable(reason),
             HostCallError::Rpc { message, .. } => PluginRouteError::ExecutionFailed(message),
             other => PluginRouteError::ExecutionFailed(other.to_string()),
         })?;
