@@ -835,6 +835,19 @@ async fn plugin_settings_round_trip_conflicts_and_security_boundaries() -> Resul
     .await?;
     let _ = send_json_ok(client.post(format!("{base}/{name}/enable")), "enable").await?;
 
+    // 3b. While `no_settings` is also active in the cohort, `settings` is withheld (403).
+    let withheld = client.get(format!("{base}/{name}/settings")).send().await?;
+    assert_eq!(withheld.status(), StatusCode::FORBIDDEN);
+    let withheld_body: serde_json::Value = withheld.json().await?;
+    assert_eq!(withheld_body["error"]["code"], "plugin_settings_withheld");
+
+    // Disable `no_settings` so the cohort holds the `settings` grant cleanly.
+    let _ = send_json_ok(
+        client.post(format!("{base}/{no_settings_name}/disable")),
+        "disable no_settings",
+    )
+    .await?;
+
     // 4. GET returns empty namespace with zero host/sibling leakage.
     let initial =
         send_json_ok(client.get(format!("{base}/{name}/settings")), "get initial").await?;
