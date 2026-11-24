@@ -567,6 +567,112 @@
         ]
       },
       {
+        "key": "sessionPersistence",
+        "group": "dsh",
+        "summary": "Read-only session log lookup surface; Core owns durable session logs and refuses plugin mutations.",
+        "availability": "always",
+        "availabilityText": "Available to every plugin that injects it.",
+        "methods": [
+          {
+            "name": "findLog",
+            "signature": "findLog(id?: unknown): Promise<undefined>",
+            "summary": "Resolve undefined; host session logs are not exposed on disk to plugins."
+          },
+          {
+            "name": "listLogs",
+            "signature": "listLogs(): Promise<readonly unknown[]>",
+            "summary": "Return an empty frozen list."
+          },
+          {
+            "name": "readLog",
+            "signature": "readLog(id?: unknown): Promise<undefined>",
+            "summary": "Resolve undefined; host session logs are private to Core."
+          },
+          {
+            "name": "artifactDirectory",
+            "signature": "artifactDirectory(headerOrId?: unknown): undefined",
+            "summary": "Return undefined; host session directories are private to Core."
+          }
+        ]
+      },
+      {
+        "key": "storageDomain",
+        "group": "dsh",
+        "summary": "Owner-scoped, bounded in-memory structured storage domains isolated per plugin.",
+        "availability": "always",
+        "availabilityText": "Available to every plugin that injects it.",
+        "methods": [
+          {
+            "name": "open",
+            "signature": "open(spec: { name: string } | string): Promise<ScopedStorageDomainHandle>",
+            "summary": "Open an owner-scoped in-memory storage domain with bounded tables and entries."
+          },
+          {
+            "name": "get",
+            "signature": "get(name: string): ScopedStorageDomainHandle | undefined",
+            "summary": "Look up an already-opened domain for this owner."
+          },
+          {
+            "name": "list",
+            "signature": "list(): readonly string[]",
+            "summary": "List domains currently opened by this owner."
+          }
+        ]
+      },
+      {
+        "key": "invariants",
+        "group": "dsh",
+        "summary": "Owner-scoped invariant registration table cleaned up on plugin disposal.",
+        "availability": "always",
+        "availabilityText": "Available to every plugin that injects it.",
+        "methods": [
+          {
+            "name": "register",
+            "signature": "register(name: string, install?: unknown): () => void",
+            "summary": "Register a named invariant under this owner and return a disposer."
+          },
+          {
+            "name": "list",
+            "signature": "list(): readonly string[]",
+            "summary": "List invariant names registered by this owner."
+          }
+        ]
+      },
+      {
+        "key": "permissionPresets",
+        "group": "dsh",
+        "summary": "Read-only catalog of Codewhale permission posture names; Core owns approval authority.",
+        "availability": "always",
+        "availabilityText": "Available to every plugin that injects it.",
+        "methods": [
+          {
+            "name": "availability",
+            "signature": "get availability(): 'readonly'",
+            "summary": "Report that permission presets are read-only."
+          },
+          {
+            "name": "defaultPreset",
+            "signature": "get defaultPreset(): string",
+            "summary": "Return the default posture name ('ask')."
+          },
+          {
+            "name": "names",
+            "signature": "get names(): readonly string[]",
+            "summary": "List Codewhale permission posture names."
+          },
+          {
+            "name": "list",
+            "signature": "list(): readonly { name: string, readonly: boolean }[]",
+            "summary": "List read-only permission preset descriptors."
+          },
+          {
+            "name": "get",
+            "signature": "get(name: string): { name: string, readonly: boolean } | undefined",
+            "summary": "Look up one permission preset descriptor by name."
+          }
+        ]
+      },
+      {
         "key": "logger",
         "group": "cordis",
         "summary": "Cordis logging. Every line becomes a host log notification attributed to the plugin.",
@@ -796,7 +902,11 @@
       "webServer",
       "connection",
       "sessionTitle",
-      "profileContext"
+      "profileContext",
+      "sessionPersistence",
+      "storageDomain",
+      "invariants",
+      "permissionPresets"
     ],
     "events": [
       {

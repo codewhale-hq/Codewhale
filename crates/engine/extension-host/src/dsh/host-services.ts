@@ -299,6 +299,302 @@ export const webAdapter: DshAdapter = {
   },
 }
 
+const MAX_STORAGE_DOMAINS_PER_OWNER = 16
+const MAX_STORAGE_TABLES_PER_DOMAIN = 32
+const MAX_STORAGE_ENTRIES_PER_TABLE = 512
+const MAX_STORAGE_VALUE_BYTES = 64 * 1024
+
+export const sessionPersistenceAdapter: DshAdapter = {
+  service: 'sessionPersistence',
+  define() {
+    class SessionPersistenceService extends Service {
+      constructor(ctx: any) { super(ctx, 'sessionPersistence') }
+
+      async findLog(_id?: unknown): Promise<undefined> {
+        return undefined
+      }
+
+      async listLogs(): Promise<readonly unknown[]> {
+        return Object.freeze([])
+      }
+
+      async readLog(_id?: unknown): Promise<undefined> {
+        return undefined
+      }
+
+      artifactDirectory(_headerOrId?: unknown): undefined {
+        return undefined
+      }
+
+      async deleteLog(): Promise<never> {
+        throw new RpcError(ErrorCode.Refused, 'sessionPersistence mutations are refused in Codewhale')
+      }
+
+      async removeLog(): Promise<never> {
+        throw new RpcError(ErrorCode.Refused, 'sessionPersistence mutations are refused in Codewhale')
+      }
+
+      async writeLog(): Promise<never> {
+        throw new RpcError(ErrorCode.Refused, 'sessionPersistence mutations are refused in Codewhale')
+      }
+    }
+    Object.freeze(SessionPersistenceService.prototype)
+    return SessionPersistenceService
+  },
+}
+
+interface ScopedStorageTable {
+  get(key: unknown): Promise<unknown>
+  set(key: unknown, value: unknown): Promise<void>
+  delete(key: unknown): Promise<boolean>
+  has(key: unknown): Promise<boolean>
+  keys(): Promise<readonly string[]>
+  list(): Promise<readonly unknown[]>
+  entries(): Promise<readonly [string, unknown][]>
+  clear(): Promise<void>
+}
+
+interface ScopedStorageDomainHandle {
+  readonly name: string
+  table(tableName: unknown): ScopedStorageTable
+  close(): Promise<void>
+}
+
+export const storageDomainAdapter: DshAdapter = {
+  service: 'storageDomain',
+  define(host: AdapterHost) {
+    const ownerDomains = new Map<string, Map<string, Map<string, Map<string, unknown>>>>()
+
+    function makeDomainHandle(token: string, domainName: string, tables: Map<string, Map<string, unknown>>): ScopedStorageDomainHandle {
+      let closed = false
+      const ensureOpen = () => {
+        if (closed) throw new RpcError(ErrorCode.NotAvailable, `storageDomain \`${domainName}\` is closed`)
+      }
+      return Object.freeze({
+        name: domainName,
+        table(tableName: unknown): ScopedStorageTable {
+          ensureOpen()
+          if (typeof tableName !== 'string' || tableName.trim().length === 0 || tableName.length > 128) {
+            throw new RpcError(ErrorCode.InvalidParams, 'storageDomain table name must be a non-empty string')
+          }
+          const key = tableName.trim()
+          let rows = tables.get(key)
+          if (!rows) {
+            if (tables.size >= MAX_STORAGE_TABLES_PER_DOMAIN) {
+              throw new RpcError(ErrorCode.Refused, 'storageDomain table limit reached')
+            }
+            rows = new Map()
+            tables.set(key, rows)
+          }
+          const store = rows
+          return Object.freeze({
+            async get(rowKey: unknown) {
+              ensureOpen()
+              if (typeof rowKey !== 'string') return undefined
+              const val = store.get(rowKey)
+              return val === undefined ? undefined : structuredClone(val)
+            },
+            async set(rowKey: unknown, value: unknown) {
+              ensureOpen()
+              if (typeof rowKey !== 'string' || rowKey.length === 0 || rowKey.length > 256) {
+                throw new RpcError(ErrorCode.InvalidParams, 'storageDomain row key must be a non-empty string')
+              }
+              if (!store.has(rowKey) && store.size >= MAX_STORAGE_ENTRIES_PER_TABLE) {
+                throw new RpcError(ErrorCode.Refused, 'storageDomain table entry limit reached')
+              }
+              const serialized = JSON.stringify(value)
+              if (serialized !== undefined && Buffer.byteLength(serialized, 'utf8') > MAX_STORAGE_VALUE_BYTES) {
+                throw new RpcError(ErrorCode.InvalidParams, 'storageDomain value exceeds size limit')
+              }
+              store.set(rowKey, structuredClone(value))
+            },
+            async delete(rowKey: unknown) {
+              ensureOpen()
+              return typeof rowKey === 'string' ? store.delete(rowKey) : false
+            },
+            async has(rowKey: unknown) {
+              ensureOpen()
+              return typeof rowKey === 'string' && store.has(rowKey)
+            },
+            async keys() {
+              ensureOpen()
+              return Object.freeze([...store.keys()])
+            },
+            async list() {
+              ensureOpen()
+              return Object.freeze([...store.values()].map((v) => structuredClone(v)))
+            },
+            async entries() {
+              ensureOpen()
+              return Object.freeze([...store.entries()].map(([k, v]) => [k, structuredClone(v)] as [string, unknown]))
+            },
+            async clear() {
+              ensureOpen()
+              store.clear()
+            },
+          })
+        },
+        async close() {
+          closed = true
+          const domains = ownerDomains.get(token)
+          if (domains?.get(domainName) === tables) {
+            domains.delete(domainName)
+            if (domains.size === 0) ownerDomains.delete(token)
+          }
+        },
+      })
+    }
+
+    class StorageDomainService extends Service {
+      constructor(ctx: any) { super(ctx, 'storageDomain') }
+
+      async open(spec: unknown): Promise<ScopedStorageDomainHandle> {
+        const owner = host.ownerOf(this.ctx)
+        if (!owner) throw new RpcError(ErrorCode.NotAvailable, 'storageDomain.open requires an active owner')
+        const rawName = typeof spec === 'string'
+          ? spec
+          : spec && typeof spec === 'object' && !Array.isArray(spec)
+            ? ((spec as Record<string, unknown>).name ?? (spec as Record<string, unknown>).id)
+            : undefined
+        if (typeof rawName !== 'string' || rawName.trim().length === 0 || rawName.length > 128) {
+          throw new RpcError(ErrorCode.InvalidParams, 'storageDomain spec requires a non-empty name')
+        }
+        const domainName = rawName.trim()
+        const token = owner.ref.owner_token
+        let domains = ownerDomains.get(token)
+        if (!domains) {
+          domains = new Map()
+          ownerDomains.set(token, domains)
+        }
+        let tables = domains.get(domainName)
+        if (!tables) {
+          if (domains.size >= MAX_STORAGE_DOMAINS_PER_OWNER) {
+            throw new RpcError(ErrorCode.Refused, 'storageDomain owner domain limit reached')
+          }
+          tables = new Map()
+          domains.set(domainName, tables)
+          const ownedTables = tables
+          ;(this.ctx as any).effect(() => () => {
+            const current = ownerDomains.get(token)
+            if (current?.get(domainName) === ownedTables) {
+              current.delete(domainName)
+              if (current.size === 0) ownerDomains.delete(token)
+            }
+          }, `storageDomain.open(${JSON.stringify(domainName)})`)
+        }
+        return makeDomainHandle(token, domainName, tables)
+      }
+
+      get(name: unknown): ScopedStorageDomainHandle | undefined {
+        if (typeof name !== 'string' || name.trim().length === 0) return undefined
+        const owner = host.ownerOf(this.ctx)
+        if (!owner) return undefined
+        const token = owner.ref.owner_token
+        const tables = ownerDomains.get(token)?.get(name.trim())
+        return tables ? makeDomainHandle(token, name.trim(), tables) : undefined
+      }
+
+      list(): readonly string[] {
+        const owner = host.ownerOf(this.ctx)
+        const domains = owner ? ownerDomains.get(owner.ref.owner_token) : undefined
+        return Object.freeze(domains ? [...domains.keys()] : [])
+      }
+    }
+    Object.freeze(StorageDomainService.prototype)
+    return StorageDomainService
+  },
+}
+
+export const invariantsAdapter: DshAdapter = {
+  service: 'invariants',
+  define(host: AdapterHost) {
+    const ownerInvariants = new Map<string, Map<string, unknown>>()
+    class InvariantsService extends Service {
+      constructor(ctx: any) { super(ctx, 'invariants') }
+
+      register(name: unknown, install?: unknown): () => void {
+        const owner = host.ownerOf(this.ctx)
+        if (!owner) throw new RpcError(ErrorCode.NotAvailable, 'invariants.register requires an active owner')
+        if (typeof name !== 'string' || name.trim().length === 0 || name.length > 128) {
+          throw new RpcError(ErrorCode.InvalidParams, 'invariant name must be a non-empty string')
+        }
+        const key = name.trim()
+        const token = owner.ref.owner_token
+        return (this.ctx as any).effect(() => {
+          let table = ownerInvariants.get(token)
+          if (!table) {
+            table = new Map()
+            ownerInvariants.set(token, table)
+          }
+          table.set(key, install)
+          return () => {
+            const current = ownerInvariants.get(token)
+            current?.delete(key)
+            if (current && current.size === 0) ownerInvariants.delete(token)
+          }
+        }, `invariants.register(${JSON.stringify(key)})`)
+      }
+
+      list(): readonly string[] {
+        const owner = host.ownerOf(this.ctx)
+        const table = owner ? ownerInvariants.get(owner.ref.owner_token) : undefined
+        return Object.freeze(table ? [...table.keys()] : [])
+      }
+    }
+    Object.freeze(InvariantsService.prototype)
+    return InvariantsService
+  },
+}
+
+const READONLY_PERMISSION_PRESET_NAMES = Object.freeze(['ask', 'accept-edits', 'auto-review', 'full-access'] as const)
+const READONLY_PERMISSION_PRESETS = Object.freeze(
+  READONLY_PERMISSION_PRESET_NAMES.map((name) => Object.freeze({ name, readonly: true })),
+)
+
+export const permissionPresetsAdapter: DshAdapter = {
+  service: 'permissionPresets',
+  define() {
+    class PermissionPresetsService extends Service {
+      constructor(ctx: any) { super(ctx, 'permissionPresets') }
+
+      get availability(): 'readonly' {
+        return 'readonly'
+      }
+
+      get defaultPreset(): string {
+        return 'ask'
+      }
+
+      get names(): readonly string[] {
+        return READONLY_PERMISSION_PRESET_NAMES
+      }
+
+      list(): readonly Readonly<{ name: string, readonly: boolean }>[] {
+        return READONLY_PERMISSION_PRESETS
+      }
+
+      get(name: unknown): Readonly<{ name: string, readonly: boolean }> | undefined {
+        if (typeof name !== 'string') return undefined
+        return READONLY_PERMISSION_PRESETS.find((preset) => preset.name === name)
+      }
+
+      apply(): never {
+        throw new RpcError(ErrorCode.Refused, 'permissionPresets is read-only in Codewhale; Core owns approval posture')
+      }
+
+      set(): never {
+        throw new RpcError(ErrorCode.Refused, 'permissionPresets is read-only in Codewhale; Core owns approval posture')
+      }
+
+      register(): never {
+        throw new RpcError(ErrorCode.Refused, 'permissionPresets is read-only in Codewhale; Core owns approval posture')
+      }
+    }
+    Object.freeze(PermissionPresetsService.prototype)
+    return PermissionPresetsService
+  },
+}
+
 export const DSH_HOST_SERVICE_ADAPTERS: readonly DshAdapter[] = Object.freeze([
   agentPresetsAdapter,
   agentDefaultModelAdapter,
@@ -306,4 +602,8 @@ export const DSH_HOST_SERVICE_ADAPTERS: readonly DshAdapter[] = Object.freeze([
   workspaceRegistryAdapter,
   typertGatewayAdapter,
   webAdapter,
+  sessionPersistenceAdapter,
+  storageDomainAdapter,
+  invariantsAdapter,
+  permissionPresetsAdapter,
 ])

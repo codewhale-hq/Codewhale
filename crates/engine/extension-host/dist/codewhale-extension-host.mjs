@@ -19,7 +19,7 @@ var __export = (target, all) => {
 var define_BUILTIN_MODULE_DIGESTS_default;
 var init_define_BUILTIN_MODULE_DIGESTS = __esm({
   "<define:__BUILTIN_MODULE_DIGESTS__>"() {
-    define_BUILTIN_MODULE_DIGESTS_default = { creator: "64a59c18fb8c8da432b3d4f6ba08faf3bb13bde1f910854a8c604a18224d0dbd", harness: "7e93989b2ff84394ab841e28577f6661ea2f01f1b30905ea6ce54857ef7f5e34", mcp: "f9735707e49e349ee38f791fa3c6f3379fde43cad5044f381f8e313286ea3d39" };
+    define_BUILTIN_MODULE_DIGESTS_default = { creator: "ded91ec7c3f1d813a8b4875aba6e6c52eab99cd02fcc50052356303ecf9fbe49", harness: "7e93989b2ff84394ab841e28577f6661ea2f01f1b30905ea6ce54857ef7f5e34", mcp: "f9735707e49e349ee38f791fa3c6f3379fde43cad5044f381f8e313286ea3d39" };
   }
 });
 
@@ -15908,341 +15908,6 @@ var init_bun_closure = __esm({
   }
 });
 
-// src/shims/prompt.ts
-function normalizePromptSection(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError("prompt section must be an object with id and text");
-  }
-  if (Object.keys(value).some((key) => key !== "id" && key !== "text" && key !== "interpolate")) {
-    throw new TypeError("prompt section supports only id and text, plus optional model-cwd interpolation");
-  }
-  const { id, text: text3, interpolate: interpolate2 } = value;
-  if (typeof id !== "string" || !SECTION_ID.test(id)) {
-    throw new TypeError("prompt section id must be lower case, start with a letter, and use a-z, 0-9, _ or - (at most 64 characters)");
-  }
-  if (typeof text3 !== "string" || text3.trim().length === 0) {
-    throw new TypeError(`prompt section "${id}" needs non-empty text`);
-  }
-  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text3)) {
-    throw new TypeError(`prompt section "${id}" text contains control characters`);
-  }
-  if (Buffer.byteLength(text3, "utf8") > MAX_PROMPT_SECTION_BYTES) {
-    throw new RangeError(`prompt section "${id}" exceeds ${MAX_PROMPT_SECTION_BYTES} UTF-8 bytes`);
-  }
-  if (interpolate2 !== void 0 && interpolate2 !== "model-cwd") throw new TypeError("prompt interpolation supports only model-cwd");
-  if (interpolate2 !== void 0) validatePromptTemplate(text3);
-  return Object.freeze({ id, text: text3, ...interpolate2 === void 0 ? {} : { interpolate: interpolate2 } });
-}
-function validatePromptTemplate(text3) {
-  for (let open2 = text3.indexOf("{{"); open2 >= 0; ) {
-    const group = /^\{\{([^{}]*)\}\}/u.exec(text3.slice(open2));
-    if (!group) {
-      if (text3.indexOf("}}", open2 + 2) >= 0) throw new TypeError("malformed prompt variable reference");
-      open2 = text3.indexOf("{{", open2 + 2);
-      continue;
-    }
-    if (!/^[a-z][a-z0-9_]*$/u.test(group[1])) throw new TypeError("malformed prompt variable reference");
-    if (group[1] !== "model" && group[1] !== "cwd") throw new TypeError(`unknown Core prompt variable "{{${group[1]}}}"; supported variables: model, cwd`);
-    open2 = text3.indexOf("{{", open2 + group[0].length);
-  }
-}
-function definePromptService(host2) {
-  class PromptShim extends Service {
-    constructor(ctx) {
-      super(ctx, "prompt");
-    }
-    registerSection(definition) {
-      const ctx = this.ctx;
-      const owner = host2.ownerOf(ctx);
-      if (!owner) throw new Error("prompt.registerSection called outside an extension owner");
-      const section = normalizePromptSection(definition);
-      return ctx.effect(() => host2.promptSections.register(owner, section), `prompt.registerSection(${JSON.stringify(section.id)})`);
-    }
-  }
-  Object.freeze(PromptShim.prototype);
-  return PromptShim;
-}
-var MAX_PROMPT_SECTION_BYTES, MAX_PROMPT_OWNER_BYTES, MAX_PROMPT_HOST_BYTES, MAX_PROMPT_SECTIONS_PER_OWNER, MAX_PROMPT_SECTIONS_PER_HOST, SECTION_ID, PromptSections;
-var init_prompt = __esm({
-  "src/shims/prompt.ts"() {
-    "use strict";
-    init_define_BUILTIN_MODULE_DIGESTS();
-    init_lib2();
-    init_owned();
-    MAX_PROMPT_SECTION_BYTES = 4 * 1024;
-    MAX_PROMPT_OWNER_BYTES = 32 * 1024;
-    MAX_PROMPT_HOST_BYTES = 128 * 1024;
-    MAX_PROMPT_SECTIONS_PER_OWNER = 128;
-    MAX_PROMPT_SECTIONS_PER_HOST = 1024;
-    SECTION_ID = /^[a-z][a-z0-9_-]{0,63}$/u;
-    PromptSections = class {
-      registrations;
-      templates;
-      owners = /* @__PURE__ */ new Map();
-      bytes = 0;
-      count = 0;
-      constructor(rpc2, ownedBy, warn) {
-        this.registrations = new OwnedRegistrations(rpc2, "prompt_section", ownedBy, warn);
-        this.templates = new OwnedRegistrations(rpc2, "prompt_template", ownedBy, warn);
-      }
-      register(owner, definition) {
-        if (owner.state !== "activating" && owner.state !== "active") throw new Error("prompt owner is not live");
-        const section = normalizePromptSection(definition);
-        const sections = this.owners.get(owner) ?? /* @__PURE__ */ new Map();
-        if (sections.has(section.id)) throw new Error(`prompt section "${section.id}" is already registered; dispose it before registering it again`);
-        const bytes = Buffer.byteLength(section.text, "utf8");
-        const ownerBytes = [...sections.values()].reduce((sum, item) => sum + item.bytes, 0);
-        if (ownerBytes + bytes > MAX_PROMPT_OWNER_BYTES || this.bytes + bytes > MAX_PROMPT_HOST_BYTES) {
-          throw new RangeError("prompt section owner or host UTF-8 byte limit reached");
-        }
-        if (sections.size >= MAX_PROMPT_SECTIONS_PER_OWNER || this.count >= MAX_PROMPT_SECTIONS_PER_HOST) {
-          throw new RangeError("prompt section owner or host registration limit reached");
-        }
-        const entry = { owner, name: section.id, definition: section, disposed: false };
-        const undo = (section.interpolate === void 0 ? this.registrations : this.templates).add(entry, { name: section.id, description: section.text });
-        const record4 = { entry, bytes, dispose: () => {
-          if (sections.get(section.id) !== record4) return;
-          sections.delete(section.id);
-          this.bytes -= bytes;
-          this.count -= 1;
-          if (sections.size === 0) this.owners.delete(owner);
-          undo();
-        } };
-        sections.set(section.id, record4);
-        this.owners.set(owner, sections);
-        this.bytes += bytes;
-        this.count += 1;
-        return record4.dispose;
-      }
-      /** Release reservations even after a plugin fails or times out during teardown. */
-      forget(owner) {
-        for (const record4 of [...this.owners.get(owner)?.values() ?? []]) record4.dispose();
-        this.registrations.forget(owner);
-        this.templates.forget(owner);
-      }
-    };
-  }
-});
-
-// src/dsh/persona.ts
-function normalizePersonaConfig(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("persona config must be plain data");
-  const config = value;
-  if (Object.keys(config).some((key) => !["prefix", "suffix", "complete", "includeRuntimeContext"].includes(key))) throw new TypeError("persona config has an unsupported field");
-  if (config.complete !== void 0 && config.complete !== false) throw new TypeError("persona replacement belongs to the Core prompt and cannot be imported");
-  if (config.includeRuntimeContext !== void 0 && config.includeRuntimeContext !== true) throw new TypeError("persona runtime-context suppression belongs to the Core prompt and cannot be imported");
-  if (typeof config.prefix !== "string" || config.suffix !== void 0 && typeof config.suffix !== "string") throw new TypeError("persona prefix and suffix must be text");
-  const result = { prefix: config.prefix, suffix: config.suffix ?? "" };
-  for (const [position, text3] of Object.entries(result)) {
-    if (Buffer.byteLength(text3, "utf8") > MAX_PROMPT_SECTION_BYTES) throw new RangeError("persona text exceeds 4096 UTF-8 bytes");
-    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text3)) throw new TypeError("persona text contains control characters");
-    validatePromptTemplate(text3);
-    if (text3.trim().length > 0) normalizePromptSection({ id: `persona-${position}`, text: text3, interpolate: "model-cwd" });
-  }
-  return Object.freeze(result);
-}
-var PERSONA, reviewedPersonaModule;
-var init_persona = __esm({
-  "src/dsh/persona.ts"() {
-    "use strict";
-    init_define_BUILTIN_MODULE_DIGESTS();
-    init_prompt();
-    init_root();
-    PERSONA = "@deepseek-ai/dsh-persona";
-    reviewedPersonaModule = Object.freeze({
-      name: "persona",
-      inject: ["prompt"],
-      apply(ctx, value) {
-        if (!ownerStorage.getStore()?.scope) throw new Error("persona requires an exact Core-selected entry scope");
-        const config = normalizePersonaConfig(value);
-        for (const [position, text3] of Object.entries(config)) {
-          if (text3.trim().length > 0) ctx.prompt.registerSection({ id: `persona-${position}`, text: text3, interpolate: "model-cwd" });
-        }
-      }
-    });
-  }
-});
-
-// src/dsh/upstream/agent-presets/metadata.ts
-var init_metadata = __esm({
-  "src/dsh/upstream/agent-presets/metadata.ts"() {
-    "use strict";
-    init_define_BUILTIN_MODULE_DIGESTS();
-    init_js_yaml();
-  }
-});
-
-// src/dsh/upstream/agent-presets/preset.ts
-var init_preset = __esm({
-  "src/dsh/upstream/agent-presets/preset.ts"() {
-    "use strict";
-    init_define_BUILTIN_MODULE_DIGESTS();
-  }
-});
-
-// src/dsh/upstream/agent-presets/specifier.ts
-var init_specifier = __esm({
-  "src/dsh/upstream/agent-presets/specifier.ts"() {
-    "use strict";
-    init_define_BUILTIN_MODULE_DIGESTS();
-  }
-});
-
-// src/dsh/upstream/agent-presets/discovery.ts
-import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL3 } from "node:url";
-var SHIPPED_PRESET_ROOT;
-var init_discovery = __esm({
-  "src/dsh/upstream/agent-presets/discovery.ts"() {
-    "use strict";
-    init_define_BUILTIN_MODULE_DIGESTS();
-    init_js_yaml();
-    init_src2();
-    init_metadata();
-    init_preset();
-    init_specifier();
-    SHIPPED_PRESET_ROOT = fileURLToPath2(new URL("../presets/", import.meta.url));
-  }
-});
-
-// src/dsh/upstream/agent-presets/composition-inventory.ts
-function mountedCompositionRows(tree) {
-  const found = [];
-  for (const entry of tree.entries()) {
-    if (entry.options.group) continue;
-    found.push({
-      entryId: entry.id,
-      moduleName: entry.options.name,
-      enabled: !entry.disabled,
-      ...isJsExpr(entry.options.disabled) ? { condition: entry.options.disabled.__jsExpr } : {},
-      ...entry.fiber === void 0 ? {} : { fiberState: entry.fiber.state }
-    });
-  }
-  return found;
-}
-var init_composition_inventory = __esm({
-  "src/dsh/upstream/agent-presets/composition-inventory.ts"() {
-    "use strict";
-    init_define_BUILTIN_MODULE_DIGESTS();
-    init_js_yaml();
-    init_src();
-    init_src2();
-    init_discovery();
-  }
-});
-
-// src/dsh/agent-presets.ts
-import { createHash as createHash2, randomBytes } from "node:crypto";
-import { fileURLToPath as fileURLToPath3, pathToFileURL as pathToFileURL4 } from "node:url";
-function fail(message) {
-  throw new Error(`agent-presets: ${message}`);
-}
-function issuePresetReceipt(snapshot3) {
-  const payload = JSON.stringify(snapshot3);
-  const receipt = createHash2("sha256").update(randomBytes(32)).update(payload).digest("hex");
-  activePresetReceipts.set(receipt, payload);
-  return receipt;
-}
-function revokePresetReceipt(receipt) {
-  activePresetReceipts.delete(receipt);
-}
-function defineReviewedAgentPresets(mount) {
-  class ReviewedAgentPresets extends Service {
-    static inject = ["loader"];
-    snapshot;
-    selfCtx;
-    constructor(ctx, config) {
-      super(ctx, "agentPresets");
-      this.selfCtx = ctx;
-      if (config?.codewhale_reviewed !== void 0 || config?.codewhale_receipt !== void 0) {
-        const snapshot3 = config.codewhale_reviewed;
-        const receipt = typeof config.codewhale_receipt === "string" ? config.codewhale_receipt : "";
-        const expected = receipt ? activePresetReceipts.get(receipt) : void 0;
-        activePresetReceipts.delete(receipt);
-        if (!snapshot3 || !expected || expected !== JSON.stringify(snapshot3) || snapshot3.catalog?.version !== 1 || !snapshot3.catalog.presets.some((p) => p.id === snapshot3.selected?.metadata.id && !p.broken)) fail("raw roster needs an installer-minted preset receipt");
-        this.snapshot = structuredClone(snapshot3);
-      }
-    }
-    mounting;
-    mounted;
-    mountSelected() {
-      const snapshot3 = this.snapshot;
-      if (!snapshot3) return Promise.resolve(void 0);
-      return this.mounting ??= mount(this.selfCtx, snapshot3.base_url, snapshot3.selected.composition).then((result) => this.mounted = result);
-    }
-    async list() {
-      const snapshot3 = this.snapshot;
-      if (!snapshot3) return [];
-      return snapshot3.catalog.presets.map((row) => ({ ...structuredClone(row), path: fileURLToPath3(new URL(snapshot3.catalog.inventory[row.id].path, snapshot3.base_url)) }));
-    }
-    async remoteExportList() {
-      const snapshot3 = this.snapshot;
-      if (!snapshot3) return { presets: [], authorable: false, defaultId: void 0, modeSelectionEnabled: false };
-      return { presets: snapshot3.catalog.presets.map(({ is_default, entry, ...row }) => ({ ...structuredClone(row), isDefault: is_default })), authorable: false, defaultId: this.defaultId, modeSelectionEnabled: snapshot3.catalog.mode_selection_enabled };
-    }
-    get defaultId() {
-      return this.snapshot?.catalog.default;
-    }
-    get authorable() {
-      return false;
-    }
-    async resolve(id = this.defaultId) {
-      const row = (await this.list()).find((p) => p.id === id);
-      if (!row) fail("preset not found");
-      return row;
-    }
-    composedPreset() {
-      return this.snapshot?.selected.metadata.id;
-    }
-    async compositionInventory() {
-      const snapshot3 = this.snapshot;
-      if (!snapshot3) return [];
-      return snapshot3.catalog.presets.map((row) => {
-        const identity = { id: row.id, trust: row.trust, ...row.name === void 0 ? {} : { name: row.name }, isDefault: row.id === this.defaultId };
-        if (row.id === this.composedPreset() && this.mounted) return { ...identity, rows: mountedCompositionRows(this.mounted.tree) };
-        const read = snapshot3.catalog.inventory[row.id];
-        if (row.broken || "broken" in read) return { ...identity, broken: row.broken ?? ("broken" in read ? read.broken : void 0), rows: [] };
-        return { ...identity, rows: structuredClone(read.rows) };
-      });
-    }
-    async readDocument(id) {
-      const snapshot3 = this.snapshot;
-      if (!snapshot3 || id !== this.composedPreset()) fail("read another preset through Core file authority");
-      return { agentPreset: id, trust: snapshot3.selected.metadata.trust, content: snapshot3.selected.source };
-    }
-    select() {
-      fail("select through Core AgentProfile/native preset selection before a turn");
-    }
-    recompose() {
-      fail("Core owns the captured agent selection and blank-session check");
-    }
-    copy() {
-      fail("copy through Core file/install/review/reload authority");
-    }
-    remove() {
-      fail("delete through Core file/install/review/reload authority");
-    }
-  }
-  Object.defineProperty(ReviewedAgentPresets.prototype, REVIEWED_AGENT_PRESETS_BRAND, { value: true });
-  return ReviewedAgentPresets;
-}
-var AGENT_PRESETS, activePresetReceipts, REVIEWED_AGENT_PRESETS_BRAND;
-var init_agent_presets = __esm({
-  "src/dsh/agent-presets.ts"() {
-    "use strict";
-    init_define_BUILTIN_MODULE_DIGESTS();
-    init_persona();
-    init_lib2();
-    init_discovery();
-    init_preset();
-    init_specifier();
-    init_composition_inventory();
-    init_src();
-    AGENT_PRESETS = "@deepseek-ai/dsh-agent-presets";
-    activePresetReceipts = /* @__PURE__ */ new Map();
-    REVIEWED_AGENT_PRESETS_BRAND = /* @__PURE__ */ Symbol("codewhale.reviewedAgentPresets");
-  }
-});
-
 // src/protocol.generated.ts
 var PROTOCOL_VERSION, MAGIC_ASCII, HEADER_LEN, MAX_FRAME, MAX_INFLIGHT, IMAGE_LIMITS, ErrorCode, METHODS, SHAPES;
 var init_protocol_generated = __esm({
@@ -16701,6 +16366,341 @@ var init_protocol = __esm({
         return out;
       }
     };
+  }
+});
+
+// src/shims/prompt.ts
+function normalizePromptSection(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("prompt section must be an object with id and text");
+  }
+  if (Object.keys(value).some((key) => key !== "id" && key !== "text" && key !== "interpolate")) {
+    throw new TypeError("prompt section supports only id and text, plus optional model-cwd interpolation");
+  }
+  const { id, text: text3, interpolate: interpolate2 } = value;
+  if (typeof id !== "string" || !SECTION_ID.test(id)) {
+    throw new TypeError("prompt section id must be lower case, start with a letter, and use a-z, 0-9, _ or - (at most 64 characters)");
+  }
+  if (typeof text3 !== "string" || text3.trim().length === 0) {
+    throw new TypeError(`prompt section "${id}" needs non-empty text`);
+  }
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text3)) {
+    throw new TypeError(`prompt section "${id}" text contains control characters`);
+  }
+  if (Buffer.byteLength(text3, "utf8") > MAX_PROMPT_SECTION_BYTES) {
+    throw new RangeError(`prompt section "${id}" exceeds ${MAX_PROMPT_SECTION_BYTES} UTF-8 bytes`);
+  }
+  if (interpolate2 !== void 0 && interpolate2 !== "model-cwd") throw new TypeError("prompt interpolation supports only model-cwd");
+  if (interpolate2 !== void 0) validatePromptTemplate(text3);
+  return Object.freeze({ id, text: text3, ...interpolate2 === void 0 ? {} : { interpolate: interpolate2 } });
+}
+function validatePromptTemplate(text3) {
+  for (let open2 = text3.indexOf("{{"); open2 >= 0; ) {
+    const group = /^\{\{([^{}]*)\}\}/u.exec(text3.slice(open2));
+    if (!group) {
+      if (text3.indexOf("}}", open2 + 2) >= 0) throw new TypeError("malformed prompt variable reference");
+      open2 = text3.indexOf("{{", open2 + 2);
+      continue;
+    }
+    if (!/^[a-z][a-z0-9_]*$/u.test(group[1])) throw new TypeError("malformed prompt variable reference");
+    if (group[1] !== "model" && group[1] !== "cwd") throw new TypeError(`unknown Core prompt variable "{{${group[1]}}}"; supported variables: model, cwd`);
+    open2 = text3.indexOf("{{", open2 + group[0].length);
+  }
+}
+function definePromptService(host2) {
+  class PromptShim extends Service {
+    constructor(ctx) {
+      super(ctx, "prompt");
+    }
+    registerSection(definition) {
+      const ctx = this.ctx;
+      const owner = host2.ownerOf(ctx);
+      if (!owner) throw new Error("prompt.registerSection called outside an extension owner");
+      const section = normalizePromptSection(definition);
+      return ctx.effect(() => host2.promptSections.register(owner, section), `prompt.registerSection(${JSON.stringify(section.id)})`);
+    }
+  }
+  Object.freeze(PromptShim.prototype);
+  return PromptShim;
+}
+var MAX_PROMPT_SECTION_BYTES, MAX_PROMPT_OWNER_BYTES, MAX_PROMPT_HOST_BYTES, MAX_PROMPT_SECTIONS_PER_OWNER, MAX_PROMPT_SECTIONS_PER_HOST, SECTION_ID, PromptSections;
+var init_prompt = __esm({
+  "src/shims/prompt.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_lib2();
+    init_owned();
+    MAX_PROMPT_SECTION_BYTES = 4 * 1024;
+    MAX_PROMPT_OWNER_BYTES = 32 * 1024;
+    MAX_PROMPT_HOST_BYTES = 128 * 1024;
+    MAX_PROMPT_SECTIONS_PER_OWNER = 128;
+    MAX_PROMPT_SECTIONS_PER_HOST = 1024;
+    SECTION_ID = /^[a-z][a-z0-9_-]{0,63}$/u;
+    PromptSections = class {
+      registrations;
+      templates;
+      owners = /* @__PURE__ */ new Map();
+      bytes = 0;
+      count = 0;
+      constructor(rpc2, ownedBy, warn) {
+        this.registrations = new OwnedRegistrations(rpc2, "prompt_section", ownedBy, warn);
+        this.templates = new OwnedRegistrations(rpc2, "prompt_template", ownedBy, warn);
+      }
+      register(owner, definition) {
+        if (owner.state !== "activating" && owner.state !== "active") throw new Error("prompt owner is not live");
+        const section = normalizePromptSection(definition);
+        const sections = this.owners.get(owner) ?? /* @__PURE__ */ new Map();
+        if (sections.has(section.id)) throw new Error(`prompt section "${section.id}" is already registered; dispose it before registering it again`);
+        const bytes = Buffer.byteLength(section.text, "utf8");
+        const ownerBytes = [...sections.values()].reduce((sum, item) => sum + item.bytes, 0);
+        if (ownerBytes + bytes > MAX_PROMPT_OWNER_BYTES || this.bytes + bytes > MAX_PROMPT_HOST_BYTES) {
+          throw new RangeError("prompt section owner or host UTF-8 byte limit reached");
+        }
+        if (sections.size >= MAX_PROMPT_SECTIONS_PER_OWNER || this.count >= MAX_PROMPT_SECTIONS_PER_HOST) {
+          throw new RangeError("prompt section owner or host registration limit reached");
+        }
+        const entry = { owner, name: section.id, definition: section, disposed: false };
+        const undo = (section.interpolate === void 0 ? this.registrations : this.templates).add(entry, { name: section.id, description: section.text });
+        const record4 = { entry, bytes, dispose: () => {
+          if (sections.get(section.id) !== record4) return;
+          sections.delete(section.id);
+          this.bytes -= bytes;
+          this.count -= 1;
+          if (sections.size === 0) this.owners.delete(owner);
+          undo();
+        } };
+        sections.set(section.id, record4);
+        this.owners.set(owner, sections);
+        this.bytes += bytes;
+        this.count += 1;
+        return record4.dispose;
+      }
+      /** Release reservations even after a plugin fails or times out during teardown. */
+      forget(owner) {
+        for (const record4 of [...this.owners.get(owner)?.values() ?? []]) record4.dispose();
+        this.registrations.forget(owner);
+        this.templates.forget(owner);
+      }
+    };
+  }
+});
+
+// src/dsh/persona.ts
+function normalizePersonaConfig(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("persona config must be plain data");
+  const config = value;
+  if (Object.keys(config).some((key) => !["prefix", "suffix", "complete", "includeRuntimeContext"].includes(key))) throw new TypeError("persona config has an unsupported field");
+  if (config.complete !== void 0 && config.complete !== false) throw new TypeError("persona replacement belongs to the Core prompt and cannot be imported");
+  if (config.includeRuntimeContext !== void 0 && config.includeRuntimeContext !== true) throw new TypeError("persona runtime-context suppression belongs to the Core prompt and cannot be imported");
+  if (typeof config.prefix !== "string" || config.suffix !== void 0 && typeof config.suffix !== "string") throw new TypeError("persona prefix and suffix must be text");
+  const result = { prefix: config.prefix, suffix: config.suffix ?? "" };
+  for (const [position, text3] of Object.entries(result)) {
+    if (Buffer.byteLength(text3, "utf8") > MAX_PROMPT_SECTION_BYTES) throw new RangeError("persona text exceeds 4096 UTF-8 bytes");
+    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text3)) throw new TypeError("persona text contains control characters");
+    validatePromptTemplate(text3);
+    if (text3.trim().length > 0) normalizePromptSection({ id: `persona-${position}`, text: text3, interpolate: "model-cwd" });
+  }
+  return Object.freeze(result);
+}
+var PERSONA, reviewedPersonaModule;
+var init_persona = __esm({
+  "src/dsh/persona.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_prompt();
+    init_root();
+    PERSONA = "@deepseek-ai/dsh-persona";
+    reviewedPersonaModule = Object.freeze({
+      name: "persona",
+      inject: ["prompt"],
+      apply(ctx, value) {
+        if (!ownerStorage.getStore()?.scope) throw new Error("persona requires an exact Core-selected entry scope");
+        const config = normalizePersonaConfig(value);
+        for (const [position, text3] of Object.entries(config)) {
+          if (text3.trim().length > 0) ctx.prompt.registerSection({ id: `persona-${position}`, text: text3, interpolate: "model-cwd" });
+        }
+      }
+    });
+  }
+});
+
+// src/dsh/upstream/agent-presets/metadata.ts
+var init_metadata = __esm({
+  "src/dsh/upstream/agent-presets/metadata.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_js_yaml();
+  }
+});
+
+// src/dsh/upstream/agent-presets/preset.ts
+var init_preset = __esm({
+  "src/dsh/upstream/agent-presets/preset.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+  }
+});
+
+// src/dsh/upstream/agent-presets/specifier.ts
+var init_specifier = __esm({
+  "src/dsh/upstream/agent-presets/specifier.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+  }
+});
+
+// src/dsh/upstream/agent-presets/discovery.ts
+import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL3 } from "node:url";
+var SHIPPED_PRESET_ROOT;
+var init_discovery = __esm({
+  "src/dsh/upstream/agent-presets/discovery.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_js_yaml();
+    init_src2();
+    init_metadata();
+    init_preset();
+    init_specifier();
+    SHIPPED_PRESET_ROOT = fileURLToPath2(new URL("../presets/", import.meta.url));
+  }
+});
+
+// src/dsh/upstream/agent-presets/composition-inventory.ts
+function mountedCompositionRows(tree) {
+  const found = [];
+  for (const entry of tree.entries()) {
+    if (entry.options.group) continue;
+    found.push({
+      entryId: entry.id,
+      moduleName: entry.options.name,
+      enabled: !entry.disabled,
+      ...isJsExpr(entry.options.disabled) ? { condition: entry.options.disabled.__jsExpr } : {},
+      ...entry.fiber === void 0 ? {} : { fiberState: entry.fiber.state }
+    });
+  }
+  return found;
+}
+var init_composition_inventory = __esm({
+  "src/dsh/upstream/agent-presets/composition-inventory.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_js_yaml();
+    init_src();
+    init_src2();
+    init_discovery();
+  }
+});
+
+// src/dsh/agent-presets.ts
+import { createHash as createHash2, randomBytes } from "node:crypto";
+import { fileURLToPath as fileURLToPath3, pathToFileURL as pathToFileURL4 } from "node:url";
+function fail(message) {
+  throw new Error(`agent-presets: ${message}`);
+}
+function issuePresetReceipt(snapshot3) {
+  const payload = JSON.stringify(snapshot3);
+  const receipt = createHash2("sha256").update(randomBytes(32)).update(payload).digest("hex");
+  activePresetReceipts.set(receipt, payload);
+  return receipt;
+}
+function revokePresetReceipt(receipt) {
+  activePresetReceipts.delete(receipt);
+}
+function defineReviewedAgentPresets(mount) {
+  class ReviewedAgentPresets extends Service {
+    static inject = ["loader"];
+    snapshot;
+    selfCtx;
+    constructor(ctx, config) {
+      super(ctx, "agentPresets");
+      this.selfCtx = ctx;
+      if (config?.codewhale_reviewed !== void 0 || config?.codewhale_receipt !== void 0) {
+        const snapshot3 = config.codewhale_reviewed;
+        const receipt = typeof config.codewhale_receipt === "string" ? config.codewhale_receipt : "";
+        const expected = receipt ? activePresetReceipts.get(receipt) : void 0;
+        activePresetReceipts.delete(receipt);
+        if (!snapshot3 || !expected || expected !== JSON.stringify(snapshot3) || snapshot3.catalog?.version !== 1 || !snapshot3.catalog.presets.some((p) => p.id === snapshot3.selected?.metadata.id && !p.broken)) fail("raw roster needs an installer-minted preset receipt");
+        this.snapshot = structuredClone(snapshot3);
+      }
+    }
+    mounting;
+    mounted;
+    mountSelected() {
+      const snapshot3 = this.snapshot;
+      if (!snapshot3) return Promise.resolve(void 0);
+      return this.mounting ??= mount(this.selfCtx, snapshot3.base_url, snapshot3.selected.composition).then((result) => this.mounted = result);
+    }
+    async list() {
+      const snapshot3 = this.snapshot;
+      if (!snapshot3) return [];
+      return snapshot3.catalog.presets.map((row) => ({ ...structuredClone(row), path: fileURLToPath3(new URL(snapshot3.catalog.inventory[row.id].path, snapshot3.base_url)) }));
+    }
+    async remoteExportList() {
+      const snapshot3 = this.snapshot;
+      if (!snapshot3) return { presets: [], authorable: false, defaultId: void 0, modeSelectionEnabled: false };
+      return { presets: snapshot3.catalog.presets.map(({ is_default, entry, ...row }) => ({ ...structuredClone(row), isDefault: is_default })), authorable: false, defaultId: this.defaultId, modeSelectionEnabled: snapshot3.catalog.mode_selection_enabled };
+    }
+    get defaultId() {
+      return this.snapshot?.catalog.default;
+    }
+    get authorable() {
+      return false;
+    }
+    async resolve(id = this.defaultId) {
+      const row = (await this.list()).find((p) => p.id === id);
+      if (!row) fail("preset not found");
+      return row;
+    }
+    composedPreset() {
+      return this.snapshot?.selected.metadata.id;
+    }
+    async compositionInventory() {
+      const snapshot3 = this.snapshot;
+      if (!snapshot3) return [];
+      return snapshot3.catalog.presets.map((row) => {
+        const identity = { id: row.id, trust: row.trust, ...row.name === void 0 ? {} : { name: row.name }, isDefault: row.id === this.defaultId };
+        if (row.id === this.composedPreset() && this.mounted) return { ...identity, rows: mountedCompositionRows(this.mounted.tree) };
+        const read = snapshot3.catalog.inventory[row.id];
+        if (row.broken || "broken" in read) return { ...identity, broken: row.broken ?? ("broken" in read ? read.broken : void 0), rows: [] };
+        return { ...identity, rows: structuredClone(read.rows) };
+      });
+    }
+    async readDocument(id) {
+      const snapshot3 = this.snapshot;
+      if (!snapshot3 || id !== this.composedPreset()) fail("read another preset through Core file authority");
+      return { agentPreset: id, trust: snapshot3.selected.metadata.trust, content: snapshot3.selected.source };
+    }
+    select() {
+      fail("select through Core AgentProfile/native preset selection before a turn");
+    }
+    recompose() {
+      fail("Core owns the captured agent selection and blank-session check");
+    }
+    copy() {
+      fail("copy through Core file/install/review/reload authority");
+    }
+    remove() {
+      fail("delete through Core file/install/review/reload authority");
+    }
+  }
+  Object.defineProperty(ReviewedAgentPresets.prototype, REVIEWED_AGENT_PRESETS_BRAND, { value: true });
+  return ReviewedAgentPresets;
+}
+var AGENT_PRESETS, activePresetReceipts, REVIEWED_AGENT_PRESETS_BRAND;
+var init_agent_presets = __esm({
+  "src/dsh/agent-presets.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_persona();
+    init_lib2();
+    init_discovery();
+    init_preset();
+    init_specifier();
+    init_composition_inventory();
+    init_src();
+    AGENT_PRESETS = "@deepseek-ai/dsh-agent-presets";
+    activePresetReceipts = /* @__PURE__ */ new Map();
+    REVIEWED_AGENT_PRESETS_BRAND = /* @__PURE__ */ Symbol("codewhale.reviewedAgentPresets");
   }
 });
 
@@ -18097,7 +18097,7 @@ var init_attachments = __esm({
 });
 
 // src/dsh/host-services.ts
-var agentPresetsAdapter, agentDefaultModelAdapter, sessionProjectionsAdapter, workspaceRegistryAdapter, typertGatewayAdapter, webAdapter, DSH_HOST_SERVICE_ADAPTERS;
+var agentPresetsAdapter, agentDefaultModelAdapter, sessionProjectionsAdapter, workspaceRegistryAdapter, typertGatewayAdapter, webAdapter, MAX_STORAGE_DOMAINS_PER_OWNER, MAX_STORAGE_TABLES_PER_DOMAIN, MAX_STORAGE_ENTRIES_PER_TABLE, MAX_STORAGE_VALUE_BYTES, sessionPersistenceAdapter, storageDomainAdapter, invariantsAdapter, READONLY_PERMISSION_PRESET_NAMES, READONLY_PERMISSION_PRESETS, permissionPresetsAdapter, DSH_HOST_SERVICE_ADAPTERS;
 var init_host_services = __esm({
   "src/dsh/host-services.ts"() {
     "use strict";
@@ -18375,13 +18375,272 @@ var init_host_services = __esm({
         return WebService;
       }
     };
+    MAX_STORAGE_DOMAINS_PER_OWNER = 16;
+    MAX_STORAGE_TABLES_PER_DOMAIN = 32;
+    MAX_STORAGE_ENTRIES_PER_TABLE = 512;
+    MAX_STORAGE_VALUE_BYTES = 64 * 1024;
+    sessionPersistenceAdapter = {
+      service: "sessionPersistence",
+      define() {
+        class SessionPersistenceService extends Service {
+          constructor(ctx) {
+            super(ctx, "sessionPersistence");
+          }
+          async findLog(_id) {
+            return void 0;
+          }
+          async listLogs() {
+            return Object.freeze([]);
+          }
+          async readLog(_id) {
+            return void 0;
+          }
+          artifactDirectory(_headerOrId) {
+            return void 0;
+          }
+          async deleteLog() {
+            throw new RpcError(ErrorCode.Refused, "sessionPersistence mutations are refused in Codewhale");
+          }
+          async removeLog() {
+            throw new RpcError(ErrorCode.Refused, "sessionPersistence mutations are refused in Codewhale");
+          }
+          async writeLog() {
+            throw new RpcError(ErrorCode.Refused, "sessionPersistence mutations are refused in Codewhale");
+          }
+        }
+        Object.freeze(SessionPersistenceService.prototype);
+        return SessionPersistenceService;
+      }
+    };
+    storageDomainAdapter = {
+      service: "storageDomain",
+      define(host2) {
+        const ownerDomains = /* @__PURE__ */ new Map();
+        function makeDomainHandle(token, domainName, tables) {
+          let closed = false;
+          const ensureOpen = () => {
+            if (closed) throw new RpcError(ErrorCode.NotAvailable, `storageDomain \`${domainName}\` is closed`);
+          };
+          return Object.freeze({
+            name: domainName,
+            table(tableName) {
+              ensureOpen();
+              if (typeof tableName !== "string" || tableName.trim().length === 0 || tableName.length > 128) {
+                throw new RpcError(ErrorCode.InvalidParams, "storageDomain table name must be a non-empty string");
+              }
+              const key = tableName.trim();
+              let rows = tables.get(key);
+              if (!rows) {
+                if (tables.size >= MAX_STORAGE_TABLES_PER_DOMAIN) {
+                  throw new RpcError(ErrorCode.Refused, "storageDomain table limit reached");
+                }
+                rows = /* @__PURE__ */ new Map();
+                tables.set(key, rows);
+              }
+              const store = rows;
+              return Object.freeze({
+                async get(rowKey) {
+                  ensureOpen();
+                  if (typeof rowKey !== "string") return void 0;
+                  const val = store.get(rowKey);
+                  return val === void 0 ? void 0 : structuredClone(val);
+                },
+                async set(rowKey, value) {
+                  ensureOpen();
+                  if (typeof rowKey !== "string" || rowKey.length === 0 || rowKey.length > 256) {
+                    throw new RpcError(ErrorCode.InvalidParams, "storageDomain row key must be a non-empty string");
+                  }
+                  if (!store.has(rowKey) && store.size >= MAX_STORAGE_ENTRIES_PER_TABLE) {
+                    throw new RpcError(ErrorCode.Refused, "storageDomain table entry limit reached");
+                  }
+                  const serialized = JSON.stringify(value);
+                  if (serialized !== void 0 && Buffer.byteLength(serialized, "utf8") > MAX_STORAGE_VALUE_BYTES) {
+                    throw new RpcError(ErrorCode.InvalidParams, "storageDomain value exceeds size limit");
+                  }
+                  store.set(rowKey, structuredClone(value));
+                },
+                async delete(rowKey) {
+                  ensureOpen();
+                  return typeof rowKey === "string" ? store.delete(rowKey) : false;
+                },
+                async has(rowKey) {
+                  ensureOpen();
+                  return typeof rowKey === "string" && store.has(rowKey);
+                },
+                async keys() {
+                  ensureOpen();
+                  return Object.freeze([...store.keys()]);
+                },
+                async list() {
+                  ensureOpen();
+                  return Object.freeze([...store.values()].map((v) => structuredClone(v)));
+                },
+                async entries() {
+                  ensureOpen();
+                  return Object.freeze([...store.entries()].map(([k, v]) => [k, structuredClone(v)]));
+                },
+                async clear() {
+                  ensureOpen();
+                  store.clear();
+                }
+              });
+            },
+            async close() {
+              closed = true;
+              const domains = ownerDomains.get(token);
+              if (domains?.get(domainName) === tables) {
+                domains.delete(domainName);
+                if (domains.size === 0) ownerDomains.delete(token);
+              }
+            }
+          });
+        }
+        class StorageDomainService extends Service {
+          constructor(ctx) {
+            super(ctx, "storageDomain");
+          }
+          async open(spec) {
+            const owner = host2.ownerOf(this.ctx);
+            if (!owner) throw new RpcError(ErrorCode.NotAvailable, "storageDomain.open requires an active owner");
+            const rawName = typeof spec === "string" ? spec : spec && typeof spec === "object" && !Array.isArray(spec) ? spec.name ?? spec.id : void 0;
+            if (typeof rawName !== "string" || rawName.trim().length === 0 || rawName.length > 128) {
+              throw new RpcError(ErrorCode.InvalidParams, "storageDomain spec requires a non-empty name");
+            }
+            const domainName = rawName.trim();
+            const token = owner.ref.owner_token;
+            let domains = ownerDomains.get(token);
+            if (!domains) {
+              domains = /* @__PURE__ */ new Map();
+              ownerDomains.set(token, domains);
+            }
+            let tables = domains.get(domainName);
+            if (!tables) {
+              if (domains.size >= MAX_STORAGE_DOMAINS_PER_OWNER) {
+                throw new RpcError(ErrorCode.Refused, "storageDomain owner domain limit reached");
+              }
+              tables = /* @__PURE__ */ new Map();
+              domains.set(domainName, tables);
+              const ownedTables = tables;
+              this.ctx.effect(() => () => {
+                const current2 = ownerDomains.get(token);
+                if (current2?.get(domainName) === ownedTables) {
+                  current2.delete(domainName);
+                  if (current2.size === 0) ownerDomains.delete(token);
+                }
+              }, `storageDomain.open(${JSON.stringify(domainName)})`);
+            }
+            return makeDomainHandle(token, domainName, tables);
+          }
+          get(name) {
+            if (typeof name !== "string" || name.trim().length === 0) return void 0;
+            const owner = host2.ownerOf(this.ctx);
+            if (!owner) return void 0;
+            const token = owner.ref.owner_token;
+            const tables = ownerDomains.get(token)?.get(name.trim());
+            return tables ? makeDomainHandle(token, name.trim(), tables) : void 0;
+          }
+          list() {
+            const owner = host2.ownerOf(this.ctx);
+            const domains = owner ? ownerDomains.get(owner.ref.owner_token) : void 0;
+            return Object.freeze(domains ? [...domains.keys()] : []);
+          }
+        }
+        Object.freeze(StorageDomainService.prototype);
+        return StorageDomainService;
+      }
+    };
+    invariantsAdapter = {
+      service: "invariants",
+      define(host2) {
+        const ownerInvariants = /* @__PURE__ */ new Map();
+        class InvariantsService extends Service {
+          constructor(ctx) {
+            super(ctx, "invariants");
+          }
+          register(name, install) {
+            const owner = host2.ownerOf(this.ctx);
+            if (!owner) throw new RpcError(ErrorCode.NotAvailable, "invariants.register requires an active owner");
+            if (typeof name !== "string" || name.trim().length === 0 || name.length > 128) {
+              throw new RpcError(ErrorCode.InvalidParams, "invariant name must be a non-empty string");
+            }
+            const key = name.trim();
+            const token = owner.ref.owner_token;
+            return this.ctx.effect(() => {
+              let table = ownerInvariants.get(token);
+              if (!table) {
+                table = /* @__PURE__ */ new Map();
+                ownerInvariants.set(token, table);
+              }
+              table.set(key, install);
+              return () => {
+                const current2 = ownerInvariants.get(token);
+                current2?.delete(key);
+                if (current2 && current2.size === 0) ownerInvariants.delete(token);
+              };
+            }, `invariants.register(${JSON.stringify(key)})`);
+          }
+          list() {
+            const owner = host2.ownerOf(this.ctx);
+            const table = owner ? ownerInvariants.get(owner.ref.owner_token) : void 0;
+            return Object.freeze(table ? [...table.keys()] : []);
+          }
+        }
+        Object.freeze(InvariantsService.prototype);
+        return InvariantsService;
+      }
+    };
+    READONLY_PERMISSION_PRESET_NAMES = Object.freeze(["ask", "accept-edits", "auto-review", "full-access"]);
+    READONLY_PERMISSION_PRESETS = Object.freeze(
+      READONLY_PERMISSION_PRESET_NAMES.map((name) => Object.freeze({ name, readonly: true }))
+    );
+    permissionPresetsAdapter = {
+      service: "permissionPresets",
+      define() {
+        class PermissionPresetsService extends Service {
+          constructor(ctx) {
+            super(ctx, "permissionPresets");
+          }
+          get availability() {
+            return "readonly";
+          }
+          get defaultPreset() {
+            return "ask";
+          }
+          get names() {
+            return READONLY_PERMISSION_PRESET_NAMES;
+          }
+          list() {
+            return READONLY_PERMISSION_PRESETS;
+          }
+          get(name) {
+            if (typeof name !== "string") return void 0;
+            return READONLY_PERMISSION_PRESETS.find((preset) => preset.name === name);
+          }
+          apply() {
+            throw new RpcError(ErrorCode.Refused, "permissionPresets is read-only in Codewhale; Core owns approval posture");
+          }
+          set() {
+            throw new RpcError(ErrorCode.Refused, "permissionPresets is read-only in Codewhale; Core owns approval posture");
+          }
+          register() {
+            throw new RpcError(ErrorCode.Refused, "permissionPresets is read-only in Codewhale; Core owns approval posture");
+          }
+        }
+        Object.freeze(PermissionPresetsService.prototype);
+        return PermissionPresetsService;
+      }
+    };
     DSH_HOST_SERVICE_ADAPTERS = Object.freeze([
       agentPresetsAdapter,
       agentDefaultModelAdapter,
       sessionProjectionsAdapter,
       workspaceRegistryAdapter,
       typertGatewayAdapter,
-      webAdapter
+      webAdapter,
+      sessionPersistenceAdapter,
+      storageDomainAdapter,
+      invariantsAdapter,
+      permissionPresetsAdapter
     ]);
   }
 });
@@ -19331,7 +19590,11 @@ var init_compatibility = __esm({
           "webServer",
           "connection",
           "sessionTitle",
-          "profileContext"
+          "profileContext",
+          "sessionPersistence",
+          "storageDomain",
+          "invariants",
+          "permissionPresets"
         ],
         cordis: [
           "logger",
@@ -19387,7 +19650,11 @@ var init_compatibility = __esm({
         "webServer",
         "connection",
         "sessionTitle",
-        "profileContext"
+        "profileContext",
+        "sessionPersistence",
+        "storageDomain",
+        "invariants",
+        "permissionPresets"
       ],
       row_bridges: {
         "@deepseek-ai/dsh-mcp-client": "mcp",
@@ -19429,7 +19696,9 @@ var init_compatibility = __esm({
         "@deepseek-ai/dsh-skill": "dsh-skill",
         "@deepseek-ai/dsh-typert-protocol": "dsh-typert-protocol",
         "@deepseek-ai/dsh-workspace": "dsh-workspace",
-        "@deepseek-ai/dsh-subagent": "dsh-subagent"
+        "@deepseek-ai/dsh-subagent": "dsh-subagent",
+        "@deepseek-ai/dsh-agent": "dsh-agent",
+        "@deepseek-ai/dsh-app-boot": "dsh-app-boot"
       },
       definition_api: {
         package: "@deepseek-ai/dsh-tools",
@@ -21616,14 +21885,29 @@ function assembleContextFor(messages = []) {
 function installModelSelection(_ctx, _options) {
   return () => void 0;
 }
-var MAX_CREDENTIAL_REF_LEN, MAX_ATOMIC_WRITE_BYTES, dshCredentialsModule, dshSettingsModule, dshHomePathsModule, fileLocks, dshAtomicWriteModule, BUNDLED_SKILL_RANK, dshSkillModule, Remote, TypertRemoteService, dshTypertProtocolModule, dshWorkspaceModule, dshSessionSurfaceModule, SubagentError, dshSubagentModule, dshAgentModule;
+function getDshRuntimeVersion() {
+  return compatibility_default.target_dsh_version;
+}
+function loadProfileDirectory() {
+  throw new RpcError(ErrorCode.NotAvailable, "dsh-app-boot profile directory loading is not available in Codewhale");
+}
+function resolveBundleDir() {
+  throw new RpcError(ErrorCode.NotAvailable, "dsh-app-boot bundle resolution is not available in Codewhale");
+}
+async function createRuntimeResolution() {
+  throw new RpcError(ErrorCode.NotAvailable, "dsh-app-boot runtime resolution is not available in Codewhale");
+}
+var MAX_CREDENTIAL_REF_LEN, MAX_ATOMIC_WRITE_BYTES, dshCredentialsModule, dshSettingsModule, dshHomePathsModule, fileLocks, dshAtomicWriteModule, BUNDLED_SKILL_RANK, dshSkillModule, Remote, TypertRemoteService, dshTypertProtocolModule, dshWorkspaceModule, dshSessionSurfaceModule, SubagentError, dshSubagentModule, dshAgentModule, dshAppBootModule;
 var init_dsh_shims = __esm({
   "src/dsh/dsh-shims.ts"() {
     "use strict";
     init_define_BUILTIN_MODULE_DIGESTS();
     init_lib2();
+    init_protocol();
     init_root();
+    init_rpc();
     init_canonical_path();
+    init_compatibility();
     init_settings();
     init_dsh_message_compat();
     MAX_CREDENTIAL_REF_LEN = 256;
@@ -21717,6 +22001,12 @@ var init_dsh_shims = __esm({
     dshAgentModule = Object.freeze({
       assembleContextFor,
       installModelSelection
+    });
+    dshAppBootModule = Object.freeze({
+      getDshRuntimeVersion,
+      loadProfileDirectory,
+      resolveBundleDir,
+      createRuntimeResolution
     });
   }
 });
@@ -21936,6 +22226,8 @@ function withDefaultDshModules(modules) {
     "dsh-workspace": dshWorkspaceModule,
     "dsh-session-surface": dshSessionSurfaceModule,
     "dsh-subagent": dshSubagentModule,
+    "dsh-agent": dshAgentModule,
+    "dsh-app-boot": dshAppBootModule,
     ...modules,
     "dsh-llm-values": { ...llmDefaults, ...modules["dsh-llm-values"] ?? {} },
     "dsh-session-values": { ...sessionDefaults, ...modules["dsh-session-values"] ?? {} }

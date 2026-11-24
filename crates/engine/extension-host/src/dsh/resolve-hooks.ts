@@ -26,6 +26,8 @@ import { RUNTIME } from '../runtime.ts'
 import { prepareBunSource, REVIEWED_IMPORT } from './bun-closure.ts'
 import * as dshMessageCompat from './dsh-message-compat.js'
 import {
+  dshAgentModule,
+  dshAppBootModule,
   dshAtomicWriteModule,
   dshCredentialsModule,
   dshHomePathsModule,
@@ -300,6 +302,8 @@ function withDefaultDshModules(modules: Record<string, Record<string, unknown>>)
     'dsh-workspace': dshWorkspaceModule as unknown as Record<string, unknown>,
     'dsh-session-surface': dshSessionSurfaceModule as unknown as Record<string, unknown>,
     'dsh-subagent': dshSubagentModule as unknown as Record<string, unknown>,
+    'dsh-agent': dshAgentModule as unknown as Record<string, unknown>,
+    'dsh-app-boot': dshAppBootModule as unknown as Record<string, unknown>,
     ...modules,
     'dsh-llm-values': { ...llmDefaults, ...(modules['dsh-llm-values'] ?? {}) },
     'dsh-session-values': { ...sessionDefaults, ...(modules['dsh-session-values'] ?? {}) },

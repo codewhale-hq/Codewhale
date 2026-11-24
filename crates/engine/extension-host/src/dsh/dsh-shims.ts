@@ -2,8 +2,11 @@ import { Service } from '@deepseek-ai/cordis'
 import { randomBytes } from 'node:crypto'
 import { lstat, mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { ErrorCode } from '../protocol.ts'
 import { ownerStorage } from '../root.ts'
+import { RpcError } from '../rpc.ts'
 import { canonicalPath, insideKey, unlinkedKeyMatches } from './canonical-path.ts'
+import compatibility from './compatibility.json' with { type: 'json' }
 import { SettingsConflictError } from './settings.ts'
 import { HarnessError } from './dsh-message-compat.js'
 
@@ -393,4 +396,27 @@ export function installModelSelection(_ctx: unknown, _options?: unknown): () => 
 export const dshAgentModule = Object.freeze({
   assembleContextFor,
   installModelSelection,
+})
+
+export function getDshRuntimeVersion(): string {
+  return compatibility.target_dsh_version
+}
+
+export function loadProfileDirectory(): never {
+  throw new RpcError(ErrorCode.NotAvailable, 'dsh-app-boot profile directory loading is not available in Codewhale')
+}
+
+export function resolveBundleDir(): never {
+  throw new RpcError(ErrorCode.NotAvailable, 'dsh-app-boot bundle resolution is not available in Codewhale')
+}
+
+export async function createRuntimeResolution(): Promise<never> {
+  throw new RpcError(ErrorCode.NotAvailable, 'dsh-app-boot runtime resolution is not available in Codewhale')
+}
+
+export const dshAppBootModule = Object.freeze({
+  getDshRuntimeVersion,
+  loadProfileDirectory,
+  resolveBundleDir,
+  createRuntimeResolution,
 })

@@ -13463,6 +13463,46 @@ var init_dsh_message_compat = __esm({
   }
 });
 
+// src/protocol.generated.ts
+var MAGIC_ASCII, IMAGE_LIMITS, ErrorCode;
+var init_protocol_generated = __esm({
+  "src/protocol.generated.ts"() {
+    "use strict";
+    MAGIC_ASCII = "CWX1";
+    IMAGE_LIMITS = {
+      maxImageBytes: 5242880,
+      maxImagesPerMessage: 1,
+      maxMessageImageBytes: 5242880,
+      maxImagePixels: 33554432,
+      maxImageDimension: 8192,
+      mediaTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"]
+    };
+    ErrorCode = {
+      ParseError: -32700,
+      InvalidRequest: -32600,
+      MethodNotFound: -32601,
+      InvalidParams: -32602,
+      Internal: -32603,
+      ExecutionFailed: -32e3,
+      NotAvailable: -32001,
+      Refused: -32002,
+      Denied: -32003,
+      Cancelled: -32800
+    };
+  }
+});
+
+// src/protocol.ts
+var MAGIC;
+var init_protocol = __esm({
+  "src/protocol.ts"() {
+    "use strict";
+    init_protocol_generated();
+    init_protocol_generated();
+    MAGIC = Buffer.from(MAGIC_ASCII, "ascii");
+  }
+});
+
 // src/shims/prompt.ts
 function normalizePromptSection(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -14146,46 +14186,6 @@ var init_agent_presets = __esm({
     SHA = /^[a-f0-9]{64}$/;
     activePresetReceipts = /* @__PURE__ */ new Map();
     REVIEWED_AGENT_PRESETS_BRAND = /* @__PURE__ */ Symbol("codewhale.reviewedAgentPresets");
-  }
-});
-
-// src/protocol.generated.ts
-var MAGIC_ASCII, IMAGE_LIMITS, ErrorCode;
-var init_protocol_generated = __esm({
-  "src/protocol.generated.ts"() {
-    "use strict";
-    MAGIC_ASCII = "CWX1";
-    IMAGE_LIMITS = {
-      maxImageBytes: 5242880,
-      maxImagesPerMessage: 1,
-      maxMessageImageBytes: 5242880,
-      maxImagePixels: 33554432,
-      maxImageDimension: 8192,
-      mediaTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"]
-    };
-    ErrorCode = {
-      ParseError: -32700,
-      InvalidRequest: -32600,
-      MethodNotFound: -32601,
-      InvalidParams: -32602,
-      Internal: -32603,
-      ExecutionFailed: -32e3,
-      NotAvailable: -32001,
-      Refused: -32002,
-      Denied: -32003,
-      Cancelled: -32800
-    };
-  }
-});
-
-// src/protocol.ts
-var MAGIC;
-var init_protocol = __esm({
-  "src/protocol.ts"() {
-    "use strict";
-    init_protocol_generated();
-    init_protocol_generated();
-    MAGIC = Buffer.from(MAGIC_ASCII, "ascii");
   }
 });
 
@@ -15452,7 +15452,7 @@ var init_attachments = __esm({
 });
 
 // src/dsh/host-services.ts
-var agentPresetsAdapter, agentDefaultModelAdapter, sessionProjectionsAdapter, workspaceRegistryAdapter, typertGatewayAdapter, webAdapter, DSH_HOST_SERVICE_ADAPTERS;
+var agentPresetsAdapter, agentDefaultModelAdapter, sessionProjectionsAdapter, workspaceRegistryAdapter, typertGatewayAdapter, webAdapter, MAX_STORAGE_DOMAINS_PER_OWNER, MAX_STORAGE_TABLES_PER_DOMAIN, MAX_STORAGE_ENTRIES_PER_TABLE, MAX_STORAGE_VALUE_BYTES, sessionPersistenceAdapter, storageDomainAdapter, invariantsAdapter, READONLY_PERMISSION_PRESET_NAMES, READONLY_PERMISSION_PRESETS, permissionPresetsAdapter, DSH_HOST_SERVICE_ADAPTERS;
 var init_host_services = __esm({
   "src/dsh/host-services.ts"() {
     "use strict";
@@ -15729,13 +15729,272 @@ var init_host_services = __esm({
         return WebService;
       }
     };
+    MAX_STORAGE_DOMAINS_PER_OWNER = 16;
+    MAX_STORAGE_TABLES_PER_DOMAIN = 32;
+    MAX_STORAGE_ENTRIES_PER_TABLE = 512;
+    MAX_STORAGE_VALUE_BYTES = 64 * 1024;
+    sessionPersistenceAdapter = {
+      service: "sessionPersistence",
+      define() {
+        class SessionPersistenceService extends Service {
+          constructor(ctx) {
+            super(ctx, "sessionPersistence");
+          }
+          async findLog(_id) {
+            return void 0;
+          }
+          async listLogs() {
+            return Object.freeze([]);
+          }
+          async readLog(_id) {
+            return void 0;
+          }
+          artifactDirectory(_headerOrId) {
+            return void 0;
+          }
+          async deleteLog() {
+            throw new RpcError(ErrorCode.Refused, "sessionPersistence mutations are refused in Codewhale");
+          }
+          async removeLog() {
+            throw new RpcError(ErrorCode.Refused, "sessionPersistence mutations are refused in Codewhale");
+          }
+          async writeLog() {
+            throw new RpcError(ErrorCode.Refused, "sessionPersistence mutations are refused in Codewhale");
+          }
+        }
+        Object.freeze(SessionPersistenceService.prototype);
+        return SessionPersistenceService;
+      }
+    };
+    storageDomainAdapter = {
+      service: "storageDomain",
+      define(host) {
+        const ownerDomains = /* @__PURE__ */ new Map();
+        function makeDomainHandle(token, domainName, tables) {
+          let closed = false;
+          const ensureOpen = () => {
+            if (closed) throw new RpcError(ErrorCode.NotAvailable, `storageDomain \`${domainName}\` is closed`);
+          };
+          return Object.freeze({
+            name: domainName,
+            table(tableName) {
+              ensureOpen();
+              if (typeof tableName !== "string" || tableName.trim().length === 0 || tableName.length > 128) {
+                throw new RpcError(ErrorCode.InvalidParams, "storageDomain table name must be a non-empty string");
+              }
+              const key = tableName.trim();
+              let rows = tables.get(key);
+              if (!rows) {
+                if (tables.size >= MAX_STORAGE_TABLES_PER_DOMAIN) {
+                  throw new RpcError(ErrorCode.Refused, "storageDomain table limit reached");
+                }
+                rows = /* @__PURE__ */ new Map();
+                tables.set(key, rows);
+              }
+              const store = rows;
+              return Object.freeze({
+                async get(rowKey) {
+                  ensureOpen();
+                  if (typeof rowKey !== "string") return void 0;
+                  const val = store.get(rowKey);
+                  return val === void 0 ? void 0 : structuredClone(val);
+                },
+                async set(rowKey, value) {
+                  ensureOpen();
+                  if (typeof rowKey !== "string" || rowKey.length === 0 || rowKey.length > 256) {
+                    throw new RpcError(ErrorCode.InvalidParams, "storageDomain row key must be a non-empty string");
+                  }
+                  if (!store.has(rowKey) && store.size >= MAX_STORAGE_ENTRIES_PER_TABLE) {
+                    throw new RpcError(ErrorCode.Refused, "storageDomain table entry limit reached");
+                  }
+                  const serialized = JSON.stringify(value);
+                  if (serialized !== void 0 && Buffer.byteLength(serialized, "utf8") > MAX_STORAGE_VALUE_BYTES) {
+                    throw new RpcError(ErrorCode.InvalidParams, "storageDomain value exceeds size limit");
+                  }
+                  store.set(rowKey, structuredClone(value));
+                },
+                async delete(rowKey) {
+                  ensureOpen();
+                  return typeof rowKey === "string" ? store.delete(rowKey) : false;
+                },
+                async has(rowKey) {
+                  ensureOpen();
+                  return typeof rowKey === "string" && store.has(rowKey);
+                },
+                async keys() {
+                  ensureOpen();
+                  return Object.freeze([...store.keys()]);
+                },
+                async list() {
+                  ensureOpen();
+                  return Object.freeze([...store.values()].map((v) => structuredClone(v)));
+                },
+                async entries() {
+                  ensureOpen();
+                  return Object.freeze([...store.entries()].map(([k, v]) => [k, structuredClone(v)]));
+                },
+                async clear() {
+                  ensureOpen();
+                  store.clear();
+                }
+              });
+            },
+            async close() {
+              closed = true;
+              const domains = ownerDomains.get(token);
+              if (domains?.get(domainName) === tables) {
+                domains.delete(domainName);
+                if (domains.size === 0) ownerDomains.delete(token);
+              }
+            }
+          });
+        }
+        class StorageDomainService extends Service {
+          constructor(ctx) {
+            super(ctx, "storageDomain");
+          }
+          async open(spec) {
+            const owner = host.ownerOf(this.ctx);
+            if (!owner) throw new RpcError(ErrorCode.NotAvailable, "storageDomain.open requires an active owner");
+            const rawName = typeof spec === "string" ? spec : spec && typeof spec === "object" && !Array.isArray(spec) ? spec.name ?? spec.id : void 0;
+            if (typeof rawName !== "string" || rawName.trim().length === 0 || rawName.length > 128) {
+              throw new RpcError(ErrorCode.InvalidParams, "storageDomain spec requires a non-empty name");
+            }
+            const domainName = rawName.trim();
+            const token = owner.ref.owner_token;
+            let domains = ownerDomains.get(token);
+            if (!domains) {
+              domains = /* @__PURE__ */ new Map();
+              ownerDomains.set(token, domains);
+            }
+            let tables = domains.get(domainName);
+            if (!tables) {
+              if (domains.size >= MAX_STORAGE_DOMAINS_PER_OWNER) {
+                throw new RpcError(ErrorCode.Refused, "storageDomain owner domain limit reached");
+              }
+              tables = /* @__PURE__ */ new Map();
+              domains.set(domainName, tables);
+              const ownedTables = tables;
+              this.ctx.effect(() => () => {
+                const current2 = ownerDomains.get(token);
+                if (current2?.get(domainName) === ownedTables) {
+                  current2.delete(domainName);
+                  if (current2.size === 0) ownerDomains.delete(token);
+                }
+              }, `storageDomain.open(${JSON.stringify(domainName)})`);
+            }
+            return makeDomainHandle(token, domainName, tables);
+          }
+          get(name) {
+            if (typeof name !== "string" || name.trim().length === 0) return void 0;
+            const owner = host.ownerOf(this.ctx);
+            if (!owner) return void 0;
+            const token = owner.ref.owner_token;
+            const tables = ownerDomains.get(token)?.get(name.trim());
+            return tables ? makeDomainHandle(token, name.trim(), tables) : void 0;
+          }
+          list() {
+            const owner = host.ownerOf(this.ctx);
+            const domains = owner ? ownerDomains.get(owner.ref.owner_token) : void 0;
+            return Object.freeze(domains ? [...domains.keys()] : []);
+          }
+        }
+        Object.freeze(StorageDomainService.prototype);
+        return StorageDomainService;
+      }
+    };
+    invariantsAdapter = {
+      service: "invariants",
+      define(host) {
+        const ownerInvariants = /* @__PURE__ */ new Map();
+        class InvariantsService extends Service {
+          constructor(ctx) {
+            super(ctx, "invariants");
+          }
+          register(name, install) {
+            const owner = host.ownerOf(this.ctx);
+            if (!owner) throw new RpcError(ErrorCode.NotAvailable, "invariants.register requires an active owner");
+            if (typeof name !== "string" || name.trim().length === 0 || name.length > 128) {
+              throw new RpcError(ErrorCode.InvalidParams, "invariant name must be a non-empty string");
+            }
+            const key = name.trim();
+            const token = owner.ref.owner_token;
+            return this.ctx.effect(() => {
+              let table = ownerInvariants.get(token);
+              if (!table) {
+                table = /* @__PURE__ */ new Map();
+                ownerInvariants.set(token, table);
+              }
+              table.set(key, install);
+              return () => {
+                const current2 = ownerInvariants.get(token);
+                current2?.delete(key);
+                if (current2 && current2.size === 0) ownerInvariants.delete(token);
+              };
+            }, `invariants.register(${JSON.stringify(key)})`);
+          }
+          list() {
+            const owner = host.ownerOf(this.ctx);
+            const table = owner ? ownerInvariants.get(owner.ref.owner_token) : void 0;
+            return Object.freeze(table ? [...table.keys()] : []);
+          }
+        }
+        Object.freeze(InvariantsService.prototype);
+        return InvariantsService;
+      }
+    };
+    READONLY_PERMISSION_PRESET_NAMES = Object.freeze(["ask", "accept-edits", "auto-review", "full-access"]);
+    READONLY_PERMISSION_PRESETS = Object.freeze(
+      READONLY_PERMISSION_PRESET_NAMES.map((name) => Object.freeze({ name, readonly: true }))
+    );
+    permissionPresetsAdapter = {
+      service: "permissionPresets",
+      define() {
+        class PermissionPresetsService extends Service {
+          constructor(ctx) {
+            super(ctx, "permissionPresets");
+          }
+          get availability() {
+            return "readonly";
+          }
+          get defaultPreset() {
+            return "ask";
+          }
+          get names() {
+            return READONLY_PERMISSION_PRESET_NAMES;
+          }
+          list() {
+            return READONLY_PERMISSION_PRESETS;
+          }
+          get(name) {
+            if (typeof name !== "string") return void 0;
+            return READONLY_PERMISSION_PRESETS.find((preset) => preset.name === name);
+          }
+          apply() {
+            throw new RpcError(ErrorCode.Refused, "permissionPresets is read-only in Codewhale; Core owns approval posture");
+          }
+          set() {
+            throw new RpcError(ErrorCode.Refused, "permissionPresets is read-only in Codewhale; Core owns approval posture");
+          }
+          register() {
+            throw new RpcError(ErrorCode.Refused, "permissionPresets is read-only in Codewhale; Core owns approval posture");
+          }
+        }
+        Object.freeze(PermissionPresetsService.prototype);
+        return PermissionPresetsService;
+      }
+    };
     DSH_HOST_SERVICE_ADAPTERS = Object.freeze([
       agentPresetsAdapter,
       agentDefaultModelAdapter,
       sessionProjectionsAdapter,
       workspaceRegistryAdapter,
       typertGatewayAdapter,
-      webAdapter
+      webAdapter,
+      sessionPersistenceAdapter,
+      storageDomainAdapter,
+      invariantsAdapter,
+      permissionPresetsAdapter
     ]);
   }
 });
@@ -16167,7 +16426,11 @@ var init_compatibility = __esm({
           "webServer",
           "connection",
           "sessionTitle",
-          "profileContext"
+          "profileContext",
+          "sessionPersistence",
+          "storageDomain",
+          "invariants",
+          "permissionPresets"
         ],
         cordis: [
           "logger",
@@ -16223,7 +16486,11 @@ var init_compatibility = __esm({
         "webServer",
         "connection",
         "sessionTitle",
-        "profileContext"
+        "profileContext",
+        "sessionPersistence",
+        "storageDomain",
+        "invariants",
+        "permissionPresets"
       ],
       row_bridges: {
         "@deepseek-ai/dsh-mcp-client": "mcp",
@@ -16265,7 +16532,9 @@ var init_compatibility = __esm({
         "@deepseek-ai/dsh-skill": "dsh-skill",
         "@deepseek-ai/dsh-typert-protocol": "dsh-typert-protocol",
         "@deepseek-ai/dsh-workspace": "dsh-workspace",
-        "@deepseek-ai/dsh-subagent": "dsh-subagent"
+        "@deepseek-ai/dsh-subagent": "dsh-subagent",
+        "@deepseek-ai/dsh-agent": "dsh-agent",
+        "@deepseek-ai/dsh-app-boot": "dsh-app-boot"
       },
       definition_api: {
         package: "@deepseek-ai/dsh-tools",
@@ -16930,13 +17199,28 @@ function assembleContextFor(messages = []) {
 function installModelSelection(_ctx, _options) {
   return () => void 0;
 }
-var MAX_CREDENTIAL_REF_LEN, MAX_ATOMIC_WRITE_BYTES, dshCredentialsModule, dshSettingsModule, dshHomePathsModule, fileLocks, dshAtomicWriteModule, BUNDLED_SKILL_RANK, dshSkillModule, Remote, TypertRemoteService, dshTypertProtocolModule, dshWorkspaceModule, dshSessionSurfaceModule, SubagentError, dshSubagentModule, dshAgentModule;
+function getDshRuntimeVersion() {
+  return compatibility_default.target_dsh_version;
+}
+function loadProfileDirectory() {
+  throw new RpcError(ErrorCode.NotAvailable, "dsh-app-boot profile directory loading is not available in Codewhale");
+}
+function resolveBundleDir() {
+  throw new RpcError(ErrorCode.NotAvailable, "dsh-app-boot bundle resolution is not available in Codewhale");
+}
+async function createRuntimeResolution() {
+  throw new RpcError(ErrorCode.NotAvailable, "dsh-app-boot runtime resolution is not available in Codewhale");
+}
+var MAX_CREDENTIAL_REF_LEN, MAX_ATOMIC_WRITE_BYTES, dshCredentialsModule, dshSettingsModule, dshHomePathsModule, fileLocks, dshAtomicWriteModule, BUNDLED_SKILL_RANK, dshSkillModule, Remote, TypertRemoteService, dshTypertProtocolModule, dshWorkspaceModule, dshSessionSurfaceModule, SubagentError, dshSubagentModule, dshAgentModule, dshAppBootModule;
 var init_dsh_shims = __esm({
   "src/dsh/dsh-shims.ts"() {
     "use strict";
     init_lib2();
+    init_protocol();
     init_root();
+    init_rpc();
     init_canonical_path();
+    init_compatibility();
     init_settings();
     init_dsh_message_compat();
     MAX_CREDENTIAL_REF_LEN = 256;
@@ -17030,6 +17314,12 @@ var init_dsh_shims = __esm({
     dshAgentModule = Object.freeze({
       assembleContextFor,
       installModelSelection
+    });
+    dshAppBootModule = Object.freeze({
+      getDshRuntimeVersion,
+      loadProfileDirectory,
+      resolveBundleDir,
+      createRuntimeResolution
     });
   }
 });
