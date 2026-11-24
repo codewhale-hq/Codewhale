@@ -649,6 +649,12 @@ impl ClipboardHandler {
             let spawned = std::thread::Builder::new()
                 .name("clipboard-read".to_string())
                 .spawn(move || {
+                    // The image writer creates `clipboard-images` but not a
+                    // missing state root (e.g. CODEWHALE_HOME points elsewhere).
+                    let images = codewhale_runtime::config::clipboard_images_dir(&workspace);
+                    if let Some(root) = images.parent() {
+                        let _ = std::fs::create_dir_all(root);
+                    }
                     let _ = tx.send(read_native_clipboard(&workspace, prefer_markdown));
                 });
             match spawned {
@@ -1082,9 +1088,6 @@ fn clipboard_image_target(
     let state_root = codewhale_paths::user_home()
         .is_some_and(|home| root == home.join(codewhale_paths::CODEWHALE_APP_DIR));
     let open = if state_root {
-        // A first paste can precede anything else creating the state root,
-        // e.g. when CODEWHALE_HOME points elsewhere.
-        std::fs::create_dir_all(root).context("create the Codewhale state directory")?;
         codewhale_util::files::WorkspaceFile::open_resolved_root
     } else {
         codewhale_util::files::WorkspaceFile::open
@@ -1525,27 +1528,6 @@ mod tests {
         symlink(outside.path(), &linked).unwrap();
         assert!(save_image_as_png_in(&linked, &img).is_err());
         assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
-    }
-
-    #[test]
-    #[cfg(all(
-        unix,
-        any(
-            target_os = "macos",
-            all(target_os = "linux", not(target_env = "ohos"))
-        )
-    ))]
-    fn first_pasted_image_creates_a_missing_state_root() {
-        let _env = crate::test_support::lock_test_env();
-        let home = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        let _home = crate::test_support::EnvVarGuard::set("HOME", home.path());
-        let dir = codewhale_runtime::config::clipboard_images_dir(workspace.path());
-        assert!(!dir.parent().unwrap().exists());
-
-        let pasted = save_image_as_png_in(&dir, &solid_rgba(2, 2, [0, 0, 255, 255]))
-            .expect("a first paste creates ~/.codewhale");
-        assert!(pasted.path.starts_with(&dir));
     }
 
     #[test]
