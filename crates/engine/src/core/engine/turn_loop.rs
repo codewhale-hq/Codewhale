@@ -6011,7 +6011,7 @@ impl Engine {
                 _ => crate::llm_client::ProviderUsageCoverage::Missing,
             }
         };
-        let accounting_error: Option<String> = None;
+        let mut accounting_error: Option<String> = None;
         let accounting_record = if pending.primary && !pending.accounting_owned_elsewhere {
             let reason = if matches!(outcome, "completed" | "review_response") {
                 crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
@@ -6025,20 +6025,26 @@ impl Engine {
                 reason,
                 &wire,
             );
-            crate::cost_status::record_runtime_usage_async(
+            match crate::cost_status::try_record_runtime_usage_async(
                 pending.accounting_scope,
                 pending.accounting_origin.as_ref(),
                 &record,
             )
-            .await;
-            Some(record)
+            .await
+            {
+                Ok(()) => Some(record),
+                Err(error) => {
+                    accounting_error = Some(error.to_string());
+                    None
+                }
+            }
         } else {
             None
         };
         let _ = self.send_event(Event::ProviderRequestReceipt {
             receipt: json!({
                 "source_accounting": pending.primary,
-                "accounting_error": accounting_error,
+                "accounting_error": accounting_error.as_deref(),
                 "session_id": self.session.id,
                 "turn_id": pending.turn_id,
                 "request_index": pending.request_index,
@@ -6062,6 +6068,9 @@ impl Engine {
                 "cache_attribution": "Local prefix changes and wire schema measurements are context for reported usage, not proof that eviction caused a miss or that unreported retries were free.",
             }),
         }).await;
+        if let Some(error) = accounting_error {
+            return Err(error);
+        }
         Ok(accounting_record)
     }
 
@@ -8061,10 +8070,27 @@ fn stream_event_content_bytes(event: &StreamEvent) -> usize {
             Delta::SignatureDelta { signature } => signature.len(),
             Delta::ThoughtSignatureDelta { thought_signature } => thought_signature.len(),
             Delta::RefusalDelta { refusal } => refusal.len(),
-            Delta::ReasoningStateDelta { .. }
-            | Delta::CitationsDelta { .. }
-            | Delta::WebSearchCallDelta { .. }
-            | Delta::ServerToolCallsDelta { .. } => 0,
+            Delta::WebSearchCallDelta {
+                status,
+                kind,
+                action,
+                sources,
+                page,
+                signature,
+                error,
+            } => {
+                status.as_ref().map_or(0, String::len)
+                    + kind.as_ref().map_or(0, String::len)
+                    + action.as_ref().map_or(0, |v| v.to_string().len())
+                    + sources.as_ref().map_or(0, |v| v.to_string().len())
+                    + page.as_ref().map_or(0, |v| v.to_string().len())
+                    + signature.as_ref().map_or(0, String::len)
+                    + error.as_ref().map_or(0, |v| v.to_string().len())
+            }
+            Delta::ServerToolCallsDelta { steps } => {
+                steps.iter().map(|s| s.to_string().len()).sum()
+            }
+            Delta::ReasoningStateDelta { .. } | Delta::CitationsDelta { .. } => 0,
         },
         _ => 0,
     }
@@ -9069,6 +9095,197 @@ mod tests {
             }),
             3
         );
+    }
+
+    #[test]
+    fn server_tool_deltas_count_payload_bytes_for_stream_cap() {
+        let big_sources =
+            serde_json::json!([{"url": "https://example.com", "body": "x".repeat(4096)}]);
+        let web_bytes = stream_event_content_bytes(&StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: codewhale_models::Delta::WebSearchCallDelta {
+                status: Some("completed".to_string()),
+                kind: None,
+                action: None,
+                sources: Some(big_sources),
+                page: None,
+                signature: None,
+                error: None,
+            },
+        });
+        assert!(web_bytes > 4096, "web search delta bytes={web_bytes}");
+
+        let steps = vec![serde_json::json!({"tool": "search", "output": "y".repeat(2048)})];
+        let step_bytes = stream_event_content_bytes(&StreamEvent::ContentBlockDelta {
+            index: 1,
+            delta: codewhale_models::Delta::ServerToolCallsDelta { steps },
+        });
+        assert!(step_bytes > 2048, "server tool delta bytes={step_bytes}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn server_tool_deltas_trip_stream_content_cap_overflow() {
+        use crate::llm_client::mock::canned;
+
+        let tmp = tempdir().unwrap();
+        let _home = crate::test_support::SealedHome::at(tmp.path());
+        let (mut engine, _model, mut rx) = stream_backpressure_fixture(tmp.path(), 16);
+        engine.config.stream_max_content_bytes = 64;
+        let request = stream_backpressure_request();
+
+        let web_stream: Vec<anyhow::Result<StreamEvent>> = vec![
+            Ok(StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStart::WebSearchCall {
+                    id: "ws-1".into(),
+                    status: "searching".into(),
+                    kind: None,
+                    action: None,
+                },
+            }),
+            Ok(StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: Delta::WebSearchCallDelta {
+                    status: Some("completed".into()),
+                    kind: None,
+                    action: None,
+                    sources: Some(json!([{ "body": "x".repeat(256) }])),
+                    page: None,
+                    signature: None,
+                    error: None,
+                },
+            }),
+            Ok(canned::message_stop()),
+        ];
+        let web_outcome = engine
+            .process_stream(
+                Box::pin(futures_util::stream::iter(web_stream)),
+                &request,
+                Instant::now(),
+                None,
+            )
+            .await;
+        assert!(
+            web_outcome
+                .stream_error
+                .as_deref()
+                .is_some_and(|message| message.contains("maximum content size")),
+            "expected stream overflow error, got {:?}",
+            web_outcome.stream_error
+        );
+        assert!(
+            std::iter::from_fn(|| rx.try_recv().ok()).any(|event| matches!(
+                event,
+                Event::Error { envelope, .. } if envelope.code == "stream_overflow"
+            )),
+            "expected stream_overflow event for WebSearchCallDelta"
+        );
+        assert!(matches!(
+            web_outcome.server_blocks.as_slice(),
+            [ContentBlock::WebSearchCall { sources: None, .. }]
+        ));
+
+        let (mut engine, _model, mut rx) = stream_backpressure_fixture(tmp.path(), 16);
+        engine.config.stream_max_content_bytes = 64;
+        let tool_stream: Vec<anyhow::Result<StreamEvent>> = vec![
+            Ok(StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStart::ServerToolCalls { steps: Vec::new() },
+            }),
+            Ok(StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: Delta::ServerToolCallsDelta {
+                    steps: vec![json!({ "output": "y".repeat(256) })],
+                },
+            }),
+            Ok(canned::message_stop()),
+        ];
+        let tool_outcome = engine
+            .process_stream(
+                Box::pin(futures_util::stream::iter(tool_stream)),
+                &request,
+                Instant::now(),
+                None,
+            )
+            .await;
+        assert!(
+            tool_outcome
+                .stream_error
+                .as_deref()
+                .is_some_and(|message| message.contains("maximum content size")),
+            "expected stream overflow error, got {:?}",
+            tool_outcome.stream_error
+        );
+        assert!(
+            std::iter::from_fn(|| rx.try_recv().ok()).any(|event| matches!(
+                event,
+                Event::Error { envelope, .. } if envelope.code == "stream_overflow"
+            )),
+            "expected stream_overflow event for ServerToolCallsDelta"
+        );
+        assert!(matches!(
+            tool_outcome.server_blocks.as_slice(),
+            [ContentBlock::ServerToolCalls { steps }] if steps.is_empty()
+        ));
+    }
+
+    #[tokio::test]
+    async fn provider_request_receipt_records_accounting_error_when_owner_work_fails() {
+        let tmp = tempdir().unwrap();
+        let _home = crate::test_support::SealedHome::at(tmp.path());
+        let (engine, model, mut rx) = stream_backpressure_fixture(tmp.path(), 16);
+        let retry_observation = engine.request_retry_observation();
+        let route = crate::core::model_client::ModelClient::effective_route_envelope(
+            model.as_ref(),
+            "test-model",
+            chrono::Utc::now(),
+        );
+        let accounting_source = crate::cost_status::NativeUsageSource::capture_with_origin(
+            retry_observation.request_id.clone(),
+            crate::cost_status::UsageSpendOwner::Primary,
+            None,
+        );
+        let mut pending = Some(PendingProviderRequestReceipt {
+            request_id: retry_observation.request_id.clone(),
+            accounting_source,
+            accounting_scope: crate::cost_status::scope_token(),
+            accounting_origin: None,
+            route,
+            primary: true,
+            accounting_owned_elsewhere: false,
+            invoked: true,
+            turn_id: "turn-accounting-err".to_string(),
+            request_index: 1,
+            prefix_check: json!({ "outcome": "stable" }),
+            reused_preparation: false,
+            wire: retry_observation.wire_observations.clone(),
+            transport_retries: retry_observation.retries.clone(),
+            started_at: Instant::now(),
+        });
+        let usage = Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            ..Usage::default()
+        };
+
+        let result = crate::cost_status::with_test_runtime_usage_error(
+            "blocking work is queued behind busy runtime owner",
+            engine.settle_provider_request_receipt(&mut pending, Some(&usage), "completed"),
+        )
+        .await;
+
+        let err = result.expect_err("failed usage settlement must return Err");
+        assert!(
+            err.contains("blocking work is queued"),
+            "unexpected settlement error: {err}"
+        );
+        let event = rx
+            .try_recv()
+            .expect("ProviderRequestReceipt must still be emitted");
+        let Event::ProviderRequestReceipt { receipt } = event else {
+            panic!("expected ProviderRequestReceipt, got {event:?}");
+        };
+        assert_eq!(receipt["accounting_error"].as_str(), Some(err.as_str()));
     }
 
     /// Regression test for the OpenAI streaming batch tool_calls bug.

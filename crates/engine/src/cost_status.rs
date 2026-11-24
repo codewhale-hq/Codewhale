@@ -2260,22 +2260,49 @@ pub fn record_runtime_usage(
     }
 }
 
-pub async fn record_runtime_usage_async(
+#[cfg(test)]
+tokio::task_local! {
+    static TEST_RUNTIME_USAGE_ERROR: &'static str;
+}
+
+#[cfg(test)]
+pub(crate) async fn with_test_runtime_usage_error<F, T>(message: &'static str, fut: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    TEST_RUNTIME_USAGE_ERROR.scope(message, fut).await
+}
+
+pub async fn try_record_runtime_usage_async(
     scope: CostScopeToken,
     origin: Option<&NativeUsageOrigin>,
     record: &RuntimeUsageRecord,
-) {
+) -> anyhow::Result<()> {
+    #[cfg(test)]
+    if let Ok(message) = TEST_RUNTIME_USAGE_ERROR.try_with(|message| *message) {
+        anyhow::bail!("{message}");
+    }
     let origin = origin.cloned();
     let record = record.clone();
     #[cfg(any(test, feature = "test-support"))]
     let test_origin = test_cost_scope_id();
-    let _ = codewhale_runtime::runtime_control::owner_work(move || {
+    codewhale_runtime::runtime_control::owner_work(move || {
         #[cfg(any(test, feature = "test-support"))]
         let _binding = bind_test_cost_scope(test_origin);
         record_runtime_usage(scope, origin.as_ref(), &record);
         Ok(())
     })
-    .await;
+    .await
+}
+
+pub async fn record_runtime_usage_async(
+    scope: CostScopeToken,
+    origin: Option<&NativeUsageOrigin>,
+    record: &RuntimeUsageRecord,
+) {
+    if let Err(error) = try_record_runtime_usage_async(scope, origin, record).await {
+        tracing::warn!(%error, "runtime usage settlement failed");
+    }
 }
 
 pub fn report_missing_runtime_usage(
