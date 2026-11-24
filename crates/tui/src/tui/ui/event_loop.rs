@@ -5607,10 +5607,7 @@ pub(crate) async fn run_event_loop(
         // browsing. After a short grace the aquarium stops requesting frames
         // and the scene is genuinely still until real activity resumes
         // (owner pain, captains-log #16).
-        let durable_tasks_active = app
-            .task_panel
-            .iter()
-            .any(|task| matches!(task.status.as_str(), "queued" | "running" | "waiting"));
+        let durable_tasks_active = has_live_durable_tasks(app);
         let ambient_busy = shell_phase_working
             || app.turn_started_at.is_some()
             || has_running_agents

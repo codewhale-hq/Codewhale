@@ -134,10 +134,6 @@ pub struct SkillMutationReceipt {
     pub name: String,
     pub scope: SkillScope,
     pub safe_target_path: String,
-    #[allow(dead_code)] // reserved for digest-diff UI
-    pub before_digest: Option<String>,
-    #[allow(dead_code)] // reserved for digest-diff UI
-    pub after_digest: Option<String>,
     pub outcome: SkillMutationOutcome,
 }
 
@@ -867,8 +863,6 @@ async fn install_remote(
             name: String::new(),
             scope: target.as_skill_scope(),
             safe_target_path: safe_display_path(&skills_dir, Some(ctx.workspace), ctx.home),
-            before_digest: None,
-            after_digest: None,
             outcome,
         },
         summary: String::new(),
@@ -922,8 +916,6 @@ async fn install_remote(
                         Some(ctx.workspace),
                         ctx.home,
                     ),
-                    before_digest: None,
-                    after_digest: after,
                     outcome,
                 },
                 summary,
@@ -947,8 +939,6 @@ async fn install_remote(
                     name,
                     scope: target.as_skill_scope(),
                     safe_target_path: safe_display_path(&path, Some(ctx.workspace), ctx.home),
-                    before_digest: current.clone(),
-                    after_digest: current,
                     outcome: SkillMutationOutcome::NoChange,
                 },
                 summary,
@@ -1298,7 +1288,6 @@ fn place_local(
 
     let dest_exists = validate_owned_child(&skills_dir, &dest, false)?;
     let mut previous: Option<InstalledMarker> = None;
-    let mut before = None;
     if dest_exists {
         previous = read_installed_marker(&dest)?;
         if previous.is_none() {
@@ -1307,7 +1296,7 @@ fn place_local(
                  refusing to replace it"
             );
         }
-        before = package_digest::compute_package_digest(&dest).ok();
+        let before = package_digest::compute_package_digest(&dest).ok();
         let same_source = previous.as_ref().is_some_and(|m| m.spec == spec);
         let recorded = previous.as_ref().and_then(|m| m.content_digest.clone());
         if same_source && before.as_deref() == Some(source_digest.as_str()) && before == recorded {
@@ -1322,8 +1311,6 @@ fn place_local(
                     name: name.to_string(),
                     scope: target.as_skill_scope(),
                     safe_target_path: safe_display_path(&dest, Some(ctx.workspace), ctx.home),
-                    before_digest: before.clone(),
-                    after_digest: before,
                     outcome: SkillMutationOutcome::NoChange,
                 },
                 summary,
@@ -1360,8 +1347,6 @@ fn place_local(
             name: name.to_string(),
             scope: target.as_skill_scope(),
             safe_target_path: safe_display_path(&dest, Some(ctx.workspace), ctx.home),
-            before_digest: before,
-            after_digest: Some(after),
             outcome,
         },
         summary,
@@ -1399,7 +1384,7 @@ fn import_external(
         bail!("skill is not an import candidate");
     }
 
-    let before = verify_expected_digest(&source_path, Some(&expected_digest))?;
+    verify_expected_digest(&source_path, Some(&expected_digest))?;
 
     let skills_dir = prepare_owned_target(ctx.workspace, ctx.home, target)?;
     let anchor = owned_anchor(ctx.workspace, ctx.home, target)?;
@@ -1443,8 +1428,6 @@ fn import_external(
                 name: source_id.canonical_name.clone(),
                 scope: target.as_skill_scope(),
                 safe_target_path: safe_display_path(&dest, Some(ctx.workspace), ctx.home),
-                before_digest: before,
-                after_digest: existing,
                 outcome: SkillMutationOutcome::AlreadyPresent,
             });
         }
@@ -1456,7 +1439,7 @@ fn import_external(
         }
     }
 
-    let after = place_package(&PlaceRequest {
+    place_package(&PlaceRequest {
         skills_dir: &skills_dir,
         anchor,
         source: &source_path,
@@ -1473,8 +1456,6 @@ fn import_external(
         name: source_id.canonical_name,
         scope: target.as_skill_scope(),
         safe_target_path: safe_display_path(&dest, Some(ctx.workspace), ctx.home),
-        before_digest: before,
-        after_digest: Some(after),
         outcome: SkillMutationOutcome::Imported,
     })
 }
@@ -1681,8 +1662,6 @@ async fn update_skill(
                     name: skill_id.canonical_name,
                     scope,
                     safe_target_path: safe_display_path(&path, Some(ctx.workspace), ctx.home),
-                    before_digest: before.clone(),
-                    after_digest: before,
                     outcome: SkillMutationOutcome::NoChange,
                 },
                 summary,
@@ -1717,8 +1696,6 @@ async fn update_skill(
                         Some(ctx.workspace),
                         ctx.home,
                     ),
-                    before_digest: before,
-                    after_digest: after,
                     outcome: SkillMutationOutcome::Updated,
                 },
                 summary,
@@ -1730,8 +1707,6 @@ async fn update_skill(
                 name: skill_id.canonical_name,
                 scope,
                 safe_target_path: safe_display_path(&path, Some(ctx.workspace), ctx.home),
-                before_digest: before,
-                after_digest: None,
                 outcome: SkillMutationOutcome::NeedsApproval(host),
             },
             summary: String::new(),
@@ -1742,8 +1717,6 @@ async fn update_skill(
                 name: skill_id.canonical_name,
                 scope,
                 safe_target_path: safe_display_path(&path, Some(ctx.workspace), ctx.home),
-                before_digest: before,
-                after_digest: None,
                 outcome: SkillMutationOutcome::NetworkDenied(host),
             },
             summary: String::new(),
@@ -1764,7 +1737,7 @@ fn remove_skill(
         bail!("only Codewhale managed skills can be removed");
     }
     let skills_dir = validate_owned_skill_path(ctx, &skill, &path)?;
-    let before = verify_expected_digest(&path, expected_digest.as_deref())?;
+    verify_expected_digest(&path, expected_digest.as_deref())?;
     let scope = match skill.root.kind {
         SkillRootKind::CodeWhaleProject => SkillScope::Project,
         SkillRootKind::CodeWhaleGlobal => SkillScope::Global,
@@ -1778,8 +1751,6 @@ fn remove_skill(
         name: skill_id.canonical_name,
         scope,
         safe_target_path: safe_display_path(&path, Some(ctx.workspace), ctx.home),
-        before_digest: before,
-        after_digest: None,
         outcome: SkillMutationOutcome::Removed,
     })
 }
@@ -1797,7 +1768,7 @@ fn trust_skill(
         bail!("only Codewhale managed skills can be trusted");
     }
     validate_owned_skill_path(ctx, &skill, &path)?;
-    let before = verify_expected_digest(&path, Some(&expected_digest))?;
+    verify_expected_digest(&path, Some(&expected_digest))?;
     validate_owned_skill_path(ctx, &skill, &path)?;
     write_trust_v2(&path, &expected_digest)?;
     let scope = match skill.root.kind {
@@ -1810,8 +1781,6 @@ fn trust_skill(
         name: skill_id.canonical_name,
         scope,
         safe_target_path: safe_display_path(&path, Some(ctx.workspace), ctx.home),
-        before_digest: before.clone(),
-        after_digest: before,
         outcome: SkillMutationOutcome::Trusted,
     })
 }

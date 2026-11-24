@@ -97,6 +97,7 @@ pub const FORBIDDEN_RUNTIME_POLICY_KEYS: &[&str] = &[
 
 /// Filename of the structured user-global constitution under `$CODEWHALE_HOME`.
 pub const USER_CONSTITUTION_FILE_NAME: &str = "constitution.json";
+pub const MAX_USER_CONSTITUTION_FILE_BYTES: u64 = crate::path_io::MAX_CONFIG_FILE_BYTES;
 
 /// Maximum length of the free-prose `notes` field after bounding.
 pub const MAX_NOTES_LEN: usize = 4000;
@@ -672,12 +673,17 @@ impl UserConstitution {
     /// Load from an explicit path (testable).
     #[must_use]
     pub fn load_from(path: &Path) -> UserConstitutionLoad {
-        let raw = match std::fs::read_to_string(path) {
-            Ok(raw) => raw,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return UserConstitutionLoad::Missing;
+        let raw = match read_bounded_constitution(path) {
+            BoundedConstitutionRead::Loaded(raw) => raw,
+            BoundedConstitutionRead::Missing => return UserConstitutionLoad::Missing,
+            BoundedConstitutionRead::TooLarge(error) => {
+                return UserConstitutionLoad::Invalid(
+                    MigrationRejection::Malformed { error }.receipt(),
+                );
             }
-            Err(e) => return UserConstitutionLoad::Unreadable(e.to_string()),
+            BoundedConstitutionRead::Unreadable(error) => {
+                return UserConstitutionLoad::Unreadable(error);
+            }
         };
         if raw.trim().is_empty() {
             return UserConstitutionLoad::Empty;
@@ -832,6 +838,13 @@ impl UserConstitution {
     /// Pure: no I/O, no clock, no home lookup. Same bytes in, same outcome out.
     #[must_use]
     pub fn migrate_raw(raw: &str) -> MigrationOutcome {
+        if raw.len() as u64 > MAX_USER_CONSTITUTION_FILE_BYTES {
+            return MigrationOutcome::Rejected(MigrationRejection::Malformed {
+                error: format!(
+                    "constitution exceeds the {MAX_USER_CONSTITUTION_FILE_BYTES}-byte limit"
+                ),
+            });
+        }
         if raw.trim().is_empty() {
             return MigrationOutcome::Rejected(MigrationRejection::Malformed {
                 error: "constitution file is empty".to_string(),
@@ -874,7 +887,7 @@ impl UserConstitution {
             });
         }
 
-        let parsed: UserConstitution = match serde_json::from_value(value.clone()) {
+        let parsed: UserConstitution = match serde_json::from_value(value) {
             Ok(parsed) => parsed,
             Err(err) => {
                 return MigrationOutcome::Rejected(MigrationRejection::Malformed {
@@ -934,16 +947,24 @@ impl UserConstitution {
     /// A rejection writes nothing at all: the original file is left byte-identical
     /// so the user can inspect it, and the receipt says exactly why.
     pub fn migrate_file(path: &Path) -> Result<MigrationOutcome> {
-        let raw = match std::fs::read_to_string(path) {
-            Ok(raw) => raw,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        Self::migrate_file_with_backup_writer(path, persistence::atomic_write)
+    }
+
+    fn migrate_file_with_backup_writer(
+        path: &Path,
+        write_backup: impl FnOnce(&Path, &[u8]) -> Result<()>,
+    ) -> Result<MigrationOutcome> {
+        let raw = match read_bounded_constitution(path) {
+            BoundedConstitutionRead::Loaded(raw) => raw,
+            BoundedConstitutionRead::Missing => {
                 return Ok(MigrationOutcome::Rejected(MigrationRejection::Malformed {
                     error: format!("no constitution file at {}", path.display()),
                 }));
             }
-            Err(e) => {
+            BoundedConstitutionRead::TooLarge(error)
+            | BoundedConstitutionRead::Unreadable(error) => {
                 return Ok(MigrationOutcome::Rejected(MigrationRejection::Malformed {
-                    error: e.to_string(),
+                    error,
                 }));
             }
         };
@@ -954,7 +975,7 @@ impl UserConstitution {
                 mut receipt,
             } => {
                 let backup = backup_path_for(path);
-                std::fs::write(&backup, raw.as_bytes()).with_context(|| {
+                write_backup(&backup, raw.as_bytes()).with_context(|| {
                     format!("failed to write migration backup to {}", backup.display())
                 })?;
                 constitution.save_to(path)?;
@@ -974,11 +995,36 @@ impl UserConstitution {
     /// believe a rollback happened.
     pub fn rollback_file(path: &Path) -> Result<PathBuf> {
         let backup = backup_path_for(path);
-        let raw = std::fs::read_to_string(&backup)
-            .with_context(|| format!("no migration backup at {}", backup.display()))?;
-        std::fs::write(path, raw.as_bytes())
+        let raw = match read_bounded_constitution(&backup) {
+            BoundedConstitutionRead::Loaded(raw) => raw,
+            BoundedConstitutionRead::Missing => {
+                anyhow::bail!("no migration backup at {}", backup.display());
+            }
+            BoundedConstitutionRead::TooLarge(error)
+            | BoundedConstitutionRead::Unreadable(error) => {
+                anyhow::bail!(
+                    "failed to read migration backup at {}: {error}",
+                    backup.display()
+                );
+            }
+        };
+        persistence::atomic_write(path, raw.as_bytes())
             .with_context(|| format!("failed to restore {}", path.display()))?;
-        std::fs::remove_file(&backup).ok();
+        if let Err(err) = std::fs::remove_file(&backup) {
+            tracing::warn!(
+                path = %backup.display(),
+                error = %err,
+                "restored constitution from backup, but failed to remove backup file"
+            );
+        } else if let Some(parent) = backup.parent().filter(|p| !p.as_os_str().is_empty())
+            && let Err(err) = persistence::sync_parent_dir(parent)
+        {
+            tracing::warn!(
+                path = %parent.display(),
+                error = %err,
+                "removed migration backup, but failed to sync parent directory"
+            );
+        }
         Ok(backup)
     }
 
@@ -1390,6 +1436,50 @@ impl UserConstitutionLoad {
 
 fn opt_blank(s: &Option<String>) -> bool {
     s.as_deref().is_none_or(|s| s.trim().is_empty())
+}
+
+enum BoundedConstitutionRead {
+    Missing,
+    TooLarge(String),
+    Unreadable(String),
+    Loaded(String),
+}
+
+fn read_bounded_constitution(path: &Path) -> BoundedConstitutionRead {
+    use std::io::Read as _;
+
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return BoundedConstitutionRead::Missing;
+        }
+        Err(err) => return BoundedConstitutionRead::Unreadable(err.to_string()),
+    };
+    let too_large = || {
+        format!(
+            "constitution file {} exceeds the 1 MiB limit",
+            path.display()
+        )
+    };
+    match file.metadata() {
+        Ok(metadata) if metadata.len() > MAX_USER_CONSTITUTION_FILE_BYTES => {
+            return BoundedConstitutionRead::TooLarge(too_large());
+        }
+        Ok(_) => {}
+        Err(err) => return BoundedConstitutionRead::Unreadable(err.to_string()),
+    }
+    let mut bytes = Vec::new();
+    let mut reader = std::io::BufReader::new(file).take(MAX_USER_CONSTITUTION_FILE_BYTES + 1);
+    if let Err(err) = reader.read_to_end(&mut bytes) {
+        return BoundedConstitutionRead::Unreadable(err.to_string());
+    }
+    if bytes.len() as u64 > MAX_USER_CONSTITUTION_FILE_BYTES {
+        return BoundedConstitutionRead::TooLarge(too_large());
+    }
+    match String::from_utf8(bytes) {
+        Ok(raw) => BoundedConstitutionRead::Loaded(raw),
+        Err(err) => BoundedConstitutionRead::Unreadable(err.to_string()),
+    }
 }
 
 fn non_blank(s: &str) -> Option<String> {
@@ -2288,6 +2378,61 @@ mod tests {
                 !raw.contains(forbidden),
                 "leaked runtime key {forbidden}: {raw}"
             );
+        }
+    }
+
+    #[test]
+    fn load_from_and_migrate_file_reject_oversized_constitution_before_parse() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(USER_CONSTITUTION_FILE_NAME);
+        let padding = "x".repeat(MAX_USER_CONSTITUTION_FILE_BYTES as usize + 64);
+        let oversized = format!(r#"{{"about":"{padding}"}}"#);
+        std::fs::write(&path, &oversized).unwrap();
+
+        let load = UserConstitution::load_from(&path);
+        match load {
+            UserConstitutionLoad::Invalid(msg) => {
+                assert!(msg.contains("1 MiB"), "{msg}");
+            }
+            other => panic!("expected Invalid for oversized constitution, got {other:?}"),
+        }
+
+        let outcome = UserConstitution::migrate_file(&path).unwrap();
+        assert!(matches!(
+            outcome,
+            MigrationOutcome::Rejected(MigrationRejection::Malformed { ref error })
+                if error.contains("1 MiB")
+        ));
+        assert!(!backup_path_for(&path).exists());
+    }
+
+    #[test]
+    fn migrate_file_aborts_without_modifying_target_when_backup_write_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(USER_CONSTITUTION_FILE_NAME);
+        let original = v1_file();
+        std::fs::write(&path, &original).unwrap();
+
+        let err = UserConstitution::migrate_file_with_backup_writer(&path, |_, _| {
+            anyhow::bail!("injected backup durability failure")
+        })
+        .expect_err("failed backup write must abort migration");
+        assert!(format!("{err:#}").contains("injected backup durability failure"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        assert!(!backup_path_for(&path).exists());
+
+        let MigrationOutcome::Migrated { receipt, .. } =
+            UserConstitution::migrate_file(&path).unwrap()
+        else {
+            panic!("expected migration to succeed with atomic backup");
+        };
+        let backup = receipt.backup_path.expect("backup path");
+        assert!(backup.exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&backup).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
         }
     }
 }

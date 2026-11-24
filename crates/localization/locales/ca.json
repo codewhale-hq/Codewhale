@@ -1899,7 +1899,6 @@
   "SidebarTodoLabel": "Pendents",
   "WorkSurfaceTodoProgress": "{label} {completed}/{total} · en queden {remaining}",
   "SidebarStopControl": "atura",
-  "SidebarDestructiveArmed": "Acció destructiva armada — prem Enter per confirmar o esborra l'esborrany per cancel·lar",
   "WorkSurfaceStopConfirmHint": "confirma l'aturada · Esc cancel·la",
   "CoordinationWorkTitle": "Treball de coordinació",
   "CoordinationSummaryDecisions": "{count} decisions",

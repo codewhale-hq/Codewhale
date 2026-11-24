@@ -1918,7 +1918,6 @@
   "SidebarTodoLabel": "Cần làm",
   "WorkSurfaceTodoProgress": "{label} {completed}/{total} · còn {remaining}",
   "SidebarStopControl": "dừng",
-  "SidebarDestructiveArmed": "Thao tác phá hủy đã kích hoạt — nhấn Enter để xác nhận hoặc xóa bản nháp để hủy",
   "WorkSurfaceStopConfirmHint": "xác nhận dừng · Esc để hủy",
   "CoordinationWorkTitle": "Công việc điều phối",
   "CoordinationSummaryDecisions": "{count} quyết định",

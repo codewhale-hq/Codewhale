@@ -1918,7 +1918,6 @@
   "SidebarTodoLabel": "待办",
   "WorkSurfaceTodoProgress": "{label} {completed}/{total} · 剩余 {remaining}",
   "SidebarStopControl": "停止",
-  "SidebarDestructiveArmed": "破坏性操作已就绪 — 按 Enter 确认，或清空草稿以取消",
   "WorkSurfaceStopConfirmHint": "确认停止 · Esc 取消",
   "CoordinationWorkTitle": "协调工作",
   "CoordinationSummaryDecisions": "{count} 项决策",

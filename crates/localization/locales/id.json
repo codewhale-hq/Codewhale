@@ -1899,7 +1899,6 @@
   "SidebarTodoLabel": "Perlu dikerjakan",
   "WorkSurfaceTodoProgress": "{label} {completed}/{total} · sisa {remaining}",
   "SidebarStopControl": "berhenti",
-  "SidebarDestructiveArmed": "Aksi destruktif aktif — tekan Enter untuk konfirmasi atau bersihkan draf untuk batal",
   "WorkSurfaceStopConfirmHint": "konfirmasi berhenti · Esc membatalkan",
   "CoordinationWorkTitle": "Kerja Koordinasi",
   "CoordinationSummaryDecisions": "{count} keputusan",

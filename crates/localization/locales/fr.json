@@ -1899,7 +1899,6 @@
   "SidebarTodoLabel": "À faire",
   "WorkSurfaceTodoProgress": "{label} {completed}/{total} · {remaining} restantes",
   "SidebarStopControl": "arrêter",
-  "SidebarDestructiveArmed": "Action destructive armée — appuyez sur Enter pour confirmer ou effacez le brouillon pour annuler",
   "WorkSurfaceStopConfirmHint": "confirmer l'arrêt · Esc annule",
   "CoordinationWorkTitle": "Travail de coordination",
   "CoordinationSummaryDecisions": "{count} décisions",

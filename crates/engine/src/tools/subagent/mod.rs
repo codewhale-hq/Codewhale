@@ -478,6 +478,8 @@ const COMPLETED_AGENT_RETENTION: Duration = Duration::from_secs(60 * 60);
 const MAX_AGENT_WORKER_RECORDS: usize = 256;
 const MAX_AGENT_WORKER_EVENTS_PER_RECORD: usize = 128;
 const MAX_QUEUED_PARENT_MESSAGES: usize = 64;
+const MAX_PARENT_MESSAGE_BYTES: usize = 16 * 1024;
+const MAX_QUEUED_PARENT_MAIL_BYTES: usize = 256 * 1024;
 /// Byte budget for the message tail retained in a [`SubAgentCheckpoint`]
 /// (#3882). Checkpoints fire on every step of every worker and are cloned
 /// into snapshots, projections, and `subagents.v1.json`; an unbounded
@@ -3748,6 +3750,27 @@ impl SubAgentWorkLifecycle {
         }
         self.work.reconcile_operation(&self.session_id, snapshot)
     }
+}
+
+fn fail_aborted_durable_launch(
+    agent_id: &str,
+    lifecycle: Option<&SubAgentWorkLifecycle>,
+    persist_error: anyhow::Error,
+) -> anyhow::Error {
+    if let Some(reconcile_error) =
+        lifecycle.and_then(|lifecycle| lifecycle.reconcile_state(OwnerState::Failed, 1, None).err())
+    {
+        tracing::warn!(
+            target: "subagent",
+            agent_id = %agent_id,
+            %reconcile_error,
+            "failed to mark aborted write-capable launch as Failed"
+        );
+        return anyhow!(
+            "failed to durably register write-capable sub-agent before launch: {persist_error}; additionally failed to settle lifecycle owner: {reconcile_error}"
+        );
+    }
+    anyhow!("failed to durably register write-capable sub-agent before launch: {persist_error}")
 }
 
 /// Translate the persisted worker owner record after its manager has applied
@@ -8521,6 +8544,12 @@ impl SubAgentManager {
         text: String,
         wake: bool,
     ) -> Result<ParentMailReceipt> {
+        if text.len() > MAX_PARENT_MESSAGE_BYTES {
+            return Err(anyhow!(
+                "Parent message is {} bytes; maximum allowed is {MAX_PARENT_MESSAGE_BYTES} bytes",
+                text.len()
+            ));
+        }
         let agent_id = self.resolve_agent_ref(agent_ref)?;
         let status = self
             .agents
@@ -8536,6 +8565,12 @@ impl SubAgentManager {
         if queue.len() >= MAX_QUEUED_PARENT_MESSAGES {
             return Err(anyhow!(
                 "Agent {agent_id} already has {MAX_QUEUED_PARENT_MESSAGES} queued parent messages; wait for it to read them before sending more"
+            ));
+        }
+        let queued_bytes: usize = queue.iter().map(|queued| queued.text.len()).sum();
+        if queued_bytes.saturating_add(entry.text.len()) > MAX_QUEUED_PARENT_MAIL_BYTES {
+            return Err(anyhow!(
+                "Agent {agent_id} queued parent mail would exceed {MAX_QUEUED_PARENT_MAIL_BYTES} bytes; wait for it to read pending messages before sending more"
             ));
         }
         queue.push_back(entry);
@@ -10460,11 +10495,10 @@ impl SubAgentManager {
                 self.coordination = coordination;
                 self.worker_origins = origins;
                 self.worker_origin_schema = schema;
-                if let Some(lifecycle) = agent.work_lifecycle.as_ref() {
-                    let _ = lifecycle.reconcile_state(OwnerState::Failed, 1, None);
-                }
-                return Err(anyhow!(
-                    "failed to durably register write-capable sub-agent before launch: {error}"
+                return Err(fail_aborted_durable_launch(
+                    &agent_id,
+                    agent.work_lifecycle.as_ref(),
+                    error,
                 ));
             }
         }
@@ -18575,6 +18609,29 @@ pub fn incomplete_subagent_response_failure(stop_reason: Option<&str>) -> String
     }
 }
 
+fn sync_transcript_artifact_metadata(
+    transcript_artifact: Option<&mut SubAgentTranscriptArtifactWriter>,
+    agent_id: &str,
+    messages: &[Message],
+    durable: bool,
+) -> Option<Value> {
+    transcript_artifact.map(|writer| {
+        let synced = match writer.sync_projected_messages(messages, durable) {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::warn!(
+                    target: "subagent",
+                    ?err,
+                    agent_id,
+                    "failed to persist complete sub-agent transcript artifact"
+                );
+                false
+            }
+        };
+        writer.metadata(synced && writer.synced_live_messages == messages.len())
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn insert_subagent_full_transcript_handle(
     runtime: &SubAgentRuntime,
@@ -18585,6 +18642,44 @@ async fn insert_subagent_full_transcript_handle(
     result: Option<&String>,
     checkpoint: Option<&SubAgentCheckpoint>,
     transcript_artifact: Option<&mut SubAgentTranscriptArtifactWriter>,
+    messages: &[Message],
+    steps_taken: u32,
+    duration_ms: u64,
+    fork_context: bool,
+) -> VarHandle {
+    let transcript_artifact = sync_transcript_artifact_metadata(
+        transcript_artifact,
+        agent_id,
+        messages,
+        *status != SubAgentStatus::Running,
+    );
+    insert_subagent_full_transcript_handle_with_metadata(
+        runtime,
+        agent_id,
+        agent_type,
+        assignment,
+        status,
+        result,
+        checkpoint,
+        transcript_artifact,
+        messages,
+        steps_taken,
+        duration_ms,
+        fork_context,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn insert_subagent_full_transcript_handle_with_metadata(
+    runtime: &SubAgentRuntime,
+    agent_id: &str,
+    agent_type: &FleetRole,
+    assignment: &SubAgentAssignment,
+    status: &SubAgentStatus,
+    result: Option<&String>,
+    checkpoint: Option<&SubAgentCheckpoint>,
+    transcript_artifact: Option<Value>,
     messages: &[Message],
     steps_taken: u32,
     duration_ms: u64,
@@ -18601,22 +18696,6 @@ async fn insert_subagent_full_transcript_handle(
         omitted_messages: checkpoint.message_count,
         messages: Vec::new(),
         ..checkpoint.clone()
-    });
-    let transcript_artifact = transcript_artifact.map(|writer| {
-        let synced =
-            match writer.sync_projected_messages(messages, *status != SubAgentStatus::Running) {
-                Ok(()) => true,
-                Err(err) => {
-                    tracing::warn!(
-                        target: "subagent",
-                        ?err,
-                        agent_id,
-                        "failed to persist complete sub-agent transcript artifact"
-                    );
-                    false
-                }
-            };
-        writer.metadata(synced && writer.synced_live_messages == messages.len())
     });
     let payload = json!({
         "kind": "subagent_full_transcript",
@@ -19142,7 +19221,7 @@ async fn cancelled_subagent_result(
     max_steps: u32,
     latest_checkpoint: Option<&SubAgentCheckpoint>,
     turn_end_parking: Option<&Arc<std::sync::atomic::AtomicBool>>,
-    transcript_artifact: &mut Option<SubAgentTranscriptArtifactWriter>,
+    transcript_artifact_metadata: Option<Value>,
     started_at: Instant,
     fork_context_enabled: bool,
     progress_suffix: &str,
@@ -19165,7 +19244,7 @@ async fn cancelled_subagent_result(
         ),
     );
     let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-    insert_subagent_full_transcript_handle(
+    insert_subagent_full_transcript_handle_with_metadata(
         runtime,
         agent_id,
         agent_type,
@@ -19173,7 +19252,7 @@ async fn cancelled_subagent_result(
         &status,
         result.as_ref(),
         checkpoint.as_ref(),
-        transcript_artifact.as_mut(),
+        transcript_artifact_metadata,
         messages,
         steps,
         duration_ms,

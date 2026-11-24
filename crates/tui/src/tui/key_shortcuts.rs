@@ -32,11 +32,16 @@ pub(super) fn is_copy_shortcut(key: &KeyEvent) -> bool {
         return false;
     }
 
-    if key.modifiers.contains(KeyModifiers::SUPER) {
-        return true;
-    }
-
-    key.modifiers.contains(KeyModifiers::CONTROL) && key.modifiers.contains(KeyModifiers::SHIFT)
+    let cmd_c = key.modifiers.contains(KeyModifiers::SUPER)
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+    let ctrl_shift_c = key.modifiers.contains(KeyModifiers::CONTROL)
+        && key.modifiers.contains(KeyModifiers::SHIFT)
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::ALT | KeyModifiers::SUPER);
+    cmd_c || ctrl_shift_c
 }
 
 /// Toggle the file-tree pane: `Ctrl+Shift+E` on Linux/Windows or
@@ -260,6 +265,14 @@ mod tests {
         assert!(is_paste_shortcut(&mac_paste));
         assert!(is_copy_shortcut(&linux_copy));
         assert!(is_paste_shortcut(&linux_paste));
+        assert!(!is_copy_shortcut(&KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT | KeyModifiers::ALT,
+        )));
+        assert!(!is_copy_shortcut(&KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::SUPER | KeyModifiers::ALT,
+        )));
     }
 
     #[test]

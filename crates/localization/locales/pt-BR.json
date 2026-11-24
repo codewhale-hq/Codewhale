@@ -1918,7 +1918,6 @@
   "SidebarTodoLabel": "A fazer",
   "WorkSurfaceTodoProgress": "{label} {completed}/{total} · {remaining} restantes",
   "SidebarStopControl": "parar",
-  "SidebarDestructiveArmed": "Ação destrutiva armada — pressione Enter para confirmar ou limpe o rascunho para cancelar",
   "WorkSurfaceStopConfirmHint": "confirmar parada · Esc cancela",
   "CoordinationWorkTitle": "Trabalho de coordenação",
   "CoordinationSummaryDecisions": "{count} decisões",

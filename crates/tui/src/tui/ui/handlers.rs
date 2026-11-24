@@ -2634,24 +2634,6 @@ pub(crate) async fn handle_view_events(
                 // Fleet is selected.
                 open_fleet_setup_target(app, config, Some(&member_id));
             }
-            ViewEvent::FleetListOpenDetailRequested { name, scope } => {
-                if app.view_stack.top_kind() != Some(ModalKind::FleetDetail) {
-                    if let Some(view) = crate::tui::views::fleet_detail::FleetDetailView::open(
-                        app, config, &name, scope,
-                    ) {
-                        app.view_stack.push(view);
-                    } else {
-                        app.set_sticky_status(
-                            format!(
-                                "Could not open team `{name}` ({}) — the file may have moved or become unreadable.",
-                                scope.label()
-                            ),
-                            crate::tui::app::StatusToastLevel::Error,
-                            None,
-                        );
-                    }
-                }
-            }
             // Enter on a Fleet editor row: the standard `/model` picker opens
             // on top of the editor, and its pick comes back below as
             // `FleetRoutePicked` to land on the editor still on the stack.

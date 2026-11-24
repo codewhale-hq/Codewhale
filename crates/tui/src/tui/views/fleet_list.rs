@@ -43,14 +43,9 @@ const FLEET_LIST_PAGE: usize = 10;
 
 /// What the host should do after this view acted on the store.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // OpenDetail/None are reserved for the qualified-name flow
 pub enum FleetListOutcome {
     /// A store mutation happened; show `message`, refresh, and pop the stack.
     Done { message: String },
-    /// Open the detail view for the given Fleet.
-    OpenDetail { name: String, scope: FleetScope },
-    /// Nothing to do.
-    None,
 }
 
 pub struct FleetListView {
@@ -598,10 +593,7 @@ fn outcome_to_action(outcome: Option<FleetListOutcome>) -> ViewAction {
         Some(FleetListOutcome::Done { message }) => {
             ViewAction::EmitAndClose(ViewEvent::FleetStoreChanged { message })
         }
-        Some(FleetListOutcome::OpenDetail { name, scope }) => {
-            ViewAction::Emit(ViewEvent::FleetListOpenDetailRequested { name, scope })
-        }
-        Some(FleetListOutcome::None) | None => ViewAction::None,
+        None => ViewAction::None,
     }
 }
 
