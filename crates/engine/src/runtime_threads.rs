@@ -1744,6 +1744,17 @@ struct ItemIndex {
     pending: Vec<(String, String)>,
 }
 
+/// The one field a whole-directory read needs from an item record.
+///
+/// Deserializing into this instead of [`TurnItemRecord`] skips every string in
+/// `detail` and `metadata`, which is most of a tool result's bytes: the read is
+/// asking which turn owns an id, and materializing a command's output to answer
+/// it allocates and then drops all of it.
+#[derive(Debug, Deserialize)]
+struct ItemTurnReference {
+    turn_id: String,
+}
+
 impl RuntimeThreadStore {
     pub fn open(root: PathBuf) -> Result<Self> {
         let root = checked_runtime_store_root(root)?;
@@ -3694,8 +3705,8 @@ impl RuntimeThreadStore {
             #[cfg(any(test, feature = "test-support"))]
             self.item_dir_files_read
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let item = self.load_item(&item_id)?;
-            by_turn.entry(item.turn_id).or_default().push(item.id);
+            let turn_id = self.load_item_turn_id(&item_id)?;
+            by_turn.entry(turn_id).or_default().push(item_id);
         }
 
         let mut index = self.item_index.write();
@@ -3707,6 +3718,34 @@ impl RuntimeThreadStore {
         }
         index.by_turn = Some(by_turn);
         Ok(())
+    }
+
+    /// The turn an item belongs to, without materializing the record.
+    ///
+    /// Only used where the whole directory is read to learn that one field —
+    /// see [`Self::ensure_item_index`]. An item's `detail` can hold a tool
+    /// result of hundreds of kilobytes, and deserializing into
+    /// [`TurnItemRecord`] allocates every one of them to answer a question
+    /// about an id.
+    fn load_item_turn_id(&self, item_id: &str) -> Result<String> {
+        let path = self.item_path(item_id)?;
+        let raw = read_store_file(&path).with_context(|| {
+            RuntimeStoreRecordFailure::new(
+                RuntimeStoreOperation::Read,
+                RuntimeStoreRecordKind::Item,
+                item_id,
+                &path,
+            )
+        })?;
+        let reference: ItemTurnReference = serde_json::from_str(&raw).with_context(|| {
+            RuntimeStoreRecordFailure::new(
+                RuntimeStoreOperation::Parse,
+                RuntimeStoreRecordKind::Item,
+                item_id,
+                &path,
+            )
+        })?;
+        Ok(reference.turn_id)
     }
 
     /// Keep the item index current across an item write.

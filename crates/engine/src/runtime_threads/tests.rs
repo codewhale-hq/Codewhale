@@ -28656,3 +28656,35 @@ async fn retry_captures_admitted_prompt_and_images_and_rejects_changed_source() 
     );
     Ok(())
 }
+
+/// The whole-directory read, measured against a real store.
+///
+/// Ignored because it needs one: point `CODEWHALE_BENCH_STORE` at a runtime
+/// store root and run
+///
+/// ```text
+/// CODEWHALE_BENCH_STORE=/path/to/runtime \
+///   cargo test -p codewhale-engine --lib -- \
+///   runtime_threads::tests::bench_item_index_against_a_real_store --ignored --nocapture
+/// ```
+///
+/// This is the pass every process paid on its first opened thread. It is a
+/// measurement, not an assertion: what it prints is what the store this runs
+/// against costs, and the number a change to this path should be judged by.
+#[test]
+#[ignore]
+fn bench_item_index_against_a_real_store() {
+    let root = PathBuf::from(
+        std::env::var("CODEWHALE_BENCH_STORE").expect("CODEWHALE_BENCH_STORE names a store"),
+    );
+    let store = RuntimeThreadStore::open(root).expect("open store");
+    let started = Instant::now();
+    store.ensure_item_index().expect("read the items directory");
+    let elapsed = started.elapsed();
+    let (items, turns) = {
+        let index = store.item_index.read();
+        let by_turn = index.by_turn.as_ref().expect("index published");
+        (by_turn.values().map(Vec::len).sum::<usize>(), by_turn.len())
+    };
+    println!("[bench] index={elapsed:?} items={items} turns={turns}");
+}
