@@ -9048,9 +9048,13 @@ impl RuntimeThreadManager {
     /// tell it, because an item's filename carries the item id and not its turn.
     /// That pass is the same one every open used to pay. Paid here, while the
     /// Runtime API is starting and no client is waiting, it is paid once
-    /// instead. See [`RuntimeThreadStore::ensure_item_index`].
+    /// instead — and, because this is the deliberate caller, the answer is also
+    /// cached for the next process. See [`RuntimeThreadStore::cache_item_index`].
     pub fn warm_item_index(&self) -> Result<()> {
-        self.store.ensure_item_index()
+        // Cached as well as built: this is the one caller that has decided the
+        // read is worth paying for, so it is also the one that leaves the answer
+        // on disk for the next process instead of paying it again.
+        self.store.cache_item_index()
     }
 
     /// The [`ThreadListFacts`] for every id in `thread_ids`, read in one pass.
