@@ -2865,5 +2865,13 @@
   "CtxMenuCellHidden": "Ячейка скрыта",
   "CtxMenuCellShown": "Ячейка показана",
   "CtxMenuHiddenCellsRestored": "Восстановлено скрытых ячеек: {count}",
-  "CtxMenuNoSelectionToCopy": "Нет выделения для копирования"
+  "CtxMenuNoSelectionToCopy": "Нет выделения для копирования",
+  "ModelPickerSectionExternalAgents": "Другие агенты (ACP)",
+  "ModelPickerExternalAgentRoute": "ACP-агент",
+  "ModelPickerExternalAgentRunnableHint": "Работает через ACP со своей учётной записью",
+  "ModelPickerExternalAgentSignInHint": "Вход: {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} не готов: {reason}",
+  "ExternalAgentSessionStarted": "Сессия начата с {agent} (ACP). Codewhale сохраняет тред, историю и подтверждения.",
+  "ExternalAgentSessionSwitchedBack": "Возврат к Codewhale ({model}).",
+  "ExternalAgentSwitchBusy": "Дождитесь завершения текущего хода перед сменой агента."
 }

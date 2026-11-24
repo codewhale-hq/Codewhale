@@ -2865,5 +2865,13 @@
   "CtxMenuCellHidden": "Đã ẩn ô",
   "CtxMenuCellShown": "Đã hiện ô",
   "CtxMenuHiddenCellsRestored": "Đã khôi phục {count} ô bị ẩn",
-  "CtxMenuNoSelectionToCopy": "Không có vùng chọn để sao chép"
+  "CtxMenuNoSelectionToCopy": "Không có vùng chọn để sao chép",
+  "ModelPickerSectionExternalAgents": "Tác nhân khác (ACP)",
+  "ModelPickerExternalAgentRoute": "Tác nhân ACP",
+  "ModelPickerExternalAgentRunnableHint": "Chạy bằng tài khoản riêng qua ACP",
+  "ModelPickerExternalAgentSignInHint": "Đăng nhập: {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} chưa sẵn sàng: {reason}",
+  "ExternalAgentSessionStarted": "Đã bắt đầu phiên với {agent} (ACP). Codewhale giữ luồng, bản ghi và phê duyệt.",
+  "ExternalAgentSessionSwitchedBack": "Đã chuyển lại sang Codewhale ({model}).",
+  "ExternalAgentSwitchBusy": "Chờ lượt hiện tại hoàn tất trước khi chuyển tác nhân."
 }

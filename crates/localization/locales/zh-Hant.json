@@ -2865,5 +2865,13 @@
   "CtxMenuCellHidden": "已隱藏條目",
   "CtxMenuCellShown": "已顯示條目",
   "CtxMenuHiddenCellsRestored": "已還原 {count} 個隱藏條目",
-  "CtxMenuNoSelectionToCopy": "沒有可複製的所選內容"
+  "CtxMenuNoSelectionToCopy": "沒有可複製的所選內容",
+  "ModelPickerSectionExternalAgents": "其他代理 (ACP)",
+  "ModelPickerExternalAgentRoute": "ACP 代理",
+  "ModelPickerExternalAgentRunnableHint": "透過 ACP 使用其自有帳號執行",
+  "ModelPickerExternalAgentSignInHint": "登入: {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} 尚未就緒: {reason}",
+  "ExternalAgentSessionStarted": "已使用 {agent} (ACP) 開始工作階段。Codewhale 保留執行緒、紀錄和核准。",
+  "ExternalAgentSessionSwitchedBack": "已切換回 Codewhale ({model})。",
+  "ExternalAgentSwitchBusy": "請等待目前回合完成後再切換代理。"
 }

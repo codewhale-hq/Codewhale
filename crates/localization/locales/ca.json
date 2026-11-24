@@ -2865,5 +2865,13 @@
   "CtxMenuCellHidden": "Cel·la amagada",
   "CtxMenuCellShown": "Cel·la mostrada",
   "CtxMenuHiddenCellsRestored": "{count} cel·la(es) amagada(es) restaurada(es)",
-  "CtxMenuNoSelectionToCopy": "Cap selecció per copiar"
+  "CtxMenuNoSelectionToCopy": "Cap selecció per copiar",
+  "ModelPickerSectionExternalAgents": "Altres agents (ACP)",
+  "ModelPickerExternalAgentRoute": "Agent ACP",
+  "ModelPickerExternalAgentRunnableHint": "S'executa amb el seu propi compte via ACP",
+  "ModelPickerExternalAgentSignInHint": "Inicia sessió: {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} no està preparat: {reason}",
+  "ExternalAgentSessionStarted": "Sessió iniciada amb {agent} (ACP). Codewhale conserva el fil, la transcripció i les aprovacions.",
+  "ExternalAgentSessionSwitchedBack": "S'ha tornat a Codewhale ({model}).",
+  "ExternalAgentSwitchBusy": "Espera que acabi el torn actual abans de canviar d'agent."
 }

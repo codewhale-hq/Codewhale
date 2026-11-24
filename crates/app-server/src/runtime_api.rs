@@ -123,6 +123,9 @@ mod context;
 mod diagnostics;
 mod external_agent_options;
 mod external_agents;
+pub use self::external_agents::{
+    ExternalAgentDiscoveryRow, discover_external_agent, discover_external_agents,
+};
 mod git;
 mod jobs;
 pub mod listener;

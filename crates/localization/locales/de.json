@@ -2865,5 +2865,13 @@
   "CtxMenuCellHidden": "Zelle ausgeblendet",
   "CtxMenuCellShown": "Zelle eingeblendet",
   "CtxMenuHiddenCellsRestored": "{count} ausgeblendete Zelle(n) wiederhergestellt",
-  "CtxMenuNoSelectionToCopy": "Keine Auswahl zum Kopieren"
+  "CtxMenuNoSelectionToCopy": "Keine Auswahl zum Kopieren",
+  "ModelPickerSectionExternalAgents": "Andere Agenten (ACP)",
+  "ModelPickerExternalAgentRoute": "ACP-Agent",
+  "ModelPickerExternalAgentRunnableHint": "Läuft über ACP mit eigenem Konto",
+  "ModelPickerExternalAgentSignInHint": "Anmelden: {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} ist nicht bereit: {reason}",
+  "ExternalAgentSessionStarted": "Sitzung mit {agent} (ACP) gestartet. Codewhale behält Thread, Verlauf und Freigaben.",
+  "ExternalAgentSessionSwitchedBack": "Zurück zu Codewhale ({model}) gewechselt.",
+  "ExternalAgentSwitchBusy": "Warte, bis der aktuelle Zug abgeschlossen ist, bevor du den Agenten wechselst."
 }

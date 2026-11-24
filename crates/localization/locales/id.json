@@ -2865,5 +2865,13 @@
   "CtxMenuCellHidden": "Sel disembunyikan",
   "CtxMenuCellShown": "Sel ditampilkan",
   "CtxMenuHiddenCellsRestored": "{count} sel tersembunyi dipulihkan",
-  "CtxMenuNoSelectionToCopy": "Tidak ada pilihan untuk disalin"
+  "CtxMenuNoSelectionToCopy": "Tidak ada pilihan untuk disalin",
+  "ModelPickerSectionExternalAgents": "Agen lain (ACP)",
+  "ModelPickerExternalAgentRoute": "Agen ACP",
+  "ModelPickerExternalAgentRunnableHint": "Berjalan dengan akunnya sendiri melalui ACP",
+  "ModelPickerExternalAgentSignInHint": "Masuk: {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} belum siap: {reason}",
+  "ExternalAgentSessionStarted": "Sesi dimulai dengan {agent} (ACP). Codewhale menyimpan utas, transkrip, dan persetujuan.",
+  "ExternalAgentSessionSwitchedBack": "Kembali ke Codewhale ({model}).",
+  "ExternalAgentSwitchBusy": "Tunggu giliran saat ini selesai sebelum mengganti agen."
 }

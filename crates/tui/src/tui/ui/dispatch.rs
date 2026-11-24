@@ -514,12 +514,22 @@ pub(crate) async fn dispatch_user_message_with_recovery(
     let stop_words = config.stop_words();
     if message.extension_command.is_none() && is_stop_word(&message.display, &stop_words).is_some()
     {
-        engine_handle.cancel();
+        if !crate::tui::external_agent::interrupt_external_turn(app) {
+            engine_handle.cancel();
+        }
         app.stopped_turn = true;
         app.status_message = Some("Turn stopped. Tool calls blocked for this turn.".to_string());
         return Ok(());
     }
     app.stopped_turn = false;
+    if app.external_agent.is_some() {
+        if let Err(error) = crate::tui::external_agent::dispatch_external_turn(app, message.clone())
+        {
+            recover_unstarted_external_message(app, message, recovery, &error.to_string());
+            return Err(error);
+        }
+        return Ok(());
+    }
 
     // #1364: run mutable `message_submit` hooks before dispatch. Hooks see the
     // user's display text and may replace or block it before file mentions,

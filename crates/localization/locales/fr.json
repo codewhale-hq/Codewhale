@@ -2865,5 +2865,13 @@
   "CtxMenuCellHidden": "Cellule masquée",
   "CtxMenuCellShown": "Cellule affichée",
   "CtxMenuHiddenCellsRestored": "{count} cellule(s) masquée(s) restaurée(s)",
-  "CtxMenuNoSelectionToCopy": "Aucune sélection à copier"
+  "CtxMenuNoSelectionToCopy": "Aucune sélection à copier",
+  "ModelPickerSectionExternalAgents": "Autres agents (ACP)",
+  "ModelPickerExternalAgentRoute": "Agent ACP",
+  "ModelPickerExternalAgentRunnableHint": "S'exécute via ACP avec son propre compte",
+  "ModelPickerExternalAgentSignInHint": "Connexion : {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} n'est pas prêt : {reason}",
+  "ExternalAgentSessionStarted": "Session démarrée avec {agent} (ACP). Codewhale conserve le fil, la transcription et les approbations.",
+  "ExternalAgentSessionSwitchedBack": "Retour à Codewhale ({model}).",
+  "ExternalAgentSwitchBusy": "Attendez la fin du tour en cours avant de changer d'agent."
 }

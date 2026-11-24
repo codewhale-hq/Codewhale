@@ -2865,5 +2865,13 @@
   "CtxMenuCellHidden": "Клітинку сховано",
   "CtxMenuCellShown": "Клітинку показано",
   "CtxMenuHiddenCellsRestored": "Відновлено схованих клітинок: {count}",
-  "CtxMenuNoSelectionToCopy": "Немає вибраного для копіювання"
+  "CtxMenuNoSelectionToCopy": "Немає вибраного для копіювання",
+  "ModelPickerSectionExternalAgents": "Інші агенти (ACP)",
+  "ModelPickerExternalAgentRoute": "ACP-агент",
+  "ModelPickerExternalAgentRunnableHint": "Працює через ACP із власним обліковим записом",
+  "ModelPickerExternalAgentSignInHint": "Вхід: {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} не готовий: {reason}",
+  "ExternalAgentSessionStarted": "Сесію розпочато з {agent} (ACP). Codewhale зберігає тред, історію та підтвердження.",
+  "ExternalAgentSessionSwitchedBack": "Повернення до Codewhale ({model}).",
+  "ExternalAgentSwitchBusy": "Дочекайтеся завершення поточного ходу перед зміною агента."
 }

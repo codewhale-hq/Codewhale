@@ -2865,5 +2865,13 @@
   "CtxMenuCellHidden": "Cell hidden",
   "CtxMenuCellShown": "Cell shown",
   "CtxMenuHiddenCellsRestored": "{count} hidden cell(s) restored",
-  "CtxMenuNoSelectionToCopy": "No selection to copy"
+  "CtxMenuNoSelectionToCopy": "No selection to copy",
+  "ModelPickerSectionExternalAgents": "Other agents (ACP)",
+  "ModelPickerExternalAgentRoute": "ACP agent",
+  "ModelPickerExternalAgentRunnableHint": "Runs on its own account via ACP",
+  "ModelPickerExternalAgentSignInHint": "Sign in: {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} is not ready: {reason}",
+  "ExternalAgentSessionStarted": "Started session with {agent} (ACP). Codewhale keeps the thread, transcript, and approvals.",
+  "ExternalAgentSessionSwitchedBack": "Switched back to Codewhale ({model}).",
+  "ExternalAgentSwitchBusy": "Wait for the current turn to finish before switching agents."
 }
