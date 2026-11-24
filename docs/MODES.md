@@ -153,7 +153,7 @@ clients that need thread resume semantics.
 ## Mode Persistence
 
 Choosing a mode interactively also sets the mode a fresh session starts in.
-The `Shift+Tab` dial, the `Alt+A` / `Alt+P` / `Alt+Y` shortcuts, the hotbar's
+The `Shift+Tab` dial, the `Alt+A` / `Alt+P` shortcuts, the hotbar's
 Plan/Work actions, and `/mode` all write `default_mode` to
 `~/.codewhale/settings.toml`, so switching to Plan survives a restart. The
 write happens off the event loop; if it fails, the TUI says so in a warning

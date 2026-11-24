@@ -4103,7 +4103,7 @@ fn command_registry_refuses_shadowing_and_undoes_exactly_one_entry() {
         .unwrap();
 
     // Built-in spellings remain protected while plugins receive distinct names.
-    for name in ["help", "trust", "model", "jihua", "zidong", "stub-alias"] {
+    for name in ["help", "trust", "model", "jihua", "stub-alias"] {
         let handle = register_command(&mut registry, &a, name, None).unwrap();
         let _ = registry.mark_active(&a);
         let registered = registry.live_command(handle, "a", a.generation).unwrap();

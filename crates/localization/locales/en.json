@@ -847,7 +847,7 @@
   "KbCycleThinking": "Cycle reasoning effort (Ctrl+T)",
   "KbCyclePermissions": "Cycle Access: Ask → Accept Edits → Plan → Auto-Review → Full Access (Shift+Tab)",
   "KbJumpPlanAgentYolo": "Trigger hotbar slots",
-  "KbAltJumpPlanAgentYolo": "Jump to Plan/Work, or request Full Access (legacy alias)",
+  "KbAltJumpPlanAgentYolo": "Jump to Plan / Work",
   "KbFocusSidebar": "Focus the Tasks / Agents / Context / Pinned workbar panel",
   "KbSessionPicker": "Open the session picker",
   "KbUpdateInstall": "Check for and install the latest Codewhale update (`/update install`)",

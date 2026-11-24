@@ -229,7 +229,7 @@ impl codewhale_engine::command_catalog::CommandCatalog for CommandTable {
     fn answers_to(&self, name: &str) -> bool {
         // `jihua` and `zidong` are mode aliases the dispatcher answers ahead
         // of the registry.
-        matches!(name, "jihua" | "zidong") || registry().get(name).is_some()
+        matches!(name, "jihua") || registry().get(name).is_some()
     }
 
     fn builtins(&self) -> Vec<codewhale_engine::command_catalog::BuiltinCommand> {
@@ -446,14 +446,8 @@ fn execute_in_context(
     // rather than the canonical `/mode` behavior, so they still dispatch
     // before registry lookup. Ordinary compatibility aliases belong in their
     // command's `CommandInfo` metadata.
-    match command.as_str() {
-        "jihua" => {
-            return config_group::mode_alias(app, "plan");
-        }
-        "zidong" => {
-            return config_group::mode_alias(app, "yolo");
-        }
-        _ => {}
+    if command == "jihua" {
+        return config_group::mode_alias(app, "plan");
     }
 
     if let Some(command_object) = registry().get(command.as_str()) {

@@ -137,10 +137,10 @@ pub fn handle_paste_burst_key(app: &mut App, key: &KeyEvent, now: Instant) -> bo
                     }
                     if rapid_chars >= 2 {
                         app.paste_burst.begin_buffer_from_now(c, now);
-                    } else {
-                        app.paste_burst.arm_window_for_direct_char(now, rapid_chars);
-                        app.insert_char(c);
+                        return true;
                     }
+                    app.paste_burst.arm_window_for_direct_char(now, rapid_chars);
+                    return false;
                 }
                 return true;
             }
@@ -614,7 +614,13 @@ mod tests {
             for (i, ch) in text.chars().enumerate() {
                 last = start + Duration::from_millis(50 * i as u64);
                 app.flush_paste_burst_if_due(last);
-                assert!(handle_paste_burst_key(&mut app, &plain(ch), last));
+                let handled = handle_paste_burst_key(&mut app, &plain(ch), last);
+                if ch.is_ascii() {
+                    assert!(handled);
+                } else {
+                    assert!(!handled);
+                    app.insert_char(ch);
+                }
             }
             let enter = last + Duration::from_millis(30);
             app.flush_paste_burst_if_due(enter);
@@ -669,14 +675,17 @@ mod tests {
                 } else {
                     plain(ch)
                 };
-                assert!(
-                    handle_paste_burst_key(
-                        &mut app,
-                        &key,
-                        start + Duration::from_millis(index as u64),
-                    ),
-                    "raw pasted {ch:?} must not reach submit"
+                let handled = handle_paste_burst_key(
+                    &mut app,
+                    &key,
+                    start + Duration::from_millis(index as u64),
                 );
+                if index == 0 && !ch.is_ascii() {
+                    assert!(!handled);
+                    app.insert_char(ch);
+                } else {
+                    assert!(handled, "raw pasted {ch:?} must not reach submit");
+                }
             }
             app.flush_paste_burst_if_due(start + Duration::from_secs(1));
             assert_eq!(app.input, pasted);
@@ -815,7 +824,8 @@ mod tests {
         let mut app = test_app();
         let t0 = Instant::now();
 
-        assert!(handle_paste_burst_key(&mut app, &plain('好'), t0));
+        assert!(!handle_paste_burst_key(&mut app, &plain('好'), t0));
+        app.insert_char('好');
         assert!(
             handle_paste_burst_key(
                 &mut app,
@@ -836,7 +846,8 @@ mod tests {
         let mut app = test_app();
         let t0 = Instant::now();
 
-        assert!(handle_paste_burst_key(&mut app, &plain('好'), t0));
+        assert!(!handle_paste_burst_key(&mut app, &plain('好'), t0));
+        app.insert_char('好');
         assert_eq!(app.input, "好");
 
         assert!(
@@ -862,7 +873,8 @@ mod tests {
 
         for (i, ch) in "你好世界".chars().enumerate() {
             let now = t0 + Duration::from_millis(200 * i as u64);
-            assert!(handle_paste_burst_key(&mut app, &plain(ch), now));
+            assert!(!handle_paste_burst_key(&mut app, &plain(ch), now));
+            app.insert_char(ch);
         }
         assert_eq!(app.input, "你好世界");
 
@@ -954,7 +966,8 @@ mod tests {
         // doesn't classify them as a paste burst.
         for (i, ch) in "你好世界".chars().enumerate() {
             let now = t0 + Duration::from_millis(50 * i as u64);
-            let _ = handle_paste_burst_key(&mut app, &plain(ch), now);
+            assert!(!handle_paste_burst_key(&mut app, &plain(ch), now));
+            app.insert_char(ch);
         }
 
         // Past the active-flush delay so any buffered burst commits.
@@ -1054,14 +1067,20 @@ mod tests {
         raw.bracketed_paste_trusted = false;
 
         let mut now = Instant::now();
-        for ch in payload.chars() {
+        for (index, ch) in payload.chars().enumerate() {
             now += Duration::from_micros(100);
             let key = if ch == '\n' {
                 KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
             } else {
                 plain(ch)
             };
-            assert!(handle_paste_burst_key(&mut raw, &key, now));
+            let handled = handle_paste_burst_key(&mut raw, &key, now);
+            if index == 0 && !ch.is_ascii() {
+                assert!(!handled);
+                raw.insert_char(ch);
+            } else {
+                assert!(handled);
+            }
         }
         let flush_at = now + PasteBurst::recommended_active_flush_delay();
         let FlushResult::TextContinuation(tail) = raw.take_paste_burst_flush_if_enabled(flush_at)
@@ -1126,10 +1145,16 @@ mod tests {
             } else {
                 plain(ch)
             };
-            assert!(
-                handle_paste_burst_key(app, &key, now),
-                "raw paste character {ch:?} must be handled by paste-burst detection"
-            );
+            let handled = handle_paste_burst_key(app, &key, now);
+            if index == 0 && !ch.is_ascii() {
+                assert!(!handled);
+                app.insert_char(ch);
+            } else {
+                assert!(
+                    handled,
+                    "raw paste character {ch:?} must be handled by paste-burst detection"
+                );
+            }
             if index + 1 == probe_at {
                 assert!(
                     app.input.len() * 3 >= payload.len(),

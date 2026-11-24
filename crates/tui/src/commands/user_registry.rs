@@ -606,7 +606,7 @@ const PROTECTED_BUILTINS: &[&str] = &[
 /// aliases dispatched ahead of the registry) resolves to a protected built-in.
 fn is_protected_builtin_command(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
-    if matches!(name.as_str(), "jihua" | "zidong") {
+    if name == "jihua" {
         return true;
     }
     super::registry()

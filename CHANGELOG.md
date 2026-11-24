@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Full Access is selected through `Shift+Tab` instead of the legacy yolo-compat funnel:** removed `Alt+Y`, `Alt+Shift+Y`, and the `/mode yolo|bypass|4` permission shortcut; `/mode yolo` now points to `Shift+Tab` (or `/auto`), and `/zidong` is now an alias for `/auto` (Auto-Review). Launch flags (`--yolo`, `--full-access`, `CODEWHALE_YOLO`, `default_mode = "yolo"`) keep their startup behavior.
+
+### Fixed
+
+- **Composer vim mode no longer swallows typing after pressing `v`:** removed the unfinished `VimMode::Visual` state that absorbed all keys until `Esc` with no on-screen indicator or operators.
+- **Lone non-ASCII keys now reach normal key routing on untrusted terminals:** single IME/non-ASCII commits in paste-burst detection keep their Enter-suppression window while falling through to the main key match (vim Normal mode, Esc-Esc backtrack reset, and ordinary insertion) instead of bypassing it.
+- **Launch-card resume always opens confirmation from mouse and keyboard:** unified mouse and keyboard launch-action dispatchers into one `apply_launch_action` path and removed the unreachable direct-resume mouse arm.
+
 ## [0.10.4] - 2026-11-23
 
 Codewhale v0.10.4 is a hotfix release. Ctrl+V no longer pastes text twice in Windows Terminal, which also doubled API keys pasted into `/provider`; the fix was checked on a real Windows Terminal. `codewhale update` no longer refuses a release binary because an unrelated `cargo install` left a Cargo record beside it. The refusal happens inside the installed 0.10.3, so an install it affects cannot update itself to 0.10.4: rerun the installer once (`curl -fsSL https://codewhale.net/install.sh | sh` on macOS and Linux, or `install.bat` from the 0.10.4 Windows archive), and later updates work. `/provider` now works for projects on a second Windows drive such as D:, Computer Use installs from the Marketplace, and every terminal draws the dot whale in `/pet`. `url` is updated to 2.5.9 for RUSTSEC-2026-0592. DeepSeek Harness compatibility is limited: of 32 published packages tried unmodified, 2 activate in the terminal; [DSH compatibility](docs/DSH_COMPATIBILITY.md) lists each one.

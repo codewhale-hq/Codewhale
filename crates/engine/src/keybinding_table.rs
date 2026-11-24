@@ -338,7 +338,7 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         section: KeybindingSection::Modes,
     },
     KeybindingEntry {
-        chord: "Alt+P / Alt+A / Alt+Y",
+        chord: "Alt+P / Alt+A",
         description_id: codewhale_localization::MessageId::KbAltJumpPlanAgentYolo,
         section: KeybindingSection::Modes,
     },
