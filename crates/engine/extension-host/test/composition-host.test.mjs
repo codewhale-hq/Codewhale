@@ -95,10 +95,10 @@ function moduleClosureComposition(t, rowSource, files, extraRows = {}) {
 
 test('a row that reads settings.describe() in a synchronous try/catch during apply activates and stays live',async t=>{
   const host=await startHost();t.after(()=>host.stop())
-  const probe=moduleClosureComposition(t,"export const inject=['commands'];export function apply(ctx){let l='zh';try{const f=ctx.get('settings').describe();if(Array.isArray(f))l='x'}catch{}ctx.commands.register({name:'probe-'+l,description:'locale probe',handler(){return {kind:'success',text:l}}})}",{})
+  const probe=moduleClosureComposition(t,"export const inject=['commands'];export function apply(ctx){let l='zh';try{const f=ctx.get('settings').describe();if(Array.isArray(f) && f.some(item=>item.ns==='locale'))l='host'}catch{}ctx.commands.register({name:'probe-'+l,description:'locale probe',handler(){return {kind:'success',text:l}}})}",{})
   const {ref,result}=await activate(host,'settings-probe',probe.entry)
   assert.equal(result.status,'ok',result.diagnostic)
-  assert.deepEqual(result.commands,['probe-zh'])
+  assert.deepEqual(result.commands,['probe-host'])
   await new Promise(resolve=>setTimeout(resolve,100))
   assert.deepEqual(host.faulted,[])
   assert.deepEqual(host.brokerCalls,[])
@@ -107,10 +107,10 @@ test('a row that reads settings.describe() in a synchronous try/catch during app
 
 test('a failed composition row names its import error, and a waiting row names only the services it lacks',async t=>{
   const host=await startHost();t.after(()=>host.stop())
-  const peer=moduleClosureComposition(t,"import {WorkspaceId} from '@deepseek-ai/dsh-workspace';export function apply(){return WorkspaceId}",{})
+  const peer=moduleClosureComposition(t,"import {setApprovalPolicy} from '@deepseek-ai/dsh-user-approval';export function apply(){return setApprovalPolicy}",{})
   const imported=(await activate(host,'row-peer',peer.entry)).result
   assert.equal(imported.status,'failed')
-  assert.match(imported.diagnostic,/composition row "row-0" failed activation: UnsupportedPeerError: requires `@deepseek-ai\/dsh-workspace`/)
+  assert.match(imported.diagnostic,/composition row "row-0" failed activation: UnsupportedPeerError: requires `@deepseek-ai\/dsh-user-approval`/)
   const web=moduleClosureComposition(t,"export const inject=['tools','webServer'];export function apply(){}",{})
   const waiting=(await activate(host,'row-web',web.entry)).result
   assert.equal(waiting.status,'failed')

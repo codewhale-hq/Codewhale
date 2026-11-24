@@ -196,20 +196,22 @@ export class HostRoot {
     const unsupportedDshLifecycle = new Set([
       'agent/pre-step', 'agent/turn-stopping',
       'subagent/start', 'subagent/end',
+      'approval/request',
     ])
     root.on('internal/listener', function (this: any, name: string, callback: any, options: any) {
       if (this[OWNER] && unsupportedDshLifecycle.has(name)) throw new Error(`DSH lifecycle ${name} is not projected by this host checkpoint`)
       if (name === 'agent/created' && options?.global) throw new Error('agent/created listeners are owner-scoped; global is unsupported')
-      if (name !== 'tools/pre-execute' && name !== 'tools/post-execute') return
+      if (name !== 'tools/pre-execute' && name !== 'tools/post-execute' && name !== 'tools/result') return
       const owner: OwnerRecord | undefined = this[OWNER]
       if (!owner) throw new Error(`${name} listener registered outside an extension owner`)
       if (options?.prepend || options?.global) throw new Error(`${name} listeners use core registration order; prepend/global are unsupported`)
-      const description = name === 'tools/pre-execute'
+      const hookEvent = name === 'tools/result' ? 'tools/post-execute' : name
+      const description = hookEvent === 'tools/pre-execute'
         ? 'Programmable tool admission listener'
         : 'Read-only tool outcome observer'
       return this.effect(() => host.hookRegistrations.add(
-        { owner, name, callback, disposed: false },
-        { name, description },
+        { owner, name: hookEvent, callback, disposed: false },
+        { name: hookEvent, description },
       ), `ctx.on("${name}")`)
     })
 
@@ -253,6 +255,31 @@ export class HostRoot {
         const invocation = host.toolInvocations.getStore()
         if (typeof name !== 'string' || !invocation || !invocation.active || invocation.agent === undefined || agent !== invocation.agent) return undefined
         return invocation.callerTools.includes(name) ? Object.freeze({ name }) : undefined
+      }
+
+      /** DSH `ctx.tools.guard(fn)`: deny-only guard registered on tools/pre-execute; never auto-approves. */
+      guard(guardFn: unknown): () => void {
+        const ctx: any = this.ctx
+        const owner: OwnerRecord | undefined = ctx[OWNER]
+        if (!owner) throw new Error('tools.guard called outside an extension owner')
+        if (typeof guardFn !== 'function') throw new TypeError('tools.guard requires a guard function')
+        const wrapped = async (exec: unknown) => {
+          const verdict = await (guardFn as (exec: unknown) => unknown)(exec)
+          if (typeof verdict === 'string' && verdict.trim().length > 0) {
+            return { kind: 'deny', reason: verdict.trim() }
+          }
+          if (verdict && typeof verdict === 'object' && (verdict as { kind?: unknown }).kind === 'deny') {
+            const reason = (verdict as { reason?: unknown }).reason
+            if (typeof reason === 'string' && reason.trim().length > 0) {
+              return { kind: 'deny', reason: reason.trim() }
+            }
+          }
+          return { kind: 'abstain' }
+        }
+        return ctx.effect(() => host.hookRegistrations.add(
+          { owner, name: 'tools/pre-execute', callback: wrapped, disposed: false },
+          { name: 'tools/pre-execute', description: 'Read-only deny-only tool guard' },
+        ), 'tools.guard()')
       }
 
       /** DSH `ctx.tools.register(defineTool(...))`: returns an idempotent disposer. */
