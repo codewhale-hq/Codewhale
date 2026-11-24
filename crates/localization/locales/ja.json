@@ -2865,5 +2865,18 @@
   "CtxMenuCellHidden": "セルを隠しました",
   "CtxMenuCellShown": "セルを表示しました",
   "CtxMenuHiddenCellsRestored": "隠れていた {count} 件のセルを復元しました",
-  "CtxMenuNoSelectionToCopy": "コピーする選択がありません"
+  "CtxMenuNoSelectionToCopy": "コピーする選択がありません",
+  "ModelPickerSectionExternalAgents": "その他のエージェント (ACP)",
+  "ModelPickerExternalAgentRoute": "ACP エージェント",
+  "ModelPickerExternalAgentRunnableHint": "ACP 経由で自身のアカウントで実行",
+  "ModelPickerExternalAgentSignInHint": "サインイン: {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} は準備できていません: {reason}",
+  "ExternalAgentSessionStarted": "{agent} (ACP) でセッションを開始しました。Codewhale がスレッド、記録、承認を保持します。",
+  "ExternalAgentSessionSwitchedBack": "Codewhale ({model}) に戻しました。",
+  "ExternalAgentSwitchBusy": "エージェントを切り替える前に現在のターンが完了するのを待ってください。",
+  "ModelPickerExternalAgentNotReady": "準備未完了",
+  "ExternalAgentThinkingStatus": "{agent} が思考中...",
+  "ExternalAgentToolCallFallback": "外部エージェントのツール呼び出し",
+  "ExternalAgentTurnFailedFallback": "外部エージェントのターンが失敗しました",
+  "ExternalAgentTurnInterruptedStatus": "{agent} のターンが中断されました"
 }
