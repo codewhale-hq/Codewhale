@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use serde::{Deserialize, Serialize};
 
 /// Terminal reasons shared by TUI, JSONL, Fleet, and benchmark receipts.
@@ -108,63 +106,6 @@ pub fn classify_turn_termination(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum VerificationOutcome {
-    NotRun,
-    PassedFirstAttempt,
-    PassedAfterRepair,
-    Failed,
-    Incomplete,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VerificationReceipt {
-    pub command: String,
-    pub outcome: VerificationOutcome,
-    pub attempts: u32,
-    pub duration_ms: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifact: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunReceipt {
-    pub reason: RunTerminationReason,
-    pub summary: String,
-    #[serde(default)]
-    pub files_changed: Vec<PathBuf>,
-    #[serde(default)]
-    pub verification: Vec<VerificationReceipt>,
-    #[serde(default)]
-    pub remaining_risks: Vec<String>,
-}
-
-impl RunReceipt {
-    pub fn validate(&self) -> Result<(), String> {
-        if self.summary.trim().is_empty() {
-            return Err("run receipt summary cannot be empty".to_string());
-        }
-        if self.reason == RunTerminationReason::Resolved
-            && self
-                .verification
-                .iter()
-                .any(|receipt| receipt.outcome == VerificationOutcome::Failed)
-        {
-            return Err("resolved run cannot contain a failed verification receipt".to_string());
-        }
-        Ok(())
-    }
-
-    #[must_use]
-    pub fn pass_at_one(&self) -> bool {
-        !self.verification.is_empty()
-            && self.verification.iter().all(|receipt| {
-                receipt.outcome == VerificationOutcome::PassedFirstAttempt && receipt.attempts == 1
-            })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,25 +117,6 @@ mod tests {
             3
         );
         assert!(!RunTerminationReason::ApprovalRequired.is_success());
-    }
-
-    #[test]
-    fn repair_success_is_not_pass_at_one() {
-        let receipt = RunReceipt {
-            reason: RunTerminationReason::Resolved,
-            summary: "fixed".to_string(),
-            files_changed: vec![PathBuf::from("src/lib.rs")],
-            verification: vec![VerificationReceipt {
-                command: "cargo test".to_string(),
-                outcome: VerificationOutcome::PassedAfterRepair,
-                attempts: 2,
-                duration_ms: 10,
-                artifact: None,
-            }],
-            remaining_risks: Vec::new(),
-        };
-        assert!(!receipt.pass_at_one());
-        assert!(receipt.validate().is_ok());
     }
 
     #[test]
