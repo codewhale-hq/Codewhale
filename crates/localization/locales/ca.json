@@ -1945,6 +1945,8 @@
   "SavedAsStartupDefault": "desat com a valor per defecte d'arrencada",
   "ModeAlreadyActiveSavedAsDefault": "Ja estàs en mode {mode} — desat com a valor per defecte d'arrencada.",
   "StartupDefaultNotSaved": "No s'ha desat {setting}: {error}",
+  "ProjectModelNotSavedAsDefault": "{model} ve de la configuració d'aquest projecte — el valor predeterminat d'inici no ha canviat.",
+  "ProjectConfigStillPinsModel": "la configuració d'aquest projecte encara fixa {model}",
   "RouteSaveNothingPending": "No hi ha cap canvi de ruta pendent per desar.",
   "RouteSaveNoTeamSelected": "No hi ha res per actualitzar — no hi ha cap equip seleccionat. Fes servir /fleet save-as per desar aquesta ruta com a equip nou.",
   "RouteSaveTeamUpdated": "L'equip `{name}` ara fa servir {route} — s'ha escrit {path}",

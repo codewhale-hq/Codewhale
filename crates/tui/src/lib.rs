@@ -15014,6 +15014,7 @@ fn merge_project_config_with_approval_baseline(
             .set_provider_model_override(&identity, Some(model.to_string()))
             .map_err(anyhow::Error::msg)?;
         config.remembered_selection_scope = Some(false);
+        config.project_model = Some(model.to_string());
     }
     if let Some(v) = table.get("reasoning_effort").and_then(toml::Value::as_str)
         && !v.is_empty()

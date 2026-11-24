@@ -26241,19 +26241,27 @@ async fn model_picker_auto_restores_raw_preference_after_fixed_normalization() {
 }
 
 #[tokio::test]
-async fn auto_model_effort_picker_persists_unresolved_tier_verbatim() {
+async fn auto_model_shift_d_persists_unresolved_effort_tier_verbatim() {
     let _guard = SettingsHomeGuard::new();
     let mut app = create_test_app();
     app.set_model_selection("auto".to_string());
     app.reasoning_effort = ReasoningEffort::Auto;
     app.reasoning_effort_preference = None;
-    let engine = mock_engine_handle();
+    let mut engine = mock_engine_handle();
+    let mut config =
+        <Config as Default>::default().with_legacy_root(Some("test-key".to_string()), None);
 
-    apply_picker_effort_choice(
+    let selected_identity = app.admitted_provider_identity().unwrap().clone();
+    apply_model_picker_choice(
         &mut app,
-        &engine.handle,
+        &mut engine.handle,
+        &mut config,
+        "auto".to_string(),
+        Some(selected_identity),
         ReasoningEffort::Low,
+        "auto".to_string(),
         ReasoningEffort::Auto,
+        true,
     )
     .await;
 
@@ -26337,7 +26345,49 @@ async fn reselecting_live_model_and_thinking_is_session_local() {
 }
 
 #[tokio::test]
-async fn reselecting_live_thinking_only_persists_startup_default() {
+async fn shift_d_on_project_pinned_model_leaves_global_default_alone() {
+    let _guard = SettingsHomeGuard::new();
+    let global_config = codewhale_runtime::config::home_config_path().expect("global config path");
+    let startup_before = std::fs::read(&global_config).ok();
+    let mut app = create_test_app();
+    app.set_model_selection("deepseek-v4-pro".to_string());
+    app.reasoning_effort = ReasoningEffort::High;
+    let mut engine = mock_engine_handle();
+    let mut config =
+        <Config as Default>::default().with_legacy_root(Some("test-key".to_string()), None);
+    config.project_model = Some("deepseek-v4-pro".to_string());
+
+    let selected_identity = app.admitted_provider_identity().unwrap().clone();
+    apply_model_picker_choice(
+        &mut app,
+        &mut engine.handle,
+        &mut config,
+        "deepseek-v4-pro".to_string(),
+        Some(selected_identity),
+        ReasoningEffort::High,
+        "deepseek-v4-pro".to_string(),
+        ReasoningEffort::High,
+        true,
+    )
+    .await;
+
+    assert_eq!(std::fs::read(global_config).ok(), startup_before);
+    assert_eq!(
+        codewhale_runtime::settings::Settings::load()
+            .expect("load settings")
+            .reasoning_effort
+            .as_deref(),
+        None
+    );
+    assert!(
+        app.status_message
+            .as_deref()
+            .is_some_and(|message| message.contains("project"))
+    );
+}
+
+#[tokio::test]
+async fn reselecting_live_thinking_in_picker_is_session_local() {
     let _guard = SettingsHomeGuard::new();
     let mut app = create_test_app();
     app.set_model_selection("deepseek-v4-pro".to_string());
@@ -26357,13 +26407,13 @@ async fn reselecting_live_thinking_only_persists_startup_default() {
             .expect("load settings")
             .reasoning_effort
             .as_deref(),
-        Some("high")
+        None
     );
     assert_eq!(app.reasoning_effort_preference, Some(ReasoningEffort::High));
     assert!(
         app.status_message
             .as_deref()
-            .is_some_and(|message| message.contains("saved as startup default"))
+            .is_some_and(|message| message.contains("Thinking unchanged"))
     );
 }
 

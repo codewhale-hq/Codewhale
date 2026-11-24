@@ -2881,11 +2881,20 @@ fn run() -> Result<()> {
             // read-only path `doctor` uses rather than looking only at flags.
             let resolved_runtime =
                 resolve_runtime_for_diagnostic_dispatch(&store, &runtime_overrides);
+            let project_model = if cli.no_project_config {
+                None
+            } else {
+                let workspace = cli.workspace.clone().unwrap_or_else(|| {
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                });
+                project_config_model(&workspace)?
+            };
             run_model_command(
                 &mut store,
                 args.command,
                 runtime_overrides.provider,
                 &resolved_runtime,
+                project_model,
             )
         }
         Some(Commands::Thread(args)) => {
@@ -6052,11 +6061,24 @@ fn model_set_route(
     }))
 }
 
+fn project_config_model(workspace: &Path) -> Result<Option<String>> {
+    match codewhale_config::load_project_config_outcome(workspace) {
+        codewhale_config::ProjectConfigOutcome::Missing => Ok(None),
+        codewhale_config::ProjectConfigOutcome::Loaded(config) => {
+            Ok(config.model.filter(|model| !model.is_empty()))
+        }
+        codewhale_config::ProjectConfigOutcome::Invalid { path, reason } => {
+            bail!("project config {} {reason}", path.display())
+        }
+    }
+}
+
 fn run_model_command(
     store: &mut ConfigStore,
     command: ModelCommand,
     top_level_provider: Option<ProviderKind>,
     resolved_runtime: &ResolvedRuntimeOptions,
+    project_model: Option<String>,
 ) -> Result<()> {
     match command {
         ModelCommand::List { provider } => {
@@ -6076,8 +6098,17 @@ fn run_model_command(
             let queried = raw_query.map(str::trim).filter(|m| !m.is_empty());
 
             if raw_query.is_none() && subcommand_provider.is_none() {
-                resolved_runtime.ensure_valid_model()?;
-                let saved = if matches!(resolved_runtime.provider_source, ProviderSource::Config)
+                let project_model = project_model.filter(|_| {
+                    !matches!(
+                        resolved_runtime.model_source,
+                        codewhale_config::ModelSource::Cli | codewhale_config::ModelSource::Env
+                    )
+                });
+                if project_model.is_none() {
+                    resolved_runtime.ensure_valid_model()?;
+                }
+                let saved = if project_model.is_none()
+                    && matches!(resolved_runtime.provider_source, ProviderSource::Config)
                     && !matches!(
                         resolved_runtime.model_source,
                         codewhale_config::ModelSource::Cli | codewhale_config::ModelSource::Env
@@ -6093,14 +6124,17 @@ fn run_model_command(
                     .map_or(resolved_runtime.provider.as_str(), |(provider, _, _)| {
                         provider.as_str()
                     });
-                let model = saved
-                    .as_ref()
-                    .map_or(resolved_runtime.model.as_str(), |(_, model, _)| {
-                        model.as_str()
-                    });
-                let source = saved
-                    .as_ref()
-                    .map_or(resolved_runtime.model_source, |(_, _, source)| *source);
+                let model = project_model
+                    .as_deref()
+                    .or_else(|| saved.as_ref().map(|(_, model, _)| model.as_str()))
+                    .unwrap_or(resolved_runtime.model.as_str());
+                let source = if project_model.is_some() {
+                    codewhale_config::ModelSource::RootModel
+                } else {
+                    saved
+                        .as_ref()
+                        .map_or(resolved_runtime.model_source, |(_, _, source)| *source)
+                };
                 let kind = ProviderKind::parse(provider).unwrap_or(ProviderKind::Custom);
                 let identity = if kind == ProviderKind::Custom {
                     store.config.named_custom_provider_id().unwrap_or(provider)
@@ -6176,8 +6210,16 @@ fn run_model_command(
                     "provider_source: {}",
                     provider_source_label(resolved_runtime.provider_source)
                 );
-                println!("model_source: {}", source.as_str());
+                println!(
+                    "model_source: {}",
+                    if project_model.is_some() {
+                        "project config model"
+                    } else {
+                        source.as_str()
+                    }
+                );
                 if saved.is_none()
+                    && project_model.is_none()
                     && let Err(error) = &resolved_runtime.route
                 {
                     println!("route_error: {error}");
@@ -8138,6 +8180,7 @@ verbosity = "concise"
             },
             None,
             &runtime,
+            None,
         )
         .unwrap();
         assert_eq!(store.config.provider, ProviderKind::Zai);
@@ -8232,6 +8275,7 @@ verbosity = "concise"
                 },
                 None,
                 &runtime,
+                None,
             )
             .unwrap();
             assert_eq!(store.config.provider, provider);
@@ -8280,6 +8324,7 @@ verbosity = "concise"
                 },
                 None,
                 &runtime,
+                None,
             )
             .unwrap();
             let saved = std::fs::read_to_string(&path).unwrap();
@@ -8329,12 +8374,43 @@ verbosity = "concise"
                 },
                 None,
                 &runtime,
+                None,
             )
             .expect_err("rejected model must fail loud")
             .to_string();
             assert!(err.contains(expected_provider), "{err}");
             assert!(err.contains(expected_model), "{err}");
         }
+    }
+
+    #[test]
+    fn model_resolve_reports_the_project_config_model() {
+        let _env = env_lock();
+        let home = tempfile::tempdir().expect("isolated home");
+        let _home = ScopedEnvVar::set("CODEWHALE_HOME", &home.path().to_string_lossy());
+        let path = home.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "provider = \"deepseek\"\n\n[providers.deepseek]\napi_key = \"k\"\nmodel = \"deepseek-v4-pro\"\n",
+        )
+        .unwrap();
+        let mut store = ConfigStore::load(Some(path)).unwrap();
+        let runtime = store
+            .config
+            .resolve_runtime_options(&CliRuntimeOverrides::default());
+        let err = run_model_command(
+            &mut store,
+            ModelCommand::Resolve {
+                model: None,
+                provider: None,
+            },
+            None,
+            &runtime,
+            Some("totally-unknown-model-x".to_string()),
+        )
+        .expect_err("the project model, not the global one, is resolved")
+        .to_string();
+        assert!(err.contains("totally-unknown-model-x"), "{err}");
     }
 
     #[test]

@@ -1945,6 +1945,8 @@
   "SavedAsStartupDefault": "enregistré comme défaut de démarrage",
   "ModeAlreadyActiveSavedAsDefault": "Déjà en mode {mode} — enregistré comme défaut de démarrage.",
   "StartupDefaultNotSaved": "{setting} n'a pas été enregistré : {error}",
+  "ProjectModelNotSavedAsDefault": "{model} provient de la configuration de ce projet — défaut de démarrage inchangé.",
+  "ProjectConfigStillPinsModel": "la configuration de ce projet impose toujours {model}",
   "RouteSaveNothingPending": "Aucun changement de route en attente à enregistrer.",
   "RouteSaveNoTeamSelected": "Rien à mettre à jour — aucune équipe n'est sélectionnée. Utilisez /fleet save-as pour enregistrer cette route comme nouvelle équipe.",
   "RouteSaveTeamUpdated": "L'équipe `{name}` utilise désormais {route} — écrit dans {path}",

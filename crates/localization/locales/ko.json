@@ -1964,6 +1964,8 @@
   "SavedAsStartupDefault": "시작 기본값으로 저장했습니다",
   "ModeAlreadyActiveSavedAsDefault": "이미 {mode} 모드입니다 — 시작 기본값으로 저장했습니다.",
   "StartupDefaultNotSaved": "{setting}을(를) 저장하지 못했습니다: {error}",
+  "ProjectModelNotSavedAsDefault": "{model}은(는) 이 프로젝트 설정에서 지정됩니다 — 시작 기본값은 바뀌지 않았습니다.",
+  "ProjectConfigStillPinsModel": "이 프로젝트 설정이 여전히 {model}을(를) 고정합니다",
   "RouteSaveNothingPending": "저장할 대기 중인 경로 변경이 없습니다.",
   "RouteSaveNoTeamSelected": "업데이트할 항목이 없습니다 — 선택된 팀이 없습니다. /fleet save-as로 이 경로를 새 팀으로 저장하세요.",
   "RouteSaveTeamUpdated": "팀 `{name}`의 경로를 {route}(으)로 바꿨습니다 — {path}에 기록했습니다",

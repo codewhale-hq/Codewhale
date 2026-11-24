@@ -1964,6 +1964,8 @@
   "SavedAsStartupDefault": "已保存为启动默认值",
   "ModeAlreadyActiveSavedAsDefault": "已处于 {mode} 模式 — 已保存为启动默认值。",
   "StartupDefaultNotSaved": "{setting}未能保存：{error}",
+  "ProjectModelNotSavedAsDefault": "{model} 来自此项目的配置 — 启动默认值未更改。",
+  "ProjectConfigStillPinsModel": "此项目的配置仍固定使用 {model}",
   "RouteSaveNothingPending": "没有待保存的路由变更。",
   "RouteSaveNoTeamSelected": "无需更新 — 当前没有选中的 Fleet。用 /fleet save-as 把这条路由另存为新 Fleet。",
   "RouteSaveTeamUpdated": "Fleet `{name}` 现在使用 {route} — 已写入 {path}",

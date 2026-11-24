@@ -1964,6 +1964,8 @@
   "SavedAsStartupDefault": "guardado como valor predeterminado de inicio",
   "ModeAlreadyActiveSavedAsDefault": "Ya estás en modo {mode}: guardado como valor predeterminado de inicio.",
   "StartupDefaultNotSaved": "No se pudo guardar {setting}: {error}",
+  "ProjectModelNotSavedAsDefault": "{model} viene de la configuración de este proyecto — el valor predeterminado de inicio no cambió.",
+  "ProjectConfigStillPinsModel": "la configuración de este proyecto todavía fija {model}",
   "RouteSaveNothingPending": "No hay ningún cambio de ruta pendiente para guardar.",
   "RouteSaveNoTeamSelected": "Nada que actualizar: no hay ningún equipo seleccionado. Usa /fleet save-as para guardar esta ruta como un equipo nuevo.",
   "RouteSaveTeamUpdated": "El equipo `{name}` ahora usa {route} — se escribió {path}",

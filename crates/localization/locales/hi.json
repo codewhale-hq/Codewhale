@@ -1945,6 +1945,8 @@
   "SavedAsStartupDefault": "स्टार्टअप डिफ़ॉल्ट के रूप में सहेजा",
   "ModeAlreadyActiveSavedAsDefault": "पहले से {mode} मोड में — स्टार्टअप डिफ़ॉल्ट के रूप में सहेजा।",
   "StartupDefaultNotSaved": "{setting} सहेजा नहीं गया: {error}",
+  "ProjectModelNotSavedAsDefault": "{model} इस प्रोजेक्ट के कॉन्फ़िग से आता है — स्टार्टअप डिफ़ॉल्ट नहीं बदला।",
+  "ProjectConfigStillPinsModel": "इस प्रोजेक्ट का कॉन्फ़िग अब भी {model} तय करता है",
   "RouteSaveNothingPending": "सहेजने के लिए कोई लंबित रूट बदलाव नहीं है।",
   "RouteSaveNoTeamSelected": "अपडेट करने को कुछ नहीं — कोई टीम चुनी नहीं गई है। इस रूट को नई टीम के रूप में सहेजने के लिए /fleet save-as का उपयोग करें।",
   "RouteSaveTeamUpdated": "टीम `{name}` अब {route} पर चलती है — {path} में लिखा गया",

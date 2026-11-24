@@ -1945,6 +1945,8 @@
   "SavedAsStartupDefault": "збережено як типове для запуску",
   "ModeAlreadyActiveSavedAsDefault": "Режим {mode} уже активний — збережено як типовий для запуску.",
   "StartupDefaultNotSaved": "{setting} не збережено: {error}",
+  "ProjectModelNotSavedAsDefault": "{model} задано конфігурацією цього проєкту — типове для запуску не змінено.",
+  "ProjectConfigStillPinsModel": "конфігурація цього проєкту й далі закріплює {model}",
   "RouteSaveNothingPending": "Немає змін маршруту, що очікують збереження.",
   "RouteSaveNoTeamSelected": "Нічого оновлювати — команду не вибрано. Збережіть цей маршрут як нову команду через /fleet save-as.",
   "RouteSaveTeamUpdated": "Команда `{name}` тепер використовує {route} — записано в {path}",
