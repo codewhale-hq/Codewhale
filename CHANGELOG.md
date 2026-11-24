@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Verified candidate evaluator for experimental search workflows:** `workflows/operate_best_of_n.workflow.js` now supports an optional host-owned `args.evaluator` (`task.verifyCandidate`) that freezes a clean Git baseline, seals candidate diffs, and replays public and held-out gates inside Linux bubblewrap with `proposal_only` receipts. Thanks [@axobase001](https://github.com/axobase001). (#7294)
+- **Local specialist whales and structured Whale cards in the Engine:** the Runtime API now serves `/v1/whales`, `/v1/whales/{id}` and `/v1/whales/{id}/recycle` over `~/.codewhale/whales/<id>/{whale.toml,SOUL.md,MEMORY.md}` with `If-Match` revision checks, binds threads created with `whale_id` to that whale's `SOUL.md`, `MEMORY.md` and model/posture defaults, and records `metadata.whale_card` on markdown report writes, failed repository maintenance commands and connector 401/OAuth failures; TUI whale failure status now reads `Failed` instead of `Blocked`. (CW-8276, CW-8277)
+- **Local specialist whales and structured Whale cards in the Engine:** the Runtime API now serves `/v1/whales`, `/v1/whales/{id}` and `/v1/whales/{id}/recycle` over `~/.codewhale/whales/<id>/{whale.toml,SOUL.md,MEMORY.md}` with `If-Match` revision checks. A thread created with `whale_id` loads that whale's `SOUL.md`, `MEMORY.md` and model/posture defaults, and a `whale_id` that names no whale is refused instead of starting an ordinary thread. Deleting a whale refuses, before removing anything, when its folder holds files Codewhale did not write. Tool items carry `metadata.whale_card` after Markdown report writes, failed repository maintenance commands and connector 401/OAuth failures. The terminal's whale failure status reads Failed instead of Blocked in every complete language pack.
+
+### Contributors
+
+- **[@WTFitsmemyself](https://github.com/WTFitsmemyself)** — first contribution: `find … -delete` now counts as a destructive action in the execution policy, the same as `find … -exec rm` ([#7496](https://github.com/codewhale-hq/Codewhale/pull/7496)).
+- **[@NieZhuZhu](https://github.com/NieZhuZhu)** — fixed verified audit findings in configuration ([#7481](https://github.com/codewhale-hq/Codewhale/pull/7481)), termination and debug commands ([#7483](https://github.com/codewhale-hq/Codewhale/pull/7483)), the extension host ([#7484](https://github.com/codewhale-hq/Codewhale/pull/7484)) and the model client ([#7490](https://github.com/codewhale-hq/Codewhale/pull/7490)).
+- **[@luochen211](https://github.com/luochen211)** — removed unused paths listed in issue 7270 ([#7491](https://github.com/codewhale-hq/Codewhale/pull/7491)).
+- **[@Serendo](https://github.com/Serendo)** — routed every TaskManager consumer in the terminal UI through the App's single slot ([#7507](https://github.com/codewhale-hq/Codewhale/pull/7507)).
+- **[@deosiree](https://github.com/deosiree)** — the Windows desktop shell (`ShellExperienceHost.exe`) is excluded from window control again, with a Windows regression test ([#7513](https://github.com/codewhale-hq/Codewhale/pull/7513)).
+- **[@gaord](https://github.com/gaord)** — item indexing reads only each record's owner field instead of the whole record ([#7522](https://github.com/codewhale-hq/Codewhale/pull/7522)).
+- **[@Goldloli](https://github.com/Goldloli)** — first contribution: translated the Auto-Review guide into Simplified Chinese ([#7521](https://github.com/codewhale-hq/Codewhale/pull/7521)).
+- **[@axobase001](https://github.com/axobase001)** — added the opt-in verified candidate evaluator for experimental search workflows ([#7294](https://github.com/codewhale-hq/Codewhale/pull/7294)).
+- **[@SamhandsomeLee](https://github.com/SamhandsomeLee)** — kept unknown Responses cache-miss counts instead of reading them as zero ([#7527](https://github.com/codewhale-hq/Codewhale/pull/7527)) and covered Responses usage normalization with fixtures ([#7528](https://github.com/codewhale-hq/Codewhale/pull/7528)).
+- **[@Owaid0723666](https://github.com/Owaid0723666)** — first contribution: added onomeo as a bundled provider descriptor with its docs and pricing coverage ([#7525](https://github.com/codewhale-hq/Codewhale/pull/7525)).
 
 ## [0.10.4] - 2026-11-23
 

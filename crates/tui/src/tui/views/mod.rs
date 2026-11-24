@@ -7125,9 +7125,6 @@ fn append_subagent_group(
         ]);
         lines.push(Line::from(row));
 
-        // The whale's own state word, paired with its glyph cue, so the row
-        // says "Waiting for you" / "Blocked" in the user's language next to
-        // the raw runtime status above. No caption text beyond that.
         let mut whale_line = vec![Span::raw("    ")];
         whale_line.extend(crate::tui::whales::badge_with_state_frame(
             species,
@@ -8364,7 +8361,7 @@ mod tests {
         assert!(text.contains("◂▰ · Working"), "{text}");
         assert!(text.contains("◂▰ Resting"), "{text}");
         assert!(text.contains("▰] ◆ Waiting for you"), "{text}");
-        assert!(text.contains("◇▰ ▌ Blocked"), "{text}");
+        assert!(text.contains("◇▰ ▌ Failed"), "{text}");
         assert!(
             !text.contains("Scout · research"),
             "no caption labels: {text}"

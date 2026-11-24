@@ -2078,7 +2078,7 @@
   "WhaleStateThinking": "Đang suy nghĩ",
   "WhaleStateWorking": "Đang làm việc",
   "WhaleStateWaiting": "Đang chờ bạn",
-  "WhaleStateBlocked": "Bị chặn",
+  "WhaleStateBlocked": "Thất bại",
   "WhaleStateOffline": "Ngoại tuyến",
   "AgentStatusParked": "tạm dừng",
   "AgentStatusParkedRecovery": "không ai đang chờ nó; dùng resume_from để tiếp tục, hoặc cancel để bỏ",

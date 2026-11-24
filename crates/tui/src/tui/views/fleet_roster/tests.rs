@@ -775,7 +775,7 @@ fn roster_detail_carries_whale_identity_without_claiming_state() {
         "no caption labels: {wide}"
     );
     assert!(!wide.contains("identity only"), "no caption labels: {wide}");
-    for word in ["Working", "Waiting for you", "Blocked", "Offline"] {
+    for word in ["Working", "Waiting for you", "Failed", "Offline"] {
         assert!(!wide.contains(word), "roster must not claim {word}: {wide}");
     }
 

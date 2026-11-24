@@ -2078,7 +2078,7 @@
   "WhaleStateThinking": "思考中",
   "WhaleStateWorking": "作業中",
   "WhaleStateWaiting": "あなたの操作待ち",
-  "WhaleStateBlocked": "ブロック中",
+  "WhaleStateBlocked": "失敗",
   "WhaleStateOffline": "オフライン",
   "AgentStatusParked": "保留中",
   "AgentStatusParkedRecovery": "誰も応答を待っていません。続行するには resume_from、破棄するには cancel",

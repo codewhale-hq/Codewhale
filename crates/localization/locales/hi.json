@@ -2078,7 +2078,7 @@
   "WhaleStateThinking": "सोच रहा है",
   "WhaleStateWorking": "काम कर रहा है",
   "WhaleStateWaiting": "आपकी प्रतीक्षा में",
-  "WhaleStateBlocked": "अवरुद्ध",
+  "WhaleStateBlocked": "विफल",
   "WhaleStateOffline": "ऑफ़लाइन",
   "AgentStatusParked": "रुका हुआ",
   "AgentStatusParkedRecovery": "इसकी कोई प्रतीक्षा नहीं कर रहा; जारी रखने के लिए resume_from, हटाने के लिए cancel",

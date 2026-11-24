@@ -966,6 +966,26 @@ docs = "docs/RUNTIME_API.md#local-whale-voice"
 owner = "crates/engine/src/whale_soul.rs"
 
 [[feature]]
+id = "local-specialist-whales"
+name = "Local specialist whales"
+summary = "Create, edit, recycle and delete named local whales; a thread started with whale_id loads that whale."
+status = "experimental"
+surfaces = { api = "preview" }
+since = "unreleased"
+docs = "docs/RUNTIME_API.md#specialist-whales"
+owner = "crates/engine/src/whale_soul.rs"
+
+[[feature]]
+id = "whale-cards"
+name = "Whale cards"
+summary = "Tool items carry a structured card for Markdown reports, failed maintenance commands and connector sign-ins."
+status = "experimental"
+surfaces = { api = "preview" }
+since = "unreleased"
+docs = "docs/RUNTIME_API.md#whale-cards"
+owner = "crates/engine/src/whale_cards.rs"
+
+[[feature]]
 id = "profile-constitution"
 name = "Profile constitution"
 summary = "Account preferences are captured per turn and previewed by the Engine."

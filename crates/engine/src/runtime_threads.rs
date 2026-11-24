@@ -441,6 +441,8 @@ pub struct ThreadRecord {
     pub environment: Option<ThreadEnvironment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_preset: Option<String>,
+    #[serde(default, alias = "whaleId", skip_serializing_if = "Option::is_none")]
+    pub whale_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -6617,7 +6619,7 @@ fn remove_file_if_exists(path: &Path) -> Result<()> {
 
 pub mod job_operations;
 pub mod manager;
-mod turn_artifacts;
+pub(crate) mod turn_artifacts;
 pub use turn_artifacts::{
     FileChangeKind, TurnArtifactKind, TurnArtifactRef, TurnWorkspaceArtifacts, TurnWorkspaceReason,
     TurnWorkspaceState,

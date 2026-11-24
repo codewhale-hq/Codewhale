@@ -2078,7 +2078,7 @@
   "WhaleStateThinking": "Pensando",
   "WhaleStateWorking": "Trabalhando",
   "WhaleStateWaiting": "Aguardando você",
-  "WhaleStateBlocked": "Bloqueada",
+  "WhaleStateBlocked": "Falhou",
   "WhaleStateOffline": "Offline",
   "AgentStatusParked": "em pausa",
   "AgentStatusParkedRecovery": "ninguém está esperando por ele; use resume_from para continuar ou cancel para descartar",

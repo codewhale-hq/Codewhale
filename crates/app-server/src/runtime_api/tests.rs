@@ -38,6 +38,7 @@ mod profile_constitution;
 mod remote_pairing;
 #[cfg(any(unix, windows))]
 mod runtime_store_convergence;
+mod whales;
 mod workspace_instructions;
 
 /// Scale a wait budget for shared CI runners.
@@ -614,6 +615,7 @@ fn messages_from_thread_detail_batches_tool_results() {
         executor: None,
         environment: None,
         agent_preset: None,
+        whale_id: None,
         disallowed_tools: Vec::new(),
     };
     let turn = TurnRecord {
@@ -849,6 +851,7 @@ fn legacy_exact_thread_export_normalizes_provider_kind_and_id() {
             executor: None,
             environment: None,
             agent_preset: None,
+            whale_id: None,
             disallowed_tools: Vec::new(),
         },
         turns: Vec::new(),

@@ -3043,688 +3043,712 @@ fn fallback_sessions_dir() -> PathBuf {
 
 pub fn build_router(state: RuntimeApiState) -> Router {
     diagnostics::mark_server_started();
-    let api_routes = Router::new()
-        .route(
-            "/v1/sessions",
-            get(list_sessions)
-                .post(create_session_from_thread)
-                .put(save_current_session),
-        )
-        .route("/v1/sessions/summary", get(list_sessions_summary))
-        .route("/v1/sessions/repair", get(get_session_repair))
-        .route(
-            "/v1/sessions/{id}",
-            get(get_session).patch(patch_session).delete(delete_session),
-        )
-        .route(
-            "/v1/sessions/{id}/resume-thread",
-            post(resume_session_thread),
-        )
-        .route("/v1/sessions/{id}/artifacts", get(list_session_artifacts))
-        .route(
-            "/v1/sessions/{id}/artifacts/{artifact_id}",
-            get(read_session_artifact),
-        )
-        .route("/v1/workspace/status", get(workspace_status))
-        // The only writer a GUI has for workspace trust. The engine owns
-        // `config.toml`; a client asks here instead of editing the file.
-        .route("/v1/workspace/trust", post(update_workspace_trust))
-        .route(
-            "/v1/terminal/{*rest}",
-            any(terminal::retired_terminal_route),
-        )
-        .route("/v1/workspace/files/search", get(workspace_file_search))
-        .route(
-            "/v1/workspace/files",
-            get(workspace_files_list)
-                .put(workspace_file_write)
-                .layer(DefaultBodyLimit::max(
-                    self::workspace::FILE_WRITE_BODY_LIMIT_BYTES,
-                )),
-        )
-        .route("/v1/workspace/files/read", get(workspace_file_read))
-        .route("/v1/workspace/instructions", get(workspace_instructions))
-        .route("/v1/agent-runs", get(list_agent_runs))
-        .route("/v1/agent-runs/{run_id}", get(get_agent_run))
-        .route("/v1/agent-runs/{run_id}/cancel", post(cancel_agent_run))
-        .route("/v1/fleet/profiles", get(list_fleet_profiles))
-        .route(
-            "/v1/fleet/profiles/{id}/document",
-            get(get_fleet_profile_document),
-        )
-        .route(
-            "/v1/fleet/runs",
-            get(list_fleet_runs)
-                .post(create_fleet_run)
-                .layer(DefaultBodyLimit::max(256 * 1024)),
-        )
-        .route("/v1/fleet/runs/{run_id}", get(get_fleet_run))
-        .route(
-            "/v1/fleet/runs/{run_id}/workers",
-            get(list_fleet_run_workers),
-        )
-        .route("/v1/fleet/runs/{run_id}/start", post(start_fleet_run))
-        .route("/v1/fleet/runs/{run_id}/events", get(stream_fleet_events))
-        .route(
-            "/v1/fleet/runs/{run_id}/events/replay",
-            get(replay_fleet_events),
-        )
-        .route("/v1/fleet/runs/{run_id}/stop", post(stop_fleet_run))
-        .route(
-            "/v1/fleet/runs/{run_id}/receipts",
-            get(list_fleet_run_receipts),
-        )
-        .route(
-            "/v1/fleet/runs/{run_id}/receipts/{task_id}",
-            get(get_fleet_run_receipt),
-        )
-        .route(
-            "/v1/fleet/runs/{run_id}/receipts/{task_id}/evidence",
-            get(inspect_fleet_run_receipt_evidence),
-        )
-        .route("/v1/fleet/workers/{worker_id}", get(get_fleet_worker))
-        .route(
-            "/v1/fleet/workers/{worker_id}/interrupt",
-            post(interrupt_fleet_worker),
-        )
-        .route(
-            "/v1/fleet/workers/{worker_id}/stop",
-            post(stop_fleet_worker),
-        )
-        .route(
-            "/v1/fleet/workers/{worker_id}/restart",
-            post(restart_fleet_worker),
-        )
-        .route(
-            "/v1/stream",
-            post(stream_turn).layer(DefaultBodyLimit::max(
-                codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
-            )),
-        )
-        .route("/v1/git", get(git::git_status_detail))
-        .route("/v1/changes", get(git::git_changes))
-        .route("/v1/diff", get(git::git_diff))
-        .route("/v1/workspace/diff", get(git::workspace_diff))
-        .route("/v1/git/graph", get(git::git_graph))
-        .route("/v1/git/stage", post(git::git_stage))
-        .route("/v1/git/unstage", post(git::git_unstage))
-        .route("/v1/git/discard", post(git::git_discard))
-        .route("/v1/git/commit", post(git::git_commit))
-        .route("/v1/git/push", post(git::git_push))
-        .route("/v1/git/branch", post(git::git_branch))
-        .route(
-            "/v1/worktrees",
-            get(git::worktrees_list).post(git::worktree_create),
-        )
-        .route("/v1/worktrees/remove", post(git::worktree_remove))
-        .route("/v1/logs", get(diagnostics::list_logs))
-        .route("/v1/logs/{name}", get(diagnostics::read_log))
-        .route("/v1/crashes", get(diagnostics::list_crashes))
-        .route("/v1/crashes/{name}", get(diagnostics::read_crash))
-        .route("/v1/process", get(diagnostics::process_info))
-        .route("/v1/jobs", get(jobs::list_jobs))
-        .route("/v1/threads", get(list_threads).post(create_thread))
-        .route("/v1/threads/summary", get(list_threads_summary))
-        .route("/v1/threads/running", get(list_running_threads))
-        .route("/v1/threads/{id}/notices", get(list_thread_notices))
-        .route(
-            "/v1/threads/{id}/notices/{notice_id}",
-            delete(ack_thread_notice),
-        )
-        .route(
-            "/v1/threads/{id}",
-            get(get_thread)
-                .patch(update_thread)
-                .delete(thread_delete::delete_thread),
-        )
-        .route(
-            "/v1/threads/{id}/history",
-            get(thread_history::snapshot_thread_history),
-        )
-        .route(
-            "/v1/thread-history/operations/lookup",
-            post(thread_history::lookup_thread_history_operation),
-        )
-        .route(
-            "/v1/thread-history/operations/recover",
-            post(thread_history::recover_thread_history_operation),
-        )
-        .route(
-            "/v1/thread-history/mutate",
-            post(thread_history::mutate_thread_history),
-        )
-        .route(
-            "/v1/thread-history/import",
-            post(thread_history::import_thread_history),
-        )
-        .route(
-            "/v1/threads/{id}/jobs",
-            get(jobs::list_thread_jobs).post(jobs::create_thread_job),
-        )
-        .route("/v1/job-operations", get(jobs::list_job_operations))
-        .route(
-            "/v1/threads/{id}/job-operations",
-            get(jobs::list_thread_job_operations),
-        )
-        .route(
-            "/v1/threads/{id}/job-operations/{operation_key}",
-            get(jobs::get_job_operation),
-        )
-        .route("/v1/threads/{id}/jobs/{job_id}", get(jobs::get_thread_job))
-        .route(
-            "/v1/threads/{id}/jobs/{job_id}/output",
-            get(jobs::get_thread_job_output),
-        )
-        .route(
-            "/v1/threads/{id}/jobs/{job_id}/stdin",
-            post(jobs::write_thread_job_stdin),
-        )
-        .route(
-            "/v1/threads/{id}/jobs/{job_id}/kill",
-            post(jobs::kill_thread_job),
-        )
-        .route(
-            "/v1/threads/{id}/jobs/{job_id}/keepalive",
-            post(jobs::keepalive_thread_job),
-        )
-        .route(
-            "/v1/threads/{id}/jobs/{job_id}/resize",
-            post(jobs::resize_thread_job),
-        )
-        // The Engine's terminal byte stream (#34), addressed by owning thread
-        // and issued identity. Auth is the route layer's, not this module's;
-        // these never create a session — see terminal.rs.
-        .route(
-            "/v1/threads/{id}/terminals",
-            get(terminal::list_thread_terminals),
-        )
-        .route(
-            "/v1/threads/{id}/terminals/{terminal_id}/output",
-            get(terminal::terminal_output),
-        )
-        .route(
-            "/v1/threads/{id}/terminals/{terminal_id}/input",
-            post(terminal::terminal_input),
-        )
-        .route(
-            "/v1/threads/{id}/terminals/{terminal_id}/resize",
-            post(terminal::terminal_resize),
-        )
-        .route(
-            "/v1/threads/{id}/terminals/{terminal_id}/kill",
-            post(terminal::terminal_kill),
-        )
-        .route("/v1/threads/{id}/context", get(context::get_thread_context))
-        .route(
-            "/v1/threads/{id}/context/standing",
-            get(context::get_thread_standing_context),
-        )
-        .route(
-            "/v1/threads/{id}/members",
-            post(members::start_thread_member)
-                .layer(DefaultBodyLimit::max(members::MAX_MEMBER_REQUEST_BYTES)),
-        )
-        .route(
-            "/v1/threads/{id}/members/operations/{operation_key}",
-            get(members::get_member_operation),
-        )
-        .route("/v1/threads/{id}/plan", get(plans::get_thread_plan))
-        .route("/v1/threads/{id}/todo", get(plans::get_thread_todo))
-        .route("/v1/plan", get(plans::latest_plan))
-        .route("/v1/todo", get(plans::latest_todo_route))
-        .route("/v1/plans", get(plans::list_plans))
-        .route("/v1/todos", get(plans::list_todos))
-        .route(
-            "/v1/targets",
-            get(targets::list_targets).post(targets::create_target),
-        )
-        .route("/v1/targets/switch", post(targets::switch_target))
-        .route("/v1/tailnet", get(targets::tailnet_inventory))
-        .route(
-            "/v1/fleet/placement",
-            post(targets::placement_preview).layer(DefaultBodyLimit::max(256 * 1024)),
-        )
-        .route("/v1/remote", get(targets::remote_status))
-        .route("/v1/remote/connect", post(targets::remote_connect))
-        .route(
-            "/v1/ssh",
-            get(targets::ssh_status).post(targets::ssh_connect),
-        )
-        .route("/v1/ssh/connect", post(targets::ssh_connect))
-        .route(
-            "/v1/cloud",
-            get(targets::cloud_status).post(targets::cloud_attach),
-        )
-        .route("/v1/cloud/attach", post(targets::cloud_attach))
-        .route("/v1/lsp", get(lsp::lsp_status))
-        .route("/v1/diagnostics", get(lsp::lsp_diagnostics))
-        .route("/v1/definition", get(lsp::lsp_definition))
-        .route("/v1/references", get(lsp::lsp_references))
-        .route("/v1/symbols", get(lsp::lsp_symbols))
-        .route("/v1/voice", get(voice::voice_status))
-        .route("/v1/voice/dictate", post(voice::voice_dictate))
-        .route("/v1/voice/send", post(voice::voice_send))
-        .route("/v1/voice/control", post(voice::voice_control))
-        .route(
-            "/v1/voice/transcribe",
-            post(voice::voice_transcribe).layer(DefaultBodyLimit::max(12 * 1024 * 1024)),
-        )
-        .route(
-            "/v1/voice/tts",
-            post(voice::voice_tts).layer(DefaultBodyLimit::max(64 * 1024)),
-        )
-        .route("/v1/threads/{id}/resume", post(resume_thread))
-        .route("/v1/threads/{id}/fork", post(fork_thread))
-        .route("/v1/threads/{id}/undo", post(undo_thread_turn))
-        .route("/v1/threads/{id}/fork-at-turn", post(fork_thread_at_turn))
-        .route(
-            "/v1/threads/{id}/patch-undo",
-            get(preview_patch_undo_thread_turn).post(patch_undo_thread_turn),
-        )
-        .route("/v1/threads/{id}/file-revert", post(revert_thread_file))
-        .route("/v1/threads/{id}/retry", post(retry_thread_turn))
-        .route(
-            "/v1/threads/{id}/turn-operations/{operation_key}",
-            get(get_thread_turn_operation),
-        )
-        .route(
-            "/v1/threads/{id}/reviews",
-            post(review::start_thread_review).layer(DefaultBodyLimit::max(1024 * 1024)),
-        )
-        .route(
-            "/v1/threads/{id}/watch-turns",
-            post(start_thread_watch_turn)
-                .layer(DefaultBodyLimit::max(
+    let api_routes =
+        Router::new()
+            .route(
+                "/v1/sessions",
+                get(list_sessions)
+                    .post(create_session_from_thread)
+                    .put(save_current_session),
+            )
+            .route("/v1/sessions/summary", get(list_sessions_summary))
+            .route("/v1/sessions/repair", get(get_session_repair))
+            .route(
+                "/v1/sessions/{id}",
+                get(get_session).patch(patch_session).delete(delete_session),
+            )
+            .route(
+                "/v1/sessions/{id}/resume-thread",
+                post(resume_session_thread),
+            )
+            .route("/v1/sessions/{id}/artifacts", get(list_session_artifacts))
+            .route(
+                "/v1/sessions/{id}/artifacts/{artifact_id}",
+                get(read_session_artifact),
+            )
+            .route("/v1/workspace/status", get(workspace_status))
+            // The only writer a GUI has for workspace trust. The engine owns
+            // `config.toml`; a client asks here instead of editing the file.
+            .route("/v1/workspace/trust", post(update_workspace_trust))
+            .route(
+                "/v1/terminal/{*rest}",
+                any(terminal::retired_terminal_route),
+            )
+            .route("/v1/workspace/files/search", get(workspace_file_search))
+            .route(
+                "/v1/workspace/files",
+                get(workspace_files_list)
+                    .put(workspace_file_write)
+                    .layer(DefaultBodyLimit::max(
+                        self::workspace::FILE_WRITE_BODY_LIMIT_BYTES,
+                    )),
+            )
+            .route("/v1/workspace/files/read", get(workspace_file_read))
+            .route("/v1/workspace/instructions", get(workspace_instructions))
+            .route("/v1/agent-runs", get(list_agent_runs))
+            .route("/v1/agent-runs/{run_id}", get(get_agent_run))
+            .route("/v1/agent-runs/{run_id}/cancel", post(cancel_agent_run))
+            .route("/v1/fleet/profiles", get(list_fleet_profiles))
+            .route(
+                "/v1/fleet/profiles/{id}/document",
+                get(get_fleet_profile_document),
+            )
+            .route(
+                "/v1/fleet/runs",
+                get(list_fleet_runs)
+                    .post(create_fleet_run)
+                    .layer(DefaultBodyLimit::max(256 * 1024)),
+            )
+            .route("/v1/fleet/runs/{run_id}", get(get_fleet_run))
+            .route(
+                "/v1/fleet/runs/{run_id}/workers",
+                get(list_fleet_run_workers),
+            )
+            .route("/v1/fleet/runs/{run_id}/start", post(start_fleet_run))
+            .route("/v1/fleet/runs/{run_id}/events", get(stream_fleet_events))
+            .route(
+                "/v1/fleet/runs/{run_id}/events/replay",
+                get(replay_fleet_events),
+            )
+            .route("/v1/fleet/runs/{run_id}/stop", post(stop_fleet_run))
+            .route(
+                "/v1/fleet/runs/{run_id}/receipts",
+                get(list_fleet_run_receipts),
+            )
+            .route(
+                "/v1/fleet/runs/{run_id}/receipts/{task_id}",
+                get(get_fleet_run_receipt),
+            )
+            .route(
+                "/v1/fleet/runs/{run_id}/receipts/{task_id}/evidence",
+                get(inspect_fleet_run_receipt_evidence),
+            )
+            .route("/v1/fleet/workers/{worker_id}", get(get_fleet_worker))
+            .route(
+                "/v1/fleet/workers/{worker_id}/interrupt",
+                post(interrupt_fleet_worker),
+            )
+            .route(
+                "/v1/fleet/workers/{worker_id}/stop",
+                post(stop_fleet_worker),
+            )
+            .route(
+                "/v1/fleet/workers/{worker_id}/restart",
+                post(restart_fleet_worker),
+            )
+            .route(
+                "/v1/stream",
+                post(stream_turn).layer(DefaultBodyLimit::max(
                     codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
-                ))
-                .layer(middleware::from_fn_with_state(
-                    state.clone(),
-                    auth::require_runtime_master_bearer,
                 )),
-        )
-        .route(
-            "/v1/threads/{id}/turns",
-            post(start_thread_turn).layer(DefaultBodyLimit::max(
-                codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
-            )),
-        )
-        .route(
-            "/v1/threads/{id}/turns/{turn_id}/steer",
-            post(steer_thread_turn),
-        )
-        .route(
-            "/v1/threads/{id}/turns/{turn_id}/artifacts",
-            get(turn_artifacts::list_turn_artifacts),
-        )
-        .route(
-            "/v1/threads/{id}/turns/{turn_id}/artifacts/{artifact_id}",
-            get(turn_artifacts::read_turn_artifact),
-        )
-        // What one tool call changed, from the workspace restore points the
-        // engine recorded around it. A shell command's writes belong to the
-        // command here, not only to the turn (see `turn_artifacts`).
-        .route(
-            "/v1/threads/{id}/turns/{turn_id}/calls/{tool_call_id}/changes",
-            get(turn_artifacts::list_call_changes),
-        )
-        .route(
-            "/v1/threads/{id}/turns/{turn_id}/interrupt",
-            post(interrupt_thread_turn),
-        )
-        .route(
-            "/v1/threads/{id}/turns/{turn_id}/tool-calls/{call_id}/result",
-            post(deliver_dynamic_tool_result),
-        )
-        .route("/v1/threads/{id}/compact", post(compact_thread))
-        .route("/v1/threads/{id}/usage", get(get_thread_usage))
-        .route("/v1/threads/{id}/receipt", get(get_thread_receipt))
-        .route(
-            "/v1/threads/{id}/turns/{turn_id}/receipt",
-            get(get_turn_receipt),
-        )
-        .route("/v1/threads/{id}/events", get(stream_thread_events))
-        .route("/v1/agent-mail", post(send_agent_mail))
-        .route("/v1/threads/{id}/agent-mail", get(list_agent_mail))
-        .route(
-            "/v1/threads/{id}/agent-mail/{message_id}/deliver",
-            post(deliver_agent_mail),
-        )
-        .route(
-            "/v1/threads/{id}/agent-mail/{message_id}/read",
-            post(mark_agent_mail_read),
-        )
-        .route("/v1/threads/{id}/read", post(mark_thread_read))
-        .route(
-            "/v1/threads/{id}/agent-mail/{message_id}/cancel",
-            post(cancel_agent_mail),
-        )
-        .route(
-            "/v1/threads/{id}/goal",
-            get(get_thread_goal)
-                .put(upsert_thread_goal)
-                .delete(delete_thread_goal),
-        )
-        .route("/v1/threads/{id}/goal/complete", post(complete_thread_goal))
-        .route("/v1/threads/{id}/goal/block", post(block_thread_goal))
-        .route("/v1/goals", get(list_goals))
-        .route("/v1/approvals", get(list_approvals))
-        .route("/v1/approvals/{approval_id}", post(decide_approval))
-        .route("/v1/approval-grants", get(list_approval_grants))
-        .route("/v1/permissions/rules", get(list_permission_rules))
-        .route("/v1/permissions/rules/remove", post(remove_permission_rule))
-        .route(
-            "/v1/threads/{id}/approval-grants/{grant_id}",
-            delete(revoke_approval_grant),
-        )
-        .route(
-            "/v1/threads/{id}/auto-review/blocks",
-            get(list_auto_review_blocks),
-        )
-        .route(
-            "/v1/threads/{id}/auto-review/approve",
-            post(approve_auto_review_retry),
-        )
-        .route(
-            "/v1/user-input/{thread_id}/{input_id}",
-            post(submit_user_input).delete(cancel_user_input_request),
-        )
-        .route("/v1/tasks", get(list_tasks).post(create_task))
-        .route("/v1/tasks/{id}", get(get_task))
-        .route("/v1/tasks/{id}/cancel", post(cancel_task))
-        .route("/v1/skills", get(list_skills))
-        .route("/v1/modes", get(list_modes))
-        .route("/v1/commands", get(list_commands))
-        .route("/v1/threads/{id}/commands", post(run_thread_command))
-        .route(
-            "/v1/threads/{id}/commands/builtin",
-            post(builtin_commands::run_builtin_command),
-        )
-        .route(
-            "/v1/threads/{id}/commands/{operation_key}",
-            get(get_thread_command).delete(cancel_thread_command),
-        )
-        .route("/v1/hooks", get(list_hooks))
-        .route(
-            "/v1/skills/{name}",
-            post(set_skill_enabled)
-                .get(get_skill_detail)
-                .delete(uninstall_skill_api),
-        )
-        .route(
-            "/v1/apps/mcp/imports",
-            get(mcp_import::preview).post(mcp_import::apply),
-        )
-        .route(
-            "/v1/apps/mcp/desktop-browser",
-            post(register_scoped_desktop_browser).layer(middleware::from_fn_with_state(
-                state.clone(),
-                auth::require_host_token,
-            )),
-        )
-        .route(
-            "/v1/apps/mcp/servers",
-            get(list_mcp_servers).post(create_mcp_server),
-        )
-        .route(
-            "/v1/apps/mcp/servers/{name}",
-            get(get_mcp_server)
-                .patch(update_mcp_server)
-                .delete(delete_mcp_server),
-        )
-        .route(
-            "/v1/apps/mcp/servers/{name}/enable",
-            post(enable_mcp_server),
-        )
-        .route(
-            "/v1/apps/mcp/servers/{name}/disable",
-            post(disable_mcp_server),
-        )
-        .route(
-            "/v1/apps/mcp/servers/{name}/reconnect",
-            post(reconnect_mcp_server),
-        )
-        .route("/v1/skills/install", post(install_skill_api))
-        .route("/v1/skills/{name}/update", post(update_skill_api))
-        .route("/v1/skills/{name}/trust", post(trust_skill_api))
-        .route("/v1/skills/{name}/audit", get(audit_skill_api))
-        .route("/v1/apps/mcp/tools", get(list_mcp_tools))
-        .route("/v1/apps/plugins", get(plugins::list_plugins))
-        .route("/v1/apps/plugin-index", get(plugin_index::get_plugin_index))
-        .route("/v1/apps/avatars", get(avatars::list_avatars))
-        .route(
-            "/v1/apps/avatars/{handle}/atlases/{page}",
-            get(avatars::get_atlas),
-        )
-        .route(
-            "/v1/apps/plugins/install",
-            post(plugins::install_plugin_api),
-        )
-        .route(
-            "/v1/apps/plugins/import/dsh/preview",
-            post(plugins::preview_dsh_plugin_api),
-        )
-        .route(
-            "/v1/apps/plugins/catalog",
-            get(plugins::list_plugin_catalog),
-        )
-        .route(
-            "/v1/apps/plugins/catalog/{id}/enable",
-            post(plugins::enable_catalog_plugin),
-        )
-        .route(
-            "/v1/apps/plugins/catalog/{id}/disable",
-            post(plugins::disable_catalog_plugin),
-        )
-        .route(
-            "/v1/apps/plugins/catalog/{id}/settings",
-            put(plugins::put_catalog_settings),
-        )
-        .route(
-            "/v1/apps/plugins/{selector}",
-            get(plugins::get_plugin).delete(plugins::uninstall_plugin_api),
-        )
-        .route(
-            "/v1/apps/plugins/{selector}/ui",
-            get(plugins::get_plugin_ui),
-        )
-        .route(
-            "/v1/apps/plugins/{selector}/ui/{*path}",
-            get(plugins::get_plugin_ui_asset),
-        )
-        .route(
-            "/v1/apps/plugins/{selector}/routes/{*path}",
-            any(plugins::plugin_route_bridge),
-        )
-        .route(
-            "/v1/apps/plugins/{selector}/update",
-            post(plugins::update_plugin_api),
-        )
-        .route(
-            "/v1/apps/plugins/{selector}/trust",
-            post(plugins::trust_plugin_api),
-        )
-        .route(
-            "/v1/apps/plugins/{selector}/enable",
-            post(plugins::enable_plugin_api),
-        )
-        .route(
-            "/v1/apps/plugins/{selector}/disable",
-            post(plugins::disable_plugin_api),
-        )
-        .route(
-            "/v1/apps/plugins/{selector}/restage",
-            post(plugins::restage_plugin_api),
-        )
-        .route(
-            "/v1/apps/plugins/{selector}/revoke",
-            post(plugins::revoke_plugin_api),
-        )
-        .route(
-            "/v1/apps/marketplaces",
-            get(plugins::list_marketplaces).post(plugins::add_marketplace),
-        )
-        .route(
-            "/v1/apps/marketplaces/{name}",
-            get(plugins::get_marketplace).delete(plugins::remove_marketplace),
-        )
-        .route(
-            "/v1/apps/marketplaces/{name}/install",
-            post(plugins::install_marketplace_candidate_api),
-        )
-        .route(
-            "/v1/automations",
-            get(list_automations).post(create_automation),
-        )
-        .route(
-            "/v1/automations/{id}",
-            get(get_automation)
-                .patch(update_automation)
-                .delete(delete_automation),
-        )
-        .route("/v1/automations/{id}/run", post(run_automation))
-        .route("/v1/automations/{id}/pause", post(pause_automation))
-        .route("/v1/automations/{id}/resume", post(resume_automation))
-        .route("/v1/automations/{id}/adopt", post(adopt_automation))
-        .route("/v1/automations/{id}/runs", get(list_automation_runs))
-        .route("/v1/automations/missed", get(automations::list_missed))
-        .route("/v1/automations/{id}/missed", get(automations::get_missed))
-        .route(
-            "/v1/automations/{id}/missed/policy",
-            put(automations::set_missed_policy),
-        )
-        .route(
-            "/v1/automations/{id}/missed/run",
-            post(automations::run_missed),
-        )
-        .route(
-            "/v1/automations/{id}/missed/skip",
-            post(automations::skip_missed),
-        )
-        .route("/v1/triggers", get(list_triggers).post(create_trigger))
-        .route("/v1/triggers/{id}", get(get_trigger).delete(cancel_trigger))
-        .route(
-            "/v1/operate",
-            get(get_operate).post(start_operate).patch(patch_operate),
-        )
-        .route("/v1/operate/keepalive", post(keepalive_operate))
-        .route("/v1/operate/plan", put(put_operate_plan))
-        .route("/v1/operate/cancel", post(cancel_operate))
-        .route("/v1/operate/stop", post(cancel_operate))
-        .route(
-            "/v1/operate/auto-merge/check",
-            post(check_operate_auto_merge),
-        )
-        .route("/v1/usage", get(get_usage))
-        .route("/v1/snapshots", get(list_snapshots))
-        .route("/v1/snapshots/{id}/restore", post(restore_snapshot))
-        .route(
-            "/v1/account/model-access",
-            get(secrets::get_account_model_access)
-                .put(secrets::set_account_model_access)
-                .delete(secrets::clear_account_model_access)
-                .layer(DefaultBodyLimit::max(
-                    secrets::PROVIDER_KEY_BODY_LIMIT_BYTES,
+            )
+            .route("/v1/git", get(git::git_status_detail))
+            .route("/v1/changes", get(git::git_changes))
+            .route("/v1/diff", get(git::git_diff))
+            .route("/v1/workspace/diff", get(git::workspace_diff))
+            .route("/v1/git/graph", get(git::git_graph))
+            .route("/v1/git/stage", post(git::git_stage))
+            .route("/v1/git/unstage", post(git::git_unstage))
+            .route("/v1/git/discard", post(git::git_discard))
+            .route("/v1/git/commit", post(git::git_commit))
+            .route("/v1/git/push", post(git::git_push))
+            .route("/v1/git/branch", post(git::git_branch))
+            .route(
+                "/v1/worktrees",
+                get(git::worktrees_list).post(git::worktree_create),
+            )
+            .route("/v1/worktrees/remove", post(git::worktree_remove))
+            .route("/v1/logs", get(diagnostics::list_logs))
+            .route("/v1/logs/{name}", get(diagnostics::read_log))
+            .route("/v1/crashes", get(diagnostics::list_crashes))
+            .route("/v1/crashes/{name}", get(diagnostics::read_crash))
+            .route("/v1/process", get(diagnostics::process_info))
+            .route("/v1/jobs", get(jobs::list_jobs))
+            .route("/v1/threads", get(list_threads).post(create_thread))
+            .route("/v1/threads/summary", get(list_threads_summary))
+            .route("/v1/threads/running", get(list_running_threads))
+            .route("/v1/threads/{id}/notices", get(list_thread_notices))
+            .route(
+                "/v1/threads/{id}/notices/{notice_id}",
+                delete(ack_thread_notice),
+            )
+            .route(
+                "/v1/threads/{id}",
+                get(get_thread)
+                    .patch(update_thread)
+                    .delete(thread_delete::delete_thread),
+            )
+            .route(
+                "/v1/threads/{id}/history",
+                get(thread_history::snapshot_thread_history),
+            )
+            .route(
+                "/v1/thread-history/operations/lookup",
+                post(thread_history::lookup_thread_history_operation),
+            )
+            .route(
+                "/v1/thread-history/operations/recover",
+                post(thread_history::recover_thread_history_operation),
+            )
+            .route(
+                "/v1/thread-history/mutate",
+                post(thread_history::mutate_thread_history),
+            )
+            .route(
+                "/v1/thread-history/import",
+                post(thread_history::import_thread_history),
+            )
+            .route(
+                "/v1/threads/{id}/jobs",
+                get(jobs::list_thread_jobs).post(jobs::create_thread_job),
+            )
+            .route("/v1/job-operations", get(jobs::list_job_operations))
+            .route(
+                "/v1/threads/{id}/job-operations",
+                get(jobs::list_thread_job_operations),
+            )
+            .route(
+                "/v1/threads/{id}/job-operations/{operation_key}",
+                get(jobs::get_job_operation),
+            )
+            .route("/v1/threads/{id}/jobs/{job_id}", get(jobs::get_thread_job))
+            .route(
+                "/v1/threads/{id}/jobs/{job_id}/output",
+                get(jobs::get_thread_job_output),
+            )
+            .route(
+                "/v1/threads/{id}/jobs/{job_id}/stdin",
+                post(jobs::write_thread_job_stdin),
+            )
+            .route(
+                "/v1/threads/{id}/jobs/{job_id}/kill",
+                post(jobs::kill_thread_job),
+            )
+            .route(
+                "/v1/threads/{id}/jobs/{job_id}/keepalive",
+                post(jobs::keepalive_thread_job),
+            )
+            .route(
+                "/v1/threads/{id}/jobs/{job_id}/resize",
+                post(jobs::resize_thread_job),
+            )
+            // The Engine's terminal byte stream (#34), addressed by owning thread
+            // and issued identity. Auth is the route layer's, not this module's;
+            // these never create a session — see terminal.rs.
+            .route(
+                "/v1/threads/{id}/terminals",
+                get(terminal::list_thread_terminals),
+            )
+            .route(
+                "/v1/threads/{id}/terminals/{terminal_id}/output",
+                get(terminal::terminal_output),
+            )
+            .route(
+                "/v1/threads/{id}/terminals/{terminal_id}/input",
+                post(terminal::terminal_input),
+            )
+            .route(
+                "/v1/threads/{id}/terminals/{terminal_id}/resize",
+                post(terminal::terminal_resize),
+            )
+            .route(
+                "/v1/threads/{id}/terminals/{terminal_id}/kill",
+                post(terminal::terminal_kill),
+            )
+            .route("/v1/threads/{id}/context", get(context::get_thread_context))
+            .route(
+                "/v1/threads/{id}/context/standing",
+                get(context::get_thread_standing_context),
+            )
+            .route(
+                "/v1/threads/{id}/members",
+                post(members::start_thread_member)
+                    .layer(DefaultBodyLimit::max(members::MAX_MEMBER_REQUEST_BYTES)),
+            )
+            .route(
+                "/v1/threads/{id}/members/operations/{operation_key}",
+                get(members::get_member_operation),
+            )
+            .route("/v1/threads/{id}/plan", get(plans::get_thread_plan))
+            .route("/v1/threads/{id}/todo", get(plans::get_thread_todo))
+            .route("/v1/plan", get(plans::latest_plan))
+            .route("/v1/todo", get(plans::latest_todo_route))
+            .route("/v1/plans", get(plans::list_plans))
+            .route("/v1/todos", get(plans::list_todos))
+            .route(
+                "/v1/targets",
+                get(targets::list_targets).post(targets::create_target),
+            )
+            .route("/v1/targets/switch", post(targets::switch_target))
+            .route("/v1/tailnet", get(targets::tailnet_inventory))
+            .route(
+                "/v1/fleet/placement",
+                post(targets::placement_preview).layer(DefaultBodyLimit::max(256 * 1024)),
+            )
+            .route("/v1/remote", get(targets::remote_status))
+            .route("/v1/remote/connect", post(targets::remote_connect))
+            .route(
+                "/v1/ssh",
+                get(targets::ssh_status).post(targets::ssh_connect),
+            )
+            .route("/v1/ssh/connect", post(targets::ssh_connect))
+            .route(
+                "/v1/cloud",
+                get(targets::cloud_status).post(targets::cloud_attach),
+            )
+            .route("/v1/cloud/attach", post(targets::cloud_attach))
+            .route("/v1/lsp", get(lsp::lsp_status))
+            .route("/v1/diagnostics", get(lsp::lsp_diagnostics))
+            .route("/v1/definition", get(lsp::lsp_definition))
+            .route("/v1/references", get(lsp::lsp_references))
+            .route("/v1/symbols", get(lsp::lsp_symbols))
+            .route("/v1/voice", get(voice::voice_status))
+            .route("/v1/voice/dictate", post(voice::voice_dictate))
+            .route("/v1/voice/send", post(voice::voice_send))
+            .route("/v1/voice/control", post(voice::voice_control))
+            .route(
+                "/v1/voice/transcribe",
+                post(voice::voice_transcribe).layer(DefaultBodyLimit::max(12 * 1024 * 1024)),
+            )
+            .route(
+                "/v1/voice/tts",
+                post(voice::voice_tts).layer(DefaultBodyLimit::max(64 * 1024)),
+            )
+            .route("/v1/threads/{id}/resume", post(resume_thread))
+            .route("/v1/threads/{id}/fork", post(fork_thread))
+            .route("/v1/threads/{id}/undo", post(undo_thread_turn))
+            .route("/v1/threads/{id}/fork-at-turn", post(fork_thread_at_turn))
+            .route(
+                "/v1/threads/{id}/patch-undo",
+                get(preview_patch_undo_thread_turn).post(patch_undo_thread_turn),
+            )
+            .route("/v1/threads/{id}/file-revert", post(revert_thread_file))
+            .route("/v1/threads/{id}/retry", post(retry_thread_turn))
+            .route(
+                "/v1/threads/{id}/turn-operations/{operation_key}",
+                get(get_thread_turn_operation),
+            )
+            .route(
+                "/v1/threads/{id}/reviews",
+                post(review::start_thread_review).layer(DefaultBodyLimit::max(1024 * 1024)),
+            )
+            .route(
+                "/v1/threads/{id}/watch-turns",
+                post(start_thread_watch_turn)
+                    .layer(DefaultBodyLimit::max(
+                        codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
+                    ))
+                    .layer(middleware::from_fn_with_state(
+                        state.clone(),
+                        auth::require_runtime_master_bearer,
+                    )),
+            )
+            .route(
+                "/v1/threads/{id}/turns",
+                post(start_thread_turn).layer(DefaultBodyLimit::max(
+                    codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
                 )),
-        )
-        .route(
-            "/v1/agents/external",
-            get(external_agents::list_external_agents),
-        )
-        .route(
-            "/v1/agents/external/quota",
-            get(external_agents::get_external_agent_quota),
-        )
-        .route(
-            "/v1/agents/external/{id}/options",
-            get(external_agent_options::get_external_agent_options),
-        )
-        .route("/v1/providers", get(list_providers))
-        .route("/v1/providers/{id}/models", get(list_provider_models))
-        .route(
-            "/v1/providers/{id}/models/refresh",
-            post(refresh_provider_models),
-        )
-        .route("/v1/providers/{id}/switch", post(switch_provider))
-        .route(
-            "/v1/providers/{id}/key/check",
-            post(secrets::check_provider_key).layer(DefaultBodyLimit::max(
-                secrets::PROVIDER_KEY_BODY_LIMIT_BYTES,
-            )),
-        )
-        .route(
-            "/v1/providers/{id}/key",
-            put(secrets::set_provider_key)
-                .delete(secrets::clear_provider_key)
-                .layer(DefaultBodyLimit::max(
-                    secrets::PROVIDER_KEY_BODY_LIMIT_BYTES,
-                )),
-        )
-        .route(
-            "/v1/providers/{id}/connect",
-            post(secrets::start_provider_connect),
-        )
-        .route(
-            "/v1/providers/{id}/connect/{attempt_id}",
-            get(secrets::get_provider_connect).delete(secrets::cancel_provider_connect),
-        )
-        .route("/v1/config", get(get_config).post(set_config))
-        .route("/v1/config/reload", post(reload_config))
-        .route(
-            "/v1/whale/soul",
-            get(whale_soul::get)
-                .put(whale_soul::save)
-                .layer(middleware::from_fn_with_state(
+            )
+            .route(
+                "/v1/threads/{id}/turns/{turn_id}/steer",
+                post(steer_thread_turn),
+            )
+            .route(
+                "/v1/threads/{id}/turns/{turn_id}/artifacts",
+                get(turn_artifacts::list_turn_artifacts),
+            )
+            .route(
+                "/v1/threads/{id}/turns/{turn_id}/artifacts/{artifact_id}",
+                get(turn_artifacts::read_turn_artifact),
+            )
+            // What one tool call changed, from the workspace restore points the
+            // engine recorded around it. A shell command's writes belong to the
+            // command here, not only to the turn (see `turn_artifacts`).
+            .route(
+                "/v1/threads/{id}/turns/{turn_id}/calls/{tool_call_id}/changes",
+                get(turn_artifacts::list_call_changes),
+            )
+            .route(
+                "/v1/threads/{id}/turns/{turn_id}/interrupt",
+                post(interrupt_thread_turn),
+            )
+            .route(
+                "/v1/threads/{id}/turns/{turn_id}/tool-calls/{call_id}/result",
+                post(deliver_dynamic_tool_result),
+            )
+            .route("/v1/threads/{id}/compact", post(compact_thread))
+            .route("/v1/threads/{id}/usage", get(get_thread_usage))
+            .route("/v1/threads/{id}/receipt", get(get_thread_receipt))
+            .route(
+                "/v1/threads/{id}/turns/{turn_id}/receipt",
+                get(get_turn_receipt),
+            )
+            .route("/v1/threads/{id}/events", get(stream_thread_events))
+            .route("/v1/agent-mail", post(send_agent_mail))
+            .route("/v1/threads/{id}/agent-mail", get(list_agent_mail))
+            .route(
+                "/v1/threads/{id}/agent-mail/{message_id}/deliver",
+                post(deliver_agent_mail),
+            )
+            .route(
+                "/v1/threads/{id}/agent-mail/{message_id}/read",
+                post(mark_agent_mail_read),
+            )
+            .route("/v1/threads/{id}/read", post(mark_thread_read))
+            .route(
+                "/v1/threads/{id}/agent-mail/{message_id}/cancel",
+                post(cancel_agent_mail),
+            )
+            .route(
+                "/v1/threads/{id}/goal",
+                get(get_thread_goal)
+                    .put(upsert_thread_goal)
+                    .delete(delete_thread_goal),
+            )
+            .route("/v1/threads/{id}/goal/complete", post(complete_thread_goal))
+            .route("/v1/threads/{id}/goal/block", post(block_thread_goal))
+            .route("/v1/goals", get(list_goals))
+            .route("/v1/approvals", get(list_approvals))
+            .route("/v1/approvals/{approval_id}", post(decide_approval))
+            .route("/v1/approval-grants", get(list_approval_grants))
+            .route("/v1/permissions/rules", get(list_permission_rules))
+            .route("/v1/permissions/rules/remove", post(remove_permission_rule))
+            .route(
+                "/v1/threads/{id}/approval-grants/{grant_id}",
+                delete(revoke_approval_grant),
+            )
+            .route(
+                "/v1/threads/{id}/auto-review/blocks",
+                get(list_auto_review_blocks),
+            )
+            .route(
+                "/v1/threads/{id}/auto-review/approve",
+                post(approve_auto_review_retry),
+            )
+            .route(
+                "/v1/user-input/{thread_id}/{input_id}",
+                post(submit_user_input).delete(cancel_user_input_request),
+            )
+            .route("/v1/tasks", get(list_tasks).post(create_task))
+            .route("/v1/tasks/{id}", get(get_task))
+            .route("/v1/tasks/{id}/cancel", post(cancel_task))
+            .route("/v1/skills", get(list_skills))
+            .route("/v1/modes", get(list_modes))
+            .route("/v1/commands", get(list_commands))
+            .route("/v1/threads/{id}/commands", post(run_thread_command))
+            .route(
+                "/v1/threads/{id}/commands/builtin",
+                post(builtin_commands::run_builtin_command),
+            )
+            .route(
+                "/v1/threads/{id}/commands/{operation_key}",
+                get(get_thread_command).delete(cancel_thread_command),
+            )
+            .route("/v1/hooks", get(list_hooks))
+            .route(
+                "/v1/skills/{name}",
+                post(set_skill_enabled)
+                    .get(get_skill_detail)
+                    .delete(uninstall_skill_api),
+            )
+            .route(
+                "/v1/apps/mcp/imports",
+                get(mcp_import::preview).post(mcp_import::apply),
+            )
+            .route(
+                "/v1/apps/mcp/desktop-browser",
+                post(register_scoped_desktop_browser).layer(middleware::from_fn_with_state(
                     state.clone(),
                     auth::require_host_token,
                 )),
-        )
-        .route("/v1/constitution", get(constitution::get_constitution))
-        .route(
-            "/v1/constitution/preview",
-            post(constitution::preview_constitution).layer(DefaultBodyLimit::max(32 * 1024)),
-        )
-        .route("/v1/settings/schema", get(get_settings_schema))
-        .route(
-            "/v1/threads/{id}/notifications/prepare",
-            post(notification_delivery::prepare),
-        )
-        .route(
-            "/v1/memory",
-            get(list_memory)
-                .post(create_memory_entry)
-                .delete(clear_memory),
-        )
-        .route("/v1/memory/{id}", get(get_memory_entry))
-        .route(
-            "/v1/dsh/remote/pairings",
-            get(remote_pairings::list_pairings).layer(middleware::from_fn_with_state(
+            )
+            .route(
+                "/v1/apps/mcp/servers",
+                get(list_mcp_servers).post(create_mcp_server),
+            )
+            .route(
+                "/v1/apps/mcp/servers/{name}",
+                get(get_mcp_server)
+                    .patch(update_mcp_server)
+                    .delete(delete_mcp_server),
+            )
+            .route(
+                "/v1/apps/mcp/servers/{name}/enable",
+                post(enable_mcp_server),
+            )
+            .route(
+                "/v1/apps/mcp/servers/{name}/disable",
+                post(disable_mcp_server),
+            )
+            .route(
+                "/v1/apps/mcp/servers/{name}/reconnect",
+                post(reconnect_mcp_server),
+            )
+            .route("/v1/skills/install", post(install_skill_api))
+            .route("/v1/skills/{name}/update", post(update_skill_api))
+            .route("/v1/skills/{name}/trust", post(trust_skill_api))
+            .route("/v1/skills/{name}/audit", get(audit_skill_api))
+            .route("/v1/apps/mcp/tools", get(list_mcp_tools))
+            .route("/v1/apps/plugins", get(plugins::list_plugins))
+            .route("/v1/apps/plugin-index", get(plugin_index::get_plugin_index))
+            .route("/v1/apps/avatars", get(avatars::list_avatars))
+            .route(
+                "/v1/apps/avatars/{handle}/atlases/{page}",
+                get(avatars::get_atlas),
+            )
+            .route(
+                "/v1/apps/plugins/install",
+                post(plugins::install_plugin_api),
+            )
+            .route(
+                "/v1/apps/plugins/import/dsh/preview",
+                post(plugins::preview_dsh_plugin_api),
+            )
+            .route(
+                "/v1/apps/plugins/catalog",
+                get(plugins::list_plugin_catalog),
+            )
+            .route(
+                "/v1/apps/plugins/catalog/{id}/enable",
+                post(plugins::enable_catalog_plugin),
+            )
+            .route(
+                "/v1/apps/plugins/catalog/{id}/disable",
+                post(plugins::disable_catalog_plugin),
+            )
+            .route(
+                "/v1/apps/plugins/catalog/{id}/settings",
+                put(plugins::put_catalog_settings),
+            )
+            .route(
+                "/v1/apps/plugins/{selector}",
+                get(plugins::get_plugin).delete(plugins::uninstall_plugin_api),
+            )
+            .route(
+                "/v1/apps/plugins/{selector}/ui",
+                get(plugins::get_plugin_ui),
+            )
+            .route(
+                "/v1/apps/plugins/{selector}/ui/{*path}",
+                get(plugins::get_plugin_ui_asset),
+            )
+            .route(
+                "/v1/apps/plugins/{selector}/routes/{*path}",
+                any(plugins::plugin_route_bridge),
+            )
+            .route(
+                "/v1/apps/plugins/{selector}/update",
+                post(plugins::update_plugin_api),
+            )
+            .route(
+                "/v1/apps/plugins/{selector}/trust",
+                post(plugins::trust_plugin_api),
+            )
+            .route(
+                "/v1/apps/plugins/{selector}/enable",
+                post(plugins::enable_plugin_api),
+            )
+            .route(
+                "/v1/apps/plugins/{selector}/disable",
+                post(plugins::disable_plugin_api),
+            )
+            .route(
+                "/v1/apps/plugins/{selector}/restage",
+                post(plugins::restage_plugin_api),
+            )
+            .route(
+                "/v1/apps/plugins/{selector}/revoke",
+                post(plugins::revoke_plugin_api),
+            )
+            .route(
+                "/v1/apps/marketplaces",
+                get(plugins::list_marketplaces).post(plugins::add_marketplace),
+            )
+            .route(
+                "/v1/apps/marketplaces/{name}",
+                get(plugins::get_marketplace).delete(plugins::remove_marketplace),
+            )
+            .route(
+                "/v1/apps/marketplaces/{name}/install",
+                post(plugins::install_marketplace_candidate_api),
+            )
+            .route(
+                "/v1/automations",
+                get(list_automations).post(create_automation),
+            )
+            .route(
+                "/v1/automations/{id}",
+                get(get_automation)
+                    .patch(update_automation)
+                    .delete(delete_automation),
+            )
+            .route("/v1/automations/{id}/run", post(run_automation))
+            .route("/v1/automations/{id}/pause", post(pause_automation))
+            .route("/v1/automations/{id}/resume", post(resume_automation))
+            .route("/v1/automations/{id}/adopt", post(adopt_automation))
+            .route("/v1/automations/{id}/runs", get(list_automation_runs))
+            .route("/v1/automations/missed", get(automations::list_missed))
+            .route("/v1/automations/{id}/missed", get(automations::get_missed))
+            .route(
+                "/v1/automations/{id}/missed/policy",
+                put(automations::set_missed_policy),
+            )
+            .route(
+                "/v1/automations/{id}/missed/run",
+                post(automations::run_missed),
+            )
+            .route(
+                "/v1/automations/{id}/missed/skip",
+                post(automations::skip_missed),
+            )
+            .route("/v1/triggers", get(list_triggers).post(create_trigger))
+            .route("/v1/triggers/{id}", get(get_trigger).delete(cancel_trigger))
+            .route(
+                "/v1/operate",
+                get(get_operate).post(start_operate).patch(patch_operate),
+            )
+            .route("/v1/operate/keepalive", post(keepalive_operate))
+            .route("/v1/operate/plan", put(put_operate_plan))
+            .route("/v1/operate/cancel", post(cancel_operate))
+            .route("/v1/operate/stop", post(cancel_operate))
+            .route(
+                "/v1/operate/auto-merge/check",
+                post(check_operate_auto_merge),
+            )
+            .route("/v1/usage", get(get_usage))
+            .route("/v1/snapshots", get(list_snapshots))
+            .route("/v1/snapshots/{id}/restore", post(restore_snapshot))
+            .route(
+                "/v1/account/model-access",
+                get(secrets::get_account_model_access)
+                    .put(secrets::set_account_model_access)
+                    .delete(secrets::clear_account_model_access)
+                    .layer(DefaultBodyLimit::max(
+                        secrets::PROVIDER_KEY_BODY_LIMIT_BYTES,
+                    )),
+            )
+            .route(
+                "/v1/agents/external",
+                get(external_agents::list_external_agents),
+            )
+            .route(
+                "/v1/agents/external/quota",
+                get(external_agents::get_external_agent_quota),
+            )
+            .route(
+                "/v1/agents/external/{id}/options",
+                get(external_agent_options::get_external_agent_options),
+            )
+            .route("/v1/providers", get(list_providers))
+            .route("/v1/providers/{id}/models", get(list_provider_models))
+            .route(
+                "/v1/providers/{id}/models/refresh",
+                post(refresh_provider_models),
+            )
+            .route("/v1/providers/{id}/switch", post(switch_provider))
+            .route(
+                "/v1/providers/{id}/key/check",
+                post(secrets::check_provider_key).layer(DefaultBodyLimit::max(
+                    secrets::PROVIDER_KEY_BODY_LIMIT_BYTES,
+                )),
+            )
+            .route(
+                "/v1/providers/{id}/key",
+                put(secrets::set_provider_key)
+                    .delete(secrets::clear_provider_key)
+                    .layer(DefaultBodyLimit::max(
+                        secrets::PROVIDER_KEY_BODY_LIMIT_BYTES,
+                    )),
+            )
+            .route(
+                "/v1/providers/{id}/connect",
+                post(secrets::start_provider_connect),
+            )
+            .route(
+                "/v1/providers/{id}/connect/{attempt_id}",
+                get(secrets::get_provider_connect).delete(secrets::cancel_provider_connect),
+            )
+            .route("/v1/config", get(get_config).post(set_config))
+            .route("/v1/config/reload", post(reload_config))
+            .route(
+                "/v1/whale/soul",
+                get(whale_soul::get)
+                    .put(whale_soul::save)
+                    .layer(middleware::from_fn_with_state(
+                        state.clone(),
+                        auth::require_host_token,
+                    )),
+            )
+            .route(
+                "/v1/whales",
+                get(whale_soul::list).post(whale_soul::create).layer(
+                    middleware::from_fn_with_state(state.clone(), auth::require_host_token),
+                ),
+            )
+            .route(
+                "/v1/whales/{id}",
+                get(whale_soul::get_one)
+                    .patch(whale_soul::patch_one)
+                    .delete(whale_soul::delete_one)
+                    .layer(middleware::from_fn_with_state(
+                        state.clone(),
+                        auth::require_host_token,
+                    )),
+            )
+            .route(
+                "/v1/whales/{id}/recycle",
+                post(whale_soul::recycle).layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    auth::require_host_token,
+                )),
+            )
+            .route("/v1/constitution", get(constitution::get_constitution))
+            .route(
+                "/v1/constitution/preview",
+                post(constitution::preview_constitution).layer(DefaultBodyLimit::max(32 * 1024)),
+            )
+            .route("/v1/settings/schema", get(get_settings_schema))
+            .route(
+                "/v1/threads/{id}/notifications/prepare",
+                post(notification_delivery::prepare),
+            )
+            .route(
+                "/v1/memory",
+                get(list_memory)
+                    .post(create_memory_entry)
+                    .delete(clear_memory),
+            )
+            .route("/v1/memory/{id}", get(get_memory_entry))
+            .route(
+                "/v1/dsh/remote/pairings",
+                get(remote_pairings::list_pairings).layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    auth::require_runtime_master_bearer,
+                )),
+            )
+            .route(
+                "/v1/dsh/remote/pairings/{grant}/present",
+                post(remote_pairings::present_pairing).layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    auth::require_runtime_master_bearer,
+                )),
+            )
+            .route(
+                "/v1/dsh/remote/pairings/{grant}",
+                delete(remote_pairings::withdraw_pairing).layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    auth::require_runtime_master_bearer,
+                )),
+            )
+            .merge(memory_lens::routes())
+            .route_layer(middleware::from_fn_with_state(
                 state.clone(),
-                auth::require_runtime_master_bearer,
-            )),
-        )
-        .route(
-            "/v1/dsh/remote/pairings/{grant}/present",
-            post(remote_pairings::present_pairing).layer(middleware::from_fn_with_state(
+                require_workspace_scope,
+            ))
+            .route_layer(middleware::from_fn_with_state(
                 state.clone(),
-                auth::require_runtime_master_bearer,
-            )),
-        )
-        .route(
-            "/v1/dsh/remote/pairings/{grant}",
-            delete(remote_pairings::withdraw_pairing).layer(middleware::from_fn_with_state(
-                state.clone(),
-                auth::require_runtime_master_bearer,
-            )),
-        )
-        .merge(memory_lens::routes())
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_workspace_scope,
-        ))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_runtime_token,
-        ));
+                require_runtime_token,
+            ));
 
     Router::new()
         .route("/", get(web::web_page))

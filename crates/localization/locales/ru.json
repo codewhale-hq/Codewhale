@@ -2078,7 +2078,7 @@
   "WhaleStateThinking": "Думает",
   "WhaleStateWorking": "Работает",
   "WhaleStateWaiting": "Ждёт вас",
-  "WhaleStateBlocked": "Заблокирован",
+  "WhaleStateBlocked": "Сбой",
   "WhaleStateOffline": "Не в сети",
   "AgentStatusParked": "приостановлен",
   "AgentStatusParkedRecovery": "его никто не ждёт; resume_from чтобы продолжить, или cancel чтобы отбросить",
