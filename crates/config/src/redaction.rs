@@ -211,8 +211,12 @@ fn config_binding(config_path: &Path) -> io::Result<ConfigBinding> {
     let config_path = config_path.canonicalize()?;
     let file = fs::File::open(&config_path)?;
     let modified = file.metadata()?.modified()?;
-    let mut body = String::new();
-    std::io::Read::read_to_string(&mut &file, &mut body)?;
+    let body = crate::path_io::read_bounded_file_to_string(
+        &file,
+        &config_path,
+        crate::path_io::MAX_CONFIG_FILE_BYTES,
+        "config file",
+    )?;
     let config: crate::ConfigToml = toml::from_str(&body)
         .map_err(|_| io::Error::other("cannot confirm an unreadable redaction config"))?;
     if !config.redaction_model_bound_masking().is_disabled() {
@@ -605,5 +609,24 @@ mod tests {
         let err = toml::from_str::<crate::ConfigToml>("[redaction]\nmodel_bound = \"maybe\"\n")
             .expect_err("unknown variant must fail");
         assert!(err.to_string().contains("enabled"), "{err}");
+    }
+
+    #[test]
+    fn config_binding_rejects_oversized_config_before_parse() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join(crate::CONFIG_FILE_NAME);
+        let mut body = String::from("[redaction]\nmodel_bound = \"disabled\"\n# ");
+        body.push_str(&"x".repeat(crate::path_io::MAX_CONFIG_FILE_BYTES as usize + 64));
+        body.push('\n');
+        fs::write(&config_path, &body).expect("write oversized config");
+
+        let err = config_binding(&config_path).expect_err("oversized config must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("1 MiB"), "{err}");
+        assert!(record_model_bound_disabled_confirmation(&config_path).is_err());
+        assert_eq!(
+            effective_masking(ModelBoundMasking::Disabled, Some(&config_path)),
+            ModelBoundMasking::Enabled
+        );
     }
 }

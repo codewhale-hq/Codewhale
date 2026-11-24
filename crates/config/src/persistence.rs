@@ -30,20 +30,57 @@ use serde::Serialize;
 #[cfg(unix)]
 const SETUP_FILE_MODE: u32 = 0o600;
 
-/// Atomically write `bytes` to `path` via a sibling temp file + rename.
-///
-/// The temp file is created in the same directory as `path` so the final
-/// `rename` is atomic on the same filesystem. On Unix the file is created with
-/// `0o600` so setup-owned state never lands world-readable. Parent directories
-/// are created as needed.
-pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+#[cfg(unix)]
+fn is_unsupported_dir_sync_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::Unsupported | std::io::ErrorKind::InvalidInput
+    ) || err.raw_os_error().is_some_and(|code| {
+        [
+            libc::EINVAL,
+            libc::ENOTSUP,
+            libc::EOPNOTSUPP,
+            libc::EROFS,
+            libc::EBADF,
+        ]
+        .contains(&code)
+    })
+}
+
+#[cfg(unix)]
+pub(crate) fn sync_parent_dir(dir: &Path) -> Result<()> {
+    match fs::File::open(dir).and_then(|file| file.sync_all()) {
+        Ok(()) => Ok(()),
+        Err(err) if is_unsupported_dir_sync_error(&err) => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("failed to sync directory {}", dir.display())),
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn sync_parent_dir(_dir: &Path) -> Result<()> {
+    Ok(())
+}
+
+pub(crate) fn sync_parent_dir_best_effort(dir: &Path, sync_dir: impl FnOnce(&Path) -> Result<()>) {
+    if let Err(err) = sync_dir(dir) {
+        tracing::warn!(
+            dir = %dir.display(),
+            error = %format!("{err:#}"),
+            "failed to sync parent directory after write; new file is already in place"
+        );
+    }
+}
+
+fn prepare_parent_dir(path: &Path) -> Result<&Path> {
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
     if let Some(parent) = parent {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create directory {}", parent.display()))?;
     }
+    Ok(parent.unwrap_or_else(|| Path::new(".")))
+}
 
-    let dir = parent.unwrap_or_else(|| Path::new("."));
+fn stage_temp_file(dir: &Path, path: &Path, bytes: &[u8]) -> Result<tempfile::NamedTempFile> {
     let mut tmp = tempfile::NamedTempFile::new_in(dir)
         .with_context(|| format!("failed to create temp file in {}", dir.display()))?;
 
@@ -65,6 +102,27 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         .sync_all()
         .with_context(|| format!("failed to sync temp file for {}", path.display()))?;
 
+    Ok(tmp)
+}
+
+/// Atomically write `bytes` to `path` via a sibling temp file + rename.
+///
+/// The temp file is created in the same directory as `path` so the final
+/// `rename` is atomic on the same filesystem. On Unix the file is created with
+/// `0o600` so setup-owned state never lands world-readable. Parent directories
+/// are created as needed.
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    atomic_write_with_dir_sync(path, bytes, sync_parent_dir)
+}
+
+fn atomic_write_with_dir_sync(
+    path: &Path,
+    bytes: &[u8],
+    sync_dir: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
+    let dir = prepare_parent_dir(path)?;
+    let mut tmp = stage_temp_file(dir, path, bytes)?;
+
     // Two Codewhale instances share one home. The loser of a race can find the
     // destination held open for a read — Windows refuses the replacing rename
     // for as long as that handle lives, because the reader does not pass
@@ -73,7 +131,10 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut attempt: u32 = 0;
     loop {
         match tmp.persist(path) {
-            Ok(_) => return Ok(()),
+            Ok(_) => {
+                sync_parent_dir_best_effort(dir, sync_dir);
+                return Ok(());
+            }
             Err(error) if attempt + 1 < PERSIST_ATTEMPTS && rename_is_retryable(&error.error) => {
                 attempt += 1;
                 tmp = error.file;
@@ -98,8 +159,24 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
                     "replacing rename refused; rewriting the file in place"
                 );
                 rewrite_in_place(path, bytes)?;
+                sync_parent_dir_best_effort(dir, sync_dir);
                 return Ok(());
             }
+        }
+    }
+}
+
+pub fn atomic_write_if_absent(path: &Path, bytes: &[u8]) -> Result<bool> {
+    let dir = prepare_parent_dir(path)?;
+    let tmp = stage_temp_file(dir, path, bytes)?;
+    match tmp.persist_noclobber(path) {
+        Ok(_) => {
+            sync_parent_dir_best_effort(dir, sync_parent_dir);
+            Ok(true)
+        }
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => {
+            Err(error.error).with_context(|| format!("failed to persist {}", path.display()))
         }
     }
 }
@@ -875,5 +952,52 @@ PASSWORD=hunter2hunter2"
         let input = "the quick brown fox = jumps over";
         // `fox` key has no sensitive hint → unchanged.
         assert_eq!(redact_secrets(input), input);
+    }
+
+    #[test]
+    fn atomic_write_syncs_parent_directory_without_failing_persisted_save() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("state.json");
+        let mut synced_dir = None;
+        atomic_write_with_dir_sync(&path, b"v1", |dir| {
+            synced_dir = Some(dir.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(synced_dir.as_deref(), Some(tmp.path()));
+
+        atomic_write_with_dir_sync(&path, b"v2", |_| {
+            anyhow::bail!("injected directory sync failure")
+        })
+        .expect("best-effort parent directory sync must not fail an already-persisted write");
+        assert_eq!(read(&path), "v2");
+
+        #[cfg(unix)]
+        {
+            assert!(is_unsupported_dir_sync_error(&std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "not supported"
+            )));
+            assert!(is_unsupported_dir_sync_error(&std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid argument"
+            )));
+            assert!(!is_unsupported_dir_sync_error(&std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "denied"
+            )));
+        }
+    }
+
+    #[test]
+    fn atomic_write_if_absent_creates_once_and_never_clobbers_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+
+        assert!(atomic_write_if_absent(&path, b"first").unwrap());
+        assert_eq!(read(&path), "first");
+
+        assert!(!atomic_write_if_absent(&path, b"second").unwrap());
+        assert_eq!(read(&path), "first");
     }
 }
