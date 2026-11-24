@@ -1996,6 +1996,20 @@ mod tests {
     }
 
     #[test]
+    fn read_resident_prefix_does_not_read_past_cap() {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("tail-invalid.txt");
+        let mut bytes = vec![b'a'; 128];
+        bytes.extend_from_slice(&[0xff, 0xfe, 0xfd, 0xfc]);
+        fs::write(&path, &bytes).expect("write");
+
+        let (prefix, file_len) = read_resident_prefix(&path, 64).expect("bounded prefix read");
+        assert_eq!(file_len, bytes.len() as u64);
+        assert!(prefix.len() <= 68);
+        assert!(prefix.starts_with(&"a".repeat(64)));
+    }
+
+    #[test]
     fn cache_maximal_total_cap_omits_extra_files() {
         let tmp = TempDir::new().expect("tempdir");
         let src = tmp.path().join("src");
