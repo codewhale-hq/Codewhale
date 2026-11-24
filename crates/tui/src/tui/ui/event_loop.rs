@@ -285,6 +285,7 @@ pub(super) fn apply_engine_session_projection(
         return true;
     }
     if (app.is_loading || app.is_compacting || app.is_purging)
+        && !app.dispatch_in_flight
         && let Ok(manager) = SessionManager::default_location()
     {
         if let Ok(session) = build_session_snapshot(app, &manager) {
@@ -5852,6 +5853,7 @@ pub(crate) async fn run_event_loop(
             // drained money+identity batch so an immediate reload agrees with
             // the live footer and worker record.
             if runtime_usage_arrived
+                && !app.dispatch_in_flight
                 && let Ok(manager) = SessionManager::default_location()
                 && let Ok(session) = build_session_snapshot(app, &manager)
             {

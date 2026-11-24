@@ -22134,6 +22134,60 @@ fn recovery_snapshot_waits_for_dispatch_admission_without_error() {
 }
 
 #[tokio::test]
+async fn pending_work_checkpoint_waits_for_dispatch_admission_without_error() {
+    let _home = SettingsHomeGuard::new();
+    let mut app = create_test_app();
+    app.current_session_id = Some("work-waits-for-dispatch-admission".to_string());
+    let mut desired = codewhale_engine::tools::todo::TodoList::new();
+    desired.add(
+        "pending task".to_string(),
+        codewhale_engine::tools::todo::TodoStatus::InProgress,
+    );
+    app.runtime_services
+        .work
+        .as_ref()
+        .expect("Work Graph runtime")
+        .apply_todo_update(
+            "work-waits-for-dispatch-admission",
+            "work_update",
+            &desired.snapshot(),
+        )
+        .await
+        .expect("mark pending work publish");
+    assert!(
+        app.runtime_services
+            .work
+            .as_ref()
+            .expect("Work Graph runtime")
+            .has_pending_publish()
+    );
+
+    app.is_loading = true;
+    app.dispatch_in_flight = true;
+    let history_len = app.history.len();
+
+    let published = persist_pending_work_checkpoint(&mut app)
+        .await
+        .expect("deferring pending work checkpoint during dispatch admission must succeed");
+    assert!(!published);
+    assert!(
+        app.runtime_services
+            .work
+            .as_ref()
+            .expect("Work Graph runtime")
+            .has_pending_publish(),
+        "pending publish must stay intact for the next tick after admission"
+    );
+    assert_eq!(app.history.len(), history_len);
+    assert!(
+        !app.history
+            .iter()
+            .any(|cell| matches!(cell, HistoryCell::Error { .. }))
+    );
+    assert!(app.status_toasts.is_empty() && app.sticky_status.is_none());
+}
+
+#[tokio::test]
 async fn steer_failure_queues_message_and_surfaces_toast() {
     let mut app = create_test_app();
     app.is_loading = true;
