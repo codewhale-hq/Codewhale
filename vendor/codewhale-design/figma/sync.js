@@ -1,6 +1,6 @@
-// Generated from Codewhale design 5.3.0; sha256 0d9acc771562a7b50fc9473e23ebccbff7cbc56962639277943a0cb0131ea83e. Do not edit.
+// Generated from Codewhale design 5.4.0; sha256 deef1a3948e0c8b58851ae1b9920ce3afcdd8ada90ca0b3aa7fcaeedf25a25a8. Do not edit.
 const PAYLOAD = {
- "version": "5.3.0",
+ "version": "5.4.0",
  "textStyles": [
   {
    "name": "CW 5/Caption",
@@ -21,7 +21,7 @@ const PAYLOAD = {
    "family": "Geist",
    "style": "Regular",
    "size": 13,
-   "line": 18
+   "line": 20
   },
   {
    "name": "CW 5/Body",
@@ -31,18 +31,32 @@ const PAYLOAD = {
    "line": 22
   },
   {
+   "name": "CW 5/Reading",
+   "family": "Geist",
+   "style": "Regular",
+   "size": 15,
+   "line": 25
+  },
+  {
    "name": "CW 5/Prose",
    "family": "Geist",
    "style": "Regular",
    "size": 16,
-   "line": 26
+   "line": 27
   },
   {
    "name": "CW 5/Heading",
    "family": "Geist",
    "style": "SemiBold",
    "size": 15,
-   "line": 24
+   "line": 22
+  },
+  {
+   "name": "CW 5/Subheading",
+   "family": "Geist",
+   "style": "SemiBold",
+   "size": 17,
+   "line": 26
   },
   {
    "name": "CW 5/Title",
@@ -162,11 +176,31 @@ const PAYLOAD = {
      "web": "var(--muted)",
      "values": {
       "Dark": {
-       "hex": "a8b6c3",
+       "hex": "aebcc9",
        "alpha": 1
       },
       "Light": {
-       "hex": "4a545d",
+       "hex": "47515a",
+       "alpha": 1
+      }
+     }
+    },
+    {
+     "name": "subagent",
+     "type": "COLOR",
+     "scopes": [
+      "SHAPE_FILL",
+      "TEXT_FILL",
+      "STROKE_COLOR"
+     ],
+     "web": "var(--subagent)",
+     "values": {
+      "Dark": {
+       "hex": "b8c7d6",
+       "alpha": 1
+      },
+      "Light": {
+       "hex": "3b4a56",
        "alpha": 1
       }
      }
@@ -182,7 +216,7 @@ const PAYLOAD = {
      "web": "var(--disabled)",
      "values": {
       "Dark": {
-       "hex": "848583",
+       "hex": "7f8c9a",
        "alpha": 1
       },
       "Light": {
@@ -202,7 +236,7 @@ const PAYLOAD = {
      "web": "var(--line)",
      "values": {
       "Dark": {
-       "hex": "3b3c3f",
+       "hex": "2a3648",
        "alpha": 1
       },
       "Light": {
@@ -227,7 +261,7 @@ const PAYLOAD = {
        "alpha": 1
       },
       "Light": {
-       "hex": "245bc7",
+       "hex": "2056c2",
        "alpha": 1
       }
      }
@@ -286,7 +320,7 @@ const PAYLOAD = {
        "alpha": 1
       },
       "Light": {
-       "hex": "84530d",
+       "hex": "7d4e08",
        "alpha": 1
       }
      }
@@ -301,11 +335,11 @@ const PAYLOAD = {
      "web": "var(--hover)",
      "values": {
       "Dark": {
-       "hex": "303134",
+       "hex": "253244",
        "alpha": 1
       },
       "Light": {
-       "hex": "e3e9ef",
+       "hex": "dde6f0",
        "alpha": 1
       }
      }
@@ -320,11 +354,11 @@ const PAYLOAD = {
      "web": "var(--selected)",
      "values": {
       "Dark": {
-       "hex": "17191c",
+       "hex": "182232",
        "alpha": 1
       },
       "Light": {
-       "hex": "d8e0e8",
+       "hex": "d2dde9",
        "alpha": 1
       }
      }
@@ -340,11 +374,31 @@ const PAYLOAD = {
      "web": "var(--live)",
      "values": {
       "Dark": {
-       "hex": "9ecbbd",
+       "hex": "86d3be",
        "alpha": 1
       },
       "Light": {
-       "hex": "396554",
+       "hex": "1b695a",
+       "alpha": 1
+      }
+     }
+    },
+    {
+     "name": "live-peak",
+     "type": "COLOR",
+     "scopes": [
+      "SHAPE_FILL",
+      "TEXT_FILL",
+      "STROKE_COLOR"
+     ],
+     "web": "var(--live-peak)",
+     "values": {
+      "Dark": {
+       "hex": "dff7f0",
+       "alpha": 1
+      },
+      "Light": {
+       "hex": "0d4035",
        "alpha": 1
       }
      }
@@ -364,7 +418,7 @@ const PAYLOAD = {
        "alpha": 1
       },
       "Light": {
-       "hex": "9e3f36",
+       "hex": "a32934",
        "alpha": 1
       }
      }
@@ -378,11 +432,11 @@ const PAYLOAD = {
      "web": "var(--border-strong)",
      "values": {
       "Dark": {
-       "hex": "828386",
+       "hex": "8a98a6",
        "alpha": 1
       },
       "Light": {
-       "hex": "737d88",
+       "hex": "6e7883",
        "alpha": 1
       }
      }
@@ -397,7 +451,7 @@ const PAYLOAD = {
      "web": "var(--ocean-depth)",
      "values": {
       "Dark": {
-       "hex": "202123",
+       "hex": "0d1624",
        "alpha": 1
       },
       "Light": {
@@ -519,6 +573,136 @@ const PAYLOAD = {
      }
     },
     {
+     "name": "change-bar/fill",
+     "type": "COLOR",
+     "scopes": [
+      "FRAME_FILL",
+      "SHAPE_FILL"
+     ],
+     "web": "var(--change-bar-fill)",
+     "values": {
+      "Dark": {
+       "hex": "ffffff",
+       "alpha": 0.04
+      },
+      "Light": {
+       "hex": "1b2a35",
+       "alpha": 0.035
+      }
+     }
+    },
+    {
+     "name": "change-bar/border",
+     "type": "COLOR",
+     "scopes": [
+      "STROKE_COLOR"
+     ],
+     "web": "var(--change-bar-border)",
+     "values": {
+      "Dark": {
+       "hex": "ffffff",
+       "alpha": 0.09
+      },
+      "Light": {
+       "hex": "1f3340",
+       "alpha": 0.11
+      }
+     }
+    },
+    {
+     "name": "subagent-tag/fill",
+     "type": "COLOR",
+     "scopes": [
+      "FRAME_FILL",
+      "SHAPE_FILL"
+     ],
+     "web": "var(--subagent-tag-fill)",
+     "values": {
+      "Dark": {
+       "hex": "8fbdff",
+       "alpha": 0.08
+      },
+      "Light": {
+       "hex": "1b2a35",
+       "alpha": 0.055
+      }
+     }
+    },
+    {
+     "name": "subagent-tag/border",
+     "type": "COLOR",
+     "scopes": [
+      "STROKE_COLOR"
+     ],
+     "web": "var(--subagent-tag-border)",
+     "values": {
+      "Dark": {
+       "hex": "8fbdff",
+       "alpha": 0.2
+      },
+      "Light": {
+       "hex": "1f3340",
+       "alpha": 0.14
+      }
+     }
+    },
+    {
+     "name": "workbar/fill",
+     "type": "COLOR",
+     "scopes": [
+      "FRAME_FILL",
+      "SHAPE_FILL"
+     ],
+     "web": "var(--workbar-fill)",
+     "values": {
+      "Dark": {
+       "hex": "0b121d",
+       "alpha": 0.68
+      },
+      "Light": {
+       "hex": "eef3f8",
+       "alpha": 0.78
+      }
+     }
+    },
+    {
+     "name": "workbar/border",
+     "type": "COLOR",
+     "scopes": [
+      "STROKE_COLOR"
+     ],
+     "web": "var(--workbar-border)",
+     "values": {
+      "Dark": {
+       "hex": "ffffff",
+       "alpha": 0.08
+      },
+      "Light": {
+       "hex": "1f3340",
+       "alpha": 0.1
+      }
+     }
+    },
+    {
+     "name": "workbar/track",
+     "type": "COLOR",
+     "scopes": [
+      "FRAME_FILL",
+      "SHAPE_FILL"
+     ],
+     "web": "var(--workbar-track)",
+     "values": {
+      "Dark": {
+       "hex": "ffffff",
+       "alpha": 0.12
+      },
+      "Light": {
+       "hex": "1b2a35",
+       "alpha": 0.11
+      }
+     }
+    },
+    {
      "name": "glass/clear-fill",
      "type": "COLOR",
      "scopes": [
@@ -588,8 +772,8 @@ const PAYLOAD = {
        "alpha": 0.09
       },
       "Light": {
-       "hex": "ffffff",
-       "alpha": 0.75
+       "hex": "1f3340",
+       "alpha": 0.12
       }
      }
     },
@@ -822,11 +1006,11 @@ const PAYLOAD = {
      "values": {
       "Dark": {
        "hex": "8fbdff",
-       "alpha": 0.16
+       "alpha": 0.12
       },
       "Light": {
-       "hex": "245bc7",
-       "alpha": 0.16
+       "hex": "2056c2",
+       "alpha": 0.12
       }
      }
     },
@@ -843,26 +1027,100 @@ const PAYLOAD = {
        "alpha": 0.35
       },
       "Light": {
-       "hex": "245bc7",
+       "hex": "2056c2",
        "alpha": 0.35
       }
      }
     },
     {
-     "name": "count/fill",
+     "name": "tint/live-fill",
      "type": "COLOR",
      "scopes": [
       "FRAME_FILL",
       "SHAPE_FILL"
      ],
-     "web": "var(--tint-count-fill)",
+     "web": "var(--tint-live-fill)",
      "values": {
       "Dark": {
-       "hex": "e8edf2",
+       "hex": "86d3be",
        "alpha": 0.1
       },
       "Light": {
-       "hex": "1b2a35",
+       "hex": "1b695a",
+       "alpha": 0.1
+      }
+     }
+    },
+    {
+     "name": "tint/live-border",
+     "type": "COLOR",
+     "scopes": [
+      "STROKE_COLOR"
+     ],
+     "web": "var(--tint-live-border)",
+     "values": {
+      "Dark": {
+       "hex": "86d3be",
+       "alpha": 0.42
+      },
+      "Light": {
+       "hex": "1b695a",
+       "alpha": 0.42
+      }
+     }
+    },
+    {
+     "name": "tint/attention-fill",
+     "type": "COLOR",
+     "scopes": [
+      "FRAME_FILL",
+      "SHAPE_FILL"
+     ],
+     "web": "var(--tint-attention-fill)",
+     "values": {
+      "Dark": {
+       "hex": "eab982",
+       "alpha": 0.1
+      },
+      "Light": {
+       "hex": "7d4e08",
+       "alpha": 0.1
+      }
+     }
+    },
+    {
+     "name": "tint/attention-border",
+     "type": "COLOR",
+     "scopes": [
+      "STROKE_COLOR"
+     ],
+     "web": "var(--tint-attention-border)",
+     "values": {
+      "Dark": {
+       "hex": "eab982",
+       "alpha": 0.42
+      },
+      "Light": {
+       "hex": "7d4e08",
+       "alpha": 0.42
+      }
+     }
+    },
+    {
+     "name": "tint/danger-fill",
+     "type": "COLOR",
+     "scopes": [
+      "FRAME_FILL",
+      "SHAPE_FILL"
+     ],
+     "web": "var(--tint-danger-fill)",
+     "values": {
+      "Dark": {
+       "hex": "eea59d",
+       "alpha": 0.1
+      },
+      "Light": {
+       "hex": "a32934",
        "alpha": 0.1
       }
      }
@@ -880,8 +1138,27 @@ const PAYLOAD = {
        "alpha": 0.45
       },
       "Light": {
-       "hex": "9e3f36",
+       "hex": "a32934",
        "alpha": 0.45
+      }
+     }
+    },
+    {
+     "name": "count/fill",
+     "type": "COLOR",
+     "scopes": [
+      "FRAME_FILL",
+      "SHAPE_FILL"
+     ],
+     "web": "var(--tint-count-fill)",
+     "values": {
+      "Dark": {
+       "hex": "e8edf2",
+       "alpha": 0.08
+      },
+      "Light": {
+       "hex": "1b2a35",
+       "alpha": 0.08
       }
      }
     },
@@ -1073,6 +1350,17 @@ const PAYLOAD = {
      }
     },
     {
+     "name": "spacing/prose",
+     "type": "FLOAT",
+     "scopes": [
+      "GAP"
+     ],
+     "web": "var(--spacing-prose)",
+     "values": {
+      "Value": 14
+     }
+    },
+    {
      "name": "spacing/section",
      "type": "FLOAT",
      "scopes": [
@@ -1227,6 +1515,39 @@ const PAYLOAD = {
      }
     },
     {
+     "name": "size/session-row",
+     "type": "FLOAT",
+     "scopes": [
+      "WIDTH_HEIGHT"
+     ],
+     "web": "var(--size-session-row)",
+     "values": {
+      "Value": 44
+     }
+    },
+    {
+     "name": "size/turn-line",
+     "type": "FLOAT",
+     "scopes": [
+      "WIDTH_HEIGHT"
+     ],
+     "web": "var(--size-turn-line)",
+     "values": {
+      "Value": 28
+     }
+    },
+    {
+     "name": "size/change-bar",
+     "type": "FLOAT",
+     "scopes": [
+      "WIDTH_HEIGHT"
+     ],
+     "web": "var(--size-change-bar)",
+     "values": {
+      "Value": 36
+     }
+    },
+    {
      "name": "size/touch-target",
      "type": "FLOAT",
      "scopes": [
@@ -1267,7 +1588,29 @@ const PAYLOAD = {
      ],
      "web": "var(--size-sidebar)",
      "values": {
-      "Value": 272
+      "Value": 268
+     }
+    },
+    {
+     "name": "size/reading",
+     "type": "FLOAT",
+     "scopes": [
+      "WIDTH_HEIGHT"
+     ],
+     "web": "var(--size-reading)",
+     "values": {
+      "Value": 680
+     }
+    },
+    {
+     "name": "size/composer",
+     "type": "FLOAT",
+     "scopes": [
+      "WIDTH_HEIGHT"
+     ],
+     "web": "var(--size-composer)",
+     "values": {
+      "Value": 720
      }
     },
     {
@@ -1278,7 +1621,18 @@ const PAYLOAD = {
      ],
      "web": "var(--size-panel)",
      "values": {
-      "Value": 300
+      "Value": 320
+     }
+    },
+    {
+     "name": "size/panel-wide",
+     "type": "FLOAT",
+     "scopes": [
+      "WIDTH_HEIGHT"
+     ],
+     "web": "var(--size-panel-wide)",
+     "values": {
+      "Value": 560
      }
     },
     {
@@ -1307,7 +1661,10 @@ const PAYLOAD = {
   }
  ]
 };
-const DRY = typeof DRY_RUN !== "undefined" && DRY_RUN;
+const DRY = typeof APPLY_FOUNDATIONS === "undefined" || APPLY_FOUNDATIONS !== true;
+const page = figma.root.children.find(node => node.id === '229:3');
+if (!page) throw Error('Inspect the existing Foundations page before synchronization');
+await figma.setCurrentPageAsync(page);
 const rgba = (v) => {
   const n = parseInt(v.hex, 16);
   return { r: ((n >> 16) & 255) / 255, g: ((n >> 8) & 255) / 255, b: (n & 255) / 255, a: v.alpha };
@@ -1384,4 +1741,8 @@ for (const wanted of PAYLOAD.textStyles) {
   style.fontSize = wanted.size;
   style.lineHeight = { unit: "PIXELS", value: wanted.line };
 }
+report.collectionIds = (await figma.variables.getLocalVariableCollectionsAsync()).map(value => value.id);
+report.variableIds = (await figma.variables.getLocalVariablesAsync()).map(value => value.id);
+report.textStyleIds = (await figma.getLocalTextStylesAsync()).map(value => value.id);
+report.pageId = page.id;
 return report;

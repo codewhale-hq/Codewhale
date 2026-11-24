@@ -140,6 +140,12 @@ function provider(input) {
       snippetKeys = ["description", "snippet"];
       trim2 = false;
       break;
+    case "searchapi":
+      items = array(parsed.organic_results);
+      urlKeys = ["link"];
+      snippetKeys = ["snippet"];
+      trim2 = false;
+      break;
     case "volcengine": {
       if (own(parsed, "error")) {
         const value = parsed.error && typeof parsed.error === "object" && !Array.isArray(parsed.error) ? row(parsed.error) : {};
@@ -261,6 +267,9 @@ Schema: {"results":[{"title":"...","url":"https://...","snippet":"..."}]}
       break;
     case "serply":
       pairs = [["q", query], ["num", String(max)], ...language === void 0 ? [] : [["hl", language]], ...region === void 0 ? [] : [["gl", region.toLowerCase()]]];
+      break;
+    case "searchapi":
+      pairs = [["q", query], ["engine", "google"], ["num", String(max)], ...window === void 0 ? [] : [["time_period", `last_${window}`]], ...language === void 0 ? [] : [["hl", language]], ...region === void 0 ? [] : [["gl", region.toLowerCase()]]];
       break;
     case "searxng":
       pairs = [["q", query], ["format", "json"], ...window === void 0 ? [] : [["time_range", window]], ...locale === void 0 ? [] : [["language", locale]]];
@@ -555,7 +564,8 @@ End of diff.`;
 }
 function pass(input) {
   const manifest = row3(input.manifest), part = row3(input.pass), view = row3(input.view);
-  const task = list(manifest.skipped_files).length === 0 ? "Review only defects introduced in this pass. Use supplementary source to check surrounding guards and declarations; it does not expand the commentable diff. Binary contents and omitted callers are not inspected. No build or tests have been run." : `Review only defects introduced in this pass. This is a partial review (pass ${integer2(part.number)} of ${list(manifest.passes).length}): the gate did not read ${skipped(manifest.skipped_files)}. Do not claim full coverage. Use supplementary source to check surrounding guards and declarations; it does not expand the commentable diff. Binary contents and omitted callers are not inspected. No build or tests have been run.`;
+  const scope = list(manifest.skipped_files).length === 0 ? "Review only defects introduced in this pass." : `Review only defects introduced in this pass. This is a partial review (pass ${integer2(part.number)} of ${list(manifest.passes).length}): the gate did not read ${skipped(manifest.skipped_files)}. Do not claim full coverage.`;
+  const task = `${scope} Use supplementary source to check surrounding guards and declarations. If the prompt omits relevant caller bodies and read-only tools are offered, inspect those callers with the tools. Anchor findings to the commentable diff and scope coverage claims to the pass manifest. Binary changes are represented by metadata. No build or tests have been run.`;
   if (!isJson(input.context)) throw new Error("invalid Core review context");
   const prompt = {
     task,

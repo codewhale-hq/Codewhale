@@ -300,6 +300,13 @@ enum PluginsCommand {
         #[arg(long, help = "Print the result as JSON")]
         json: bool,
     },
+    #[command(
+        about = "Review or install a third-party plugin package (currently: DeepSeek Harness `dsh`)"
+    )]
+    Import {
+        #[command(subcommand)]
+        command: PluginImportCommand,
+    },
     #[command(about = "Update an installed user-scope plugin bundle from its recorded source")]
     Update {
         #[arg(value_name = "NAME", help = "Plugin bundle name")]
@@ -366,6 +373,24 @@ enum PluginsCommand {
         #[arg(value_name = "NAME", help = "Plugin bundle name")]
         name: String,
         #[arg(long, help = "Print the result as JSON")]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum PluginImportCommand {
+    #[command(
+        about = "Review a DeepSeek Harness package, or approve and install an exact reviewed content hash"
+    )]
+    Dsh {
+        #[arg(
+            value_name = "ARGS",
+            required = true,
+            num_args = 1..=3,
+            help = "<package-dir> to review, or `approve <package-dir> <content-hash>` to install"
+        )]
+        args: Vec<String>,
+        #[arg(long, help = "Print the review or install result as JSON")]
         json: bool,
     },
 }
@@ -1081,6 +1106,33 @@ fn resolve_exec_prompt(args: &ExecArgs) -> Result<String> {
 
 const EXEC_STDIN_GRACE: Duration = Duration::from_secs(2);
 
+#[cfg(unix)]
+fn read_stdin_context(grace: Duration) -> Result<Option<String>> {
+    use std::os::fd::AsRawFd;
+    let stdin = io::stdin();
+    let mut poll_fd = libc::pollfd {
+        fd: stdin.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let timeout = i32::try_from(grace.as_millis()).unwrap_or(i32::MAX);
+    let ready = loop {
+        let rc = unsafe { libc::poll(&mut poll_fd, 1, timeout) };
+        if rc >= 0 {
+            break rc;
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error.into());
+        }
+    };
+    if ready == 0 {
+        return Ok(None);
+    }
+    read_capped_text(stdin.lock(), MAX_EXEC_PROMPT_BYTES, "exec prompt on stdin").map(Some)
+}
+
+#[cfg(not(unix))]
 fn read_stdin_context(grace: Duration) -> Result<Option<String>> {
     let (tx, rx) = std::sync::mpsc::channel::<Result<Option<String>, String>>();
     let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
@@ -2185,6 +2237,7 @@ fn run_with_args(options: RuntimeOptions, args: Vec<String>) -> Result<()> {
         }
         // Invoke the original hook (prints to stderr, etc.)
         orig_hook(panic_info);
+        crate::tui::ui::mark_terminal_restored_by_panic();
     }));
 
     // Parse and freeze every startup authority before Tokio or any other
@@ -2761,7 +2814,7 @@ async fn run_async_main_dispatch(
                     return crate::doctor::run_restore(stamp);
                 }
                 if args.installs {
-                    return crate::doctor::run_installs_report(args.json, args.brief);
+                    return run_doctor_installs_report(&cli, &args);
                 }
                 let config = match load_doctor_config_from_cli(&cli, &args) {
                     Ok(config) => config,
@@ -2800,14 +2853,15 @@ async fn run_async_main_dispatch(
                     )
                     .await;
                     if args.fix {
-                        let plan = crate::doctor_fix::plan_fixes(
+                        let plan = crate::doctor_fix::plan_fixes_for_config(
                             &config,
                             &workspace,
+                            cli.config.as_deref(),
                             plugin_registry.as_ref(),
                         );
                         crate::doctor_fix::print_fix_plan(&plan);
                         if !plan.is_empty() && (args.yes || crate::doctor_fix::confirm_fix(&plan)) {
-                            let results = crate::doctor_fix::apply_fixes(&plan);
+                            let results = crate::doctor_fix::apply_fixes(&plan, &config);
                             crate::doctor_fix::print_apply_results(&results);
                         }
                     }
@@ -2837,6 +2891,28 @@ async fn run_async_main_dispatch(
                     };
                     run_plugins_install_cli(
                         spec,
+                        json,
+                        config,
+                        registry,
+                        &plugin_discovery,
+                        &workspace,
+                    )
+                    .await
+                }
+                PluginsCommand::Import {
+                    command: PluginImportCommand::Dsh { args, json },
+                } => {
+                    let config = load_config_from_cli(&cli)?;
+                    let default_workspace = resolve_workspace(&cli);
+                    let workspace = crate::commands::groups::plugins::headless::agent_project()
+                        .unwrap_or_else(|| default_workspace.clone());
+                    let registry = if workspace == default_workspace {
+                        (*plugin_registry).clone()
+                    } else {
+                        (*plugin_discovery.inspect_registry_for_workspace(&workspace)).clone()
+                    };
+                    run_plugins_import_dsh_cli(
+                        args,
                         json,
                         config,
                         registry,
@@ -3199,6 +3275,7 @@ async fn run_async_main_dispatch(
                         args.sandbox.as_deref(),
                         args.json,
                         resume_session,
+                        resume_explicit_provider || resume_explicit_model.is_some(),
                         force_configured_route,
                         args.output_format,
                         max_turns,
@@ -3672,6 +3749,7 @@ fn is_workspace_dotenv_credential_key(key: &str) -> bool {
             "DEEPSEEK_SEARCH_API_KEY"
                 | "SOFYA_API_KEY"
                 | "SERPLY_API_KEY"
+                | "SEARCHAPI_API_KEY"
                 | "METASO_API_KEY"
                 | "BAIDU_SEARCH_API_KEY"
                 | "TAVILY_API_KEY"
@@ -5394,6 +5472,15 @@ async fn run_doctor(
     };
     // Presence and variable name only; the value is never held here.
     let env_key_source = codewhale_runtime::config::active_provider_env_api_key_source(config);
+    let route_record_stale = verdict_state
+        .steps
+        .get(&codewhale_config::SetupStep::ProviderModel)
+        .and_then(|entry| entry.result.as_deref())
+        .is_some_and(|result| {
+            doctor_setup_route_record_is_stale(result, &api_target.provider, &api_target.model)
+        });
+    let route_credential_unavailable =
+        resolve_credential_diagnostic(config).availability == CredentialAvailability::Unavailable;
     let verdict = doctor_verdict(
         &verdict_state,
         identity
@@ -5415,6 +5502,8 @@ async fn run_doctor(
                         true,
                     )
                 }),
+            route_record_stale,
+            route_credential_unavailable,
         },
     );
     println!("{}", verdict.truecolor(aqua_r, aqua_g, aqua_b).bold());
@@ -5469,7 +5558,7 @@ async fn run_doctor(
             let flagged = crate::doctor::config_credential_shaped_keys(&raw);
             if !flagged.is_empty() {
                 println!(
-                    "  {} credential-shaped value(s) in config.toml ({}): move them to the secret backend, then scrub the file — config.toml is plain text",
+                    "  {} credential-shaped value(s) in config.toml ({}): config.toml is plain text. `codewhale doctor --fix` moves provider `api_key` values into the secret store and removes them from the file; delete any other listed key by hand once it is unused",
                     "!".truecolor(sky_r, sky_g, sky_b),
                     flagged.join(", ")
                 );
@@ -5594,11 +5683,14 @@ async fn run_doctor(
     .await;
 
     let (setup_state, setup_source) = doctor_setup_state(config, workspace);
+    let route_source = doctor_route_source(config, profile, local_route.is_some());
     print_doctor_setup_report(
         config,
         workspace,
         &setup_state,
         setup_source,
+        &api_target,
+        &route_source,
         (aqua_r, aqua_g, aqua_b),
         (sky_r, sky_g, sky_b),
     );
@@ -5726,25 +5818,42 @@ async fn run_doctor(
     // API connectivity test
     println!();
     println!("{}", "API Connectivity:".bold());
-    // Configured-vs-active honesty (DGF-01): doctor describes the route a
-    // session launched NOW would resolve. It cannot see inside an already
-    // running session, which keeps the route it resolved at its own launch.
     println!(
-        "  · scope: configured route — what a session launched now would use; a running session keeps the route it resolved at launch (its TUI header shows the live route)"
+        "  · scope: configured default route, the one a session launched now uses; /provider and /model change only the running session, whose TUI header shows its route"
     );
-    println!("  · provider: {}", api_target.provider);
+    println!(
+        "  · provider: {} (from {})",
+        api_target.provider, route_source.provider
+    );
+    let latest_session_route = {
+        let sessions = doctor_paths.sessions.clone();
+        let provider = api_target.provider.clone();
+        let model = api_target.model.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::doctor::latest_session_route_line(&sessions, &provider, &model)
+        })
+        .await
+        .ok()
+        .flatten()
+    };
+    if let Some(line) = latest_session_route {
+        println!("  · {line}");
+    }
     println!(
         "  · base_url: {}",
         codewhale_config::structural_url_authority(&api_target.base_url)
     );
     match api_target.resolution {
         DoctorModelResolution::Resolved => {
-            println!("  · model: {} (resolved)", api_target.model);
+            println!(
+                "  · model: {} (resolved; from {})",
+                api_target.model, route_source.model
+            );
         }
         DoctorModelResolution::ConfiguredOnly => {
             println!(
-                "  · model: {} (configured; route resolution unavailable)",
-                api_target.model
+                "  · model: {} (from {}; route resolution unavailable)",
+                api_target.model, route_source.model
             );
         }
     }
@@ -6066,6 +6175,12 @@ async fn run_doctor(
         println!("  {}", status.summary());
         if !status.unknown.is_empty() {
             println!("  ⚠ Unknown bundled names: {}", status.unknown.join(", "));
+        }
+        if !status.retired.is_empty() {
+            println!(
+                "  · No longer bundled (kept in [skills.bundled]): {}",
+                status.retired.join(", ")
+            );
         }
         if !status.ignored.is_empty() {
             println!(
@@ -6641,6 +6756,8 @@ struct DoctorVerdictFacts {
     /// (#6889). A model the provider is still loading looks exactly like this.
     live_probe_timed_out: bool,
     local_discovery: bool,
+    route_record_stale: bool,
+    route_credential_unavailable: bool,
 }
 
 /// `set via <VAR> (value not shown; not checked offline)`.
@@ -6694,16 +6811,39 @@ fn doctor_verdict(
     // `first_run_ready` accepts NeedsAction (a failed key still reaches the
     // wizard's ready screen), so check the provider first.
     match state.status(codewhale_config::SetupStep::ProviderModel) {
-        StepStatus::Verified if state.first_run_ready() || facts.onboarded => {
+        StepStatus::Verified
+            if !facts.route_credential_unavailable
+                && !facts.route_record_stale
+                && (state.first_run_ready() || facts.onboarded) =>
+        {
             "Ready: setup is complete.".to_string()
         }
         StepStatus::Configured | StepStatus::Verified
-            if state.first_run_ready() || facts.onboarded =>
+            if !facts.route_credential_unavailable
+                && (state.first_run_ready() || facts.onboarded) =>
         {
-            format!("Ready: setup is complete (saved key not checked offline; {PROBE_HINT}).")
+            if facts.route_record_stale {
+                format!(
+                    "Ready: setup is complete (saved {provider} key not checked offline; {PROBE_HINT}; run /setup provider to refresh the recorded route)."
+                )
+            } else {
+                format!("Ready: setup is complete (saved key not checked offline; {PROBE_HINT}).")
+            }
         }
         StepStatus::Configured | StepStatus::Verified => env_ready.unwrap_or_else(|| {
-            "Not ready: first-run setup is unfinished → run `codewhale setup`.".to_string()
+            if facts.route_credential_unavailable {
+                if facts.local_discovery {
+                    format!(
+                        "Not confirmed: the {provider} route has no verified key, so Codewhale and `codewhale exec` use a local Ollama model if one is running → `codewhale doctor --probe-local` checks for one; or save a key with /provider in Codewhale or `codewhale auth set --provider {provider}`."
+                    )
+                } else {
+                    format!(
+                        "Not ready: the {provider} route has no verified key → save one with /provider in Codewhale or `codewhale auth set --provider {provider}`; `codewhale doctor --probe-api` checks a key already saved."
+                    )
+                }
+            } else {
+                "Not ready: first-run setup is unfinished → run `codewhale setup`.".to_string()
+            }
         }),
         StepStatus::NeedsAction => env_ready.unwrap_or_else(|| {
             // A derived NeedsAction only means offline doctor cannot see the
@@ -6813,6 +6953,8 @@ mod doctor_verdict_tests {
             live_probe,
             live_probe_timed_out: false,
             local_discovery: false,
+            route_record_stale: false,
+            route_credential_unavailable: false,
         }
     }
 
@@ -7650,11 +7792,14 @@ fn doctor_has_credentials_or_local_runtime(config: &Config) -> bool {
         .certifies_ready()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn print_doctor_setup_report(
     config: &Config,
     workspace: &Path,
     state: &codewhale_config::SetupState,
     source: &str,
+    api_target: &DoctorApiTarget,
+    route_source: &DoctorRouteSource,
     ok_rgb: (u8, u8, u8),
     warn_rgb: (u8, u8, u8),
 ) {
@@ -7687,6 +7832,10 @@ fn print_doctor_setup_report(
     println!();
     println!("{}", "Setup State:".bold());
     println!("  · source: {source}");
+    println!(
+        "  · configured default route: {} / {} (provider from {}, model from {}; API Connectivity checks this same route)",
+        api_target.provider, api_target.model, route_source.provider, route_source.model
+    );
     println!(
         "  · credential: source={}, availability={}",
         doctor_api_key_source_label(credential.source),
@@ -7750,7 +7899,22 @@ fn print_doctor_setup_report(
         let result = entry.and_then(|entry| entry.result.as_deref());
         let required_label = if required { "required" } else { "optional" };
         let version_label = version.unwrap_or("unversioned");
-        let result_label = result.unwrap_or("no result");
+        let result_label = match result {
+            Some(result)
+                if step == codewhale_config::SetupStep::ProviderModel
+                    && doctor_setup_route_record_is_stale(
+                        result,
+                        &api_target.provider,
+                        &api_target.model,
+                    ) =>
+            {
+                format!(
+                    "recorded at setup: {result}; the configured default route has changed since, run /setup provider to refresh this record"
+                )
+            }
+            Some(result) => format!("recorded at setup: {result}"),
+            None => "no result".to_string(),
+        };
         println!(
             "    · {}: {} ({required_label}, {version_label}, {result_label})",
             setup_step_id(step),
@@ -9057,14 +9221,114 @@ fn doctor_route_report(config: &Config) -> serde_json::Value {
 fn doctor_provider_config_table(identity: &codewhale_runtime::config::ProviderIdentity) -> String {
     format!(
         "providers.{}",
-        identity
+        identity.config_table_key().unwrap_or_else(|_| identity
             .compatibility()
-            .map_or(identity.key.as_str(), |row| row.config_key)
+            .map_or(identity.key.as_str(), |row| row.config_key))
     )
 }
 
+struct DoctorRouteSource {
+    provider: String,
+    model: String,
+}
+
+fn doctor_route_source(
+    config: &Config,
+    profile: Option<&str>,
+    local_adopted: bool,
+) -> DoctorRouteSource {
+    if local_adopted {
+        return DoctorRouteSource {
+            provider: "live local Ollama (--probe-local)".to_string(),
+            model: "live local Ollama (--probe-local)".to_string(),
+        };
+    }
+    let profile_note = profile
+        .map(str::trim)
+        .filter(|profile| !profile.is_empty())
+        .map(|profile| format!(" with profile `{profile}`"))
+        .unwrap_or_default();
+    let provider = if config.route_provenance.provider_from_managed {
+        "managed configuration".to_string()
+    } else if config.route_provenance.provider_from_env
+        || codewhale_runtime::config::explicit_launch_provider_override().is_some()
+    {
+        "environment CODEWHALE_PROVIDER".to_string()
+    } else if config.route_provenance.provider_from_saved_selection {
+        "saved selection in settings.toml".to_string()
+    } else if config
+        .provider
+        .as_ref()
+        .is_some_and(|provider| !provider.trim().is_empty())
+    {
+        if config.route_provenance.provider_from_profile {
+            format!("config `provider`{profile_note}")
+        } else {
+            "config `provider`".to_string()
+        }
+    } else {
+        "the built-in default".to_string()
+    };
+    let model_profile_note = if config.route_provenance.model_from_profile {
+        profile_note.as_str()
+    } else {
+        ""
+    };
+    let provider_model_table = config.active_provider_identity().ok().filter(|identity| {
+        config
+            .provider_config_for(identity)
+            .and_then(|entry| entry.model.as_deref())
+            .is_some_and(|model| !model.trim().is_empty())
+    });
+    let model = if config.route_provenance.model_from_managed {
+        "managed configuration".to_string()
+    } else if codewhale_runtime::config::explicit_launch_model_override().is_some() {
+        "environment CODEWHALE_MODEL".to_string()
+    } else if config.environment_model_applied {
+        "environment model override".to_string()
+    } else if config.route_provenance.model_from_saved_selection {
+        "saved selection in settings.toml".to_string()
+    } else if let Some(identity) = provider_model_table {
+        format!(
+            "config `[{}].model`{model_profile_note}",
+            doctor_provider_config_table(&identity)
+        )
+    } else if config.default_model_uses_root_default_text_model() {
+        format!("config `default_text_model`{model_profile_note}")
+    } else {
+        "the provider default".to_string()
+    };
+    DoctorRouteSource { provider, model }
+}
+
+fn doctor_setup_route_record_is_stale(record: &str, provider: &str, model: &str) -> bool {
+    let mut recorded_provider: Option<&str> = None;
+    let mut recorded_model: Option<&str> = None;
+    for segment in record.split([',', ';']) {
+        let part = segment.trim();
+        if let Some(value) = part.strip_prefix("provider=") {
+            recorded_provider = Some(value.split_whitespace().next().unwrap_or_default());
+        } else if let Some(value) = part.strip_prefix("model=") {
+            recorded_model = Some(value.trim());
+        }
+    }
+    let model = model.trim().trim_start_matches("models/");
+    let provider_stale = recorded_provider.is_some_and(|recorded| recorded != provider);
+    let model_stale = recorded_model.is_some_and(|recorded| {
+        if let Some(effective) = recorded.strip_prefix("auto:") {
+            !model.eq_ignore_ascii_case("auto")
+                && effective.trim().trim_start_matches("models/") != model
+        } else {
+            recorded.trim_start_matches("models/") != model
+        }
+    });
+    provider_stale || model_stale
+}
+
 fn doctor_provider_source(config: &Config) -> &'static str {
-    if config
+    if codewhale_runtime::config::explicit_launch_provider_override().is_some() {
+        "env"
+    } else if config
         .provider
         .as_ref()
         .is_some_and(|provider| !provider.trim().is_empty())
@@ -9588,6 +9852,187 @@ async fn run_plugins_install_cli(
     Ok(())
 }
 
+async fn run_plugins_import_dsh_cli(
+    args: Vec<String>,
+    json: bool,
+    config: Config,
+    registry: codewhale_plugins::PluginRegistry,
+    plugin_discovery: &Arc<codewhale_plugins::PluginDiscoveryContext>,
+    workspace: &Path,
+) -> Result<()> {
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    match words.as_slice() {
+        ["approve", path, expected_hash] => {
+            let receipt = codewhale_plugins::mutation::install_exact_from_cli_receipt(
+                format!("dsh:{path}"),
+                (*expected_hash).to_string(),
+                config,
+                registry,
+            )
+            .await?;
+            if !json {
+                println!("Installed {} (disabled, untrusted).", receipt.name);
+                println!(
+                    "Review with `codewhale plugins trust {}`, then enable with `codewhale plugins enable {}`.",
+                    receipt.name, receipt.name
+                );
+                return Ok(());
+            }
+            let refreshed = plugin_discovery.inspect_registry_for_workspace(workspace);
+            let record = refreshed
+                .get(&receipt.name)
+                .map(|plugin| {
+                    let mut value = plugin_cli_record(plugin);
+                    if let Some(object) = value.as_object_mut() {
+                        object.insert("action".to_string(), "installed".into());
+                    }
+                    value
+                })
+                .unwrap_or_else(|| {
+                    serde_json::json!({
+                        "name": plugin_cli_text(&receipt.name),
+                        "action": "installed",
+                        "path": receipt.path.as_ref().map(|p| plugin_cli_text(&p.to_string_lossy())),
+                        "content_hash": receipt.installed_content_hash.or(receipt.content_hash),
+                        "trust": "untrusted",
+                        "enabled": false,
+                    })
+                });
+            println!("{}", serde_json::to_string_pretty(&record)?);
+            Ok(())
+        }
+        [path] if *path != "approve" => {
+            let package_path = PathBuf::from(path);
+            let network = config
+                .network
+                .clone()
+                .map(codewhale_net::network_policy::NetworkPolicy::from)
+                .unwrap_or_default();
+            let policy = codewhale_plugins::activation::extension_host_policy_enabled();
+            let (canonical, conversion, content_hash) = tokio::task::spawn_blocking(move || {
+                let _scope = codewhale_plugins::activation::PolicyScope::propagate(policy);
+                let canonical = package_path.canonicalize().with_context(|| {
+                    format!("DSH package not found at {}", package_path.display())
+                })?;
+                let (conversion, content_hash) =
+                    codewhale_plugins::install::preview_dsh_with_network(&canonical, &network)?;
+                Ok::<_, anyhow::Error>((canonical, conversion, content_hash))
+            })
+            .await
+            .context("DSH preview task failed to finish")??;
+            let manual_ports: Vec<String> = conversion
+                .outcomes
+                .iter()
+                .filter(|outcome| outcome.needs_manual_port())
+                .map(|outcome| {
+                    format!(
+                        "{} ({}) {}: {}",
+                        outcome.row.as_deref().unwrap_or("unlabeled"),
+                        outcome.package.as_deref().unwrap_or("unlabeled"),
+                        outcome.kind,
+                        outcome.reason
+                    )
+                })
+                .collect();
+            if json {
+                let payload = serde_json::json!({
+                    "action": "preview",
+                    "plugin_name": conversion.plugin_name,
+                    "source_package": conversion.source_package,
+                    "source_version": conversion.source_version,
+                    "package_path": canonical.to_string_lossy(),
+                    "content_hash": content_hash,
+                    "skills": conversion.skills,
+                    "commands": conversion.commands,
+                    "agents": conversion.agents,
+                    "hooks": conversion.hooks,
+                    "remote_servers": conversion.remote_servers,
+                    "local_servers": conversion.local_servers,
+                    "network_hosts": conversion.network_hosts,
+                    "native_rows": conversion.native_rows,
+                    "requires_node": conversion.requires_node,
+                    "manual_ports": manual_ports,
+                    "diagnostics": conversion.diagnostics,
+                });
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+                return Ok(());
+            }
+            let pkg_label =
+                plugin_cli_text(conversion.source_package.as_deref().unwrap_or("unnamed"));
+            let version_suffix = conversion
+                .source_version
+                .as_deref()
+                .map(|v| format!("@{}", plugin_cli_text(v)))
+                .unwrap_or_default();
+            println!(
+                "DeepSeek Harness package {pkg_label}{version_suffix} -> plugin '{}'",
+                plugin_cli_text(&conversion.plugin_name)
+            );
+            println!(
+                "  Source: {}",
+                plugin_cli_text(&canonical.to_string_lossy())
+            );
+            let fmt_list = |items: &[String]| {
+                if items.is_empty() {
+                    "none".to_string()
+                } else {
+                    plugin_cli_text(&items.join(", "))
+                }
+            };
+            println!("  Skills: {}", fmt_list(&conversion.skills));
+            println!("  Commands: {}", fmt_list(&conversion.commands));
+            println!("  Agents: {}", fmt_list(&conversion.agents));
+            println!("  Hooks: {}", fmt_list(&conversion.hooks));
+            println!(
+                "  Remote MCP servers: {}",
+                fmt_list(&conversion.remote_servers)
+            );
+            println!(
+                "  Local MCP servers: {}",
+                fmt_list(&conversion.local_servers)
+            );
+            println!("  Network hosts: {}", fmt_list(&conversion.network_hosts));
+            if !conversion.native_rows.is_empty() {
+                println!("  Native host code: {}", fmt_list(&conversion.native_rows));
+            }
+            if conversion.requires_node {
+                println!("  Requires: node on PATH");
+            }
+            if manual_ports.is_empty() {
+                println!("  Skipped: none");
+            } else {
+                println!("  Skipped ({}):", manual_ports.len());
+                for line in &manual_ports {
+                    println!("    - {}", plugin_cli_text(line));
+                }
+            }
+            if !conversion.diagnostics.is_empty() {
+                println!("  Diagnostics:");
+                for line in &conversion.diagnostics {
+                    println!("    - {}", plugin_cli_text(line));
+                }
+            }
+            println!("  Content hash: {content_hash}");
+            println!();
+            println!(
+                "Nothing was installed. To import exactly this bundle (disabled and untrusted):"
+            );
+            println!(
+                "  codewhale plugins import dsh approve {} {}",
+                plugin_cli_text(&format!(
+                    "'{}'",
+                    canonical.to_string_lossy().replace('\'', "'\\''")
+                )),
+                content_hash
+            );
+            Ok(())
+        }
+        _ => bail!(
+            "Usage:\n  codewhale plugins import dsh <package-dir> [--json]\n  codewhale plugins import dsh approve <package-dir> <content-hash> [--json]"
+        ),
+    }
+}
+
 fn run_plugins_cli(
     command: PluginsCommand,
     mut registry: Arc<codewhale_plugins::PluginRegistry>,
@@ -9688,8 +10133,8 @@ fn run_plugins_cli(
             json,
             &mut headless::ProcessConsole,
         )?,
-        PluginsCommand::Install { .. } => {
-            unreachable!("plugins install is dispatched before spawn_blocking")
+        PluginsCommand::Install { .. } | PluginsCommand::Import { .. } => {
+            unreachable!("plugins install/import is dispatched before spawn_blocking")
         }
         PluginsCommand::Update { name, json } => {
             let network = config
@@ -10687,6 +11132,17 @@ fn load_config_from_cli(cli: &Cli) -> Result<Config> {
 /// a provider endpoint. Keep credential-bearing environment values out of the
 /// regular diagnostic configuration so an unrelated renderer or error path
 /// cannot disclose them.
+/// Kept out of line so the config it loads never widens the debug poll frame
+/// of the top-level dispatch future, which runs at near-zero stack margin.
+#[inline(never)]
+fn run_doctor_installs_report(cli: &Cli, args: &DoctorArgs) -> Result<()> {
+    let update = (args.brief && !args.json)
+        .then(|| load_doctor_config_from_cli(cli, args).ok())
+        .flatten()
+        .map(|config| config.update_config());
+    crate::doctor::run_installs_report(args.json, args.brief, update.as_ref())
+}
+
 fn load_doctor_config_from_cli(cli: &Cli, args: &DoctorArgs) -> Result<Config> {
     if args.probe_api || args.probe_local {
         return load_config_from_cli(cli);
@@ -11532,7 +11988,7 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
     let config = &config;
     validate_review_receipt_args(&args)?;
 
-    if args.pr.is_some() && !is_command_available("gh") {
+    if args.pr.is_some() && !tokio::task::spawn_blocking(|| is_command_available("gh")).await? {
         bail!(
             "`gh` CLI not found on PATH. Install GitHub CLI \
              (https://cli.github.com) and authenticate (`gh auth login`) \
@@ -11542,7 +11998,12 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
     // Fetched before the diff so a missing/hidden PR fails before any model
     // route is resolved or billed.
     let pr_view = match args.pr {
-        Some(number) => Some((number, run_gh_pr_view(number, args.repo.as_deref())?)),
+        Some(number) => {
+            let repo = args.repo.clone();
+            let view = tokio::task::spawn_blocking(move || run_gh_pr_view(number, repo.as_deref()))
+                .await??;
+            Some((number, view))
+        }
         None => None,
     };
     if let Some(base) = args.base.as_deref() {
@@ -11551,11 +12012,14 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
             "--base must name a commit or ref, not an option: {base}"
         );
     }
-    let diff = collect_diff(
-        &args,
-        pr_view.as_ref().map(|(_, view)| view),
-        &std::env::current_dir()?,
-    )?;
+    let workspace = std::env::current_dir()?;
+    let diff = {
+        let args = args.clone();
+        let view = pr_view.as_ref().map(|(_, view)| view.clone());
+        let workspace = workspace.clone();
+        tokio::task::spawn_blocking(move || collect_diff(&args, view.as_ref(), &workspace))
+            .await??
+    };
     if diff.trim().is_empty() {
         bail!("No diff to review.");
     }
@@ -11564,7 +12028,12 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
     }
     let commits = match (&args.base, args.pr) {
         (Some(base), None) => {
-            collect_base_commit_messages(base, args.path.as_deref(), &std::env::current_dir()?)?
+            let base = base.clone();
+            let path = args.path.clone();
+            tokio::task::spawn_blocking(move || {
+                collect_base_commit_messages(&base, path.as_deref(), &workspace)
+            })
+            .await??
         }
         _ => String::new(),
     };
@@ -12255,6 +12724,7 @@ fn review_config_with_spend_rates(
             display_name: None,
             limit: None,
             cost: None,
+            cost_currency: None,
             modalities: None,
             attachment: None,
             reasoning: None,
@@ -12266,6 +12736,7 @@ fn review_config_with_spend_rates(
             .last_mut()
             .expect("inserted review route declaration")
     };
+    row.cost_currency = None;
     row.cost = Some(codewhale_config::models_dev::ModelsDevCost {
         input: Some(rates.input_usd_per_million),
         output: Some(rates.output_usd_per_million),
@@ -14594,6 +15065,7 @@ fn merge_project_config_with_approval_baseline(
             .set_provider_model_override(&identity, Some(model.to_string()))
             .map_err(anyhow::Error::msg)?;
         config.remembered_selection_scope = Some(false);
+        config.project_model = Some(model.to_string());
     }
     if let Some(v) = table.get("reasoning_effort").and_then(toml::Value::as_str)
         && !v.is_empty()
@@ -17213,6 +17685,103 @@ mod doctor_setup_state_tests {
 #[cfg(test)]
 mod doctor_endpoint_tests {
     use super::*;
+
+    #[test]
+    fn doctor_setup_route_record_flags_a_route_changed_after_setup() {
+        let record = "provider=google, model=gemini-4-carbon, context_window=1048576 (catalog) auth=key saved";
+        assert!(doctor_setup_route_record_is_stale(
+            record,
+            "deepseek",
+            "deepseek-flash"
+        ));
+        assert!(!doctor_setup_route_record_is_stale(
+            record,
+            "google",
+            "models/gemini-4-carbon"
+        ));
+        assert!(!doctor_setup_route_record_is_stale(
+            "provider=deepseek, model=deepseek-flash; configured, not checked",
+            "deepseek",
+            "deepseek-flash"
+        ));
+        assert!(!doctor_setup_route_record_is_stale(
+            "provider=deepseek, model=auto: deepseek-v4-flash, context_window=131072",
+            "deepseek",
+            "auto"
+        ));
+        assert!(!doctor_setup_route_record_is_stale(
+            "provider=deepseek, model=auto: deepseek-v4-flash, context_window=131072",
+            "deepseek",
+            "deepseek-v4-flash"
+        ));
+        assert!(!doctor_setup_route_record_is_stale(
+            "bundled/default",
+            "deepseek",
+            "deepseek-flash"
+        ));
+    }
+
+    #[test]
+    fn doctor_route_source_respects_env_ignored_root_model_and_local_probe() {
+        let mut env_cfg = Config::default();
+        env_cfg.provider = Some("openai".to_string());
+        env_cfg
+            .providers
+            .get_or_insert_with(Default::default)
+            .openai
+            .model = Some("gpt-5".to_string());
+        env_cfg.environment_model_applied = true;
+        let env_src = doctor_route_source(&env_cfg, Some("sandbox-strict"), false);
+        assert_eq!(env_src.provider, "config `provider`");
+        assert_eq!(env_src.model, "environment model override");
+
+        let mut foreign_root = Config::default();
+        foreign_root.provider = Some("openai".to_string());
+        foreign_root.default_text_model = Some("deepseek-v4-pro".to_string());
+        let foreign_src = doctor_route_source(&foreign_root, None, false);
+        assert_eq!(foreign_src.model, "the provider default");
+
+        let local_src = doctor_route_source(&Config::default(), None, true);
+        assert_eq!(local_src.provider, "live local Ollama (--probe-local)");
+        assert_eq!(local_src.model, "live local Ollama (--probe-local)");
+    }
+
+    #[test]
+    fn doctor_verdict_does_not_certify_stale_route_without_credentials() {
+        use codewhale_config::{
+            ConstitutionChoice, RuntimePostureSource, SetupState, SetupStep, StepEntry, StepStatus,
+        };
+        let mut state = SetupState::default();
+        state.set_step(
+            SetupStep::Language,
+            StepEntry::new(StepStatus::Verified, true, "0.10.2"),
+        );
+        state.set_step(
+            SetupStep::ProviderModel,
+            StepEntry::new(StepStatus::Verified, true, "0.10.2")
+                .with_result("provider=google, model=gemini-4-carbon"),
+        );
+        state.runtime_posture_source = RuntimePostureSource::Confirmed;
+        state.constitution_choice = ConstitutionChoice::Bundled;
+        let unavailable = DoctorVerdictFacts {
+            onboarded: true,
+            route_record_stale: true,
+            route_credential_unavailable: true,
+            ..DoctorVerdictFacts::default()
+        };
+        let verdict = doctor_verdict(&state, "openai", &unavailable);
+        assert!(verdict.starts_with("Not ready"), "{verdict}");
+
+        let stale_with_key = DoctorVerdictFacts {
+            onboarded: true,
+            route_record_stale: true,
+            route_credential_unavailable: false,
+            ..DoctorVerdictFacts::default()
+        };
+        let verdict2 = doctor_verdict(&state, "openai", &stale_with_key);
+        assert!(verdict2.contains("not checked offline"), "{verdict2}");
+        assert!(verdict2.contains("/setup provider"), "{verdict2}");
+    }
 
     #[test]
     fn doctor_api_target_reports_default_endpoint() {
@@ -21387,7 +21956,7 @@ mod setup_helper_tests {
         assert_eq!(doctor_auth_scheme(&cloud), "bearer");
         let report = doctor_route_report(&cloud);
         assert_eq!(report["provider"], "ollama-cloud");
-        assert_eq!(report["provider_config_table"], "providers.ollama_cloud");
+        assert_eq!(report["provider_config_table"], "providers.ollama");
 
         let custom_remote = ollama_config("https://ollama-gateway.example.test/v1");
         assert_eq!(

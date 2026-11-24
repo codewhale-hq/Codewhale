@@ -142,7 +142,7 @@ def refresh() -> None:
     display.update({re.sub(r"[^a-z0-9]", "", (u.get("name") or "").lower()): u["login"]
                     for u in known.values() if u.get("name") and u["login"] in people})
     aliases = json.loads(DATA.read_text()).get("unlinked_aliases", {}) if DATA.exists() else {}
-    unlinked = set()
+    unlinked = {login for login, why in sources.items() if login.lower() not in known and why & {"commit", "co-author", "merged pull request"}}
     for n in names:
         key = re.sub(r"[^a-z0-9]", "", n.lower())
         if key and key in display:
@@ -215,7 +215,7 @@ def render() -> None:
         "GitHub's contributor count includes only commit authors and co-authors whose email is linked to their "
         "account, so it misses many of them. If your commits are missing there, add your commit email to your "
         "GitHub account and they will link.\n\n"
-        f"{links}\n\nAlso with us, from commits whose email is not linked to an account: {' · '.join(extra)}.\n"
+        f"{links}\n\nAlso with us, credited without a linked GitHub account: {' · '.join(extra)}.\n"
         "<!-- contributor-wall:end -->\n"
     )
     doc = ROOT / "docs" / "CONTRIBUTORS.md"

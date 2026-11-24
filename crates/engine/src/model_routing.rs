@@ -19,9 +19,7 @@ use codewhale_config::ProviderKind;
 use codewhale_models::auto_route_evidence::AutoRouteDecisionEvidence;
 use codewhale_models::{ContentBlock, Message, MessageRequest, MessageResponse, SystemPrompt};
 use codewhale_models::{Role, Usage};
-use codewhale_runtime::config::{
-    AutoRouterKind, Config, ProviderIdentity, normalize_model_name_for_provider,
-};
+use codewhale_runtime::config::{AutoRouterKind, Config, ProviderIdentity};
 
 /// Big/cheap model pair the auto-router may choose between for the active
 /// provider (#3018).
@@ -52,8 +50,11 @@ fn catalog_family_candidates(
     provider: ProviderKind,
     current_model: &str,
 ) -> Option<RouterCandidates> {
-    let normalized = normalize_model_name_for_provider(provider, current_model)
-        .unwrap_or_else(|| current_model.trim().to_string());
+    let normalized = codewhale_config::route::resolve_model(provider, current_model, None)
+        .map_or_else(
+            |_| current_model.trim().to_string(),
+            |resolved| resolved.wire_id,
+        );
     let lower = normalized.to_ascii_lowercase();
 
     let cheap = match provider {
@@ -144,13 +145,9 @@ pub fn provider_router_candidates(
     }
 
     if provider == ProviderKind::Zai {
-        let normalized =
-            codewhale_runtime::config::normalize_model_name_for_provider(provider, current_model)
-                .unwrap_or_else(|| current_model.to_string());
+        let normalized = codewhale_config::route::resolve_model(provider, current_model, None)
+            .map_or_else(|_| current_model.to_string(), |resolved| resolved.wire_id);
         return RouterCandidates {
-            // GLM-5.3 routes faster/explore children to GLM-5.3-Flash.
-            // GLM-5.2 still uses GLM-5-Turbo. Flash, Turbo, and 5.1 have no
-            // cheaper tier and keep children on the parent model.
             cheap: if normalized
                 == codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_3_MODEL
             {
@@ -173,10 +170,9 @@ pub fn provider_router_candidates(
     }
 
     if provider == ProviderKind::Openrouter
-        && let Some(normalized) =
-            codewhale_runtime::config::normalize_model_name_for_provider(provider, current_model)
+        && let Ok(resolved) = codewhale_config::route::resolve_model(provider, current_model, None)
         && matches!(
-            normalized.as_str(),
+            resolved.wire_id.as_str(),
             codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_1_MODEL
                 | codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_2_MODEL
                 | codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_3_MODEL
@@ -184,10 +180,8 @@ pub fn provider_router_candidates(
                 | codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_TURBO_MODEL
         )
     {
+        let normalized = resolved.wire_id;
         return RouterCandidates {
-            // z-ai/glm-5.3 routes faster children to z-ai/glm-5.3-flash;
-            // z-ai/glm-5.2 still uses z-ai/glm-5-turbo. Flash, turbo, and 5.1
-            // have no cheaper tier and keep children on parent.
             cheap: if normalized
                 == codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_3_MODEL
             {
@@ -222,14 +216,18 @@ pub fn provider_router_candidates(
             if current_model.to_ascii_lowercase().contains("deepseek") =>
         {
             RouterCandidates {
-                big: codewhale_runtime::config::wire_model_for_provider(
-                    provider,
-                    "deepseek-v4-pro",
+                big: codewhale_config::route::resolve_model(provider, "deepseek-v4-pro", None)
+                    .map_or_else(
+                        |_| "deepseek-v4-pro".to_string(),
+                        |resolved| resolved.wire_id,
+                    ),
+                cheap: Some(
+                    codewhale_config::route::resolve_model(provider, "deepseek-v4-flash", None)
+                        .map_or_else(
+                            |_| "deepseek-v4-flash".to_string(),
+                            |resolved| resolved.wire_id,
+                        ),
                 ),
-                cheap: Some(codewhale_runtime::config::wire_model_for_provider(
-                    provider,
-                    "deepseek-v4-flash",
-                )),
             }
         }
         ProviderKind::Volcengine if current_model.to_ascii_lowercase().contains("deepseek") => {
@@ -1079,8 +1077,8 @@ fn explicit_model_matches_candidate(
     requested_model: &str,
 ) -> bool {
     candidate.model.eq_ignore_ascii_case(requested_model)
-        || normalize_model_name_for_provider(candidate.provider, requested_model)
-            .is_some_and(|model| candidate.model.eq_ignore_ascii_case(&model))
+        || codewhale_config::route::resolve_model(candidate.provider, requested_model, None)
+            .is_ok_and(|resolved| candidate.model.eq_ignore_ascii_case(&resolved.wire_id))
 }
 
 /// Declared local fallback for Auto routing when the flash classifier is
@@ -1353,36 +1351,6 @@ fn auto_route_usage_has_reported_data(usage: &codewhale_models::Usage) -> bool {
         || usage.reasoning_tokens.is_some()
         || usage.reasoning_replay_tokens.is_some()
         || usage.server_tool_use.is_some()
-}
-
-/// Stable, persistence-safe identity for one classifier response. The raw
-/// provider response id is hashed with the frozen dispatch route and instant;
-/// neither it nor any custom route label crosses into telemetry/persistence.
-pub fn auto_route_usage_source_id(route: &EffectiveRouteEnvelope, response_id: &str) -> String {
-    use sha2::{Digest as _, Sha256};
-
-    let mut digest = Sha256::new();
-    let dispatched_at = route.dispatched_at.to_rfc3339();
-    for part in [
-        b"codewhale:auto-route-classifier:v1".as_slice(),
-        route.provider.as_str().as_bytes(),
-        route.provider_identity.as_bytes(),
-        route.model.as_bytes(),
-        route
-            .endpoint_fingerprint
-            .as_deref()
-            .unwrap_or_default()
-            .as_bytes(),
-        dispatched_at.as_bytes(),
-        response_id.as_bytes(),
-    ] {
-        digest.update((part.len() as u64).to_le_bytes());
-        digest.update(part);
-    }
-    format!(
-        "auto-router:{}",
-        codewhale_runtime::hashing::hex_bytes(digest.finalize())
-    )
 }
 
 fn auto_route_attempt_from_response(

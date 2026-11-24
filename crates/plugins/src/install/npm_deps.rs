@@ -34,16 +34,40 @@ pub enum NpmDepsNetworkError {
 impl fmt::Display for NpmDepsNetworkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NeedsApproval(host) => write!(
-                f,
-                "Network approval required for {host}; use /network allow {host}, then retry"
-            ),
+            Self::NeedsApproval(host) => f.write_str(&network_approval_message(
+                host,
+                Some("to fetch this package's declared npm dependencies"),
+            )),
             Self::Denied(host) => write!(f, "Network access denied for {host}"),
         }
     }
 }
 
 impl std::error::Error for NpmDepsNetworkError {}
+
+pub(crate) fn network_approval_message(host: &str, purpose: Option<&str>) -> String {
+    let purpose = purpose
+        .map(|purpose| format!(" {purpose}"))
+        .unwrap_or_default();
+    format!(
+        "Network approval required for {host}{purpose}; run `/network allow {host}` in the terminal UI, or add \"{host}\" to `allow` under [network] in config.toml, then retry"
+    )
+}
+
+#[derive(Debug)]
+pub(crate) struct NpmStage {
+    pub(crate) dir: tempfile::TempDir,
+    pub(crate) fetched: Vec<String>,
+}
+
+impl NpmStage {
+    pub(crate) fn path(&self) -> &Path {
+        self.dir.path()
+    }
+}
+
+const IMPORT_SPECIFIER_PATTERN: &str =
+    r#"(?:from\s*|import\s*\(\s*|require(?:\.resolve)?\s*\(\s*|import\s*)["']([^"']+)["']"#;
 
 fn ensure_registry_allowed(network: &NetworkPolicy) -> Result<()> {
     match network.decide(NPM_REGISTRY_HOST) {
@@ -484,7 +508,7 @@ async fn fetch_verified_tarball(
     Ok(arc)
 }
 
-fn read_capped_scan_text(path: &Path, max_bytes: usize) -> Result<Option<String>> {
+fn read_capped_scan_text(path: &Path, max_bytes: usize) -> Result<String> {
     let file = codewhale_util::bundle_file::open_bundle_file(path)
         .with_context(|| format!("failed to open DSH file `{}`", path.display()))?;
     let mut buf = Vec::new();
@@ -496,7 +520,7 @@ fn read_capped_scan_text(path: &Path, max_bytes: usize) -> Result<Option<String>
             path.display()
         );
     }
-    Ok(String::from_utf8(buf).ok())
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 fn has_clean_bundled_package_json(root: &Path, dep_name: &str) -> Result<bool> {
@@ -518,8 +542,14 @@ fn has_clean_bundled_package_json(root: &Path, dep_name: &str) -> Result<bool> {
         }
         [Some(first), None]
     };
+    let Ok(canonical_root) = fs::canonicalize(root) else {
+        return Ok(false);
+    };
     let mut cur = root.to_path_buf();
-    for component in std::iter::once("node_modules").chain(segments.into_iter().flatten()) {
+    for (idx, component) in std::iter::once("node_modules")
+        .chain(segments.into_iter().flatten())
+        .enumerate()
+    {
         if component.is_empty() || component == "." || component == ".." || component.contains('\\')
         {
             return Ok(false);
@@ -530,11 +560,32 @@ fn has_clean_bundled_package_json(root: &Path, dep_name: &str) -> Result<bool> {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(err) => return Err(err.into()),
         };
-        if codewhale_util::path_identity::metadata_is_link_or_reparse(&meta) || !meta.is_dir() {
+        if codewhale_util::path_identity::metadata_is_link_or_reparse(&meta) {
+            if idx == 0 {
+                return Ok(false);
+            }
+            let Ok(target) = fs::canonicalize(&cur) else {
+                return Ok(false);
+            };
+            if !target.starts_with(&canonical_root) || !target.is_dir() {
+                return Ok(false);
+            }
+            cur = target;
+        } else if !meta.is_dir() {
             return Ok(false);
         }
     }
-    Ok(codewhale_util::bundle_file::open_bundle_file(&cur.join("package.json")).is_ok())
+    let pkg_json = cur.join("package.json");
+    if let Ok(meta) = fs::symlink_metadata(&pkg_json)
+        && codewhale_util::path_identity::metadata_is_link_or_reparse(&meta)
+    {
+        let Ok(target) = fs::canonicalize(&pkg_json) else {
+            return Ok(false);
+        };
+        return Ok(target.starts_with(&canonical_root)
+            && codewhale_util::bundle_file::open_bundle_file(&target).is_ok());
+    }
+    Ok(codewhale_util::bundle_file::open_bundle_file(&pkg_json).is_ok())
 }
 
 struct ScanState<'a> {
@@ -607,11 +658,10 @@ fn scan_dir(cur: &Path, depth: usize, state: &mut ScanState<'_>) -> Result<()> {
             .extension()
             .map(|e| e.to_string_lossy().to_ascii_lowercase());
         if state.has_roster && matches!(ext.as_deref(), Some("yml" | "yaml")) {
-            if let Some(text) = read_capped_scan_text(&path, MAX_SCAN_FILE_BYTES)? {
-                for dep in state.declared.keys() {
-                    if text.contains(dep.as_str()) {
-                        state.referenced.insert(dep.clone());
-                    }
+            let text = read_capped_scan_text(&path, MAX_SCAN_FILE_BYTES)?;
+            for dep in state.declared.keys() {
+                if text.contains(dep.as_str()) {
+                    state.referenced.insert(dep.clone());
                 }
             }
             continue;
@@ -636,8 +686,8 @@ fn scan_dir(cur: &Path, depth: usize, state: &mut ScanState<'_>) -> Result<()> {
                     )
                 })
             })
-            && let Some(text) = read_capped_scan_text(&path, MAX_SCAN_FILE_BYTES)?
         {
+            let text = read_capped_scan_text(&path, MAX_SCAN_FILE_BYTES)?;
             for cap in state.import_re.captures_iter(&text) {
                 if let Some(spec) = cap.get(1).map(|m| m.as_str())
                     && let Some(pkg) = bare_package_name(spec)
@@ -651,6 +701,76 @@ fn scan_dir(cur: &Path, depth: usize, state: &mut ScanState<'_>) -> Result<()> {
     Ok(())
 }
 
+fn node_modules_has_symlinks(package_root: &Path) -> Result<bool> {
+    let nm = package_root.join("node_modules");
+    let meta = match fs::symlink_metadata(&nm) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(err.into()),
+    };
+    if codewhale_util::path_identity::metadata_is_link_or_reparse(&meta) {
+        return Ok(true);
+    }
+    if !meta.is_dir() {
+        return Ok(false);
+    }
+    fn walk(dir: &Path, depth: usize) -> Result<bool> {
+        if depth > MAX_SCAN_DEPTH {
+            bail!("DSH package directory nesting exceeds {MAX_SCAN_DEPTH} levels");
+        }
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let meta = fs::symlink_metadata(&path)?;
+            if codewhale_util::path_identity::metadata_is_link_or_reparse(&meta) {
+                return Ok(true);
+            }
+            if meta.is_dir() && walk(&path, depth + 1)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    walk(&nm, 0)
+}
+
+fn copy_regular_file(
+    src_path: &Path,
+    dst_path: &Path,
+    canonical_root: Option<&Path>,
+    file_count: &mut usize,
+    total_bytes: &mut u64,
+) -> Result<()> {
+    *file_count += 1;
+    if *file_count > MAX_UNPACKED_FILES {
+        bail!("DSH package exceeds the {MAX_UNPACKED_FILES}-file budget");
+    }
+    let mut src_file = match canonical_root.filter(|root| src_path.starts_with(root)) {
+        Some(root) => codewhale_util::fs_confined::open_read(root, src_path)?,
+        None => codewhale_util::bundle_file::open_bundle_file(src_path)?,
+    };
+    let mut dst_file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dst_path)?;
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = std::io::Read::read(&mut src_file, &mut buf)?;
+        if n == 0 {
+            break;
+        }
+        *total_bytes = total_bytes.saturating_add(n as u64);
+        if *total_bytes > MAX_UNPACKED_BYTES {
+            bail!(
+                "DSH package exceeds the {} MiB byte budget",
+                MAX_UNPACKED_BYTES / (1024 * 1024)
+            );
+        }
+        dst_file.write_all(&buf[..n])?;
+    }
+    Ok(())
+}
+
 fn copy_dir_no_symlinks(
     src: &Path,
     dst: &Path,
@@ -658,53 +778,124 @@ fn copy_dir_no_symlinks(
     file_count: &mut usize,
     total_bytes: &mut u64,
 ) -> Result<()> {
+    let root_meta = fs::symlink_metadata(src)?;
+    if codewhale_util::path_identity::metadata_is_link_or_reparse(&root_meta) || !root_meta.is_dir()
+    {
+        bail!("symlinks and reparse points are not permitted in DSH packages");
+    }
+    let canonical_root = fs::canonicalize(src)?;
+    let mut active_dirs = BTreeSet::new();
+    active_dirs.insert(canonical_root.clone());
+    copy_dir_inner(
+        src,
+        dst,
+        depth,
+        &canonical_root,
+        false,
+        &mut active_dirs,
+        file_count,
+        total_bytes,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn copy_dir_inner(
+    src: &Path,
+    dst: &Path,
+    depth: usize,
+    canonical_root: &Path,
+    in_node_modules: bool,
+    active_dirs: &mut BTreeSet<PathBuf>,
+    file_count: &mut usize,
+    total_bytes: &mut u64,
+) -> Result<()> {
     if depth > MAX_SCAN_DEPTH {
         bail!("DSH package directory nesting exceeds {MAX_SCAN_DEPTH} levels");
-    }
-    if depth == 0 {
-        let root_meta = fs::symlink_metadata(src)?;
-        if codewhale_util::path_identity::metadata_is_link_or_reparse(&root_meta)
-            || !root_meta.is_dir()
-        {
-            bail!("symlinks and reparse points are not permitted in DSH packages");
-        }
     }
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
+        let name = entry.file_name();
+        let dst_path = dst.join(&name);
         let meta = fs::symlink_metadata(&src_path)?;
-        if codewhale_util::path_identity::metadata_is_link_or_reparse(&meta) {
-            bail!("symlinks and reparse points are not permitted in DSH packages");
+        let is_link = codewhale_util::path_identity::metadata_is_link_or_reparse(&meta);
+        if is_link {
+            if !in_node_modules {
+                bail!("symlinks and reparse points are not permitted in DSH packages");
+            }
+            let target = fs::canonicalize(&src_path).map_err(|_| {
+                anyhow::anyhow!(
+                    "broken symlink inside node_modules is not permitted in DSH packages"
+                )
+            })?;
+            if !target.starts_with(canonical_root) {
+                bail!("symlink inside node_modules escapes the DSH package root");
+            }
+            let target_meta = fs::metadata(&target)?;
+            if target_meta.is_dir() {
+                if !active_dirs.insert(target.clone()) {
+                    bail!("cyclic symlink inside node_modules is not permitted in DSH packages");
+                }
+                let res = copy_dir_inner(
+                    &target,
+                    &dst_path,
+                    depth + 1,
+                    canonical_root,
+                    true,
+                    active_dirs,
+                    file_count,
+                    total_bytes,
+                )
+                .and_then(|()| {
+                    copy_pnpm_private_dependencies(
+                        &target,
+                        &dst_path,
+                        depth + 1,
+                        canonical_root,
+                        active_dirs,
+                        file_count,
+                        total_bytes,
+                    )
+                });
+                active_dirs.remove(&target);
+                res?;
+            } else if target_meta.is_file() {
+                copy_regular_file(
+                    &target,
+                    &dst_path,
+                    Some(canonical_root),
+                    file_count,
+                    total_bytes,
+                )?;
+            } else {
+                bail!(
+                    "non-regular file `{}` is not permitted in DSH packages",
+                    src_path.display()
+                );
+            }
+            continue;
         }
         if meta.is_dir() {
-            copy_dir_no_symlinks(&src_path, &dst_path, depth + 1, file_count, total_bytes)?;
+            let child_in_node_modules = in_node_modules || name == "node_modules";
+            copy_dir_inner(
+                &src_path,
+                &dst_path,
+                depth + 1,
+                canonical_root,
+                child_in_node_modules,
+                active_dirs,
+                file_count,
+                total_bytes,
+            )?;
         } else if meta.is_file() {
-            *file_count += 1;
-            if *file_count > MAX_UNPACKED_FILES {
-                bail!("DSH package exceeds the {MAX_UNPACKED_FILES}-file budget");
-            }
-            let mut src_file = codewhale_util::bundle_file::open_bundle_file(&src_path)?;
-            let mut dst_file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&dst_path)?;
-            let mut buf = [0u8; 8192];
-            loop {
-                let n = std::io::Read::read(&mut src_file, &mut buf)?;
-                if n == 0 {
-                    break;
-                }
-                *total_bytes = total_bytes.saturating_add(n as u64);
-                if *total_bytes > MAX_UNPACKED_BYTES {
-                    bail!(
-                        "DSH package exceeds the {} MiB byte budget",
-                        MAX_UNPACKED_BYTES / (1024 * 1024)
-                    );
-                }
-                dst_file.write_all(&buf[..n])?;
-            }
+            copy_regular_file(
+                &src_path,
+                &dst_path,
+                Some(canonical_root),
+                file_count,
+                total_bytes,
+            )?;
         } else {
             bail!(
                 "non-regular file `{}` is not permitted in DSH packages",
@@ -713,6 +904,61 @@ fn copy_dir_no_symlinks(
         }
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn copy_pnpm_private_dependencies(
+    target: &Path,
+    dst: &Path,
+    depth: usize,
+    canonical_root: &Path,
+    active_dirs: &mut BTreeSet<PathBuf>,
+    file_count: &mut usize,
+    total_bytes: &mut u64,
+) -> Result<()> {
+    let Some(store) = target
+        .ancestors()
+        .skip(1)
+        .take_while(|ancestor| *ancestor != canonical_root)
+        .find(|ancestor| {
+            ancestor
+                .file_name()
+                .is_some_and(|name| name == "node_modules")
+        })
+    else {
+        return Ok(());
+    };
+    let mut entries = 0usize;
+    for entry in fs::read_dir(store)? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with('@') {
+            entries += fs::read_dir(entry.path())?.count();
+        } else {
+            entries += 1;
+        }
+        if entries >= 2 {
+            break;
+        }
+    }
+    if entries < 2 {
+        return Ok(());
+    }
+    if dst.join("node_modules").exists() {
+        bail!(
+            "pnpm package `{}` has both its own node_modules and private dependencies; this layout is not supported in DSH packages",
+            target.display()
+        );
+    }
+    copy_dir_inner(
+        store,
+        &dst.join("node_modules"),
+        depth,
+        canonical_root,
+        true,
+        active_dirs,
+        file_count,
+        total_bytes,
+    )
 }
 
 fn unpack_tarball(
@@ -799,9 +1045,7 @@ pub(crate) fn collect_unresolved_seeds(
     }
     let mut referenced = BTreeSet::new();
     visit_composition_entries(entries, &mut referenced);
-    let import_re = Regex::new(
-        r#"(?:from\s+|import\s*\(\s*|require(?:\.resolve)?\s*\(\s*|import\s+)["']([^"']+)["']"#,
-    )?;
+    let import_re = Regex::new(IMPORT_SPECIFIER_PATTERN)?;
     let has_roster = presets::has_roster(entries);
     let mut state = ScanState {
         base: package_root,
@@ -830,15 +1074,34 @@ pub(crate) fn maybe_stage_with_dependencies(
     manifest: &Value,
     entries: &[Value],
     network: &NetworkPolicy,
-) -> Result<Option<tempfile::TempDir>> {
+) -> Result<Option<NpmStage>> {
     let (declared, seeds) = collect_unresolved_seeds(package_root, manifest, entries)?;
-    if seeds.is_empty() {
+    let materialize_only = seeds.is_empty() && node_modules_has_symlinks(package_root)?;
+    if seeds.is_empty() && !materialize_only {
         return Ok(None);
+    }
+    if materialize_only {
+        let stage = tempfile::Builder::new()
+            .prefix("codewhale-dsh-npm-")
+            .tempdir()?;
+        let mut file_count = 0usize;
+        let mut total_bytes = 0u64;
+        copy_dir_no_symlinks(
+            package_root,
+            stage.path(),
+            0,
+            &mut file_count,
+            &mut total_bytes,
+        )?;
+        return Ok(Some(NpmStage {
+            dir: stage,
+            fetched: Vec::new(),
+        }));
     }
     ensure_registry_allowed(network)?;
     let root = package_root.to_path_buf();
     let network = network.clone();
-    std::thread::spawn(move || -> Result<Option<tempfile::TempDir>> {
+    std::thread::spawn(move || -> Result<Option<NpmStage>> {
         let stage = tempfile::Builder::new()
             .prefix("codewhale-dsh-npm-")
             .tempdir()?;
@@ -861,6 +1124,7 @@ pub(crate) fn maybe_stage_with_dependencies(
 
         let mut hoisted: HashMap<String, Version> = HashMap::new();
         let mut unpacked_at: HashSet<(PathBuf, String)> = HashSet::new();
+        let mut fetched = Vec::new();
         let mut queue: VecDeque<(PathBuf, String, String)> = seeds
             .into_iter()
             .map(|(_, name, range)| (staged_root.clone(), name, range))
@@ -898,6 +1162,7 @@ pub(crate) fn maybe_stage_with_dependencies(
             if !unpacked_at.insert((target_dir.clone(), resolved_ver_str.clone())) {
                 continue;
             }
+            fetched.push(format!("{name}@{resolved_ver_str}"));
             package_count += 1;
             if package_count > MAX_UNPACKED_PACKAGES {
                 bail!("resolved npm dependencies exceed the {MAX_UNPACKED_PACKAGES}-package limit");
@@ -917,7 +1182,12 @@ pub(crate) fn maybe_stage_with_dependencies(
             }
         }
 
-        Ok(Some(stage))
+        fetched.sort();
+        fetched.dedup();
+        Ok(Some(NpmStage {
+            dir: stage,
+            fetched,
+        }))
     })
     .join()
     .map_err(|_| anyhow::anyhow!("npm dependency resolver thread panicked"))?
@@ -1032,10 +1302,7 @@ mod tests {
         assert!(!declared.contains_key("cosmokit"));
 
         let mut referenced = BTreeSet::new();
-        let re = Regex::new(
-            r#"(?:from\s+|import\s*\(\s*|require(?:\.resolve)?\s*\(\s*|import\s+)["']([^"']+)["']"#,
-        )
-        .unwrap();
+        let re = Regex::new(IMPORT_SPECIFIER_PATTERN).unwrap();
         let text = fs::read_to_string(dir.path().join("lib/index.js")).unwrap();
         for cap in re.captures_iter(&text) {
             if let Some(pkg) = bare_package_name(&cap[1])
@@ -1045,6 +1312,69 @@ mod tests {
             }
         }
         assert_eq!(referenced, BTreeSet::from(["zod".to_string()]));
+    }
+
+    #[test]
+    fn minified_imports_become_seeds_and_stop_at_the_npm_approval_message() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("lib")).unwrap();
+        fs::write(
+            dir.path().join("lib/index.js"),
+            r#"import{z}from"zod";import"side-effect-dep";export function apply(){return z}"#,
+        )
+        .unwrap();
+        let manifest = Value::Map(vec![(
+            "dependencies".to_string(),
+            Value::Map(vec![
+                ("zod".to_string(), Value::Str("^4.0.0".to_string())),
+                (
+                    "side-effect-dep".to_string(),
+                    Value::Str("^1.0.0".to_string()),
+                ),
+            ]),
+        )]);
+        let (_, seeds) = collect_unresolved_seeds(dir.path(), &manifest, &[]).unwrap();
+        let names: BTreeSet<_> = seeds.iter().map(|(_, name, _)| name.as_str()).collect();
+        assert_eq!(names, BTreeSet::from(["side-effect-dep", "zod"]));
+        let Err(err) =
+            maybe_stage_with_dependencies(dir.path(), &manifest, &[], &NetworkPolicy::default())
+        else {
+            panic!("minified seeds must stop at the npm network approval");
+        };
+        assert_eq!(
+            err.downcast_ref::<NpmDepsNetworkError>(),
+            Some(&NpmDepsNetworkError::NeedsApproval("registry.npmjs.org"))
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("to fetch this package's declared npm dependencies"),
+            "{message}"
+        );
+        assert!(
+            message
+                .contains(r#"add "registry.npmjs.org" to `allow` under [network] in config.toml"#),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn non_utf8_source_file_still_records_declared_dependency() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("lib")).unwrap();
+        let mut bytes = b"// invalid utf-8 byte: ".to_vec();
+        bytes.extend_from_slice(&[0xff, 0xfe]);
+        bytes.extend_from_slice(b"\nimport \"declared-dep\";\n");
+        fs::write(dir.path().join("lib/index.js"), bytes).unwrap();
+        let manifest = Value::Map(vec![(
+            "dependencies".to_string(),
+            Value::Map(vec![(
+                "declared-dep".to_string(),
+                Value::Str("^1.0.0".to_string()),
+            )]),
+        )]);
+        let (_, seeds) = collect_unresolved_seeds(dir.path(), &manifest, &[]).unwrap();
+        let names: BTreeSet<_> = seeds.iter().map(|(_, name, _)| name.as_str()).collect();
+        assert_eq!(names, BTreeSet::from(["declared-dep"]));
     }
 
     #[test]
@@ -1080,6 +1410,286 @@ mod tests {
         assert_eq!(
             deny_err.downcast_ref::<NpmDepsNetworkError>(),
             Some(&NpmDepsNetworkError::Denied("registry.npmjs.org"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pnpm_alias_materialization_keeps_private_transitive_dependencies() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(root.join("lib/index.js"), "const foo = require('foo');\n").unwrap();
+        let store = root.join("node_modules/.pnpm");
+        let foo = store.join("foo@1.0.0/node_modules/foo");
+        let bar = store.join("bar@1.0.0/node_modules/bar");
+        fs::create_dir_all(&foo).unwrap();
+        fs::create_dir_all(&bar).unwrap();
+        fs::write(
+            foo.join("package.json"),
+            r#"{"name":"foo","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        fs::write(foo.join("index.js"), "module.exports = require('bar');\n").unwrap();
+        fs::write(
+            bar.join("package.json"),
+            r#"{"name":"bar","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        symlink(
+            "../../bar@1.0.0/node_modules/bar",
+            store.join("foo@1.0.0/node_modules/bar"),
+        )
+        .unwrap();
+        symlink(
+            ".pnpm/foo@1.0.0/node_modules/foo",
+            root.join("node_modules/foo"),
+        )
+        .unwrap();
+
+        let manifest = Value::Map(vec![(
+            "dependencies".to_string(),
+            Value::Map(vec![("foo".to_string(), Value::Str("^1.0.0".to_string()))]),
+        )]);
+        let deny_policy = NetworkPolicy {
+            default: Decision::Deny.into(),
+            ..NetworkPolicy::default()
+        };
+        let staged = maybe_stage_with_dependencies(root, &manifest, &[], &deny_policy)
+            .unwrap()
+            .expect("pnpm symlinks should trigger symlink-free materialization");
+        assert!(staged.fetched.is_empty());
+        let private_bar = staged.path().join("node_modules/foo/node_modules/bar");
+        let meta = fs::symlink_metadata(&private_bar).unwrap();
+        assert!(!meta.file_type().is_symlink() && meta.is_dir());
+        assert!(private_bar.join("package.json").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pnpm_scoped_packages_keep_private_transitive_dependencies() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(
+            root.join("lib/index.js"),
+            "const foo = require('@scope/foo');\n",
+        )
+        .unwrap();
+        let store = root.join("node_modules/.pnpm");
+        let foo = store.join("@scope+foo@1.0.0/node_modules/@scope/foo");
+        let bar = store.join("@scope+bar@1.0.0/node_modules/@scope/bar");
+        let priv_dep = store.join("priv@2.0.0/node_modules/priv");
+        fs::create_dir_all(&foo).unwrap();
+        fs::create_dir_all(&bar).unwrap();
+        fs::create_dir_all(&priv_dep).unwrap();
+        fs::write(
+            foo.join("package.json"),
+            r#"{"name":"@scope/foo","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        fs::write(
+            foo.join("index.js"),
+            "module.exports = require('@scope/bar') + require('priv');\n",
+        )
+        .unwrap();
+        fs::write(
+            bar.join("package.json"),
+            r#"{"name":"@scope/bar","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        fs::write(
+            priv_dep.join("package.json"),
+            r#"{"name":"priv","version":"2.0.0"}"#,
+        )
+        .unwrap();
+        symlink(
+            "../../../@scope+bar@1.0.0/node_modules/@scope/bar",
+            store.join("@scope+foo@1.0.0/node_modules/@scope/bar"),
+        )
+        .unwrap();
+        symlink(
+            "../../priv@2.0.0/node_modules/priv",
+            store.join("@scope+foo@1.0.0/node_modules/priv"),
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("node_modules/@scope")).unwrap();
+        symlink(
+            "../.pnpm/@scope+foo@1.0.0/node_modules/@scope/foo",
+            root.join("node_modules/@scope/foo"),
+        )
+        .unwrap();
+
+        let manifest = Value::Map(vec![(
+            "dependencies".to_string(),
+            Value::Map(vec![(
+                "@scope/foo".to_string(),
+                Value::Str("^1.0.0".to_string()),
+            )]),
+        )]);
+        let deny_policy = NetworkPolicy {
+            default: Decision::Deny.into(),
+            ..NetworkPolicy::default()
+        };
+        let staged = maybe_stage_with_dependencies(root, &manifest, &[], &deny_policy)
+            .unwrap()
+            .expect("pnpm symlinks should trigger symlink-free materialization");
+        let private_bar = staged
+            .path()
+            .join("node_modules/@scope/foo/node_modules/@scope/bar");
+        let meta = fs::symlink_metadata(&private_bar).unwrap();
+        assert!(!meta.file_type().is_symlink() && meta.is_dir());
+        assert!(private_bar.join("package.json").is_file());
+        let private_dep = staged
+            .path()
+            .join("node_modules/@scope/foo/node_modules/priv");
+        assert!(private_dep.join("package.json").is_file());
+
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("package.json"), r#"{"name":"evil"}"#).unwrap();
+        symlink(
+            outside.path(),
+            store.join("@scope+foo@1.0.0/node_modules/escape"),
+        )
+        .unwrap();
+        let err = maybe_stage_with_dependencies(root, &manifest, &[], &deny_policy).unwrap_err();
+        assert!(
+            err.to_string().contains("escapes"),
+            "unexpected error for escaping symlink: {err:#}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pnpm_scoped_packages_keep_same_scope_private_dependencies() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(
+            root.join("lib/index.js"),
+            "const foo = require('@scope/foo');\n",
+        )
+        .unwrap();
+        let store = root.join("node_modules/.pnpm");
+        let foo = store.join("@scope+foo@1.0.0/node_modules/@scope/foo");
+        let util = store.join("@scope+util@1.0.0/node_modules/@scope/util");
+        fs::create_dir_all(&foo).unwrap();
+        fs::create_dir_all(&util).unwrap();
+        fs::write(
+            foo.join("package.json"),
+            r#"{"name":"@scope/foo","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        fs::write(
+            foo.join("index.js"),
+            "module.exports = require('@scope/util');\n",
+        )
+        .unwrap();
+        fs::write(
+            util.join("package.json"),
+            r#"{"name":"@scope/util","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        symlink(
+            "../../../@scope+util@1.0.0/node_modules/@scope/util",
+            store.join("@scope+foo@1.0.0/node_modules/@scope/util"),
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("node_modules/@scope")).unwrap();
+        symlink(
+            "../.pnpm/@scope+foo@1.0.0/node_modules/@scope/foo",
+            root.join("node_modules/@scope/foo"),
+        )
+        .unwrap();
+
+        let manifest = Value::Map(vec![(
+            "dependencies".to_string(),
+            Value::Map(vec![(
+                "@scope/foo".to_string(),
+                Value::Str("^1.0.0".to_string()),
+            )]),
+        )]);
+        let deny_policy = NetworkPolicy {
+            default: Decision::Deny.into(),
+            ..NetworkPolicy::default()
+        };
+        let staged = maybe_stage_with_dependencies(root, &manifest, &[], &deny_policy)
+            .unwrap()
+            .expect("pnpm symlinks should trigger symlink-free materialization");
+        let private_util = staged
+            .path()
+            .join("node_modules/@scope/foo/node_modules/@scope/util");
+        let meta = fs::symlink_metadata(&private_util).unwrap();
+        assert!(!meta.file_type().is_symlink() && meta.is_dir());
+        assert!(private_util.join("package.json").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn confined_pnpm_symlinks_in_node_modules_materialize_offline_and_escapes_refuse() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(
+            root.join("lib/index.js"),
+            "import { z } from 'zod';\nexport function apply() { return z; }\n",
+        )
+        .unwrap();
+        let pnpm_pkg = root.join("node_modules/.pnpm/zod@4.0.0/node_modules/zod");
+        fs::create_dir_all(&pnpm_pkg).unwrap();
+        fs::write(
+            pnpm_pkg.join("package.json"),
+            r#"{"name":"zod","version":"4.0.0","main":"index.js"}"#,
+        )
+        .unwrap();
+        fs::write(pnpm_pkg.join("index.js"), "module.exports = { z: 1 };\n").unwrap();
+        symlink(
+            ".pnpm/zod@4.0.0/node_modules/zod",
+            root.join("node_modules/zod"),
+        )
+        .unwrap();
+
+        let manifest = Value::Map(vec![(
+            "dependencies".to_string(),
+            Value::Map(vec![("zod".to_string(), Value::Str("^4.0.0".to_string()))]),
+        )]);
+        assert!(has_clean_bundled_package_json(root, "zod").unwrap());
+        let (_, seeds) = collect_unresolved_seeds(root, &manifest, &[]).unwrap();
+        assert!(
+            seeds.is_empty(),
+            "confined pnpm symlinked dependency should count as bundled"
+        );
+        let deny_policy = NetworkPolicy {
+            default: Decision::Deny.into(),
+            ..NetworkPolicy::default()
+        };
+        let staged = maybe_stage_with_dependencies(root, &manifest, &[], &deny_policy)
+            .unwrap()
+            .expect("pnpm symlinks should trigger symlink-free materialization");
+        let materialized_zod = staged.path().join("node_modules/zod");
+        let meta = fs::symlink_metadata(&materialized_zod).unwrap();
+        assert!(
+            !meta.file_type().is_symlink() && meta.is_dir(),
+            "staged node_modules/zod must be a real directory"
+        );
+        assert!(materialized_zod.join("package.json").is_file());
+
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("package.json"), r#"{"name":"evil"}"#).unwrap();
+        symlink(outside.path(), root.join("node_modules/evil")).unwrap();
+        assert!(!has_clean_bundled_package_json(root, "evil").unwrap());
+        let err = maybe_stage_with_dependencies(root, &manifest, &[], &deny_policy).unwrap_err();
+        assert!(
+            err.to_string().contains("escapes"),
+            "unexpected error for escaping symlink: {err:#}"
         );
     }
 }

@@ -106,6 +106,13 @@ pub struct ProviderRouteIdentity {
     credential_generation: Option<codewhale_config::credentials::CredentialGeneration>,
 }
 
+impl ProviderRouteIdentity {
+    pub(crate) fn has_keyless_credential(&self, base_url: &str) -> bool {
+        self.credential_generation.as_ref()
+            == Some(&codewhale_config::credentials::CredentialGeneration::derive(base_url, ""))
+    }
+}
+
 pub fn route_identity_for_model(
     config: &codewhale_runtime::config::Config,
     identity: &ProviderIdentity,
@@ -119,6 +126,30 @@ pub fn route_identity_for_model(
         auth_class: auth_class_for_provider(config, identity),
         credential_generation: config.readonly_health_credential_generation(identity),
     }
+}
+
+pub fn inventory_observation_for_route(
+    config: &Config,
+    identity: &ProviderIdentity,
+) -> ProviderRouteIdentity {
+    let mut observation = route_identity_for_model(config, identity, "");
+    if observation.credential_generation.is_none() {
+        let mut scoped = config.clone();
+        scoped.plugin_oauth_read_only = true;
+        if scoped.scope_to_provider_identity(identity).is_ok() {
+            observation.credential_generation =
+                scoped
+                    .active_route_api_key_read_only()
+                    .ok()
+                    .map(|credential| {
+                        codewhale_config::credentials::CredentialGeneration::derive(
+                            &scoped.base_url_for_route(identity),
+                            &credential,
+                        )
+                    });
+        }
+    }
+    observation
 }
 
 pub fn auth_class_for_provider(
@@ -216,6 +247,15 @@ pub fn credential_state_for_provider(
     let auth_mode = config.auth_mode_for_provider(identity);
     if provider == ProviderKind::Anthropic && auth_mode.as_deref() == Some("oauth") {
         return CredentialState::MissingKey;
+    }
+    if provider == ProviderKind::Anthropic
+        && codewhale_config::credentials::auth_mode_is_claude_org(auth_mode.as_deref())
+    {
+        return if config.provider_uses_custom_endpoint(identity) {
+            CredentialState::MissingKey
+        } else {
+            CredentialState::Saved
+        };
     }
     // Plugin OAuth takes precedence over local/keyless and legacy custom
     // classifications. Diagnostics only read the bound credential; they never
@@ -667,6 +707,14 @@ impl ProviderReadinessSnapshot {
             .iter()
             .rev()
             .find_map(|(candidate, check)| same_credential(candidate, identity).then_some(check))
+    }
+
+    #[must_use]
+    pub fn last_for_provider(&self, identity: &ProviderIdentity) -> Option<&LastProviderCheck> {
+        self.checks
+            .iter()
+            .rev()
+            .find_map(|(candidate, check)| (candidate.identity == *identity).then_some(check))
     }
 
     pub fn record_success(
@@ -2664,6 +2712,109 @@ default_text_model = "deepseek-chat"
         assert_ne!(
             local.readonly_health_credential_generation(&id),
             changed.readonly_health_credential_generation(&id)
+        );
+    }
+
+    #[test]
+    fn last_for_provider_follows_chronological_checks_across_rotations_and_endpoints() {
+        let _env = crate::test_support::lock_test_env();
+        let _cli = crate::test_support::EnvVarGuard::remove(codewhale_config::CLI_API_KEY_ENV);
+        let mut config = codewhale_runtime::config::Config::from_saved_document(
+            r#"provider = "openai"
+            [providers.openai]
+            api_key = "key-1"
+            base_url = "https://endpoint-a.example/v1"
+            model = "gpt-5.5"
+        "#,
+            None,
+        )
+        .unwrap();
+        let identity = config.active_provider_identity().unwrap();
+        let endpoint_a = config.base_url_for_route(&identity);
+        let receipt_a = crate::route_receipt::TurnRouteReceipt::from_admitted(
+            &identity,
+            "gpt-5.5",
+            &endpoint_a,
+            "key-1",
+        );
+
+        let mut checks = ProviderReadinessSnapshot::default();
+        checks.record_failure(
+            &config,
+            &receipt_a,
+            "gpt-5.5",
+            &ErrorEnvelope::new(
+                ErrorCategory::Authentication,
+                ErrorSeverity::Error,
+                false,
+                "auth_failed",
+                "HTTP 401: bad key",
+            ),
+        );
+        assert_eq!(
+            checks.last_for_provider(&identity),
+            Some(&LastProviderCheck::Failed {
+                category: ErrorCategory::Authentication,
+                message: "HTTP 401: bad key".to_string(),
+            })
+        );
+
+        config
+            .set_provider_api_key_override(&identity, Some("key-2".into()))
+            .unwrap();
+        let receipt_a_key2 = crate::route_receipt::TurnRouteReceipt::from_admitted(
+            &identity,
+            "gpt-5.5",
+            &endpoint_a,
+            "key-2",
+        );
+        checks.record_failure(
+            &config,
+            &receipt_a_key2,
+            "gpt-5.5",
+            &ErrorEnvelope::new(
+                ErrorCategory::RateLimit,
+                ErrorSeverity::Error,
+                true,
+                "rate_limit",
+                "HTTP 402: credits depleted",
+            ),
+        );
+        assert_eq!(
+            checks.last_for_provider(&identity),
+            Some(&LastProviderCheck::Failed {
+                category: ErrorCategory::RateLimit,
+                message: "HTTP 402: credits depleted".to_string(),
+            })
+        );
+
+        let mut endpoint_checks = ProviderReadinessSnapshot::default();
+        endpoint_checks.record_failure(
+            &config,
+            &receipt_a_key2,
+            "gpt-5.5",
+            &ErrorEnvelope::new(
+                ErrorCategory::Authentication,
+                ErrorSeverity::Error,
+                false,
+                "auth_failed",
+                "HTTP 401: wrong endpoint",
+            ),
+        );
+        config
+            .set_provider_base_url_override(&identity, Some("https://endpoint-b.example/v1".into()))
+            .unwrap();
+        let endpoint_b = config.base_url_for_route(&identity);
+        let receipt_b = crate::route_receipt::TurnRouteReceipt::from_admitted(
+            &identity,
+            "gpt-5.5",
+            &endpoint_b,
+            "key-2",
+        );
+        endpoint_checks.record_success(&config, &receipt_b, "gpt-5.5");
+        assert_eq!(
+            endpoint_checks.last_for_provider(&identity),
+            Some(&LastProviderCheck::Passed)
         );
     }
 }

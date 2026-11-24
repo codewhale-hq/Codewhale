@@ -235,22 +235,140 @@ impl SessionBootSurface {
         }
     }
 
-    /// Enabled servers known to be connecting before any name has arrived.
-    ///
-    /// The first launch frame can have `mcp_initializing` set with an empty
-    /// name list; without this a 23-server workspace would paint nothing at
-    /// all until the first boot event lands.
     #[must_use]
-    pub fn connecting_without_names(&self) -> usize {
-        self.unnamed_connecting
+    pub fn quiet_announced(
+        mut self,
+        announced: &std::collections::BTreeMap<String, McpServerBootState>,
+    ) -> Self {
+        if announced.is_empty() {
+            return self;
+        }
+        self.servers.retain(|row| {
+            row.state != McpServerBootState::Connecting || !announced.contains_key(&row.name)
+        });
+        if self.phase == SessionBootPhase::Booting
+            && self.unnamed_connecting == 0
+            && !self
+                .servers
+                .iter()
+                .any(|row| row.state == McpServerBootState::Connecting)
+        {
+            self.phase = SessionBootPhase::Settled;
+        }
+        self
+    }
+
+    #[cfg(test)]
+    pub fn announce_problem_changes(
+        &self,
+        locale: Locale,
+        announced: &mut std::collections::BTreeMap<String, McpServerBootState>,
+    ) -> Option<SessionBootActivityChip> {
+        self.announce_problem_changes_with_fallbacks(locale, announced)
+            .map(|(chip, _)| chip)
+    }
+
+    pub(crate) fn announce_problem_changes_with_fallbacks(
+        &self,
+        locale: Locale,
+        announced: &mut std::collections::BTreeMap<String, McpServerBootState>,
+    ) -> Option<(SessionBootActivityChip, Vec<String>)> {
+        let mut needs_login = Vec::new();
+        let mut failed = Vec::new();
+        let mut recovered = Vec::new();
+        for row in &self.servers {
+            match row.state {
+                McpServerBootState::NeedsLogin | McpServerBootState::Failed => {
+                    if !announced.contains_key(&row.name) {
+                        announced.insert(row.name.clone(), row.state);
+                        if row.state == McpServerBootState::NeedsLogin {
+                            needs_login.push(row.name.as_str());
+                        } else {
+                            failed.push(row.name.as_str());
+                        }
+                    }
+                }
+                McpServerBootState::Connected => {
+                    if let Some(prev) = announced.get_mut(&row.name)
+                        && matches!(
+                            *prev,
+                            McpServerBootState::NeedsLogin | McpServerBootState::Failed
+                        )
+                    {
+                        *prev = McpServerBootState::Connected;
+                        recovered.push(row.name.as_str());
+                    }
+                }
+                McpServerBootState::Disabled | McpServerBootState::Connecting => {}
+            }
+        }
+        if needs_login.is_empty() && failed.is_empty() && recovered.is_empty() {
+            return None;
+        }
+        let mut line = String::from("MCP");
+        if !recovered.is_empty() {
+            line.push_str(&format!(
+                "{ITEM_SEPARATOR}{} {}",
+                named_list(&recovered),
+                tr(locale, MessageId::ExtensionsStateConnected)
+            ));
+        }
+        if !needs_login.is_empty() {
+            line.push_str(&format!(
+                "{ITEM_SEPARATOR}{}: {}",
+                mcp_auth_required_state_label(locale),
+                named_list(&needs_login)
+            ));
+        }
+        if !failed.is_empty() {
+            line.push_str(&format!(
+                "{ITEM_SEPARATOR}{}: {}",
+                tr(locale, MessageId::PhaseFailed),
+                named_list(&failed)
+            ));
+        }
+        let level = if !failed.is_empty() {
+            SessionBootActivityLevel::Failure
+        } else if !needs_login.is_empty() {
+            SessionBootActivityLevel::Attention
+        } else {
+            SessionBootActivityLevel::Active
+        };
+        if level != SessionBootActivityLevel::Active {
+            line.push_str(&format!("{ITEM_SEPARATOR}/mcp"));
+        }
+        let mut fallbacks = Vec::new();
+        if level != SessionBootActivityLevel::Active {
+            let mut counted = String::from("MCP");
+            if !needs_login.is_empty() {
+                counted.push_str(&format!("{ITEM_SEPARATOR}{} auth", needs_login.len()));
+            }
+            if !failed.is_empty() {
+                counted.push_str(&format!(
+                    "{ITEM_SEPARATOR}{} {}",
+                    failed.len(),
+                    tr(locale, MessageId::PhaseFailed)
+                ));
+            }
+            counted.push_str(&format!("{ITEM_SEPARATOR}/mcp"));
+            fallbacks.push(counted);
+            let total = needs_login.len() + failed.len();
+            let noun = if total == 1 { "problem" } else { "problems" };
+            fallbacks.push(format!(
+                "MCP{ITEM_SEPARATOR}{total} {noun}{ITEM_SEPARATOR}/mcp"
+            ));
+        } else if !recovered.is_empty() {
+            fallbacks.push(format!(
+                "MCP{ITEM_SEPARATOR}{} {}",
+                recovered.len(),
+                tr(locale, MessageId::ExtensionsStateConnected)
+            ));
+        }
+        Some((SessionBootActivityChip { text: line, level }, fallbacks))
     }
 
     #[must_use]
-    pub fn activity_notice(
-        &self,
-        locale: Locale,
-        budget: usize,
-    ) -> Option<SessionBootActivityChip> {
+    pub fn activity_notice(&self, budget: usize) -> Option<SessionBootActivityChip> {
         if self.phase == SessionBootPhase::Hidden || budget == 0 {
             return None;
         }
@@ -260,26 +378,6 @@ impl SessionBootSurface {
             .filter(|row| row.state == McpServerBootState::Connecting)
             .map(|row| row.name.as_str())
             .collect();
-        // A server whose login expired is not a failure: the engine already
-        // knows the remedy (`codewhale mcp login <server>` / the login tool),
-        // so the chip counts it under the shared auth-required label and only
-        // calls the rest failed (#5926).
-        let need_login = self
-            .servers
-            .iter()
-            .filter(|row| row.state == McpServerBootState::NeedsLogin)
-            .count();
-        let failed = self
-            .servers
-            .iter()
-            .filter(|row| row.state == McpServerBootState::Failed)
-            .count();
-        let connected = self
-            .servers
-            .iter()
-            .filter(|row| row.state == McpServerBootState::Connected)
-            .count();
-
         if !connecting.is_empty() {
             let count = connecting.len();
             let named = named_chip_line("MCP", count, "connecting", &connecting);
@@ -289,35 +387,8 @@ impl SessionBootSurface {
                 budget,
             );
         }
-        if failed > 0 || need_login > 0 {
-            let auth_label = mcp_auth_required_state_label();
-            let mut full = format!(
-                "MCP{ITEM_SEPARATOR}{connected} {}",
-                tr(locale, MessageId::ExtensionsStateConnected)
-            );
-            // The narrow form drops the glyph and shortens the verb so both
-            // counts survive an 80-column footer.
-            let mut compact = String::from("MCP");
-            if need_login > 0 {
-                full.push_str(&format!("{ITEM_SEPARATOR}{need_login} {auth_label}"));
-                compact.push_str(&format!("{ITEM_SEPARATOR}{need_login} login"));
-            }
-            if failed > 0 {
-                full.push_str(&format!(
-                    "{ITEM_SEPARATOR}{failed} {}",
-                    tr(locale, MessageId::PhaseFailed)
-                ));
-                compact.push_str(&format!("{ITEM_SEPARATOR}{failed} failed"));
-            }
-            let level = if failed > 0 {
-                SessionBootActivityLevel::Failure
-            } else {
-                SessionBootActivityLevel::Attention
-            };
-            return activity_notice_from_candidates(level, vec![full, compact], budget);
-        }
         if self.phase == SessionBootPhase::Booting {
-            let count = self.servers.len().max(self.unnamed_connecting);
+            let count = self.unnamed_connecting;
             if count > 0 {
                 return activity_notice_from_candidates(
                     SessionBootActivityLevel::Active,
@@ -345,6 +416,19 @@ impl SessionBootSurface {
         // summary.
         None
     }
+}
+
+fn named_list(names: &[&str]) -> String {
+    let shown = names
+        .iter()
+        .take(MAX_NAMED_CHIPS)
+        .copied()
+        .collect::<Vec<_>>();
+    let mut list = shown.join(", ");
+    if names.len() > shown.len() {
+        list.push_str(&format!(" +{}", names.len() - shown.len()));
+    }
+    list
 }
 
 fn activity_notice_from_candidates(
@@ -410,8 +494,12 @@ pub fn mcp_error_requires_login(error: &str) -> bool {
 /// The `◆ auth required` state label every TUI MCP surface prints for a
 /// server whose login is missing, expired, or revoked.
 #[must_use]
-pub fn mcp_auth_required_state_label() -> String {
-    format!("{} auth required", codewhale_tui_kit::glyphs::ATTENTION)
+pub fn mcp_auth_required_state_label(locale: Locale) -> String {
+    format!(
+        "{} {}",
+        codewhale_tui_kit::glyphs::ATTENTION,
+        tr(locale, MessageId::McpAuthRequiredState)
+    )
 }
 
 fn named_chip_line(kind: &str, count: usize, verb: &str, names: &[&str]) -> String {
@@ -481,7 +569,7 @@ mod tests {
         assert_eq!(surface.phase, SessionBootPhase::Hidden);
         assert!(
             surface
-                .activity_notice(Locale::En, 80)
+                .activity_notice(80)
                 .map(|notice| notice.text)
                 .is_none()
         );
@@ -500,7 +588,7 @@ mod tests {
             },
         );
         assert_eq!(surface.phase, SessionBootPhase::Hidden);
-        assert!(surface.activity_notice(Locale::En, 80).is_none());
+        assert!(surface.activity_notice(80).is_none());
     }
 
     #[test]
@@ -559,7 +647,7 @@ mod tests {
             assert_eq!(surface.phase, SessionBootPhase::Settled);
             for budget in [12, 22, 40, 80] {
                 assert_eq!(
-                    surface.activity_notice(Locale::En, budget),
+                    surface.activity_notice(budget),
                     None,
                     "plugin summary {summary:?} produced a chip at width {budget}"
                 );
@@ -581,7 +669,7 @@ mod tests {
             },
         );
         assert_eq!(
-            surface.activity_notice(Locale::En, 80),
+            surface.activity_notice(80),
             Some(SessionBootActivityChip {
                 text: "MCP · 1 connecting · alpha".to_string(),
                 level: SessionBootActivityLevel::Active,
@@ -603,7 +691,7 @@ mod tests {
         assert_eq!(surface.servers.len(), 1);
         assert_eq!(surface.servers[0].state, McpServerBootState::Connecting);
         let chip = surface
-            .activity_notice(Locale::En, 80)
+            .activity_notice(80)
             .map(|notice| notice.text)
             .expect("chip");
         assert!(chip.contains("alpha"), "{chip}");
@@ -631,7 +719,7 @@ mod tests {
         );
         assert_eq!(surface.phase, SessionBootPhase::Booting);
         let chip = surface
-            .activity_notice(Locale::En, 80)
+            .activity_notice(80)
             .map(|notice| notice.text)
             .expect("chip");
         assert!(chip.contains("4 connecting"), "{chip}");
@@ -641,7 +729,7 @@ mod tests {
     }
 
     #[test]
-    fn settled_failures_remain_classified_for_the_footer_chip() {
+    fn settled_failures_remain_classified() {
         let snap = snapshot(vec![
             server("alpha", true, true, None),
             server("beta", true, false, Some("protocol negotiation timed out")),
@@ -699,32 +787,68 @@ mod tests {
                 .map(|row| row.state),
             Some(McpServerBootState::NeedsLogin)
         );
-        // The compact activity chip names a needs-login server under the
-        // shared auth-required label, at attention level: the remedy is a
-        // login, not a repair (#5926).
         assert_eq!(surface.servers.len(), 1);
-        let chip = surface
-            .activity_notice(Locale::En, 100)
-            .expect("needs-login must surface on the boot chip");
-        assert_eq!(chip.level, SessionBootActivityLevel::Attention);
-        assert_eq!(
-            chip.text,
-            format!(
-                "MCP{ITEM_SEPARATOR}0 connected{ITEM_SEPARATOR}1 {}",
-                mcp_auth_required_state_label()
-            )
-        );
-        assert!(!chip.text.contains("failed"), "{}", chip.text);
+        assert_eq!(surface.activity_notice(100), None);
     }
 
     #[test]
-    fn chip_separates_expired_logins_from_real_failures() {
+    fn problems_are_announced_once_and_recoveries_once() {
         let mut expired = server("slack", true, false, Some("401 Unauthorized"));
         expired.auth_required = true;
+        let failing = server("beta", true, false, Some("Stdio transport closed"));
         let snap = snapshot(vec![
             server("alpha", true, true, None),
-            expired,
-            server("beta", true, false, Some("Stdio transport closed")),
+            expired.clone(),
+            failing.clone(),
+        ]);
+        let surface = SessionBootSurface::from_parts(
+            Some(&snap),
+            false,
+            &[],
+            3,
+            PluginBootSummary::default(),
+        );
+        assert_eq!(surface.activity_notice(100), None);
+        let mut announced = std::collections::BTreeMap::new();
+        let chip = surface
+            .announce_problem_changes(Locale::En, &mut announced)
+            .expect("first sight is announced");
+        assert_eq!(chip.level, SessionBootActivityLevel::Failure);
+        assert_eq!(
+            chip.text,
+            format!(
+                "MCP{ITEM_SEPARATOR}{}: slack{ITEM_SEPARATOR}failed: beta{ITEM_SEPARATOR}/mcp",
+                mcp_auth_required_state_label(Locale::En)
+            )
+        );
+        for _ in 0..10 {
+            assert_eq!(
+                surface.announce_problem_changes(Locale::En, &mut announced),
+                None
+            );
+        }
+
+        let retrying = SessionBootSurface::from_parts(
+            Some(&snap),
+            true,
+            &["beta".to_string()],
+            3,
+            PluginBootSummary::default(),
+        );
+        assert_eq!(
+            retrying.quiet_announced(&announced).activity_notice(100),
+            None,
+            "a retry of an announced server paints nothing"
+        );
+
+        let mut signed_in = expired;
+        signed_in.connected = true;
+        signed_in.error = None;
+        signed_in.auth_required = false;
+        let snap = snapshot(vec![
+            server("alpha", true, true, None),
+            signed_in,
+            failing.clone(),
         ]);
         let surface = SessionBootSurface::from_parts(
             Some(&snap),
@@ -734,23 +858,40 @@ mod tests {
             PluginBootSummary::default(),
         );
         let chip = surface
-            .activity_notice(Locale::En, 100)
-            .expect("mixed states surface on the boot chip");
-        assert_eq!(chip.level, SessionBootActivityLevel::Failure);
+            .announce_problem_changes(Locale::En, &mut announced)
+            .expect("sign-in is announced");
+        assert_eq!(chip.text, format!("MCP{ITEM_SEPARATOR}slack connected"));
         assert_eq!(
-            chip.text,
-            format!(
-                "MCP{ITEM_SEPARATOR}1 connected{ITEM_SEPARATOR}1 {}{ITEM_SEPARATOR}1 failed",
-                mcp_auth_required_state_label()
-            )
+            surface.announce_problem_changes(Locale::En, &mut announced),
+            None
         );
-        // Under a tight budget the compact form keeps both counts.
-        let compact = surface
-            .activity_notice(Locale::En, 30)
-            .expect("compact chip");
+
+        let flapped = snapshot(vec![
+            server("alpha", true, true, None),
+            server("slack", true, false, Some("transport closed")),
+            failing,
+        ]);
+        let flapped_surface = SessionBootSurface::from_parts(
+            Some(&flapped),
+            false,
+            &[],
+            3,
+            PluginBootSummary::default(),
+        );
         assert_eq!(
-            compact.text,
-            format!("MCP{ITEM_SEPARATOR}1 login{ITEM_SEPARATOR}1 failed")
+            flapped_surface.announce_problem_changes(Locale::En, &mut announced),
+            None
+        );
+        let recovered_again = SessionBootSurface::from_parts(
+            Some(&snap),
+            false,
+            &[],
+            3,
+            PluginBootSummary::default(),
+        );
+        assert_eq!(
+            recovered_again.announce_problem_changes(Locale::En, &mut announced),
+            None
         );
     }
 
@@ -773,7 +914,7 @@ mod tests {
             PluginBootSummary::default(),
         );
         let chip = surface
-            .activity_notice(Locale::En, 22)
+            .activity_notice(22)
             .map(|notice| notice.text)
             .expect("chip");
         assert_eq!(chip, "MCP · 3 connecting");
@@ -802,7 +943,7 @@ mod tests {
             vec!["alpha", "docs", "gamma"]
         );
         let chip = surface
-            .activity_notice(Locale::En, 80)
+            .activity_notice(80)
             .map(|notice| notice.text)
             .expect("chip");
         assert!(chip.contains("3 connecting"), "{chip}");
@@ -819,10 +960,31 @@ mod tests {
         assert!(surface.servers.is_empty());
         assert_eq!(
             surface
-                .activity_notice(Locale::En, 80)
+                .activity_notice(80)
                 .map(|notice| notice.text)
                 .as_deref(),
             Some("MCP · 4 connecting")
         );
+    }
+
+    #[test]
+    fn booting_snapshot_with_non_connecting_servers_reports_no_connecting_chip() {
+        let snap = snapshot(vec![
+            server("alpha", true, true, None),
+            server("beta", false, false, None),
+            server("gamma", true, false, Some("connection refused")),
+        ]);
+        let surface =
+            SessionBootSurface::from_parts(Some(&snap), true, &[], 3, PluginBootSummary::default());
+        assert_eq!(surface.phase, SessionBootPhase::Booting);
+        assert_eq!(surface.activity_notice(80), None);
+    }
+
+    #[test]
+    fn mcp_auth_required_state_label_uses_locale() {
+        let label = mcp_auth_required_state_label(Locale::ZhHans);
+        let expected = tr(Locale::ZhHans, MessageId::McpAuthRequiredState);
+        assert!(label.contains(expected.as_ref()), "{label}");
+        assert!(!label.contains("auth required"), "{label}");
     }
 }

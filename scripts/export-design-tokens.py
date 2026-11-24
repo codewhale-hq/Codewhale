@@ -101,11 +101,11 @@ def render_css(tokens) -> str:
 def gpui_tokens(data):
     aliases = {
         "BG": "background", "TEXT": "foreground", "PANEL": "surface",
-        "TEXT_MUTED": "muted_foreground", "BORDER": "border", "SIDEBAR": "sidebar",
+        "TEXT_MUTED": "muted_foreground", "SUBAGENT": "subagent", "BORDER": "border", "SIDEBAR": "sidebar",
         "PRIMARY": "primary", "ON_PRIMARY": "primary_foreground", "ACCENT": "accent",
         "HOVER": "hover", "LIST_ACTIVE": "selected", "ATTENTION": "attention", "LIVE": "live",
-        "DANGER": "danger", "BORDER_STRONG": "border_strong", "OCEAN_DEPTH": "ocean_depth",
-        "DIFF_ADD": "diff_add", "DIFF_REMOVE": "diff_remove",
+        "LIVE_PEAK": "live_peak", "DANGER": "danger", "BORDER_STRONG": "border_strong",
+        "OCEAN_DEPTH": "ocean_depth", "DIFF_ADD": "diff_add", "DIFF_REMOVE": "diff_remove",
     }
     return [
         (f"{prefix}_{name}", tuple(bytes.fromhex(palette[key])))
@@ -120,6 +120,8 @@ def gpui_geometry(data, digest):
     for section in ["radius", "focus", "spacing"]:
         for name, value in data[section].items():
             lines.append(f"  --gpui-{section}-{name}: {value}px;")
+    for name, value in data["size"].items():
+        lines.append(f"  --gpui-size-{name.removesuffix('_px').replace('_', '-')}: {value}px;")
     for name in ["selection_opacity", "primary_hover_opacity"]:
         lines.append(f"  --gpui-{name.replace('_', '-')}: {data[name]};")
     for role, spec in data["type_roles"].items():
@@ -127,8 +129,10 @@ def gpui_geometry(data, digest):
                   f"  --gpui-type-{role}-line: {spec['line_px'] / spec['size_px']:.4g};",
                   f"  --gpui-type-{role}-weight: {spec['weight']};"]
     for name, value in data["motion"].items():
-        if name.startswith("duration_") or name.startswith("loop_") and name.endswith("_ms"):
+        if (name.startswith("duration_") or name.startswith("loop_") or name in ("sweep_active_ms", "sweep_rest_ms", "sweep_delay_ms")) and name.endswith("_ms"):
             lines.append(f"  --gpui-motion-{name.removesuffix('_ms').replace('_', '-')}: {value}ms;")
+        elif name in ("breathe_min_alpha", "breathe_max_alpha"):
+            lines.append(f"  --gpui-motion-{name.removesuffix('_alpha').replace('_', '-')}: {value:g};")
     lines.append(f"  --gpui-motion-arrive-rise: {data['motion']['arrive_rise_px']}px;")
     for name, curve in data["easing"].items():
         lines.append(f"  --gpui-easing-{name}: cubic-bezier({', '.join(f'{v:g}' for v in curve)});")

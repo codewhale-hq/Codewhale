@@ -1,31 +1,31 @@
 
-   Settings  ──────────────────────────────────────────────────────────────────────────────────────────────────────────
-
-  Edit Theme [theme]
-
-  Scope: SAVED
-  Current: underwater
-
-  Choose:
-       1. system
-       2. terminal
-       3. shoreline
-       4. shoreline-light
-    ▸  5. underwater
-       6. underwater-retro
-       7. dark
-       8. light
-       9. grayscale
-      10. catppuccin-mocha
-      11. tokyo-night
-      12. dracula
-      13. gruvbox-dark
-      14. claude
-      15. matrix
-      16. solarized-light
-      17. uwu
-
-
-  [ Apply ]  [ Cancel ]
-  ↑/↓ or click choose · Enter/Apply · Esc/Cancel · 1-9 jump
- ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ╭ Settings ─────────────────────────────────────────────────────────────────────────────────────────────────── SAVED ╮
+ │ Edit Theme [theme]                                                                                                 │
+ │                                                                                                                    │
+ │ Scope: SAVED                                                                                                       │
+ │ Current: underwater                                                                                                │
+ │                                                                                                                    │
+ │ Choose:                                                                                                            │
+ │      1. system                                                                                                     │
+ │      2. terminal                                                                                                   │
+ │      3. shoreline                                                                                                  │
+ │      4. shoreline-light                                                                                            │
+ │   ▸  5. underwater                                                                                                 │
+ │      6. underwater-retro                                                                                           │
+ │      7. dark                                                                                                       │
+ │      8. light                                                                                                      │
+ │      9. grayscale                                                                                                  │
+ │     10. catppuccin-mocha                                                                                           │
+ │     11. tokyo-night                                                                                                │
+ │     12. dracula                                                                                                    │
+ │     13. gruvbox-dark                                                                                               │
+ │     14. claude                                                                                                     │
+ │     15. matrix                                                                                                     │
+ │     16. solarized-light                                                                                            │
+ │     17. uwu                                                                                                        │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │ [ Apply ]  [ Cancel ]                                                                                              │
+ │ ↑/↓ or click choose · Enter/Apply · Esc/Cancel · 1-9 jump                                                          │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

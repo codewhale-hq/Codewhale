@@ -1047,6 +1047,19 @@ impl std::fmt::Debug for NativeUsageOrigin {
     }
 }
 
+static WARNED_USAGE_PERSISTENCE_FAILURES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn should_warn_usage_persistence_failure(session_id: &str, error: &std::io::Error) -> bool {
+    let mut warned = WARNED_USAGE_PERSISTENCE_FAILURES
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if warned.len() >= 256 {
+        warned.clear();
+    }
+    warned.insert(format!("{session_id}:{:?}", error.kind()))
+}
+
 impl NativeUsageOrigin {
     pub(crate) fn scope(&self) -> CostScopeToken {
         self.scope
@@ -1118,7 +1131,11 @@ impl NativeUsageOrigin {
                         &manager,
                     )
                 }) {
-                    tracing::warn!(%error, session_id = %session_id, "usage persistence failed; continuing with unknown cost");
+                    if should_warn_usage_persistence_failure(session_id, &error) {
+                        tracing::warn!(%error, session_id = %session_id, "usage persistence failed; continuing with unknown cost");
+                    } else {
+                        tracing::debug!(%error, session_id = %session_id, "usage persistence failed again; continuing with unknown cost");
+                    }
                 }
             }
             NativeUsageDestination::Runtime { owner, sink, .. } => {
@@ -2243,22 +2260,49 @@ pub fn record_runtime_usage(
     }
 }
 
-pub async fn record_runtime_usage_async(
+#[cfg(test)]
+tokio::task_local! {
+    static TEST_RUNTIME_USAGE_ERROR: &'static str;
+}
+
+#[cfg(test)]
+pub(crate) async fn with_test_runtime_usage_error<F, T>(message: &'static str, fut: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    TEST_RUNTIME_USAGE_ERROR.scope(message, fut).await
+}
+
+pub async fn try_record_runtime_usage_async(
     scope: CostScopeToken,
     origin: Option<&NativeUsageOrigin>,
     record: &RuntimeUsageRecord,
-) {
+) -> anyhow::Result<()> {
+    #[cfg(test)]
+    if let Ok(message) = TEST_RUNTIME_USAGE_ERROR.try_with(|message| *message) {
+        anyhow::bail!("{message}");
+    }
     let origin = origin.cloned();
     let record = record.clone();
     #[cfg(any(test, feature = "test-support"))]
     let test_origin = test_cost_scope_id();
-    let _ = codewhale_runtime::runtime_control::owner_work(move || {
+    codewhale_runtime::runtime_control::owner_work(move || {
         #[cfg(any(test, feature = "test-support"))]
         let _binding = bind_test_cost_scope(test_origin);
         record_runtime_usage(scope, origin.as_ref(), &record);
         Ok(())
     })
-    .await;
+    .await
+}
+
+pub async fn record_runtime_usage_async(
+    scope: CostScopeToken,
+    origin: Option<&NativeUsageOrigin>,
+    record: &RuntimeUsageRecord,
+) {
+    if let Err(error) = try_record_runtime_usage_async(scope, origin, record).await {
+        tracing::warn!(%error, "runtime usage settlement failed");
+    }
 }
 
 pub fn report_missing_runtime_usage(
@@ -4971,5 +5015,287 @@ mod tests {
             (0, 0)
         );
         assert!(drain().is_empty());
+    }
+
+    #[test]
+    fn frozen_dispatch_quotes_price_google_and_major_providers_while_unpriced_models_fail_closed() {
+        let _env = crate::test_support::lock_test_env();
+        let _live = crate::provider_lake::lock_live_snapshot();
+        let home = tempfile::tempdir().expect("test home");
+        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
+        let _reset = ProviderCatalogTestReset;
+        crate::provider_catalog_live::reset_cache_for_test();
+        crate::provider_lake::clear_live_snapshot();
+
+        let now = Utc::now();
+        let now_unix = u64::try_from(now.timestamp()).expect("nonnegative timestamp");
+        let google_base = ProviderKind::Google.provider().default_base_url();
+        let google_fp = codewhale_config::catalog::base_url_fingerprint(google_base);
+
+        let google_roster = codewhale_config::catalog::ProviderCatalogDelta {
+            provider: "google".to_string(),
+            base_url_fingerprint: google_fp.clone(),
+            fetched_at: now_unix,
+            offerings: [
+                "models/gemini-4-carbon",
+                "models/gemini-4-hydrogen",
+                "models/gemini-4-argon",
+                "models/gemini-4-neon",
+            ]
+            .into_iter()
+            .map(|id| codewhale_config::catalog::CatalogOffering {
+                provider: "google".to_string(),
+                wire_model_id: id.to_string(),
+                endpoint_key: "chat".to_string(),
+                source: codewhale_config::catalog::CatalogSource::Live {
+                    base_url_fingerprint: google_fp.clone(),
+                    fetched_at: now_unix,
+                },
+                ..Default::default()
+            })
+            .collect(),
+        };
+        assert_eq!(
+            crate::provider_catalog_live::record_success(google_roster),
+            codewhale_config::catalog::CatalogStatus::Fresh
+        );
+
+        let google_usage = Usage {
+            input_tokens: 136_287,
+            output_tokens: 46,
+            prompt_cache_hit_tokens: Some(131_324),
+            prompt_cache_miss_tokens: Some(4_963),
+            ..Usage::default()
+        };
+        let roster_probe = Usage {
+            input_tokens: 1,
+            output_tokens: 1,
+            ..Usage::default()
+        };
+
+        for (model, expected_usd) in [
+            (
+                "gemini-4-carbon",
+                4_963.0 * 2e-6 + 131_324.0 * 0.1e-6 + 46.0 * 10e-6,
+            ),
+            (
+                "models/gemini-4-carbon",
+                4_963.0 * 2e-6 + 131_324.0 * 0.1e-6 + 46.0 * 10e-6,
+            ),
+            (
+                "gemini-4-hydrogen",
+                4_963.0 * 1.5e-6 + 131_324.0 * 0.075e-6 + 46.0 * 7.5e-6,
+            ),
+            (
+                "models/gemini-4-hydrogen",
+                4_963.0 * 1.5e-6 + 131_324.0 * 0.075e-6 + 46.0 * 7.5e-6,
+            ),
+            (
+                "gemini-4-neon",
+                4_963.0 * 3e-6 + 131_324.0 * 0.15e-6 + 46.0 * 15e-6,
+            ),
+            (
+                "models/gemini-4-neon",
+                4_963.0 * 3e-6 + 131_324.0 * 0.15e-6 + 46.0 * 15e-6,
+            ),
+        ] {
+            let route = EffectiveRouteEnvelope::capture_observed(
+                ProviderKind::Google,
+                "google",
+                model,
+                Some(google_base),
+                now,
+            );
+            assert!(route.provider_live_pricing.is_some(), "{model}");
+            let audit = route.audit_frozen(&google_usage);
+            assert!(audit.usd_priced, "{model}: {audit:?}");
+            assert_eq!(audit.unpriced_reason, None, "{model}: {audit:?}");
+            assert!(
+                (audit.estimate.expect("priced").usd - expected_usd).abs() < 1e-12,
+                "{model}: {audit:?}"
+            );
+            let probe = route.audit(&roster_probe);
+            assert!(
+                probe.estimate.is_some_and(CostEstimate::is_positive),
+                "{model} roster probe: {probe:?}"
+            );
+            assert_eq!(probe.unpriced_reason, None, "{model} roster probe");
+        }
+
+        let live_models_dev = codewhale_config::catalog::CatalogSnapshot {
+            offerings: vec![
+                codewhale_config::catalog::CatalogOffering {
+                    provider: "google".to_string(),
+                    wire_model_id: "gemini-4-neon".to_string(),
+                    endpoint_key: "chat".to_string(),
+                    cost: Some(codewhale_config::models_dev::ModelsDevCost {
+                        input: Some(3.0),
+                        output: Some(15.0),
+                        cache_read: Some(0.15),
+                        input_audio: Some(3.0),
+                        ..Default::default()
+                    }),
+                    source: codewhale_config::catalog::CatalogSource::ModelsDevLive {
+                        fetched_at: now_unix,
+                    },
+                    ..Default::default()
+                },
+                codewhale_config::catalog::CatalogOffering {
+                    provider: "google".to_string(),
+                    wire_model_id: "gemini-4-carbon".to_string(),
+                    endpoint_key: "chat".to_string(),
+                    cost: Some(codewhale_config::models_dev::ModelsDevCost {
+                        input: Some(2.0),
+                        output: Some(10.0),
+                        cache_read: Some(0.1),
+                        input_audio: Some(2.0),
+                        ..Default::default()
+                    }),
+                    source: codewhale_config::catalog::CatalogSource::ModelsDevLive {
+                        fetched_at: now_unix.saturating_sub(
+                            crate::provider_catalog_live::DEFAULT_PROVIDER_CATALOG_TTL_SECS + 60,
+                        ),
+                    },
+                    ..Default::default()
+                },
+            ],
+        };
+        crate::provider_lake::set_live_snapshot(
+            live_models_dev,
+            crate::provider_lake::LiveSource::ModelsDev,
+        );
+
+        let expected_neon = 4_963.0 * 3e-6 + 131_324.0 * 0.15e-6 + 46.0 * 15e-6;
+        for model in ["gemini-4-neon", "models/gemini-4-neon"] {
+            let route = EffectiveRouteEnvelope::capture_observed(
+                ProviderKind::Google,
+                "google",
+                model,
+                Some(google_base),
+                now,
+            );
+            let audit = route.audit_frozen(&google_usage);
+            assert!(audit.usd_priced, "{model}: {audit:?}");
+            assert_eq!(
+                audit.provenance,
+                Some(codewhale_config::pricing::PricingProvenance::ModelsDevLive)
+            );
+            assert!(
+                (audit.estimate.expect("priced").usd - expected_neon).abs() < 1e-12,
+                "{model}: {audit:?}"
+            );
+        }
+
+        let stale_degraded = EffectiveRouteEnvelope::capture_observed(
+            ProviderKind::Google,
+            "google",
+            "gemini-4-carbon",
+            Some(google_base),
+            now,
+        );
+        let stale_audit = stale_degraded.audit_frozen(&google_usage);
+        assert!(stale_audit.usd_priced, "{stale_audit:?}");
+        assert_eq!(
+            stale_audit.provenance,
+            Some(codewhale_config::pricing::PricingProvenance::ModelsDevBundled)
+        );
+
+        for (provider, identity, model, base_url) in [
+            (
+                ProviderKind::Openai,
+                "openai",
+                "gpt-5.6",
+                "https://api.openai.com/v1",
+            ),
+            (
+                ProviderKind::Anthropic,
+                "anthropic",
+                "claude-fable-5-2",
+                "https://api.anthropic.com",
+            ),
+            (
+                ProviderKind::Deepseek,
+                "deepseek",
+                "deepseek-v4-flash",
+                "https://api.deepseek.com/beta",
+            ),
+            (
+                ProviderKind::Openrouter,
+                "openrouter",
+                "deepseek/deepseek-v4-pro",
+                "https://openrouter.ai/api/v1",
+            ),
+            (
+                ProviderKind::Zai,
+                "zai",
+                "glm-5.2",
+                "https://api.z.ai/api/paas/v4",
+            ),
+            (
+                ProviderKind::Stepfun,
+                "stepfun",
+                "step-3.7-flash",
+                "https://api.stepfun.ai/v1",
+            ),
+        ] {
+            let api_key_config = codewhale_runtime::config::Config::default();
+            let route = if provider == ProviderKind::Anthropic {
+                let observed = EffectiveRouteEnvelope::capture_observed(
+                    provider,
+                    identity,
+                    model,
+                    Some(base_url),
+                    now,
+                );
+                assert!(
+                    !observed.audit_frozen(&small_usage()).is_priced(),
+                    "{model} {base_url}"
+                );
+                EffectiveRouteEnvelope::from_admitted(
+                    Some(&api_key_config),
+                    &api_key_config.test_identity_for_kind(provider),
+                    model,
+                    Some(base_url),
+                    now,
+                )
+            } else {
+                EffectiveRouteEnvelope::capture_observed(
+                    provider,
+                    identity,
+                    model,
+                    Some(base_url),
+                    now,
+                )
+            };
+            assert!(
+                route.provider_live_pricing.is_some(),
+                "{provider:?} {model} {base_url}"
+            );
+            let audit = route.audit_frozen(&small_usage());
+            assert!(
+                audit.usd_priced && audit.estimate.is_some_and(CostEstimate::is_positive),
+                "{provider:?} {model} {base_url}: {audit:?}"
+            );
+        }
+
+        let proxy_route = EffectiveRouteEnvelope::capture_observed(
+            ProviderKind::Google,
+            "google",
+            "gemini-4-carbon",
+            Some("https://proxy.example/v1"),
+            now,
+        );
+        assert!(proxy_route.provider_live_pricing.is_none());
+        assert!(!proxy_route.audit_frozen(&google_usage).is_priced());
+
+        let custom_route = EffectiveRouteEnvelope::capture_observed(
+            ProviderKind::Custom,
+            "my-local-gateway",
+            "totally-unknown-custom-model",
+            Some("https://gateway.example/v1"),
+            now,
+        );
+        assert!(custom_route.provider_live_pricing.is_none());
+        assert!(!custom_route.audit_frozen(&small_usage()).is_priced());
     }
 }

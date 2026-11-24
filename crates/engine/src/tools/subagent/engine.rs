@@ -91,8 +91,22 @@ impl ChildAccountingProjection {
         &self,
         record: &crate::cost_status::RuntimeUsageRecord,
     ) {
-        let _ = self.publish_async(record).await;
-        let _ = self.project_settled(record).await;
+        if let Err(error) = self.publish_async(record).await {
+            tracing::warn!(
+                target: "subagent",
+                owner = %self.owner,
+                %error,
+                "auxiliary review usage publication failed"
+            );
+        }
+        if let Err(error) = self.project_settled(record).await {
+            tracing::warn!(
+                target: "subagent",
+                owner = %self.owner,
+                %error,
+                "auxiliary review usage projection failed"
+            );
+        }
     }
 }
 
@@ -171,7 +185,7 @@ impl ChildAuthority {
         todos: SharedTodoList,
         plan: SharedPlanState,
     ) -> ToolRegistryBuilder {
-        let mut builder = ToolRegistryBuilder::new().with_full_agent_surface_options(
+        ToolRegistryBuilder::new().with_full_agent_surface_options(
             Some(runtime.client.clone()),
             runtime.model.clone(),
             runtime.manager.clone(),
@@ -179,11 +193,7 @@ impl ChildAuthority {
             runtime.agent_tool_surface_options.clone(),
             todos,
             plan,
-        );
-        if let Some(pool) = runtime.mcp_pool.as_ref() {
-            builder = builder.with_mcp_tools(pool.clone());
-        }
-        builder
+        )
     }
     pub fn accounting_projection(&self) -> ChildAccountingProjection {
         ChildAccountingProjection::capture(&self.runtime, &self.owner_agent_id)
@@ -354,7 +364,35 @@ impl ChildAuthority {
         // and non-`Full`-shell roles cannot run shell, regardless of whether
         // the parent session is auto-approved. This closes the auto-approve
         // bypass where a read-only child could quietly write or shell out.
+        if let Some(grant) = registry.delegated_mcp_read(name) {
+            if !self.grant.network
+                || !self
+                    .grant
+                    .scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.iter().any(|entry| entry == name))
+            {
+                return Err(admission_denied(
+                    "[role.scope.denied] This connector needs an explicit child tool and network grant.",
+                ));
+            }
+            if !grant.current() {
+                return Err(admission_denied(
+                    "[role.binding.stale] This connector binding has changed.",
+                ));
+            }
+            if !grant.permits_arguments(input) {
+                return Err(admission_denied(
+                    "[role.disclosure.denied] This connector payload is outside the delegated read grant.",
+                ));
+            }
+        }
         if !self.posture_permits_tool(registry, name, Some(input)) {
+            if crate::mcp::McpPool::is_mcp_tool(name) {
+                return Err(admission_denied(
+                    "[role.effect.denied] This role requires an operator-authorized connector read.",
+                ));
+            }
             if self.allows_bounded_readonly_bash(name) {
                 // #6015: the same rule text and next steps as the durable
                 // authority and the executor, from the one classifier.
@@ -569,6 +607,16 @@ impl ChildAuthority {
         if name == "agent" {
             return true;
         }
+        if let Some(grant) = registry.delegated_mcp_read(name) {
+            return grant.current()
+                && self.grant.network
+                && self
+                    .grant
+                    .scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.iter().any(|entry| entry == name))
+                && input.is_none_or(|input| grant.permits_arguments(input));
+        }
         match registry.get(name) {
             Some(spec) => match input.map_or_else(
                 || spec.approval_requirement(),
@@ -684,6 +732,13 @@ impl ChildAuthority {
         }
     }
 
+    pub(crate) fn can_collect_background_tests(&self) -> bool {
+        use codewhale_agent_contract::worker_profile::{ShellGrant, ToolSurface};
+        self.grant.shell == ShellGrant::Full
+            && self.grant.surface != ToolSurface::Evidence
+            && self.is_tool_allowed("task_shell_wait")
+    }
+
     pub fn grant_blocks_tool(&self, registry: &ToolRegistry, name: &str) -> bool {
         let lower = name.to_ascii_lowercase();
         // Desktop / machine-control is never in a child's grant.
@@ -714,7 +769,8 @@ impl ChildAuthority {
                 lower.as_str(),
                 "exec_wait" | "exec_interact" | "task_shell_start" | "task_shell_wait"
             )
-            || lower.starts_with("terminal/");
+            || lower.starts_with("terminal/")
+            || lower.starts_with("terminal_");
         raw_shell
             && self.grant.shell < codewhale_agent_contract::worker_profile::ShellGrant::Full
             && !self.allows_bounded_readonly_bash(name)
@@ -789,6 +845,57 @@ impl ChildAuthority {
             "Bash" => Some(json!({"action": "run", "command": "pwd"})),
             _ => None,
         }
+    }
+
+    pub fn can_admit_any_mcp_tool(&self) -> bool {
+        (self.grant.surface != codewhale_agent_contract::worker_profile::ToolSurface::Evidence
+            || self.grant.scope.as_ref().is_some_and(|scope| {
+                scope
+                    .iter()
+                    .any(|name| crate::mcp::McpPool::is_mcp_tool(name) && !name.contains('*'))
+            }))
+            && self.grant.network
+            && !self.grant.scope.as_ref().is_some_and(Vec::is_empty)
+            && !self.is_tool_denied("mcp*")
+    }
+
+    pub async fn admitted_mcp_servers(
+        self: &Arc<Self>,
+        runtime: &SubAgentRuntime,
+    ) -> HashSet<String> {
+        if !self.can_admit_any_mcp_tool() {
+            return HashSet::new();
+        }
+        let Some(pool) = runtime.mcp_pool.as_ref() else {
+            return HashSet::new();
+        };
+        let routes = {
+            let guard = pool.lock().await;
+            guard.resolved_tool_servers()
+        };
+        if routes.is_empty() {
+            return HashSet::new();
+        }
+        let mcp_registry = ToolRegistryBuilder::new()
+            .with_mcp_tools(Arc::clone(pool))
+            .await
+            .build(self.context());
+        self.tools_for_model(&mcp_registry, &self.agent_type)
+            .into_iter()
+            .filter_map(|tool| routes.get(&tool.name).cloned())
+            .collect()
+    }
+
+    pub(crate) fn connected_mcp_tools_for_model(
+        &self,
+        registry: &ToolRegistry,
+        connected: Vec<Tool>,
+    ) -> Vec<Tool> {
+        let connected: HashSet<_> = connected.into_iter().map(|tool| tool.name).collect();
+        self.tools_for_model(registry, &self.agent_type)
+            .into_iter()
+            .filter(|tool| connected.contains(&tool.name))
+            .collect()
     }
 
     pub fn tools_for_model(&self, registry: &ToolRegistry, agent_type: &FleetRole) -> Vec<Tool> {
@@ -1252,27 +1359,21 @@ impl ChildJob {
             .unwrap_or_else(|error| error.into_inner()) = stop;
     }
 
-    async fn capture_activation_output(&self, streamed_text: String) -> Result<()> {
-        let Some(activation) = self.authority.runtime.activation.as_ref() else {
-            return Ok(());
-        };
-        let admission = *self
-            .activation_admission_index
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let Some(admission) = admission else {
-            return Ok(());
-        };
-        let output = {
-            let mut artifact = self.artifact.lock().await;
+    async fn capture_activation_output_off_runtime(
+        &self,
+        admission: usize,
+        streamed_text: String,
+    ) -> Result<Option<codewhale_agent_contract::worker_profile::ChildActivationOutput>> {
+        let artifact = self.artifact.clone();
+        let owner_agent_id = self.authority.owner_agent_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut artifact = artifact.blocking_lock();
             let writer = artifact
                 .as_mut()
                 .ok_or_else(|| anyhow!("child transcript writer is unavailable"))?;
             writer.append_messages(&[], true)?;
-            let messages = super::load_subagent_transcript_artifact(
-                &writer.state_root,
-                &self.authority.owner_agent_id,
-            )?;
+            let messages =
+                super::load_subagent_transcript_artifact(&writer.state_root, &owner_agent_id)?;
             let selected =
                 messages
                     .iter()
@@ -1315,8 +1416,26 @@ impl ChildJob {
                         },
                     )
                 })
-                .transpose()?
+                .transpose()
+        })
+        .await
+        .map_err(|error| anyhow!("child activation output capture failed: {error}"))?
+    }
+
+    async fn capture_activation_output(&self, streamed_text: String) -> Result<()> {
+        let Some(activation) = self.authority.runtime.activation.as_ref() else {
+            return Ok(());
         };
+        let admission = *self
+            .activation_admission_index
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Some(admission) = admission else {
+            return Ok(());
+        };
+        let output = self
+            .capture_activation_output_off_runtime(admission, streamed_text)
+            .await?;
         let stop_reason = *self
             .activation_terminal_stop
             .lock()
@@ -1328,6 +1447,30 @@ impl ChildJob {
             stop_reason,
         )
         .await
+    }
+
+    async fn sync_transcript_artifact_metadata(
+        &self,
+        messages: &[Message],
+        durable: bool,
+    ) -> Option<Value> {
+        let artifact = self.artifact.clone();
+        let agent_id = self.authority.owner_agent_id.clone();
+        let messages = messages.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let mut artifact = artifact.blocking_lock();
+            sync_transcript_artifact_metadata(artifact.as_mut(), &agent_id, &messages, durable)
+        })
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(
+                target: "subagent",
+                ?error,
+                agent_id = %self.authority.owner_agent_id,
+                "failed to join sub-agent transcript artifact sync task"
+            );
+            None
+        })
     }
 
     pub fn provider_responded(&self) {
@@ -1350,7 +1493,18 @@ impl ChildJob {
         reason: Option<&str>,
     ) -> Result<SubAgentResult> {
         self.project(messages, steps).await?;
-        let mut artifact = self.artifact.lock().await;
+        self.finish_projected(messages, steps, status, text, reason)
+            .await
+    }
+
+    async fn finish_projected(
+        &self,
+        messages: &[Message],
+        steps: u32,
+        status: SubAgentStatus,
+        text: Option<String>,
+        reason: Option<&str>,
+    ) -> Result<SubAgentResult> {
         if self.authority.runtime.cancel_token.is_cancelled() {
             // `project` has durably synced this exact Core Session and updated
             // the captured worker. Return that checkpoint rather than discarding
@@ -1363,6 +1517,7 @@ impl ChildJob {
                 .await
                 .get_result(&self.authority.owner_agent_id)?
                 .checkpoint;
+            let artifact_metadata = self.sync_transcript_artifact_metadata(messages, true).await;
             return Ok(cancelled_subagent_result(
                 &self.authority.runtime,
                 &self.authority.owner_agent_id,
@@ -1373,7 +1528,7 @@ impl ChildJob {
                 self.max_steps,
                 checkpoint.as_ref(),
                 self.parking.as_ref(),
-                &mut artifact,
+                artifact_metadata,
                 self.started_at,
                 self.fork_context,
                 " in Core child turn",
@@ -1388,7 +1543,10 @@ impl ChildJob {
             matches!(status, SubAgentStatus::Interrupted(_)),
         );
         let duration_ms = u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-        insert_subagent_full_transcript_handle(
+        let artifact_metadata = self
+            .sync_transcript_artifact_metadata(messages, status != SubAgentStatus::Running)
+            .await;
+        insert_subagent_full_transcript_handle_with_metadata(
             &self.authority.runtime,
             &self.authority.owner_agent_id,
             &self.authority.agent_type,
@@ -1396,7 +1554,7 @@ impl ChildJob {
             &status,
             text.as_ref(),
             Some(&checkpoint),
-            artifact.as_mut(),
+            artifact_metadata,
             messages,
             steps,
             duration_ms,
@@ -1438,28 +1596,26 @@ impl ChildJob {
             .map(|record| record.usage.clone());
         if result.status == SubAgentStatus::BudgetExhausted {
             let cause = reason.unwrap_or("child work budget exhausted");
-            if let Some(note) = budget_work_preservation_note(
+            let partial = result
+                .result
+                .take()
+                .unwrap_or_else(|| budget_handback::fallback_partial_text(messages));
+            let preservation_note = budget_work_preservation_note(
                 &self.authority.runtime.manager,
                 &self.authority.owner_agent_id,
                 cause,
             )
-            .await
-            {
-                result
-                    .result
-                    .get_or_insert_with(String::new)
-                    .push_str(&format!("\n\n{note}"));
-            }
-            let artifact = if let Some(body) = result.result.clone() {
-                budget_handback::write_digest_artifact(
-                    &self.authority.runtime,
-                    &self.authority.owner_agent_id,
-                    body,
-                )
-                .await
-            } else {
-                None
+            .await;
+            let digest = match preservation_note.as_deref() {
+                Some(note) => format!("{partial}\n\n{note}"),
+                None => partial.clone(),
             };
+            let artifact = budget_handback::write_digest_artifact(
+                &self.authority.runtime,
+                &self.authority.owner_agent_id,
+                digest,
+            )
+            .await;
             let mut handback_note = "The host preserves the recorded work without another model request; the assignment is not complete.".to_string();
             if let Some(artifact) = artifact {
                 handback_note.push_str(&format!(
@@ -1467,11 +1623,11 @@ impl ChildJob {
                     artifact.display()
                 ));
             }
-            result = budget_partial_result_with_note(
-                result,
-                reason.unwrap_or("child work budget exhausted"),
-                &handback_note,
-            );
+            if let Some(note) = preservation_note {
+                handback_note.push(' ');
+                handback_note.push_str(&note);
+            }
+            result = budget_partial_result_with_note(result, cause, &handback_note, &partial);
         }
         release_resident_leases_for(&self.authority.owner_agent_id);
         Ok(result)
@@ -1632,10 +1788,11 @@ pub(super) async fn run_child_agent(
     parking: Option<Arc<std::sync::atomic::AtomicBool>>,
     input_rx: mpsc::UnboundedReceiver<SubAgentInput>,
 ) -> Result<SubAgentResult> {
+    let allow_mcp = !matches!(agent_type, FleetRole::Scout | FleetRole::Reviewer);
     let (runtime, attachment) = if runtime.cancel_token.is_cancelled() {
         (runtime.clone(), None)
     } else {
-        prepare_child_membership(runtime, &assignment, &agent_id).await?
+        prepare_child_membership(runtime, &assignment, &agent_id, allow_mcp).await?
     };
     let (owner_agent_name, executed_actions) = {
         let manager = runtime.manager.read().await;
@@ -1650,20 +1807,23 @@ pub(super) async fn run_child_agent(
             });
         (name, manager.executed_actions_handle(&agent_id))
     };
-    let identity = format!(
-        "You are {owner_agent_name}. Scope: {}. Your final answer is delivered to the parent automatically; include the result and its evidence.",
-        if runtime.worker_profile.permissions.write {
-            "you may edit files; keep to what this task assigns"
-        } else {
-            "read-only"
-        }
-    );
+    let branch_workspace = runtime.context.workspace.clone();
+    let branch = tokio::task::spawn_blocking(move || current_git_branch(&branch_workspace))
+        .await
+        .ok()
+        .flatten();
     let mut authority = ChildAuthority::capture(
         runtime.clone(),
         agent_type.clone(),
         agent_id.clone(),
-        owner_agent_name,
+        owner_agent_name.clone(),
         allowed_tools.clone(),
+    );
+    let identity = subagent_capability_block(
+        &owner_agent_name,
+        &runtime,
+        &authority.grant,
+        branch.as_deref(),
     );
     if let Some(actions) = executed_actions
         && let Some(auth) = Arc::get_mut(&mut authority)
@@ -1671,7 +1831,7 @@ pub(super) async fn run_child_agent(
         auth.executed_actions = actions;
     }
     let mut system =
-        build_subagent_system_prompt_with_skills(&agent_type, &assignment, &runtime.context);
+        build_subagent_system_prompt_with_memory(&agent_type, &assignment, &runtime.context);
     if let Some(persona) = runtime
         .activation
         .as_ref()
@@ -1711,9 +1871,17 @@ pub(super) async fn run_child_agent(
         &system,
         fork.as_ref(),
     );
+    let admitted_mcp_servers = authority.admitted_mcp_servers(&runtime).await;
+    crate::core::engine::filter_messages_mcp_server_instructions(&mut seed, &admitted_mcp_servers);
     let initial = seed
         .pop()
         .ok_or_else(|| anyhow!("child assignment has no task message"))?;
+    if let Some(section) =
+        subagent_inherited_instructions_section(&runtime.parent_pinned_project_instructions)
+    {
+        system.push_str("\n\n");
+        system.push_str(&section);
+    }
     let content = initial
         .content
         .iter()
@@ -1736,15 +1904,27 @@ pub(super) async fn run_child_agent(
         // No tool/model is admitted. Preserve the same full seed and the
         // existing Park-vs-Cancel projection, including a step-zero checkpoint.
         seed.push(initial);
-        job.project(&seed, 0).await?;
-        let checkpoint = runtime
-            .manager
-            .read()
+        let artifact_metadata = {
+            let artifact = job.artifact.clone();
+            let agent_id = agent_id.clone();
+            let messages = seed.clone();
+            tokio::task::spawn_blocking(move || -> Result<Option<Value>> {
+                let mut artifact = artifact.blocking_lock();
+                if let Some(writer) = artifact.as_mut() {
+                    writer.sync_messages(&messages, false)?;
+                }
+                Ok(sync_transcript_artifact_metadata(
+                    artifact.as_mut(),
+                    &agent_id,
+                    &messages,
+                    true,
+                ))
+            })
             .await
-            .get_result(&agent_id)
-            .ok()
-            .and_then(|result| result.checkpoint);
-        let mut artifact = job.artifact.lock().await;
+            .map_err(|error| anyhow!("child cancelled transcript sync failed: {error}"))??
+        };
+        let checkpoint =
+            build_subagent_checkpoint(&agent_id, "Core child Session checkpoint", &seed, 0, true);
         return Ok(cancelled_subagent_result(
             &runtime,
             &agent_id,
@@ -1753,9 +1933,9 @@ pub(super) async fn run_child_agent(
             &seed,
             0,
             max_steps,
-            checkpoint.as_ref(),
+            Some(&checkpoint),
             job.parking.as_ref(),
-            &mut artifact,
+            artifact_metadata,
             started_at,
             fork_context,
             " before Core child admission",
@@ -1771,6 +1951,8 @@ pub(super) async fn run_child_agent(
         max_steps: codewhale_runtime::turn_budget::resolve_max_model_steps(Some(max_steps)),
         compaction: runtime.compaction.clone(),
         subagent_api_timeout: runtime.step_api_timeout,
+        stream_retry_limits: api.stream_retry_limits(),
+        stream_open_timeout: api.stream_open_timeout(),
         auto_review_policy: runtime.auto_review_policy.as_ref().clone(),
         tools_always_load: allowed_tools.iter().flatten().cloned().collect(),
         reasoning_only_max_reprompts: api.reasoning_only_max_reprompts(),
@@ -2191,6 +2373,7 @@ async fn prepare_child_membership(
     runtime: &SubAgentRuntime,
     assignment: &SubAgentAssignment,
     agent_id: &str,
+    allow_mcp: bool,
 ) -> Result<(
     SubAgentRuntime,
     Option<crate::extension_host::HostAttachment>,
@@ -2231,7 +2414,7 @@ async fn prepare_child_membership(
                 .context
                 .clone()
                 .with_plugin_registry(attachment.plugin_view());
-            if let Some(parent_pool) = runtime.mcp_pool.as_ref() {
+            if allow_mcp && let Some(parent_pool) = runtime.mcp_pool.as_ref() {
                 let mut pool = parent_pool
                     .lock()
                     .await
@@ -2544,5 +2727,236 @@ mod owner_origin_tests {
                 .is_empty()
         );
         assert!(!selected.join("effect").exists());
+    }
+
+    #[tokio::test]
+    async fn publish_auxiliary_usage_warns_when_worker_projection_fails() {
+        use std::io::{Read as _, Seek as _, SeekFrom};
+        use tracing::instrument::WithSubscriber as _;
+
+        let _environment = crate::test_support::lock_test_env();
+        let tmp = tempfile::tempdir().unwrap();
+        let _home =
+            crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path().join("home"));
+        let mut runtime = super::super::tests::stub_runtime();
+        runtime.manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 2);
+        runtime.context = ToolContext::new(tmp.path().to_path_buf());
+        let route = runtime
+            .client
+            .effective_route_envelope(&runtime.model, chrono::Utc::now());
+        let source = crate::cost_status::NativeUsageSource::capture_with_origin(
+            "auto-review-return:missing-worker".to_string(),
+            crate::cost_status::UsageSpendOwner::Auxiliary,
+            None,
+        );
+        let usage = Usage {
+            input_tokens: 12,
+            output_tokens: 7,
+            ..Usage::default()
+        };
+        let record = source.reported(&route, &usage);
+        let accounting = ChildAccountingProjection::capture(&runtime, "missing-worker");
+
+        let mut output = tempfile::tempfile().unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_env_filter(tracing_subscriber::EnvFilter::new("warn"))
+            .with_writer(std::sync::Mutex::new(output.try_clone().unwrap()))
+            .finish();
+        accounting
+            .publish_auxiliary_usage(&record)
+            .with_subscriber(subscriber)
+            .await;
+
+        output.seek(SeekFrom::Start(0)).unwrap();
+        let mut logs = String::new();
+        output.read_to_string(&mut logs).unwrap();
+        assert!(
+            logs.contains("WARN")
+                && logs.contains("auxiliary review usage projection failed")
+                && logs.contains("owner=missing-worker")
+                && logs.contains("error="),
+            "{logs}"
+        );
+    }
+
+    #[tokio::test]
+    async fn capture_activation_output_runs_transcript_io_off_tokio_worker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 2);
+        let agent_id = {
+            manager
+                .write()
+                .await
+                .insert_test_running_agent("activation-worker", tmp.path())
+        };
+        let mut runtime = super::super::tests::stub_runtime();
+        runtime.manager = manager.clone();
+        runtime.context = ToolContext::new(tmp.path().to_path_buf());
+        let authority = ChildAuthority::capture(
+            runtime,
+            FleetRole::Worker,
+            agent_id.clone(),
+            "activation-worker".into(),
+            None,
+        );
+        let job = ChildJob::admitted(
+            authority,
+            SubAgentAssignment::new("capture output".into(), None),
+            Instant::now(),
+            4,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        {
+            let mut artifact = job.artifact.lock().await;
+            artifact
+                .as_mut()
+                .unwrap()
+                .append_messages(
+                    &[Message {
+                        role: codewhale_models::Role::User,
+                        content: vec![ContentBlock::Text {
+                            text: "hello".into(),
+                            cache_control: None,
+                        }],
+                    }],
+                    true,
+                )
+                .unwrap();
+        }
+
+        let artifact_hold = job.artifact.lock().await;
+        let capture_task = tokio::spawn({
+            let job = job.clone();
+            async move {
+                job.capture_activation_output_off_runtime(0, "streamed reply".into())
+                    .await
+            }
+        });
+        tokio::task::yield_now().await;
+        let probe = tokio::time::timeout(Duration::from_secs(2), tokio::spawn(async { 42usize }))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(probe, 42);
+        drop(artifact_hold);
+
+        let captured = tokio::time::timeout(Duration::from_secs(5), capture_task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .expect("captured streamed output");
+        assert_eq!(captured.transcript_message_index, 1);
+        assert_eq!(captured.content_sha256.len(), 64);
+        assert!(job.artifact.try_lock().is_ok());
+
+        let loaded =
+            super::super::load_subagent_transcript_artifact(tmp.path(), &agent_id).unwrap();
+        assert_eq!(loaded.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn finish_does_not_hold_artifact_mutex_across_await_points() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 2);
+        let agent_id = {
+            manager
+                .write()
+                .await
+                .insert_test_running_agent("finish-worker", tmp.path())
+        };
+        let mut runtime = super::super::tests::stub_runtime();
+        runtime.manager = manager.clone();
+        runtime.context = ToolContext::new(tmp.path().to_path_buf());
+        let handle_store = runtime.context.runtime.handle_store.clone();
+        let authority = ChildAuthority::capture(
+            runtime,
+            FleetRole::Worker,
+            agent_id.clone(),
+            "finish-worker".into(),
+            None,
+        );
+        let job = ChildJob::admitted(
+            authority,
+            SubAgentAssignment::new("finish cleanly".into(), None),
+            Instant::now(),
+            4,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        let messages = vec![Message {
+            role: codewhale_models::Role::User,
+            content: vec![ContentBlock::Text {
+                text: "work".into(),
+                cache_control: None,
+            }],
+        }];
+        job.project(&messages, 1).await.unwrap();
+
+        let manager_hold = manager.write().await;
+        let finish_task = tokio::spawn({
+            let job = job.clone();
+            let messages = messages.clone();
+            async move {
+                job.finish_projected(
+                    &messages,
+                    1,
+                    SubAgentStatus::Completed,
+                    Some("done".into()),
+                    None,
+                )
+                .await
+            }
+        });
+        let lookup = VarHandle {
+            kind: "var_handle".to_string(),
+            session_id: format!("agent:{agent_id}"),
+            name: "full_transcript".to_string(),
+            type_name: String::new(),
+            length: 0,
+            repr_preview: String::new(),
+            sha256: String::new(),
+        };
+        let wait_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let completed_published = {
+                let store = handle_store.lock().await;
+                store.get(&lookup).is_some_and(|record| {
+                    matches!(
+                        &record.value,
+                        crate::tools::handle::HandleValue::Json(payload)
+                            if payload["status"] == json!("completed")
+                    )
+                })
+            };
+            if completed_published {
+                break;
+            }
+            assert!(
+                Instant::now() < wait_deadline,
+                "finish_projected did not reach post-handle manager.read() await"
+            );
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            job.artifact.try_lock().is_ok(),
+            "artifact mutex must not be held while finish awaits manager.read()"
+        );
+        drop(manager_hold);
+
+        let result = tokio::time::timeout(Duration::from_secs(5), finish_task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.status, SubAgentStatus::Completed);
+        assert_eq!(result.result.as_deref(), Some("done"));
     }
 }

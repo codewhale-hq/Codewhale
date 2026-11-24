@@ -27,9 +27,9 @@ This installs the latest release on macOS or Linux, and it needs no account.
 
 [简体中文](docs/i18n/README.zh-CN.md) · [日本語](docs/i18n/README.ja-JP.md) · [Tiếng Việt](docs/i18n/README.vi.md) · [Bahasa Indonesia](docs/i18n/README.id.md) · [한국어](docs/i18n/README.ko-KR.md) · [Español](docs/i18n/README.es-419.md) · [Português](docs/i18n/README.pt-BR.md) · [Русский](docs/i18n/README.ru.md) · [Українська](docs/i18n/README.uk.md) · [Français](docs/i18n/README.fr.md) · [Deutsch](docs/i18n/README.de.md) · [繁體中文](docs/i18n/README.zh-TW.md) · [हिन्दी](docs/i18n/README.hi.md) · [Türkçe](docs/i18n/README.tr.md) · [Italiano](docs/i18n/README.it.md) · [Polski](docs/i18n/README.pl.md) · [العربية](docs/i18n/README.ar.md) · [Català](docs/i18n/README.ca.md)
 
-<img src="web/public/codewhale-tui-latest.png" width="760" alt="Codewhale in a terminal after a real task on gemini-4-hydrogen. It ran python3 -m unittest -v test_ls.py, 2 tests passed, and it reports that it added a --json flag to ls.py with argparse. The status line shows accept edits and gemini-4-hydrogen.">
+<img src="web/public/codewhale-tui-latest.png" width="760" alt="Codewhale in a terminal after a real task on deepseek-flash. It ran python3 -m unittest -v test_ls.py, 2 tests passed, and it reports that it added a --json flag to ls.py. The status line shows accept edits and deepseek-flash.">
 
-<sub>A real session on a 0.10.3 development build: gemini-4-hydrogen through Google's API wrote the edit, and you allowed the test run once.</sub>
+<sub>A real session on a 0.10.3 development build: deepseek-flash through DeepSeek's API wrote the edit, and you allowed the test run once.</sub>
 
 </div>
 
@@ -139,40 +139,20 @@ The terminal app, `exec`, `web` and the Runtime API share one engine
 [VS Code extension](https://marketplace.visualstudio.com/items?itemName=HengQuWorld.brotherwhale-vscode)
 connects to it from the sidebar ([source](https://github.com/HengQuWorld/CodeWhale-VSCode)).
 
-<p align="center">
-  <a href="https://www.orcarouter.ai/redeem/1a6250545fdc4e0aaccb0a4470159e67" rel="sponsored">
-    <img src="web/public/codewhale-x-orcarouter.webp" alt="Codewhale × OrcaRouter: +30% DeepSeek V4.1 Flash usage" width="560">
-  </a>
-</p>
-
-<a href="https://www.orcarouter.ai/redeem/1a6250545fdc4e0aaccb0a4470159e67" rel="sponsored">Codewhale × OrcaRouter</a>
-gives 30% extra DeepSeek V4.1 Flash credit on each OrcaRouter top-up until
-November 21, 2026. This link is part of a referral campaign; Codewhale may
-earn a referral reward on top-ups made through it.
-
 ## How it stays safe
 
-Two switches say how much Codewhale may do on its own. `Tab`, when the input
-is empty, changes the mode: **Plan** reads and searches but changes nothing,
-**Work** edits files and runs commands, and **Operate** has the same access as
-Work and keeps going until the goal is verified or it needs you. `Shift+Tab`
-changes the permission. **Ask**, the default, applies file edits in your
-repository without asking and asks before shell commands that are not
-read-only.
-**Auto-Review** lets rules and a reviewer model approve routine calls and
-refuses high-risk ones; switch to Ask to approve those yourself. **Full
-Access** never asks and turns off Codewhale's sandbox, although repository
-rules and managed policy still apply. The
-[v0.10.2 guide](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md)
-has the details.
+One dial says how much Codewhale may do on its own. `Shift+Tab` steps it:
+**Ask → Accept Edits → Plan → Auto-Review → Full Access**. **Accept Edits**,
+the default, applies file edits inside the git repository without asking and
+asks before commands. **Ask** asks before every file edit and every command.
+**Plan** reads and searches but changes nothing. **Auto-Review** lets rules
+and a reviewer model approve routine calls and refuses high-risk ones; switch
+to Ask to approve those yourself. **Full Access** never asks and turns off
+Codewhale's sandbox, although repository rules and managed policy still apply.
+`Tab` only completes and never changes the mode, and Operate is retired. The
+[modes guide](docs/MODES.md) has the details.
 
-Coming in 0.10.3: `Shift+Tab` becomes one dial through Ask, Accept Edits,
-Plan, Auto-Review and Full Access, `Tab` no longer changes the mode, and
-Operate is retired. Ask will ask before every file edit too, and the new
-default, Accept Edits, will apply edits inside the git repository and still ask
-before commands. The [current guide](docs/MODES.md) describes it.
-
-In Ask and Auto-Review, commands run in an OS sandbox where the system has
+In Ask, Accept Edits and Auto-Review, commands run in an OS sandbox where the system has
 one: Seatbelt on macOS, and bubblewrap on Linux when it is installed. Windows
 has no OS sandbox yet, and Full Access turns the sandbox off. Inside the
 sandbox, shell commands and terminal sessions cannot read credential stores

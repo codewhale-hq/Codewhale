@@ -186,8 +186,12 @@ fn delta_json(delta: &Delta) -> Value {
         Delta::InputJsonDelta { partial_json } => {
             json!({ "type": "input_json_delta", "partial_json": partial_json })
         }
+        Delta::ToolCallIdDelta { id } => json!({ "type": "tool_call_id_delta", "id": id }),
         Delta::SignatureDelta { signature } => {
             json!({ "type": "signature_delta", "signature": signature })
+        }
+        Delta::ThoughtSignatureDelta { thought_signature } => {
+            json!({ "type": "thought_signature_delta", "thought_signature": thought_signature })
         }
         Delta::ReasoningStateDelta { state } => json!({
             "type": "reasoning_state_delta",

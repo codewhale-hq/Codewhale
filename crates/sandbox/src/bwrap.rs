@@ -548,12 +548,34 @@ fn existing_directory(path: &Path) -> Option<PathBuf> {
     canonical.is_dir().then_some(canonical)
 }
 
+#[cfg(target_os = "linux")]
+fn stderr_matches_erofs(stderr: &str, localized_erofs: Option<&str>) -> bool {
+    stderr.contains("Read-only file system")
+        || localized_erofs.is_some_and(|msg| !msg.is_empty() && stderr.contains(msg))
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn is_erofs_stderr(stderr: &str) -> bool {
+    let localized = super::localized_errno_message(libc::EROFS);
+    stderr_matches_erofs(stderr, localized.as_deref())
+}
+
+#[cfg(target_os = "linux")]
+fn detect_denial_with_localized(
+    exit_code: i32,
+    stderr: &str,
+    localized_erofs: Option<&str>,
+) -> bool {
+    exit_code != 0
+        && (super::bwrap_setup_failure(stderr).is_some()
+            || stderr_matches_erofs(stderr, localized_erofs))
+}
+
 /// Detect a failure attributable to the bubblewrap boundary.
 #[cfg(target_os = "linux")]
 pub fn detect_denial(exit_code: i32, stderr: &str) -> bool {
-    exit_code != 0
-        && (super::bwrap_setup_failure(stderr).is_some()
-            || stderr.contains("Read-only file system"))
+    let localized = super::localized_errno_message(libc::EROFS);
+    detect_denial_with_localized(exit_code, stderr, localized.as_deref())
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -937,5 +959,23 @@ mod tests {
             assert!(!detect_denial(1, "Operation not permitted"));
             assert!(!detect_denial(1, "ordinary command failure"));
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn denial_detection_matches_localized_erofs_without_bwrap_prefix() {
+        let localized = "Только для чтения файловая система";
+        assert!(detect_denial_with_localized(
+            1,
+            &format!("touch: cannot touch '/etc/x': {localized}"),
+            Some(localized),
+        ));
+        assert!(!detect_denial_with_localized(0, localized, Some(localized),));
+        assert!(!detect_denial_with_localized(
+            1,
+            "ordinary command failure",
+            Some(localized),
+        ));
+        assert!(super::super::localized_errno_message(libc::EROFS).is_some());
     }
 }

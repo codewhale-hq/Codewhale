@@ -25,11 +25,14 @@ use unicode_width::UnicodeWidthStr;
 
 use super::{
     CommandPaletteAction, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
-    render_underwater_surface, truncate_view_text,
+    truncate_view_text,
 };
 use crate::commands::contract::{localized_approver_label, localized_turned_on_by_label};
 use crate::commands::groups::plugins::render::{ReviewTextContext, escape_review_text};
 use crate::tui::app::App;
+use crate::tui::views::rounded::{
+    render_hairline, render_rounded_surface_themed, resolved_surface_bg,
+};
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_tui_kit::menu_style;
@@ -1434,7 +1437,9 @@ fn mcp_model(app: &App, locale: Locale) -> ExtensionsTabModel {
             } else if observed.is_some_and(|server| server.connected) {
                 tr(locale, MessageId::ExtensionsStateConnected)
             } else if observed.is_some_and(|server| server.auth_required) {
-                Cow::Owned(crate::tui::session_boot::mcp_auth_required_state_label())
+                Cow::Owned(crate::tui::session_boot::mcp_auth_required_state_label(
+                    locale,
+                ))
             } else if observed.is_some_and(|server| server.error.is_some()) {
                 tr(locale, MessageId::ExtensionsStateError)
             } else if stale {
@@ -2479,39 +2484,70 @@ impl ModalView for ExtensionsView {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         *self.hits.borrow_mut() = HitAreas::default();
-        let body = render_underwater_surface(
+        let body = render_rounded_surface_themed(
             area,
             buf,
             tr(self.locale, MessageId::ExtensionsTitle).into_owned(),
+            None,
+            self.focus == ExtensionsFocus::Search,
+            Some(&self.theme),
         );
         if body.width == 0 || body.height < 5 {
             return;
         }
-        let spacious = body.height >= 16;
-        let status = if spacious && self.pending_remove.is_none() {
-            self.selected_item().map_or_else(
-                || self.selected_status(),
-                |item| {
-                    format!(
-                        "{} · {}\n{}\n{}",
-                        item.label, item.state, item.description, item.detail
-                    )
-                },
-            )
+        let surface_bg = resolved_surface_bg(&self.theme);
+        let border_color = if self.theme.border != ratatui::style::Color::Reset {
+            self.theme.border
         } else {
-            self.selected_status()
+            palette::BORDER_COLOR
         };
-        let status = Paragraph::new(status)
-            .style(Style::default().fg(if self.pending_remove.is_some() {
-                palette::STATUS_WARNING
-            } else {
-                palette::TEXT_MUTED
-            }))
-            .wrap(Wrap { trim: false });
+        let spacious = body.height >= 16;
+        let status_lines: Vec<Line<'static>> = if spacious && self.pending_remove.is_none() {
+            match self.selected_item() {
+                Some(item) => vec![
+                    Line::from(vec![
+                        Span::styled(
+                            item.label.clone(),
+                            Style::default()
+                                .fg(palette::TEXT_PRIMARY)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" · ", Style::default().fg(border_color)),
+                        Span::styled(
+                            item.state.clone(),
+                            Style::default().fg(item.tone.ink().color(&self.theme)),
+                        ),
+                    ]),
+                    Line::from(Span::styled(
+                        item.description.clone(),
+                        Style::default().fg(palette::TEXT_SOFT),
+                    )),
+                    Line::from(Span::styled(
+                        item.detail.clone(),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    )),
+                ],
+                None => vec![Line::from(Span::styled(
+                    self.selected_status(),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ))],
+            }
+        } else {
+            vec![Line::from(Span::styled(
+                self.selected_status(),
+                Style::default().fg(if self.pending_remove.is_some() {
+                    palette::STATUS_WARNING
+                } else {
+                    palette::TEXT_MUTED
+                }),
+            ))]
+        };
+        let status = Paragraph::new(status_lines).wrap(Wrap { trim: false });
         let status_height = if spacious {
             u16::try_from(status.line_count(body.width))
                 .unwrap_or(u16::MAX)
-                .clamp(3, (body.height / 3).max(3))
+                .saturating_add(1)
+                .clamp(4, (body.height / 3).max(4))
         } else {
             1
         };
@@ -2620,6 +2656,7 @@ impl ModalView for ExtensionsView {
         } else if selected >= scroll.saturating_add(list_height.max(1)) {
             scroll = selected.saturating_sub(list_height.saturating_sub(1));
         }
+        let ascii = crate::tui::color_compat::ascii_safe_enabled();
         for (visible_offset, (entry_index, entry)) in entries
             .iter()
             .enumerate()
@@ -2646,27 +2683,48 @@ impl ModalView for ExtensionsView {
             } else {
                 Style::default().fg(palette::TEXT_PRIMARY)
             };
-            // Rows are built as (text, optional ink) pairs. The ink is what
-            // stops every row on the screen from reading the same: the action
-            // chip is an invitation, the state is a verdict, the description
-            // is background. A selected row keeps one style — a highlight the
-            // eye can follow beats four colours fighting a fill.
             let mut parts: Vec<(String, Option<codewhale_palette::ChromeInk>)> = Vec::new();
             match entry {
                 VisibleEntry::Group(group) => {
                     let folded = self.folded_groups.contains(&self.fold_key(group));
+                    let chevron = if folded {
+                        if ascii { ">" } else { "▸" }
+                    } else if ascii {
+                        "v"
+                    } else {
+                        "▾"
+                    };
                     parts.push((
-                        format!(
-                            "{} {} ({})",
-                            if folded { "▸" } else { "▾" },
-                            group.label,
-                            group.items.len()
-                        ),
-                        None,
+                        format!("{chevron} {} ({})", group.label, group.items.len()),
+                        Some(codewhale_palette::ChromeInk::Identity),
                     ));
                 }
                 VisibleEntry::Item(_, item) => {
-                    parts.push(("  ".into(), None));
+                    let dot = match item.tone {
+                        ExtensionTone::Ready => {
+                            if ascii {
+                                "*"
+                            } else {
+                                "●"
+                            }
+                        }
+                        ExtensionTone::Idle => {
+                            if ascii {
+                                "o"
+                            } else {
+                                "○"
+                            }
+                        }
+                        ExtensionTone::Attention => "!",
+                        ExtensionTone::Failure => {
+                            if ascii {
+                                "x"
+                            } else {
+                                "✗"
+                            }
+                        }
+                    };
+                    parts.push((format!("{dot} "), Some(item.tone.ink())));
                     if let Some(action) = item.action.as_ref() {
                         parts.push((
                             format!("{} · ", action.label()),
@@ -2691,8 +2749,6 @@ impl ModalView for ExtensionsView {
                 )),
             }
 
-            // Truncate across the whole row, not per span, so the width bound
-            // is the one the flat row always had.
             let joined = parts
                 .iter()
                 .map(|(text, _)| text.as_str())
@@ -2719,12 +2775,20 @@ impl ModalView for ExtensionsView {
             hits.rows.push((row_area, entry_index));
         }
 
-        status.render(rows[3], buf);
-        let mut compact_hints = vec![
-            super::ActionHint::new("Tab", tr(self.locale, MessageId::ExtensionsActionTabs)),
-            super::ActionHint::new("/", tr(self.locale, MessageId::SessionsActionSearch)),
-            super::ActionHint::new("Esc", tr(self.locale, MessageId::SessionsActionClose)),
-        ];
+        if spacious && rows[3].height > 1 {
+            render_hairline(rows[3], buf, border_color, surface_bg);
+            status.render(
+                Rect::new(
+                    rows[3].x,
+                    rows[3].y.saturating_add(1),
+                    rows[3].width,
+                    rows[3].height.saturating_sub(1),
+                ),
+                buf,
+            );
+        } else {
+            status.render(rows[3], buf);
+        }
         let enter_label = match entries.get(selected).copied() {
             Some(VisibleEntry::Item(_, item)) => Some(
                 item.action
@@ -2743,41 +2807,48 @@ impl ModalView for ExtensionsView {
             }
             _ => None,
         };
-        if let Some(label) = enter_label.as_ref() {
-            compact_hints.insert(1, super::ActionHint::new("Enter", label.clone()));
-        }
-        let mut full_hints = vec![
-            super::ActionHint::new("Tab", tr(self.locale, MessageId::ExtensionsActionTabs)),
-            super::ActionHint::new("↑↓", tr(self.locale, MessageId::LaunchHintMove)),
+        let mut hints = vec![
+            (
+                0u8,
+                super::ActionHint::new("Tab", tr(self.locale, MessageId::ExtensionsActionTabs)),
+            ),
+            (
+                3,
+                super::ActionHint::new("↑↓", tr(self.locale, MessageId::LaunchHintMove)),
+            ),
         ];
         if let Some(label) = enter_label {
-            full_hints.push(super::ActionHint::new("Enter", label));
+            hints.push((0, super::ActionHint::new("Enter", label)));
         }
         if let Some(item) = self.selected_item() {
             if let Some(toggle) = item.toggle.as_ref() {
-                full_hints.push(super::ActionHint::new("Space", toggle.label().to_string()));
+                hints.push((
+                    1,
+                    super::ActionHint::new("Space", toggle.label().to_string()),
+                ));
             }
             if let Some(remove) = item.remove.as_ref() {
-                full_hints.push(super::ActionHint::new("d", remove.label().to_string()));
+                hints.push((2, super::ActionHint::new("d", remove.label().to_string())));
             }
         }
-        full_hints.push(super::ActionHint::new(
-            "/",
-            tr(self.locale, MessageId::SessionsActionSearch),
+        hints.push((
+            0,
+            super::ActionHint::new("/", tr(self.locale, MessageId::SessionsActionSearch)),
         ));
-        full_hints.push(super::ActionHint::new(
-            "Esc",
-            tr(self.locale, MessageId::SessionsActionClose),
+        hints.push((
+            0,
+            super::ActionHint::new("Esc", tr(self.locale, MessageId::SessionsActionClose)),
         ));
-        render_modal_footer(
-            rows[4],
-            buf,
-            if rows[4].width < 64 {
-                &compact_hints
-            } else {
-                &full_hints
-            },
-        );
+        let (mut ranks, mut hints): (Vec<u8>, Vec<super::ActionHint>) = hints.into_iter().unzip();
+        for shed in [3, 2, 1] {
+            if super::action_footer_lines(&hints, rows[4].width).len() <= 1 {
+                break;
+            }
+            let mut kept = ranks.iter().map(|rank| *rank != shed);
+            hints.retain(|_| kept.next().unwrap_or(true));
+            ranks.retain(|rank| *rank != shed);
+        }
+        render_modal_footer(rows[4], buf, &hints);
         *self.hits.borrow_mut() = hits;
     }
 
@@ -3510,7 +3581,7 @@ mod tests {
     fn login_row(name: &str) -> ExtensionItem {
         mcp_row(
             name,
-            &crate::tui::session_boot::mcp_auth_required_state_label(),
+            &crate::tui::session_boot::mcp_auth_required_state_label(Locale::En),
             "401 Unauthorized: the session is no longer accepted",
             ExtensionAction::Command {
                 label: "re-auth".into(),
@@ -3646,6 +3717,42 @@ mod tests {
         // Land on the item, not its group heading.
         view.selected[ExtensionsTab::Plugins.index()] = 1;
         view
+    }
+
+    #[test]
+    fn the_footer_sheds_row_hints_before_esc_close_at_every_width() {
+        let mut view = view_on_item(ExtensionAction::Command {
+            label: "diagnose".into(),
+            command: "/mcp diagnose demo".into(),
+            disposition: RowActionDisposition::InPlace,
+        });
+        {
+            let item = &mut view.snapshot.tabs[ExtensionsTab::Plugins.index()].groups[0].items[0];
+            item.toggle = Some(ExtensionAction::Command {
+                label: "disable".into(),
+                command: "/mcp disable demo".into(),
+                disposition: RowActionDisposition::InPlace,
+            });
+            item.remove = Some(ExtensionAction::Command {
+                label: "remove".into(),
+                command: "/mcp remove demo".into(),
+                disposition: RowActionDisposition::InPlace,
+            });
+        }
+        let footer = |width: u16| {
+            let screen = view.render_text_for_test(width, 24);
+            screen.lines().nth(22).unwrap_or_default().to_string()
+        };
+        for width in 60..=120u16 {
+            let footer = footer(width);
+            assert!(footer.contains("Enter diagnose"), "{width}: {footer}");
+            assert!(footer.contains("Esc close"), "{width}: {footer}");
+        }
+        assert_eq!(
+            footer(80).trim_matches(['│', ' ']),
+            "Tab filters · Enter diagnose · Space disable · / search · Esc close"
+        );
+        assert!(footer(120).contains("↑↓ move") && footer(120).contains("d remove"));
     }
 
     /// T10: right-click used to arm the row's removal and a second one ran

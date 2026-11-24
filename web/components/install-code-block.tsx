@@ -10,6 +10,7 @@ interface Props {
   copiedLabel?: string;
   copyLocale?: string;
   installIntent?: boolean;
+  html?: string;
 }
 
 /**
@@ -18,7 +19,7 @@ interface Props {
  * mark, "Copied" and its announcement appear only after the clipboard write
  * succeeds; a failed write never shows a false confirmation.
  */
-export function InstallCodeBlock({ cmd, copyLabel = "Copy", copiedLabel = "Copied", copyLocale, installIntent = false }: Props) {
+export function InstallCodeBlock({ cmd, copyLabel = "Copy", copiedLabel = "Copied", copyLocale, installIntent = false, html }: Props) {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
@@ -43,7 +44,11 @@ export function InstallCodeBlock({ cmd, copyLabel = "Copy", copiedLabel = "Copie
 
   return (
     <div className="code">
-      <pre tabIndex={0} className={multiline ? "code-block" : "code-block code-block-single"}>{pipeAt < 0 ? cmd : (<><span className="code-seg">{cmd.slice(0, pipeAt + 1)}</span><span className="code-seg code-seg-pipe">{cmd.slice(pipeAt + 1)}</span></>)}</pre>
+      {html ? (
+        <pre tabIndex={0} className={multiline ? "code-block" : "code-block code-block-single"} dangerouslySetInnerHTML={{ __html: html }} />
+      ) : (
+        <pre tabIndex={0} className={multiline ? "code-block" : "code-block code-block-single"}>{pipeAt < 0 ? cmd : (<><span className="code-seg">{cmd.slice(0, pipeAt + 1)}</span><span className="code-seg code-seg-pipe">{cmd.slice(pipeAt + 1)}</span></>)}</pre>
+      )}
       <button
         type="button"
         lang={copyLocale}

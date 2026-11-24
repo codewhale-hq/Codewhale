@@ -1,6 +1,6 @@
 use super::*;
 use crate::test_support::{EnvVarGuard, lock_test_env};
-use crate::tui::clipboard::{ClipboardHandler, PastedImage};
+use crate::tui::clipboard::{ClipboardContent, ClipboardHandler, PastedImage};
 use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus};
 use crate::tui::motion::MotionMode;
 use codewhale_config::ProviderKind;
@@ -3988,6 +3988,17 @@ fn test_queue_message() {
 }
 
 #[test]
+fn queue_message_at_cap_returns_message_to_composer() {
+    let mut app = App::new(test_options(false), &Config::default());
+    for index in 0..MAX_QUEUED_MESSAGES {
+        app.queue_message(QueuedMessage::new(format!("m{index}"), None));
+    }
+    app.queue_message(QueuedMessage::new("overflow".to_string(), None));
+    assert_eq!(app.queued_message_count(), MAX_QUEUED_MESSAGES);
+    assert_eq!(app.input, "overflow");
+}
+
+#[test]
 fn test_remove_scenario() {
     // Scenario consolidation of: test_remove_queued_message, test_remove_queued_message_invalid_index
     // from test_remove_queued_message
@@ -5566,7 +5577,7 @@ fn enter_during_active_paste_burst_appends_newline_to_buffer_not_submit() {
     assert!(app.paste_burst.is_active());
     assert!(app.input.is_empty());
 
-    let result = app.handle_composer_enter(true);
+    let result = app.handle_composer_enter(true, Instant::now());
 
     assert!(
         result.is_none(),
@@ -5598,7 +5609,7 @@ fn enter_inside_paste_burst_window_after_flush_inserts_newline_not_submit() {
         "suppression window should be open"
     );
 
-    let result = app.handle_composer_enter(true);
+    let result = app.handle_composer_enter(true, Instant::now());
 
     assert!(
         result.is_none(),
@@ -5608,9 +5619,12 @@ fn enter_inside_paste_burst_window_after_flush_inserts_newline_not_submit() {
         app.input, "hello\n",
         "newline must be inserted into the composer instead of firing a submit"
     );
-    assert!(!app.composer_enter_would_submit(true));
-    assert!(app.composer_enter_would_submit(false));
-    assert_eq!(app.handle_composer_enter(false).as_deref(), Some("hello\n"));
+    assert!(!app.composer_enter_would_submit(true, Instant::now()));
+    assert!(app.composer_enter_would_submit(false, Instant::now()));
+    assert_eq!(
+        app.handle_composer_enter(false, Instant::now()).as_deref(),
+        Some("hello\n")
+    );
 }
 
 /// The absorbed Enter above must not buy the window more time. Re-arming on
@@ -5627,7 +5641,7 @@ fn enter_absorbed_after_flush_does_not_re_arm_the_suppression_window() {
     app.paste_burst.extend_window(now);
 
     assert!(
-        app.handle_composer_enter(true).is_none(),
+        app.handle_composer_enter(true, Instant::now()).is_none(),
         "first Enter is absorbed as the paste's possible trailing newline"
     );
     assert_eq!(app.input, "hello\n");
@@ -5650,7 +5664,7 @@ fn enter_outside_any_paste_burst_window_submits_normally() {
     app.input = "hello world".to_string();
     app.cursor_position = "hello world".chars().count();
 
-    let result = app.handle_composer_enter(true);
+    let result = app.handle_composer_enter(true, Instant::now());
 
     assert_eq!(
         result.as_deref(),
@@ -5677,9 +5691,14 @@ fn enter_with_paste_burst_detection_disabled_submits_normally() {
     let now = Instant::now();
     app.paste_burst.extend_window(now);
 
-    let result = app.handle_composer_enter(true);
+    let result = app.handle_composer_enter(true, Instant::now());
 
     assert_eq!(result.as_deref(), Some("ship it"));
+}
+
+fn clipboard_paste(app: &mut App, content: ClipboardContent) -> bool {
+    app.clipboard = ClipboardHandler::with_content_for_test(content);
+    crate::tui::paste::handle_paste(app, crate::tui::paste::PasteSource::Shortcut)
 }
 
 #[test]
@@ -5688,13 +5707,48 @@ fn clipboard_text_paste_matches_bracketed_paste_state() {
     let mut bracketed = App::new(test_options(false), &Config::default());
     let mut clipboard = App::new(test_options(false), &Config::default());
 
-    bracketed.insert_paste_text(text);
-    clipboard.apply_clipboard_content(ClipboardContent::Text(text.to_string()));
+    crate::tui::paste::handle_paste(
+        &mut bracketed,
+        crate::tui::paste::PasteSource::Terminal(text),
+    );
+    assert!(clipboard_paste(
+        &mut clipboard,
+        ClipboardContent::Text(text.to_string())
+    ));
 
     assert_eq!(clipboard.input, bracketed.input);
     assert_eq!(clipboard.cursor_position, bracketed.cursor_position);
     assert_eq!(clipboard.slash_menu_hidden, bracketed.slash_menu_hidden);
     assert_eq!(clipboard.mention_menu_hidden, bracketed.mention_menu_hidden);
+}
+
+#[test]
+fn release_only_paste_edge_leaves_text_to_the_terminal_and_still_attaches_an_image() {
+    use crate::tui::paste::{PasteSource, handle_paste};
+
+    let mut app = App::new(test_options(false), &Config::default());
+    app.clipboard = ClipboardHandler::with_content_for_test(ClipboardContent::Text(
+        "already pasted".to_string(),
+    ));
+    handle_paste(&mut app, PasteSource::Terminal("already pasted"));
+    handle_paste(&mut app, PasteSource::ReleaseOnly);
+    assert_eq!(app.input, "already pasted");
+
+    let mut app = App::new(test_options(false), &Config::default());
+    app.clipboard = ClipboardHandler::with_content_for_test(ClipboardContent::Image(
+        crate::tui::clipboard::PastedImage {
+            path: std::path::PathBuf::from("/tmp/pasted.png"),
+            width: 8,
+            height: 4,
+            byte_len: 2048,
+        },
+    ));
+
+    handle_paste(&mut app, PasteSource::ReleaseOnly);
+    assert!(app.input.contains("pasted.png"), "{}", app.input);
+    // The other edge of the same chord does not attach it twice.
+    handle_paste(&mut app, PasteSource::Shortcut);
+    assert_eq!(app.input.matches("pasted.png").count(), 1, "{}", app.input);
 }
 
 #[test]
@@ -5704,7 +5758,7 @@ fn ssh_direct_clipboard_paste_points_to_terminal_owned_bracketed_paste() {
     app.cursor_position = app.input.chars().count();
     app.clipboard = ClipboardHandler::for_test(true, true);
 
-    assert!(!app.paste_from_clipboard());
+    crate::tui::paste::handle_paste(&mut app, crate::tui::paste::PasteSource::Shortcut);
     assert_eq!(app.input, "keep this draft");
     let hint = app
         .status_message
@@ -5722,12 +5776,15 @@ fn clipboard_image_paste_keeps_adjacent_text_and_concise_status() {
     app.input = "before after".to_string();
     app.cursor_position = "before".chars().count();
 
-    app.apply_clipboard_content(ClipboardContent::Image(PastedImage {
-        path: PathBuf::from("/tmp/pasted.png"),
-        width: 8,
-        height: 4,
-        byte_len: 2048,
-    }));
+    assert!(clipboard_paste(
+        &mut app,
+        ClipboardContent::Image(PastedImage {
+            path: PathBuf::from("/tmp/pasted.png"),
+            width: 8,
+            height: 4,
+            byte_len: 2048,
+        })
+    ));
 
     assert!(
         app.input

@@ -198,6 +198,7 @@ impl McpDispatchUnderTest for McpPoolDispatch {
                 None,
                 None,
                 None,
+                None,
             ) => result,
         }
     }

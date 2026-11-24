@@ -274,38 +274,54 @@ impl codewhale_engine::command_catalog::CommandCatalog for CommandTable {
         &self,
         workspace: &std::path::Path,
     ) -> Vec<codewhale_engine::command_catalog::UserCommand> {
-        user_registry::with_registry_for_workspace(Some(workspace), |registry| {
-            let mut bindings = std::collections::HashMap::<String, Vec<String>>::new();
-            for info in command_infos() {
-                for spelling in std::iter::once(info.name).chain(info.aliases.iter().copied()) {
-                    if let Some(command) = registry.get(spelling) {
-                        bindings
-                            .entry(command.name.clone())
-                            .or_default()
-                            .push(spelling.to_string());
-                    }
-                }
-            }
-            registry
-                .iter()
-                .map(|metadata| codewhale_engine::command_catalog::UserCommand {
-                    name: metadata.name.clone(),
-                    aliases: metadata.aliases.clone(),
-                    description: metadata.description.clone(),
-                    usage: metadata.display_usage().map(str::to_string),
-                    takes_arguments: metadata.takes_arguments(),
-                    hidden: metadata.hidden,
-                    extension: metadata.extension.is_some(),
-                    plugin_id: metadata
-                        .plugin_authority
-                        .as_ref()
-                        .map(|authority| authority.plugin_id.as_str().to_string()),
-                    workspace_sourced: metadata.workspace_sourced,
-                    builtin_bindings: bindings.remove(&metadata.name).unwrap_or_default(),
-                })
-                .collect()
-        })
+        user_registry::with_registry_for_workspace(Some(workspace), user_registry_entries)
     }
+
+    fn user_commands_with_plugins(
+        &self,
+        workspace: &std::path::Path,
+        plugins: &codewhale_plugins::PluginRegistry,
+    ) -> Vec<codewhale_engine::command_catalog::UserCommand> {
+        user_registry::with_registry_for_workspace_plugins(
+            Some(workspace),
+            plugins,
+            user_registry_entries,
+        )
+    }
+}
+
+fn user_registry_entries(
+    registry: &user_registry::UserCommandRegistry,
+) -> Vec<codewhale_engine::command_catalog::UserCommand> {
+    let mut bindings = std::collections::HashMap::<String, Vec<String>>::new();
+    for info in command_infos() {
+        for spelling in std::iter::once(info.name).chain(info.aliases.iter().copied()) {
+            if let Some(command) = registry.get(spelling) {
+                bindings
+                    .entry(command.name.clone())
+                    .or_default()
+                    .push(spelling.to_string());
+            }
+        }
+    }
+    registry
+        .iter()
+        .map(|metadata| codewhale_engine::command_catalog::UserCommand {
+            name: metadata.name.clone(),
+            aliases: metadata.aliases.clone(),
+            description: metadata.description.clone(),
+            usage: metadata.display_usage().map(str::to_string),
+            takes_arguments: metadata.takes_arguments(),
+            hidden: metadata.hidden,
+            extension: metadata.extension.is_some(),
+            plugin_id: metadata
+                .plugin_authority
+                .as_ref()
+                .map(|authority| authority.plugin_id.as_str().to_string()),
+            workspace_sourced: metadata.workspace_sourced,
+            builtin_bindings: bindings.remove(&metadata.name).unwrap_or_default(),
+        })
+        .collect()
 }
 
 pub fn command_infos() -> Vec<&'static CommandInfo> {

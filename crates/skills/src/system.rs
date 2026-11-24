@@ -126,7 +126,6 @@ const FEISHU_BODY: &str = include_str!("../assets/skills/feishu/SKILL.md");
 const MCP_DISCOVERY_BODY: &str = include_str!("../assets/skills/mcp-discovery/SKILL.md");
 
 // Legacy v4 body retained for migration fixtures; installed copies stay on disk.
-#[cfg(test)]
 const V4_BEST_PRACTICES_BODY: &str = include_str!("../assets/skills/v4-best-practices/SKILL.md");
 
 // Generation-10 `mcp-discovery` body, retained solely so an unmodified copy of
@@ -587,7 +586,7 @@ pub fn bundled_skill_generation() -> &'static str {
     BUNDLED_SKILL_VERSION
 }
 
-fn feishu_body() -> &'static str {
+pub(super) fn feishu_body() -> &'static str {
     FEISHU_BODY
 }
 
@@ -603,6 +602,71 @@ fn contributor_onboarding_body() -> &'static str {
 /// recognizable and is left in place, never deleted by name.
 fn feedback_body() -> &'static str {
     FEEDBACK_BODY
+}
+
+const RETIRED_BUNDLED_SKILL_NAMES: &[&str] = &[
+    "contributor-onboarding",
+    "feedback",
+    "feishu",
+    "health",
+    "social-media",
+    "v4-best-practices",
+];
+
+pub(super) fn retired_bundled_skill_name(name: &str) -> Option<&'static str> {
+    let name = normalize_skill_name_for_lookup(name);
+    RETIRED_BUNDLED_SKILL_NAMES
+        .iter()
+        .copied()
+        .find(|retired| *retired == name)
+}
+
+fn retired_bundled_body_matches(retired: &str, body: &str) -> bool {
+    let exact = match retired {
+        "feedback" => Some(FEEDBACK_BODY),
+        "contributor-onboarding" => Some(CONTRIBUTOR_ONBOARDING_BODY),
+        "feishu" => Some(FEISHU_BODY),
+        "v4-best-practices" => Some(V4_BEST_PRACTICES_BODY),
+        _ => None,
+    };
+    exact == Some(body) || is_superseded_shipped_body(retired, body)
+}
+
+fn retired_bundled_copy_matches_shipped(owned: &Path, copy: &Path, retired: &str) -> bool {
+    let Ok(body) = codewhale_util::fs_confined::read_to_string(owned, copy) else {
+        return false;
+    };
+    if !retired_bundled_body_matches(retired, &body) {
+        return false;
+    }
+    let Ok((parsed, _)) = skill_parse::parse_verified_content(copy, &body) else {
+        return false;
+    };
+    retired_bundled_skill_name(&parsed.name) == Some(retired)
+}
+
+fn retired_listed(names: &Option<Vec<String>>, retired: &str) -> bool {
+    names
+        .iter()
+        .flatten()
+        .any(|entry| retired_bundled_skill_name(entry) == Some(retired))
+}
+
+#[must_use]
+pub fn retired_bundled_copy_disabled(
+    policy: &BundledSkillsConfig,
+    path: &Path,
+    name: &str,
+    owned: &Path,
+) -> bool {
+    retired_bundled_skill_name(name).is_some_and(|retired| {
+        let expected = owned.join(retired).join("SKILL.md");
+        retired_listed(&policy.disabled, retired)
+            && fs::symlink_metadata(owned.join(retired).join(".installed-from")).is_err()
+            && super::roots::paths_refer_to_same_dir(path, &expected)
+            && codewhale_util::fs_confined::read_to_string(owned, &expected)
+                .is_ok_and(|body| retired_bundled_body_matches(retired, &body))
+    })
 }
 
 /// Whether a skill name matches one of the bundled first-party skills.
@@ -925,6 +989,7 @@ pub struct BundledSkillsStatus {
     pub explicit_only: Vec<&'static str>,
     pub shadowed: Vec<&'static str>,
     pub unknown: Vec<String>,
+    pub retired: Vec<String>,
     pub ignored: Vec<String>,
     pub skills: Vec<BundledSkillStatus>,
 }
@@ -956,6 +1021,9 @@ impl BundledSkillsStatus {
                 "Unknown bundled names: {}",
                 self.unknown.join(", ")
             ));
+        }
+        if !self.retired.is_empty() {
+            lines.push(format!("No longer bundled: {}", self.retired.join(", ")));
         }
         if !self.ignored.is_empty() {
             lines.push(format!(
@@ -999,6 +1067,7 @@ pub fn bundled_skills_status(
         explicit_only: vec![],
         shadowed: vec![],
         unknown: vec![],
+        retired: vec![],
         ignored: vec![],
         skills: vec![],
     };
@@ -1008,7 +1077,39 @@ pub fn bundled_skills_status(
         ("explicit_only", &policy.explicit_only),
     ] {
         for name in names.iter().flatten() {
-            if canonical_bundled_skill_name(name).is_none() {
+            if let Some(retired) = retired_bundled_skill_name(name) {
+                let copy = owned.join(retired).join("SKILL.md");
+                let installed = fs::metadata(&copy).is_ok_and(|meta| meta.is_file());
+                let has_marker =
+                    fs::symlink_metadata(owned.join(retired).join(".installed-from")).is_ok();
+                let matches_shipped =
+                    installed && retired_bundled_copy_matches_shipped(&owned, &copy, retired);
+                let hidden = retired_listed(&policy.disabled, retired)
+                    && installed
+                    && !has_marker
+                    && matches_shipped;
+                let state = match (field, installed) {
+                    ("disabled", true) if has_marker => format!(
+                        "installed copy at {} has .installed-from and stays active",
+                        copy.display()
+                    ),
+                    ("disabled", true) if !matches_shipped => format!(
+                        "copy at {} was customized or renamed and stays active",
+                        copy.display()
+                    ),
+                    ("disabled", true) => format!("installed copy at {} is hidden", copy.display()),
+                    ("disabled", false) => {
+                        "no copy installed; this entry can be removed".to_string()
+                    }
+                    (_, true) if hidden => "hidden by disabled".to_string(),
+                    (_, true) => format!(
+                        "this entry has no effect; the copy at {} loads as a user skill",
+                        copy.display()
+                    ),
+                    (_, false) => "no copy installed; this entry can be removed".to_string(),
+                };
+                status.retired.push(format!("{field}={retired} ({state})"));
+            } else if canonical_bundled_skill_name(name).is_none() {
                 status
                     .unknown
                     .push(format!("{field}={}", name.escape_debug()));

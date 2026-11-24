@@ -73,7 +73,8 @@ fn run_script(executable: &Path, manifest: &Path, cwd: &Path) -> Command {
         .env("CARGO_CFG_TARGET_OS", "linux")
         .env_remove("CODEWHALE_BUILD_SHA")
         .env_remove("DEEPSEEK_BUILD_SHA")
-        .env_remove("GITHUB_SHA");
+        .env_remove("GITHUB_SHA")
+        .env_remove("CODEWHALE_LOCAL_BUILD_SHA");
     command
 }
 

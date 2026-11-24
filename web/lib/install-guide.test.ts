@@ -18,7 +18,7 @@ describe("canonical installation guide", () => {
 
   it("keeps top-level command bytes intact and nested code inside its list", () => {
     const guide = buildInstallGuide('# Setup\n\n```sh\nprintf "$HOME & <path>"\n```\n\n1. In a list:\n\n   ```sh\n   echo nested\n   ```\n');
-    expect(guide.chunks[1]).toEqual({ kind: "code", text: 'printf "$HOME & <path>"' });
+    expect(guide.chunks[1]).toEqual({ kind: "code", text: 'printf "$HOME & <path>"', lang: "sh" });
     expect(guide.chunks[2].text).toMatch(/<ol>[\s\S]*<li>[\s\S]*<pre><code[\s\S]*echo nested[\s\S]*<\/li>[\s\S]*<\/ol>/);
   });
 

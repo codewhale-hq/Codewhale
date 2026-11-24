@@ -471,7 +471,9 @@
           "deepseek/deepseek-v4pro": "deepseek-v4-pro",
           "flash": "deepseek-flash",
           "flash-vision": "deepseek-flash",
-          "pro": "deepseek-v4-pro"
+          "pro": "deepseek-v4-pro",
+          "v4-flash": "deepseek-flash",
+          "v4-pro": "deepseek-v4-pro"
         },
         "ids": "strict",
         "strip_prefixes": [],
@@ -649,6 +651,25 @@
         "order": 4
       },
       "wire_policy": "chat_completions"
+    },
+    "atmorouter": {
+      "aliases": [
+        "atmo-router"
+      ],
+      "api_key_env": "ATMOROUTER_API_KEY",
+      "auth": {
+        "env_vars": [
+          "ATMOROUTER_API_KEY"
+        ],
+        "secret_slot": "atmorouter"
+      },
+      "base_url": "https://atmorouter.dev/v1",
+      "credential_url": "https://atmorouter.dev/dashboard/keys",
+      "discovery": "models_endpoint",
+      "docs_url": "https://atmorouter.dev/docs/quickstart",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
     },
     "baseten": {
       "aliases": [
@@ -1135,6 +1156,22 @@
         "order": 20
       },
       "wire_policy": "chat_completions"
+    },
+    "llmtr": {
+      "api_key_env": "LLMTR_API_KEY",
+      "auth": {
+        "env_vars": [
+          "LLMTR_API_KEY"
+        ],
+        "secret_slot": "llmtr"
+      },
+      "base_url": "https://llmtr.com/v1",
+      "credential_url": "https://llmtr.com/dashboard/keys",
+      "discovery": "models_endpoint",
+      "docs_url": "https://llmtr.com/docs/",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
     },
     "longcat": {
       "aliases": [
@@ -1637,6 +1674,22 @@
         "order": 19
       },
       "wire_policy": "chat_completions"
+    },
+    "onomeo": {
+      "api_key_env": "ONOMEO_API_KEY",
+      "auth": {
+        "env_vars": [
+          "ONOMEO_API_KEY"
+        ],
+        "secret_slot": "onomeo"
+      },
+      "base_url": "https://onomeo.com/v1",
+      "credential_url": "https://onomeo.com/dashboard",
+      "discovery": "models_endpoint",
+      "docs_url": "https://onomeo.com/integrations",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
     },
     "openai": {
       "aliases": [
@@ -2246,6 +2299,25 @@
       },
       "wire_policy": "chat_completions"
     },
+    "trustedrouter": {
+      "aliases": [
+        "trusted-router"
+      ],
+      "api_key_env": "TRUSTEDROUTER_API_KEY",
+      "auth": {
+        "env_vars": [
+          "TRUSTEDROUTER_API_KEY"
+        ],
+        "secret_slot": "trustedrouter"
+      },
+      "base_url": "https://api.trustedrouter.com/v1",
+      "credential_url": "https://trustedrouter.com/console/api-keys",
+      "discovery": "public_models_endpoint",
+      "docs_url": "https://trustedrouter.com/docs",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
     "tsubasa": {
       "api_key_env": "TSUBASA_API_KEY",
       "auth": {
@@ -2378,6 +2450,25 @@
         "order": 5
       },
       "wire_policy": "chat_completions"
+    },
+    "worldrouter": {
+      "aliases": [
+        "world-router"
+      ],
+      "api_key_env": "WORLDROUTER_API_KEY",
+      "auth": {
+        "env_vars": [
+          "WORLDROUTER_API_KEY"
+        ],
+        "secret_slot": "worldrouter"
+      },
+      "base_url": "https://inference-api.worldrouter.ai/v1",
+      "credential_url": "https://www.worldrouter.ai/",
+      "discovery": "models_endpoint",
+      "docs_url": "https://www.worldrouter.ai/docs/quickstart",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
     },
     "xai": {
       "aliases": [

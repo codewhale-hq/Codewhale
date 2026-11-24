@@ -31,9 +31,10 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+use crate::tui::views::rounded::{render_rounded_footer, render_rounded_surface};
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, action_footer_lines,
-    render_modal_footer, render_panel_scroll_rail, render_underwater_surface,
+    render_panel_scroll_rail,
 };
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
@@ -70,7 +71,7 @@ struct OwnedEvidence {
     ready: bool,
     pending: Option<(
         tokio_util::sync::CancellationToken,
-        tokio::sync::oneshot::Receiver<Result<EvidenceWindow, ()>>,
+        tokio::sync::oneshot::Receiver<Result<EvidenceWindow, String>>,
     )>,
 }
 
@@ -120,7 +121,7 @@ impl OwnedEvidence {
                 let result = codewhale_engine::tools::tool_result_retrieval::RetrieveToolResultTool
                     .execute(input, &context)
                     .await
-                    .map_err(|_| ())
+                    .map_err(|error| error.to_string())
                     .and_then(|result| evidence_window(&result.content, offset));
                 let _ = send.send(result);
             });
@@ -129,31 +130,32 @@ impl OwnedEvidence {
     }
 }
 
-fn evidence_window(content: &str, requested: u64) -> Result<EvidenceWindow, ()> {
+fn evidence_window(content: &str, requested: u64) -> Result<EvidenceWindow, String> {
     use base64::Engine as _;
     if content.len()
         > EVIDENCE_WINDOW_BYTES * 2
             + codewhale_engine::tools::tool_result_retrieval::MAX_REFERENCE_BYTES * 6
     {
-        return Err(());
+        return Err("evidence window rejected".to_string());
     }
-    let value: serde_json::Value = serde_json::from_str(content).map_err(|_| ())?;
+    let value: serde_json::Value =
+        serde_json::from_str(content).map_err(|error| error.to_string())?;
     let total = value
         .get("total_bytes")
         .and_then(serde_json::Value::as_u64)
-        .ok_or(())?;
+        .ok_or_else(|| "evidence window field missing".to_string())?;
     let offset = value
         .get("offset")
         .and_then(serde_json::Value::as_u64)
-        .ok_or(())?;
+        .ok_or_else(|| "evidence window field missing".to_string())?;
     let digest = value
         .get("sha256")
         .and_then(serde_json::Value::as_str)
-        .ok_or(())?;
+        .ok_or_else(|| "evidence window field missing".to_string())?;
     let data = value
         .get("data")
         .and_then(serde_json::Value::as_str)
-        .ok_or(())?;
+        .ok_or_else(|| "evidence window field missing".to_string())?;
     if value.get("mode").and_then(serde_json::Value::as_str) != Some("bytes")
         || value.get("encoding").and_then(serde_json::Value::as_str) != Some("base64")
         || offset != requested
@@ -162,11 +164,11 @@ fn evidence_window(content: &str, requested: u64) -> Result<EvidenceWindow, ()> 
         || digest.len() != 64
         || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
     {
-        return Err(());
+        return Err("evidence window rejected".to_string());
     }
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data)
-        .map_err(|_| ())?;
+        .map_err(|error| error.to_string())?;
     if bytes.len() > EVIDENCE_WINDOW_BYTES
         || bytes.len() as u64 > total - offset
         || value
@@ -174,10 +176,10 @@ fn evidence_window(content: &str, requested: u64) -> Result<EvidenceWindow, ()> 
             .and_then(serde_json::Value::as_u64)
             != Some(bytes.len() as u64)
     {
-        return Err(());
+        return Err("evidence window rejected".to_string());
     }
     if bytes.is_empty() && offset < total {
-        return Err(());
+        return Err("evidence window rejected".to_string());
     }
     let text_prefix = match std::str::from_utf8(&bytes) {
         Ok(text) => Some(text),
@@ -1147,7 +1149,9 @@ impl ModalView for PagerView {
                 .and_then(|(_, receive)| match receive.try_recv() {
                     Ok(result) => Some(result),
                     Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
-                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(Err(())),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                        Some(Err("evidence retrieval task ended".to_string()))
+                    }
                 })
         });
         let Some(result) = completed else {
@@ -1174,7 +1178,13 @@ impl ModalView for PagerView {
                 evidence.encoding = window.encoding;
                 evidence.ready = true;
             }
-            _ => {
+            Ok(_) => {
+                tracing::warn!("evidence window digest changed during retrieval");
+                page.copy_text = None;
+                evidence.ready = false;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "evidence window retrieval failed");
                 page.copy_text = None;
                 evidence.ready = false;
             }
@@ -1520,7 +1530,7 @@ impl ModalView for PagerView {
         } else {
             page.title.clone()
         };
-        let inner = render_underwater_surface(area, buf, title);
+        let inner = render_rounded_surface(area, buf, title, None, self.search_mode);
 
         // The wrapping action footer is anchored to the bottom of the inner
         // area; the body fills the rows above it.
@@ -1595,7 +1605,7 @@ impl ModalView for PagerView {
                 )));
             }
         }
-        let content = render_modal_footer(inner, buf, &hints);
+        let content = render_rounded_footer(inner, buf, &hints);
 
         // Re-wrap before reserving the search-status row: resizing can make
         // the first match appear or the last match disappear. Hold a column
@@ -1739,10 +1749,6 @@ impl ModalView for PagerView {
 
         let content =
             render_panel_scroll_rail(content, buf, row_count, scroll, visible_height, true);
-        // Explicit base ink: the surface behind this body is always WHALE_BG,
-        // so spans without their own fg must not inherit a dark terminal
-        // default (light-profile terminals would render them as black-on-black).
-        // Ratatui paints the base first; styled spans patch over it.
         let paragraph = Paragraph::new(visible_lines)
             .wrap(Wrap { trim: false })
             .style(Style::default().fg(palette::TEXT_PRIMARY));
@@ -2360,10 +2366,6 @@ mod tests {
 
     #[test]
     fn body_cells_carry_explicit_ink_on_the_dark_surface() {
-        // The pager paints WHALE_BG behind the body, so a body span
-        // without its own fg inherits the terminal default, black ink on
-        // light-profile terminals, i.e. black-on-black. The base paragraph
-        // style must pin every text cell to the body ink.
         let p = make_pager(3);
         let area = Rect::new(0, 0, 100, 16);
         let mut buf = Buffer::empty(area);
@@ -2379,7 +2381,8 @@ mod tests {
             }
             for x in 0..area.width {
                 let cell = &buf[(x, y)];
-                if cell.symbol().trim().is_empty() {
+                let symbol = cell.symbol();
+                if symbol.trim().is_empty() || matches!(symbol, "│" | "|") {
                     continue;
                 }
                 assert_eq!(
@@ -2788,11 +2791,10 @@ mod tests {
                 assert!(text.contains(label), "{w}x{h}: footer missing '{label}'");
             }
 
-            // Composited frame is fully opaque.
             assert!(!text.contains('X'), "{w}x{h}: background bleed-through");
             assert_eq!(
                 buf[(w / 2, h / 2)].bg,
-                palette::WHALE_BG,
+                palette::COMPOSER_BG,
                 "{w}x{h}: modal interior must be opaque"
             );
 

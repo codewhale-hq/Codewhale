@@ -1051,6 +1051,8 @@ pub struct SessionMetadata {
     /// kind (`custom` for every named custom route).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec_route_binding: Option<crate::route_receipt::ExecRouteBinding>,
     /// Workspace directory
     pub workspace: PathBuf,
     /// Optional mode label (agent/plan/etc.)
@@ -1291,6 +1293,11 @@ fn default_model_provider() -> String {
 
 impl SessionMetadata {
     pub fn set_model_provider_route(&mut self, kind: &str, identity: Option<&str>) {
+        if self.exec_route_binding.is_some()
+            && (self.model_provider != kind || self.model_provider_id.as_deref() != identity)
+        {
+            self.exec_route_binding = Some(crate::route_receipt::ExecRouteBinding::default());
+        }
         self.model_provider = kind.to_string();
         self.model_provider_id = identity.map(str::to_string);
     }
@@ -1909,6 +1916,8 @@ pub struct SavedTurnOutcome {
     pub status: crate::core::events::TurnOutcomeStatus,
     /// User-facing error text, secrets redacted.
     pub error: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
     pub ended_at: DateTime<Utc>,
     /// Transcript messages that existed when the turn ended. Resume places
     /// the notice after that many messages (clamped to the transcript).
@@ -1919,6 +1928,10 @@ impl SavedTurnOutcome {
     /// Build the persisted record for a failed turn. Redacts before bounding
     /// so a cut can never leave half a secret behind.
     pub fn failed(error: &str, after_message_count: usize) -> Self {
+        Self::failed_with_code(error, None, after_message_count)
+    }
+
+    pub fn failed_with_code(error: &str, code: Option<&str>, after_message_count: usize) -> Self {
         let redacted = codewhale_sanitize::redact::redact_secrets(error.trim());
         let error = if redacted.chars().count() > MAX_SAVED_TURN_OUTCOME_ERROR_CHARS {
             let mut cut: String = redacted
@@ -1930,9 +1943,14 @@ impl SavedTurnOutcome {
         } else {
             redacted
         };
+        let code = code
+            .map(|value| value.trim().trim_matches(['[', ']']).trim())
+            .filter(|value| !value.is_empty())
+            .map(codewhale_sanitize::redact::redact_secrets);
         Self {
             status: crate::core::events::TurnOutcomeStatus::Failed,
             error,
+            code,
             ended_at: Utc::now(),
             after_message_count,
         }
@@ -2206,6 +2224,7 @@ impl SavedSession {
             model,
             model_provider: default_model_provider(),
             model_provider_id: None,
+            exec_route_binding: None,
             workspace,
             mode: None,
             cost: SessionCostSnapshot::default(),
@@ -2706,6 +2725,39 @@ impl SessionManager {
         &self.sessions_dir
     }
 
+    pub fn exec_route_binding_key(sessions_dir: &Path, create: bool) -> anyhow::Result<[u8; 32]> {
+        use ring::rand::SecureRandom as _;
+        let directory = sessions_dir.join(".exec-route");
+        let directory = if create {
+            codewhale_config::private_directory::PrivateDirectory::open(&directory)?
+        } else {
+            codewhale_config::private_directory::PrivateDirectory::inspect(&directory)?
+        };
+        let name = "key";
+        let read = || -> anyhow::Result<Option<[u8; 32]>> {
+            directory
+                .read_private_receipt(name, 32)?
+                .map(|(bytes, _)| {
+                    bytes
+                        .try_into()
+                        .map_err(|_| anyhow::anyhow!("invalid exec route binding key"))
+                })
+                .transpose()
+        };
+        if let Some(key) = read()? {
+            return Ok(key);
+        }
+        anyhow::ensure!(create, "exec route binding key is missing");
+        let mut key = [0u8; 32];
+        ring::rand::SystemRandom::new()
+            .fill(&mut key)
+            .map_err(|_| anyhow::anyhow!("could not generate an exec route binding key"))?;
+        if let Err(error) = directory.write_owned_file(name, &key, false) {
+            return read()?.ok_or(error);
+        }
+        Ok(key)
+    }
+
     /// The live-lease file for `session_id`; see [`set_live_session`].
     fn live_lease_path(&self, session_id: &str, create_dir: bool) -> io::Result<PathBuf> {
         let (late_path, _) = if create_dir {
@@ -2967,13 +3019,48 @@ impl SessionManager {
     }
 
     fn write_late_usage_ledger(path: &Path, ledger: &LateUsageLedger) -> io::Result<()> {
-        let bytes = serde_json::to_vec(ledger)
+        let mut bytes = serde_json::to_vec(ledger)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_LATE_USAGE_LEDGER_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "late usage ledger exceeds its size bound",
-            ));
+        let limit = usize::try_from(MAX_LATE_USAGE_LEDGER_BYTES).unwrap_or(usize::MAX);
+        if bytes.len() > limit {
+            let mut remaining_bytes = bytes.len();
+            let mut pruned = 0;
+            for record in ledger
+                .records
+                .iter()
+                .filter(|record| record.diagnostic_only)
+            {
+                let record_len = serde_json::to_vec(record)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+                    .len();
+                pruned += 1;
+                let comma = usize::from(pruned < ledger.records.len());
+                remaining_bytes -= record_len + comma;
+                if remaining_bytes <= limit {
+                    break;
+                }
+            }
+            if remaining_bytes > limit {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "late usage ledger exceeds its size bound",
+                ));
+            }
+            let mut compacted = ledger.clone();
+            let mut remaining = pruned;
+            compacted.records.retain(|record| {
+                if record.diagnostic_only && remaining > 0 {
+                    remaining -= 1;
+                    return false;
+                }
+                true
+            });
+            bytes = serde_json::to_vec(&compacted)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            tracing::warn!(
+                pruned,
+                "compacted late usage diagnostic receipts to fit the ledger bound"
+            );
         }
         let parent = path.parent().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "usage ledger has no parent")
@@ -3645,7 +3732,11 @@ impl SessionManager {
         let path = self.validated_session_goal_path(session_id)?;
         let Some(goal) = goal else {
             if self.checked_existing_session_goals_dir()?.is_some() && path.exists() {
-                fs::remove_file(path)?;
+                fs::remove_file(&path)?;
+                #[cfg(unix)]
+                if let Some(parent) = path.parent() {
+                    fs::File::open(parent)?.sync_all()?;
+                }
             }
             return Ok(());
         };
@@ -3763,6 +3854,19 @@ impl SessionManager {
         metadata.title_is_custom = persisted.title_is_custom;
         metadata.archived = persisted.archived;
         metadata.created_at = persisted.created_at;
+        if metadata.exec_route_binding.is_none()
+            && let Some(binding) = persisted.exec_route_binding.as_ref()
+        {
+            metadata.exec_route_binding = Some(
+                if metadata.model_provider == persisted.model_provider
+                    && metadata.model_provider_id == persisted.model_provider_id
+                {
+                    binding.clone()
+                } else {
+                    crate::route_receipt::ExecRouteBinding::default()
+                },
+            );
+        }
         metadata
             .parent_session_id
             .clone_from(&persisted.parent_session_id);
@@ -6199,6 +6303,8 @@ impl SessionManager {
         if session_dir.is_dir() && fs::read_dir(&session_dir)?.next().is_none() {
             fs::remove_dir(session_dir)?;
         }
+        #[cfg(unix)]
+        fs::File::open(&self.sessions_dir)?.sync_all()?;
         Ok(())
     }
 
@@ -7212,10 +7318,11 @@ pub fn session_recovery_hint(workspace: &Path, current_session_id: Option<&str>)
     let manager = SessionManager::default_location().ok()?;
     let meta = manager.interrupted_workspace_session(workspace, current_session_id)?;
     Some(format!(
-        "A previous Codewhale session in this workspace (\"{}\", id {}, last active {}) has a recovery checkpoint — it likely ended mid-task. Use session_search/session_get to inspect it and offer to summarize or continue the work; resuming is the user's decision (e.g. /resume).",
+        "A previous Codewhale session in this workspace (\"{}\", id {}, last active {}) has a recovery checkpoint — it likely ended mid-task. To inspect it, call session_get with session_id \"{}\" (load session_get with tool_search first if it is not among your tools), then offer to summarize or continue the work; resuming is the user's decision (e.g. /resume).",
         meta.title,
         truncate_id(&meta.id),
         meta.updated_at.format("%Y-%m-%d %H:%M UTC"),
+        meta.id,
     ))
 }
 
@@ -7753,6 +7860,7 @@ fn create_saved_session_inner(
             model: model.to_string(),
             model_provider: default_model_provider(),
             model_provider_id: None,
+            exec_route_binding: None,
             workspace: workspace.to_path_buf(),
             mode: mode.map(str::to_string),
             cost: SessionCostSnapshot::default(),
@@ -8154,7 +8262,7 @@ pub fn strip_thinking_tags(text: &str) -> String {
 }
 
 /// Truncate a string to create a title (character-safe for UTF-8)
-fn truncate_title(s: &str, max_len: usize) -> String {
+pub(crate) fn truncate_title(s: &str, max_len: usize) -> String {
     let s = s.trim();
     // Older sessions may carry a title saved before sanitization existed;
     // never echo raw controls into stdout or the picker. Take the first

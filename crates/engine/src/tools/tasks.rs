@@ -383,6 +383,10 @@ impl ToolSpec for TasksTool {
         }
     }
 
+    fn supports_parallel_for(&self, input: &Value) -> bool {
+        self.is_read_only_for(input)
+    }
+
     fn refusal_before_approval(&self, input: &Value, context: &ToolContext) -> Option<ToolResult> {
         if context.auto_approve || self.resolve_action(input).ok()? != "gate_run" {
             return None;
@@ -824,9 +828,10 @@ impl TasksTool {
         if let Some(path) = log_path {
             metadata["artifact_path"] = json!(path);
         }
-        Ok(ToolResult::json(&content)
-            .map_err(|e| ToolError::execution_failed(e.to_string()))?
-            .with_metadata(metadata))
+        let mut result =
+            ToolResult::json(&content).map_err(|e| ToolError::execution_failed(e.to_string()))?;
+        result.success = status == "passed";
+        Ok(result.with_metadata(metadata))
     }
 
     async fn execute_pr_attempt_record(
@@ -1013,10 +1018,7 @@ impl ToolSpec for TaskShellWaitTool {
     }
 
     fn capabilities(&self) -> Vec<ToolCapability> {
-        vec![
-            ToolCapability::WritesFiles,
-            ToolCapability::RequiresApproval,
-        ]
+        vec![ToolCapability::ReadOnly, ToolCapability::WritesFiles]
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
@@ -1035,6 +1037,10 @@ impl ToolSpec for TaskShellWaitTool {
         // Recording a gate writes task evidence and `cancel` kills a process;
         // neither is a read-only poll.
         input.get("gate").is_none_or(Value::is_null) && !task_shell_wait_requests_cancel(input)
+    }
+
+    fn supports_parallel_for(&self, input: &Value) -> bool {
+        self.is_read_only_for(input)
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
@@ -1698,6 +1704,8 @@ mod tests {
         }
         assert!(tool.capabilities().contains(&ToolCapability::WritesFiles));
         assert!(!tool.is_read_only());
+        assert!(tool.supports_parallel_for(&json!({"task_ids": ["shell_1", "shell_2"]})));
+        assert!(!tool.supports_parallel_for(&json!({"task_id": "shell_1", "cancel": true})));
     }
 
     #[test]
@@ -2162,6 +2170,7 @@ mod tests {
             )
             .await
             .expect("gate runs");
+        assert!(!result.success, "a timed-out gate must not report success");
         let metadata = result.metadata.expect("metadata");
         assert_eq!(metadata["timed_out"], true, "{metadata}");
         // What the gate wrote before the timeout is kept.

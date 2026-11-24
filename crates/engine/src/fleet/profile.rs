@@ -662,16 +662,135 @@ pub fn load_claude_agent_profiles_from_dir_in(
                 &path,
                 None,
                 origin,
-                format!("{err:#}"),
+                format!("{err:#}")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
             )),
         }
     }
     Ok((profiles, issues))
 }
 
+const CLAUDE_AGENT_KEYS: &[&str] = &[
+    "name",
+    "description",
+    "tools",
+    "disallowedtools",
+    "model",
+    "permissionmode",
+    "skills",
+    "hooks",
+    "color",
+    "mcpservers",
+    "maxturns",
+    "memory",
+    "background",
+    "isolation",
+    "effort",
+    "initialprompt",
+];
+
+fn is_claude_agent_key_line(line: &str) -> bool {
+    if line.starts_with([' ', '\t']) {
+        return false;
+    }
+    let Some((key, value)) = line.split_once(':') else {
+        return false;
+    };
+    if CLAUDE_AGENT_KEYS.contains(&key.trim().to_ascii_lowercase().as_str()) {
+        return true;
+    }
+    let mut chars = key.chars();
+    let is_identifier = chars.next().is_some_and(|ch| ch.is_ascii_alphabetic())
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'));
+    is_identifier && !value.trim().is_empty()
+}
+
+fn lenient_claude_description(raw: &str) -> std::borrow::Cow<'_, str> {
+    let lines: Vec<&str> = raw.lines().collect();
+    let Some(open) = lines
+        .iter()
+        .position(|line| !line.trim_matches('\u{feff}').trim().is_empty())
+    else {
+        return raw.into();
+    };
+    if lines[open].trim_matches('\u{feff}').trim_end() != "---" {
+        return raw.into();
+    }
+    let Some(close) = lines[open + 1..]
+        .iter()
+        .position(|line| line.trim_end() == "---")
+        .map(|offset| open + 1 + offset)
+    else {
+        return raw.into();
+    };
+    let Some(description) = (open + 1..close).find(|&index| {
+        let line = lines[index];
+        !line.starts_with([' ', '\t'])
+            && line
+                .split_once(':')
+                .is_some_and(|(key, _)| key.trim().eq_ignore_ascii_case("description"))
+    }) else {
+        return raw.into();
+    };
+    let value = lines[description]
+        .split_once(':')
+        .map_or("", |(_, value)| value.trim());
+    if value.starts_with(['|', '>']) {
+        return raw.into();
+    }
+    let end = (description + 1..close)
+        .find(|&index| is_claude_agent_key_line(lines[index]))
+        .unwrap_or(close);
+    let continuation = &lines[description + 1..end];
+    if !continuation.iter().any(|line| {
+        !line.trim().is_empty()
+            && !line.starts_with([' ', '\t'])
+            && !line.trim_start().starts_with('#')
+    }) {
+        return raw.into();
+    }
+    let value = [('"', '"'), ('\'', '\'')]
+        .iter()
+        .find_map(|(open, close)| {
+            value
+                .strip_prefix(*open)
+                .and_then(|inner| inner.strip_suffix(*close))
+        })
+        .unwrap_or(value);
+    let mut rebuilt: Vec<String> = lines[..description]
+        .iter()
+        .map(|line| (*line).to_string())
+        .collect();
+    rebuilt.push("description: |-".into());
+    if !value.is_empty() {
+        rebuilt.push(format!("  {value}"));
+    }
+    rebuilt.extend(
+        continuation
+            .iter()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .map(|line| {
+                if line.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!("  {}", line.trim_end())
+                }
+            }),
+    );
+    rebuilt.extend(lines[end..].iter().map(|line| (*line).to_string()));
+    let mut text = rebuilt.join("\n");
+    if raw.ends_with('\n') {
+        text.push('\n');
+    }
+    text.into()
+}
+
 fn load_claude_agent_file(root: Option<&Path>, path: &Path) -> Result<AgentProfile> {
     let raw = read_profile_text(root, path)
         .with_context(|| format!("reading Claude agent {}", path.display()))?;
+    let raw = lenient_claude_description(&raw);
     let (metadata, body) = codewhale_skill_install::frontmatter::parse_frontmatter(&raw)
         .map_err(|err| anyhow!("parsing Claude agent {}: {err}", path.display()))?
         .ok_or_else(|| {
@@ -1665,6 +1784,67 @@ reasoning = "expensive"
             issues[0].detail.contains("no `---` frontmatter"),
             "{}",
             issues[0].detail
+        );
+    }
+
+    #[test]
+    fn claude_agent_unquoted_multiline_description_loads_like_claude_code() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_profile(
+            tmp.path(),
+            "dev-planner.md",
+            "---\nname: dev-planner\ndescription: Plans work. Use when planning.\n\nExamples:\n- <example>\n  Context: a feature\n  user: \"Plan it\"\n  assistant: \"I'll plan\"\n  </example>\n# trailing note\n\ntools: Read, Grep\nmodel: opus\n---\nYou plan.\n",
+        );
+        write_profile(
+            tmp.path(),
+            "comment-only.md",
+            "---\nname: comment-only\ndescription: Reviewer\n# todo\ntools: Read\n---\nReview.\n",
+        );
+        write_profile(
+            tmp.path(),
+            "unknown-after-description.md",
+            "---\nname: guarded\ndescription: Read-only reviewer\nallowed-tools: Read, Grep\n---\nReview.\n",
+        );
+        write_profile(
+            tmp.path(),
+            "broken.md",
+            "---\nname: broken\ndescription: never closed\n",
+        );
+        let (profiles, issues) = load_claude_agent_profiles_from_dir(tmp.path()).unwrap();
+        assert_eq!(profiles.len(), 2, "{issues:?}");
+        let planner = profiles.iter().find(|p| p.id == "dev-planner").unwrap();
+        let description = planner.description.as_deref().unwrap();
+        assert!(
+            description.starts_with(
+                "Plans work. Use when planning.\n\nExamples:\n- <example>\n  Context: a feature"
+            ),
+            "{description}"
+        );
+        assert!(description.ends_with("</example>"), "{description}");
+        assert!(!description.contains("# trailing note"), "{description}");
+        assert_eq!(planner.profile.role.name, "explore");
+        assert_eq!(
+            planner.profile.role.instructions.as_deref(),
+            Some("You plan.")
+        );
+        let comment_only = profiles.iter().find(|p| p.id == "comment-only").unwrap();
+        assert_eq!(comment_only.description.as_deref(), Some("Reviewer"));
+        assert_eq!(issues.len(), 2);
+        let broken = issues.iter().find(|i| i.id == "broken").unwrap();
+        assert!(!broken.detail.contains('\n'), "{}", broken.detail);
+        assert!(
+            broken.detail.contains("closing delimiter"),
+            "{}",
+            broken.detail
+        );
+        let unknown = issues
+            .iter()
+            .find(|i| i.id == "unknown-after-description")
+            .unwrap();
+        assert!(
+            unknown.detail.contains("allowed-tools"),
+            "{}",
+            unknown.detail
         );
     }
 

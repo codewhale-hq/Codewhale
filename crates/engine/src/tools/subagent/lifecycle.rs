@@ -3,7 +3,121 @@ use super::*;
 
 pub(super) const COMPACT_STATUS_BYTES: usize = 8192;
 pub(super) const COMPACT_SPAWN_BYTES: usize = 4096;
-const DETAIL_STATUS_BYTES: usize = 32 * 1024;
+pub(super) const COMPACT_CANCEL_BYTES: usize = 4096;
+const DETAIL_STATUS_BYTES: usize = 8 * 1024 - r#","action":"status""#.len();
+const PEEK_RECENT_EVENTS_LIMIT: usize = 8;
+
+pub(super) fn compact_transcript_handle(mut handle: Value) -> Value {
+    if let Some(preview) = handle.get("repr_preview").and_then(Value::as_str) {
+        handle["repr_preview"] = json!(text_preview(preview, 160));
+    }
+    handle
+}
+
+fn compact_event_entry(event: &AgentWorkerEvent) -> Value {
+    let mut entry = json!({
+        "seq": event.seq,
+        "status": agent_worker_status_name(event.status),
+        "timestamp_ms": event.timestamp_ms,
+    });
+    let obj = entry.as_object_mut().expect("event object");
+    if let Some(step) = event.step {
+        obj.insert("step".into(), json!(step));
+    }
+    if let Some(tool_name) = event.tool_name.as_deref() {
+        obj.insert("tool_name".into(), json!(text_preview(tool_name, 64)));
+    }
+    if let Some(message) = event.message.as_deref() {
+        obj.insert("message".into(), json!(text_preview(message, 160)));
+    }
+    entry
+}
+
+fn compact_event_json(event: &Value) -> Value {
+    let Some(source) = event.as_object() else {
+        return json!(text_preview(&event.to_string(), 160));
+    };
+    let mut obj = serde_json::Map::new();
+    for key in ["seq", "status", "timestamp_ms", "step"] {
+        if let Some(val) = source.get(key) {
+            obj.insert(key.to_string(), val.clone());
+        }
+    }
+    if let Some(tool_name) = source.get("tool_name").and_then(Value::as_str) {
+        obj.insert("tool_name".into(), json!(text_preview(tool_name, 64)));
+    }
+    if let Some(message) = source.get("message").and_then(Value::as_str) {
+        obj.insert("message".into(), json!(text_preview(message, 160)));
+    }
+    Value::Object(obj)
+}
+
+pub(super) fn attach_peek_recent_events(row: &mut Value, record: Option<&AgentWorkerRecord>) {
+    let Some(obj) = row.as_object_mut() else {
+        return;
+    };
+    match record {
+        Some(record) => {
+            let total = record.events.len();
+            let start = total.saturating_sub(PEEK_RECENT_EVENTS_LIMIT);
+            let recent: Vec<Value> = record
+                .events
+                .iter()
+                .skip(start)
+                .map(compact_event_entry)
+                .collect();
+            obj.insert("recent_events".into(), Value::Array(recent));
+            obj.insert("events_total".into(), json!(total));
+        }
+        None => {
+            obj.insert("recent_events".into(), Value::Array(Vec::new()));
+            obj.insert("events_total".into(), json!(0));
+        }
+    }
+}
+
+pub(super) fn compact_cancel_receipt(
+    snapshot: &SubAgentResult,
+    projection: &SubAgentSessionProjection,
+    record: Option<&AgentWorkerRecord>,
+) -> Value {
+    let usage = record.map(|rec| &rec.usage).unwrap_or(&projection.usage);
+    let handle = compact_transcript_handle(
+        serde_json::to_value(&projection.transcript_handle).unwrap_or(Value::Null),
+    );
+    let mut receipt = json!({
+        "action": "cancel",
+        "agent_id": projection.agent_id,
+        "name": text_preview(&projection.name, 64),
+        "role": snapshot.agent_type.as_str(),
+        "status": projection.status,
+        "terminal": projection.terminal,
+        "steps": snapshot.steps_taken,
+        "steps_taken": snapshot.steps_taken,
+        "duration_ms": snapshot.duration_ms,
+        "usage": {
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "total_tokens": usage.total_tokens,
+        },
+        "transcript_handle": handle,
+        "cancelled_by_parent": snapshot.status == SubAgentStatus::Cancelled,
+    });
+    if let Some(summary) = snapshot
+        .result
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        receipt["summary"] = json!(text_preview(summary, 512));
+    }
+    if serde_json::to_vec(&receipt).map_or(true, |bytes| bytes.len() > COMPACT_CANCEL_BYTES)
+        && let Some(summary) = receipt.get("summary").and_then(Value::as_str)
+    {
+        receipt["summary"] = json!(text_preview(summary, 160));
+    }
+    receipt
+}
 
 pub(super) fn text_preview(value: &str, bytes: usize) -> String {
     if value.len() <= bytes {
@@ -14,6 +128,46 @@ pub(super) fn text_preview(value: &str, bytes: usize) -> String {
         end -= 1;
     }
     format!("{}...", &value[..end])
+}
+
+pub(super) fn reasoning_override_note(route: &ChildRouteReceipt) -> Option<String> {
+    let requested = route.requested_reasoning.trim();
+    if matches!(requested, "" | "inherit" | "auto") {
+        return None;
+    }
+    let effective = route
+        .effective_reasoning
+        .as_deref()
+        .map(str::trim)
+        .filter(|effort| !effort.is_empty());
+    if effective.is_some_and(|effort| effort.eq_ignore_ascii_case(requested)) {
+        return None;
+    }
+    let route_context = match route.resolved_profile_id.as_deref() {
+        Some(profile) => format!(" (route ceiling; profile '{profile}')"),
+        None => " (route ceiling)".to_string(),
+    };
+    let no_tier_context = match route.resolved_profile_id.as_deref() {
+        Some(profile) => format!(" (profile '{profile}')"),
+        None => String::new(),
+    };
+    Some(text_preview(
+        &match effective {
+            Some(effort) => {
+                format!(
+                    "requested thinking '{requested}' runs as '{effort}' on {}/{}{route_context}",
+                    route.provider_id, route.model_id
+                )
+            }
+            None => {
+                format!(
+                    "requested thinking '{requested}' is not sent; {}/{}{no_tier_context} has no reasoning tier",
+                    route.provider_id, route.model_id
+                )
+            }
+        },
+        240,
+    ))
 }
 
 pub(super) fn page(input: &Value) -> Result<(usize, usize), ToolError> {
@@ -105,8 +259,9 @@ pub(super) fn compact_row(manager: &SubAgentManager, agent: &SubAgent) -> Value 
         });
     let mut row = json!({
         "agent_id": agent.id, "name": text_preview(&agent.session_name, 64),
+        "role": agent.agent_type.as_str(),
         "status": status, "terminal": agent.status != SubAgentStatus::Running,
-        "compact": true, "steps_taken": agent.steps_taken,
+        "compact": true, "steps": agent.steps_taken, "steps_taken": agent.steps_taken,
         "duration_ms": u64::try_from(agent.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
         "needs_continuation": continuable, "usage": {},
     });
@@ -268,7 +423,6 @@ pub(super) fn compact_row(manager: &SubAgentManager, agent: &SubAgent) -> Value 
         let counts = row.pointer("/verification/deliverable_counts").cloned();
         let total = row.pointer("/verification/deliverables_total").cloned();
         row["verification"] = json!({"status": status, "deliverable_counts": counts, "deliverables_total": total, "detail_required": true});
-        row.as_object_mut().expect("row object").remove("activity");
     }
     row
 }
@@ -428,15 +582,30 @@ fn bound_detail_value(value: &mut Value, offset: usize, limit: usize, budget: &m
     }
 }
 
-pub(super) fn bounded_detail(
-    mut value: Value,
-    compact: Value,
-    offset: usize,
-    limit: usize,
-) -> Value {
+fn detail_fits(page: &Value) -> bool {
+    serde_json::to_vec(page).is_ok_and(|bytes| bytes.len() <= DETAIL_STATUS_BYTES)
+}
+
+fn truncate_event_page(detail: &mut Value, offset: usize, retained: usize) {
+    if let Some(events) = detail
+        .get_mut("recent_events")
+        .and_then(Value::as_array_mut)
+        && events.len() > retained
+    {
+        events.truncate(retained);
+        detail["events_next_offset"] = json!(offset.saturating_add(retained));
+        detail["events_omitted"] = json!(true);
+    }
+}
+
+pub(super) fn bounded_detail(value: Value, compact: Value, offset: usize, limit: usize) -> Value {
     // The typed handle is the retrieval authority, not diagnostic prose.
     // Large earlier fields must never consume its lookup coordinates.
-    let transcript_handle = value.get("transcript_handle").cloned();
+    let transcript_handle = value
+        .get("transcript_handle")
+        .filter(|handle| !handle.is_null())
+        .cloned()
+        .map(compact_transcript_handle);
     let mut verification = value.get("verification").cloned().unwrap_or(Value::Null);
     if let Some(verdicts) = verification
         .get_mut("deliverables")
@@ -453,66 +622,229 @@ pub(super) fn bounded_detail(
             .then_some(offset.saturating_add(limit))
             .map_or(Value::Null, |next| json!(next));
     }
-    bound_detail_value(&mut verification, 0, limit, &mut 4000);
-    // Page the two archives at their actual boundaries, not every content
-    // array inside a message, before enforcing the byte budget.
-    for pointer in [
-        "/checkpoint/messages",
-        "/snapshot/checkpoint/messages",
-        "/worker_record/events",
-    ] {
-        if let Some(items) = value.pointer_mut(pointer).and_then(Value::as_array_mut) {
-            let count = items.len();
-            *items = std::mem::take(items)
-                .into_iter()
-                .skip(offset)
-                .take(limit)
-                .collect();
-            value[pointer.replace('/', "_") + "_total"] = json!(count);
+    bound_detail_value(&mut verification, 0, limit, &mut 2048);
+
+    let mut detail = serde_json::Map::new();
+    if let Some(compact_obj) = compact.as_object() {
+        for (key, val) in compact_obj {
+            detail.insert(key.clone(), val.clone());
         }
     }
-    bound_detail_value(&mut value, 0, limit, &mut (12 * 1024));
-    let object = value.as_object_mut().expect("projection is an object");
-    // Keep the canonical compact facts (especially causes and delivery
-    // verdicts) visible if a very large diagnostic archive must be omitted.
-    if let Some(compact) = compact.as_object() {
-        object.extend(
-            compact
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone())),
-        );
+    if !detail.contains_key("role")
+        && let Some(role) = value
+            .pointer("/snapshot/agent_type")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                value
+                    .pointer("/child_route/canonical_role")
+                    .and_then(Value::as_str)
+            })
+            .or_else(|| {
+                value
+                    .pointer("/worker_record/spec/agent_type")
+                    .and_then(Value::as_str)
+            })
+    {
+        detail.insert("role".into(), json!(role));
     }
-    object.insert("verification".into(), verification);
-    if let Some(mut handle) = transcript_handle {
-        if let Some(preview) = handle.get("repr_preview").and_then(Value::as_str) {
-            handle["repr_preview"] = json!(text_preview(preview, 160));
+    if let Some(steps) = detail
+        .get("steps")
+        .or_else(|| detail.get("steps_taken"))
+        .or_else(|| value.pointer("/snapshot/steps_taken"))
+        .cloned()
+    {
+        detail.insert("steps".into(), steps.clone());
+        detail.insert("steps_taken".into(), steps);
+    }
+    if let Some(objective) = value
+        .pointer("/snapshot/assignment/objective")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            value
+                .pointer("/worker_record/spec/objective")
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        detail.insert("objective".into(), json!(text_preview(objective, 320)));
+    }
+    if let Some(result_text) = value
+        .pointer("/snapshot/result")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        let bounded = text_preview(result_text, 2048);
+        let truncated = bounded.len() < result_text.len();
+        detail.insert("result".into(), json!(bounded));
+        if truncated {
+            detail.insert("result_truncated".into(), json!(true));
         }
-        object.insert("transcript_handle".into(), handle);
     }
-    object.insert("compact".into(), json!(false));
-    object.insert("detail_bounded".into(), json!(true));
-    object.insert("detail_offset".into(), json!(offset));
-    object.insert("detail_limit".into(), json!(limit));
-    object.insert("detail_hint".into(), json!("Fields are bounded; use offset/limit for messages and events, or transcript_handle for the complete retained transcript."));
-    if serde_json::to_vec(&value).map_or(true, |bytes| bytes.len() > DETAIL_STATUS_BYTES) {
-        let object = value.as_object_mut().expect("projection is an object");
-        for key in ["snapshot", "worker_record", "checkpoint"] {
-            object.remove(key);
+    if let Some(checkpoint) = value
+        .get("checkpoint")
+        .filter(|cp| cp.is_object())
+        .or_else(|| {
+            value
+                .pointer("/snapshot/checkpoint")
+                .filter(|cp| cp.is_object())
+        })
+    {
+        let mut summary = serde_json::Map::new();
+        if let Some(reason) = checkpoint.get("reason").and_then(Value::as_str) {
+            summary.insert("reason".into(), json!(text_preview(reason, 160)));
         }
-        object.insert(
-            "omitted_detail".into(),
-            json!(["snapshot", "worker_record", "checkpoint"]),
-        );
+        if let Some(step) = checkpoint.get("step") {
+            summary.insert("step".into(), step.clone());
+        }
+        if let Some(messages) = checkpoint.get("messages").and_then(Value::as_array) {
+            summary.insert("message_count".into(), json!(messages.len()));
+        }
+        if let Some(continuable) = checkpoint.get("continuable") {
+            summary.insert("continuable".into(), continuable.clone());
+        }
+        if !summary.is_empty() {
+            detail.insert("checkpoint_summary".into(), Value::Object(summary));
+        }
     }
-    if serde_json::to_vec(&value).map_or(true, |bytes| bytes.len() > DETAIL_STATUS_BYTES) {
-        let handle = value.get("transcript_handle").cloned();
-        value = json!({
-            "agent_id": value["agent_id"], "status": value["status"],
-            "needs_input": value["needs_input"], "summary": value["summary"],
-            "usage": value["usage"], "verification": value["verification"],
-            "transcript_handle": handle, "detail_bounded": true,
-            "omitted_detail": "Diagnostic page exceeded 32 KiB; use transcript_handle for retained detail.",
+    if let Some(events) = value
+        .pointer("/worker_record/events")
+        .and_then(Value::as_array)
+    {
+        let total = events.len();
+        let page_events: Vec<Value> = events
+            .iter()
+            .skip(offset)
+            .take(limit)
+            .map(compact_event_json)
+            .collect();
+        let next = offset.saturating_add(page_events.len());
+        detail.insert("recent_events".into(), Value::Array(page_events));
+        detail.insert("events_total".into(), json!(total));
+        if next < total {
+            detail.insert("events_next_offset".into(), json!(next));
+        }
+    }
+    if let Some(continuable) = value.get("continuable") {
+        detail.insert("continuable".into(), continuable.clone());
+    }
+    detail.insert("verification".into(), verification);
+    let has_handle = transcript_handle.is_some();
+    if let Some(handle) = transcript_handle {
+        detail.insert("transcript_handle".into(), handle);
+    }
+    detail.insert("compact".into(), json!(false));
+    detail.insert("detail_bounded".into(), json!(true));
+    detail.insert("detail_offset".into(), json!(offset));
+    detail.insert("detail_limit".into(), json!(limit));
+    detail.insert(
+        "detail_hint".into(),
+        json!(if has_handle {
+            "Fields are bounded; use offset/limit for recent_events and deliverables, or transcript_handle with handle_read for the complete retained transcript."
+        } else {
+            "Fields are bounded; use offset/limit for recent_events and deliverables."
+        }),
+    );
+
+    let mut out = Value::Object(detail);
+    if !detail_fits(&out) {
+        if let Some(result_text) = out
+            .get("result")
+            .and_then(Value::as_str)
+            .map(|text| text_preview(text, 512))
+        {
+            out["result"] = json!(result_text);
+            out["result_truncated"] = json!(true);
+        }
+        truncate_event_page(&mut out, offset, 4);
+    }
+    if !detail_fits(&out) {
+        truncate_event_page(&mut out, offset, 1);
+        let status = out
+            .pointer("/verification/status")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let counts = out.pointer("/verification/deliverable_counts").cloned();
+        let total = out.pointer("/verification/deliverables_total").cloned();
+        let next = out
+            .pointer("/verification/deliverables_next_offset")
+            .cloned();
+        out["verification"] = json!({
+            "status": status,
+            "deliverable_counts": counts,
+            "deliverables_total": total,
+            "deliverables_next_offset": next,
+            "detail_required": true,
         });
     }
-    value
+    if !detail_fits(&out) {
+        let handle = out.get("transcript_handle").cloned();
+        let mut minimal = json!({
+            "agent_id": out["agent_id"],
+            "role": out["role"],
+            "status": out["status"],
+            "steps": out["steps"],
+            "steps_taken": out["steps_taken"],
+            "duration_ms": out["duration_ms"],
+            "activity": out["activity"],
+            "needs_input": out["needs_input"],
+            "summary": out["summary"],
+            "usage": out["usage"],
+            "verification": out["verification"],
+            "detail_bounded": true,
+            "omitted_detail": if handle.is_some() {
+                "Diagnostic page exceeded 8 KiB; use transcript_handle with handle_read for retained detail."
+            } else {
+                "Diagnostic page exceeded 8 KiB."
+            },
+        });
+        if let Some(handle) = handle {
+            minimal["transcript_handle"] = handle;
+        }
+        for key in [
+            "recent_events",
+            "events_total",
+            "events_next_offset",
+            "events_omitted",
+        ] {
+            if let Some(value) = out.get_mut(key) {
+                minimal[key] = value.take();
+            }
+        }
+        if !detail_fits(&minimal) {
+            let identity = minimal.get_mut("agent_id").map(Value::take);
+            minimal.as_object_mut().unwrap().retain(|key, _| {
+                matches!(
+                    key.as_str(),
+                    "recent_events"
+                        | "events_total"
+                        | "events_next_offset"
+                        | "events_omitted"
+                        | "transcript_handle"
+                        | "detail_bounded"
+                )
+            });
+            if !detail_fits(&minimal)
+                && let Some(row) = minimal
+                    .get_mut("recent_events")
+                    .and_then(Value::as_array_mut)
+                    .and_then(|events| events.first_mut())
+            {
+                *row = json!({"seq": row["seq"].as_u64(), "detail_omitted": true});
+            }
+            if !detail_fits(&minimal) {
+                minimal.as_object_mut().unwrap().remove("transcript_handle");
+                minimal["transcript_handle_omitted"] = json!(true);
+            }
+            if let Some(identity) = identity {
+                minimal["agent_id"] = identity;
+                if !detail_fits(&minimal) {
+                    minimal.as_object_mut().unwrap().remove("agent_id");
+                }
+            }
+        }
+        out = minimal;
+    }
+    out
 }

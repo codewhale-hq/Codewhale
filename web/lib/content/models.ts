@@ -11,17 +11,17 @@ export const MODELS_COPY = {
   latestSince: { en: "In Codewhale since {date}", zh: "{date} 起已加入 Codewhale" },
   pickerTitle: { en: "Pick a model by name", zh: "按名称挑选模型" },
   pickerLead: {
-    en: "Search the model picker, and the same model appears under every provider that offers it. These views are from real sessions on a 0.10.3 development build.",
-    zh: "在模型选择器中搜索，同一个模型会出现在每个提供它的提供商下。这些画面来自 0.10.3 开发版本上的真实会话。",
+    en: "Search the model picker, and the same model appears under every provider that offers it. These views are from real sessions on development builds.",
+    zh: "在模型选择器中搜索，同一个模型会出现在每个提供它的提供商下。这些画面来自开发版本上的真实会话。",
   },
   pickerTerminalLabel: {
-    en: "Codewhale in a terminal. The model picker, searched for hydrogen, lists gemini-4-hydrogen from OpenCode Zen, Google Gemini, OpenRouter and Eden AI, with Google Gemini selected.",
-    zh: "终端中的 Codewhale。在模型选择器中搜索 hydrogen，列出 OpenCode Zen、Google Gemini、OpenRouter 和 Eden AI 提供的 gemini-4-hydrogen，并选中了 Google Gemini。",
+    en: "Codewhale in a terminal. The model picker, searched for deepseek-flash, lists deepseek-flash from DeepSeek, Fireworks AI and OpenRouter, with DeepSeek selected.",
+    zh: "终端中的 Codewhale。在模型选择器中搜索 deepseek-flash，列出 DeepSeek、Fireworks AI 和 OpenRouter 提供的 deepseek-flash，并选中了 DeepSeek。",
   },
   pickerTerminalCaption: { en: "The terminal model picker.", zh: "终端中的模型选择器。" },
   pickerDesktopAlt: {
-    en: "The desktop app's Models settings with Ollama and Google Gemini connected, and the model menu open on Google's list with gemini-4-hydrogen highlighted.",
-    zh: "桌面应用的 Models 设置，已连接 Ollama 和 Google Gemini，模型菜单展开在 Google 的列表上，gemini-4-hydrogen 处于高亮。",
+    en: "The desktop app's Models settings with DeepSeek connected and ready, deepseek-flash as the model for new sessions and the thinking level on Auto.",
+    zh: "桌面应用的 Models 设置：DeepSeek 已连接并就绪，新会话使用 deepseek-flash，思考级别为 Auto。",
   },
   pickerDesktopCaption: {
     en: "The desktop app, in development with no download yet, reads the model list from each connected provider.",

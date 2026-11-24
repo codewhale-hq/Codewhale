@@ -1155,6 +1155,105 @@ fn remote_bundle_bytes(name: &str, extra: &[u8]) -> Vec<u8> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_update_with_unchanged_archive_repairs_altered_install() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins = tmp.path().join("plugins");
+    let archive = tarball(&[
+        (
+            "repo-main/plugin.toml",
+            b"schema_version = 1\n[plugin]\nname = \"demo\"\nversion = \"1.0.0\"\n",
+        ),
+        ("repo-main/data.txt", b"v1"),
+    ]);
+    let url = serve_bodies(vec![archive.clone(), archive.clone(), archive]);
+    let outcome = install(
+        PluginInstallSource::parse(&url).unwrap(),
+        &plugins,
+        DEFAULT_MAX_SIZE_BYTES,
+        &loopback_policy(),
+        false,
+        &no_conflict(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(outcome, PluginInstallOutcome::Installed(_)));
+    fs::write(plugins.join("demo/data.txt"), b"tampered").unwrap();
+    assert!(matches!(
+        update("demo", &plugins, DEFAULT_MAX_SIZE_BYTES, &loopback_policy())
+            .await
+            .unwrap(),
+        PluginUpdateResult::Updated(_)
+    ));
+    assert_eq!(fs::read(plugins.join("demo/data.txt")).unwrap(), b"v1");
+    assert!(matches!(
+        update("demo", &plugins, DEFAULT_MAX_SIZE_BYTES, &loopback_policy())
+            .await
+            .unwrap(),
+        PluginUpdateResult::NoChange
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dsh_update_with_unchanged_package_repairs_altered_install() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins = tmp.path().join("plugins");
+    let pkg = write_dsh_base_package(
+        &tmp.path().join("dsh-repair"),
+        serde_json::json!({
+            "name": "dsh-repair",
+            "version": "1.0.0",
+            "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+        }),
+        "[]\n",
+    );
+    fs::create_dir_all(pkg.join("commands")).unwrap();
+    fs::write(pkg.join("commands/hello.md"), "hello v1\n").unwrap();
+    fs::write(
+        pkg.join("plugin.json"),
+        serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "dsh-repair",
+            "version": "1.0.0",
+            "extensions": {
+                "net.codewhale": {
+                    "commands": {"path": "commands"}
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let outcome = install(
+        PluginInstallSource::parse(pkg.to_str().unwrap()).unwrap(),
+        &plugins,
+        DEFAULT_MAX_SIZE_BYTES,
+        &allow_all(),
+        false,
+        &no_conflict(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(outcome, PluginInstallOutcome::Installed(_)));
+
+    let installed_cmd = plugins.join("dsh-repair/commands/hello.md");
+    fs::write(&installed_cmd, "tampered\n").unwrap();
+    assert!(matches!(
+        update("dsh-repair", &plugins, DEFAULT_MAX_SIZE_BYTES, &allow_all())
+            .await
+            .unwrap(),
+        PluginUpdateResult::Updated(_)
+    ));
+    assert_eq!(fs::read_to_string(&installed_cmd).unwrap(), "hello v1\n");
+    assert!(matches!(
+        update("dsh-repair", &plugins, DEFAULT_MAX_SIZE_BYTES, &allow_all())
+            .await
+            .unwrap(),
+        PluginUpdateResult::NoChange
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn marketplace_archive_selects_only_requested_bundle_and_updates_same_source() {
     let tmp = tempfile::tempdir().unwrap();
     let plugins = tmp.path().join("plugins");
@@ -1821,12 +1920,59 @@ fn dsh_client_closure_is_retained_hashed_and_refuses_ambient_dependencies() {
         "good",
         "const r = require(\"react\");\nconst p = require('@deepseek-ai/dsh-client-ui-primitives');\nconst u = require(\"./util\");\n",
     );
+    fs::write(
+        good.join("lib/util.js"),
+        "exports.v = 1; require('./client'); require('./data.json'); require('mapped'); require('react-dom/client'); require('react/jsx-runtime');\n",
+    )
+    .unwrap();
+    fs::write(good.join("lib/data.json"), r#"{"value":2}"#).unwrap();
+    fs::create_dir_all(good.join("node_modules/mapped")).unwrap();
+    fs::write(
+        good.join("node_modules/mapped/package.json"),
+        r#"{"exports":{".":{"import":"./selected.cjs","default":"./missing.js"}}}"#,
+    )
+    .unwrap();
+    fs::write(
+        good.join("node_modules/mapped/selected.cjs"),
+        "exports.value = 3;",
+    )
+    .unwrap();
     let converted = dsh::convert_package(&good, &tmp.path().join("out-good")).unwrap();
     assert_eq!(converted.client_closures.len(), 1);
     let closure = &converted.client_closures[0];
     assert_eq!(closure.entry, "source/lib/client.js");
     assert!(closure.files.contains_key("source/lib/util.js"));
-    assert_eq!(closure.host_provided.len(), 2);
+    assert_eq!(closure.host_provided.len(), 4);
+    assert!(
+        closure
+            .host_provided
+            .iter()
+            .any(|id| id == "react-dom/client")
+    );
+    assert!(
+        closure
+            .host_provided
+            .iter()
+            .any(|id| id == "react/jsx-runtime")
+    );
+    assert_eq!(
+        closure.imports["source/lib/client.js"]["./util"].as_deref(),
+        Some("source/lib/util.js")
+    );
+    assert_eq!(closure.imports["source/lib/client.js"]["react"], None);
+    assert_eq!(
+        closure.imports["source/lib/util.js"]["./client"].as_deref(),
+        Some("source/lib/client.js")
+    );
+    assert_eq!(
+        closure.imports["source/lib/util.js"]["./data.json"].as_deref(),
+        Some("source/lib/data.json")
+    );
+    assert_eq!(
+        closure.imports["source/lib/util.js"]["mapped"].as_deref(),
+        Some("source/node_modules/mapped/selected.cjs")
+    );
+
     let installed = fs::read(tmp.path().join("out-good/source/lib/util.js")).unwrap();
     assert_eq!(
         closure.files["source/lib/util.js"],
@@ -1841,6 +1987,7 @@ fn dsh_client_closure_is_retained_hashed_and_refuses_ambient_dependencies() {
     assert!(!converted.outcomes.iter().any(|o| o.needs_manual_port()));
 
     for (label, source) in [
+        ("dynamic-import", "import(\"./util\");\n"),
         ("ambient", "require(\"left-pad\");\n"),
         ("builtin", "require(\"node:fs\");\n"),
         ("computed", "const n = \"x\"; require(n);\n"),
@@ -2471,6 +2618,59 @@ fn plain_dsh_package_with_no_plugin_json_keeps_behavior_with_skills_dir_or_mcp_j
     }
     let conversion_md = fs::read_to_string(out.join("CONVERSION.md")).unwrap();
     assert!(!conversion_md.contains("Merged from sibling plugin.json"));
+    assert!(conversion_md.contains("install hook, network request or credential lookup ran"));
+    assert!(conversion_md.contains("Only files inside the selected package were read"));
+
+    let fetched = ["acorn@8.14.0".to_string(), "zod@4.1.0".to_string()];
+    let mut staged = converted.clone();
+    staged
+        .diagnostics
+        .push(dsh::fetched_npm_note(&fetched).unwrap());
+    let staged_md = dsh::conversion_markdown(&staged, true);
+    assert!(staged_md.contains(
+        "Fetched from registry.npmjs.org (sha512-verified; install scripts not run): acorn@8.14.0, zod@4.1.0"
+    ));
+    assert!(!staged_md.contains("network request"));
+    assert!(!staged_md.contains("Only files inside the selected package were read"));
+    let many: Vec<String> = (0..45).map(|index| format!("p{index}@1.0.0")).collect();
+    assert!(
+        dsh::fetched_npm_note(&many)
+            .unwrap()
+            .ends_with("p39@1.0.0, +5 more")
+    );
+    assert!(dsh::fetched_npm_note(&[]).is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn dsh_custom_skill_dirs_refuse_a_symlinked_skill_dir_inside_the_package() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = write_dsh_base_package(
+        &tmp.path().join("leak-pkg"),
+        serde_json::json!({
+            "name": "@demo/leak",
+            "version": "1.0.0",
+            "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+        }),
+        minimal_dsh_patch_with_skill(),
+    );
+    write_minimal_skill(&dir.join("custom-skills"), "guide");
+
+    let outside = tmp.path().join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(
+        outside.join("SKILL.md"),
+        "---\nname: leaked\ndescription: outside skill\n---\nbody\n",
+    )
+    .unwrap();
+    fs::write(outside.join("secret.txt"), "TOP-SECRET-OUTSIDE-PACKAGE\n").unwrap();
+    std::os::unix::fs::symlink(&outside, dir.join("custom-skills/leak")).unwrap();
+
+    let err = dsh::convert_package(&dir, &tmp.path().join("out-leak"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("links or reparse points"), "{err}");
+    assert!(!tmp.path().join("out-leak").exists());
 }
 
 #[test]
@@ -2909,6 +3109,55 @@ fn tarball_with_dsh_package_and_plugin_json_merges_and_enforces_rules() {
         ("b/commands/hello.md", cmd),
     ]);
     assert!(tarball::stage_tarball(&multi_tar, tmp.path(), DEFAULT_MAX_SIZE_BYTES, None).is_err());
+}
+
+#[test]
+fn native_root_with_nested_dsh_integration_installs_as_one_bundle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugin_json = serde_json::to_vec(&serde_json::json!({
+        "$schema": "https://agent-plugins.org/schemas/plugin.json",
+        "name": "computer-use",
+        "version": "0.16.3"
+    }))
+    .unwrap();
+    let root_package = br#"{"name":"codewhale-cu-plugin","version":"0.16.3","private":true}"#;
+    let dsh_package = serde_json::to_vec(&serde_json::json!({
+        "name": "@codewhale/computer-use-dsh",
+        "version": "0.6.0",
+        "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+    }))
+    .unwrap();
+    let patch = minimal_dsh_patch_with_skill().as_bytes();
+
+    let archive = tarball(&[
+        ("computer-use/plugin.json", &plugin_json),
+        ("computer-use/package.json", root_package),
+        ("computer-use/integrations/dsh/package.json", &dsh_package),
+        ("computer-use/integrations/dsh/cordis.patch.yml", patch),
+    ]);
+    let staged = stage_tarball(&archive, tmp.path(), DEFAULT_MAX_SIZE_BYTES, None).unwrap();
+    assert_eq!(staged.name, "computer-use");
+    assert!(!staged.staged_path.join("CONVERSION.json").exists());
+    assert!(
+        staged
+            .staged_path
+            .join("integrations/dsh/package.json")
+            .is_file()
+    );
+
+    let siblings = tarball(&[
+        ("repo/native/plugin.json", &plugin_json),
+        ("repo/harness/package.json", &dsh_package),
+        ("repo/harness/cordis.patch.yml", patch),
+    ]);
+    let err = scan_tarball(&siblings, DEFAULT_MAX_SIZE_BYTES).unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<PluginInstallError>(),
+            Some(PluginInstallError::PluginTomlRoots(2))
+        ),
+        "got: {err:#}"
+    );
 }
 
 #[test]
@@ -3399,6 +3648,7 @@ async fn prepare_remote_install_leaves_plugins_dir_empty_and_checks_exact_hash()
         &no_conflict(),
         "0000000000000000000000000000000000000000000000000000000000000000",
     )
+    .await
     .unwrap_err();
     assert!(mismatch.downcast_ref::<PluginContentMismatch>().is_some());
     assert!(!plugins.join("remote-preview").exists());
@@ -3411,6 +3661,7 @@ async fn prepare_remote_install_leaves_plugins_dir_empty_and_checks_exact_hash()
         &no_conflict(),
         &prepared.content_hash,
     )
+    .await
     .unwrap();
     assert!(matches!(outcome, PluginInstallOutcome::Installed(_)));
     assert!(plugins.join("remote-preview").is_dir());

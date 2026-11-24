@@ -59,9 +59,10 @@ use codewhale_config::ProviderKind;
 #[cfg(test)]
 use codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL;
 use codewhale_engine::automation_manager::{
-    AutomationManager, AutomationRecord, AutomationRunRecord, AutomationSchedulerConfig,
-    CreateAutomationRequest, CreateDelayedTriggerRequest, DelayedTriggerRecord,
-    DelayedTriggerStatus, SharedAutomationManager, UpdateAutomationRequest, spawn_scheduler,
+    AutomationManager, AutomationRecord, AutomationRecordView, AutomationRunRecord,
+    AutomationSchedulerConfig, CreateAutomationRequest, CreateDelayedTriggerRequest,
+    DelayedTriggerRecord, DelayedTriggerStatus, SharedAutomationManager, UpdateAutomationRequest,
+    spawn_scheduler,
 };
 use codewhale_engine::fleet::executor::{FleetExecutor, configured_codewhale_binary};
 use codewhale_engine::fleet::ledger::{
@@ -78,13 +79,15 @@ use codewhale_engine::fleet::worker_runtime::fleet_write_roots;
 use codewhale_engine::mcp::McpPool;
 use codewhale_engine::runtime_threads::{
     MAX_RUNTIME_EVENT_REPLAY_TAIL, ThreadRecord, TurnRecord, manager::CompactThreadRequest,
-    manager::CreateThreadRequest, manager::ExternalApprovalDecision, manager::RuntimeThreadManager,
-    manager::RuntimeThreadManagerConfig, manager::RuntimeTurnOperationReceipt,
-    manager::SharedRuntimeThreadManager, manager::StartTurnRequest, manager::StartWatchTurnRequest,
-    manager::SteerTurnRequest, manager::ThreadDetail, manager::ThreadListFilter,
-    manager::UpdateThreadRequest, manager::UsageGroupBy, manager::UsageTotals,
+    manager::CreateThreadRequest, manager::ExternalApprovalDecision,
+    manager::RuntimeThreadCreateConflict, manager::RuntimeThreadCreateRouteConflict,
+    manager::RuntimeThreadManager, manager::RuntimeThreadManagerConfig,
+    manager::RuntimeTurnOperationReceipt, manager::SharedRuntimeThreadManager,
+    manager::StartTurnRequest, manager::StartWatchTurnRequest, manager::SteerTurnRequest,
+    manager::ThreadDetail, manager::ThreadListFilter, manager::UpdateThreadRequest,
+    manager::UsageGroupBy, manager::UsageTotals,
 };
-use codewhale_runtime::config::{Config, normalize_model_name_for_provider, validate_route};
+use codewhale_runtime::config::{Config, validate_route};
 // `TurnItemKind` is read only by the summary tests now that the route builds
 // its rows from `ThreadListFacts` instead of walking item records here.
 #[cfg(test)]
@@ -1694,6 +1697,7 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         session_provider_keys: false,
         threads: true,
         thread_create_idempotency: true,
+        exact_route_thread_create: true,
         thread_idle_precondition: true,
         thread_patch_undo_turn_id: true,
         thread_scoped_reads: true,
@@ -3220,6 +3224,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             post(jobs::kill_thread_job),
         )
         .route(
+            "/v1/threads/{id}/jobs/{job_id}/keepalive",
+            post(jobs::keepalive_thread_job),
+        )
+        .route(
             "/v1/threads/{id}/jobs/{job_id}/resize",
             post(jobs::resize_thread_job),
         )
@@ -3576,6 +3584,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/automations/{id}/run", post(run_automation))
         .route("/v1/automations/{id}/pause", post(pause_automation))
         .route("/v1/automations/{id}/resume", post(resume_automation))
+        .route("/v1/automations/{id}/adopt", post(adopt_automation))
         .route("/v1/automations/{id}/runs", get(list_automation_runs))
         .route("/v1/automations/missed", get(automations::list_missed))
         .route("/v1/automations/{id}/missed", get(automations::get_missed))
@@ -4021,12 +4030,30 @@ async fn refresh_local_default_catalog(
 }
 
 fn runtime_request_model(config: &Config, requested: Option<&str>) -> Result<String, ApiError> {
-    if let Some(model) = requested {
-        return Ok(model.to_string());
-    }
     let identity = config
         .active_provider_identity()
         .map_err(ApiError::bad_request)?;
+    if let Some(model) = requested {
+        let base_url = config.base_url_for_route(&identity);
+        return codewhale_config::resolve_model_for_configured_route(
+            identity.provider,
+            identity.key.as_str(),
+            &base_url,
+            config.custom_models.as_deref(),
+            model,
+        )
+        .map(|resolved| resolved.wire_id)
+        .map_err(|error| {
+            ApiError::bad_request(codewhale_config::format_configured_model_error(
+                identity.key.as_str(),
+                model,
+                &error,
+            ))
+        });
+    }
+    if let Some(error) = config.configured_model_error() {
+        return Err(ApiError::bad_request(error));
+    }
     let model = provider_default_model_for_api(config, &identity);
     if model.is_empty() {
         return Err(ApiError::bad_request(
@@ -4074,13 +4101,15 @@ async fn create_thread(
     if req.mode.as_ref().is_none_or(|m| m.trim().is_empty()) {
         req.mode = Some("agent".to_string());
     }
-    refresh_local_default_catalog(
-        &state,
-        req.model.as_deref(),
-        req.model_provider.as_deref(),
-        req.model_provider_id.as_deref(),
-    )
-    .await;
+    if req.route_selection.is_none() {
+        refresh_local_default_catalog(
+            &state,
+            req.model.as_deref(),
+            req.model_provider.as_deref(),
+            req.model_provider_id.as_deref(),
+        )
+        .await;
+    }
 
     let thread = state
         .runtime_threads
@@ -4093,9 +4122,9 @@ async fn create_thread(
         .map_err(|e| {
             if let Some(refusal) = external_agent_refusal(&e).or_else(|| mode_refusal(&e)) {
                 refusal
-            } else if e
-                .is::<codewhale_engine::runtime_threads::manager::RuntimeThreadCreateConflict>()
-            {
+            } else if e.is::<RuntimeThreadCreateRouteConflict>() {
+                ApiError::conflict(e.to_string()).with_code("route_selection_stale")
+            } else if e.is::<RuntimeThreadCreateConflict>() {
                 ApiError::conflict(e.to_string())
             } else {
                 ApiError::bad_request(e.to_string())
@@ -6169,10 +6198,14 @@ async fn list_commands(
     };
     #[cfg(any(test, feature = "test-support"))]
     let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    let plugins = state.plugin_discovery.registry_for_workspace(&workspace);
     let commands = tokio::task::spawn_blocking(move || {
         #[cfg(any(test, feature = "test-support"))]
         let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
-        let mut commands = command_catalog(&catalog.builtins(), &catalog.user_commands(&workspace));
+        let mut commands = command_catalog(
+            &catalog.builtins(),
+            &catalog.user_commands_with_plugins(&workspace, &plugins),
+        );
         let mut counts = std::collections::HashMap::new();
         for entry in &extensions {
             *counts
@@ -6449,9 +6482,9 @@ async fn list_modes(
     )
 }
 
-async fn list_skills(
-    State(state): State<RuntimeApiState>,
-) -> Result<Json<SkillsResponse>, ApiError> {
+fn discover_skills_snapshot(
+    state: &RuntimeApiState,
+) -> (PathBuf, codewhale_skills::SkillRegistry, Vec<PathBuf>) {
     let (skills_dir, skills_config) = {
         let config = state.config.read();
         let skills_dir = resolve_skills_dir(&config, &state.workspace);
@@ -6467,25 +6500,40 @@ async fn list_skills(
         &skills_config,
         Some(plugin_registry.as_ref()),
     );
-    let mut skill_state = state.skill_state.lock().await;
-    skill_state
-        .refresh()
-        .map_err(|error| ApiError::internal(format!("refresh skill state: {error}")))?;
-    let skills = registry
-        .list()
-        .iter()
-        .map(|skill| {
-            let enabled = skill_state
-                .is_enabled_with_legacy(&skill.name, skill.legacy_activation_name.as_deref());
-            skill_entry_for(skill, enabled, &skills_dir)
-        })
-        .collect();
-    Ok(Json(SkillsResponse {
-        directory: skills_dir,
-        directories,
-        warnings: registry.warnings().to_vec(),
-        skills,
-    }))
+    (skills_dir, registry, directories)
+}
+
+async fn list_skills(
+    State(state): State<RuntimeApiState>,
+) -> Result<Json<SkillsResponse>, ApiError> {
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+        let (skills_dir, registry, directories) = discover_skills_snapshot(&state);
+        let mut skill_state = state.skill_state.blocking_lock();
+        skill_state
+            .refresh()
+            .map_err(|error| ApiError::internal(format!("refresh skill state: {error}")))?;
+        let skills = registry
+            .list()
+            .iter()
+            .map(|skill| {
+                let enabled = skill_state
+                    .is_enabled_with_legacy(&skill.name, skill.legacy_activation_name.as_deref());
+                skill_entry_for(skill, enabled, &skills_dir)
+            })
+            .collect();
+        Ok(Json(SkillsResponse {
+            directory: skills_dir,
+            directories,
+            warnings: registry.warnings().to_vec(),
+            skills,
+        }))
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("list skills task failed: {error}")))?
 }
 
 async fn set_skill_enabled(
@@ -6493,37 +6541,31 @@ async fn set_skill_enabled(
     Path(name): Path<String>,
     Json(req): Json<SetSkillEnabledRequest>,
 ) -> Result<Json<SetSkillEnabledResponse>, ApiError> {
-    let (skills_dir, skills_config) = {
-        let config = state.config.read();
-        let skills_dir = resolve_skills_dir(&config, &state.workspace);
-        let skills_config = config.skills_config();
-        (skills_dir, skills_config)
-    };
-    let plugin_registry = state
-        .plugin_discovery
-        .registry_for_workspace(&state.workspace);
-    let (registry, directories) = discover_skills_for_runtime_api(
-        &state.workspace,
-        &skills_dir,
-        &skills_config,
-        Some(plugin_registry.as_ref()),
-    );
-    let exists = registry.list().iter().any(|skill| skill.name == name);
-    if !exists {
-        return Err(ApiError::not_found(format!(
-            "skill '{name}' not found in searched directories: {}",
-            format_skill_search_paths(&directories)
-        )));
-    }
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+        let (_skills_dir, registry, directories) = discover_skills_snapshot(&state);
+        let exists = registry.list().iter().any(|skill| skill.name == name);
+        if !exists {
+            return Err(ApiError::not_found(format!(
+                "skill '{name}' not found in searched directories: {}",
+                format_skill_search_paths(&directories)
+            )));
+        }
 
-    let mut store = state.skill_state.lock().await;
-    store
-        .set_enabled(&name, req.enabled)
-        .map_err(|err| ApiError::internal(format!("persist skill state: {err}")))?;
-    Ok(Json(SetSkillEnabledResponse {
-        name,
-        enabled: req.enabled,
-    }))
+        let mut store = state.skill_state.blocking_lock();
+        store
+            .set_enabled(&name, req.enabled)
+            .map_err(|err| ApiError::internal(format!("persist skill state: {err}")))?;
+        Ok(Json(SetSkillEnabledResponse {
+            name,
+            enabled: req.enabled,
+        }))
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("set skill enabled task failed: {error}")))?
 }
 
 /// `GET /v1/skills/{name}` — one skill's full routing metadata plus its body.
@@ -6546,21 +6588,7 @@ async fn get_skill_detail(
     tokio::task::spawn_blocking(move || {
         #[cfg(any(test, feature = "test-support"))]
         let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
-        let (skills_dir, skills_config) = {
-            let config = state.config.read();
-            let skills_dir = resolve_skills_dir(&config, &state.workspace);
-            let skills_config = config.skills_config();
-            (skills_dir, skills_config)
-        };
-        let plugin_registry = state
-            .plugin_discovery
-            .registry_for_workspace(&state.workspace);
-        let (registry, directories) = discover_skills_for_runtime_api(
-            &state.workspace,
-            &skills_dir,
-            &skills_config,
-            Some(plugin_registry.as_ref()),
-        );
+        let (skills_dir, registry, directories) = discover_skills_snapshot(&state);
         let Some(skill) = registry.get(&name) else {
             return Err(ApiError::not_found(format!(
                 "skill '{name}' not found in searched directories: {}",
@@ -8574,10 +8602,10 @@ fn apply_write_request_to_config(
 
 async fn list_automations(
     State(state): State<RuntimeApiState>,
-) -> Result<Json<Vec<AutomationRecord>>, ApiError> {
+) -> Result<Json<Vec<AutomationRecordView>>, ApiError> {
     let manager = state.automations.lock().await;
     let automations = manager
-        .list_automations()
+        .list_automation_views()
         .map_err(|e| ApiError::internal(format!("Failed to list automations: {e}")))?;
     Ok(Json(automations))
 }
@@ -8962,9 +8990,11 @@ async fn create_automation_in_workspace(
 async fn get_automation(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
-) -> Result<Json<AutomationRecord>, ApiError> {
+) -> Result<Json<AutomationRecordView>, ApiError> {
     let manager = state.automations.lock().await;
-    let automation = manager.get_automation(&id).map_err(map_automation_err)?;
+    let automation = manager
+        .get_automation_view(&id)
+        .map_err(map_automation_err)?;
     Ok(Json(automation))
 }
 
@@ -9129,6 +9159,41 @@ async fn resume_automation(
         headers,
         "resume",
         codewhale_engine::automation_manager::AutomationStatus::Active,
+    )
+    .await
+}
+
+async fn adopt_automation(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Query(query): Query<AutomationPreconditionQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let existing = state
+        .automations
+        .lock()
+        .await
+        .get_automation(&id)
+        .map_err(map_automation_err)?;
+    require_destination_thread(&state, existing.destination_thread_id.as_deref()).await?;
+    automation_mutation(
+        &state,
+        &headers,
+        &format!("POST /v1/automations/{id}/adopt"),
+        &query.expected_revision,
+        StatusCode::OK,
+        map_automation_err,
+        async {
+            let manager = state.automations.clone().lock_owned().await;
+            let id = id.clone();
+            let expected = query.expected_revision;
+            tokio::task::spawn_blocking(move || {
+                let adopted = manager.adopt_automation_if(&id, expected)?;
+                Ok(manager.record_view(adopted))
+            })
+            .await
+            .context("automation adopt worker failed")?
+        },
     )
     .await
 }
@@ -10687,19 +10752,13 @@ async fn retry_thread_turn(
     Json(req): Json<RetryTurnRequest>,
 ) -> Result<(StatusCode, Json<RetryTurnResponse>), ApiError> {
     let depth = req.depth.unwrap_or(0);
-    let (reservation, _) = state
-        .runtime_threads
-        .thread_restore_guard(&id)
-        .await
-        .map_err(map_thread_err)?;
     let runtime = state.runtime_threads.clone();
     let sessions_dir = state.sessions_dir.clone();
     let prompt = req.prompt;
     let (forked_thread, retry_prompt, original_user_images, max_output_tokens) =
         tokio::spawn(async move {
-            let _reservation = reservation;
             let prepared = runtime
-                .prepare_fork_at_user_message_in_sessions_dir(&id, depth, &sessions_dir)
+                .prepare_retry_in_sessions_dir(&id, depth, &sessions_dir)
                 .await
                 .map_err(map_thread_err)?;
             let retry_prompt = prompt
@@ -10711,7 +10770,7 @@ async fn retry_thread_turn(
                 ));
             }
             let (forked_thread, _, original_user_images, max_output_tokens) = runtime
-                .publish_prepared_fork(prepared)
+                .publish_prepared_fork_guarded(prepared)
                 .await
                 .map_err(map_thread_err)?;
             Ok((
@@ -12929,6 +12988,35 @@ struct ProviderEntry {
     credential_writable_reason: Option<&'static str>,
     #[serde(rename = "browserConnect", skip_serializing_if = "std::ops::Not::not")]
     browser_connect: bool,
+    #[serde(rename = "lastCheck", skip_serializing_if = "Option::is_none")]
+    last_check: Option<ProviderLastCheck>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ProviderLastCheck {
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    category: Option<codewhale_error_taxonomy::ErrorCategory>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+impl From<codewhale_engine::provider_readiness::LastProviderCheck> for ProviderLastCheck {
+    fn from(check: codewhale_engine::provider_readiness::LastProviderCheck) -> Self {
+        use codewhale_engine::provider_readiness::LastProviderCheck;
+        match check {
+            LastProviderCheck::Passed | LastProviderCheck::ModelsEndpointPassed => Self {
+                ok: true,
+                category: None,
+                message: None,
+            },
+            LastProviderCheck::Failed { category, message } => Self {
+                ok: false,
+                category: Some(category),
+                message: Some(message),
+            },
+        }
+    }
 }
 
 /// Stable, non-secret wire projection of provider readiness.
@@ -13009,6 +13097,8 @@ struct RefreshProviderModelsResponse {
 /// Entry in `GET /v1/providers/{id}/models`.
 #[derive(Debug, Clone, Serialize)]
 struct ProviderModelEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    route: Option<codewhale_engine::model_inventory::ExactRouteModel>,
     /// Canonical model id suitable for `POST /v1/threads`'s `model` field.
     id: String,
     /// Image-input support reported by the exact resolved provider/model
@@ -13025,6 +13115,11 @@ struct ProviderModelEntry {
 
 #[derive(Debug, Clone, Serialize)]
 struct ProviderModelsResponse {
+    inventory_revision: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inventory_status: Option<codewhale_config::catalog::CatalogStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discovery_supported: Option<bool>,
     provider: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     model_provider_id: Option<String>,
@@ -13114,20 +13209,84 @@ fn paginate_provider_models(
         )));
     }
 
+    let exact_query = params.filter.as_deref().unwrap_or_default().trim();
+    let rank = |entry: &ProviderModelEntry| {
+        if filter.is_empty() {
+            return 0;
+        }
+        if !filter.is_empty() && entry.id == exact_query {
+            return 0;
+        }
+        let id = entry.id.to_lowercase();
+        let name = entry
+            .facts
+            .as_ref()
+            .and_then(|facts| facts.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_lowercase();
+        let alias = entry
+            .facts
+            .as_ref()
+            .and_then(|facts| facts.get("canonical_model_id"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_lowercase();
+        if id == filter || name == filter || alias == filter {
+            1
+        } else if id.starts_with(&filter) || name.starts_with(&filter) || alias.starts_with(&filter)
+        {
+            2
+        } else {
+            3
+        }
+    };
     models.sort_by(|left, right| {
-        left.id
-            .to_lowercase()
-            .cmp(&right.id.to_lowercase())
+        rank(left)
+            .cmp(&rank(right))
+            .then_with(|| {
+                if filter.is_empty() {
+                    left.route
+                        .as_ref()
+                        .and_then(|row| row.provider_rank)
+                        .unwrap_or(usize::MAX)
+                        .cmp(
+                            &right
+                                .route
+                                .as_ref()
+                                .and_then(|row| row.provider_rank)
+                                .unwrap_or(usize::MAX),
+                        )
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .then_with(|| left.id.to_lowercase().cmp(&right.id.to_lowercase()))
             .then_with(|| left.id.cmp(&right.id))
     });
-    models.dedup_by(|left, right| left.id.eq_ignore_ascii_case(&right.id));
+    models.dedup_by(|left, right| left.id == right.id);
     if models.len() > MAX_PROVIDER_MODELS_CATALOG_SIZE {
         return Err(ApiError::internal(format!(
             "Provider model catalog exceeds the safe {MAX_PROVIDER_MODELS_CATALOG_SIZE}-row limit"
         )));
     }
     if !filter.is_empty() {
-        models.retain(|entry| entry.id.to_lowercase().contains(&filter));
+        models.retain(|entry| {
+            entry.id.to_lowercase().contains(&filter)
+                || ["name", "canonical_model_id"].iter().any(|key| {
+                    entry
+                        .facts
+                        .as_ref()
+                        .and_then(|facts| facts.get(*key))
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| value.to_lowercase().contains(&filter))
+                })
+                || provider.to_lowercase().contains(&filter)
+                || params
+                    .model_provider_id
+                    .as_ref()
+                    .is_some_and(|id| id.to_lowercase().contains(&filter))
+        });
     }
 
     // A live catalog can refresh between requests. Bind the opaque position
@@ -13170,7 +13329,7 @@ fn paginate_provider_models(
             version: PROVIDER_MODELS_CURSOR_VERSION,
             provider: provider.to_string(),
             filter,
-            catalog_fingerprint,
+            catalog_fingerprint: catalog_fingerprint.clone(),
             route_fingerprint,
             offset: end,
         })?)
@@ -13179,6 +13338,9 @@ fn paginate_provider_models(
     };
 
     Ok(ProviderModelsResponse {
+        inventory_revision: catalog_fingerprint,
+        inventory_status: None,
+        discovery_supported: None,
         provider: provider.to_string(),
         model_provider_id: params.model_provider_id.clone(),
         models: page,
@@ -13187,75 +13349,18 @@ fn paginate_provider_models(
     })
 }
 
-fn push_unique_model(models: &mut Vec<String>, model: &str) {
-    let model = model.trim();
-    if !model.is_empty()
-        && !models
-            .iter()
-            .any(|existing| existing.eq_ignore_ascii_case(model))
-    {
-        models.push(model.to_string());
-    }
-}
-
 fn provider_models_for_api(
     config: &Config,
     identity: &codewhale_runtime::config::ProviderIdentity,
 ) -> Vec<String> {
-    if config.verify_provider_identity(identity).is_err() {
-        return Vec::new();
-    }
-    let provider = identity.provider;
-    let mut models = Vec::new();
-    if let Some(model) = config
-        .provider_config_for(identity)
-        .and_then(|entry| entry.model.as_deref())
-    {
-        push_unique_model(&mut models, model);
-    }
-    if config.active_provider_identity().ok().as_ref() == Some(identity) {
-        let active_model = provider_default_model_for_api(config, identity);
-        if !active_model.trim().eq_ignore_ascii_case("auto") {
-            push_unique_model(&mut models, &active_model);
-        }
-    }
-    let exact_catalog = codewhale_engine::provider_catalog_live::cached_entry_for_route(
-        provider,
-        identity.key.as_str(),
-        &config.base_url_for_route(identity),
+    codewhale_engine::model_inventory::exact_route_inventory(
+        config,
+        identity,
+        &Default::default(),
+        &[],
     )
-    .ok()
-    .flatten()
-    .is_some_and(|entry| entry.fetched_at > 0);
-    // A pass-through provider normally lists only what its own live catalog
-    // returned. When that catalog cannot exist (an OAuth route), the catalog
-    // lake's next layers (Models.dev, then the bundled snapshot) answer.
-    if !config.model_ids_pass_through_for_provider(identity)
-        || exact_catalog
-        || codewhale_engine::provider_lake::live_catalog_unavailable(config, identity)
-    {
-        for model in codewhale_engine::provider_lake::models_for_provider(config, identity) {
-            push_unique_model(&mut models, &model);
-        }
-    }
-    for model in config.custom_models.as_deref().unwrap_or_default() {
-        if codewhale_runtime::config::configured_model_for_route(
-            config,
-            provider,
-            identity.key.as_str(),
-            &config.base_url_for_route(identity),
-            &model.id,
-        )
-        .is_some()
-            && !models.contains(&model.id)
-        {
-            models.push(model.id.clone());
-        }
-    }
-    if provider == ProviderKind::Ollama {
-        models.retain(|model| !codewhale_runtime::config::is_unresolved_local_ollama_model(model));
-    }
-    models
+    .map(|inventory| inventory.models.into_iter().map(|row| row.model).collect())
+    .unwrap_or_default()
 }
 
 fn provider_model_image_input_for_api(
@@ -13306,6 +13411,7 @@ fn provider_model_entry_for_api(
 
     let provider = identity.provider;
     let mut entry = ProviderModelEntry {
+        route: None,
         image_input: provider_model_image_input_for_api(config, identity, &model),
         output_token_limit: provider_model_output_token_limit_for_api(config, identity, &model),
         id: model,
@@ -13656,6 +13762,8 @@ fn configured_custom_provider_routes(config: &Config) -> Vec<String> {
 fn provider_entry_for_api(
     config: &Config,
     identity: &codewhale_runtime::config::ProviderIdentity,
+    last_check: Option<codewhale_engine::provider_readiness::LastProviderCheck>,
+    claude_org_available: bool,
 ) -> ProviderEntry {
     let writeability = secrets::credential_writeability(config, identity);
     ProviderEntry {
@@ -13674,15 +13782,21 @@ fn provider_entry_for_api(
         credential_source: writeability.source,
         credential_writable: writeability.writable,
         credential_writable_reason: writeability.reason,
-        browser_connect: identity.provider == ProviderKind::Orcarouter
+        browser_connect: (identity.provider == ProviderKind::Orcarouter
+            || (identity.provider == ProviderKind::Anthropic
+                && claude_org_available
+                && !config.provider_uses_custom_endpoint(identity)))
             && writeability.writable
             && !config.session_provider_keys_only,
+        last_check: last_check.map(ProviderLastCheck::from),
     }
 }
 
 async fn list_providers(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<ProvidersResponse>, ApiError> {
+    secrets::refresh_claude_org_availability_if_stale(&state);
+    let claude_org_available = state.provider_connect.claude_org_available();
     #[cfg(any(test, feature = "test-support"))]
     let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     tokio::task::spawn_blocking(move || {
@@ -13693,13 +13807,14 @@ async fn list_providers(
         secrets::invalidate_stale_account_catalog(&config);
         let active_identity = config.active_provider_identity().ok();
         let current = active_identity.as_ref().map_or_else(|| config.provider.clone().unwrap_or_else(|| "unavailable".into()), |identity| identity.persisted_kind().to_string());
-        let mut providers = config.provider_identities().iter().filter(|identity| identity.provider != ProviderKind::Antigravity).map(|identity| provider_entry_for_api(&config, identity)).collect::<Vec<_>>();
+        let mut providers = config.provider_identities().iter().filter(|identity| identity.provider != ProviderKind::Antigravity).map(|identity| provider_entry_for_api(&config, identity, state.runtime_threads.provider_last_check(identity), claude_org_available)).collect::<Vec<_>>();
         providers.extend(config.unadmitted_provider_keys().into_iter().map(|key| ProviderEntry {
             id: key.to_string(), model_provider_id: Some(key.to_string()), display_name: format!("{key} (unavailable)"),
             default_model: String::new(), has_model_catalog: false,
             credential_state: ProviderCredentialState::Legacy, credential_source: secrets::ProviderCredentialSource::None,
             credential_writable: false, credential_writable_reason: Some("This configured route is unavailable; repair its exact provider definition before using it."),
             browser_connect: false,
+            last_check: None,
         }));
         Ok(Json(ProvidersResponse {
             current_provider_id: active_identity.as_ref().and_then(|identity| identity.persisted_id()).map(str::to_string),
@@ -13770,26 +13885,40 @@ async fn list_provider_models(
         let config = state.config.read().clone();
         secrets::invalidate_stale_account_catalog(&config);
         let identity = provider_models_identity(&config, &id, params.model_provider_id.as_deref())?;
-        let route = serde_json::to_vec(&(
-            identity.persisted_kind(),
-            identity.persisted_id(),
-            config.base_url_for_route(&identity),
-        ))
-        .map_err(|error| {
-            ApiError::internal(format!("Could not fingerprint provider route: {error}"))
-        })?;
-        let route_fingerprint = Some(codewhale_runtime::hashing::sha256_hex(route));
-        let models = provider_models_for_api(&config, &identity)
-            .into_iter()
-            .map(|id| provider_model_entry_for_api(&config, &identity, id))
+        let inventory = codewhale_engine::model_inventory::exact_route_inventory(
+            &config,
+            &identity,
+            &state.runtime_threads.provider_readiness_snapshot(),
+            &[],
+        )
+        .map_err(ApiError::bad_request)?;
+        let route_fingerprint = Some(inventory.revision.clone());
+        let models = inventory
+            .models
+            .iter()
+            .cloned()
+            .map(|route| {
+                let mut entry =
+                    provider_model_entry_for_api(&config, &identity, route.model.clone());
+                entry.route = Some(route);
+                entry
+            })
             .collect();
-        paginate_provider_models(
+        if !inventory.is_current(&config, &identity) {
+            return Err(ApiError::conflict(
+                "Inventory changed while reading; retry the exact route",
+            ));
+        }
+        let mut response = paginate_provider_models(
             identity.persisted_kind(),
             models,
             &params,
             route_fingerprint,
-        )
-        .map(Json)
+        )?;
+        response.inventory_revision = inventory.revision;
+        response.inventory_status = Some(inventory.status);
+        response.discovery_supported = Some(inventory.discovery_supported);
+        Ok(Json(response))
     })
     .await
     .map_err(|_| ApiError::internal("Provider model listing failed"))?
@@ -15132,15 +15261,14 @@ fn normalize_runtime_config_model(
         .map_err(ApiError::bad_request);
     }
     validate_route(provider, value).map_err(ApiError::bad_request)?;
-    if value.eq_ignore_ascii_case("auto") {
-        return Ok("auto".to_string());
-    }
-    normalize_model_name_for_provider(provider, value).ok_or_else(|| {
-        ApiError::bad_request(format!(
-            "Invalid model '{value}' for provider '{}'.",
-            provider.as_str()
-        ))
-    })
+    codewhale_config::route::resolve_model(provider, value, None)
+        .map(|resolved| resolved.wire_id)
+        .map_err(|_| {
+            ApiError::bad_request(format!(
+                "Invalid model '{value}' for provider '{}'.",
+                provider.as_str()
+            ))
+        })
 }
 
 async fn reload_config(
@@ -15342,6 +15470,17 @@ async fn list_memory(
     State(state): State<RuntimeApiState>,
     Query(query): Query<ListMemoryQuery>,
 ) -> Result<Json<Value>, ApiError> {
+    let store = native_store_for_state(&state);
+    tokio::task::spawn_blocking(move || list_memory_sync(store, state.workspace, query))
+        .await
+        .map_err(|error| ApiError::internal(format!("memory list worker stopped: {error}")))?
+}
+
+fn list_memory_sync(
+    store: codewhale_runtime::native_memory::NativeMemoryStore,
+    workspace: PathBuf,
+    query: ListMemoryQuery,
+) -> Result<Json<Value>, ApiError> {
     let limit = match query.limit.unwrap_or(MEMORY_LIST_DEFAULT_LIMIT) {
         0 => {
             return Err(ApiError::bad_request("limit must be at least 1"));
@@ -15354,15 +15493,14 @@ async fn list_memory(
         n => n,
     };
 
-    let store = native_store_for_state(&state);
     let root = store.root().to_path_buf();
-    let (scope_filter, mut workspace_id) = resolve_memory_scope(&query.scope, &state.workspace)?;
+    let (scope_filter, mut workspace_id) = resolve_memory_scope(&query.scope, &workspace)?;
     if scope_filter.is_none() {
         // "all" is global memory plus this repository's. With no identity
         // (no origin remote, or git unavailable) there is no workspace memory
         // to show, and the listing still serves global memory.
         workspace_id =
-            codewhale_runtime::native_memory::NativeMemoryStore::workspace_id(&state.workspace)
+            codewhale_runtime::native_memory::NativeMemoryStore::workspace_id(&workspace)
                 .unwrap_or_else(|error| {
                     tracing::warn!("memory list shows global memory only: {error}");
                     None
@@ -15376,7 +15514,7 @@ async fn list_memory(
         }
         match scope_filter {
             None if workspace_id.is_some() => {
-                store.search_in_workspace(workspace_id.as_deref(), &state.workspace, q, limit)
+                store.search_in_workspace(workspace_id.as_deref(), &workspace, q, limit)
             }
             None => store.search(q, limit),
             Some(codewhale_runtime::native_memory::MemoryScope::Global) => {
@@ -15386,16 +15524,21 @@ async fn list_memory(
                         .collect()
                 })
             }
-            Some(codewhale_runtime::native_memory::MemoryScope::Workspace) => store
-                .search_for_workspace(&state.workspace, q, limit)
-                .map(|h| {
+            Some(codewhale_runtime::native_memory::MemoryScope::Workspace) => {
+                store.search_for_workspace(&workspace, q, limit).map(|h| {
                     h.into_iter()
                         .filter(|h| scope_label_for_source(&h.source, &root) == "workspace")
                         .collect()
-                }),
+                })
+            }
         }
     } else {
-        store.list_all(scope_filter, workspace_id.as_deref(), limit)
+        store.list_in_workspace(
+            scope_filter,
+            workspace_id.as_deref(),
+            Some(&workspace),
+            limit,
+        )
     }
     .map_err(|e| ApiError::internal(format!("memory list error: {e}")))?;
 

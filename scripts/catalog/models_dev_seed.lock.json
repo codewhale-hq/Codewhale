@@ -1,15 +1,15 @@
 {
   "source": {
     "url": "https://models.dev/catalog.json",
-    "fetched_at": "2026-11-17T15:04:45Z",
-    "sha256": "08c60778489d59baf98eadacf6328b4f75e6f79ba16078778366a4302fb69a13"
+    "fetched_at": "2026-11-24T05:20:16Z",
+    "sha256": "1b336cd97b8b7a2ad26f0d748106a122206d5cf1f21c1a180ccf864d7a2b067d"
   },
   "models": {
     "deepseek/deepseek-v4-pro-0813": {
       "id": "deepseek/deepseek-v4-pro-0813",
       "name": "DeepSeek V4 Pro 0813",
       "description": "DeepSeek V4 Pro snapshot with million-token context and support for thinking and non-thinking modes",
-      "family": "deepseek-thinking",
+      "family": "deepseek-pro",
       "release_date": "2026-08-13",
       "last_updated": "2026-08-22",
       "attachment": false,
@@ -442,7 +442,7 @@
       "id": "xiaomi/mimo-v2.6-flash",
       "name": "MiMo-V2.6-Flash",
       "description": "MiMo Flash model for multimodal coding agents and long-context automation",
-      "family": "mimo",
+      "family": "mimo-flash",
       "release_date": "2026-09-22",
       "last_updated": "2026-09-22",
       "attachment": true,
@@ -578,7 +578,7 @@
       "id": "xiaomi/mimo-v2.6-pro",
       "name": "MiMo-V2.6-Pro",
       "description": "Stronger MiMo Pro tier for multimodal reasoning and coding-agent execution",
-      "family": "mimo",
+      "family": "mimo-pro",
       "release_date": "2026-09-22",
       "last_updated": "2026-09-22",
       "attachment": true,
@@ -742,7 +742,7 @@
         "canonical_model_id": "alibaba/qwen3.7-plus",
         "name": "Qwen3.7 Plus",
         "description": "Multimodal Qwen workhorse for long-context agents, visual inputs, and coding",
-        "family": "qwen",
+        "family": "qwen-plus",
         "knowledge": "2025-04",
         "release_date": "2026-06-02",
         "last_updated": "2026-06-02",
@@ -833,7 +833,7 @@
         "canonical_model_id": "deepseek/deepseek-v4-pro",
         "name": "DeepSeek V4 Pro",
         "description": "Open MoE flagship with million-token context for coding and long agent runs",
-        "family": "deepseek-thinking",
+        "family": "deepseek-pro",
         "knowledge": "2025-05",
         "release_date": "2026-04-24",
         "last_updated": "2026-04-24",
@@ -927,7 +927,7 @@
         "canonical_model_id": "alibaba/qwen3.6-flash",
         "name": "Qwen3.6 Flash",
         "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
-        "family": "qwen3.6",
+        "family": "qwen-flash",
         "release_date": "2026-04-27",
         "last_updated": "2026-04-27",
         "attachment": true,
@@ -974,7 +974,7 @@
         "canonical_model_id": "alibaba/qwen3.7-max",
         "name": "Qwen3.7 Max",
         "description": "Qwen frontier model tuned for agent frameworks, coding assistants, and long tasks",
-        "family": "qwen",
+        "family": "qwen-max",
         "release_date": "2026-05-21",
         "last_updated": "2026-05-21",
         "attachment": false,
@@ -1019,7 +1019,7 @@
         "canonical_model_id": "alibaba/qwen3.7-plus",
         "name": "Qwen3.7 Plus",
         "description": "Multimodal Qwen workhorse for long-context agents, visual inputs, and coding",
-        "family": "qwen",
+        "family": "qwen-plus",
         "knowledge": "2025-04",
         "release_date": "2026-06-02",
         "last_updated": "2026-06-02",
@@ -1067,7 +1067,7 @@
         "canonical_model_id": "alibaba/qwen3.8-max",
         "name": "Qwen3.8 Max",
         "description": "2.4-trillion-parameter MoE flagship for coding, professional work, multimodal understanding, and long-horizon agentic workflows",
-        "family": "qwen",
+        "family": "qwen-max",
         "release_date": "2026-08-03",
         "last_updated": "2026-08-03",
         "attachment": true,
@@ -1293,6 +1293,9 @@
         "reasoning": true,
         "reasoning_options": [
           {
+            "type": "toggle"
+          },
+          {
             "type": "budget_tokens",
             "min": 1024
           }
@@ -1397,6 +1400,9 @@
         "reasoning": true,
         "reasoning_options": [
           {
+            "type": "toggle"
+          },
+          {
             "type": "effort",
             "values": [
               "low",
@@ -1464,6 +1470,9 @@
         "attachment": true,
         "reasoning": true,
         "reasoning_options": [
+          {
+            "type": "toggle"
+          },
           {
             "type": "effort",
             "values": [
@@ -1579,9 +1588,6 @@
               "provider": {
                 "body": {
                   "speed": "fast"
-                },
-                "headers": {
-                  "anthropic-beta": "fast-mode-2026-02-01"
                 }
               }
             }
@@ -1599,6 +1605,9 @@
         "attachment": true,
         "reasoning": true,
         "reasoning_options": [
+          {
+            "type": "toggle"
+          },
           {
             "type": "effort",
             "values": [
@@ -1743,7 +1752,7 @@
         "canonical_model_id": "arcee-ai/trinity-large-thinking",
         "name": "Trinity Large Thinking",
         "description": "Reasoning-optimized 398B MoE agent model with extended thinking for long-horizon and multi-turn tool use",
-        "family": "trinity",
+        "family": "trinity-large",
         "release_date": "2026-04-01",
         "last_updated": "2026-05-28",
         "attachment": false,
@@ -1936,7 +1945,7 @@
         "canonical_model_id": "deepseek/deepseek-v4-pro-0813",
         "name": "DeepSeek V4 Pro",
         "description": "DeepSeek V4 Pro snapshot with million-token context and support for thinking and non-thinking modes",
-        "family": "deepseek-thinking",
+        "family": "deepseek-pro",
         "release_date": "2026-08-13",
         "last_updated": "2026-08-22",
         "attachment": false,
@@ -2028,7 +2037,8 @@
           "output": 1.5,
           "cache_read": 0.025,
           "input_audio": 0.5
-        }
+        },
+        "status": "deprecated"
       },
       "gemini-3.1-pro-preview": {
         "id": "gemini-3.1-pro-preview",
@@ -2138,7 +2148,8 @@
           "output": 9,
           "cache_read": 0.15,
           "input_audio": 1.5
-        }
+        },
+        "status": "deprecated"
       },
       "gemini-3.5-flash-lite": {
         "id": "gemini-3.5-flash-lite",
@@ -2283,7 +2294,8 @@
           "output": 3.75,
           "cache_read": 0.075,
           "input_audio": 0.75
-        }
+        },
+        "status": "deprecated"
       },
       "gemini-3.8-flash": {
         "id": "gemini-3.8-flash",
@@ -2477,14 +2489,62 @@
           "input_audio": 1.5
         }
       },
+      "gemini-4-neon": {
+        "id": "gemini-4-neon",
+        "canonical_model_id": "google/gemini-4-neon",
+        "name": "Gemini 4 Neon",
+        "description": "Google's Gemini 4 model for fast, frontier-level coding, knowledge work and science workflows, with four thinking levels and a 1M-token context window",
+        "family": "gemini",
+        "knowledge": "2026-03",
+        "release_date": "2026-11-18",
+        "last_updated": "2026-11-18",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 3,
+          "output": 15,
+          "cache_read": 0.15,
+          "input_audio": 3
+        }
+      },
       "gemini-flash-latest": {
         "id": "gemini-flash-latest",
         "name": "Gemini Flash Latest",
-        "description": "High-efficiency Gemini model for agentic workflows, coding, and multimodal reasoning",
+        "description": "Google's most intelligent Flash model, engineered for long-horizon software engineering, autonomous agents, and complex enterprise workflows",
         "family": "gemini-flash",
-        "knowledge": "2026-03",
-        "release_date": "2026-08-13",
-        "last_updated": "2026-08-13",
+        "release_date": "2026-09-02",
+        "last_updated": "2026-09-02",
         "attachment": true,
         "reasoning": true,
         "reasoning_options": [
@@ -2645,12 +2705,77 @@
       }
     },
     "meta": {
+      "muse-ember-1.0": {
+        "id": "muse-ember-1.0",
+        "canonical_model_id": "meta/muse-ember-1.0",
+        "name": "Muse Ember",
+        "description": "Muse Ember is Meta's smallest and most efficient reasoning model, built for the work agents repeat all day: tool calls, coding subtasks, routing, extraction, and long-document parsing. It pairs with Muse Wonder or Muse Spark, which plan while Muse Ember handles the volume.",
+        "family": "muse-ember",
+        "release_date": "2026-11-09",
+        "last_updated": "2026-11-09",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "pdf",
+            "audio"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 524288
+        },
+        "cost": {
+          "input": 0.1,
+          "output": 0.5,
+          "cache_read": 0.004,
+          "tiers": [
+            {
+              "input": 0.3,
+              "output": 1.5,
+              "cache_read": 0.012,
+              "tier": {
+                "type": "context",
+                "size": 200000
+              }
+            }
+          ],
+          "context_over_200k": {
+            "input": 0.3,
+            "output": 1.5,
+            "cache_read": 0.012
+          }
+        }
+      },
       "muse-spark-1.1": {
         "id": "muse-spark-1.1",
         "canonical_model_id": "meta/muse-spark-1.1",
         "name": "Muse Spark 1.1",
         "description": "Muse Spark is a natively multimodal reasoning model with support for tool-use, visual chain of thought, and multi-agent orchestration.",
-        "family": "muse",
+        "family": "muse-spark",
         "release_date": "2026-04-08",
         "last_updated": "2026-07-09",
         "attachment": true,
@@ -2676,7 +2801,8 @@
             "text",
             "image",
             "pdf",
-            "video"
+            "video",
+            "audio"
           ],
           "output": [
             "text"
@@ -2697,7 +2823,7 @@
         "canonical_model_id": "meta/muse-spark-1.2",
         "name": "Muse Spark 1.2",
         "description": "Muse Spark 1.2 is a coding-focused update to Muse Spark 1.1 with improvements in code generation, complex debugging, codebase understanding, and end-to-end developer workflows.",
-        "family": "muse",
+        "family": "muse-spark",
         "release_date": "2026-08-05",
         "last_updated": "2026-08-05",
         "attachment": true,
@@ -2745,7 +2871,7 @@
         "canonical_model_id": "meta/muse-spark-1.2",
         "name": "Muse Spark 1.2 Contributor",
         "description": "Muse Spark 1.2 is a coding-focused update to Muse Spark 1.1 with improvements in code generation, complex debugging, codebase understanding, and end-to-end developer workflows.",
-        "family": "muse",
+        "family": "muse-spark",
         "release_date": "2026-08-05",
         "last_updated": "2026-08-05",
         "attachment": true,
@@ -2793,7 +2919,7 @@
         "canonical_model_id": "meta/muse-spark-1.3",
         "name": "Muse Spark 1.3",
         "description": "Muse Spark 1.3 is a multimodal reasoning model from Meta for long-running agentic, multi-agent, and coding workflows. It improves long-horizon agent collaboration, instruction following, and coding efficiency relative to Muse Spark 1.2.",
-        "family": "muse",
+        "family": "muse-spark",
         "release_date": "2026-09-02",
         "last_updated": "2026-09-02",
         "attachment": true,
@@ -2842,7 +2968,7 @@
         "canonical_model_id": "meta/muse-spark-1.3",
         "name": "Muse Spark 1.3 Contributor",
         "description": "Muse Spark 1.3 is a multimodal reasoning model from Meta for long-running agentic, multi-agent, and coding workflows. It improves long-horizon agent collaboration, instruction following, and coding efficiency relative to Muse Spark 1.2.",
-        "family": "muse",
+        "family": "muse-spark",
         "release_date": "2026-09-02",
         "last_updated": "2026-09-02",
         "attachment": true,
@@ -2890,7 +3016,7 @@
         "canonical_model_id": "meta/muse-wonder-1.0",
         "name": "Muse Wonder",
         "description": "Muse Wonder is a frontier multimodal reasoning model from Meta for personal and professional agents, long-horizon coding, and computer use. It combines Active Memory, which carries relevant context across conversations, with Active Focus, which keeps it working through blockers toward a goal.",
-        "family": "muse",
+        "family": "muse-wonder",
         "release_date": "2026-10-12",
         "last_updated": "2026-10-12",
         "attachment": true,
@@ -2940,7 +3066,7 @@
         "id": "MiniMax-M2.7",
         "name": "MiniMax-M2.7",
         "description": "Open MiniMax flagship for coding agents, office automation, and complex environments",
-        "family": "minimax",
+        "family": "minimax-m",
         "release_date": "2026-03-18",
         "last_updated": "2026-03-18",
         "attachment": false,
@@ -2973,7 +3099,7 @@
         "id": "MiniMax-M2.7-highspeed",
         "name": "MiniMax-M2.7-highspeed",
         "description": "Low-latency M2.7 variant for interactive coding plans and agent loops",
-        "family": "minimax",
+        "family": "minimax-m",
         "release_date": "2026-03-18",
         "last_updated": "2026-03-18",
         "attachment": false,
@@ -3006,7 +3132,7 @@
         "id": "MiniMax-M3",
         "name": "MiniMax-M3",
         "description": "MiniMax multimodal model for long-context coding, perception, and agent planning",
-        "family": "minimax",
+        "family": "minimax-m",
         "release_date": "2026-06-01",
         "last_updated": "2026-06-25",
         "attachment": true,
@@ -3061,7 +3187,7 @@
         "canonical_model_id": "minimax/MiniMax-M3.1-Flash",
         "name": "MiniMax-M3.1-Flash",
         "description": "Frontier multimodal coding model with 1M context window and tunable thinking depth",
-        "family": "minimax",
+        "family": "minimax-m-flash",
         "release_date": "2026-10-19",
         "last_updated": "2026-10-19",
         "attachment": true,
@@ -3109,7 +3235,7 @@
         "canonical_model_id": "moonshotai/kimi-k2.6",
         "name": "Kimi K2.6",
         "description": "Multimodal Kimi workhorse for agent loops, coding tasks, and visual context",
-        "family": "kimi-k2",
+        "family": "kimi",
         "knowledge": "2025-01",
         "release_date": "2026-04-20",
         "last_updated": "2026-04-20",
@@ -3152,7 +3278,7 @@
         "canonical_model_id": "moonshotai/kimi-k2.7-code",
         "name": "Kimi K2.7 Code",
         "description": "Coding-focused Kimi model, stronger on long-horizon repo work with less overthinking",
-        "family": "kimi-k2",
+        "family": "kimi-code",
         "knowledge": "2025-01",
         "release_date": "2026-06-12",
         "last_updated": "2026-06-12",
@@ -3191,7 +3317,7 @@
         "canonical_model_id": "moonshotai/kimi-k2.7-code",
         "name": "Kimi K2.7 Code HighSpeed",
         "description": "Coding-focused Kimi model, stronger on long-horizon repo work with less overthinking",
-        "family": "kimi-k2",
+        "family": "kimi-code",
         "knowledge": "2025-01",
         "release_date": "2026-06-12",
         "last_updated": "2026-06-12",
@@ -3230,7 +3356,7 @@
         "canonical_model_id": "moonshotai/kimi-k3",
         "name": "Kimi K3",
         "description": "Multimodal Kimi model with 1M context and toggleable max-effort thinking for long-horizon agent work",
-        "family": "kimi-k3",
+        "family": "kimi",
         "release_date": "2026-07-16",
         "last_updated": "2026-07-16",
         "attachment": true,
@@ -3278,7 +3404,7 @@
         "canonical_model_id": "moonshotai/kimi-k3.1-pro",
         "name": "Kimi K3.1 Pro",
         "description": "Multimodal Kimi model with a 1M-token context window and always-on reasoning, for coding, 3D creation and financial research",
-        "family": "kimi-k3",
+        "family": "kimi-pro",
         "release_date": "2026-10-23",
         "last_updated": "2026-10-23",
         "attachment": true,
@@ -3326,7 +3452,7 @@
         "canonical_model_id": "moonshotai/kimi-k3.1-pro",
         "name": "Kimi K3.1 Pro Highspeed",
         "description": "Multimodal Kimi model with a 1M-token context window and always-on reasoning, for coding, 3D creation and financial research",
-        "family": "kimi-k3",
+        "family": "kimi-pro",
         "release_date": "2026-10-23",
         "last_updated": "2026-10-23",
         "attachment": true,
@@ -3376,7 +3502,7 @@
         "canonical_model_id": "deepseek/deepseek-v4-pro",
         "name": "DeepSeek V4 Pro",
         "description": "Open MoE flagship with million-token context for coding and long agent runs",
-        "family": "deepseek-thinking",
+        "family": "deepseek-pro",
         "knowledge": "2025-05",
         "release_date": "2026-04-24",
         "last_updated": "2026-04-24",
@@ -3468,6 +3594,7 @@
           "output": 14,
           "cache_read": 0.175
         },
+        "status": "deprecated",
         "experimental": {
           "modes": {
             "fast": {
@@ -4607,6 +4734,206 @@
             }
           }
         }
+      },
+      "gpt-6.2-astra": {
+        "id": "gpt-6.2-astra",
+        "canonical_model_id": "openai/gpt-6.2-astra",
+        "name": "GPT-6.2 Astra",
+        "description": "A frontier reasoning model for coding, computer use, and professional work such as slides, spreadsheets, and documents.",
+        "family": "gpt-astra",
+        "knowledge": "2026-05-18",
+        "release_date": "2026-11-17",
+        "last_updated": "2026-11-17",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": false,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 8,
+          "output": 40,
+          "cache_read": 0.4,
+          "cache_write": 10,
+          "tiers": [
+            {
+              "input": 16,
+              "output": 60,
+              "cache_read": 0.8,
+              "cache_write": 20,
+              "tier": {
+                "type": "context",
+                "size": 272000
+              }
+            }
+          ],
+          "context_over_200k": {
+            "input": 16,
+            "output": 60,
+            "cache_read": 0.8,
+            "cache_write": 20
+          }
+        },
+        "experimental": {
+          "modes": {
+            "fast": {
+              "cost": {
+                "input": 16,
+                "output": 80,
+                "cache_read": 0.8,
+                "cache_write": 20
+              },
+              "provider": {
+                "body": {
+                  "service_tier": "priority"
+                }
+              }
+            },
+            "pro": {
+              "provider": {
+                "body": {
+                  "reasoning": {
+                    "mode": "pro"
+                  }
+                }
+              }
+            },
+            "ultrafast": {
+              "provider": {
+                "body": {
+                  "service_tier": "ultrafast"
+                }
+              }
+            }
+          }
+        }
+      },
+      "gpt-6.2-sol": {
+        "id": "gpt-6.2-sol",
+        "canonical_model_id": "openai/gpt-6.2-sol",
+        "name": "GPT-6.2 Sol",
+        "description": "An efficient reasoning model for everyday work, multistep agentic workflows, and coding.",
+        "family": "gpt-sol",
+        "knowledge": "2026-06-01",
+        "release_date": "2026-11-17",
+        "last_updated": "2026-11-17",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": false,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 2,
+          "output": 10,
+          "cache_read": 0.1,
+          "cache_write": 2.5,
+          "tiers": [
+            {
+              "input": 4,
+              "output": 15,
+              "cache_read": 0.2,
+              "cache_write": 5,
+              "tier": {
+                "type": "context",
+                "size": 272000
+              }
+            }
+          ],
+          "context_over_200k": {
+            "input": 4,
+            "output": 15,
+            "cache_read": 0.2,
+            "cache_write": 5
+          }
+        },
+        "experimental": {
+          "modes": {
+            "fast": {
+              "cost": {
+                "input": 4,
+                "output": 20,
+                "cache_read": 0.2,
+                "cache_write": 5
+              },
+              "provider": {
+                "body": {
+                  "service_tier": "priority"
+                }
+              }
+            },
+            "pro": {
+              "provider": {
+                "body": {
+                  "reasoning": {
+                    "mode": "pro"
+                  }
+                }
+              }
+            },
+            "ultrafast": {
+              "provider": {
+                "body": {
+                  "service_tier": "ultrafast"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "openrouter": {
@@ -4648,7 +4975,7 @@
         },
         "limit": {
           "context": 1048576,
-          "output": 943717
+          "output": 393216
         },
         "cost": {
           "input": 0.09,
@@ -4661,7 +4988,7 @@
         "canonical_model_id": "deepseek/deepseek-v4-pro",
         "name": "DeepSeek V4 Pro",
         "description": "Open MoE flagship with million-token context for coding and long agent runs",
-        "family": "deepseek-thinking",
+        "family": "deepseek-pro",
         "knowledge": "2025-05",
         "release_date": "2026-04-24",
         "last_updated": "2026-04-24",
@@ -4694,12 +5021,12 @@
         },
         "limit": {
           "context": 1048576,
-          "output": 384000
+          "output": 393216
         },
         "cost": {
-          "input": 0.9,
-          "output": 1.5,
-          "cache_read": 0.25
+          "input": 1.28,
+          "output": 2.56,
+          "cache_read": 0.108
         }
       },
       "dots-studio/dots-3-note-preview:free": {
@@ -4735,15 +5062,14 @@
         "cost": {
           "input": 0,
           "output": 0
-        },
-        "status": "deprecated"
+        }
       },
       "minimax/minimax-m3": {
         "id": "minimax/minimax-m3",
         "canonical_model_id": "minimax/MiniMax-M3",
         "name": "MiniMax-M3",
         "description": "MiniMax multimodal model for long-context coding, perception, and agent planning",
-        "family": "minimax",
+        "family": "minimax-m",
         "release_date": "2026-06-01",
         "last_updated": "2026-06-01",
         "attachment": true,
@@ -4769,12 +5095,12 @@
         },
         "limit": {
           "context": 1048576,
-          "output": 512000
+          "output": 235929
         },
         "cost": {
-          "input": 0.3,
-          "output": 1.2,
-          "cache_read": 0.06
+          "input": 0.23,
+          "output": 0.96,
+          "cache_read": 0.05
         }
       },
       "qwen/qwen3.6-35b-a3b": {
@@ -4811,8 +5137,8 @@
           "output": 235929
         },
         "cost": {
-          "input": 0.1,
-          "output": 0.9,
+          "input": 0.05,
+          "output": 0.7,
           "cache_read": 0.025
         }
       },
@@ -4821,7 +5147,7 @@
         "canonical_model_id": "alibaba/qwen3.6-flash",
         "name": "Qwen3.6 Flash",
         "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
-        "family": "qwen3.6",
+        "family": "qwen-flash",
         "release_date": "2026-04-27",
         "last_updated": "2026-04-27",
         "attachment": true,
@@ -4876,7 +5202,7 @@
         "canonical_model_id": "alibaba/qwen3.6-plus",
         "name": "Qwen3.6 Plus",
         "description": "Earlier Qwen multimodal workhorse for million-token agent and document tasks",
-        "family": "qwen",
+        "family": "qwen-plus",
         "knowledge": "2025-04",
         "release_date": "2026-04-02",
         "last_updated": "2026-04-02",
@@ -4932,7 +5258,7 @@
         "canonical_model_id": "alibaba/qwen3.7-plus",
         "name": "Qwen3.7 Plus",
         "description": "Multimodal Qwen workhorse for long-context agents, visual inputs, and coding",
-        "family": "qwen",
+        "family": "qwen-plus",
         "knowledge": "2025-04",
         "release_date": "2026-06-02",
         "last_updated": "2026-06-02",
@@ -4990,7 +5316,7 @@
         "canonical_model_id": "alibaba/qwen3.8-flash",
         "name": "Qwen3.8 Flash",
         "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
-        "family": "qwen",
+        "family": "qwen-flash",
         "release_date": "2026-08-26",
         "last_updated": "2026-08-26",
         "attachment": true,
@@ -5032,7 +5358,7 @@
         "canonical_model_id": "tencent/hy4",
         "name": "Hy4",
         "description": "Tencent Hy reasoning model for coding, instruction following, and agent tasks",
-        "family": "Hy",
+        "family": "hy",
         "release_date": "2026-11-04",
         "last_updated": "2026-11-04",
         "attachment": true,
@@ -5111,9 +5437,9 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.007,
-          "output": 6.8,
-          "cache_read": 0.006
+          "input": 0.62,
+          "output": 2.42,
+          "cache_read": 0.14
         }
       },
       "z-ai/glm-5.3": {
@@ -5194,12 +5520,12 @@
         },
         "limit": {
           "context": 1048576,
-          "output": 131072
+          "output": 943718
         },
         "cost": {
-          "input": 0.0399,
-          "output": 0.0784,
-          "cache_read": 0.03
+          "input": 0.12,
+          "output": 0.38,
+          "cache_read": 0.02
         }
       }
     },
@@ -5348,7 +5674,7 @@
         "canonical_model_id": "deepseek/deepseek-v4-pro-0813",
         "name": "DeepSeek V4 Pro 0813",
         "description": "DeepSeek V4 Pro snapshot with million-token context and support for thinking and non-thinking modes",
-        "family": "deepseek-thinking",
+        "family": "deepseek-pro",
         "release_date": "2026-08-13",
         "last_updated": "2026-08-22",
         "attachment": false,
@@ -5503,7 +5829,7 @@
         "canonical_model_id": "moonshotai/kimi-k3",
         "name": "Kimi K3",
         "description": "Multimodal Kimi model with 1M context and toggleable max-effort thinking for long-horizon agent work",
-        "family": "kimi-k3",
+        "family": "kimi",
         "release_date": "2026-07-16",
         "last_updated": "2026-07-16",
         "attachment": true,
@@ -5540,7 +5866,7 @@
         },
         "limit": {
           "context": 1048576,
-          "output": 131072
+          "output": 1048576
         },
         "cost": {
           "input": 3,
@@ -5553,7 +5879,7 @@
         "canonical_model_id": "meta/muse-spark-1.2",
         "name": "Muse Spark 1.2",
         "description": "Muse Spark 1.2 is a coding-focused update to Muse Spark 1.1 with improvements in code generation, complex debugging, codebase understanding, and end-to-end developer workflows.",
-        "family": "muse",
+        "family": "muse-spark",
         "release_date": "2026-08-05",
         "last_updated": "2026-08-05",
         "attachment": true,
@@ -5742,7 +6068,7 @@
         "canonical_model_id": "alibaba/qwen3.8-max",
         "name": "Qwen3.8 Max",
         "description": "2.4-trillion-parameter MoE flagship for coding, professional work, multimodal understanding, and long-horizon agentic workflows",
-        "family": "qwen",
+        "family": "qwen-max",
         "release_date": "2026-08-03",
         "last_updated": "2026-08-03",
         "attachment": true,
@@ -5798,7 +6124,7 @@
         "canonical_model_id": "tencent/hy3",
         "name": "Hy3",
         "description": "Tencent Hy reasoning model for coding, instruction following, and agent tasks",
-        "family": "Hy",
+        "family": "hy",
         "release_date": "2026-07-06",
         "last_updated": "2026-07-06",
         "attachment": false,
@@ -5978,7 +6304,7 @@
         "canonical_model_id": "deepseek/deepseek-v4-pro",
         "name": "DeepSeek V4 Pro",
         "description": "Open MoE flagship with million-token context for coding and long agent runs",
-        "family": "deepseek-thinking",
+        "family": "deepseek-pro",
         "knowledge": "2025-05",
         "release_date": "2026-04-24",
         "last_updated": "2026-04-24",
@@ -6023,7 +6349,7 @@
         "canonical_model_id": "stepfun/step-3.5-flash",
         "name": "Step 3.5 Flash",
         "description": "StepFun flash lane for quick multimodal reasoning and coding assistance",
-        "family": "step",
+        "family": "step-flash",
         "knowledge": "2025-01",
         "release_date": "2026-01-29",
         "last_updated": "2026-02-13",
@@ -6069,7 +6395,7 @@
         "canonical_model_id": "stepfun/step-3.5-flash-2603",
         "name": "Step 3.5 Flash 2603",
         "description": "StepFun flash model for efficient multimodal reasoning, coding, and tool use",
-        "family": "step",
+        "family": "step-flash",
         "knowledge": "2025-01",
         "release_date": "2026-04-02",
         "last_updated": "2026-04-02",
@@ -6115,6 +6441,7 @@
         "canonical_model_id": "stepfun/step-3.7-flash",
         "name": "Step 3.7 Flash",
         "description": "Newer StepFun flash model for faster agents, coding, and multimodal prompts",
+        "family": "step-flash",
         "knowledge": "2026-03-01",
         "release_date": "2026-05-29",
         "last_updated": "2026-05-29",
@@ -6163,6 +6490,7 @@
         "canonical_model_id": "stepfun/step-5-preview",
         "name": "Step 5 Preview",
         "description": "StepFun's next-generation flagship base model for coding and professional knowledge work, with native text, image, and video input and a 1M-token context window",
+        "family": "step",
         "release_date": "2026-09-16",
         "last_updated": "2026-09-20",
         "attachment": true,
@@ -6460,7 +6788,7 @@
         "canonical_model_id": "xiaomi/mimo-v2.6-flash",
         "name": "MiMo-V2.6-Flash",
         "description": "MiMo Flash model for multimodal coding agents and long-context automation",
-        "family": "mimo",
+        "family": "mimo-flash",
         "release_date": "2026-09-22",
         "last_updated": "2026-09-22",
         "attachment": true,
@@ -6503,7 +6831,7 @@
         "canonical_model_id": "xiaomi/mimo-v2.6-pro",
         "name": "MiMo-V2.6-Pro",
         "description": "MiMo Pro model for multimodal coding agents and long-context automation",
-        "family": "mimo",
+        "family": "mimo-pro",
         "release_date": "2026-09-22",
         "last_updated": "2026-09-22",
         "attachment": true,
@@ -6548,7 +6876,7 @@
         "canonical_model_id": "zhipuai/glm-5-turbo",
         "name": "GLM-5-Turbo",
         "description": "Faster GLM-5 lane for coding agents that need lower latency",
-        "family": "glm",
+        "family": "glm-turbo",
         "release_date": "2026-03-16",
         "last_updated": "2026-03-16",
         "attachment": false,

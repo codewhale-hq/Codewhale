@@ -12,8 +12,9 @@ use crate::tui::app::{
 };
 use crate::tui::background_indicator::is_live_shell_entry;
 use crate::tui::history::{
-    FileActivityKind, FileActivitySummary, FileMutationReceipt, HistoryCell, ToolCell,
+    FileActivityKind, FileActivitySummary, FileMutationReceipt, HistoryCell, SubAgentCell, ToolCell,
 };
+use crate::tui::widgets::agent_card::AgentLifecycle;
 use codewhale_engine::tools::subagent::{AgentWorkerStatus, SubAgentResult, SubAgentStatus};
 use codewhale_engine::work_graph::{
     AcceptanceRequirement, EdgeKind, EvidenceKind, EvidenceKindTag, NodeKind, NodeState,
@@ -499,6 +500,38 @@ impl WorkSurfaceState {
         self.user_turn_epoch = self.user_turn_epoch.wrapping_add(1);
     }
 
+    #[must_use]
+    pub(crate) fn frozen_agent_elapsed_ms(&self, agent_id: &str) -> Option<u64> {
+        self.frozen_agent_elapsed_ms.get(agent_id).copied()
+    }
+
+    pub(crate) fn reset_session_state(&mut self, next_session_id: Option<&str>) {
+        self.cached_graph = None;
+        self.latest_rows.clear();
+        self.catalog_rows.clear();
+        self.file_activity = SettledFileActivity::default();
+        self.frozen_agent_elapsed_ms.clear();
+        self.selected = None;
+        self.opened = None;
+        self.hovered = None;
+        self.scroll_offset = 0;
+        self.dismissed = false;
+        self.dismissed_at_rows = 0;
+        self.recent_only_since_ms = None;
+        self.recent_only_fingerprint = 0;
+        self.recent_only_suppressed = false;
+        self.activity_since_ms = None;
+        self.activity_fingerprint = 0;
+        self.activity_suppressed = false;
+        if self
+            .session_instance
+            .as_ref()
+            .is_some_and(|scope| next_session_id != Some(scope.session_id.as_str()))
+        {
+            self.session_instance = None;
+        }
+    }
+
     /// Record the exact graph restored from persisted session state. This
     /// must happen at the restore boundary: the first later runtime capture
     /// may already contain work created by this process.
@@ -781,12 +814,29 @@ fn agents_view_rows(app: &mut App) -> Vec<WorkRow> {
             std::borrow::Cow::Borrowed(worker_status_label(receipt.status))
         };
         let activity = receipt.activity.clone().unwrap_or_default();
-        // The same name every other surface shows for this worker (#6565).
         let name = app
             .agent_label_map
             .get(&receipt.worker_id)
+            .filter(|label| !App::is_agent_counter_placeholder(label))
             .cloned()
+            .or_else(|| {
+                let candidate = receipt.display_name.trim();
+                (!candidate.is_empty() && candidate != receipt.worker_id)
+                    .then(|| candidate.to_string())
+            })
+            .or_else(|| app.agent_label_map.get(&receipt.worker_id).cloned())
             .unwrap_or_else(|| receipt.display_name.clone());
+        let bucket = if parked {
+            WorkBucket::Ready
+        } else {
+            worker_status_bucket(receipt.status)
+        };
+        let tokens = match (receipt.input_tokens, receipt.output_tokens) {
+            (Some(input), Some(output)) => Some(input.saturating_add(output)),
+            (Some(input), None) => Some(input),
+            (None, Some(output)) => Some(output),
+            (None, None) => None,
+        };
         retained.push(WorkRow {
             id,
             mark: receipt.state.glyph(),
@@ -796,11 +846,7 @@ fn agents_view_rows(app: &mut App) -> Vec<WorkRow> {
             } else {
                 format!("{status} · {activity}")
             },
-            tone: bucket_tone(if parked {
-                WorkBucket::Ready
-            } else {
-                worker_status_bucket(receipt.status)
-            }),
+            tone: agent_tone(bucket, receipt.status == AgentWorkerStatus::Failed),
             selectable: true,
             primary_action: Some(SidebarRowAction::OpenAgentTranscript {
                 agent_id: receipt.worker_id.clone(),
@@ -812,7 +858,7 @@ fn agents_view_rows(app: &mut App) -> Vec<WorkRow> {
                 elapsed_secs: receipt.millis.map(|millis| millis / 1_000),
                 model: (!receipt.model.is_empty() && receipt.model != "unknown")
                     .then(|| receipt.model.clone()),
-                tokens: receipt.output_tokens,
+                tokens,
                 todos_remaining: None,
                 // History, not news: a settled receipt has nothing running,
                 // and a parked husk asked nobody anything (#5906). Only a
@@ -821,7 +867,45 @@ fn agents_view_rows(app: &mut App) -> Vec<WorkRow> {
             }),
         });
     }
-    retained.extend(agents);
+    for row in agents {
+        if seen.insert(row.id.clone()) {
+            retained.push(row);
+        }
+    }
+    for cell in &app.history {
+        match cell {
+            HistoryCell::SubAgent(SubAgentCell::Delegate(card)) => {
+                let id = WorkRowId(format!("worker:{}", card.agent_id));
+                if seen.insert(id.clone()) {
+                    retained.push(transcript_agent_row(
+                        app,
+                        id,
+                        &card.agent_id,
+                        &card.agent_type,
+                        card.status,
+                        card.summary.as_deref(),
+                    ));
+                }
+            }
+            HistoryCell::SubAgent(SubAgentCell::Fanout(card)) => {
+                for worker in &card.workers {
+                    let id = WorkRowId(format!("worker:{}", worker.agent_id));
+                    if seen.insert(id.clone()) {
+                        let summary = format!("{} · {}", card.kind, worker.worker_id);
+                        retained.push(transcript_agent_row(
+                            app,
+                            id,
+                            &worker.agent_id,
+                            "worker",
+                            worker.status,
+                            Some(&summary),
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
     let agents = retained;
     let mut out = Vec::with_capacity(agents.len() + 1);
     if !agents.is_empty() {
@@ -833,6 +917,85 @@ fn agents_view_rows(app: &mut App) -> Vec<WorkRow> {
     }
     app.work_surface.latest_rows = out.clone();
     out
+}
+
+fn transcript_agent_row(
+    app: &App,
+    id: WorkRowId,
+    agent_id: &str,
+    agent_type: &str,
+    lifecycle: AgentLifecycle,
+    summary: Option<&str>,
+) -> WorkRow {
+    let (worker_status, state) = match lifecycle {
+        AgentLifecycle::Pending => (
+            AgentWorkerStatus::Queued,
+            codewhale_engine::agent_roster::RosterState::Running,
+        ),
+        AgentLifecycle::Running => (
+            AgentWorkerStatus::Running,
+            codewhale_engine::agent_roster::RosterState::Running,
+        ),
+        AgentLifecycle::Completed => (
+            AgentWorkerStatus::Completed,
+            codewhale_engine::agent_roster::RosterState::Done,
+        ),
+        AgentLifecycle::Failed => (
+            AgentWorkerStatus::Failed,
+            codewhale_engine::agent_roster::RosterState::Failed,
+        ),
+        AgentLifecycle::Cancelled => (
+            AgentWorkerStatus::Cancelled,
+            codewhale_engine::agent_roster::RosterState::Cancelled,
+        ),
+        AgentLifecycle::Interrupted => (
+            AgentWorkerStatus::Interrupted,
+            codewhale_engine::agent_roster::RosterState::Cancelled,
+        ),
+    };
+    let status = worker_status_label(worker_status);
+    let bucket = worker_status_bucket(worker_status);
+    let name = app
+        .agent_label_map
+        .get(agent_id)
+        .filter(|label| !App::is_agent_counter_placeholder(label))
+        .cloned()
+        .or_else(|| {
+            let trimmed = agent_type.trim();
+            (!trimmed.is_empty() && trimmed != "unknown" && trimmed != agent_id)
+                .then(|| trimmed.to_string())
+        })
+        .or_else(|| app.agent_label_map.get(agent_id).cloned())
+        .unwrap_or_else(|| "agent".to_string());
+    let objective = summary
+        .map(codewhale_engine::agent_roster::one_line)
+        .filter(|text| !text.is_empty())
+        .unwrap_or_default();
+    WorkRow {
+        id,
+        mark: state.glyph(),
+        label: name.clone(),
+        detail: if objective.is_empty() {
+            status.to_string()
+        } else {
+            format!("{status} · {objective}")
+        },
+        tone: agent_tone(bucket, worker_status == AgentWorkerStatus::Failed),
+        selectable: true,
+        primary_action: Some(SidebarRowAction::OpenAgentTranscript {
+            agent_id: agent_id.to_string(),
+        }),
+        agent: Some(AgentRowFacts {
+            role_label: name,
+            status: status.to_string(),
+            objective,
+            elapsed_secs: None,
+            model: None,
+            tokens: None,
+            todos_remaining: None,
+            holds_dock_open: matches!(lifecycle, AgentLifecycle::Pending | AgentLifecycle::Running),
+        }),
+    }
 }
 
 /// Pick the view for this frame when the user has not picked one.
@@ -2380,6 +2543,21 @@ pub(super) fn settled_file_activity(app: &App) -> SettledFileActivity {
             && !details.contains(&target)
         {
             details.push(target);
+        }
+    }
+    if let Some(session_id) = app.current_session_id.as_deref() {
+        for ((owner, _), paths) in &app.delegated_writes {
+            if owner != session_id {
+                continue;
+            }
+            for raw_path in paths {
+                if let Some(target) = privacy_safe_path(&app.workspace, raw_path)
+                    && !activity.write.contains(&target)
+                {
+                    activity.summary.record(FileActivityKind::Write);
+                    activity.write.push(target);
+                }
+            }
         }
     }
     activity
@@ -4693,5 +4871,209 @@ mod tests {
             quiet_fact(&app, &agent, None).as_deref(),
             Some("sans progrès depuis 2m · arrêt automatique à 5m")
         );
+    }
+
+    #[test]
+    fn turn_one_fleet_retains_spawned_and_completed_agents_without_agent_list_and_past_ttl() {
+        use crate::tui::subagent_routing::{
+            apply_subagent_terminal_projection, reconcile_subagent_activity_state_at,
+            upsert_roster_progress, upsert_roster_spawn, upsert_roster_terminal,
+        };
+        use codewhale_engine::core::events::AgentProgressEventMeta;
+        use codewhale_engine::tools::subagent::AgentRunUsage;
+        use std::time::Duration;
+
+        let mut app = test_app();
+        app.set_current_session_id(Some("turn-1-session".to_string()));
+        app.work_surface.panel = RailPanel::Tasks;
+        app.work_surface.explicit_view = false;
+
+        app.agent_progress.insert(
+            "agent_51275578".to_string(),
+            "starting: Inspect turn_loop.rs".to_string(),
+        );
+        upsert_roster_spawn(
+            &mut app,
+            "turn-1-session",
+            "agent_51275578",
+            "Inspect turn_loop.rs",
+            Some(AgentWorkerStatus::Running),
+            None,
+            "gemini-4-hydrogen",
+            Some("scout"),
+        );
+        resolve_view(&mut app);
+        assert_eq!(app.work_surface.panel, RailPanel::Agents);
+        assert_eq!(live_agent_row_count(&mut app), 1);
+
+        let progress_meta = AgentProgressEventMeta {
+            worker_status: AgentWorkerStatus::RunningTool,
+            tool_name: Some("read_file".to_string()),
+            step: Some(3),
+            routine_wait: false,
+            approval_id: None,
+        };
+        upsert_roster_progress(
+            &mut app,
+            "turn-1-session",
+            "agent_51275578",
+            "step 3 · read_file",
+            &progress_meta,
+            None,
+        );
+
+        let usage = AgentRunUsage {
+            status: "recorded".to_string(),
+            input_tokens: Some(12_000),
+            output_tokens: Some(450),
+            total_tokens: Some(12_450),
+            cost_microusd: Some(2_500),
+            note: String::new(),
+        };
+        upsert_roster_terminal(
+            &mut app,
+            "turn-1-session",
+            "agent_51275578",
+            Some(&SubAgentStatus::Cancelled),
+            "Cancelled by parent",
+            None,
+            Some(&usage),
+            Some("scout"),
+            Some(14_000),
+        );
+        apply_subagent_terminal_projection(
+            &mut app,
+            "agent_51275578",
+            SubAgentStatus::Cancelled,
+            Some("Cancelled by parent".to_string()),
+        );
+
+        upsert_roster_spawn(
+            &mut app,
+            "turn-1-session",
+            "agent_failed",
+            "Run verification",
+            Some(AgentWorkerStatus::Running),
+            None,
+            "gemini-4-hydrogen",
+            Some("verifier"),
+        );
+        upsert_roster_terminal(
+            &mut app,
+            "turn-1-session",
+            "agent_failed",
+            Some(&SubAgentStatus::Failed("tests failed".to_string())),
+            "tests failed",
+            None,
+            None,
+            Some("verifier"),
+            Some(9_000),
+        );
+        apply_subagent_terminal_projection(
+            &mut app,
+            "agent_failed",
+            SubAgentStatus::Failed("tests failed".to_string()),
+            Some("tests failed".to_string()),
+        );
+
+        let now = Instant::now();
+        reconcile_subagent_activity_state_at(&mut app, now);
+        reconcile_subagent_activity_state_at(&mut app, now + Duration::from_secs(60));
+        assert!(app.subagent_cache.is_empty());
+        assert!(app.agent_progress.is_empty());
+
+        resolve_view(&mut app);
+        assert_eq!(app.work_surface.panel, RailPanel::Agents);
+        assert_eq!(live_agent_row_count(&mut app), 0);
+
+        let rows = agents_view_rows(&mut app);
+        let workers: Vec<_> = rows.iter().filter(|row| row.agent.is_some()).collect();
+        assert_eq!(workers.len(), 2);
+
+        let cancelled = workers
+            .iter()
+            .find(|row| row.id.0 == "worker:agent_51275578")
+            .expect("cancelled worker retained");
+        assert_eq!(cancelled.label, "scout");
+        let cancelled_facts = cancelled.agent.as_ref().unwrap();
+        assert_eq!(cancelled_facts.status, "cancelled");
+        assert_eq!(cancelled_facts.elapsed_secs, Some(14));
+        assert_eq!(cancelled_facts.tokens, Some(12_450));
+        assert_eq!(cancelled_facts.model.as_deref(), Some("gemini-4-hydrogen"));
+
+        let failed = workers
+            .iter()
+            .find(|row| row.id.0 == "worker:agent_failed")
+            .expect("failed worker retained");
+        assert_eq!(failed.tone, WorkTone::Failure);
+        assert_eq!(failed.agent.as_ref().unwrap().status, "failed");
+
+        let price = super::super::views::price_rows(&mut app);
+        assert!(
+            price
+                .iter()
+                .any(|row| row.id.0 == "price:agent:agent_51275578"),
+            "cost view must show live priced subagents before AgentList arrives"
+        );
+    }
+
+    #[test]
+    fn session_switch_via_set_current_session_id_isolates_fleet_and_workbar() {
+        use crate::tui::subagent_routing::upsert_roster_spawn;
+
+        let mut app = test_app();
+        app.set_current_session_id(Some("session-a".to_string()));
+        app.subagent_cache.push(running_agent("worker_a"));
+        app.agent_progress
+            .insert("worker_a".to_string(), "working".to_string());
+        upsert_roster_spawn(
+            &mut app,
+            "session-a",
+            "worker_a",
+            "work in session a",
+            Some(AgentWorkerStatus::Running),
+            None,
+            "gemini-4-hydrogen",
+            Some("scout-a"),
+        );
+        app.work_surface.dismissed = true;
+        assert_eq!(
+            agents_view_rows(&mut app)
+                .iter()
+                .filter(|row| row.agent.is_some())
+                .count(),
+            1
+        );
+
+        app.set_current_session_id(Some("session-b".to_string()));
+        assert!(app.subagent_cache.is_empty());
+        assert!(app.agent_progress.is_empty());
+        assert!(app.current_agent_roster().is_empty());
+        assert!(!app.work_surface.dismissed);
+        assert!(agents_view_rows(&mut app).is_empty());
+    }
+
+    #[test]
+    fn delegated_writes_appear_in_files_view_for_owning_session_only() {
+        let mut app = test_app();
+        app.workspace = std::path::PathBuf::from("/repo");
+        app.set_current_session_id(Some("session-files".to_string()));
+        app.delegated_writes.insert(
+            ("session-files".to_string(), 1),
+            std::collections::BTreeSet::from([
+                "/repo/crates/tui/src/lib.rs".to_string(),
+                "../outside.rs".to_string(),
+            ]),
+        );
+        app.delegated_writes.insert(
+            ("other-session".to_string(), 1),
+            std::collections::BTreeSet::from(["/repo/crates/tui/src/other.rs".to_string()]),
+        );
+
+        assert_eq!(super::super::views::files_touched_count(&mut app), 1);
+        let rows = super::super::views::files_rows(&mut app);
+        assert!(rows.iter().any(|row| row.label == "crates/tui/src/lib.rs"));
+        assert!(!rows.iter().any(|row| row.label.contains("outside.rs")));
+        assert!(!rows.iter().any(|row| row.label.contains("other.rs")));
     }
 }

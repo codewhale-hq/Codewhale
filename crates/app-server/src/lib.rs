@@ -831,6 +831,7 @@ fn build_state_with_transport(
 ) -> Result<AppState> {
     let has_explicit_config_path = config_path.is_some();
     let store = ConfigStore::load(config_path)?;
+    store.config.validate_configured_model()?;
     let config_path = has_explicit_config_path.then(|| store.path().to_path_buf());
     let config = store.config.clone();
 

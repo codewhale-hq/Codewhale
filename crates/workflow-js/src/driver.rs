@@ -277,8 +277,19 @@ pub trait WorkflowDriver: Send + Sync {
     /// corresponding `task()` call.
     async fn spawn_task(&self, request: TaskRequest) -> Result<SpawnedTask, DriverError>;
 
+    async fn verify_candidate(
+        &self,
+        _request: serde_json::Value,
+    ) -> Result<serde_json::Value, DriverError> {
+        Err(DriverError::Rejected(
+            "verified candidate evaluator was not frozen for this run".to_string(),
+        ))
+    }
+
     /// Cancel every in-flight task belonging to this run. Idempotent.
     fn cancel_all(&self);
+
+    fn cancel_task(&self, _task_id: &str) {}
 
     /// Current snapshot of the run's shared token pool.
     fn budget(&self) -> BudgetSnapshot;

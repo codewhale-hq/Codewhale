@@ -20,6 +20,7 @@ struct Projection<'a> {
     session: &'a str,
     thread: &'a str,
     turn: &'a str,
+    workspace: &'a Path,
     cursor: u64,
     emit: bool,
     calls: HashMap<String, PendingToolCall>,
@@ -75,7 +76,9 @@ impl PromptRun {
         let thread_id = thread_id.to_string();
         // Subscribe before snapshot/admission; replay deduplicates by seq.
         let mut receiver = self.runtime.subscribe_events();
-        let cursor = self.runtime.get_thread_detail(&thread_id).await?.latest_seq;
+        let detail = self.runtime.get_thread_detail(&thread_id).await?;
+        let cursor = detail.latest_seq;
+        let workspace = detail.thread.workspace;
         let turn = self
             .runtime
             .start_acp_turn(
@@ -96,6 +99,7 @@ impl PromptRun {
             session: &session_id,
             thread: &thread_id,
             turn: &turn.id,
+            workspace: &workspace,
             cursor,
             emit: true,
             calls: HashMap::new(),
@@ -323,6 +327,7 @@ impl PromptRun {
         let session = projection.session;
         let thread = projection.thread;
         let turn = projection.turn;
+        let workspace = projection.workspace;
         let cursor = &mut projection.cursor;
         let calls = &mut projection.calls;
         let permissions = &mut projection.permissions;
@@ -360,9 +365,17 @@ impl PromptRun {
                         input: tool.get("input").cloned().unwrap_or(Value::Null),
                     };
                     if emit {
+                        let external = p.pointer("/item/metadata/external_agent").map(|agent| {
+                            agent
+                                .get("locations")
+                                .and_then(external_locations)
+                                .unwrap_or_default()
+                        });
                         out(update(
                             session,
-                            acp::SessionUpdate::ToolCall(tool_call_start(&call)),
+                            acp::SessionUpdate::ToolCall(tool_call_start(
+                                &call, workspace, external,
+                            )),
                         ))?;
                     }
                     calls.insert(id, call);
@@ -380,9 +393,11 @@ impl PromptRun {
                     session,
                     acp::SessionUpdate::ToolCallUpdate(tool_call_update(
                         call,
+                        workspace,
                         acp::ToolCallStatus::InProgress,
                         None,
                         &[],
+                        None,
                     )),
                 ))?;
             }
@@ -390,6 +405,7 @@ impl PromptRun {
                 if let Some(item) = p.get("item")
                     && let Some(id) = item
                         .pointer("/metadata/execution_id")
+                        .or_else(|| item.pointer("/metadata/external_agent/tool_call_id"))
                         .and_then(Value::as_str)
                     && let Some(call) = calls.remove(id)
                 {
@@ -405,13 +421,21 @@ impl PromptRun {
                     } else {
                         acp::ToolCallStatus::Failed
                     };
+                    let external = item.pointer("/metadata/external_agent").map(|agent| {
+                        agent
+                            .get("locations")
+                            .and_then(external_locations)
+                            .unwrap_or_default()
+                    });
                     out(update(
                         session,
                         acp::SessionUpdate::ToolCallUpdate(tool_call_update(
                             &call,
+                            workspace,
                             status,
                             item.get("detail").and_then(Value::as_str),
                             &blocks,
+                            external,
                         )),
                     ))?;
                 }
@@ -464,11 +488,31 @@ impl PromptRun {
                         (Some(text), None) | (None, Some(text)) => text.to_string(),
                         (None, None) => title.clone(),
                     };
+                    let external = p.get("external_agent").map(|_| {
+                        p.get("locations")
+                            .and_then(external_locations)
+                            .unwrap_or_default()
+                    });
                     let mut fields = acp::ToolCallUpdateFields::new()
                         .title(title)
                         .kind(tool_call_kind(shown_call))
                         .raw_input((!shown_call.input.is_null()).then(|| shown_call.input.clone()))
-                        .content(vec![acp::ToolCallContent::from(text)]);
+                        .content(
+                            if nested || external.is_some() {
+                                Vec::new()
+                            } else {
+                                tool_call_requested_diffs(shown_call, workspace)
+                                    .into_iter()
+                                    .map(acp::ToolCallContent::Diff)
+                                    .collect()
+                            }
+                            .into_iter()
+                            .chain([acp::ToolCallContent::from(text)])
+                            .collect::<Vec<_>>(),
+                        );
+                    if let Some(locations) = external {
+                        fields = fields.locations(locations);
+                    }
                     if !nested {
                         fields = fields.status(acp::ToolCallStatus::Pending);
                     }
@@ -668,6 +712,7 @@ mod tests {
                 session: &session,
                 thread: &thread,
                 turn: &turn.id,
+                workspace: Path::new("/"),
                 cursor: 0,
                 emit: true,
                 calls: HashMap::new(),
@@ -868,6 +913,7 @@ mod tests {
             session: &id,
             thread: &thread,
             turn: "turn-current",
+            workspace: Path::new("/"),
             cursor: 0,
             emit: true,
             calls: HashMap::new(),
@@ -909,6 +955,53 @@ mod tests {
         Ok(())
     }
     #[tokio::test(flavor = "current_thread")]
+    async fn external_agent_tool_completion_settles_from_the_external_call_id() -> Result<()> {
+        let mut rig = Rig::new(fixture_config(), vec![])?;
+        let id = rig.new_session().await;
+        let thread = rig.server.sessions[&id].thread_id.clone();
+        let mut p = Projection {
+            session: &id,
+            thread: &thread,
+            turn: "turn-current",
+            workspace: Path::new("/"),
+            cursor: 0,
+            emit: true,
+            calls: HashMap::new(),
+            permissions: HashMap::new(),
+        };
+        let mut output: Vec<Value> = Vec::new();
+        let start = event(
+            1,
+            &thread,
+            p.turn,
+            "item.started",
+            json!({"tool":{"id":"agent-call-1","name":"edit","input":{"path":"a.rs"}}}),
+        );
+        rig.server
+            .prompt_run()
+            .project_event(&mut p, &start, &mut recording(&mut output))
+            .await?;
+        assert_eq!(p.calls.len(), 1);
+        let done = event(
+            2,
+            &thread,
+            p.turn,
+            "item.completed",
+            json!({"item":{"status":"completed","detail":"edited","metadata":{"external_agent":{"tool_call_id":"agent-call-1","kind":"edit"}}}}),
+        );
+        rig.server
+            .prompt_run()
+            .project_event(&mut p, &done, &mut recording(&mut output))
+            .await?;
+        assert!(p.calls.is_empty());
+        let update = &output.last().expect("tool call update frame")["params"]["update"];
+        assert_eq!(update["sessionUpdate"], "tool_call_update");
+        assert_eq!(update["toolCallId"], "agent-call-1");
+        assert_eq!(update["status"], "completed");
+        rig.close().await;
+        Ok(())
+    }
+    #[tokio::test(flavor = "current_thread")]
     async fn projection_filters_foreign_turns_reasoning_and_unminted_approvals() -> Result<()> {
         let mut rig = Rig::new(fixture_config(), vec![])?;
         let id = rig.new_session().await;
@@ -917,6 +1010,7 @@ mod tests {
             session: &id,
             thread: &thread,
             turn: "turn-current",
+            workspace: Path::new("/"),
             cursor: 0,
             emit: true,
             calls: HashMap::new(),
@@ -972,6 +1066,7 @@ mod tests {
             session: &id,
             thread: &thread,
             turn: "turn-current",
+            workspace: Path::new("/"),
             cursor: 0,
             emit: true,
             calls: HashMap::new(),

@@ -19,30 +19,28 @@ Implementation sources:
 
 ## Default-active contract
 
-The 0.10.3 source candidate starts new turns with fourteen eager native names
-plus synthetic `tool_search`. This is the current source contract, not a
-claim about the published v0.10.2 release.
+Current `main` starts new turns with twelve eager native names plus synthetic
+`tool_search`.
 
 1. `read`
 2. `write`
 3. `edit`
-4. `file_search`
-5. `grep_files`
-6. `bash`
-7. `agent`
-8. `todo_write`
-9. `create_goal`
-10. `get_goal`
-11. `update_goal`
-12. `task_shell_wait`
-13. `present`
-14. `load_skill`
-15. `tool_search` (synthetic, always active)
+4. `list_dir`
+5. `file_search`
+6. `grep_files`
+7. `bash`
+8. `agent`
+9. `todo_write`
+10. `create_goal`
+11. `present`
+12. `load_skill`
+13. `tool_search` (synthetic, always active)
 
-The fourteen native names are `DEFAULT_ACTIVE_NATIVE_TOOLS` in
+The twelve native names are `DEFAULT_ACTIVE_NATIVE_TOOLS` in
 `crates/engine/src/core/engine/tool_catalog.rs`. An authority boundary may
 remove `agent` at the maximum child depth, and Plan registers only the
-foreground shell surface (so no `task_shell_wait`). Route size alone must not
+foreground shell surface. `get_goal`, `update_goal` and `task_shell_wait`
+activate on demand once a goal or background shell exists. Route size alone must not
 change this core vocabulary. `workflow`, `context_archive_get` and
 `context_archive_search` remain available through `tool_search` when policy
 permits; they are no longer eager names.
@@ -102,8 +100,8 @@ one-shot user approval. The approved policy affects only that call.
 Both tools read source from stdin, return stdout/stderr/return_code, and keep
 the existing timeout and process-tree cleanup. They are not persistent REPLs;
 tracebacks refer to stdin rather than a temporary script path. The persistent
-Python kernels behind `rlm` and inline `repl` fences start through the same
-launcher, so they run under the same effective policy.
+Python kernels behind `rlm` start through the same launcher, so they run under
+the same effective policy.
 
 Platform/backend limits of the shared launcher still apply: no available local
 wrapper means workspace-write remains unenforced, while read-only is refused.
@@ -119,10 +117,10 @@ does not mean "unable to research."
 
 The durable `github`, `automation`, and `rlm` action families are also deferred
 by default. `rlm` owns `open`, `eval`, `configure`, and `close` actions for a
-persistent local Python session. Inline ```` ```repl ```` fences in a reply run in
-the same kind of kernel only when `code_execution` is on the turn's surface
-(never in Plan mode), only when the fence opens its own line, and only after
-`code_execution`'s approval under the session posture. These kernels start
+persistent local Python session. A ```` ```repl ```` fence in an ordinary reply is
+text and never runs; only a recursive `rlm` turn executes its fenced code, and
+only when `code_execution` is on that turn's surface (never in Plan mode) and
+after `code_execution`'s approval under the session posture. These kernels start
 through the launcher `code_execution` uses, with the sanitized child
 environment, so the session's sandbox policy and wrapper apply to them: a
 read-only policy without an enforcing wrapper refuses to start one, and a
@@ -213,12 +211,14 @@ auto-approved native calls only, no MCP.
 ### Conversation toolbox cache
 
 A successful search activation is remembered by name for the current
-conversation. Its soft targets are eight deferred names and 16 KiB of added
+conversation. Its soft targets are sixteen deferred names and 32 KiB of added
 provider-wire schemas, measured after the route's production transformations
 against the eager-tool baseline. An adapter that cannot measure the wire reports
-unknown bytes; internal `Tool` serialization is not substituted. To make room it evicts tools that were never called first
-(oldest activation first), then the least recently called; a tool called in the
-current or previous turn is never evicted. When such tools already fill the
+unknown bytes; internal `Tool` serialization is not substituted. To make room it
+evicts MCP tools before first-party tools, and within each group evicts tools
+that were never called first (oldest activation first), then the least recently
+called; a tool called in the current or previous turn is never evicted. When such
+tools already fill the
 cache, a search still activates its best match over the bound and holds the
 rest; a later activation restores the bound once those tools go unused. Every
 entry is revalidated against the current catalog and policy before it is
@@ -302,8 +302,8 @@ loaded through `tool_search` when needed.
 
 `bash` runs one cancellable foreground command. It does not carry background,
 TTY, wait, interact, or cancel action fields. Stateful process and terminal
-control stays out of the shell schema: `task_shell_wait` is eager for the
-background jobs `bash` starts, while interactive terminal control remains
+control stays out of the shell schema: `task_shell_wait` activates once
+`bash` starts a background job, while interactive terminal control remains
 deferred behind `tool_search`; neither enlarges the first-turn shell schema.
 
 Use `tasks` when the work itself needs a durable lifecycle, structured gates,
@@ -314,7 +314,7 @@ into the parent transcript.
 ## Parallel fan-out
 
 The sub-agent capacity source of truth is
-`crates/tui/src/config/subagent_limits.rs`:
+`crates/runtime/src/config/subagent_limits.rs`:
 
 - default configured concurrency: **64**;
 - maximum configured concurrency: **128**;

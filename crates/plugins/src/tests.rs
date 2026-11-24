@@ -227,6 +227,10 @@ fn declarative_runtime_sources_survive_restart_only_from_the_staged_snapshot() {
             "{capability:?} must never execute from mutable source"
         );
     }
+    assert!(staged_root.join("commands/plugin-hello.md").is_file());
+    let root = fixture.workspace.parent().unwrap().to_path_buf();
+    drop(fixture);
+    assert!(!root.try_exists().unwrap());
 }
 
 #[test]
@@ -1720,4 +1724,27 @@ fn managed_policy_path_env_override_is_honored() {
         launch_directory.join(relative)
     );
     assert!(context.managed_policy_source().unwrap().is_absolute());
+}
+
+#[tokio::test]
+async fn component_file_names_list_files_not_folders() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let commands = dir.path().join("commands");
+    std::fs::create_dir_all(&commands).expect("commands dir");
+    std::fs::write(commands.join("Ship.md"), "x").expect("ship");
+    std::fs::write(commands.join("notes.txt"), "x").expect("notes");
+    let single = dir.path().join("solo.md");
+    std::fs::write(&single, "x").expect("solo");
+    let (names, cut) = crate::runtime::component_file_names(
+        &[commands.clone(), single, dir.path().join("missing")],
+        Some("md"),
+        true,
+        512,
+    )
+    .await;
+    assert_eq!(names, vec!["ship".to_string(), "solo".to_string()]);
+    assert!(!cut);
+    let (limited, cut) = crate::runtime::component_file_names(&[commands], None, false, 1).await;
+    assert_eq!(limited.len(), 1);
+    assert!(cut);
 }

@@ -54,6 +54,7 @@ pub fn hard_disabled() -> bool {
 fn disable(state: &mut State) {
     if state.enabled
         || state.snapshot.facts.is_some()
+        || state.registry.is_some()
         || state.snapshot.status.state != CloudFactsState::Off
     {
         state.epoch = state.epoch.saturating_add(1);
@@ -196,17 +197,40 @@ pub fn publish_registry(
             .insert(REGISTRY_SCHEMA.to_string(), registry.revision);
     }
     before_publish(state.highest_seen.get(REGISTRY_SCHEMA).copied());
+    if state.registry.is_some() || registry.is_some() {
+        state.snapshot.generation = state.snapshot.generation.saturating_add(1);
+    }
     state.registry = registry;
     true
 }
 
 #[must_use]
 pub fn pulled_registry() -> Option<Arc<AdmittedRegistry>> {
-    let Ok(mut state) = STATE.write() else {
-        return None;
-    };
+    pulled_registry_at(crate::catalog::now_unix())
+}
+
+#[must_use]
+pub fn pulled_registry_at(now: u64) -> Option<Arc<AdmittedRegistry>> {
+    if let Ok(state) = STATE.read() {
+        let Some(registry) = &state.registry else {
+            return None;
+        };
+        if !hard_disabled() && !registry.is_expired_at(now) {
+            return Some(Arc::clone(registry));
+        }
+    }
+    let mut state = STATE.write().ok()?;
     if hard_disabled() {
         disable(&mut state);
+        return None;
+    }
+    if state
+        .registry
+        .as_ref()
+        .is_some_and(|registry| registry.is_expired_at(now))
+    {
+        state.registry = None;
+        state.snapshot.generation = state.snapshot.generation.saturating_add(1);
     }
     state.registry.clone()
 }
@@ -217,6 +241,14 @@ fn snapshot_at(now: u64) -> OverlaySnapshot {
     };
     if hard_disabled() {
         disable(&mut state);
+    }
+    if state
+        .registry
+        .as_ref()
+        .is_some_and(|registry| registry.is_expired_at(now))
+    {
+        state.registry = None;
+        state.snapshot.generation = state.snapshot.generation.saturating_add(1);
     }
     if state
         .snapshot
@@ -255,16 +287,25 @@ pub fn is_verified() -> bool {
 
 #[must_use]
 pub fn cloud_default_model(provider: &str) -> Option<(String, DefaultSource)> {
-    let overlay = overlay()?;
-    let model = overlay
-        .provider_defaults
-        .get(provider)?
-        .default_model
-        .clone()?;
+    if let Some(overlay) = overlay()
+        && let Some(model) = overlay
+            .provider_defaults
+            .get(provider)
+            .and_then(|d| d.default_model.clone())
+    {
+        return Some((
+            model,
+            DefaultSource::CloudFacts {
+                facts_version: overlay.facts_version,
+            },
+        ));
+    }
+    let reg = pulled_registry()?;
+    let model = reg.compiled.provider_defaults.get(provider)?.clone();
     Some((
         model,
         DefaultSource::CloudFacts {
-            facts_version: overlay.facts_version,
+            facts_version: reg.revision,
         },
     ))
 }

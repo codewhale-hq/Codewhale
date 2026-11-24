@@ -31,6 +31,7 @@ use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
@@ -40,6 +41,9 @@ pub const MAX_EVENTS: usize = 512;
 pub const MAX_BYTES: u64 = 256 * 1024;
 /// A single append must fit in one atomic `write(2)`.
 pub const MAX_LINE_BYTES: usize = 4096;
+
+const PRIVACY_LOCK_BUDGET: Duration = Duration::from_secs(3);
+const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 
 /// Exact contents of the opt-out tombstone observed by a consent decision.
 ///
@@ -349,20 +353,48 @@ fn read_ring_tail(path: &Path) -> Result<Vec<String>> {
     Ok(lines)
 }
 
-/// Replace `path` atomically through a sibling temp file in the same directory.
-fn rewrite(path: &Path, bytes: &[u8]) -> Result<()> {
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+fn sync_directory(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        File::open(dir)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+    }
+    Ok(())
+}
+
+fn persist_atomic_with_sync(
+    path: &Path,
+    bytes: &[u8],
+    sync_file: impl FnOnce(&File) -> std::io::Result<()>,
+    sync_dir: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<()> {
+    let dir = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)
-        .with_context(|| format!("failed to stage a rewrite of {}", path.display()))?;
-    tmp.write_all(bytes)
-        .with_context(|| format!("failed to write a rewrite of {}", path.display()))?;
-    tmp.flush()
-        .with_context(|| format!("failed to flush a rewrite of {}", path.display()))?;
+        .with_context(|| format!("failed to stage {}", path.display()))?;
     secure(tmp.as_file())?;
+    tmp.write_all(bytes)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    sync_file(tmp.as_file()).with_context(|| format!("failed to sync {}", path.display()))?;
     tmp.persist(path)
         .map_err(|error| error.error)
         .with_context(|| format!("failed to persist {}", path.display()))?;
+    sync_dir(dir).with_context(|| format!("failed to sync directory {}", dir.display()))?;
     Ok(())
+}
+
+fn persist_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    persist_atomic_with_sync(path, bytes, File::sync_all, sync_directory)
+}
+
+/// Replace `path` atomically through a sibling temp file in the same directory.
+fn rewrite(path: &Path, bytes: &[u8]) -> Result<()> {
+    persist_atomic(path, bytes)
 }
 
 /// Open (creating if needed) the sibling lock file.
@@ -412,17 +444,39 @@ fn try_flock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<Op
     }
 }
 
-/// Run `operation` holding the exclusive compaction lock, **blocking**.
+fn with_flock<T>(
+    root: &Path,
+    timeout: Option<Duration>,
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let mut lock = fd_lock::RwLock::new(open_lock(root)?);
+    let Some(timeout) = timeout else {
+        let _guard = lock
+            .write()
+            .context("failed to acquire the telemetry privacy lock")?;
+        return operation();
+    };
+    let deadline = Instant::now() + timeout;
+    loop {
+        match lock.try_write() {
+            Ok(_guard) => return operation(),
+            Err(_) if Instant::now() < deadline => std::thread::sleep(LOCK_RETRY_INTERVAL),
+            Err(_) => anyhow::bail!("the telemetry compaction lock stayed busy"),
+        }
+    }
+}
+
+/// Run `operation` holding the exclusive compaction lock.
 ///
-/// Only startup arming and the opt-out wipe use this. They are not exit
-/// paths, so blocking is fine there and nowhere else.
+/// Startup arming, the opt-out wipe, and the spool header write use this.
+/// `flock` has no timeout of its own, so a suspended process holding the lock
+/// would wedge every launch behind it; the wait is bounded by
+/// `PRIVACY_LOCK_BUDGET` and a still-busy lock returns an error, which every
+/// caller treats as skip-and-continue rather than fatal.
 pub fn with_lock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<T> {
     let gate = process_gate(root);
     let _turn = wait_turn(&gate);
-    let file = open_lock(root)?;
-    let mut lock = fd_lock::RwLock::new(file);
-    let _guard = lock.write().context("failed to take the telemetry lock")?;
-    operation()
+    with_flock(root, Some(PRIVACY_LOCK_BUDGET), operation)
 }
 
 /// Run `operation` holding the exclusive compaction lock if it is free.
@@ -477,8 +531,8 @@ pub fn truncate(path: &Path) -> Result<()> {
 ///
 /// Order matters and is the whole of the guarantee:
 ///
-/// 1. take the blocking lock — this is not an exit path;
-/// 2. write the tombstone **first**, and never remove it here;
+/// 1. wait for an outstanding delivery to release the privacy lock;
+/// 2. write the tombstone and keep it for the rest of this opted-out period;
 /// 3. truncate `buffer.jsonl` and `dryrun.jsonl` — do **not** unlink them, and
 ///    never unlink the privacy lock file — and delete every spool;
 /// 4. remove `install_id.json` and `state.json`.
@@ -487,28 +541,18 @@ pub fn truncate(path: &Path) -> Result<()> {
 /// logs it — but the tombstone alone already makes the buffer permanently
 /// undrainable, so a failed wipe fails **closed**.
 pub fn wipe(root: &Path) -> Result<()> {
-    with_lock(root, || {
-        let tombstone = tombstone_path(root);
-        // A tombstone generation identifies one durable opted-out period. Keep
-        // it stable across later launches that re-observe the same persistent
-        // choice; re-enable removes the file, so the next real opt-out creates
-        // a naturally distinct generation. An unreadable or oversized file is
-        // repaired in the fail-closed direction by replacing it here; legacy
-        // empty tombstones remain valid stable generations.
-        if tombstone_generation(root).ok().flatten().is_none() {
-            let mut file = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&tombstone)
-                .with_context(|| format!("failed to write {}", tombstone.display()))?;
-            secure(&file)?;
-            file.write_all(uuid::Uuid::new_v4().to_string().as_bytes())
-                .with_context(|| format!("failed to write {}", tombstone.display()))?;
-            file.sync_data()
-                .with_context(|| format!("failed to sync {}", tombstone.display()))?;
-            drop(file);
-        }
+    wipe_with_timeout(root, None)
+}
+
+pub(crate) fn wipe_on_startup(root: &Path) -> Result<()> {
+    wipe_with_timeout(root, Some(PRIVACY_LOCK_BUDGET))
+}
+
+fn wipe_with_timeout(root: &Path, timeout: Option<Duration>) -> Result<()> {
+    let gate = process_gate(root);
+    let _turn = wait_turn(&gate);
+    match with_flock(root, timeout, || {
+        write_tombstone(root)?;
 
         let mut failure: Option<anyhow::Error> = None;
         for path in [buffer_path(root), dryrun_path(root)] {
@@ -535,7 +579,28 @@ pub fn wipe(root: &Path) -> Result<()> {
             Some(error) => Err(error),
             None => Ok(()),
         }
-    })
+    }) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            write_tombstone(root)?;
+            Err(error)
+        }
+    }
+}
+
+fn write_tombstone(root: &Path) -> Result<()> {
+    let tombstone = tombstone_path(root);
+    // A tombstone generation identifies one durable opted-out period. Keep
+    // it stable across later launches that re-observe the same persistent
+    // choice; re-enable removes the file, so the next real opt-out creates
+    // a naturally distinct generation. An unreadable or oversized file is
+    // repaired in the fail-closed direction by replacing it here; legacy
+    // empty tombstones remain valid stable generations.
+    if tombstone_generation(root).ok().flatten().is_some() {
+        return Ok(());
+    }
+    let generation = uuid::Uuid::new_v4().to_string();
+    persist_atomic(&tombstone, generation.as_bytes())
 }
 
 /// Clear the tombstone, deleting every spool when there was one, and truncate
@@ -548,7 +613,7 @@ pub fn wipe(root: &Path) -> Result<()> {
 pub(crate) fn arm(
     root: &Path,
     observed_generation: Option<&TombstoneGeneration>,
-    permission_still_enabled: impl FnOnce() -> bool,
+    permission_still_enabled: impl Fn() -> bool,
 ) -> Result<()> {
     ensure_dir(root)?;
     with_lock(root, || {
@@ -560,11 +625,110 @@ pub(crate) fn arm(
             anyhow::bail!("telemetry permission is no longer enabled");
         }
         let tombstone = tombstone_path(root);
-        if tombstone.exists() {
+        if observed_generation.is_some() && tombstone.exists() {
+            if tombstone_generation(root)?.as_ref() != observed_generation {
+                anyhow::bail!("telemetry permission changed before arming");
+            }
             let _ = fs::remove_dir_all(crate::spool::dir(root));
             fs::remove_file(&tombstone)
                 .with_context(|| format!("failed to remove {}", tombstone.display()))?;
+            if !permission_still_enabled() {
+                let _ = write_tombstone(root);
+                anyhow::bail!("telemetry permission is no longer enabled");
+            }
+        }
+        if tombstone.exists() {
+            anyhow::bail!("telemetry permission changed before arming");
         }
         truncate(&buffer_path(root))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persist_atomic_syncs_file_before_rename_and_parent_dir_after() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("buffer.jsonl");
+        fs::write(&target, b"old\n").unwrap();
+
+        let events = std::cell::RefCell::new(Vec::new());
+        persist_atomic_with_sync(
+            &target,
+            b"new\n",
+            |file| {
+                assert_eq!(fs::read(&target).unwrap(), b"old\n");
+                file.sync_all()?;
+                events.borrow_mut().push("file_sync");
+                Ok(())
+            },
+            |parent| {
+                assert_eq!(parent, dir.path());
+                assert_eq!(fs::read(&target).unwrap(), b"new\n");
+                sync_directory(parent)?;
+                events.borrow_mut().push("dir_sync");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(events.into_inner(), vec!["file_sync", "dir_sync"]);
+    }
+
+    #[test]
+    fn persist_atomic_preserves_existing_file_on_file_sync_error_and_reports_dir_sync_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("buffer.jsonl");
+        fs::write(&target, b"original\n").unwrap();
+
+        let err = persist_atomic_with_sync(
+            &target,
+            b"replacement\n",
+            |_| Err(std::io::Error::other("injected file sync failure")),
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("failed to sync"));
+        assert_eq!(fs::read(&target).unwrap(), b"original\n");
+
+        let err = persist_atomic_with_sync(&target, b"replacement\n", File::sync_all, |_| {
+            Err(std::io::Error::other("injected dir sync failure"))
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("failed to sync directory"));
+    }
+
+    #[test]
+    fn rewrite_and_write_tombstone_persist_durably_with_restricted_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        ensure_dir(root).unwrap();
+
+        let buf = buffer_path(root);
+        rewrite(&buf, b"{\"ok\":true}\n").unwrap();
+        assert_eq!(fs::read(&buf).unwrap(), b"{\"ok\":true}\n");
+
+        write_tombstone(root).unwrap();
+        let generation = tombstone_generation(root)
+            .unwrap()
+            .expect("tombstone present");
+        assert!(!generation.0.is_empty());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                fs::metadata(&buf).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::metadata(tombstone_path(root))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
 }

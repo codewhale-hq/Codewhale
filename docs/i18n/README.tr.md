@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:a3f7ac7d7dc2 -->
+<!-- source: README.md sha256:8f9ce64ce19c -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ Bu komut, macOS veya Linux'a en son sürümü kurar ve hesap gerektirmez. [Windo
 
 <sub>Bu çeviri makine taslağıdır ve henüz anadili konuşan biri tarafından gözden geçirilmedi.</sub>
 
-<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="gemini-4-hydrogen ile gerçek bir görevden sonra terminalde Codewhale. python3 -m unittest -v test_ls.py komutunu çalıştırdı, 2 test geçti ve argparse ile ls.py dosyasına --json seçeneğini eklediğini bildiriyor. Durum satırında accept edits ve gemini-4-hydrogen görünüyor.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="deepseek-flash ile gerçek bir görevden sonra terminalde Codewhale. python3 -m unittest -v test_ls.py komutunu çalıştırdı, 2 test geçti ve ls.py dosyasına --json seçeneğini eklediğini bildiriyor. Durum satırında accept edits ve deepseek-flash görünüyor.">
 
-<sub>0.10.3 geliştirme sürümünde gerçek bir oturum: gemini-4-hydrogen, Google API üzerinden değişikliği yazdı ve testlerin çalışmasına bir kez siz izin verdiniz.</sub>
+<sub>0.10.3 geliştirme sürümünde gerçek bir oturum: deepseek-flash, DeepSeek API üzerinden değişikliği yazdı ve testlerin çalışmasına bir kez siz izin verdiniz.</sub>
 
 </div>
 
@@ -96,11 +96,9 @@ Terminal uygulaması, `exec`, `web` ve Runtime API tek bir motoru paylaşır ([m
 
 ## Nasıl güvende kalır
 
-İki anahtar, Codewhale'in sormadan ne kadar şey yapabileceğini belirler. Giriş boşken `Tab` modu değiştirir: **Plan** okur ve arar ama hiçbir şeyi değiştirmez, **Work** dosyaları düzenler ve komutlar çalıştırır, **Operate** ise Work ile aynı erişime sahiptir ve hedef doğrulanana ya da size ihtiyaç duyana kadar devam eder. `Shift+Tab` izni değiştirir. Varsayılan olan **Ask**, deponuzdaki dosya düzenlemelerini sormadan uygular ve yalnızca okuma yapmayan kabuk komutlarından önce sorar. **Auto-Review**, kuralların ve bir inceleme modelinin rutin çağrıları onaylamasına izin verir ve yüksek riskli olanları reddeder; bunları kendiniz onaylamak için Ask'e geçin. **Full Access** hiç sormaz ve Codewhale'in sandbox'ını kapatır, ancak depo kuralları ve yönetilen politika geçerli olmaya devam eder. Ayrıntılar [v0.10.2 kılavuzunda](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md).
+Tek bir kadran, Codewhale'in sormadan ne kadar şey yapabileceğini belirler. `Shift+Tab` onu sırayla çevirir: **Ask → Accept Edits → Plan → Auto-Review → Full Access**. Varsayılan olan **Accept Edits**, git deposu içindeki dosya düzenlemelerini sormadan uygular ve komutlardan önce sorar. **Ask** her dosya düzenlemesinden ve her komuttan önce sorar. **Plan** okur ve arar ama hiçbir şeyi değiştirmez. **Auto-Review**, kuralların ve bir inceleme modelinin rutin çağrıları onaylamasına izin verir ve yüksek riskli olanları reddeder; bunları kendiniz onaylamak için Ask'e geçin. **Full Access** hiç sormaz ve Codewhale'in sandbox'ını kapatır, ancak depo kuralları ve yönetilen politika geçerli olmaya devam eder. `Tab` yalnızca tamamlama yapar ve modu asla değiştirmez; Operate kaldırıldı. Ayrıntılar [modlar kılavuzunda](../MODES.md).
 
-0.10.3 ile gelecek: `Shift+Tab`, Ask, Accept Edits, Plan, Auto-Review ve Full Access arasında dönen tek bir kadran olur, `Tab` artık modu değiştirmez ve Operate kaldırılır. Ask her dosya düzenlemesinden önce de soracak, yeni varsayılan Accept Edits ise git deposu içindeki düzenlemeleri uygulayıp komutlardan önce sormaya devam edecek. [Güncel kılavuz](../MODES.md) bunu anlatır.
-
-Ask ve Auto-Review'de komutlar, sistemde varsa bir işletim sistemi sandbox'ında çalışır: macOS'ta Seatbelt, Linux'ta kuruluysa bubblewrap. Windows'ta henüz işletim sistemi sandbox'ı yok ve Full Access sandbox'ı kapatır. Sandbox içinde kabuk komutları ve terminal oturumları `~/.ssh`, `~/.aws` ve `.env` dosyaları gibi kimlik bilgisi depolarını okuyamaz. `/preview-request`, bir sonraki isteğin hassas bilgileri gizlenmiş önizlemesini göndermeden gösterir.
+Ask, Accept Edits ve Auto-Review'de komutlar, sistemde varsa bir işletim sistemi sandbox'ında çalışır: macOS'ta Seatbelt, Linux'ta kuruluysa bubblewrap. Windows'ta henüz işletim sistemi sandbox'ı yok ve Full Access sandbox'ı kapatır. Sandbox içinde kabuk komutları ve terminal oturumları `~/.ssh`, `~/.aws` ve `.env` dosyaları gibi kimlik bilgisi depolarını okuyamaz. `/preview-request`, bir sonraki isteğin hassas bilgileri gizlenmiş önizlemesini göndermeden gösterir.
 
 Hesaba ihtiyacınız yok ve `/provider` ile eklediğiniz anahtarlar makinenizde kalır. Kendi API anahtarınızla sağlayıcıya doğrudan ödeme yaparsınız; yerel modeller anahtar gerektirmez. Fiyat biliniyorsa alt bilgi ve `/cost` bir oturumun maliyetini gösterir; bilinmeyen fiyat ücretsiz olarak değil, bilinmiyor olarak gösterilir.
 

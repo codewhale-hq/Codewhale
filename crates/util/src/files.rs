@@ -1,7 +1,7 @@
 //! Workspace-confined file operations shared by Fleet artifacts and its ledger.
 
 use std::fs::File;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Component, Path};
 
 pub struct ConfinedDirEntry {
@@ -496,21 +496,30 @@ impl WorkspaceFile {
         self.atomic_write(bytes, false)
     }
 
+    pub fn publish_from_reader(&self, reader: &mut impl io::Read) -> io::Result<()> {
+        self.atomic_write_retained(reader, false, None).map(drop)
+    }
+
     pub fn replace(&self, bytes: &[u8]) -> io::Result<()> {
         self.atomic_write(bytes, true)
     }
 
     fn atomic_write(&self, bytes: &[u8], replace: bool) -> io::Result<()> {
-        self.atomic_write_retained(bytes, replace, None).map(drop)
+        self.atomic_write_retained(&mut io::Cursor::new(bytes), replace, None)
+            .map(drop)
     }
 
     pub fn publish_retained(&self, bytes: &[u8], executable: bool) -> io::Result<File> {
-        self.atomic_write_retained(bytes, false, Some(if executable { 0o755 } else { 0o644 }))
+        self.atomic_write_retained(
+            &mut io::Cursor::new(bytes),
+            false,
+            Some(if executable { 0o755 } else { 0o644 }),
+        )
     }
 
     fn atomic_write_retained(
         &self,
-        bytes: &[u8],
+        reader: &mut impl io::Read,
         replace: bool,
         mode: Option<u32>,
     ) -> io::Result<File> {
@@ -549,7 +558,7 @@ impl WorkspaceFile {
                     return Err(error);
                 }
             }
-            file.write_all(bytes)?;
+            io::copy(reader, &mut file)?;
             file.sync_all()?;
             if !replace
                 && rename_exclusive(
@@ -938,7 +947,7 @@ impl WindowsDirectory {
             options
                 .access_mode(READ_CONTROL | WRITE_DAC | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES);
         }
-        let file = options.open(path)?;
+        let file = retry_windows_io(false, || options.open(path))?;
         let metadata = file.metadata()?;
         if !metadata.is_dir() || crate::path_identity::metadata_is_link_or_reparse(&metadata) {
             return Err(invalid_path());
@@ -1103,16 +1112,21 @@ impl WorkspaceFile {
         self.atomic_write(bytes, false)
     }
 
+    pub fn publish_from_reader(&self, reader: &mut impl io::Read) -> io::Result<()> {
+        self.atomic_write_retained(reader, false).map(drop)
+    }
+
     pub fn replace(&self, bytes: &[u8]) -> io::Result<()> {
         self.atomic_write(bytes, true)
     }
 
     fn atomic_write(&self, bytes: &[u8], replace: bool) -> io::Result<()> {
-        self.atomic_write_retained(bytes, replace).map(drop)
+        self.atomic_write_retained(&mut io::Cursor::new(bytes), replace)
+            .map(drop)
     }
 
     pub fn publish_retained(&self, bytes: &[u8], _executable: bool) -> io::Result<File> {
-        self.atomic_write_retained(bytes, false)
+        self.atomic_write_retained(&mut io::Cursor::new(bytes), false)
     }
 
     pub fn open_retained(&self) -> io::Result<File> {
@@ -1144,13 +1158,13 @@ impl WorkspaceFile {
         Ok(())
     }
 
-    fn atomic_write_retained(&self, bytes: &[u8], replace: bool) -> io::Result<File> {
+    fn atomic_write_retained(&self, reader: &mut impl io::Read, replace: bool) -> io::Result<File> {
         use std::os::windows::fs::OpenOptionsExt;
         use windows_sys::Win32::Storage::FileSystem::{
             DELETE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ,
         };
 
-        let mut temporary =
+        let mut temporary = retry_windows_io(false, || {
             tempfile::Builder::new()
                 .prefix(".fleet-write-")
                 .make_in(&self.directory, |path| {
@@ -1160,9 +1174,10 @@ impl WorkspaceFile {
                         .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE)
                         .share_mode(FILE_SHARE_READ)
                         .open(path)
-                })?;
+                })
+        })?;
         let result = (|| {
-            temporary.write_all(bytes)?;
+            io::copy(reader, &mut temporary)?;
             temporary.as_file().sync_all()?;
 
             rename_windows_opened(temporary.as_file(), &self.filename, replace)
@@ -1179,6 +1194,33 @@ impl WorkspaceFile {
                 temporary.into_temp_path().close()?;
                 Err(error)
             }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn retry_windows_io<T>(
+    include_permission_denied: bool,
+    mut op: impl FnMut() -> io::Result<T>,
+) -> io::Result<T> {
+    let mut attempt = 0;
+    loop {
+        match op() {
+            Ok(value) => return Ok(value),
+            Err(error)
+                if matches!(error.raw_os_error(), Some(32 | 33))
+                    || (include_permission_denied
+                        && (error.kind() == io::ErrorKind::PermissionDenied
+                            || error.raw_os_error() == Some(5))) =>
+            {
+                let Some(backoff) = crate::utils::windows_publish_retry_delay(&error, attempt)
+                else {
+                    return Err(error);
+                };
+                std::thread::sleep(backoff);
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
         }
     }
 }
@@ -1216,8 +1258,7 @@ pub fn rename_windows_opened(
         (*rename).FileNameLength = name_bytes as u32;
         std::ptr::copy_nonoverlapping(name.as_ptr(), (*rename).FileName.as_mut_ptr(), name.len());
     }
-    let mut attempt = 0;
-    loop {
+    retry_windows_io(true, || {
         let mut status = IO_STATUS_BLOCK::default();
         // SAFETY: this synchronously opened file has DELETE access;
         // every handle and buffer remains live throughout the call.
@@ -1231,16 +1272,14 @@ pub fn rename_windows_opened(
             )
         };
         if result >= 0 {
-            return Ok(());
+            Ok(())
+        } else {
+            // SAFETY: converts the returned NTSTATUS without dereferencing.
+            Err(io::Error::from_raw_os_error(unsafe {
+                RtlNtStatusToDosError(result) as i32
+            }))
         }
-        // SAFETY: converts the returned NTSTATUS without dereferencing.
-        let error = io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(result) as i32 });
-        let Some(backoff) = crate::utils::windows_publish_retry_delay(&error, attempt) else {
-            return Err(error);
-        };
-        std::thread::sleep(backoff);
-        attempt += 1;
-    }
+    })
 }
 
 /// Whether `directory`'s filesystem reports an owner and mode of its own for
@@ -1633,6 +1672,9 @@ impl WorkspaceFile {
     }
     pub fn publish(&self, _: &[u8]) -> io::Result<()> {
         unreachable!()
+    }
+    pub fn publish_from_reader(&self, _: &mut impl io::Read) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
     }
     pub fn open_delivery(workspace: &Path, relative: &Path) -> io::Result<Self> {
         Self::open(workspace, relative, false)

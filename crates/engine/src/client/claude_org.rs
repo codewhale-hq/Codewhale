@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use codewhale_account_cli::{AccountClient, ClaudeOrgError, ClaudeOrgErrorKind, ClaudeOrgToken};
 use codewhale_config::credentials::CLAUDE_ORG_LINK_COMMAND;
@@ -14,11 +14,25 @@ pub(super) type ClaudeOrgTokenSource =
 const USER_PROFILES_BETA: &str = "user-profiles-billing-2026-10-01";
 const ISSUED_TOKENS_KEPT: usize = 4;
 
+type ClaudeOrgResumeIdentity = (String, String, String, String);
+
+fn resume_identity(token: &ClaudeOrgToken) -> Option<ClaudeOrgResumeIdentity> {
+    let (issuer, account) = token.account.as_ref()?;
+    let profile = token.user_profile_id.as_ref()?;
+    Some((
+        issuer.clone(),
+        account.clone(),
+        profile.clone(),
+        token.base_url.clone(),
+    ))
+}
+
 pub(super) struct ClaudeOrgAuth {
     source: ClaudeOrgTokenSource,
     default_beta: Option<String>,
     cached: Mutex<Option<ClaudeOrgToken>>,
     issued: StdMutex<Vec<String>>,
+    pinned_resume_identity: OnceLock<ClaudeOrgResumeIdentity>,
 }
 
 impl ClaudeOrgAuth {
@@ -44,7 +58,38 @@ impl ClaudeOrgAuth {
             default_beta,
             cached: Mutex::new(None),
             issued: StdMutex::new(Vec::new()),
+            pinned_resume_identity: OnceLock::new(),
         }
+    }
+
+    #[allow(clippy::result_large_err)]
+    pub(super) async fn pin_resume_identity(
+        &self,
+    ) -> Result<Option<ClaudeOrgResumeIdentity>, LlmError> {
+        let identity = resume_identity(&self.token(None).await?);
+        if let Some(identity) = identity.as_ref() {
+            let pinned = self.pinned_resume_identity.get_or_init(|| identity.clone());
+            if pinned != identity {
+                return Err(Self::resume_identity_changed());
+            }
+        }
+        Ok(identity)
+    }
+
+    fn resume_identity_changed() -> LlmError {
+        LlmError::authentication_error(
+            "Claude organization billing identity changed after route selection. Re-run with an explicit --provider or --model.",
+        )
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn check_resume_identity(&self, token: &ClaudeOrgToken) -> Result<(), LlmError> {
+        if let Some(expected) = self.pinned_resume_identity.get()
+            && resume_identity(token).as_ref() != Some(expected)
+        {
+            return Err(Self::resume_identity_changed());
+        }
+        Ok(())
     }
 
     #[allow(clippy::result_large_err)]
@@ -54,6 +99,7 @@ impl ClaudeOrgAuth {
             token.is_fresh_at(chrono::Utc::now())
                 && rejected.is_none_or(|rejected| rejected != token.access_token)
         }) {
+            self.check_resume_identity(token)?;
             return Ok(token.clone());
         }
         *cached = None;
@@ -64,6 +110,7 @@ impl ClaudeOrgAuth {
                 LlmError::Other(format!("Claude organization token task failed: {error}"))
             })?
             .map_err(token_error)?;
+        self.check_resume_identity(&token)?;
         if let Ok(mut issued) = self.issued.lock() {
             if !issued.contains(&token.access_token) {
                 issued.push(token.access_token.clone());
@@ -193,7 +240,10 @@ fn token_error(error: ClaudeOrgError) -> LlmError {
         ClaudeOrgErrorKind::NotSignedIn
         | ClaudeOrgErrorKind::NotLinked
         | ClaudeOrgErrorKind::RelinkRequired
-        | ClaudeOrgErrorKind::Disabled => LlmError::authentication_error(error.to_string()),
+        | ClaudeOrgErrorKind::Disabled
+        | ClaudeOrgErrorKind::AlreadyLinkedElsewhere => {
+            LlmError::authentication_error(error.to_string())
+        }
         ClaudeOrgErrorKind::Unavailable => LlmError::ConnectError {
             message: error.to_string(),
             transient: true,
@@ -262,6 +312,7 @@ mod tests {
             Arc::new(move || {
                 let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
                 Ok(ClaudeOrgToken {
+                    account: Some(("fixture-account-service".into(), "fixture-account".into())),
                     access_token: format!("org-token-{n}"),
                     expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
                     base_url: "https://api.anthropic.com".to_string(),
@@ -333,7 +384,11 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let (client, fetches) = claude_org_client(&server);
+        let (mut client, fetches) = claude_org_client_with(&server, Some("uprof_fixture"), None);
+        client
+            .pin_exec_auth_scope()
+            .await
+            .expect("pin Claude billing profile");
 
         client
             .create_message(request(&client))
@@ -356,6 +411,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pinned_claude_org_profile_cannot_change_during_refetch() {
+        let fetches = AtomicUsize::new(0);
+        let auth = ClaudeOrgAuth::with_source(
+            Arc::new(move || {
+                let n = fetches.fetch_add(1, Ordering::SeqCst);
+                Ok(ClaudeOrgToken {
+                    account: Some(("fixture-account-service".into(), "fixture-account".into())),
+                    access_token: format!("fixture-token-{n}"),
+                    expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+                    base_url: "https://api.anthropic.com".into(),
+                    anthropic_version: "2026-10-21".into(),
+                    user_profile_id: Some(format!("uprof_fixture_{n}")),
+                })
+            }),
+            None,
+        );
+        assert!(auth.pin_resume_identity().await.unwrap().is_some());
+        let error = auth
+            .refetch_after_rejection("fixture-token-0")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("billing identity changed"));
+    }
+
+    #[tokio::test]
     async fn claude_org_token_is_refused_for_an_origin_it_was_not_bound_to() {
         let fetches = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&fetches);
@@ -363,6 +443,7 @@ mod tests {
             Arc::new(move || {
                 counter.fetch_add(1, Ordering::SeqCst);
                 Ok(ClaudeOrgToken {
+                    account: Some(("fixture-account-service".into(), "fixture-account".into())),
                     access_token: "org-token-bound".to_string(),
                     expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
                     base_url: "https://api.anthropic.com".to_string(),

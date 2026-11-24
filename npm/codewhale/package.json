@@ -1,7 +1,7 @@
 {
   "name": "codewhale",
-  "version": "0.10.3",
-  "codewhaleBinaryVersion": "0.10.3",
+  "version": "0.10.4",
+  "codewhaleBinaryVersion": "0.10.4",
   "description": "Terminal coding agent for supported hosted and local models. One runtime on your machine. Rust, MIT.",
   "author": "Hmbown",
   "license": "MIT",
@@ -45,13 +45,14 @@
     "test": "node --test test/*.test.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "publishConfig": {
     "access": "public"
   },
   "preferGlobal": true,
   "files": [
+    "codewhale-notices",
     "bin/*.js",
     "scripts/*.js",
     "test/*.js",

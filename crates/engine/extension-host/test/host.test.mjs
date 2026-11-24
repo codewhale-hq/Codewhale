@@ -209,6 +209,21 @@ export function apply() { createUserMessage({ content: [], source: { kind: 'fixt
   }
 })
 
+test('a nested ctx.inject wait names only the services that are missing, and why', async (t) => {
+  const host = await startHost()
+  t.after(() => host.stop())
+  const web = tempPlugin("export const name = 'widget'\nexport function apply(ctx) { ctx.inject(['credentials', 'webServer', 'connection'], () => {}) }\n")
+  const presets = tempPlugin("export const name = 'presets'\nexport function apply(ctx) { ctx.inject(['agentPresets'], () => {}) }\n")
+  t.after(() => { web.cleanup(); presets.cleanup() })
+  const widget = (await activate(host, 'nested-web', web.entry)).result
+  assert.equal(widget.status, 'failed')
+  assert.match(widget.diagnostic, /waits on `webServer`, `connection`, not provided by the Codewhale extension host in this phase \(DSH Web UI services; Codewhale has no plugin web server\)/)
+  assert.doesNotMatch(widget.diagnostic, /credentials/)
+  const registry = (await activate(host, 'nested-presets', presets.entry)).result
+  assert.equal(registry.status, 'failed')
+  assert.match(registry.diagnostic, /waits on `agentPresets`, not provided .*\(the DSH 0\.2\.2 agent-preset registry is not adopted\)/)
+})
+
 test('an unsupported DSH peer fails the import loudly', async (t) => {
   const host = await startHost()
   const plugin = tempPlugin("import '@deepseek-ai/dsh-agent'\nexport function apply() {}\n")

@@ -299,7 +299,7 @@ impl BuiltinModule {
 pub static BUILTIN_MODULES: &[BuiltinModule] = &[
     BuiltinModule {
         id: "harness",
-        source_sha256: "ac65aa44a3824dcdb0060db426bf530a088fd593e58b9f4cfdaefbc09a5fa037",
+        source_sha256: "7e93989b2ff84394ab841e28577f6661ea2f01f1b30905ea6ce54857ef7f5e34",
         tools: &[],
         services: &[],
     },
@@ -311,7 +311,7 @@ pub static BUILTIN_MODULES: &[BuiltinModule] = &[
     },
     BuiltinModule {
         id: "creator",
-        source_sha256: "41bf97f29fad606ae1d92c8937031233094dcbae96e43da90437b86895404923",
+        source_sha256: "dacda4ed3211feffbd92c2a569edac113037a2384202d1b577904b1dc4c5c2df",
         tools: &[
             Tier0Tool {
                 name: "cordis_inspect_list",

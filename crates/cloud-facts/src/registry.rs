@@ -3,16 +3,16 @@ use std::sync::Arc;
 
 use codewhale_config::catalog::now_unix;
 use codewhale_config::cloud_facts::registry::{
-    AdmittedRegistry, BuiltinNames, MAX_REGISTRY_ENVELOPE_BYTES, REGISTRY_SCHEMA, admit_registry,
-    verify_registry_envelope,
+    AdmittedRegistry, BuiltinNames, MAX_REGISTRY_ENVELOPE_BYTES, REGISTRY_CHANNEL, REGISTRY_SCHEMA,
+    admit_registry, verify_registry_envelope,
 };
 use codewhale_config::cloud_facts::{FactsRejection, TrustedKey, overlay};
 use codewhale_config::persistence::atomic_write;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Fetched, RefreshError, STATE_SUBDIR, Settings, checked_url, fetch_limited, fetch_suppressed,
-    read_bounded_regular,
+    Fetched, RefreshError, STATE_SUBDIR, Settings, checked_url, fetch_envelope, fetch_limited,
+    fetch_suppressed, off_runtime, publish_off_runtime, read_bounded_regular,
 };
 
 pub const ENV_REGISTRY_URL: &str = "CODEWHALE_REGISTRY_URL";
@@ -29,6 +29,15 @@ pub struct RegistrySettings {
     pub cache_path: Option<PathBuf>,
 }
 
+#[must_use]
+pub fn default_registry_url(facts_url: Option<&str>) -> String {
+    let template = facts_url
+        .map(str::trim)
+        .filter(|url| url.contains("{channel}"))
+        .unwrap_or(super::DEFAULT_URL_TEMPLATE);
+    template.replace("{channel}", REGISTRY_CHANNEL)
+}
+
 impl RegistrySettings {
     #[must_use]
     pub fn from_facts(settings: &Settings) -> Self {
@@ -38,10 +47,21 @@ impl RegistrySettings {
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
         };
+        let local_path = env(ENV_REGISTRY_PATH).map(PathBuf::from);
+        let explicit_url =
+            env(ENV_REGISTRY_URL).map(|url| url.replace("{channel}", REGISTRY_CHANNEL));
+        let url = if local_path.is_some() {
+            explicit_url
+        } else {
+            explicit_url.or_else(|| {
+                let facts_url = settings.url.clone().or_else(|| env(super::ENV_URL));
+                Some(default_registry_url(facts_url.as_deref()))
+            })
+        };
         Self {
             enabled: settings.enabled && !overlay::hard_disabled(),
-            url: env(ENV_REGISTRY_URL),
-            local_path: env(ENV_REGISTRY_PATH).map(PathBuf::from),
+            url,
+            local_path,
             cache_path: settings
                 .cache_path
                 .as_ref()
@@ -188,18 +208,19 @@ where
         return Err(RefreshError::Disabled);
     }
     let path = settings.cache_file();
-    let mut cache = cache_for(settings, path.as_deref());
-    let fetched = if let Some(local) = &settings.local_path {
-        read_bounded_regular(local, MAX_REGISTRY_ENVELOPE_BYTES)
-            .map(|bytes| Fetched::Body { bytes, etag: None })?
-    } else {
-        if suppress_network {
-            return Err(RefreshError::Suppressed);
-        }
-        let url = checked_url(settings.url.as_deref().unwrap_or_default())?;
-        let etag = cache.etag.clone().filter(|_| !cache.envelope.is_empty());
-        transport(url, etag, MAX_REGISTRY_ENVELOPE_BYTES).await?
+    let mut cache = {
+        let (settings, path) = (settings.clone(), path.clone());
+        off_runtime(move || Ok(cache_for(&settings, path.as_deref()))).await?
     };
+    let fetched = fetch_envelope(
+        settings.local_path.clone(),
+        MAX_REGISTRY_ENVELOPE_BYTES,
+        suppress_network,
+        || checked_url(settings.url.as_deref().unwrap_or_default()),
+        cache.etag.clone().filter(|_| !cache.envelope.is_empty()),
+        |url, etag| transport(url, etag, MAX_REGISTRY_ENVELOPE_BYTES),
+    )
+    .await?;
     let (bytes, etag) = match fetched {
         Fetched::NotModified => (cache.envelope.as_bytes().to_vec(), cache.etag.clone()),
         Fetched::NotFound => return Ok(None),
@@ -211,20 +232,27 @@ where
     cache.fetched_at = now_unix();
     cache.etag = etag;
     cache.envelope = String::from_utf8(bytes).map_err(|e| RefreshError::Io(e.to_string()))?;
-    if !overlay::publish_registry(ticket, Some(Arc::new(admitted)), |floor| {
-        cache.highest_revision = cache.highest_revision.max(floor);
-        save_cache(path.as_deref(), &cache);
-    }) {
-        return Err(RefreshError::Superseded);
-    }
+    let ticket = ticket.clone();
+    publish_off_runtime(move || {
+        overlay::publish_registry(&ticket, Some(Arc::new(admitted)), |floor| {
+            cache.highest_revision = cache.highest_revision.max(floor);
+            save_cache(path.as_deref(), &cache);
+        })
+    })
+    .await?;
     Ok(Some(revision))
 }
 
-pub(crate) fn spawn_registry_refresh(settings: RegistrySettings, ticket: overlay::OverlayTicket) {
+pub(crate) fn spawn_registry_refresh(
+    settings: RegistrySettings,
+    ticket: overlay::OverlayTicket,
+    on_update: Option<Arc<dyn Fn() + Send + Sync>>,
+) {
     if !settings.active() || (settings.local_path.is_none() && fetch_suppressed()) {
         return;
     }
     tokio::spawn(async move {
+        let before = overlay::snapshot().generation;
         let outcome = refresh_registry_using(
             &settings,
             &ticket,
@@ -234,6 +262,11 @@ pub(crate) fn spawn_registry_refresh(settings: RegistrySettings, ticket: overlay
         )
         .await;
         tracing::debug!(target: "cloud_facts", ?outcome, "registry refresh settled");
+        if overlay::snapshot().generation != before
+            && let Some(hook) = on_update
+        {
+            hook();
+        }
     });
 }
 

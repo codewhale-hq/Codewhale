@@ -114,6 +114,10 @@ mod telemetry;
 pub use base_url_resolution::*;
 pub use config_backup::*;
 pub use config_migration::*;
+pub use config_resolve::{
+    ConfiguredModelInputs, ConfiguredModelSelection, format_configured_model_error,
+    resolve_configured_model, resolve_model_for_configured_route,
+};
 pub use config_store::*;
 pub use config_toml::*;
 pub use display_redaction::*;

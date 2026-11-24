@@ -16,8 +16,8 @@ pub mod roots;
 mod system;
 #[allow(unused_imports)]
 pub use roots::{
-    CompatibleHarness, SkillRootAccess, SkillRootCatalog, SkillRootDescriptor, SkillRootId,
-    SkillRootKind, SkillScope, classify_configured_skills_dir, safe_display_path,
+    CompatibleHarness, SkillCatalogGroup, SkillRootAccess, SkillRootCatalog, SkillRootDescriptor,
+    SkillRootId, SkillRootKind, SkillScope, classify_configured_skills_dir, safe_display_path,
 };
 #[allow(unused_imports)]
 pub use system::is_exact_bundled_skill;
@@ -1066,6 +1066,19 @@ pub fn discover_in_workspace_with_mode_and_plugins(
     with_untrusted_project_skills_warning(registry, workspace, None, mode)
 }
 
+#[must_use]
+pub fn skill_root_catalog_for_workspace(
+    workspace: &Path,
+    skills_dir: Option<&Path>,
+    config: &SkillsConfig,
+) -> (SkillRootCatalog, Option<PathBuf>) {
+    let mode = SkillDiscoveryMode::from_config(config);
+    let home = codewhale_paths::user_home();
+    let catalog = SkillRootCatalog::build(workspace, home.as_deref(), skills_dir)
+        .with_flat_workspace_root(mode.flat_workspace_root());
+    (catalog, home)
+}
+
 pub fn discover_for_workspace(
     workspace: &Path,
     skills_dir: Option<&Path>,
@@ -1279,6 +1292,15 @@ fn merge_watched_directories(
         let (registry, dir_watched) = SkillRegistry::discover_watched_confined(&dir, confine_to);
         watched.extend(dir_watched);
         for mut skill in registry.skills {
+            if let Some(owned) = owned {
+                if let Some(retired) = system::retired_bundled_skill_name(&skill.name) {
+                    let marker = owned.join(retired).join(".installed-from");
+                    watched.push((marker.clone(), watched_path_stamp(&marker)));
+                }
+                if system::retired_bundled_copy_disabled(policy, &skill.path, &skill.name, owned) {
+                    continue;
+                }
+            }
             if let Some(owned) = owned.filter(|_| system::is_bundled_skill_name(&skill.name)) {
                 let marker = owned.join(&skill.name).join(".installed-from");
                 watched.push((marker.clone(), watched_path_stamp(&marker)));

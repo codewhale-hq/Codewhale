@@ -34,6 +34,7 @@ import {
 import { RpcError, type RpcPeer } from './rpc.ts'
 import { UserQuestionError } from './dsh/dsh-message-compat.js'
 import { explainImportError } from './dsh/resolve-hooks.ts'
+import { PROVIDED_SERVICES, REFUSED_SERVICES, describeMissingServices } from './dsh/missing-services.ts'
 import compatibility from './dsh/compatibility.json' with { type: 'json' }
 import { assertSupportedJsonSchema, validateJsonSchemaValue, ToolOutputError } from './dsh/dsh-tools-compat.js'
 import { isJson } from './json.ts'
@@ -59,16 +60,6 @@ import {
 /** Context key carrying the owner record; inherited by every nested fiber. */
 export const OWNER = Symbol.for('codewhale.extension-host.owner')
 
-/**
- * Service names a plugin may never provide: each is one authority the Rust
- * core owns (§4.3 of the design). `tools`, `commands` and `logger` are
- * provided by the host root as shims and are refused to plugins for the same
- * reason.
- */
-export const REFUSED_SERVICES = new Set(compatibility.refused_services)
-
-/** Services the root provides; `inject` of anything else fails activation. */
-const PROVIDED_SERVICES = new Set(Object.values(compatibility.provided_services).flat())
 const CORDIS_SERVICES = new Set(compatibility.provided_services.cordis)
 const CREATOR_SERVICES = new Set(['pluginManager', 'sandboxPolicy', 'approval'])
 
@@ -204,19 +195,22 @@ export class HostRoot {
     // projection. Refuse instead of accepting listeners that never fire.
     const unsupportedDshLifecycle = new Set([
       'agent/pre-step', 'agent/turn-stopping',
-      'tools/post-execute', 'subagent/start', 'subagent/end',
+      'subagent/start', 'subagent/end',
     ])
     root.on('internal/listener', function (this: any, name: string, callback: any, options: any) {
       if (this[OWNER] && unsupportedDshLifecycle.has(name)) throw new Error(`DSH lifecycle ${name} is not projected by this host checkpoint`)
       if (name === 'agent/created' && options?.global) throw new Error('agent/created listeners are owner-scoped; global is unsupported')
-      if (name !== 'tools/pre-execute') return
+      if (name !== 'tools/pre-execute' && name !== 'tools/post-execute') return
       const owner: OwnerRecord | undefined = this[OWNER]
-      if (!owner) throw new Error('pre-execute listener registered outside an extension owner')
-      if (options?.prepend || options?.global) throw new Error('pre-execute listeners use core registration order; prepend/global are unsupported')
+      if (!owner) throw new Error(`${name} listener registered outside an extension owner`)
+      if (options?.prepend || options?.global) throw new Error(`${name} listeners use core registration order; prepend/global are unsupported`)
+      const description = name === 'tools/pre-execute'
+        ? 'Programmable tool admission listener'
+        : 'Read-only tool outcome observer'
       return this.effect(() => host.hookRegistrations.add(
         { owner, name, callback, disposed: false },
-        { name, description: 'Programmable tool admission listener' },
-      ), 'ctx.on("tools/pre-execute")')
+        { name, description },
+      ), `ctx.on("${name}")`)
     })
 
     // Refuse core service names before any plugin can run. The refusal does
@@ -434,13 +428,17 @@ export class HostRoot {
           : undefined
       },
       log: (level, message, owner) => host.log(level, message, owner),
+      brokerTicket: (ctx, service) => {
+        const invocation = adapterHost.liveInvocation(ctx)
+        const ticket = invocation?.brokerTickets.get(service)
+        if (invocation === undefined || ticket === undefined) throw new RpcError(ErrorCode.NotAvailable, `the ${String(service).slice(0, 64)} broker is only available to a live tool invocation the core gave a ticket for it`)
+        return { invocation, ticket }
+      },
       broker: async (ctx, service, method, input, signal?: AbortSignal) => {
         if (signal !== undefined && !(signal instanceof AbortSignal)) {
           throw new RpcError(ErrorCode.InvalidParams, 'signal must be an AbortSignal')
         }
-        const invocation = adapterHost.liveInvocation(ctx)
-        const ticket = invocation?.brokerTickets.get(service)
-        if (invocation === undefined || ticket === undefined) throw new RpcError(ErrorCode.NotAvailable, `the ${String(service).slice(0, 64)} broker is only available to a live tool invocation the core gave a ticket for it`)
+        const { invocation, ticket } = adapterHost.brokerTicket(ctx, service)
         const combined = signal === undefined ? invocation.signal : AbortSignal.any([invocation.signal, signal])
         return rpc.request<unknown>('dsh/broker', { owner: invocation.owner.ref, ticket, service, method, input }, combined)
       },
@@ -591,11 +589,7 @@ export class HostRoot {
       const creatorAllowed = this.tier === 'builtin' && owner.ref.plugin_id === 'host:creator'
       const creatorRestricted = this.tier === 'builtin' && !creatorAllowed
       const missing = Object.keys(Inject.resolve(plugin.inject)).filter((name) => (!PROVIDED_SERVICES.has(name) || (creatorRestricted && CREATOR_SERVICES.has(name))) && !(creatorAllowed && CREATOR_SERVICES.has(name)))
-      if (missing.length > 0) {
-        const owned = missing.filter((name) => REFUSED_SERVICES.has(name))
-        throw new Error(`requires ${missing.map((name) => `\`${name}\``).join(', ')}, not provided by the Codewhale extension host in this phase`
-          + (owned.length > 0 ? `; ${owned.map((name) => `\`${name}\``).join(', ')} belong${owned.length === 1 ? 's' : ''} to the Codewhale core and no reviewed bridge exposes ${owned.length === 1 ? 'it' : 'them'} yet` : ''))
-      }
+      if (missing.length > 0) throw new Error(`requires ${describeMissingServices(missing, { scoped: false })}`)
       const ownerCtx = this.root.extend({ [OWNER]: owner })
       const fiber = ownerStorage.run(owner, () => ownerCtx.plugin(plugin, params.config ?? {}))
       owner.fibers.push(fiber)
@@ -809,6 +803,17 @@ export class HostRoot {
       throw new RpcError(ErrorCode.NotAvailable, 'hook handle is not live for this event')
     }
     const exec = hookExecution(params.payload, signal)
+    if (params.event === 'tools/post-execute') {
+      const run = ownerStorage.run(local.owner, async () => {
+        try {
+          await local.callback(exec, async () => ({ kind: 'abstain' }))
+        } catch (error) {
+          this.log('warn', `tools/post-execute listener threw: ${describeError(error)}`, local.owner)
+        }
+        return { kind: 'abstain' } as HookVerdictWire
+      })
+      return Promise.race([run, abortedBy(signal)])
+    }
     const run = ownerStorage.run(local.owner, async () => hookVerdict(
       await local.callback(exec, async () => ({ kind: 'abstain' })),
       () => {
@@ -941,7 +946,8 @@ function pendingFibers(fiber: any): string[] {
     seen.add(current)
     if (current.state === 0 /* PENDING */) {
       const names = Object.keys(current.inject ?? {})
-      out.push(`${current.name ?? 'plugin'} (${names.join(', ')})`)
+      const unresolved = names.filter((name) => current.ctx?.get?.(name) === undefined)
+      out.push(`${current.name ?? 'plugin'} waits on ${describeMissingServices(unresolved.length > 0 ? unresolved : names)}`)
     }
   }
   visit(fiber)

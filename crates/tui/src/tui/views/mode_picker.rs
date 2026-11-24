@@ -8,15 +8,15 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph, Widget},
+    widgets::{Padding, Paragraph, Widget},
 };
 use unicode_width::UnicodeWidthStr;
 
 use crate::tui::app::{App, AppModeUi};
 use crate::tui::conversation_mode as modes;
 use crate::tui::views::{
-    ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, centered_modal_area,
-    render_modal_footer, render_modal_surface,
+    ActionHint, ModalKind, ModalView, SurfaceFrame, ViewAction, ViewEvent, centered_modal_area,
+    render_modal_footer, render_rounded_modal,
 };
 use codewhale_config::AppMode;
 use codewhale_engine::conversation_modes::ConversationModeTable;
@@ -44,6 +44,7 @@ enum Entry {
 
 pub struct ModePickerView {
     cursor: usize,
+    current_mode: AppMode,
     locale: Locale,
     rows: Vec<ConversationRow>,
     locked: bool,
@@ -79,14 +80,8 @@ impl ModePickerView {
                 id: mode.id.clone(),
                 name: modes::display_name(locale, mode),
                 description: modes::display_description(locale, mode),
-                unavailable: (!mode.available).then(|| {
-                    modes::display_reason(
-                        locale,
-                        mode.reason
-                            .as_deref()
-                            .unwrap_or("This mode is unavailable."),
-                    )
-                }),
+                unavailable: (!mode.available)
+                    .then(|| modes::display_reason(locale, mode.reason.as_deref())),
                 current: mode.id == current_id,
             })
             .collect();
@@ -101,6 +96,7 @@ impl ModePickerView {
         );
         let mut view = Self {
             cursor: 0,
+            current_mode: current,
             locale,
             rows,
             locked,
@@ -226,26 +222,13 @@ impl ModalView for ModePickerView {
         let popup_height = self.line_count() + 7;
         let popup_area = centered_modal_area(area, 68, popup_height, 44, 8);
 
-        render_modal_surface(area, popup_area, buf);
-
-        let title = format!(
-            " {} ",
-            tr(self.locale, MessageId::ConversationModePickerTitle)
+        let (inner, _) = render_rounded_modal(
+            area,
+            popup_area,
+            buf,
+            SurfaceFrame::new(tr(self.locale, MessageId::ConversationModePickerTitle))
+                .padding(Padding::uniform(1)),
         );
-        let block = Block::default()
-            .title(Line::from(Span::styled(
-                title,
-                Style::default()
-                    .fg(palette::WHALE_ACTION)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::WHALE_BG))
-            .padding(Padding::uniform(1));
-
-        let inner = block.inner(popup_area);
-        block.render(popup_area, buf);
 
         let content = render_modal_footer(
             inner,
@@ -266,12 +249,15 @@ impl ModalView for ModePickerView {
         let muted = Style::default().fg(palette::TEXT_MUTED);
         let width = usize::from(content.width);
         let mut lines: Vec<Line<'static>> = Vec::new();
+        let mut selected_row_y: Option<u16> = None;
 
-        let push_row = |lines: &mut Vec<Line<'static>>,
-                        entry: Option<Entry>,
-                        prefix: String,
-                        text: String,
-                        disabled: bool| {
+        let mut push_row = |lines: &mut Vec<Line<'static>>,
+                            entry: Option<Entry>,
+                            pointer: String,
+                            is_active: bool,
+                            label: String,
+                            text: String,
+                            disabled: bool| {
             let cursor_here = entry.is_some_and(|entry| entries.get(self.cursor) == Some(&entry));
             let row_style = if cursor_here {
                 menu_style::selected_row_style()
@@ -280,23 +266,45 @@ impl ModalView for ModePickerView {
             } else {
                 Style::default().fg(palette::TEXT_PRIMARY)
             };
+            let active_style = if cursor_here {
+                menu_style::selected_row_style()
+            } else if is_active {
+                Style::default().fg(palette::STATUS_SUCCESS)
+            } else {
+                row_style
+            };
             let hint_style = if cursor_here {
                 menu_style::selected_row_bg_style().fg(palette::SELECTION_TEXT)
             } else {
                 muted
             };
-            let room = width.saturating_sub(UnicodeWidthStr::width(prefix.as_str()));
+            let check = if is_active {
+                codewhale_tui_kit::glyphs::CURRENT
+            } else {
+                " "
+            };
+            let lead = format!("{pointer} ");
+            let body = format!(" {label}");
+            let prefix_width = UnicodeWidthStr::width(lead.as_str())
+                + UnicodeWidthStr::width(check)
+                + UnicodeWidthStr::width(body.as_str());
+            let room = width.saturating_sub(prefix_width);
             let text = codewhale_tui_kit::ui_text::semantic_truncate(&text, room);
+            let y = content
+                .y
+                .saturating_add(u16::try_from(lines.len()).unwrap_or(u16::MAX));
             if entry.is_some() {
-                let y = content
-                    .y
-                    .saturating_add(u16::try_from(lines.len()).unwrap_or(u16::MAX));
                 self.row_hitboxes
                     .borrow_mut()
                     .push(Rect::new(content.x, y, content.width, 1));
             }
+            if cursor_here && y < content.bottom() {
+                selected_row_y = Some(y);
+            }
             lines.push(Line::from(vec![
-                Span::styled(prefix, row_style),
+                Span::styled(lead, row_style),
+                Span::styled(check.to_string(), active_style),
+                Span::styled(body, row_style),
                 Span::styled(text, hint_style),
             ]));
         };
@@ -327,10 +335,9 @@ impl ModalView for ModePickerView {
                 } else {
                     " ".to_string()
                 };
-                let check = if row.current { "✓" } else { " " };
                 let pad =
                     " ".repeat(16usize.saturating_sub(UnicodeWidthStr::width(row.name.as_str())));
-                let prefix = format!("{pointer} {check} {}{pad}", row.name);
+                let label = format!("{}{pad}", row.name);
                 let text = row
                     .unavailable
                     .clone()
@@ -338,7 +345,9 @@ impl ModalView for ModePickerView {
                 push_row(
                     &mut lines,
                     entry,
-                    prefix,
+                    pointer,
+                    row.current,
+                    label,
                     text,
                     row.unavailable.is_some() || self.locked,
                 );
@@ -352,14 +361,28 @@ impl ModalView for ModePickerView {
         for mode in VISIBLE_MODES {
             let entry = Entry::Permission(mode);
             let cursor_here = entries.get(self.cursor) == Some(&entry);
-            let pointer = codewhale_tui_kit::glyphs::selection_marker(cursor_here);
+            let pointer = codewhale_tui_kit::glyphs::selection_marker(cursor_here).to_string();
             let name = mode.display_name_localized(self.locale);
             let hint = mode.picker_hint_localized(self.locale);
             let pad = " ".repeat(8usize.saturating_sub(UnicodeWidthStr::width(&*name)));
-            let prefix = format!("{pointer} {}. {name}{pad}", mode.number());
-            push_row(&mut lines, Some(entry), prefix, hint.into_owned(), false);
+            let label = format!("{}. {name}{pad}", mode.number());
+            push_row(
+                &mut lines,
+                Some(entry),
+                pointer,
+                mode == self.current_mode,
+                label,
+                hint.into_owned(),
+                false,
+            );
         }
 
+        if let Some(y) = selected_row_y {
+            buf.set_style(
+                Rect::new(content.x, y, content.width, 1),
+                menu_style::selected_row_bg_style(),
+            );
+        }
         Paragraph::new(lines).render(content, buf);
     }
 }
@@ -667,5 +690,26 @@ mod tests {
             view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             ViewAction::EmitAndClose(ViewEvent::ConversationModeSelected { ref id }) if id == "creator"
         ));
+    }
+
+    #[test]
+    fn unavailable_mode_without_reason_uses_localized_default() {
+        let table = ConversationModeTable {
+            default: conversation_modes::STANDARD,
+            modes: vec![conversation_modes::ConversationMode {
+                id: "unavailable-id".to_string(),
+                name: "Unavailable".to_string(),
+                description: "Unavailable mode".to_string(),
+                source: "builtin",
+                available: false,
+                reason: None,
+            }],
+        };
+        let view = ModePickerView::from_table(AppMode::Agent, Locale::ZhHans, &table, None, false);
+        let expected = tr(
+            Locale::ZhHans,
+            MessageId::ConversationModeUnavailableDefault,
+        );
+        assert_eq!(view.rows[0].unavailable.as_deref(), Some(expected.as_ref()));
     }
 }

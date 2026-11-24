@@ -2419,3 +2419,89 @@ mod spools {
         assert!(lines.last().unwrap().contains(&line(699)));
     }
 }
+
+#[test]
+fn arming_skips_a_busy_privacy_lock_instead_of_wedging_the_launch() {
+    let home = temp_home();
+    let root = root_of(&home);
+    buffer::ensure_dir(&root).expect("telemetry root");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(buffer::lock_path(&root))
+        .expect("open lock");
+    let mut lock = fd_lock::RwLock::new(file);
+    let _guard = lock.try_write().expect("hold the privacy lock");
+
+    let started = Instant::now();
+    let error = buffer::arm(&root, None, || true).expect_err("busy lock must not arm");
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(error.to_string().contains("lock stayed busy"));
+}
+
+#[test]
+fn arm_reinstalls_tombstone_if_permission_flips_false_after_removal() {
+    let home = temp_home();
+    let root = root_of(&home);
+    buffer::ensure_dir(&root).expect("telemetry root");
+    buffer::wipe(&root).expect("wipe");
+    let generation = buffer::tombstone_generation(&root).expect("read wipe generation");
+    let checks = std::sync::atomic::AtomicUsize::new(0);
+    let err = buffer::arm(&root, generation.as_ref(), || {
+        checks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+    })
+    .expect_err("revoked permission after tombstone removal must fail closed");
+    assert!(err.to_string().contains("no longer enabled"));
+    assert!(buffer::tombstone_present(&root));
+}
+
+#[test]
+fn persistent_preference_waits_for_delivery_even_after_startup_budget() {
+    let home = temp_home();
+    let root = root_of(&home);
+    buffer::ensure_dir(&root).expect("telemetry root");
+    let file = std::fs::File::create(buffer::lock_path(&root)).expect("privacy lock");
+    let mut lock = fd_lock::RwLock::new(file);
+    let guard = lock.try_write().expect("hold delivery lock");
+    let (finished, completion) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            finished.send(buffer::wipe(&root)).expect("report wipe");
+        });
+        assert!(matches!(
+            completion.recv_timeout(std::time::Duration::from_millis(3200)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(guard);
+        completion
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("wipe completed")
+            .expect("wipe succeeded");
+    });
+    assert!(buffer::tombstone_present(&root));
+}
+
+#[test]
+fn lockless_wipe_fallback_installs_non_empty_tombstone() {
+    let home = temp_home();
+    let root = root_of(&home);
+    buffer::ensure_dir(&root).expect("telemetry root");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(buffer::lock_path(&root))
+        .expect("open lock");
+    let mut lock = fd_lock::RwLock::new(file);
+    let _guard = lock.try_write().expect("hold the privacy lock");
+
+    let err = buffer::wipe_on_startup(&root).expect_err("busy lock returns error");
+    assert!(err.to_string().contains("lock stayed busy"));
+    assert!(buffer::tombstone_present(&root));
+    assert!(
+        buffer::tombstone_generation(&root)
+            .expect("read fallback tombstone")
+            .is_some()
+    );
+}

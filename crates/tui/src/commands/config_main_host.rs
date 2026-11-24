@@ -19,8 +19,7 @@ use codewhale_runtime::config::{
     MAX_SUBAGENT_API_TIMEOUT_SECS, MAX_SUBAGENT_HEARTBEAT_TIMEOUT_SECS, MAX_SUBAGENTS,
     MIN_STREAM_CHUNK_TIMEOUT_SECS, MIN_SUBAGENT_API_TIMEOUT_SECS,
     MIN_SUBAGENT_HEARTBEAT_TIMEOUT_SECS, SearchProvider, SearchProviderSource, SubagentsConfig,
-    XIAOMI_MIMO_PAY_AS_YOU_GO_BASE_URL, normalize_custom_model_id,
-    normalize_model_name_for_provider, validate_route,
+    XIAOMI_MIMO_PAY_AS_YOU_GO_BASE_URL, normalize_custom_model_id, validate_route,
 };
 use codewhale_runtime::config_persistence::{
     persist_root_bool_key, persist_root_string_key, persist_subagents_bool_key,
@@ -446,32 +445,37 @@ pub(crate) fn show_single_setting(app: &App, key: &str) -> ConfigReply {
                 .as_setting_for_provider(app.api_provider)
                 .to_string(),
         ),
-        "workspace_follow_symlinks" | "follow_symlinks" => Settings::load().ok().map(|settings| {
-            format!(
+        "workspace_follow_symlinks" | "follow_symlinks" => match Settings::load() {
+            Ok(settings) => Some(format!(
                 "{} (restart required for engine tools)",
                 settings.workspace_follow_symlinks
-            )
+            )),
+            Err(err) => return config_lookup_failed(app.ui_locale, &key, err),
+        },
+        "search" | "search.provider" | "search_provider" => match load_command_config(app) {
+            Ok(config) => Some(search_provider_display(&config, app.ui_locale)),
+            Err(err) => return config_lookup_failed(app.ui_locale, &key, err),
+        },
+        "telemetry" => match load_command_config(app) {
+            Ok(config) => Some(
+                codewhale_engine::telemetry_notice::saved_preference_enabled(&config).to_string(),
+            ),
+            Err(err) => return config_lookup_failed(app.ui_locale, &key, err),
+        },
+        "prompt_suggestion" => match load_command_config(app) {
+            Ok(config) => Some(prompt_suggestion_display(&config)),
+            Err(err) => return config_lookup_failed(app.ui_locale, &key, err),
+        },
+        "auto_review.reviewer_model" => Some(match app.auto_review_reviewer_model.clone() {
+            Some(model) => model,
+            None => match load_command_config(app) {
+                Ok(config) => config
+                    .auto_review
+                    .and_then(|cfg| cfg.reviewer_model)
+                    .unwrap_or_else(|| "auto (default)".to_string()),
+                Err(err) => return config_lookup_failed(app.ui_locale, &key, err),
+            },
         }),
-        "search" | "search.provider" | "search_provider" => load_command_config(app)
-            .ok()
-            .map(|config| search_provider_display(&config, app.ui_locale)),
-        "telemetry" => load_command_config(app).ok().map(|config| {
-            codewhale_engine::telemetry_notice::saved_preference_enabled(&config).to_string()
-        }),
-        "prompt_suggestion" => load_command_config(app)
-            .ok()
-            .map(|config| prompt_suggestion_display(&config)),
-        "auto_review.reviewer_model" => Some(
-            app.auto_review_reviewer_model
-                .clone()
-                .or_else(|| {
-                    load_command_config(app)
-                        .ok()
-                        .and_then(|config| config.auto_review)
-                        .and_then(|cfg| cfg.reviewer_model)
-                })
-                .unwrap_or_else(|| "auto (default)".to_string()),
-        ),
         "notifications" => Some(notifications_summary_value(&app.notification_settings)),
         _ => {
             // Any spelling `/set` accepts; internal flags, actions and
@@ -488,6 +492,18 @@ pub(crate) fn show_single_setting(app: &App, key: &str) -> ConfigReply {
         Some(v) => ConfigReply::message(format!("{key} = {v}")),
         None => ConfigReply::error(unknown_setting_message(&key)),
     }
+}
+
+fn config_lookup_failed(
+    locale: codewhale_localization::Locale,
+    key: &str,
+    err: impl std::fmt::Display,
+) -> ConfigReply {
+    ConfigReply::error(
+        tr(locale, MessageId::ConfigLookupFailed)
+            .replace("{key}", key)
+            .replace("{error}", &format!("{err:#}")),
+    )
 }
 
 /// Error for `/config <key>` when `key` is not a known setting: name the
@@ -1893,11 +1909,12 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                 {
                     value.trim().to_string()
                 } else {
-                    let Some(model) =
-                        normalize_model_name_for_provider(ProviderKind::Deepseek, value)
+                    let Ok(resolved) =
+                        codewhale_config::route::resolve_model(ProviderKind::Deepseek, value, None)
                     else {
                         return ConfigReply::error(format!("Invalid DeepSeek model '{value}'."));
                     };
+                    let model = resolved.wire_id;
                     if let Err(error) = validate_route(ProviderKind::Deepseek, &model) {
                         return ConfigReply::error(error);
                     }
@@ -1927,12 +1944,15 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             let model = if auto_select {
                 "auto".to_string()
             } else if app.api_provider == ProviderKind::OpencodeGo {
-                let Some(model) = normalize_model_name_for_provider(app.api_provider, value) else {
+                let Ok(resolved) =
+                    codewhale_config::route::resolve_model(app.api_provider, value, None)
+                else {
                     return ConfigReply::error(format!(
                         "Invalid model '{value}' for provider {}.",
                         app.api_provider.as_str()
                     ));
                 };
+                let model = resolved.wire_id;
                 if let Err(reason) = validate_route(app.api_provider, &model) {
                     return ConfigReply::error(reason);
                 }
@@ -1955,12 +1975,15 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                 };
                 model
             } else {
-                let Some(model) = normalize_model_name_for_provider(app.api_provider, value) else {
+                let Ok(resolved) =
+                    codewhale_config::route::resolve_model(app.api_provider, value, None)
+                else {
                     return ConfigReply::error(format!(
                         "Invalid model '{value}' for provider {}.",
                         app.api_provider.as_str()
                     ));
                 };
+                let model = resolved.wire_id;
                 if let Err(reason) = validate_route(app.api_provider, &model) {
                     return ConfigReply::error(reason);
                 }
@@ -2198,19 +2221,32 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             };
             let suffix = if persist {
                 match persist_root_bool_key(app.config_path.as_deref(), "allow_shell", enabled) {
-                    Ok(path) => format!(" (saved to {})", path.display()),
+                    Ok(path) => format!(
+                        " ({})",
+                        app.tr(MessageId::ConfigSavedTo)
+                            .replace("{path}", &path.display().to_string())
+                    ),
                     Err(err) => return ConfigReply::error(format!("Failed to save: {err}")),
                 }
             } else {
-                " (session only, add --save to persist)".to_string()
+                format!(" ({})", app.tr(MessageId::ConfigSessionOnlyHint))
             };
             app.set_agent_shell_access(enabled);
             let mode_hint = if enabled {
-                " Work mode will expose shell on the next turn with approval gating. Full Access (Shift+Tab) also enables shell and auto-approves."
+                app.tr(MessageId::ConfigAllowShellEnabledHint).replace(
+                    "{chord}",
+                    &crate::tui::shell_key_routing::display_chord(
+                        crate::tui::shell_key_routing::binding(
+                            crate::tui::shell_key_routing::ShellBindingId::PermissionCycle,
+                        )
+                        .footer_chord,
+                    ),
+                )
             } else {
-                " Shell tools will be hidden on the next turn. Re-enable with `/config allow_shell true`."
+                app.tr(MessageId::ConfigAllowShellDisabledHint)
+                    .replace("{command}", "`/config allow_shell true`")
             };
-            return ConfigReply::message(format!("allow_shell = {enabled}{suffix}.{mode_hint}"));
+            return ConfigReply::message(format!("allow_shell = {enabled}{suffix}. {mode_hint}"));
         }
         "mcp_config_path" | "mcp" => {
             if value.trim().is_empty() {

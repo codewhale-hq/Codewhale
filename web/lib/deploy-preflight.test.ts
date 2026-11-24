@@ -135,7 +135,11 @@ describe("web workflow deploy trigger contract", () => {
   const deployReminder = jobBlock(workflow, "deploy-reminder");
 
   it("runs lint only for manually requested final validation", () => {
-    expect(workflow).toMatch(/^on:\n  workflow_dispatch:\n\npermissions:/m);
+    const triggerBlock = workflow.slice(
+      workflow.indexOf("on:\n"),
+      workflow.indexOf("\n\npermissions:"),
+    );
+    expect(triggerBlock).toMatch(/^on:\n  workflow_dispatch:(?:\n    .*)*$/);
     expect(jobBlock(workflow, "lint")).not.toContain("if:");
   });
 
@@ -168,6 +172,19 @@ describe("web workflow deploy trigger contract", () => {
   it("checks out the exact dispatched revision before deploying", () => {
     expect(deploy).toContain("ref: ${{ github.sha }}");
     expect(deploy).toContain('--expected-revision "$GITHUB_SHA"');
+  });
+
+  it("verifies an optional expected_sha input right after checkout", () => {
+    expect(workflow).toMatch(
+      /^  workflow_dispatch:\n    inputs:\n      expected_sha:\n        description: .*\n        required: false\n        default: ''\n        type: string$/m,
+    );
+    for (const job of [jobBlock(workflow, "lint"), deploy]) {
+      expect(job).toContain("EXPECTED_SHA: ${{ inputs.expected_sha }}");
+      expect(job).toContain('actual="$(git rev-parse HEAD)"');
+      expect(job.indexOf("actions/checkout@")).toBeGreaterThanOrEqual(0);
+      expect(job.indexOf("Verify expected commit")).toBeGreaterThan(job.indexOf("actions/checkout@"));
+      expect(job.indexOf("Verify expected commit")).toBeLessThan(job.indexOf("actions/setup-node@"));
+    }
   });
 
   it("builds and caches one bundle before cf deploy consumes it", () => {

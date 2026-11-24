@@ -465,7 +465,7 @@ pub fn system_prompt(contexts: CommandContexts<'_>) -> CommandResult {
         format!(
             "{}...\n\n(truncated, {} chars total)",
             &prompt_text[..truncate_at],
-            prompt_text.len()
+            prompt_text.chars().count()
         )
     } else {
         prompt_text

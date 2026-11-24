@@ -539,6 +539,40 @@ not from project or plugin declarations.
 
 `codewhale mcp init` (and `codewhale setup --mcp`) writes to this resolved path.
 
+#### Delegated connector reads
+
+An operator can authorize a child to send a specific read to a static HTTP connector. Put the declaration in the global MCP config outside the workspace. Verify the connector implementation and operation before declaring its effect. The child needs network access, the exact tool name in its scope, and the session's per-call approval. Each declaration pins the server URL, literal authorization headers, advertised input schema and allowed argument objects. Changing the binding or schema requires a new declaration. OAuth, environment-supplied credentials, runtime servers, project files and plugins cannot supply this grant.
+
+For a server named `books` that advertises `lookup`, the child tool name is `mcp_books_lookup`. This example adds its read policy to the global config.
+
+```json
+{
+  "delegated_operations": {
+    "books": {
+      "lookup": {
+        "effect": "read",
+        "binding_sha256": "<binding digest>",
+        "input_schema": {"type": "object", "properties": {"isbn": {"type": "string"}}},
+        "allowed_arguments": [{"isbn": "sample"}]
+      }
+    }
+  }
+}
+```
+
+Compute the binding digest locally using the exact URL and all literal headers. This example reads the selected server and prints only its digest.
+
+```sh
+python3 - /path/to/global/mcp.json books <<'PYTHON'
+import hashlib, json, sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    config = json.load(source)
+server = (config.get("servers") or config["mcpServers"])[sys.argv[2]]
+binding = json.dumps([server["url"], server["headers"]], sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+print(hashlib.sha256(binding.encode()).hexdigest())
+PYTHON
+```
+
 The interactive `/config` editor also exposes `mcp_config_path`. Changing it in
 the TUI updates the path used by `/mcp` and marks the pool reload-required;
 `/mcp reload` then switches the live pool to the new config source.

@@ -528,6 +528,94 @@ async fn lifecycle_deliverable_preview_reports_omissions_and_detail_pages_the_fu
     assert_eq!(detail["verification"]["deliverables_next_offset"], 6);
 }
 
+#[test]
+fn lifecycle_oversized_event_pages_return_every_sequence_once() {
+    let expected: Vec<u64> = (1..=25).collect();
+    let events: Vec<Value> = expected
+        .iter()
+        .map(|seq| {
+            json!({
+                "seq": seq,
+                "status": "running_tool",
+                "timestamp_ms": 1_700_000_000_000_u64,
+                "message": "\u{0001}".repeat(160),
+                "tool_name": "x".repeat(64),
+            })
+        })
+        .collect();
+    let projection = json!({"worker_record": {"events": events}});
+    for (path_bytes, first_page_len) in [(0, 4), (6000, 1), (10000, 1)] {
+        let compact = json!({
+            "agent_id": "agent-test",
+            "write_progress": {"declared": ["x".repeat(path_bytes)]},
+        });
+        let mut seen = Vec::new();
+        loop {
+            let offset = seen.len();
+            let detail = lifecycle::bounded_detail(projection.clone(), compact.clone(), offset, 20);
+            let result = lifecycle::status_result(detail, false).unwrap();
+            assert!(result.content.len() <= 8192);
+            let page: Value = serde_json::from_str(&result.content).unwrap();
+            let rows = page["recent_events"].as_array().unwrap();
+            assert!(!rows.is_empty());
+            if offset == 0 {
+                assert_eq!(rows.len(), first_page_len);
+            }
+            assert_eq!(page["events_total"], expected.len());
+            seen.extend(rows.iter().map(|row| row["seq"].as_u64().unwrap()));
+            let Some(next) = page["events_next_offset"].as_u64() else {
+                break;
+            };
+            assert_eq!(next as usize, seen.len());
+            assert!(seen.len() < expected.len());
+        }
+        assert_eq!(seen, expected);
+    }
+
+    let last_page = |bytes| {
+        lifecycle::bounded_detail(
+            projection.clone(),
+            json!({"agent_id":"agent-test","write_progress":{"declared":["x".repeat(bytes)]}}),
+            expected.len() - 1,
+            20,
+        )
+    };
+    let available = 8192 - serde_json::to_vec(&last_page(0)).unwrap().len();
+    let result = lifecycle::status_result(last_page(available), false).unwrap();
+    assert!(result.content.len() <= 8192);
+    let page: Value = serde_json::from_str(&result.content).unwrap();
+    assert_eq!(page["recent_events"][0]["seq"], 25);
+    assert!(page.get("events_next_offset").is_none());
+
+    for (session_bytes, keeps_handle) in [(7200, true), (9000, false)] {
+        let mut with_handle = projection.clone();
+        with_handle["transcript_handle"] = json!({
+            "kind": "var_handle", "session_id": "s".repeat(session_bytes),
+            "name": "transcript", "type": "json", "length": 7, "repr_preview": "",
+            "sha256": "a".repeat(64),
+        });
+        let detail = lifecycle::bounded_detail(
+            with_handle.clone(),
+            json!({"agent_id":"agent-test","summary":"x".repeat(7600)}),
+            0,
+            20,
+        );
+        let result = lifecycle::status_result(detail, false).unwrap();
+        assert!(result.content.len() <= 8192);
+        let page: Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(page["recent_events"][0]["seq"], 1);
+        assert_eq!(page["recent_events"][0]["detail_omitted"], true);
+        assert_eq!(page["events_next_offset"], 1);
+        assert_eq!(page["agent_id"], "agent-test");
+        if keeps_handle {
+            assert_eq!(page["transcript_handle"], with_handle["transcript_handle"]);
+        } else {
+            assert!(page.get("transcript_handle").is_none());
+            assert_eq!(page["transcript_handle_omitted"], true);
+        }
+    }
+}
+
 #[tokio::test]
 async fn lifecycle_running_row_reports_declared_vs_observed_writes() {
     // #6194 item 5: the parent sees the declared/observed write diff while
@@ -871,4 +959,544 @@ async fn lifecycle_cleanup_keeps_source_identity_while_descendants_still_need_it
     assert!(manager.agents.is_empty());
     assert!(manager.worker_records.is_empty());
     assert!(manager.resume_targets.is_empty());
+}
+
+#[test]
+fn reasoning_override_note_names_requested_and_effective_tiers() {
+    let mut route = ChildRouteReceipt {
+        requested_type: "explore".into(),
+        requested_profile: Some("scout".into()),
+        resolved_profile_id: Some("scout".into()),
+        profile_origin: Some("workspace".into()),
+        canonical_role: "explore".into(),
+        provider_id: "gemini".into(),
+        model_id: "gemini-4".into(),
+        route_source: "profile.model".into(),
+        fallback_note: None,
+        requested_reasoning: "xhigh".into(),
+        effective_reasoning: Some("high".into()),
+        runtime_version: "0.10.3".into(),
+        runtime_build_sha: "unknown".into(),
+    };
+    assert_eq!(
+        lifecycle::reasoning_override_note(&route).as_deref(),
+        Some(
+            "requested thinking 'xhigh' runs as 'high' on gemini/gemini-4 (route ceiling; profile 'scout')"
+        )
+    );
+    route.resolved_profile_id = None;
+    assert_eq!(
+        lifecycle::reasoning_override_note(&route).as_deref(),
+        Some("requested thinking 'xhigh' runs as 'high' on gemini/gemini-4 (route ceiling)")
+    );
+    route.effective_reasoning = None;
+    assert_eq!(
+        lifecycle::reasoning_override_note(&route).as_deref(),
+        Some("requested thinking 'xhigh' is not sent; gemini/gemini-4 has no reasoning tier")
+    );
+    route.effective_reasoning = Some("xhigh".into());
+    assert_eq!(lifecycle::reasoning_override_note(&route), None);
+    route.requested_reasoning = "inherit".into();
+    route.effective_reasoning = Some("low".into());
+    assert_eq!(lifecycle::reasoning_override_note(&route), None);
+}
+
+#[tokio::test]
+async fn lifecycle_start_peek_and_status_detail_preserve_fields_and_strip_checkpoint_bloat() {
+    let dir = tempdir().unwrap();
+    let manager = new_shared_subagent_manager(dir.path().to_path_buf(), 4);
+    let (client, _, _, fixture_config) =
+        super::tests::delayed_chat_client(Duration::from_secs(30), "done").await;
+    let context = ToolContext::new(dir.path()).with_state_namespace("lifecycle-view-session");
+    let mut runtime = super::tests::stub_runtime();
+    runtime.client = client;
+    runtime.api_config = Some(Arc::new(fixture_config));
+    runtime.manager = Arc::clone(&manager);
+    runtime.context = context.clone();
+    let _cancel_on_drop = runtime.cancel_token.clone().drop_guard();
+
+    let tool = AgentTool::new(Arc::clone(&manager), runtime);
+    let started = tool
+        .execute(
+            json!({
+                "action": "start",
+                "type": "explore",
+                "name": "scout-view",
+                "prompt": "inspect the harness"
+            }),
+            &context,
+        )
+        .await
+        .expect("start succeeds");
+    let start_view = crate::core::engine::tool_result_context_view(
+        codewhale_config::ProviderKind::Deepseek,
+        "deepseek-v3.2-128k",
+        None,
+        "agent",
+        &started,
+    );
+    assert!(!start_view.needs_full_output_artifact);
+    assert!(!start_view.text.contains("Child results are self-reports"));
+    assert!(
+        !start_view
+            .text
+            .contains("[sub-agent result summarized for parent context]")
+    );
+    let start_json: Value = serde_json::from_str(&start_view.text).unwrap();
+    let agent_id = start_json["agent_id"].as_str().unwrap().to_string();
+    assert_eq!(start_json["action"], "start");
+    assert_eq!(start_json["role"], "explore");
+    assert_eq!(start_json["name"], "scout-view");
+    assert_eq!(start_json["status"], "running");
+    assert_eq!(
+        start_json["effective_limits"]["max_steps"],
+        WorkerRuntimeProfile::EXPLORE_MAX_STEPS
+    );
+    assert!(start_json["transcript_handle"].is_object());
+
+    let child = manager
+        .write()
+        .await
+        .agents
+        .get_mut(&agent_id)
+        .and_then(|agent| agent.task_handle.take())
+        .expect("started child has a task");
+    child.abort();
+    if let Err(error) = child.await {
+        assert!(error.is_cancelled(), "started child panicked: {error}");
+    }
+
+    let giant_sig = "SIG_BASE64_".repeat(500);
+    {
+        let mut guard = manager.write().await;
+        let agent = guard.agents.get_mut(&agent_id).unwrap();
+        agent.status = SubAgentStatus::Running;
+        agent.steps_taken = 4;
+        agent.checkpoint = Some(build_subagent_checkpoint(
+            &agent_id,
+            "checkpointed",
+            &[Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "deep thoughts".into(),
+                        signature: Some(giant_sig.clone()),
+                        state: None,
+                        redacted_data: None,
+                    },
+                    ContentBlock::ToolUse {
+                        id: "call-1".into(),
+                        execution_id: None,
+                        name: "read".into(),
+                        input: json!({"path": "Cargo.toml"}),
+                        caller: None,
+                        thought_signature: Some(giant_sig.clone()),
+                    },
+                ],
+            }],
+            4,
+            true,
+        ));
+        let record = guard.worker_records.get_mut(&agent_id).unwrap();
+        record.usage.input_tokens = Some(1200);
+        record.usage.output_tokens = Some(250);
+        record.usage.total_tokens = Some(1450);
+        record.latest_message = Some("reading Cargo.toml".into());
+        record.events.clear();
+        for i in 0..120_u64 {
+            record.events.push_back(AgentWorkerEvent {
+                seq: i + 1,
+                worker_id: agent_id.clone(),
+                status: AgentWorkerStatus::RunningTool,
+                timestamp_ms: 1_700_000_000_000 + i,
+                message: Some(format!("step event {i}")),
+                step: Some(4),
+                tool_name: Some("read".into()),
+            });
+        }
+        guard.persist_state_synchronously().unwrap();
+    }
+
+    let peek = tool
+        .execute(json!({"action": "peek", "agent_id": agent_id}), &context)
+        .await
+        .expect("peek succeeds");
+    let peek_view = crate::core::engine::tool_result_context_view(
+        codewhale_config::ProviderKind::Deepseek,
+        "deepseek-v3.2-128k",
+        None,
+        "agent",
+        &peek,
+    );
+    assert!(!peek_view.needs_full_output_artifact);
+    assert!(!peek_view.text.contains("Child results are self-reports"));
+    let peek_json: Value = serde_json::from_str(&peek_view.text).unwrap();
+    assert_eq!(peek_json["agent_id"], agent_id);
+    assert_eq!(peek_json["role"], "explore");
+    assert_eq!(peek_json["steps"], 4);
+    assert!(peek_json["duration_ms"].is_u64());
+    assert_eq!(peek_json["activity"], "reading Cargo.toml");
+    assert_eq!(peek_json["usage"]["total_tokens"], 1450);
+    assert!(peek_json["transcript_handle"].is_object());
+    assert_eq!(peek_json["events_total"], 120);
+    assert_eq!(peek_json["recent_events"].as_array().unwrap().len(), 8);
+    assert_eq!(peek_json["recent_events"][7]["seq"], 120);
+
+    let detail = tool
+        .execute(
+            json!({"action": "status", "agent_id": agent_id, "detail": true}),
+            &context,
+        )
+        .await
+        .expect("status detail succeeds");
+    assert!(detail.content.len() <= 8 * 1024, "{}", detail.content.len());
+    assert!(!detail.content.contains("SIG_BASE64_"));
+    assert!(!detail.content.contains("thought_signature"));
+    let detail_view = crate::core::engine::tool_result_context_view(
+        codewhale_config::ProviderKind::Deepseek,
+        "deepseek-v3.2-128k",
+        None,
+        "agent",
+        &detail,
+    );
+    assert!(!detail_view.needs_full_output_artifact);
+    assert!(!detail_view.text.contains("Child results are self-reports"));
+    let detail_json: Value = serde_json::from_str(&detail_view.text).unwrap();
+    assert_eq!(detail_json["agent_id"], agent_id);
+    assert_eq!(detail_json["role"], "explore");
+    assert_eq!(detail_json["steps"], 4);
+    assert_eq!(detail_json["activity"], "reading Cargo.toml");
+    assert_eq!(detail_json["usage"]["total_tokens"], 1450);
+    assert!(detail_json.get("checkpoint").is_none());
+    assert!(detail_json.get("snapshot").is_none());
+    assert!(detail_json.get("worker_record").is_none());
+    assert_eq!(detail_json["checkpoint_summary"]["message_count"], 1);
+    assert_eq!(detail_json["events_total"], 120);
+    let handle: VarHandle =
+        serde_json::from_value(detail_json["transcript_handle"].clone()).unwrap();
+    assert!(
+        context
+            .runtime
+            .handle_store
+            .lock()
+            .await
+            .get(&handle)
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn lifecycle_cancel_receipt_is_compact_and_suppresses_duplicate_parent_completion() {
+    let dir = tempdir().unwrap();
+    let manager = new_shared_subagent_manager(dir.path().to_path_buf(), 4);
+    let context = ToolContext::new(dir.path()).with_state_namespace("cancel-suppress-session");
+    let (completion_tx, mut completion_rx) = mpsc::channel::<SubAgentCompletion>(16);
+    let (event_tx, mut event_rx) = mpsc::channel(16);
+    let (mailbox, mut mailbox_rx) = Mailbox::new(CancellationToken::new());
+
+    let giant_sig = "SIG_BASE64_".repeat(500);
+    let (cancelled_id, async_done_id) = {
+        let mut guard = manager.write().await;
+        let cancelled_id = "agent_cancel_compact".to_string();
+        let async_done_id = "agent_async_finish".to_string();
+        for id in [&cancelled_id, &async_done_id] {
+            let (input_tx, _input_rx) = mpsc::unbounded_channel();
+            let mut agent = SubAgent::new(
+                id.clone(),
+                FleetRole::Scout,
+                "explore repo".into(),
+                SubAgentAssignment::new("explore repo".into(), None),
+                "deepseek-v4-flash".into(),
+                None,
+                None,
+                input_tx,
+                dir.path().to_path_buf(),
+                guard.current_session_boot_id.clone(),
+            );
+            agent.owner_session_id = "cancel-suppress-session".into();
+            agent.steps_taken = 9;
+            agent.checkpoint = Some(build_subagent_checkpoint(
+                id,
+                "in-progress",
+                &[Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::ToolUse {
+                        id: "c1".into(),
+                        execution_id: None,
+                        name: "read".into(),
+                        input: json!({"path": "README.md"}),
+                        caller: None,
+                        thought_signature: Some(giant_sig.clone()),
+                    }],
+                }],
+                9,
+                true,
+            ));
+            let mut delivery_runtime = super::tests::stub_runtime().child_runtime();
+            delivery_runtime.context = context.clone();
+            delivery_runtime.parent_completion_tx = Some(completion_tx.clone());
+            delivery_runtime.event_tx = Some(event_tx.clone());
+            delivery_runtime.mailbox = Some(mailbox.clone());
+            agent.terminal_delivery = Some(SubAgentTerminalDeliveryContext::from_runtime(
+                &delivery_runtime,
+            ));
+            guard.agents.insert(id.clone(), agent);
+            let mut spec = super::tests::make_worker_spec(id, dir.path().to_path_buf());
+            spec.agent_type = FleetRole::Scout;
+            guard.register_worker_for_session(spec, "cancel-suppress-session", None);
+            let record = guard.worker_records.get_mut(id).unwrap();
+            record.usage.input_tokens = Some(5000);
+            record.usage.output_tokens = Some(800);
+            record.usage.total_tokens = Some(5800);
+            if id == &cancelled_id {
+                for seq in 1..=6000_u64 {
+                    record.events.push_back(AgentWorkerEvent {
+                        seq,
+                        worker_id: id.clone(),
+                        status: AgentWorkerStatus::RunningTool,
+                        timestamp_ms: 1_700_000_000_000 + seq,
+                        message: Some(format!("event-{seq}")),
+                        step: Some(9),
+                        tool_name: Some("read".into()),
+                    });
+                }
+            }
+        }
+        (cancelled_id, async_done_id)
+    };
+
+    let tool = AgentTool::new(Arc::clone(&manager), super::tests::stub_runtime());
+    let cancel_result = tool
+        .execute(
+            json!({"action": "cancel", "agent_id": cancelled_id}),
+            &context,
+        )
+        .await
+        .expect("cancel succeeds");
+    assert!(
+        cancel_result.content.len() < lifecycle::COMPACT_CANCEL_BYTES,
+        "cancel receipt must stay under 4 KiB, got {}B",
+        cancel_result.content.len()
+    );
+    assert!(!cancel_result.content.contains("SIG_BASE64_"));
+    assert!(!cancel_result.content.contains("thought_signature"));
+    let cancel_json: Value = serde_json::from_str(&cancel_result.content).unwrap();
+    assert_eq!(cancel_json["action"], "cancel");
+    assert_eq!(cancel_json["agent_id"], cancelled_id);
+    assert_eq!(cancel_json["role"], "explore");
+    assert_eq!(cancel_json["status"], "cancelled");
+    assert_eq!(cancel_json["steps"], 9);
+    assert_eq!(cancel_json["usage"]["total_tokens"], 5800);
+    assert_eq!(cancel_json["cancelled_by_parent"], true);
+    assert!(cancel_json["transcript_handle"].is_object());
+
+    assert!(
+        completion_rx.try_recv().is_err(),
+        "explicit parent cancel must not emit duplicate subagent_completion"
+    );
+    let synthesized = manager
+        .read()
+        .await
+        .terminal_results_excluding_for_session("cancel-suppress-session", &HashSet::new());
+    assert!(
+        synthesized.is_empty(),
+        "explicit parent cancel must not be synthesized into a duplicate completion turn"
+    );
+    let host_event = event_rx.try_recv().expect("AgentComplete still emitted");
+    assert!(matches!(
+        host_event,
+        Event::AgentComplete { id, outcome: Some(SubAgentStatus::Cancelled), .. }
+            if id == cancelled_id
+    ));
+    assert!(mailbox_rx.drain_available().iter().any(|env| {
+        matches!(&env.message, MailboxMessage::Cancelled { agent_id, .. } if agent_id == &cancelled_id)
+    }));
+
+    let mut finished = manager.read().await.get_result(&async_done_id).unwrap();
+    finished.status = SubAgentStatus::Completed;
+    finished.result = Some("finished async work".into());
+    finish_terminal_result_owned(Arc::clone(&manager), finished)
+        .await
+        .expect("async completion commits");
+    let delivered = completion_rx
+        .try_recv()
+        .expect("async completion must still deliver subagent_completion");
+    assert_eq!(delivered.agent_id, async_done_id);
+}
+
+#[tokio::test]
+async fn lifecycle_explore_caps_reasoning_and_strips_ungranted_mcp_server_instructions() {
+    let home = tempdir().unwrap();
+    let owned_home = home.path().canonicalize().unwrap();
+    let _home = crate::test_support::SealedHome::at(&owned_home);
+    let mut codex = super::tests::stub_runtime_for_provider("openai-codex");
+    codex.model = "gpt-5.5".to_string();
+
+    for parent_effort in [None, Some("high"), Some("xhigh"), Some("max")] {
+        let mut rt = codex.clone();
+        rt.reasoning_effort = parent_effort.map(str::to_string);
+        let route = worker_profile_subagent_assignment_route(
+            &rt,
+            &ModelRoute::Inherit,
+            SubAgentThinking::Inherit,
+            &FleetRole::Scout,
+        );
+        assert_eq!(
+            route.reasoning_effort.as_deref(),
+            Some("medium"),
+            "parent={parent_effort:?}"
+        );
+    }
+
+    let mut low_parent = codex.clone();
+    low_parent.reasoning_effort = Some("low".to_string());
+    let low_route = worker_profile_subagent_assignment_route(
+        &low_parent,
+        &ModelRoute::Inherit,
+        SubAgentThinking::Inherit,
+        &FleetRole::Scout,
+    );
+    assert_eq!(low_route.reasoning_effort.as_deref(), Some("low"));
+
+    let mut high_parent = codex.clone();
+    high_parent.reasoning_effort = Some("high".to_string());
+    let explicit_override = worker_profile_subagent_assignment_route(
+        &high_parent,
+        &ModelRoute::Inherit,
+        SubAgentThinking::Effort(ReasoningEffort::High),
+        &FleetRole::Scout,
+    );
+    assert_eq!(explicit_override.reasoning_effort.as_deref(), Some("high"));
+
+    let worker_route = worker_profile_subagent_assignment_route(
+        &high_parent,
+        &ModelRoute::Inherit,
+        SubAgentThinking::Inherit,
+        &FleetRole::Worker,
+    );
+    assert_eq!(worker_route.reasoning_effort.as_deref(), Some("high"));
+
+    let mut pool = crate::mcp::McpPool::new(codewhale_mcp::config::McpConfig::default());
+    pool.insert_test_connection("github", &["list_prs"], Some("GitHub guidance"));
+    pool.insert_test_connection("linear", &["list_issues"], Some("Linear guidance"));
+    pool.insert_test_connection(
+        "computer-use",
+        &["screenshot"],
+        Some("Computer-use guidance"),
+    );
+    pool.insert_test_connection("docs", &["search"], Some("Docs guidance"));
+    let pool = Arc::new(tokio::sync::Mutex::new(pool));
+
+    let mut explore_runtime = super::tests::stub_runtime()
+        .child_runtime()
+        .with_mcp_pool(Some(Arc::clone(&pool)));
+    explore_runtime.worker_profile = WorkerRuntimeProfile::for_role(FleetRole::Scout);
+    let explore_auth = engine::ChildAuthority::capture(
+        explore_runtime.clone(),
+        FleetRole::Scout,
+        "agent_explore_mcp".into(),
+        "explore".into(),
+        None,
+    );
+    let explore_servers = explore_auth.admitted_mcp_servers(&explore_runtime).await;
+    assert!(explore_servers.is_empty());
+
+    let mut worker_runtime = super::tests::stub_runtime()
+        .child_runtime()
+        .with_mcp_pool(Some(Arc::clone(&pool)));
+    worker_runtime.worker_profile = WorkerRuntimeProfile::for_role(FleetRole::Worker);
+    let scoped_worker_auth = engine::ChildAuthority::capture(
+        worker_runtime.clone(),
+        FleetRole::Worker,
+        "agent_docs_worker".into(),
+        "docs-worker".into(),
+        Some(vec!["read".into(), "mcp_docs_search".into()]),
+    );
+    let scoped_servers = scoped_worker_auth
+        .admitted_mcp_servers(&worker_runtime)
+        .await;
+    assert_eq!(scoped_servers, HashSet::from(["docs".to_string()]));
+
+    let full_worker_auth = engine::ChildAuthority::capture(
+        worker_runtime.clone(),
+        FleetRole::Worker,
+        "agent_full_worker".into(),
+        "full-worker".into(),
+        None,
+    );
+    let full_servers = full_worker_auth.admitted_mcp_servers(&worker_runtime).await;
+    assert!(!full_servers.contains("computer-use"));
+    assert!(full_servers.contains("docs"));
+
+    let parent_fork = SubAgentForkContext {
+        messages: vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "investigate subagent lifecycle".into(),
+                    cache_control: None,
+                }],
+            },
+            crate::runtime_handoff::mcp_server_instructions_runtime_message(&[
+                ("github".into(), "GitHub guidance".into()),
+                ("linear".into(), "Linear guidance".into()),
+                ("computer-use".into(), "Computer-use guidance".into()),
+                ("docs".into(), "Docs guidance".into()),
+            ]),
+        ],
+        structured_state_block: None,
+        work_source: None,
+    };
+    let explore_seed = build_initial_subagent_messages(
+        "map the lifecycle",
+        &SubAgentAssignment::new("map the lifecycle".into(), None),
+        &FleetRole::Scout,
+        Some(&parent_fork),
+    );
+    assert!(
+        !explore_seed
+            .iter()
+            .any(crate::runtime_handoff::is_mcp_server_instructions_message)
+    );
+}
+
+#[test]
+fn aborted_durable_launch_surfaces_and_logs_reconcile_failure() {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    let work = crate::work_graph::new_shared_work_runtime(
+        crate::tools::todo::new_shared_todo_list(),
+        crate::tools::plan::new_shared_plan_state(),
+    );
+    let lifecycle = SubAgentWorkLifecycle {
+        work,
+        session_id: "session-a".to_string(),
+        external: "worker:agent-abort".to_string(),
+    };
+    let mut output = tempfile::tempfile().unwrap();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_env_filter(tracing_subscriber::EnvFilter::new("warn"))
+        .with_writer(std::sync::Mutex::new(output.try_clone().unwrap()))
+        .finish();
+    let error = tracing::subscriber::with_default(subscriber, || {
+        fail_aborted_durable_launch("agent-abort", Some(&lifecycle), anyhow!("disk full"))
+    });
+    let message = error.to_string();
+    assert!(message.contains("disk full"), "{message}");
+    assert!(
+        message.contains("additionally failed to settle lifecycle owner")
+            && message.contains("lifecycle observation arrived before graph registration"),
+        "{message}"
+    );
+    output.seek(SeekFrom::Start(0)).unwrap();
+    let mut logs = String::new();
+    output.read_to_string(&mut logs).unwrap();
+    assert!(
+        logs.contains("WARN")
+            && logs.contains("failed to mark aborted write-capable launch as Failed")
+            && logs.contains("lifecycle observation arrived before graph registration"),
+        "{logs}"
+    );
 }

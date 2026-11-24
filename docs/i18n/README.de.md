@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:a3f7ac7d7dc2 -->
+<!-- source: README.md sha256:8f9ce64ce19c -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ Das installiert die neueste Version unter macOS oder Linux und braucht kein Kont
 
 <sub>Diese Übersetzung ist ein maschineller Entwurf und wurde noch nicht von Muttersprachlern geprüft.</sub>
 
-<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale im Terminal nach einer echten Aufgabe mit gemini-4-hydrogen. Es hat python3 -m unittest -v test_ls.py ausgeführt, 2 Tests sind bestanden, und es berichtet, dass es ls.py mit argparse eine Option --json hinzugefügt hat. Die Statuszeile zeigt accept edits und gemini-4-hydrogen.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale im Terminal nach einer echten Aufgabe mit deepseek-flash. Es hat python3 -m unittest -v test_ls.py ausgeführt, 2 Tests sind bestanden, und es berichtet, dass es ls.py eine Option --json hinzugefügt hat. Die Statuszeile zeigt accept edits und deepseek-flash.">
 
-<sub>Eine echte Sitzung mit einem Entwicklungs-Build von 0.10.3: gemini-4-hydrogen hat die Änderung über die Google-API geschrieben, und du hast den Testlauf einmal erlaubt.</sub>
+<sub>Eine echte Sitzung mit einem Entwicklungs-Build von 0.10.3: deepseek-flash hat die Änderung über die DeepSeek-API geschrieben, und du hast den Testlauf einmal erlaubt.</sub>
 
 </div>
 
@@ -96,11 +96,9 @@ Die Terminal-App, `exec`, `web` und die Runtime API teilen sich eine Engine ([Ar
 
 ## Wie es sicher bleibt
 
-Zwei Schalter legen fest, wie viel Codewhale ohne Rückfrage tun darf. Bei leerer Eingabe wechselt `Tab` den Modus: **Plan** liest und sucht, ändert aber nichts, **Work** bearbeitet Dateien und führt Befehle aus, und **Operate** hat dieselben Rechte wie Work und arbeitet weiter, bis das Ziel geprüft ist oder es dich braucht. `Shift+Tab` wechselt die Berechtigung. **Ask**, die Voreinstellung, übernimmt Dateiänderungen in deinem Repository ohne Rückfrage und fragt vor Shell-Befehlen, die nicht nur lesen. **Auto-Review** lässt Regeln und ein Review-Modell Routineaufrufe freigeben und lehnt riskante ab; wechsle zu Ask, um sie selbst freizugeben. **Full Access** fragt nie und schaltet die Sandbox von Codewhale ab, wobei Repository-Regeln und verwaltete Richtlinien weiter gelten. Die [Anleitung zu v0.10.2](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md) hat die Details.
+Ein einziger Regler legt fest, wie viel Codewhale ohne Rückfrage tun darf. `Shift+Tab` schaltet ihn weiter: **Ask → Accept Edits → Plan → Auto-Review → Full Access**. **Accept Edits**, die Voreinstellung, übernimmt Dateiänderungen im Git-Repository ohne Rückfrage und fragt vor Befehlen. **Ask** fragt vor jeder Dateiänderung und jedem Befehl. **Plan** liest und sucht, ändert aber nichts. **Auto-Review** lässt Regeln und ein Review-Modell Routineaufrufe freigeben und lehnt riskante ab; wechsle zu Ask, um sie selbst freizugeben. **Full Access** fragt nie und schaltet die Sandbox von Codewhale ab, wobei Repository-Regeln und verwaltete Richtlinien weiter gelten. `Tab` vervollständigt nur und wechselt nie den Modus, und Operate entfällt. Die [Anleitung zu den Modi](../MODES.md) hat die Details.
 
-Kommt in 0.10.3: `Shift+Tab` wird ein einziger Regler durch Ask, Accept Edits, Plan, Auto-Review und Full Access, `Tab` wechselt den Modus nicht mehr, und Operate entfällt. Ask fragt dann auch vor jeder Dateiänderung, und die neue Voreinstellung, Accept Edits, übernimmt Änderungen im Git-Repository und fragt weiterhin vor Befehlen. Die [aktuelle Anleitung](../MODES.md) beschreibt das.
-
-In Ask und Auto-Review laufen Befehle in einer Betriebssystem-Sandbox, wo das System eine hat: Seatbelt unter macOS und bubblewrap unter Linux, wenn es installiert ist. Windows hat noch keine Betriebssystem-Sandbox, und Full Access schaltet die Sandbox ab. In der Sandbox können Shell-Befehle und Terminal-Sitzungen keine Zugangsdatenspeicher wie `~/.ssh`, `~/.aws` und `.env`-Dateien lesen. `/preview-request` zeigt eine geschwärzte Vorschau der nächsten Anfrage, ohne sie zu senden.
+In Ask, Accept Edits und Auto-Review laufen Befehle in einer Betriebssystem-Sandbox, wo das System eine hat: Seatbelt unter macOS und bubblewrap unter Linux, wenn es installiert ist. Windows hat noch keine Betriebssystem-Sandbox, und Full Access schaltet die Sandbox ab. In der Sandbox können Shell-Befehle und Terminal-Sitzungen keine Zugangsdatenspeicher wie `~/.ssh`, `~/.aws` und `.env`-Dateien lesen. `/preview-request` zeigt eine geschwärzte Vorschau der nächsten Anfrage, ohne sie zu senden.
 
 Du brauchst kein Konto, und Schlüssel, die du mit `/provider` hinzufügst, bleiben auf deinem Rechner. Mit deinem eigenen API-Schlüssel bezahlst du den Anbieter direkt, und lokale Modelle brauchen keinen Schlüssel. Die Fußzeile und `/cost` zeigen, was eine Sitzung gekostet hat, wenn der Preis bekannt ist; ein unbekannter Preis wird als unbekannt angezeigt, nie als kostenlos.
 

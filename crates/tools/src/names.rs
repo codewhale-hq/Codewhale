@@ -8,6 +8,18 @@ pub const LEGACY_TOOL_SEARCH_REGEX_NAME: &str = "tool_search_tool_regex";
 
 pub const LEGACY_TOOL_SEARCH_BM25_NAME: &str = "tool_search_tool_bm25";
 
+pub const TERMINAL_RUN_NAME: &str = "terminal_run";
+pub const TERMINAL_SEND_NAME: &str = "terminal_send";
+pub const TERMINAL_WAIT_NAME: &str = "terminal_wait";
+pub const TERMINAL_CANCEL_NAME: &str = "terminal_cancel";
+pub const TERMINAL_RESET_NAME: &str = "terminal_reset";
+
+pub const LEGACY_TERMINAL_RUN_NAME: &str = "terminal/run";
+pub const LEGACY_TERMINAL_SEND_NAME: &str = "terminal/send";
+pub const LEGACY_TERMINAL_WAIT_NAME: &str = "terminal/wait";
+pub const LEGACY_TERMINAL_CANCEL_NAME: &str = "terminal/cancel";
+pub const LEGACY_TERMINAL_RESET_NAME: &str = "terminal/reset";
+
 pub fn is_tool_search_tool(name: &str) -> bool {
     matches!(
         name,

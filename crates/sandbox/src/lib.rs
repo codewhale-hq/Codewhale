@@ -100,6 +100,8 @@ pub struct CommandSpec {
     /// `-File` scripts). Authoritative for display; `None` for specs built
     /// directly from a program + args.
     pub requested_command: Option<String>,
+
+    pub private_tmp: bool,
 }
 
 impl CommandSpec {
@@ -146,6 +148,7 @@ impl CommandSpec {
             sandbox_policy: SandboxPolicy::default(),
             justification: None,
             requested_command: Some(command.to_string()),
+            private_tmp: false,
         }
     }
 
@@ -160,12 +163,18 @@ impl CommandSpec {
             sandbox_policy: SandboxPolicy::default(),
             justification: None,
             requested_command: None,
+            private_tmp: false,
         }
     }
 
     /// Set the sandbox policy for this command.
     pub fn with_policy(mut self, policy: SandboxPolicy) -> Self {
         self.sandbox_policy = policy;
+        self
+    }
+
+    pub fn with_private_tmp(mut self) -> Self {
+        self.private_tmp = true;
         self
     }
 
@@ -315,6 +324,156 @@ pub struct ExecEnv {
 
     /// The original policy (for reference).
     pub policy: SandboxPolicy,
+
+    pub scratch: Option<ScratchDir>,
+}
+
+#[derive(Debug)]
+pub struct ScratchDir(Option<tempfile::TempDir>);
+
+impl ScratchDir {
+    pub fn path(&self) -> &std::path::Path {
+        self.0
+            .as_ref()
+            .map_or_else(|| std::path::Path::new(""), tempfile::TempDir::path)
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let Some(dir) = self.0.take() else {
+            return;
+        };
+        let path = dir.path().to_path_buf();
+        if dir.close().is_err() {
+            cleanup_scratch_tree(&path);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn clear_immutable_flags(path: &std::path::Path) {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        if let Ok(c_path) = std::ffi::CString::new(path.as_os_str().as_bytes()) {
+            unsafe {
+                let mut stat: libc::stat = std::mem::zeroed();
+                if libc::lstat(c_path.as_ptr(), &mut stat) == 0 {
+                    let cleared = stat.st_flags & !(libc::UF_IMMUTABLE | libc::UF_APPEND);
+                    if cleared != stat.st_flags {
+                        let _ = libc::lchflags(c_path.as_ptr(), cleared);
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = path;
+}
+
+#[cfg(unix)]
+fn normalize_scratch_tree(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    clear_immutable_flags(path);
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    if !meta.file_type().is_dir() {
+        return;
+    }
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let entry_path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            normalize_scratch_tree(&entry_path);
+        } else if !file_type.is_symlink() {
+            clear_immutable_flags(&entry_path);
+        }
+    }
+}
+
+fn cleanup_scratch_tree(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        let Ok(meta) = std::fs::symlink_metadata(path) else {
+            return;
+        };
+        if !meta.file_type().is_dir() {
+            clear_immutable_flags(path);
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+        normalize_scratch_tree(path);
+    }
+    let _ = std::fs::remove_dir_all(path);
+}
+
+#[cfg(target_os = "macos")]
+fn read_only_scratch(spec: &CommandSpec) -> Option<(ScratchDir, std::path::PathBuf)> {
+    if !spec.private_tmp || !matches!(spec.sandbox_policy, SandboxPolicy::ReadOnly { .. }) {
+        return None;
+    }
+    let canonical_cwd = spec.cwd.canonicalize().unwrap_or_else(|_| spec.cwd.clone());
+    let outside_cwd = |path: &std::path::Path| {
+        canonical_cwd == std::path::Path::new("/") || !path.starts_with(&canonical_cwd)
+    };
+    for parent in [
+        seatbelt::darwin_user_temp_dir(),
+        Some(std::path::PathBuf::from("/private/tmp")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !outside_cwd(&parent) {
+            continue;
+        }
+        match tempfile::Builder::new()
+            .prefix("codewhale-ro-")
+            .tempdir_in(&parent)
+        {
+            Ok(dir) => {
+                let canonical = dir
+                    .path()
+                    .canonicalize()
+                    .unwrap_or_else(|_| dir.path().to_path_buf());
+                if outside_cwd(&canonical) {
+                    return Some((ScratchDir(Some(dir)), canonical));
+                }
+            }
+            Err(error) => {
+                tracing::warn!("read-only command runs without a private TMPDIR: {error}");
+            }
+        }
+    }
+    None
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
+fn insert_private_tmp_env(env: &mut HashMap<String, String>, dir: &std::path::Path) {
+    let dir = dir.to_string_lossy().into_owned();
+    env.insert("TMPPREFIX".to_string(), format!("{dir}/zsh"));
+    for key in ["TMPDIR", "TMP", "TEMP"] {
+        env.insert(key.to_string(), dir.clone());
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SandboxResourceLimits {
+    pub address_space_bytes: u64,
+    pub file_size_bytes: u64,
+    pub open_files: u64,
+    pub processes: u64,
+    pub cpu_seconds: u64,
 }
 
 impl ExecEnv {
@@ -343,6 +502,42 @@ impl ExecEnv {
             return bwrap::spawn(move || command.spawn())?;
         }
         command.spawn()
+    }
+
+    pub fn spawn_background_limited(
+        &self,
+        command: std::process::Command,
+        limits: SandboxResourceLimits,
+    ) -> std::io::Result<std::process::Child> {
+        #[cfg(unix)]
+        let mut command = command;
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                command.pre_exec(move || {
+                    for (resource, value) in [
+                        (libc::RLIMIT_AS, limits.address_space_bytes),
+                        (libc::RLIMIT_FSIZE, limits.file_size_bytes),
+                        (libc::RLIMIT_NOFILE, limits.open_files),
+                        (libc::RLIMIT_NPROC, limits.processes),
+                        (libc::RLIMIT_CPU, limits.cpu_seconds),
+                    ] {
+                        let limit = libc::rlimit {
+                            rlim_cur: value as libc::rlim_t,
+                            rlim_max: value as libc::rlim_t,
+                        };
+                        if libc::setrlimit(resource, &raw const limit) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
+                    Ok(())
+                });
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = limits;
+        self.spawn_background(command)
     }
 
     #[cfg(not(target_env = "ohos"))]
@@ -457,6 +652,36 @@ pub fn bwrap_setup_failure(stderr: &str) -> Option<&str> {
         .lines()
         .map(str::trim_start)
         .find(|line| line.starts_with("bwrap:"))
+}
+
+/// Resolve `strerror(errno)` for the active environment `LC_MESSAGES` locale
+/// without mutating the process-global locale or child environment.
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
+pub(crate) fn localized_errno_message(errno: libc::c_int) -> Option<String> {
+    // SAFETY: `newlocale`, `uselocale`, `strerror_r`, and `freelocale` operate
+    // only on the calling thread's locale and a stack-owned NUL-terminated buffer.
+    unsafe {
+        let loc = libc::newlocale(libc::LC_MESSAGES_MASK, c"".as_ptr(), std::ptr::null_mut());
+        if loc.is_null() {
+            return None;
+        }
+        let prev = libc::uselocale(loc);
+        let mut buf = [0 as libc::c_char; 256];
+        let rc = libc::strerror_r(errno, buf.as_mut_ptr(), buf.len());
+        if !prev.is_null() {
+            libc::uselocale(prev);
+        }
+        libc::freelocale(loc);
+        if rc != 0 {
+            return None;
+        }
+        buf[buf.len() - 1] = 0;
+        let msg = std::ffi::CStr::from_ptr(buf.as_ptr()).to_str().ok()?;
+        (!msg.is_empty()).then(|| msg.to_string())
+    }
 }
 
 /// Manager for sandbox operations.
@@ -925,6 +1150,7 @@ impl SandboxManager {
             timeout: spec.timeout,
             sandbox_type: SandboxType::None,
             policy: spec.sandbox_policy.clone(),
+            scratch: None,
         }
     }
 
@@ -940,6 +1166,7 @@ impl SandboxManager {
             timeout: spec.timeout,
             sandbox_type: SandboxType::None,
             policy: spec.sandbox_policy.clone(),
+            scratch: None,
         }
     }
 
@@ -949,6 +1176,15 @@ impl SandboxManager {
         // Build the original command
         let mut original_command = vec![spec.program.clone()];
         original_command.extend(spec.args.clone());
+
+        let (scratch, scratch_path) = if self.readable_paths.is_none() {
+            match read_only_scratch(spec) {
+                Some((dir, path)) => (Some(dir), Some(path)),
+                None => (None, None),
+            }
+        } else {
+            (None, None)
+        };
 
         // Generate sandbox-exec arguments
         let seatbelt_args = if let Some(paths) = &self.readable_paths {
@@ -964,6 +1200,7 @@ impl SandboxManager {
                 &spec.sandbox_policy,
                 &spec.cwd,
                 &self.denied_read_subpaths,
+                scratch_path.as_deref(),
             )
         };
 
@@ -975,6 +1212,9 @@ impl SandboxManager {
         let mut env = spec.env.clone();
         env.insert("CODEWHALE_SANDBOX".to_string(), "seatbelt".to_string());
         env.insert("DEEPSEEK_SANDBOX".to_string(), "seatbelt".to_string());
+        if let Some(path) = &scratch_path {
+            insert_private_tmp_env(&mut env, path);
+        }
 
         ExecEnv {
             command,
@@ -983,6 +1223,7 @@ impl SandboxManager {
             timeout: spec.timeout,
             sandbox_type: SandboxType::MacosSeatbelt,
             policy: spec.sandbox_policy.clone(),
+            scratch,
         }
     }
 
@@ -1049,6 +1290,9 @@ impl SandboxManager {
         let mut env = spec.env.clone();
         env.insert("CODEWHALE_SANDBOX".to_string(), "bwrap".to_string());
         env.insert("DEEPSEEK_SANDBOX".to_string(), "bwrap".to_string());
+        if matches!(spec.sandbox_policy, SandboxPolicy::ReadOnly { .. }) {
+            insert_private_tmp_env(&mut env, std::path::Path::new("/tmp"));
+        }
 
         ExecEnv {
             command,
@@ -1057,6 +1301,7 @@ impl SandboxManager {
             timeout: spec.timeout,
             sandbox_type: SandboxType::LinuxBubblewrap,
             policy: spec.sandbox_policy.clone(),
+            scratch: None,
         }
     }
 
@@ -1093,6 +1338,7 @@ impl SandboxManager {
             timeout: spec.timeout,
             sandbox_type: SandboxType::Windows,
             policy: spec.sandbox_policy.clone(),
+            scratch: None,
         }
     }
 
@@ -1150,7 +1396,7 @@ impl SandboxManager {
             SandboxType::LinuxBubblewrap => {
                 if let Some(error) = bwrap_setup_failure(stderr) {
                     format!("Bubblewrap could not create the sandbox: {}", error)
-                } else if stderr.contains("Read-only file system") {
+                } else if bwrap::is_erofs_stderr(stderr) {
                     "Bubblewrap blocked access outside the writable workspace view.".to_string()
                 } else {
                     format!(
@@ -1275,6 +1521,7 @@ mod tests {
             sandbox_policy: SandboxPolicy::default(),
             justification: None,
             requested_command: None,
+            private_tmp: false,
         };
 
         assert_eq!(spec.display_command(), "echo hello");
@@ -1427,6 +1674,7 @@ mod tests {
             timeout: Duration::from_secs(30),
             sandbox_type: SandboxType::None,
             policy: SandboxPolicy::default(),
+            scratch: None,
         };
 
         assert_eq!(env.program(), "sandbox-exec");
@@ -1897,5 +2145,67 @@ mod tests {
                 .trim(),
             "ok"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scratch_dir_cleans_up_readonly_subtrees_on_drop() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::Builder::new()
+            .prefix("codewhale-ro-test-")
+            .tempdir()
+            .expect("tempdir");
+        let path = dir.path().to_path_buf();
+        let nested = path.join("nested");
+        std::fs::create_dir(&nested).expect("nested dir");
+        std::fs::write(nested.join("locked.txt"), "data").expect("write");
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o555))
+            .expect("chmod 0555");
+
+        let scratch = ScratchDir(Some(dir));
+        assert_eq!(scratch.path(), path.as_path());
+        drop(scratch);
+        assert!(!path.exists(), "{} leaked after drop", path.display());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn read_only_scratch_ignores_host_tmpdir_inside_workspace() {
+        let _guard = codewhale_runtime::test_support::lock_test_env();
+        let workspace = tempfile::tempdir().expect("workspace");
+        let workspace_tmp = workspace.path().join(".tmp");
+        std::fs::create_dir_all(&workspace_tmp).expect("workspace tmp");
+        let prev_tmpdir = std::env::var_os("TMPDIR");
+        unsafe { std::env::set_var("TMPDIR", &workspace_tmp) };
+
+        let spec = CommandSpec::shell(
+            "true",
+            workspace.path().to_path_buf(),
+            Duration::from_secs(5),
+        )
+        .with_policy(SandboxPolicy::read_only())
+        .with_private_tmp();
+        let prepared = read_only_scratch(&spec);
+
+        match prev_tmpdir {
+            Some(val) => unsafe { std::env::set_var("TMPDIR", val) },
+            None => unsafe { std::env::remove_var("TMPDIR") },
+        }
+
+        let (scratch, canonical_path) = prepared.expect("scratch dir");
+        let canonical_ws = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        assert!(
+            !canonical_path.starts_with(&canonical_ws),
+            "{} created inside {}",
+            canonical_path.display(),
+            canonical_ws.display()
+        );
+        assert!(canonical_path.exists());
+        drop(scratch);
+        assert!(!canonical_path.exists());
     }
 }

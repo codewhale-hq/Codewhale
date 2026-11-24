@@ -17,7 +17,7 @@ use codewhale_core::ContextReference;
 use codewhale_execpolicy::ApprovalMode;
 
 use crate::tui::active_cell::ActiveCell;
-use crate::tui::clipboard::{ClipboardContent, ClipboardHandler};
+use crate::tui::clipboard::ClipboardHandler;
 use crate::tui::history::{
     HistoryCell, TranscriptActionOwner, TranscriptFold, TranscriptRenderOptions,
 };
@@ -632,6 +632,7 @@ pub struct AgentProgressMeta {
     /// and ordinary progress does not refresh that snapshot, so the quiet
     /// readout caps the engine's clock with this one.
     pub last_progress_at: Option<Instant>,
+    pub started_at: Option<Instant>,
 }
 
 /// Per-turn LSP repair-loop summary for the Turn Inspector (#4107).
@@ -681,12 +682,9 @@ pub enum LaunchRowId {
     ReturnToSession,
     Recent(String),
     SeeAll,
+    ShowRecent,
     /// Open the MCP manager from the status summary, including healthy servers.
     McpManager,
-    /// The MCP problems row: Enter/click types the remedy command into the
-    /// composer (`/mcp login <name>` or `/mcp`) instead of making the user
-    /// retype what the card printed (#6085).
-    McpRemedy,
 }
 
 /// How many recent sessions the startup card lists inline before the
@@ -720,6 +718,7 @@ pub struct LaunchState {
     /// must not say "no recent sessions yet" while `/resume` lists them;
     /// when they exist it shows the see-all row instead of the lie.
     pub has_scoped_sessions: bool,
+    pub recent_expanded: bool,
     /// Whether launch keys type into the pre-session composer. The composer
     /// is the launch screen's one focus owner, so this is `true` from first
     /// paint. The composer itself is the session `App`'s own
@@ -843,6 +842,7 @@ impl LaunchState {
             recent,
             total_workspace_sessions,
             has_scoped_sessions,
+            recent_expanded: false,
             composer_focus: true,
             row_hitboxes: Vec::new(),
             hovered_row: None,
@@ -873,6 +873,12 @@ impl LaunchState {
         self.has_scoped_sessions = any_scoped;
     }
 
+    pub fn expand_recent(&mut self) {
+        self.recent_expanded = true;
+        self.menu_selected = None;
+        self.hovered_row = None;
+    }
+
     /// Begin the card dissolve once (idempotent). The first keystroke or a
     /// launched command dissolves the launch card.
     pub fn dissolve_card(&mut self, now_ms: u128) {
@@ -891,6 +897,7 @@ impl LaunchState {
         self.menu_selected = None;
         self.hovered_row = None;
         self.status = None;
+        self.recent_expanded = false;
         self.refresh_recent();
     }
 
@@ -1043,6 +1050,9 @@ impl Default for ComposerState {
 /// Viewport/scroll state — fields related to transcript scrolling and caching.
 pub struct ViewportState {
     pub(crate) working_glow_visible: bool,
+    pub(crate) activity_sweep_visible: bool,
+    pub(crate) settle_flash_visible: bool,
+    pub(crate) detected_background: Option<ratatui::style::Color>,
     /// Per-draw copy of the owning backend's negotiated capability facts.
     /// Unavailable outside a backend draw; never redetect or infer depth.
     pub(crate) ocean_caps: Option<codewhale_ratatui::Caps>,
@@ -1119,6 +1129,9 @@ impl Default for ViewportState {
     fn default() -> Self {
         Self {
             working_glow_visible: false,
+            activity_sweep_visible: false,
+            settle_flash_visible: false,
+            detected_background: None,
             ocean_caps: None,
             ocean_semantic_surfaces: Vec::new(),
             transcript_scroll: TranscriptScroll::to_bottom(),
@@ -1301,10 +1314,6 @@ pub struct SidebarHoverState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SidebarRowAction {
     Command(String),
-    /// Put a destructive command in the composer instead of executing it.
-    /// The user confirms with Enter or cancels by editing/clearing the draft.
-    #[allow(dead_code)] // destructive confirm path; mouse_ui already matches it (TUI-DOG-008)
-    PrefillCommand(String),
     /// Select the persistent Agents panel. This is deliberately a navigation
     /// action rather than a modal: the Subagents summary is a group door, so
     /// it should reveal the standing register instead of fabricating a detail
@@ -1608,6 +1617,8 @@ pub(crate) struct SkillCacheScope {
     pub(crate) plugins: std::sync::Arc<codewhale_plugins::PluginRegistry>,
 }
 
+pub(crate) const MAX_QUEUED_MESSAGES: usize = 64;
+
 pub struct App {
     pub mode: AppMode,
     /// Registered hotbar actions available for future slot config/render layers.
@@ -1706,6 +1717,9 @@ pub struct App {
     /// When the clipboard paste last ran, so a terminal that reports both the
     /// press and the release of Ctrl+V pastes once instead of twice.
     pub last_clipboard_paste: Option<Instant>,
+    /// A clipboard read still running off the UI thread.
+    pub(crate) pending_paste: Option<crate::tui::paste::PendingPaste>,
+    pub paste_shortcut_press_seen: bool,
     /// Whether the once-per-turn provider-wait incident (#3095) has already
     /// been logged for the current turn.
     pub provider_wait_incident_logged: bool,
@@ -1984,6 +1998,7 @@ pub struct App {
     /// grace of gentle motion the aquarium settles to a genuinely still
     /// scene instead of repainting an idle screen forever.
     pub ambient_idle_since: Option<Instant>,
+    pub ambient_life_held_ms: Option<u128>,
     /// Start of the underwater shell's one-shot successful-turn exhale.
     /// Kept separate from the ambient ocean clock so completion can settle
     /// once without restarting or repainting the transcript field.
@@ -2083,6 +2098,9 @@ pub struct App {
     pub tool_collapse_threshold: usize,
     /// Tool runs the user explicitly expanded. Stores original history indices.
     pub expanded_tool_runs: HashSet<usize>,
+    pub turn_work_durations: HashMap<usize, Duration>,
+    pub turn_durations_revision: u64,
+    pub active_turn_user_index: Option<usize>,
     /// Current dense tool-run collapse behavior.
     pub tool_collapse_mode: ToolCollapseMode,
     /// File-tree pane state. `None` when hidden; `Some` when visible.
@@ -2151,8 +2169,9 @@ pub struct App {
     /// boundary (`agent_id` → count), from the latest `AgentList` refresh.
     pub agent_queued_follow_ups: HashMap<String, usize>,
     /// Receipts-only roster of every agent that ran this session (#5479).
-    /// Refreshed wholesale on each `AgentList` event; shared by `/agents`,
-    /// the Agents register and the Price view.
+    /// Updated incrementally from session-scoped agent lifecycle events and
+    /// reconciled by `AgentList`; shared by `/agents`, the Agents register
+    /// and the Price view.
     pub agent_roster: Vec<codewhale_engine::agent_roster::AgentRosterRow>,
     /// Original conversation owner of the retained snapshot. A process boot
     /// marker or a worker's parent run is not a conversation identity.
@@ -2391,6 +2410,8 @@ pub struct App {
     pub mcp_snapshot_generation_invalidated: bool,
     /// Enabled servers that have not settled in the current boot pass.
     pub mcp_connecting: Vec<String>,
+    pub mcp_announced_problems:
+        std::collections::BTreeMap<String, crate::tui::session_boot::McpServerBootState>,
     /// Number of MCP servers declared in the user's config at app boot.
     /// Used by the footer chip (#502) so a count is visible even before
     /// the user runs `/mcp` for the first time. `0` hides the chip.
@@ -2445,7 +2466,7 @@ pub struct App {
     /// when their tools complete.
     pub exploring_entries: HashMap<String, (usize, usize)>,
     /// Tool calls that should be ignored by the UI
-    pub ignored_tool_calls: HashSet<String>,
+    pub ignored_tool_calls: HashMap<String, serde_json::Value>,
     /// Last exec wait command shown (for duplicate suppression)
     pub last_exec_wait_command: Option<String>,
     /// Current streaming assistant cell
@@ -2810,6 +2831,10 @@ pub(crate) struct ToolRunCache {
     pub(crate) projection_builds: usize,
     pub(crate) history_len: usize,
     pub(crate) expanded_runs: HashSet<usize>,
+    pub(crate) open_tail: bool,
+    pub(crate) open_turn_user_index: Option<usize>,
+    pub(crate) echoed_queued_users: usize,
+    pub(crate) turn_durations_revision: u64,
     pub(crate) summaries: HashMap<usize, (HistoryCell, u64)>,
     pub(crate) hidden_indices: HashSet<usize>,
     pub(crate) superseded_todos: HashSet<usize>,
@@ -2879,6 +2904,10 @@ impl Default for ToolRunCache {
             projection_builds: 0,
             history_len: usize::MAX,
             expanded_runs: HashSet::new(),
+            open_tail: false,
+            open_turn_user_index: None,
+            echoed_queued_users: 0,
+            turn_durations_revision: u64::MAX,
             summaries: HashMap::new(),
             hidden_indices: HashSet::new(),
             superseded_todos: HashSet::new(),
@@ -2912,6 +2941,19 @@ fn default_composer_arrows_scroll_for_platform(use_mouse_capture: bool, _is_wind
 }
 
 impl App {
+    /// The durable task manager this host currently owns.
+    ///
+    /// This is the one slot every consumer reads. A session switch can adopt
+    /// another Runtime store, which replaces the manager; a handle captured at
+    /// launch would then describe a store this host no longer holds, and its
+    /// admission is closed. `None` means this host is between managers — after
+    /// a failed adoption, before exit — and callers must treat that as "no task
+    /// work is available right now" rather than as an error.
+    #[must_use]
+    pub fn task_manager(&self) -> Option<crate::task_manager::SharedTaskManager> {
+        self.runtime_services.task_manager.clone()
+    }
+
     /// Start or end an MCP boot prediction, stamping when it starts.
     ///
     /// Every writer of [`App::mcp_initializing`] goes through here so a
@@ -3466,7 +3508,11 @@ impl App {
     pub fn finish_onboarding_without_feature_intro(&mut self) {
         self.onboarding = OnboardingState::None;
         if let Err(err) = crate::tui::onboarding::mark_onboarded() {
-            self.status_message = Some(format!("Failed to mark onboarding: {err}"));
+            tracing::warn!(error = %err, "onboarding marker write failed");
+            let message = self
+                .tr(MessageId::OnboardingMarkFailed)
+                .replace("{error}", &err.to_string());
+            self.push_status_toast(message, StatusToastLevel::Error, None);
         }
         self.needs_redraw = true;
     }
@@ -3498,8 +3544,11 @@ impl App {
             Ok(None) => return,
             Ok(Some(())) => {}
             Err(err) => {
-                self.status_message = Some(format!("Failed to save feature-intro flag: {err}"));
-                // Still show the nudge; the flag write may simply retry next launch.
+                tracing::warn!(error = %err, "feature intro flag write failed");
+                let message = self
+                    .tr(MessageId::FeatureIntroFlagSaveFailed)
+                    .replace("{error}", &err.to_string());
+                self.push_status_toast(message, StatusToastLevel::Error, None);
             }
         }
         self.status_message = Some(self.tr(MessageId::FleetReadyNotice).into_owned());
@@ -5561,6 +5610,12 @@ impl App {
             .into_iter()
             .filter_map(remap)
             .collect();
+        self.turn_work_durations = std::mem::take(&mut self.turn_work_durations)
+            .into_iter()
+            .filter_map(|(idx, duration)| remap(idx).map(|idx| (idx, duration)))
+            .collect();
+        self.turn_durations_revision = self.turn_durations_revision.wrapping_add(1);
+        self.active_turn_user_index = self.active_turn_user_index.and_then(remap);
         self.collapsed_cell_map.clear();
         self.streaming_message_index = self.streaming_message_index.and_then(remap);
         self.streaming_source_receipt = None;
@@ -5588,7 +5643,7 @@ impl App {
     /// `true` for the `Agent N` counter placeholder assigned before a child's
     /// dispatch metadata arrives. Placeholders are the only label that may be
     /// upgraded once the child's identity is observed.
-    fn is_agent_counter_placeholder(label: &str) -> bool {
+    pub(crate) fn is_agent_counter_placeholder(label: &str) -> bool {
         label
             .strip_prefix("Agent ")
             .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
@@ -5607,6 +5662,12 @@ impl App {
                 self.agent_progress_meta
                     .get(agent_id)
                     .and_then(|meta| meta.display_name.clone())
+            })
+            .or_else(|| {
+                self.current_agent_roster()
+                    .iter()
+                    .find(|row| row.worker_id == agent_id)
+                    .map(|row| row.display_name.clone())
             })
             .map(|name| name.trim().to_string())
             .filter(|name| !name.is_empty() && name != agent_id)
@@ -5907,8 +5968,27 @@ impl App {
     pub(crate) fn set_current_session_id(&mut self, session_id: Option<String>) {
         if self.current_session_id != session_id {
             self.view_stack.remove_owned_evidence_pagers();
+            self.mcp_announced_problems.clear();
             self.session_write_receipt = None;
             self.session_write_owner = None;
+            self.subagent_cache.clear();
+            self.subagent_terminal_seen_at.clear();
+            self.subagent_cache_received_at = None;
+            self.agent_progress.clear();
+            self.agent_progress_meta.clear();
+            self.subagent_card_index.clear();
+            self.last_fanout_card_index = None;
+            self.pending_subagent_dispatch = None;
+            self.agent_activity_started_at = None;
+            self.agent_counter = 0;
+            self.agent_label_map.clear();
+            self.agent_focus = None;
+            self.agent_queued_follow_ups.clear();
+            self.agent_roster.clear();
+            self.agent_roster_session_id = None;
+            self.agent_roster_print_requested = false;
+            self.coordination_detail = None;
+            self.work_surface.reset_session_state(session_id.as_deref());
         }
         self.current_session_id = session_id;
     }
@@ -6123,6 +6203,11 @@ impl App {
         self.collapsed_cells.retain(|idx| *idx < len);
         self.cell_folds.retain(|idx, _| *idx < len);
         self.expanded_tool_runs.retain(|idx| *idx < len);
+        self.turn_work_durations.retain(|idx, _| *idx < len);
+        self.turn_durations_revision = self.turn_durations_revision.wrapping_add(1);
+        if self.active_turn_user_index.is_some_and(|idx| idx >= len) {
+            self.active_turn_user_index = None;
+        }
         self.collapsed_cell_map.clear();
     }
 
@@ -6272,6 +6357,50 @@ impl App {
     }
 
     #[must_use]
+    pub(crate) fn turn_fold_open_tail(&self) -> bool {
+        self.is_loading || self.active_cell.is_some()
+    }
+
+    #[must_use]
+    pub(crate) fn echoed_queued_user_count(&self) -> usize {
+        self.queued_messages
+            .iter()
+            .filter(|message| message.history_echoed && message.extension_command.is_none())
+            .count()
+    }
+
+    #[must_use]
+    pub(crate) fn turn_fold_projection(&self) -> crate::tui::history::TurnFoldProjection {
+        if !self.tool_collapse_active() {
+            return crate::tui::history::TurnFoldProjection::default();
+        }
+        let active_entries = self
+            .active_cell
+            .as_ref()
+            .map_or(&[][..], crate::tui::active_cell::ActiveCell::entries);
+        let superseded_todos =
+            crate::tui::history::superseded_todo_write_indices(&self.history, active_entries);
+        crate::tui::history::detect_turn_folds(
+            &self.history,
+            active_entries,
+            self.turn_fold_open_tail(),
+            self.active_turn_user_index,
+            self.echoed_queued_user_count(),
+            &superseded_todos,
+            &self.turn_work_durations,
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn folded_turn_at(&self, index: usize) -> Option<crate::tui::history::TurnFold> {
+        self.turn_fold_projection()
+            .turns
+            .into_iter()
+            .find(|turn| turn.host() == Some(index))
+            .filter(|turn| !self.expanded_tool_runs.contains(&turn.key))
+    }
+
+    #[must_use]
     pub fn tool_run_start_for_history_index(&self, index: usize) -> Option<usize> {
         if !self.tool_collapse_active() {
             return None;
@@ -6283,6 +6412,14 @@ impl App {
         if index >= self.history.len().saturating_add(active_entries.len()) {
             return None;
         }
+        let folds = self.turn_fold_projection();
+        if folds.agents.contains(&index) {
+            return Some(index);
+        }
+        let turn = folds.turn_containing(index).map(|turn| turn.key);
+        if let Some(key) = turn.filter(|key| !self.expanded_tool_runs.contains(key)) {
+            return Some(key);
+        }
         crate::tui::history::detect_tool_runs_from_slices(
             &self.history,
             active_entries,
@@ -6291,6 +6428,20 @@ impl App {
         .into_iter()
         .find(|run| index >= run.start && index < run.start.saturating_add(run.count))
         .map(|run| run.start)
+        .or(turn)
+    }
+
+    #[must_use]
+    pub(crate) fn transcript_fold_header_at(&self, index: usize) -> bool {
+        let Some(key) = self.tool_run_start_for_history_index(index) else {
+            return false;
+        };
+        key == index
+            || self
+                .turn_fold_projection()
+                .turns
+                .iter()
+                .any(|turn| turn.key == key && turn.host() == Some(index))
     }
 
     pub fn toggle_tool_run_expansion_at(&mut self, index: usize) -> bool {
@@ -6604,17 +6755,6 @@ impl App {
                 *cell_index = cell_index.saturating_add(added);
             }
         }
-        self.active_tool_entry_completed_at =
-            std::mem::take(&mut self.active_tool_entry_completed_at)
-                .into_iter()
-                .map(|(index, at)| {
-                    if index >= boundary {
-                        (index.saturating_add(added), at)
-                    } else {
-                        (index, at)
-                    }
-                })
-                .collect();
     }
 
     pub fn cell_at_virtual_index_mut(&mut self, index: usize) -> Option<&mut HistoryCell> {
@@ -7163,7 +7303,7 @@ impl App {
     /// Ceiling on how far the ambient clock advances per sampled frame.
     /// Bursty draw schedules (fast token streams) slow the aquarium down
     /// instead of teleporting creatures across the gap.
-    pub const AMBIENT_MAX_STEP_MS: u128 = 160;
+    pub const AMBIENT_MAX_STEP_MS: u128 = 260;
     /// Gentle-motion grace before a fully idle aquarium settles still.
     pub const AMBIENT_IDLE_SETTLE_MS: u64 = 6_000;
 
@@ -7194,10 +7334,17 @@ impl App {
     pub fn ambient_idle_settled(&mut self, busy: bool, now: Instant) -> bool {
         if busy {
             self.ambient_idle_since = None;
+            self.ambient_life_held_ms = None;
             return false;
         }
         let since = *self.ambient_idle_since.get_or_insert(now);
-        now.duration_since(since) >= Duration::from_millis(Self::AMBIENT_IDLE_SETTLE_MS)
+        let settled =
+            now.duration_since(since) >= Duration::from_millis(Self::AMBIENT_IDLE_SETTLE_MS);
+        if settled {
+            self.ambient_life_held_ms
+                .get_or_insert(self.ambient_clock_ms);
+        }
+        settled
     }
 
     /// Resolve one motion policy for every surface that can request or paint
@@ -7366,6 +7513,14 @@ impl App {
     pub fn queue_message(&mut self, message: QueuedMessage) {
         if message.extension_command.is_some() {
             self.restore_unsent_message(message);
+            return;
+        }
+        if self.queued_messages.len() >= MAX_QUEUED_MESSAGES {
+            self.restore_unsent_message(message);
+            let notice = self
+                .tr(MessageId::QueueFullNotice)
+                .replace("{max}", &MAX_QUEUED_MESSAGES.to_string());
+            self.push_status_toast(notice, StatusToastLevel::Warning, None);
             return;
         }
         self.queued_messages.push_back(message);
@@ -8015,7 +8170,7 @@ impl App {
 
     pub fn accepts_custom_model_ids(&self) -> bool {
         self.model_ids_passthrough
-            || codewhale_runtime::config::provider_passes_model_through(self.api_provider)
+            || codewhale_config::descriptors::provider_passes_model_through(self.api_provider)
     }
 
     pub(crate) fn apply_provider_switch_reasoning_effort(

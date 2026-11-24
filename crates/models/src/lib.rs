@@ -273,6 +273,19 @@ pub fn max_output_tokens_for_model(model: &str) -> Option<u32> {
     reviewed_model_limit(model, |row| row.generation_default.or(row.max_output))
 }
 
+fn reviewed_model_flag(
+    model: &str,
+    flag: impl Fn(codewhale_config::catalog::reviewed::IntrinsicModel) -> Option<bool>,
+) -> Option<bool> {
+    codewhale_config::catalog::reviewed::intrinsic_model(model)
+        .and_then(&flag)
+        .or_else(|| {
+            reviewed_snapshot_model(model)
+                .and_then(codewhale_config::catalog::reviewed::intrinsic_model)
+                .and_then(flag)
+        })
+}
+
 /// Catalog-first reasoning capability. `None` means no catalog row and no
 /// remaining cited fallback — unknown, not "not a reasoning model".
 ///
@@ -281,19 +294,22 @@ pub fn max_output_tokens_for_model(model: &str) -> Option<u32> {
 /// unknown to `false` for existing stream/UI gates.
 #[must_use]
 pub fn model_reasoning_capability(model: &str) -> Option<bool> {
-    codewhale_config::catalog::reviewed::intrinsic_model(model)
-        .and_then(|row| row.reasoning)
-        .or_else(|| {
-            reviewed_snapshot_model(model).and_then(|id| {
-                codewhale_config::catalog::reviewed::intrinsic_model(id)
-                    .and_then(|row| row.reasoning)
-            })
-        })
+    reviewed_model_flag(model, |row| row.reasoning)
 }
 
 #[must_use]
 pub fn model_supports_reasoning(model: &str) -> bool {
     model_reasoning_capability(model).unwrap_or(false)
+}
+
+#[must_use]
+pub fn model_requires_thought_signatures(model: &str) -> bool {
+    reviewed_model_flag(model, |row| row.thought_signatures_required).unwrap_or(false)
+}
+
+#[must_use]
+pub fn model_can_disable_thinking(model: &str) -> bool {
+    reviewed_model_flag(model, |row| row.thinking_can_disable).unwrap_or(false)
 }
 
 /// Contributor tier of Muse Spark 1.2 is a distinct selectable id with
@@ -652,10 +668,14 @@ pub enum Delta {
     ThinkingDelta { thinking: String },
     #[serde(rename = "input_json_delta")]
     InputJsonDelta { partial_json: String },
+    #[serde(skip)]
+    ToolCallIdDelta { id: String },
     /// Anthropic signed-thinking signature delta (#3014); arrives at the end
     /// of a thinking block on the native Messages stream.
     #[serde(rename = "signature_delta")]
     SignatureDelta { signature: String },
+    #[serde(rename = "thought_signature_delta")]
+    ThoughtSignatureDelta { thought_signature: String },
     /// Opaque Responses reasoning continuity, attached only when the provider
     /// returns an encrypted item on the exact originating route.
     #[serde(rename = "reasoning_state_delta")]
@@ -1663,5 +1683,20 @@ mod tests {
         assert_eq!(delta.title.as_deref(), Some("Rust 2024 Summary"));
         assert_eq!(delta.refusal.as_deref(), Some("Policy blocked output"));
         assert!(delta.stop_details.is_some());
+    }
+
+    #[test]
+    fn offline_seed_models_resolve_limits_and_reasoning() {
+        for (model, context, output) in [
+            ("gemini-4-neon", 1_048_576, 65_536),
+            ("gpt-6.2-astra", 1_050_000, 128_000),
+            ("gpt-6.2-sol", 1_050_000, 128_000),
+            ("muse-ember-1.0", 1_048_576, 524_288),
+        ] {
+            assert_eq!(context_window_for_model(model), Some(context), "{model}");
+            assert_eq!(max_output_tokens_for_model(model), Some(output), "{model}");
+            assert!(model_supports_reasoning(model), "{model}");
+        }
+        assert!(!model_can_disable_thinking("gemini-4-neon"));
     }
 }

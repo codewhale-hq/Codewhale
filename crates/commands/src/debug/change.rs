@@ -149,7 +149,8 @@ fn change_report(
 }
 
 pub fn inline_changelog_section(section: &str) -> String {
-    if section.len() <= MAX_INLINE_CHANGELOG_CHARS {
+    let total_chars = section.chars().count();
+    if total_chars <= MAX_INLINE_CHANGELOG_CHARS {
         return section.to_string();
     }
 
@@ -158,7 +159,7 @@ pub fn inline_changelog_section(section: &str) -> String {
         "{truncated}\n\
 \n\
 [... {} characters omitted from the bundled Codewhale changelog]",
-        section.len() - MAX_INLINE_CHANGELOG_CHARS
+        total_chars - MAX_INLINE_CHANGELOG_CHARS
     )
 }
 
@@ -381,4 +382,27 @@ pub fn next_contentful_version_after(lines: &[&str], mut pos: usize) -> Option<S
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inline_changelog_section_uses_char_count_for_threshold_and_omission() {
+        let within_char_budget = format!("{}{}", "a".repeat(4080), "中".repeat(10));
+        assert!(within_char_budget.len() > MAX_INLINE_CHANGELOG_CHARS);
+        assert_eq!(
+            inline_changelog_section(&within_char_budget),
+            within_char_budget
+        );
+
+        let over_char_budget = "中".repeat(4200);
+        let output = inline_changelog_section(&over_char_budget);
+        assert!(output.starts_with(&"中".repeat(MAX_INLINE_CHANGELOG_CHARS)));
+        assert!(
+            output.ends_with("[... 104 characters omitted from the bundled Codewhale changelog]"),
+            "unexpected omission notice: {output}"
+        );
+    }
 }

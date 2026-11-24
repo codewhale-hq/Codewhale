@@ -5,6 +5,7 @@
 //! directly to verify each "class of stream failure" the engine relies on.
 use super::*;
 use crate::client::wire::{SseLineDecoder, SseLineError};
+use codewhale_config::descriptors::defaults::DEFAULT_GOOGLE_BASE_URL;
 use codewhale_models::{ContentBlockStart, Delta, StreamEvent};
 
 /// Decode a raw SSE-data JSON chunk into our internal events, mirroring
@@ -18,7 +19,7 @@ fn decode_chunk_with_reasoning(json_text: &str, is_reasoning_model: bool) -> Vec
     let mut content_index = 0u32;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
+    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     parse_sse_chunk(
         &chunk,
@@ -35,10 +36,25 @@ fn decode_chunks_with_style(
     chunks: &[&str],
     reasoning_stream_style: ReasoningStreamStyle,
 ) -> Vec<StreamEvent> {
+    decode_chunks_with_tool_stream(chunks, reasoning_stream_style, ChatToolStream::default())
+}
+
+fn decode_google_chunks(chunks: &[&str]) -> Vec<StreamEvent> {
+    decode_chunks_with_tool_stream(
+        chunks,
+        ReasoningStreamStyle::SeparateField,
+        ChatToolStream::for_base_url(DEFAULT_GOOGLE_BASE_URL),
+    )
+}
+
+fn decode_chunks_with_tool_stream(
+    chunks: &[&str],
+    reasoning_stream_style: ReasoningStreamStyle,
+    mut tool_indices: ChatToolStream,
+) -> Vec<StreamEvent> {
     let mut content_index = 0u32;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     let mut inline_reasoning_tags = InlineReasoningTagState::default();
     let mut events = Vec::new();
@@ -67,7 +83,7 @@ fn decode_sse_byte_chunks(chunks: &[&[u8]]) -> Result<Vec<StreamEvent>, SseLineE
         content_index: u32,
         text_started: bool,
         thinking_started: bool,
-        tool_indices: std::collections::HashMap<u32, u32>,
+        tool_indices: ChatToolStream,
         reasoning_detail_buffers: std::collections::HashMap<u32, String>,
         inline_reasoning_tags: InlineReasoningTagState,
         events: Vec<StreamEvent>,
@@ -80,7 +96,7 @@ fn decode_sse_byte_chunks(chunks: &[&[u8]]) -> Result<Vec<StreamEvent>, SseLineE
                 content_index: 0,
                 text_started: false,
                 thinking_started: false,
-                tool_indices: std::collections::HashMap::new(),
+                tool_indices: ChatToolStream::default(),
                 reasoning_detail_buffers: std::collections::HashMap::new(),
                 inline_reasoning_tags: InlineReasoningTagState::default(),
                 events: Vec::new(),
@@ -300,7 +316,7 @@ fn decoder_streams_moonshot_multi_chunk_reasoning_as_thinking() {
     let mut content_index = 0u32;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
+    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     let mut events = Vec::new();
     for chunk in chunks {
@@ -388,7 +404,7 @@ fn decoder_streams_minimax_reasoning_details_as_incremental_thinking() {
     let mut content_index = 0u32;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
+    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     let mut events = Vec::new();
     for chunk in chunks {
@@ -459,7 +475,7 @@ fn modelstudio_streams_reasoning_content_as_thinking() {
         let mut content_index = 0u32;
         let mut text_started = false;
         let mut thinking_started = false;
-        let mut tool_indices = std::collections::HashMap::new();
+        let mut tool_indices = ChatToolStream::default();
         let mut reasoning_detail_buffers = std::collections::HashMap::new();
         let mut inline_reasoning_tags = InlineReasoningTagState::default();
         let mut events = Vec::new();
@@ -528,7 +544,7 @@ fn decoder_does_not_render_reasoning_as_text_for_known_provider_models() {
     let mut content_index = 0u32;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
+    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     let is_reasoning_model =
         is_reasoning_model_for_stream(ProviderKind::XiaomiMimo, "mimo-v2.5-pro");
@@ -815,7 +831,7 @@ fn decoder_treats_done_frame_as_terminal() {
     let mut content_index = 0u32;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
+    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     let mut inline_reasoning_tags = InlineReasoningTagState::default();
 
@@ -837,7 +853,7 @@ fn decoder_treats_done_frame_as_terminal() {
     assert_eq!(content_index, 0);
     assert!(!text_started);
     assert!(!thinking_started);
-    assert!(tool_indices.is_empty());
+    assert!(tool_indices.calls.is_empty());
 }
 
 #[test]
@@ -922,28 +938,17 @@ fn non_streaming_response_uses_fallback_name_for_missing_tool_name() {
 /// fallback used to be the literal string `"tool_call"` for every
 /// parallel call, so two tool calls in one delta ended up sharing an
 /// id. Downstream routing then matched the first call's tool_result
-/// twice and the second call hung. The fallback is now indexed by the
-/// content-block position, keeping each call unique within the
-/// response.
+/// twice and the second call hung.
 #[test]
 fn decoder_assigns_unique_fallback_ids_to_parallel_tool_calls_missing_id() {
     let events = decode_chunk(
         r#"{"choices":[{"delta":{"tool_calls":[
                 {"index":0,"function":{"name":"grep_files","arguments":"{\"pattern\":\"a\"}"}},
                 {"index":1,"function":{"name":"read_file","arguments":"{\"path\":\"x\"}"}}
-            ]}}]}"#,
+            ]},"finish_reason":"tool_calls"}]}"#,
     );
 
-    let ids: Vec<&str> = events
-        .iter()
-        .filter_map(|e| match e {
-            StreamEvent::ContentBlockStart {
-                content_block: ContentBlockStart::ToolUse { id, .. },
-                ..
-            } => Some(id.as_str()),
-            _ => None,
-        })
-        .collect();
+    let ids = finalized_tool_call_ids(&events);
 
     assert_eq!(
         ids.len(),
@@ -954,6 +959,183 @@ fn decoder_assigns_unique_fallback_ids_to_parallel_tool_calls_missing_id() {
         ids[0], ids[1],
         "parallel tool calls without upstream `id` must get distinct fallback ids; got {ids:?}"
     );
+}
+
+/// Twin of `decoder_assigns_unique_fallback_ids_to_parallel_tool_calls_missing_id`
+/// for the non-streaming `parse_chat_message` path (audit Finding V3): a
+/// `chat/completions` response whose `tool_calls` entries omit `id` used to
+/// give every call the literal fallback `"tool_call"`, so parallel calls
+/// shared one id and the whole-response admission in
+/// `validate_tool_call_ids_for_protocol` rejected the turn as a duplicate
+/// pairing id. The fallback is now indexed by the tool-call position.
+#[test]
+fn non_streaming_assigns_unique_fallback_ids_to_parallel_tool_calls_missing_id() {
+    let payload: Value = serde_json::from_str(
+        r#"{
+                "id": "chatcmpl_2",
+                "model": "deepseek-v4-pro",
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            { "function": { "name": "grep_files", "arguments": "{\"pattern\":\"a\"}" } },
+                            { "function": { "name": "read_file", "arguments": "{\"path\":\"x\"}" } }
+                        ]
+                    },
+                    "finish_reason": "tool_calls"
+                }]
+            }"#,
+    )
+    .expect("valid response");
+
+    let parsed = parse_chat_message(&payload).expect("message parses");
+    let ids: Vec<&str> = parsed
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::ToolUse { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        ids.len(),
+        2,
+        "expected two tool-use blocks for parallel tool calls; got {ids:?}"
+    );
+    assert_ne!(
+        ids[0], ids[1],
+        "parallel tool calls without upstream `id` must get distinct fallback ids; got {ids:?}"
+    );
+    crate::client::validate_tool_call_ids_for_protocol(
+        codewhale_config::provider::WireFormat::ChatCompletions,
+        ids.iter().copied(),
+    )
+    .expect("distinct fallback ids pass whole-response admission");
+}
+
+#[test]
+fn decoder_fallback_id_does_not_collide_with_literal_call_index_id() {
+    let events = decode_chunk(
+        r#"{"choices":[{"delta":{"tool_calls":[
+                {"index":0,"id":"call_1","function":{"name":"grep_files","arguments":"{}"}},
+                {"index":1,"function":{"name":"read_file","arguments":"{}"}}
+            ]},"finish_reason":"tool_calls"}]}"#,
+    );
+
+    let ids = finalized_tool_call_ids(&events);
+
+    assert_eq!(ids.len(), 2, "expected two tool-use blocks; got {events:?}");
+    assert_eq!(ids[0], "call_1");
+    assert_eq!(
+        ids[1], "call_missing_1",
+        "the id-less call gets its fallback id; got {ids:?}"
+    );
+    assert_ne!(ids[0], ids[1]);
+    crate::client::validate_tool_call_ids_for_protocol(
+        codewhale_config::provider::WireFormat::ChatCompletions,
+        ids.iter().copied(),
+    )
+    .expect("a literal call_1 and a synthesized call_missing_1 are distinct");
+}
+
+/// Twin of `decoder_fallback_id_does_not_collide_with_literal_call_index_id`
+/// for the non-streaming parser.
+#[test]
+fn non_streaming_fallback_id_does_not_collide_with_literal_call_index_id() {
+    let payload: Value = serde_json::from_str(
+        r#"{
+                "id": "chatcmpl_3",
+                "model": "deepseek-v4-pro",
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            { "id": "call_1", "function": { "name": "grep_files", "arguments": "{}" } },
+                            { "function": { "name": "read_file", "arguments": "{}" } }
+                        ]
+                    },
+                    "finish_reason": "tool_calls"
+                }]
+            }"#,
+    )
+    .expect("valid response");
+
+    let parsed = parse_chat_message(&payload).expect("message parses");
+    let ids: Vec<&str> = parsed
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::ToolUse { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(ids.len(), 2, "expected two tool-use blocks; got {ids:?}");
+    assert_eq!(ids[0], "call_1");
+    assert_eq!(
+        ids[1], "call_missing_1",
+        "the id-less call gets its fallback id; got {ids:?}"
+    );
+    assert_ne!(ids[0], ids[1]);
+    crate::client::validate_tool_call_ids_for_protocol(
+        codewhale_config::provider::WireFormat::ChatCompletions,
+        ids.iter().copied(),
+    )
+    .expect("a literal call_1 and a synthesized call_missing_1 are distinct");
+}
+
+fn finalized_tool_call_ids(events: &[StreamEvent]) -> Vec<&str> {
+    let mut ids = std::collections::BTreeMap::new();
+    for event in events {
+        match event {
+            StreamEvent::ContentBlockStart {
+                index,
+                content_block: ContentBlockStart::ToolUse { id, .. },
+            }
+            | StreamEvent::ContentBlockDelta {
+                index,
+                delta: Delta::ToolCallIdDelta { id },
+            } => {
+                ids.insert(*index, id.as_str());
+            }
+            _ => {}
+        }
+    }
+    ids.into_values().collect()
+}
+
+#[test]
+fn fallback_identity_matches_non_streaming_with_late_literal_ids() {
+    let events = decode_chunks_with_style(
+        &[
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"read_file","arguments":"{"}}]}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"}"}},{"index":1,"function":{"name":"grep_files","arguments":"{}"}}]}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_missing_0"}]},"finish_reason":"tool_calls"}]}"#,
+        ],
+        ReasoningStreamStyle::None,
+    );
+    let ids = finalized_tool_call_ids(&events);
+    let message = parse_chat_message(&json!({"choices":[{"message":{"tool_calls":[
+        {"function":{"name":"read_file","arguments":"{}"}},
+        {"id":"call_missing_0","function":{"name":"grep_files","arguments":"{}"}}
+    ]}}]}))
+    .expect("message parses");
+    let non_streaming: Vec<_> = message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::ToolUse { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, non_streaming);
+    assert_eq!(ids, ["call_missing_0_1", "call_missing_0"]);
+    crate::client::validate_tool_call_ids_for_protocol(
+        codewhale_config::provider::WireFormat::ChatCompletions,
+        ids.iter().copied(),
+    )
+    .expect("provider and generated ids pass admission");
 }
 
 #[test]
@@ -1888,4 +2070,292 @@ fn deepseek_chat_web_tools_latest_reminder_replay_and_sse_parity() {
             && delta.title.as_deref() == Some("Rust Chat")
             && usage.as_ref().and_then(|u| u.safety_tokens) == Some(5)
     )));
+}
+
+#[test]
+fn google_parallel_tool_calls_without_index_keep_separate_blocks_and_replay_cleanly() {
+    let sse_chunks = [
+        serde_json::json!({
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "id": "call_g1",
+                            "type": "function",
+                            "function": { "name": "read_file", "arguments": "{\"path\":\"a.rs\"}" },
+                            "extra_content": { "google": { "thought_signature": "sig_first" } }
+                        },
+                        {
+                            "id": "call_g2",
+                            "type": "function",
+                            "function": { "name": "read_file", "arguments": "{\"path\":\"b.rs\"}" }
+                        }
+                    ]
+                }
+            }]
+        })
+        .to_string(),
+        serde_json::json!({
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [{
+                        "id": "call_g3",
+                        "type": "function",
+                        "function": { "name": "grep_files", "arguments": "{\"pattern\":" }
+                    }]
+                }
+            }]
+        })
+        .to_string(),
+        serde_json::json!({
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [{
+                        "function": { "arguments": "\"foo\"}" },
+                        "extra_content": { "google": { "thought_signature": "sig_late" } }
+                    }]
+                }
+            }]
+        })
+        .to_string(),
+        serde_json::json!({
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "tool_calls"
+            }]
+        })
+        .to_string(),
+    ];
+    let refs: Vec<&str> = sse_chunks.iter().map(String::as_str).collect();
+    let events = decode_google_chunks(&refs);
+
+    let starts: Vec<(u32, String, Option<String>)> = events
+        .into_iter()
+        .filter_map(|ev| match ev {
+            StreamEvent::ContentBlockStart {
+                index,
+                content_block:
+                    ContentBlockStart::ToolUse {
+                        id,
+                        thought_signature,
+                        ..
+                    },
+            } => Some((index, id, thought_signature)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        starts,
+        vec![
+            (0, "call_g1".to_string(), Some("sig_first".to_string())),
+            (1, "call_g2".to_string(), None),
+            (2, "call_g3".to_string(), None),
+        ]
+    );
+
+    let events2 = decode_google_chunks(&refs);
+    assert!(events2.iter().any(|ev| matches!(
+        ev,
+        StreamEvent::ContentBlockDelta {
+            index: 2,
+            delta: Delta::ThoughtSignatureDelta { thought_signature },
+        } if thought_signature == "sig_late"
+    )));
+
+    let replay_messages = vec![serde_json::json!({
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": "call_g1",
+                "type": "function",
+                "function": { "name": "read_file", "arguments": "{\"path\":\"a.rs\"}" },
+                "extra_content": { "google": { "thought_signature": "sig_first" } }
+            },
+            {
+                "id": "call_g2",
+                "type": "function",
+                "function": { "name": "read_file", "arguments": "{\"path\":\"b.rs\"}" }
+            }
+        ]
+    })];
+    crate::client::chat::validate_google_thought_signature_replay(
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        "gemini-4-hydrogen",
+        &replay_messages,
+    )
+    .expect("parallel Gemini tool calls carry thought_signature only on tool_calls[0]");
+
+    let missing_first = vec![serde_json::json!({
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": "call_unsigned",
+                "type": "function",
+                "function": { "name": "read_file", "arguments": "{}" }
+            },
+            {
+                "id": "call_second",
+                "type": "function",
+                "function": { "name": "read_file", "arguments": "{}" },
+                "extra_content": { "google": { "thought_signature": "sig_wrong_slot" } }
+            }
+        ]
+    })];
+    assert!(
+        crate::client::chat::validate_google_thought_signature_replay(
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "gemini-4-hydrogen",
+            &missing_first,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn google_parallel_tool_continuations_match_identity_then_batch_position() {
+    let start = r#"{"choices":[{"delta":{"tool_calls":[
+        {"id":"call_g1","function":{"name":"read_file","arguments":"{\"path\":"}},
+        {"id":"call_g2","function":{"name":"grep_files","arguments":"{\"pattern\":"}}
+    ]}}]}"#;
+    let continue_both = r#"{"choices":[{"delta":{"tool_calls":[
+        {"id":"call_g1","function":{"arguments":"\"a.rs\"}"}},
+        {"function":{"arguments":"\"needle\"}"}}
+    ]}}]}"#;
+    let signature_for_first = r#"{"choices":[{"delta":{"tool_calls":[
+        {"index":0,"id":"call_g1","extra_content":{"google":{"thought_signature":"sig_first"}}}
+    ]}}]}"#;
+    let events = decode_google_chunks(&[start, signature_for_first, continue_both]);
+    let input: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::ContentBlockDelta {
+                index,
+                delta: Delta::InputJsonDelta { partial_json },
+            } => Some((*index, partial_json.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        input,
+        [
+            (0, "{\"path\":"),
+            (1, "{\"pattern\":"),
+            (0, "\"a.rs\"}"),
+            (1, "\"needle\"}")
+        ]
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: Delta::ThoughtSignatureDelta { thought_signature }
+        } if thought_signature == "sig_first"
+    )));
+
+    let ambiguous = r#"{"choices":[{"delta":{"tool_calls":[
+        {"function":{"arguments":"\"unknown target\"}"}}
+    ]}}]}"#;
+    let events = decode_google_chunks(&[start, ambiguous]);
+    assert!(matches!(events.last(), Some(StreamEvent::Error { .. })));
+
+    let anonymous_parallel = r#"{"choices":[{"delta":{"tool_calls":[
+        {"function":{"arguments":"{}"}},
+        {"function":{"arguments":"{}"}}
+    ]}}]}"#;
+    let events = decode_google_chunks(&[start, anonymous_parallel]);
+    assert!(matches!(events.last(), Some(StreamEvent::Error { .. })));
+
+    let partly_reordered = r#"{"choices":[{"delta":{"tool_calls":[
+        {"id":"call_g2","function":{"arguments":"{}"}},
+        {"function":{"arguments":"{}"}}
+    ]}}]}"#;
+    let events = decode_google_chunks(&[start, partly_reordered]);
+    assert!(matches!(events.last(), Some(StreamEvent::Error { .. })));
+
+    let unknown_continuation = r#"{"choices":[{"delta":{"tool_calls":[
+        {"index":5,"function":{"arguments":"{}"}}
+    ]}}]}"#;
+    let events = decode_google_chunks(&[start, unknown_continuation]);
+    assert!(matches!(events.last(), Some(StreamEvent::Error { .. })));
+
+    let indexed_batch = r#"{"choices":[{"delta":{"tool_calls":[
+        {"index":0,"function":{"name":"read_file"}},
+        {"index":1,"id":"call_g2","function":{"name":"grep_files"}}
+    ]}}]}"#;
+    let conflicting_identity = r#"{"choices":[{"delta":{"tool_calls":[
+        {"index":0,"id":"call_g2"}
+    ]}}]}"#;
+    let events = decode_google_chunks(&[indexed_batch, conflicting_identity]);
+    assert!(matches!(events.last(), Some(StreamEvent::Error { .. })));
+
+    let pending_ids = r#"{"choices":[{"delta":{"tool_calls":[
+        {"index":0,"function":{"name":"read_file","arguments":"{}"}},
+        {"index":1,"function":{"name":"grep_files","arguments":"{}"}}
+    ]}}]}"#;
+    let finish = r#"{"choices":[{"delta":{"tool_calls":[
+        {"index":0,"extra_content":{"google":{"thought_signature":"sig_first"}}},
+        {"index":1,"id":"call_missing_0"}
+    ]},"finish_reason":"tool_calls"}]}"#;
+    let events = decode_google_chunks(&[pending_ids, finish]);
+    assert_eq!(
+        finalized_tool_call_ids(&events),
+        ["call_missing_0_1", "call_missing_0"]
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: Delta::ThoughtSignatureDelta { thought_signature },
+        } if thought_signature == "sig_first"
+    )));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::Error { .. }))
+    );
+}
+
+#[test]
+fn google_reasoning_effort_honors_hydrogen_xhigh_and_gemini4_low_floor() {
+    let url = "https://generativelanguage.googleapis.com/v1beta/openai";
+
+    let mut hydrogen_xhigh = serde_json::json!({});
+    crate::client::chat::apply_google_reasoning_effort(
+        &mut hydrogen_xhigh,
+        url,
+        "gemini-4-hydrogen",
+        Some("xhigh"),
+    );
+    assert_eq!(hydrogen_xhigh["reasoning_effort"], "xhigh");
+
+    let mut carbon_xhigh = serde_json::json!({});
+    crate::client::chat::apply_google_reasoning_effort(
+        &mut carbon_xhigh,
+        url,
+        "gemini-4-carbon",
+        Some("xhigh"),
+    );
+    assert_eq!(carbon_xhigh["reasoning_effort"], "high");
+
+    let mut hydrogen_off = serde_json::json!({});
+    crate::client::chat::apply_google_reasoning_effort(
+        &mut hydrogen_off,
+        url,
+        "gemini-4-hydrogen",
+        Some("off"),
+    );
+    assert_eq!(hydrogen_off["reasoning_effort"], "low");
+
+    let mut flash_off = serde_json::json!({});
+    crate::client::chat::apply_google_reasoning_effort(
+        &mut flash_off,
+        url,
+        "gemini-2.5-flash",
+        Some("off"),
+    );
+    assert_eq!(flash_off["reasoning_effort"], "none");
 }

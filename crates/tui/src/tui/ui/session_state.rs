@@ -20,6 +20,7 @@ pub(crate) fn surface_session_load_failure(app: &mut App, message: String) {
     app.add_message(crate::tui::history::HistoryCell::Error {
         message: message.clone(),
         severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+        code: None,
     });
     app.status_message = Some(message);
 }
@@ -527,6 +528,9 @@ pub(crate) fn reconcile_turn_liveness_with(
 /// written to disk, so `--continue` loads the *previous* save — effectively
 /// losing the entire in-progress turn.
 pub(crate) fn persist_recovery_snapshot(app: &mut App) {
+    if app.dispatch_in_flight {
+        return;
+    }
     if let Ok(manager) = SessionManager::default_location()
         && let Ok(mut session) = build_session_snapshot(app, &manager)
     {
@@ -558,9 +562,22 @@ pub(crate) fn persist_recovery_snapshot(app: &mut App) {
             PersistRequest::SaveCheckpoint { session },
             &projection,
         ) {
-            app.status_message = Some(format!(
-                "To-do list update pending while saving recovery snapshot ({err})"
-            ));
+            tracing::error!(%err, "recovery snapshot save failed; in-progress turn not durably persisted");
+            let id = app
+                .current_session_id
+                .as_deref()
+                .map(codewhale_engine::session_manager::truncate_id)
+                .unwrap_or("—");
+            let message = app
+                .tr(MessageId::SessionSaveFailed)
+                .replace("{id}", id)
+                .replace("{error}", &err.to_string());
+            app.add_message(HistoryCell::Error {
+                message: message.clone(),
+                severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+                code: None,
+            });
+            app.set_sticky_status(message, StatusToastLevel::Error, None);
         }
     }
 }
@@ -584,6 +601,7 @@ pub(crate) fn persist_full_reset_snapshot(app: &mut App) {
             app.add_message(crate::tui::history::HistoryCell::Error {
                 message: message.clone(),
                 severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+                code: None,
             });
             app.status_message = Some(message);
             return;
@@ -607,7 +625,9 @@ pub(crate) fn maybe_throttled_recovery_snapshot(
     now: Instant,
     last_snapshot_at: &mut Option<Instant>,
 ) {
-    if !app.is_loading && !matches!(app.runtime_turn_status.as_deref(), Some("in_progress")) {
+    if app.dispatch_in_flight
+        || (!app.is_loading && !matches!(app.runtime_turn_status.as_deref(), Some("in_progress")))
+    {
         return;
     }
     if last_snapshot_at
@@ -751,6 +771,7 @@ pub(crate) fn recover_engine_event_disconnect(app: &mut App) -> bool {
         message: "Engine stopped before completing the turn. Check ~/.codewhale/crashes and retry."
             .to_string(),
         severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+        code: None,
     });
     app.push_status_toast(
         "Engine stopped before completing the turn.",
@@ -1064,27 +1085,6 @@ pub(crate) fn resume_launch_session(app: &mut App, session_id: &str) -> commands
     commands::CommandResult::action(AppAction::LoadSession(path))
 }
 
-/// `LaunchAction::McpRemedy` (#6085): type the remedy the problems row
-/// prints into the composer — `/mcp login <name>` or `/mcp`. Typing beats
-/// copying (no clipboard dependency over SSH), and the user reads the
-/// command before a second Enter sends it.
-pub(crate) fn type_launch_mcp_remedy(app: &mut App) {
-    let Some(command) = crate::tui::underwater::mcp_remedy_command(app) else {
-        return;
-    };
-    // Home can be revisited with an unsent draft. The manager exposes the
-    // same remedy without replacing user-authored composer content.
-    if !app.input.is_empty() {
-        app.launch.dissolve_card(app.ambient_clock_ms);
-        open_mcp_extensions(app);
-        return;
-    }
-    app.input = command;
-    app.cursor_position = app.input.chars().count();
-    app.launch.menu_selected = None;
-    app.launch.status = None;
-}
-
 pub(crate) fn begin_launch_session(
     app: &mut App,
     workspace: Option<PathBuf>,
@@ -1120,17 +1120,20 @@ pub(crate) fn begin_launch_session(
     })
 }
 
-pub(crate) async fn sync_runtime_workspace_state(
-    task_manager: &SharedTaskManager,
-    workspace: PathBuf,
-) {
-    task_manager.set_default_workspace(workspace).await;
+/// Point the manager the App currently owns at `workspace`.
+///
+/// Reads through the slot rather than a captured handle: a session switch can
+/// replace the manager, and a stale handle would update a store this host no
+/// longer holds.
+pub(crate) async fn sync_runtime_workspace_state(app: &App, workspace: PathBuf) {
+    if let Some(current) = app.runtime_services.task_manager.as_ref() {
+        current.set_default_workspace(workspace).await;
+    }
 }
 
 pub(crate) async fn switch_workspace(
     app: &mut App,
     engine_handle: &mut EngineHandle,
-    task_manager: &SharedTaskManager,
     config: &Config,
     workspace: PathBuf,
 ) {
@@ -1151,7 +1154,7 @@ pub(crate) async fn switch_workspace(
     }
 
     apply_workspace_runtime_state(app, config, workspace.clone());
-    sync_runtime_workspace_state(task_manager, workspace.clone()).await;
+    sync_runtime_workspace_state(app, workspace.clone()).await;
 
     replace_tui_engine(app, config, engine_handle).await;
     if !app.api_messages.is_empty() {
@@ -1322,7 +1325,7 @@ pub(crate) fn persist_rules_from_approval(
     app: &mut App,
     config: &mut Config,
     rules: &[codewhale_config::ToolAskRule],
-) {
+) -> bool {
     let action = rules.first().map(|rule| rule.action);
     match codewhale_config::ConfigStore::load(app.config_path.clone()).and_then(|mut store| {
         let added = match action {
@@ -1350,6 +1353,7 @@ pub(crate) fn persist_rules_from_approval(
                 "Saved {added} {action} permission rule(s) to {}",
                 path.display()
             ));
+            true
         }
         Ok((_added, path)) => {
             let action = match action {
@@ -1360,9 +1364,11 @@ pub(crate) fn persist_rules_from_approval(
                 "{action} permission rule already saved in {}",
                 path.display()
             ));
+            true
         }
         Err(err) => {
             app.status_message = Some(format!("Failed to save permission rule: {err:#}"));
+            false
         }
     }
 }

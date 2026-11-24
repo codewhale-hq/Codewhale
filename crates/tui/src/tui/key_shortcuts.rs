@@ -9,7 +9,7 @@
 
 use std::borrow::Cow;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 pub(super) fn has_control_like_modifier(modifiers: KeyModifiers) -> bool {
     has_control_like_modifier_for_platform(modifiers, cfg!(target_os = "macos"))
@@ -32,11 +32,16 @@ pub(super) fn is_copy_shortcut(key: &KeyEvent) -> bool {
         return false;
     }
 
-    if key.modifiers.contains(KeyModifiers::SUPER) {
-        return true;
-    }
-
-    key.modifiers.contains(KeyModifiers::CONTROL) && key.modifiers.contains(KeyModifiers::SHIFT)
+    let cmd_c = key.modifiers.contains(KeyModifiers::SUPER)
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+    let ctrl_shift_c = key.modifiers.contains(KeyModifiers::CONTROL)
+        && key.modifiers.contains(KeyModifiers::SHIFT)
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::ALT | KeyModifiers::SUPER);
+    cmd_c || ctrl_shift_c
 }
 
 /// Toggle the file-tree pane: `Ctrl+Shift+E` on Linux/Windows or
@@ -202,6 +207,36 @@ pub(super) fn is_paste_shortcut(key: &KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PasteEdge {
+    Route,
+    Ignore,
+    ImageOnly,
+}
+
+pub(super) fn paste_edge(key: &KeyEvent, press_seen: &mut bool) -> PasteEdge {
+    match key.kind {
+        KeyEventKind::Press => {
+            *press_seen = is_paste_shortcut(key);
+            PasteEdge::Route
+        }
+        KeyEventKind::Release
+            if matches!(
+                key.code,
+                KeyCode::Char('v') | KeyCode::Char('V') | KeyCode::Char('\u{16}')
+            ) =>
+        {
+            let seen = std::mem::take(press_seen);
+            if is_paste_shortcut(key) && !seen {
+                PasteEdge::ImageOnly
+            } else {
+                PasteEdge::Ignore
+            }
+        }
+        _ => PasteEdge::Ignore,
+    }
+}
+
 /// `Ctrl+H` is the legacy ASCII backspace many terminals still emit
 /// when the user presses Backspace. Disallows Alt/Super so it doesn't
 /// shadow window-management combos.
@@ -230,6 +265,14 @@ mod tests {
         assert!(is_paste_shortcut(&mac_paste));
         assert!(is_copy_shortcut(&linux_copy));
         assert!(is_paste_shortcut(&linux_paste));
+        assert!(!is_copy_shortcut(&KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT | KeyModifiers::ALT,
+        )));
+        assert!(!is_copy_shortcut(&KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::SUPER | KeyModifiers::ALT,
+        )));
     }
 
     #[test]
@@ -395,5 +438,50 @@ mod tests {
         let alt_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT);
         assert!(!is_tool_details_shortcut(&plain_v));
         assert!(is_tool_details_shortcut(&alt_v));
+    }
+
+    fn key_edge(code: char, modifiers: KeyModifiers, kind: KeyEventKind) -> KeyEvent {
+        KeyEvent::new_with_kind(KeyCode::Char(code), modifiers, kind)
+    }
+
+    #[test]
+    fn paste_edges_paste_once_per_chord() {
+        let ctrl = KeyModifiers::CONTROL;
+        let press = key_edge('v', ctrl, KeyEventKind::Press);
+        let release = key_edge('v', ctrl, KeyEventKind::Release);
+
+        let mut seen = false;
+        assert_eq!(paste_edge(&release, &mut seen), PasteEdge::ImageOnly);
+        assert_eq!(paste_edge(&release, &mut seen), PasteEdge::ImageOnly);
+
+        assert_eq!(paste_edge(&press, &mut seen), PasteEdge::Route);
+        assert_eq!(paste_edge(&release, &mut seen), PasteEdge::Ignore);
+        assert_eq!(paste_edge(&release, &mut seen), PasteEdge::ImageOnly);
+
+        assert_eq!(paste_edge(&press, &mut seen), PasteEdge::Route);
+        let repeat = key_edge('v', ctrl, KeyEventKind::Repeat);
+        assert_eq!(paste_edge(&repeat, &mut seen), PasteEdge::Ignore);
+        assert_eq!(paste_edge(&release, &mut seen), PasteEdge::Ignore);
+    }
+
+    #[test]
+    fn a_paste_press_without_its_release_does_not_swallow_the_next_release_only_paste() {
+        let ctrl = KeyModifiers::CONTROL;
+        let press = key_edge('v', ctrl, KeyEventKind::Press);
+        let release = key_edge('v', ctrl, KeyEventKind::Release);
+
+        let mut seen = false;
+        assert_eq!(paste_edge(&press, &mut seen), PasteEdge::Route);
+        let bare_v_release = key_edge('v', KeyModifiers::NONE, KeyEventKind::Release);
+        assert_eq!(paste_edge(&bare_v_release, &mut seen), PasteEdge::Ignore);
+        assert_eq!(paste_edge(&release, &mut seen), PasteEdge::ImageOnly);
+
+        assert_eq!(paste_edge(&press, &mut seen), PasteEdge::Route);
+        let other = key_edge('a', KeyModifiers::NONE, KeyEventKind::Press);
+        assert_eq!(paste_edge(&other, &mut seen), PasteEdge::Route);
+        assert_eq!(paste_edge(&release, &mut seen), PasteEdge::ImageOnly);
+
+        let other_release = key_edge('a', KeyModifiers::NONE, KeyEventKind::Release);
+        assert_eq!(paste_edge(&other_release, &mut seen), PasteEdge::Ignore);
     }
 }

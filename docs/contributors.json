@@ -1,6 +1,6 @@
 {
  "generated_by": "scripts/contributor-wall.py refresh",
- "github_contributor_list": 222,
+ "github_contributor_list": 230,
  "people": [
   {
    "login": "0gl20shk0sbt36",
@@ -324,6 +324,13 @@
    ]
   },
   {
+   "login": "b84330808",
+   "credited_for": [
+    "changelog credit",
+    "contributor record"
+   ]
+  },
+  {
    "login": "baendlorel",
    "credited_for": [
     "changelog credit",
@@ -429,7 +436,9 @@
    "credited_for": [
     "changelog credit",
     "co-author",
-    "contributor record"
+    "commit",
+    "contributor record",
+    "merged pull request"
    ]
   },
   {
@@ -638,16 +647,6 @@
    ]
   },
   {
-   "login": "dajiaohuang",
-   "credited_for": [
-    "changelog credit",
-    "co-author",
-    "commit",
-    "contributor record",
-    "merged pull request"
-   ]
-  },
-  {
    "login": "DarrellThomas",
    "credited_for": [
     "changelog credit",
@@ -677,6 +676,15 @@
    ]
   },
   {
+   "login": "deosiree",
+   "credited_for": [
+    "changelog credit",
+    "commit",
+    "contributor record",
+    "merged pull request"
+   ]
+  },
+  {
    "login": "Dev-next-gen",
    "credited_for": [
     "commit"
@@ -691,6 +699,13 @@
   {
    "login": "DI-HUO-MING-YI",
    "credited_for": [
+    "contributor record"
+   ]
+  },
+  {
+   "login": "diegovskytl",
+   "credited_for": [
+    "changelog credit",
     "contributor record"
    ]
   },
@@ -977,6 +992,15 @@
    "credited_for": [
     "changelog credit",
     "co-author",
+    "commit",
+    "contributor record",
+    "merged pull request"
+   ]
+  },
+  {
+   "login": "gabsferreira",
+   "credited_for": [
+    "changelog credit",
     "commit",
     "contributor record",
     "merged pull request"
@@ -1527,6 +1551,15 @@
    "login": "KhalidAlnujaidi",
    "credited_for": [
     "changelog credit",
+    "merged pull request"
+   ]
+  },
+  {
+   "login": "knowhycodata",
+   "credited_for": [
+    "changelog credit",
+    "commit",
+    "contributor record",
     "merged pull request"
    ]
   },
@@ -2130,6 +2163,15 @@
    ]
   },
   {
+   "login": "NieZhuZhu",
+   "credited_for": [
+    "changelog credit",
+    "commit",
+    "contributor record",
+    "merged pull request"
+   ]
+  },
+  {
    "login": "nightfallsad",
    "credited_for": [
     "commit",
@@ -2206,6 +2248,15 @@
    "login": "oooyuy92",
    "credited_for": [
     "changelog credit"
+   ]
+  },
+  {
+   "login": "Opgeek-1",
+   "credited_for": [
+    "changelog credit",
+    "commit",
+    "contributor record",
+    "merged pull request"
    ]
   },
   {
@@ -2469,6 +2520,15 @@
    ]
   },
   {
+   "login": "ruanchaves",
+   "credited_for": [
+    "changelog credit",
+    "commit",
+    "contributor record",
+    "merged pull request"
+   ]
+  },
+  {
    "login": "saieswar237",
    "credited_for": [
     "changelog credit",
@@ -2502,6 +2562,12 @@
     "co-author",
     "contributor record",
     "harvested pull request"
+   ]
+  },
+  {
+   "login": "scripting-drafts",
+   "credited_for": [
+    "changelog credit"
    ]
   },
   {
@@ -2713,6 +2779,13 @@
    ]
   },
   {
+   "login": "swf1996120",
+   "credited_for": [
+    "changelog credit",
+    "contributor record"
+   ]
+  },
+  {
    "login": "sximelon",
    "credited_for": [
     "changelog credit",
@@ -2764,6 +2837,15 @@
    "credited_for": [
     "changelog credit",
     "contributor record"
+   ]
+  },
+  {
+   "login": "thejesh23",
+   "credited_for": [
+    "changelog credit",
+    "commit",
+    "contributor record",
+    "merged pull request"
    ]
   },
   {
@@ -2979,6 +3061,13 @@
    "credited_for": [
     "co-author",
     "contributor record"
+   ]
+  },
+  {
+   "login": "WTFitsmemyself",
+   "credited_for": [
+    "commit",
+    "merged pull request"
    ]
   },
   {
@@ -3343,6 +3432,7 @@
   "bluth",
   "chatman-media",
   "codgo",
+  "dajiaohuang",
   "douglarek",
   "kurise",
   "LeHaiDang",
@@ -3350,6 +3440,7 @@
   "liuhq",
   "liushiao",
   "liuyang",
+  "lucaszhu-hue",
   "markchang",
   "ningjingkun",
   "ornn.ban",

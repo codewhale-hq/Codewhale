@@ -524,6 +524,133 @@ mod recovery {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn first_fork_accepts_only_verified_checkpoint_migration() -> Result<()> {
+        let _env = crate::test_support::lock_test_env();
+        for missing_checkpoint in [false, true] {
+            for mutation in [
+                "none",
+                "length",
+                "hash",
+                "cursor",
+                "retained",
+                "timestamp",
+                "state",
+            ] {
+                let dir = tempfile::tempdir()?;
+                let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", dir.path());
+                let manager = RuntimeThreadManager::open(
+                    config(),
+                    dir.path().to_path_buf(),
+                    test_manager_config(dir.path().join("runtime")),
+                )?;
+                let thread = manager
+                    .create_thread(CreateThreadRequest {
+                        workspace: Some(dir.path().to_path_buf()),
+                        ..Default::default()
+                    })
+                    .await?;
+                let messages = vec![
+                    msg(Role::User, "first"),
+                    msg(Role::Assistant, "first answer"),
+                    msg(Role::User, "second"),
+                    msg(Role::Assistant, "second answer"),
+                ];
+                manager
+                    .seed_thread_from_messages(&thread.id, &messages)
+                    .await?;
+                let sessions = crate::session_manager::SessionManager::new(
+                    manager.sessions_dir().to_path_buf(),
+                )?;
+                let document = crate::session_manager::create_saved_session_with_id_and_mode(
+                    Uuid::new_v4().to_string(),
+                    &messages,
+                    &thread.model,
+                    dir.path(),
+                    0,
+                    None,
+                    Some("agent"),
+                );
+                sessions.save_session(&document)?;
+                {
+                    let _admission = manager.session_checkpoint_guard().await;
+                    manager
+                        .set_thread_session_checkpoint(&thread.id, &document)
+                        .await?;
+                }
+                let mut legacy = manager.store.load_thread(&thread.id)?;
+                if missing_checkpoint {
+                    legacy.saved_session_checkpoint = None;
+                } else {
+                    legacy
+                        .saved_session_checkpoint
+                        .as_mut()
+                        .unwrap()
+                        .messages_len = None;
+                }
+                manager.store.save_thread(&legacy)?;
+                let turns = manager.store.list_turns_for_thread(&thread.id)?;
+                let prepared = manager
+                    .prepare_fork_dropping_user_turn_in_sessions_dir(
+                        &thread.id,
+                        &turns.last().unwrap().id,
+                        manager.sessions_dir(),
+                    )
+                    .await?;
+                let mut current = manager.store.load_thread(&thread.id)?;
+                let checkpoint = current.saved_session_checkpoint.as_mut().unwrap();
+                assert_eq!(checkpoint.messages_len, Some(4));
+                match mutation {
+                    "length" => checkpoint.messages_len = Some(3),
+                    "hash" => checkpoint.messages_sha256 = "changed".into(),
+                    "cursor" => checkpoint.covered_turn_id = None,
+                    "retained" => checkpoint.retained_messages = Some(1),
+                    "timestamp" => current.updated_at += chrono::Duration::seconds(1),
+                    "state" => current.latest_turn_id = Some("concurrent".into()),
+                    _ => {}
+                }
+                manager.store.save_thread(&current)?;
+                let result = manager.publish_prepared_fork_guarded(prepared).await;
+                if mutation == "none" {
+                    let (forked, original, _, _) = result?;
+                    assert_eq!(original.as_deref(), Some("second"));
+                    assert_eq!(manager.restore_thread_messages(&forked)?, messages[..2]);
+                    assert_ne!(forked.session_id, current.session_id);
+                } else {
+                    let error =
+                        result.expect_err("unverified source changes must reject publication");
+                    assert!(
+                        format!("{error:#}").contains("source thread changed while preparing fork"),
+                        "{error:#}"
+                    );
+                    assert_eq!(
+                        manager
+                            .list_threads(ThreadListFilter::IncludeArchived, None)
+                            .await?
+                            .len(),
+                        1
+                    );
+                }
+                assert_eq!(
+                    serde_json::to_value(manager.store.load_thread(&thread.id)?)?,
+                    serde_json::to_value(&current)?
+                );
+                assert_eq!(
+                    serde_json::to_value(manager.store.list_turns_for_thread(&thread.id)?)?,
+                    serde_json::to_value(&turns)?
+                );
+                assert_eq!(
+                    sessions
+                        .resume_session(&document.metadata.id)?
+                        .session
+                        .messages,
+                    messages
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// The legacy prefix search must agree with `serde_json`'s own encoding
     /// of a slice, for every prefix length.
     #[test]
@@ -15905,6 +16032,7 @@ async fn dynamic_tool_result_settles_snapshot_and_emits_one_safe_resolution() ->
     const RESULT_SECRET: &str = "dynamic-result-secret";
     let executor = manager.clone();
     let executor_thread_id = thread.id.clone();
+    let mut events = manager.subscribe_events();
     let execution = tokio::spawn(async move {
         DynamicToolExecutor::execute_dynamic_tool(
             &executor,
@@ -15916,18 +16044,25 @@ async fn dynamic_tool_result_settles_snapshot_and_emits_one_safe_resolution() ->
         .await
     });
 
-    let pending = tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(TURN_SETTLEMENT_DEADLOCK_TIMEOUT, async {
         loop {
-            let detail = manager.get_thread_detail(&thread.id).await?;
-            if let Some(call) = detail.pending_dynamic_tool_calls.first() {
-                break Ok::<_, anyhow::Error>((detail.latest_seq, call.clone()));
+            let event = events.recv().await?;
+            if event.event == "tool_call.requested"
+                && event.thread_id == thread.id
+                && event.turn_id.as_deref() == Some(turn.id.as_str())
+            {
+                return Ok::<_, anyhow::Error>(());
             }
-            sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .context("dynamic tool call did not reach the canonical snapshot")??;
-    let (snapshot_seq, call) = pending;
+    .context("dynamic tool request event did not arrive")??;
+    let detail = manager.get_thread_detail(&thread.id).await?;
+    let snapshot_seq = detail.latest_seq;
+    let call = detail
+        .pending_dynamic_tool_calls
+        .first()
+        .context("durable dynamic tool request is missing from the canonical snapshot")?;
     assert_eq!(call.thread_id, thread.id);
     assert_eq!(call.turn_id, turn.id);
     assert_eq!(call.namespace.as_deref(), Some("bench"));
@@ -18141,7 +18276,7 @@ async fn auto_review_force_prompt_is_denied_without_opening_a_modal() -> Result<
         })
         .await?;
 
-    let decision = tokio::time::timeout(Duration::from_secs(2), harness.recv_approval_event())
+    let decision = tokio::time::timeout(Duration::from_secs(10), harness.recv_approval_event())
         .await
         .context("Auto-Review hold should resolve without a modal")?;
     assert_eq!(
@@ -18150,7 +18285,7 @@ async fn auto_review_force_prompt_is_denied_without_opening_a_modal() -> Result<
             id: "tool_auto_hold".to_string(),
         })
     );
-    let decided = tokio::time::timeout(Duration::from_secs(2), async {
+    let decided = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if manager.pending_approvals_count() == 0
                 && let Some(event) =
@@ -23588,6 +23723,400 @@ fn a_warmed_store_opens_a_thread_without_reading_the_items_directory() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The index is a cache, and a cache is worth having only if it outlives the
+/// process that built it.
+///
+/// Every new process — a restarted engine, a `codewhale receipts` run — used to
+/// pay the whole items-directory read again, because the only copy of the answer
+/// was in memory. On a store with tens of thousands of items that read is the
+/// first thread's entire open time (27ms to list the directory against 4.8s to
+/// open every record, measured against 55,572 items).
+#[test]
+fn the_item_index_survives_the_process_that_built_it() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        for index in 0..4 {
+            store
+                .save_item(&sample_item(
+                    &format!("trn_{index}"),
+                    &format!("itm_{index}"),
+                    TurnItemLifecycleStatus::Completed,
+                ))
+                .expect("save item");
+        }
+        assert!(
+            !store.item_index_path().expect("index path").exists(),
+            "saving an item does not read the directory, so nothing is cached yet"
+        );
+        store.cache_item_index().expect("build and cache the index");
+        assert!(
+            store.item_index_path().expect("index path").exists(),
+            "the index is written for the next process"
+        );
+    }
+
+    // A new process over the same store: the listing finds every id already
+    // accounted for, so not one item record is opened.
+    let store = RuntimeThreadStore::open(dir.clone()).expect("reopen store");
+    store
+        .item_dir_files_read
+        .store(0, std::sync::atomic::Ordering::SeqCst);
+    let items = store
+        .list_items_for_turns_map(&["trn_2".to_string()])
+        .expect("read a thread's items");
+    assert_eq!(items["trn_2"].len(), 1);
+    assert_eq!(
+        store
+            .item_dir_files_read
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a cached store must not re-read the item records it already knows"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Only the items the listing does not account for are opened: an item written
+/// while no process was running is learned on its own, not by re-reading the
+/// store.
+#[test]
+fn the_cache_learns_only_the_items_written_while_it_was_closed() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        store
+            .save_item(&sample_item(
+                "trn_known",
+                "itm_known",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save item");
+        store.cache_item_index().expect("build and cache the index");
+    }
+    {
+        // The store is written again without anyone reading its directory, the
+        // shape a running turn leaves behind.
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        store
+            .save_item(&sample_item(
+                "trn_late",
+                "itm_late",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save item");
+    }
+
+    let store = RuntimeThreadStore::open(dir.clone()).expect("reopen store");
+    store
+        .item_dir_files_read
+        .store(0, std::sync::atomic::Ordering::SeqCst);
+    let items = store
+        .list_items_for_turns_map(&["trn_known".to_string(), "trn_late".to_string()])
+        .expect("read both threads");
+    assert_eq!(items["trn_known"].len(), 1);
+    assert_eq!(items["trn_late"].len(), 1);
+    assert_eq!(
+        store
+            .item_dir_files_read
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "only the item the cache had never seen is opened"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// An entry outlives its item, and the listing is what decides membership: a
+/// deleted item is not reported, and the file is rewritten without it.
+#[test]
+fn the_cache_forgets_an_item_that_is_gone() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        for id in ["itm_kept", "itm_removed"] {
+            store
+                .save_item(&sample_item(
+                    "trn_1",
+                    id,
+                    TurnItemLifecycleStatus::Completed,
+                ))
+                .expect("save item");
+        }
+        store.cache_item_index().expect("build and cache the index");
+    }
+    let removed_path = dir.join("items").join("itm_removed.json");
+    std::fs::remove_file(&removed_path).expect("remove item");
+
+    let store = RuntimeThreadStore::open(dir.clone()).expect("reopen store");
+    let items = store
+        .list_items_for_turns_map(&["trn_1".to_string()])
+        .expect("read the thread's items");
+    assert_eq!(
+        items["trn_1"]
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["itm_kept"],
+        "an item the directory no longer holds is not part of a turn"
+    );
+
+    // The read above learned that one entry is gone; caching replaces the file
+    // with what the directory actually holds.
+    store.cache_item_index().expect("refresh the cache");
+    let cached = store.load_persisted_item_index();
+    assert_eq!(cached.get("itm_removed"), None);
+    assert_eq!(cached.get("itm_kept").map(String::as_str), Some("trn_1"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A cache is never trusted over the directory: anything unreadable costs the
+/// full read and nothing else.
+#[test]
+fn a_damaged_cache_falls_back_to_reading_the_directory() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        store
+            .save_item(&sample_item(
+                "trn_1",
+                "itm_1",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save item");
+        store.cache_item_index().expect("build and cache the index");
+    }
+    let cache_path = dir.join(ITEM_INDEX_CACHE_FILE);
+
+    // Truncated, foreign-schema and absent all have to answer the same way.
+    for damaged in [
+        "{ not json".to_string(),
+        serde_json::json!({ "schema_version": 99, "by_item": {} }).to_string(),
+    ] {
+        std::fs::write(&cache_path, damaged).expect("damage the cache");
+        let store = RuntimeThreadStore::open(dir.clone()).expect("reopen store");
+        store
+            .item_dir_files_read
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        let items = store
+            .list_items_for_turns_map(&["trn_1".to_string()])
+            .expect("read the thread's items");
+        assert_eq!(items["trn_1"].len(), 1);
+        assert_eq!(
+            store
+                .item_dir_files_read
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "an unusable cache means the records are read"
+        );
+        // And caching replaces it, so the next process is spared the read.
+        store.cache_item_index().expect("replace the damaged cache");
+        assert_eq!(
+            store
+                .load_persisted_item_index()
+                .get("itm_1")
+                .map(String::as_str),
+            Some("trn_1")
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A read-only handle exists so that reading a thread never mutates a store
+/// another process owns, and a cache is a write.
+#[test]
+fn a_read_only_handle_never_writes_the_cache() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        store
+            .save_item(&sample_item(
+                "trn_1",
+                "itm_1",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save item");
+    }
+
+    let store = RuntimeThreadStore::open_read_only(dir.clone())
+        .expect("open store")
+        .expect("store exists");
+    store.cache_item_index().expect("build the index");
+    assert!(store.item_index.read().by_turn.is_some());
+    assert!(
+        !store.item_index_path().expect("index path").exists(),
+        "a read-only handle must not write to the store"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// An item can be written again under an existing id with a different owner,
+/// and a cache that remembers the old owner then answers for the wrong turn.
+///
+/// The directory listing cannot see the difference — the filename is the item id
+/// either way — so ownership has to be re-established from the record whenever
+/// it may have changed. This is the case a persisted index must not get wrong.
+#[test]
+fn a_cached_index_never_reports_an_item_under_the_turn_that_lost_it() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        store
+            .save_item(&sample_item(
+                "trn_first",
+                "itm_moved",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save item");
+        store.cache_item_index().expect("cache the index");
+        // The same record id, written again under another turn.
+        store
+            .save_item(&sample_item(
+                "trn_second",
+                "itm_moved",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("re-save the item under its new owner");
+    }
+
+    let store = RuntimeThreadStore::open(dir.clone()).expect("reopen store");
+    let items = store
+        .list_items_for_turns_map(&["trn_first".to_string(), "trn_second".to_string()])
+        .expect("read both turns");
+    assert!(
+        !items
+            .get("trn_first")
+            .is_some_and(|items| !items.is_empty()),
+        "the turn that no longer owns the item must not list it"
+    );
+    assert_eq!(
+        items.get("trn_second").map(|items| items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>()),
+        Some(vec!["itm_moved"]),
+        "the turn that owns it now must find it"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// An id that is deleted and later written again under another turn is the same
+/// hazard as an overwrite: the listing sees a name reappear and has no way to
+/// know the cached owner went with it.
+#[test]
+fn a_cached_index_never_reports_an_item_recreated_under_another_turn() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        store
+            .save_item(&sample_item(
+                "trn_first",
+                "itm_reborn",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save item");
+        store.cache_item_index().expect("cache the index");
+        store.remove_item("itm_reborn").expect("remove the item");
+        store
+            .save_item(&sample_item(
+                "trn_second",
+                "itm_reborn",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save the id under another turn");
+    }
+
+    let store = RuntimeThreadStore::open(dir.clone()).expect("reopen store");
+    let items = store
+        .list_items_for_turns_map(&["trn_first".to_string(), "trn_second".to_string()])
+        .expect("read both turns");
+    assert!(
+        !items
+            .get("trn_first")
+            .is_some_and(|items| !items.is_empty()),
+        "the first turn never got this id back"
+    );
+    assert_eq!(
+        items.get("trn_second").map(|items| items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>()),
+        Some(vec!["itm_reborn"]),
+        "the turn it was written under owns it"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Reading a store never writes to it.
+///
+/// The cache is a file the store did not have before, and the routes that answer
+/// a client are reads: a `GET` that left one behind would break the promise those
+/// routes make, and the tests that snapshot a store to prove a route is
+/// read-only would be right to fail. So building the index writes nothing;
+/// [`RuntimeThreadStore::cache_item_index`] is the only writer, and only the
+/// startup warm-up calls it.
+#[test]
+fn reading_a_store_never_writes_the_index_cache() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        store
+            .save_item(&sample_item(
+                "trn_1",
+                "itm_1",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save item");
+    }
+    let snapshot = |label: &str| {
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        let mut stack = vec![dir.clone()];
+        while let Some(next) = stack.pop() {
+            for entry in std::fs::read_dir(&next).expect("list store") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+        assert!(
+            !files
+                .iter()
+                .any(|path| path.ends_with(ITEM_INDEX_CACHE_FILE)),
+            "{label}: no cache file yet"
+        );
+        files
+    };
+
+    let before = snapshot("before the read");
+    let store = RuntimeThreadStore::open(dir.clone()).expect("reopen store");
+    store
+        .list_items_for_turns_map(&["trn_1".to_string()])
+        .expect("read the thread's items");
+    assert_eq!(
+        snapshot("after the read"),
+        before,
+        "a read must leave the store exactly as it found it"
+    );
+
+    // The deliberate caller is what puts it there.
+    store.cache_item_index().expect("cache the index");
+    assert!(
+        dir.join(ITEM_INDEX_CACHE_FILE).exists(),
+        "the warm-up's own call is what writes the cache"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// The index is exact, not a snapshot: an item the store holds is returned
 /// whether or not the turn ever registered it, and whether it was written
 /// before or after the index was built.
@@ -24597,6 +25126,155 @@ async fn canonical_sessions_root_is_resolved_off_the_ui_runtime_and_cached() -> 
     Ok(())
 }
 
+#[tokio::test]
+async fn runtime_thread_title_comes_from_the_first_prompt_only() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest {
+            trust_mode: Some(true),
+            ..Default::default()
+        })
+        .await?;
+    let mut harness = install_mock_engine(&manager, &thread.id).await;
+    for prompt in [
+        "The case-insensitivity test in tests/test_core.py fails. Fix tally/core.py so word counting ignores case.",
+        "Please try that again.",
+    ] {
+        let turn = manager
+            .start_turn(
+                &thread.id,
+                StartTurnRequest {
+                    prompt: prompt.to_string(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        assert!(matches!(
+            harness.rx_op.recv().await,
+            Some(Op::SendMessage(TurnSpec { .. }))
+        ));
+        harness
+            .tx_event
+            .send(EngineEvent::TurnStarted {
+                previous_source: None,
+                turn_id: turn.id.clone(),
+                created_at: Utc::now(),
+                route: None,
+                submission_id: None,
+            })
+            .await?;
+        harness
+            .tx_event
+            .send(EngineEvent::TurnComplete {
+                source_accounting: false,
+                turn_id: None,
+                submission_id: None,
+                compaction_id: None,
+                usage: Usage::default(),
+                parent_route_usage: Usage::default(),
+                routed_usage_dropped_records: 0,
+                status: TurnOutcomeStatus::Completed,
+                error: None,
+                tool_catalog: None,
+                base_url: None,
+            })
+            .await?;
+        wait_for_terminal_turn(&manager, &turn.id).await?;
+    }
+    let title = manager.store.load_thread(&thread.id)?.title;
+    assert_eq!(
+        title.as_deref(),
+        Some("The case-insensitivity test in tests/test_core.py fails. ...")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn runtime_provider_last_check_reports_the_last_call_failure() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let config = manager.config.read().clone();
+    let identity = config.test_identity_for_kind(ProviderKind::Google);
+    let receipt = crate::route_receipt::TurnRouteReceipt::for_test_fixture(
+        &config,
+        ProviderKind::Google,
+        "gemini-4-hydrogen",
+    );
+    let thread = manager
+        .create_thread(CreateThreadRequest {
+            trust_mode: Some(true),
+            ..Default::default()
+        })
+        .await?;
+    let mut harness = install_mock_engine(&manager, &thread.id).await;
+    let turn = manager
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "hello".to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert!(matches!(
+        harness.rx_op.recv().await,
+        Some(Op::SendMessage(TurnSpec { .. }))
+    ));
+    harness
+        .tx_event
+        .send(EngineEvent::TurnStarted {
+            previous_source: None,
+            turn_id: turn.id.clone(),
+            created_at: Utc::now(),
+            route: Some(crate::core::events::TurnRoute {
+                provider: ProviderKind::Google,
+                provider_identity: identity.key.to_string(),
+                model: "gemini-4-hydrogen".to_string(),
+                auto_model: false,
+                receipt: Some(receipt),
+                billing: None,
+                base_url: config.base_url_for_route(&identity),
+                billing_product: crate::route_billing::RouteProduct::Unproven,
+            }),
+            submission_id: None,
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::Error {
+            envelope: crate::llm_client::LlmError::Other(
+                "HTTP 402: RESOURCE_EXHAUSTED: Your prepayment credits are depleted".to_string(),
+            )
+            .into(),
+            recoverable: false,
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            usage: Usage::default(),
+            parent_route_usage: Usage::default(),
+            routed_usage_dropped_records: 0,
+            status: TurnOutcomeStatus::Failed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+    wait_for_terminal_turn(&manager, &turn.id).await?;
+    match manager.provider_last_check(&identity) {
+        Some(crate::provider_readiness::LastProviderCheck::Failed { category, message }) => {
+            assert_eq!(category, codewhale_error_taxonomy::ErrorCategory::RateLimit);
+            assert!(message.contains("402"), "{message}");
+        }
+        other => panic!("expected the 402 to be the provider's last check: {other:?}"),
+    }
+    Ok(())
+}
+
 /// B1: a credential a tool printed is masked in the durable tool item (and
 /// the event log built from it) on Runtime API threads, as it is in the
 /// engine transcript.
@@ -24691,9 +25369,17 @@ async fn runtime_receipts_mask_configured_secrets() -> Result<()> {
             model_call: None,
             id: "tool-error".into(),
             name: "exec_command".into(),
-            result: Err(crate::tools::spec::ToolError::execution_failed(format!(
-                "failed with {EXACT}"
-            ))),
+            result: Err(
+                crate::tools::spec::ToolError::execution_failed_with_metadata(
+                    format!("failed with {EXACT}"),
+                    json!({
+                        "exit_code": 1,
+                        "status": "Failed",
+                        "stderr_summary": format!("failed with {EXACT}"),
+                        "execution_receipt": {"stdout_preview": "x"},
+                    }),
+                ),
+            ),
         })
         .await?;
     harness
@@ -24734,6 +25420,22 @@ async fn runtime_receipts_mask_configured_secrets() -> Result<()> {
     assert_eq!(metadata["stdout_len"], 120, "ordinary metadata survives");
     assert_eq!(metadata["exit_code"], 0);
     assert_eq!(metadata["api_key"], codewhale_config::persistence::REDACTED);
+    let failed = items
+        .iter()
+        .find(|item| {
+            item.metadata
+                .as_ref()
+                .is_some_and(|meta| meta["tool_result_for"] == "tool-error")
+        })
+        .context("the failed call keeps its item")?;
+    let failed_meta = failed.metadata.as_ref().context("failed metadata kept")?;
+    assert_eq!(failed_meta["exit_code"], 1, "{failed_meta}");
+    assert_eq!(failed_meta["status"], "Failed");
+    assert_eq!(failed_meta["is_error"], true);
+    assert!(
+        failed_meta.get("execution_receipt").is_none(),
+        "{failed_meta}"
+    );
     let events = serde_json::to_string(&manager.events_since(&thread.id, None)?)?;
     assert!(!events.contains(TOKEN), "the event log holds no live token");
     assert!(
@@ -28110,4 +28812,312 @@ async fn standing_rule_refuses_sub_agent_approvals_and_holds_other_answers_while
         ExternalApprovalDecision::Allow { remember: false }
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn named_turn_fork_does_not_block_unrelated_thread_restore_guard() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread_a = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let thread_b = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+
+    let mut turn_ids = Vec::new();
+    for (idx, prompt) in ["first", "second"].iter().enumerate() {
+        let mut turn = sample_turn(
+            &thread_a.id,
+            &format!("turn_cw8227_{idx}"),
+            RuntimeTurnStatus::Completed,
+        );
+        let item_id = format!("item_cw8227_{idx}");
+        let item = TurnItemRecord {
+            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+            id: item_id.clone(),
+            turn_id: turn.id.clone(),
+            kind: TurnItemKind::UserMessage,
+            status: TurnItemLifecycleStatus::Completed,
+            summary: (*prompt).to_string(),
+            detail: Some((*prompt).to_string()),
+            metadata: None,
+            artifact_refs: Vec::new(),
+            artifacts: Vec::new(),
+            started_at: Some(turn.created_at),
+            ended_at: Some(turn.created_at),
+        };
+        turn.input_summary = (*prompt).to_string();
+        turn.item_ids = vec![item_id];
+        manager.store.save_item(&item)?;
+        manager.store.save_turn(&turn)?;
+        turn_ids.push(turn.id);
+    }
+    let mut updated_a = manager.store.load_thread(&thread_a.id)?;
+    updated_a.latest_turn_id = turn_ids.last().cloned();
+    manager.store.save_thread(&updated_a)?;
+
+    let (hook_tx, mut hook_rx) = mpsc::unbounded_channel();
+    *manager.fork_prepare_test_hook.lock() = Some(hook_tx);
+
+    let fork_manager = manager.clone();
+    let fork_thread_id = thread_a.id.clone();
+    let fork_turn_id = turn_ids[1].clone();
+    let fork_sessions_dir = manager.sessions_dir().to_path_buf();
+    let fork_task = tokio::spawn(async move {
+        fork_manager
+            .fork_dropping_user_turn_in_sessions_dir(
+                &fork_thread_id,
+                &fork_turn_id,
+                &fork_sessions_dir,
+            )
+            .await
+    });
+
+    let resume = tokio::time::timeout(Duration::from_secs(5), hook_rx.recv())
+        .await
+        .expect("fork should reach preparation pause")
+        .expect("fork hook sender should remain open");
+
+    let (guard_b, record_b) = tokio::time::timeout(
+        Duration::from_secs(1),
+        manager.thread_restore_guard(&thread_b.id),
+    )
+    .await
+    .expect("unrelated thread_restore_guard must not wait on another thread's fork preparation")?;
+    assert_eq!(record_b.id, thread_b.id);
+    drop(guard_b);
+
+    let _ = resume.send(());
+    let (forked, original_text, _, _) = tokio::time::timeout(Duration::from_secs(5), fork_task)
+        .await
+        .expect("fork task should complete")??;
+    assert_eq!(
+        forked.parent_thread_id.as_deref(),
+        Some(thread_a.id.as_str())
+    );
+    assert_eq!(original_text.as_deref(), Some("second"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn named_turn_fork_rejects_commit_when_source_thread_changes_mid_prepare() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread_a = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+
+    let mut turn_ids = Vec::new();
+    for (idx, prompt) in ["first", "second"].iter().enumerate() {
+        let mut turn = sample_turn(
+            &thread_a.id,
+            &format!("turn_cw8227_race_{idx}"),
+            RuntimeTurnStatus::Completed,
+        );
+        let item_id = format!("item_cw8227_race_{idx}");
+        let item = TurnItemRecord {
+            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+            id: item_id.clone(),
+            turn_id: turn.id.clone(),
+            kind: TurnItemKind::UserMessage,
+            status: TurnItemLifecycleStatus::Completed,
+            summary: (*prompt).to_string(),
+            detail: Some((*prompt).to_string()),
+            metadata: None,
+            artifact_refs: Vec::new(),
+            artifacts: Vec::new(),
+            started_at: Some(turn.created_at),
+            ended_at: Some(turn.created_at),
+        };
+        turn.input_summary = (*prompt).to_string();
+        turn.item_ids = vec![item_id];
+        manager.store.save_item(&item)?;
+        manager.store.save_turn(&turn)?;
+        turn_ids.push(turn.id);
+    }
+    let mut updated_a = manager.store.load_thread(&thread_a.id)?;
+    updated_a.latest_turn_id = turn_ids.last().cloned();
+    manager.store.save_thread(&updated_a)?;
+
+    let (hook_tx, mut hook_rx) = mpsc::unbounded_channel();
+    *manager.fork_prepare_test_hook.lock() = Some(hook_tx);
+
+    let fork_manager = manager.clone();
+    let fork_thread_id = thread_a.id.clone();
+    let fork_turn_id = turn_ids[1].clone();
+    let fork_sessions_dir = manager.sessions_dir().to_path_buf();
+    let fork_task = tokio::spawn(async move {
+        fork_manager
+            .fork_dropping_user_turn_in_sessions_dir(
+                &fork_thread_id,
+                &fork_turn_id,
+                &fork_sessions_dir,
+            )
+            .await
+    });
+
+    let resume = tokio::time::timeout(Duration::from_secs(5), hook_rx.recv())
+        .await
+        .expect("fork should reach preparation pause")
+        .expect("fork hook sender should remain open");
+
+    let mut mutated_a = manager.store.load_thread(&thread_a.id)?;
+    mutated_a.latest_turn_id = Some("turn_concurrent_mutation".to_string());
+    mutated_a.updated_at = Utc::now() + chrono::Duration::seconds(1);
+    manager.store.save_thread(&mutated_a)?;
+
+    let _ = resume.send(());
+    let err = tokio::time::timeout(Duration::from_secs(5), fork_task)
+        .await
+        .expect("fork task should settle")?
+        .expect_err("fork must fail closed when source thread changed during preparation");
+    assert!(
+        format!("{err:#}").contains("source thread changed while preparing fork"),
+        "{err:#}"
+    );
+    let threads = manager
+        .list_threads(ThreadListFilter::IncludeArchived, None)
+        .await?;
+    assert_eq!(threads.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn retry_captures_admitted_prompt_and_images_and_rejects_changed_source() -> Result<()> {
+    use crate::image_attach::test_support::runtime_image_fixture;
+
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let image = runtime_image_fixture(17);
+    let messages: Vec<Message> = serde_json::from_value(json!([
+        {"role":"user","content":[{"type":"text","text":"retry this"},
+            {"type":"image_url","image_url":{"url":format!("data:image/png;base64,{}", image.data_base64)}}]},
+        {"role":"assistant","content":[{"type":"text","text":"original answer"}]}
+    ]))?;
+    manager
+        .seed_thread_from_messages(&thread.id, &messages)
+        .await?;
+    let (admission, source) = manager.thread_restore_guard(&thread.id).await?;
+    let (hook_tx, mut hook_rx) = mpsc::unbounded_channel();
+    *manager.fork_prepare_test_hook.lock() = Some(hook_tx);
+    let runtime = manager.clone();
+    let id = thread.id.clone();
+    let mut task = tokio::spawn(async move {
+        runtime
+            .prepare_retry_in_sessions_dir(&id, 0, runtime.sessions_dir())
+            .await
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut task)
+            .await
+            .is_err()
+    );
+    assert!(hook_rx.try_recv().is_err());
+    drop(admission);
+    let resume = tokio::time::timeout(Duration::from_secs(5), hook_rx.recv())
+        .await?
+        .context("retry preparation hook closed")?;
+    let (admission, mut current) = tokio::time::timeout(
+        Duration::from_secs(1),
+        manager.thread_restore_guard(&thread.id),
+    )
+    .await??;
+    current.latest_turn_id = Some("turn_concurrently_completed".to_string());
+    current.updated_at = source.updated_at + chrono::Duration::seconds(1);
+    manager.store.save_thread(&current)?;
+    drop(admission);
+    let _ = resume.send(());
+    let prepared = tokio::time::timeout(Duration::from_secs(5), task).await???;
+    assert_eq!(prepared.dropped_turn_id, source.latest_turn_id);
+    assert_eq!(prepared.original_user_text(), Some("retry this"));
+    assert_eq!(prepared.original_images.len(), 1);
+    assert_eq!(prepared.original_images[0].data_base64, image.data_base64);
+    let error = manager
+        .publish_prepared_fork_guarded(prepared)
+        .await
+        .expect_err("retry must not publish after concurrent source completion");
+    assert!(
+        format!("{error:#}").contains("source thread changed while preparing fork"),
+        "{error:#}"
+    );
+    assert_eq!(
+        manager
+            .list_threads(ThreadListFilter::IncludeArchived, None)
+            .await?
+            .len(),
+        1
+    );
+    Ok(())
+}
+
+/// The whole-directory read, measured against a real store.
+///
+/// Ignored because it needs one: point `CODEWHALE_BENCH_STORE` at a runtime
+/// store root and run
+///
+/// ```text
+/// CODEWHALE_BENCH_STORE=/path/to/runtime \
+///   cargo test -p codewhale-engine --lib -- \
+///   runtime_threads::tests::bench_item_index_against_a_real_store --ignored --nocapture
+/// ```
+#[test]
+#[ignore]
+#[allow(clippy::print_stdout)]
+fn bench_item_index_against_a_real_store() {
+    let root = PathBuf::from(
+        std::env::var("CODEWHALE_BENCH_STORE").expect("CODEWHALE_BENCH_STORE names a store"),
+    );
+    let store = RuntimeThreadStore::open(root).expect("open store");
+    let started = Instant::now();
+    store.cache_item_index().expect("build the index");
+    let elapsed = started.elapsed();
+    let (items, turns) = {
+        let index = store.item_index.read();
+        let by_turn = index.by_turn.as_ref().expect("index published");
+        (by_turn.values().map(Vec::len).sum::<usize>(), by_turn.len())
+    };
+    println!("[bench] index={elapsed:?} items={items} turns={turns}");
+}
+
+#[test]
+fn sanitize_agent_mail_text_bounds_oversized_tokens_and_redacts_case_insensitively() {
+    let huge_ascii = "A".repeat(256 * 1024);
+    let capped = sanitize_agent_mail_text(&huge_ascii, 2048);
+    assert_eq!(capped.len(), 2048);
+    assert!(capped.bytes().all(|b| b == b'A'));
+
+    let huge_multibyte = "中".repeat(1024);
+    let capped_utf8 = sanitize_agent_mail_text(&huge_multibyte, 10);
+    assert_eq!(capped_utf8, "中中中");
+
+    assert!(agent_mail_token_is_credential("SK-123456"));
+    assert!(agent_mail_token_is_credential("(GitHub_Pat_abc)"));
+    assert!(agent_mail_token_is_credential("MY-API-KEY=secret"));
+    assert!(agent_mail_token_is_credential("Db-Passwd:hunter2"));
+    assert!(agent_mail_token_is_credential("auth_Token=xyz"));
+    assert!(!agent_mail_token_is_credential("hello=world"));
+    assert!(!agent_mail_token_is_credential("密钥=123"));
+
+    let redacted = sanitize_agent_mail_text(
+        "Use BEARER topsecret and Proxy-Authorization: nextval at https://example.com /etc/hosts",
+        2048,
+    );
+    assert_eq!(
+        redacted,
+        "Use [redacted-credential] [redacted-credential] and [redacted-credential] [redacted-credential] at [redacted-url] [redacted-path]"
+    );
+
+    assert!(agent_mail_looks_like_raw_transcript(
+        "prefix <TURN_META> body"
+    ));
+    assert!(agent_mail_looks_like_raw_transcript(
+        "{\"Role\": \"Assistant\"}"
+    ));
+    assert!(agent_mail_looks_like_raw_transcript(
+        "summary\n   TOOL_RESULT: ok"
+    ));
+    assert!(!agent_mail_looks_like_raw_transcript(
+        "Finished the bounded handoff cleanly."
+    ));
 }

@@ -325,6 +325,41 @@
     }
 
     #[test]
+    fn saved_turn_outcome_deserializes_legacy_json_without_code_and_round_trips_code() {
+        let legacy_json = r#"{
+            "status": "failed",
+            "error": "SSE stream request did not receive response headers after 45s",
+            "ended_at": "2026-11-18T16:22:00Z",
+            "after_message_count": 95
+        }"#;
+        let legacy: SavedTurnOutcome =
+            serde_json::from_str(legacy_json).expect("legacy turn_outcome deserializes");
+        assert_eq!(legacy.code, None);
+        assert_eq!(legacy.after_message_count, 95);
+        assert_eq!(
+            legacy.error,
+            "SSE stream request did not receive response headers after 45s"
+        );
+
+        let serialized_legacy = serde_json::to_value(&legacy).expect("serialize without code");
+        assert!(
+            serialized_legacy.get("code").is_none(),
+            "missing code must stay omitted in JSON: {serialized_legacy}"
+        );
+
+        let coded = SavedTurnOutcome::failed_with_code(
+            "SSE stream request did not receive response headers after 45s",
+            Some("[llm_network_error]"),
+            95,
+        );
+        assert_eq!(coded.code.as_deref(), Some("llm_network_error"));
+        let round_tripped: SavedTurnOutcome =
+            serde_json::from_str(&serde_json::to_string(&coded).expect("serialize coded"))
+                .expect("deserialize coded");
+        assert_eq!(round_tripped, coded);
+    }
+
+    #[test]
     fn save_load_round_trip_preserves_all_messages_for_cache_fidelity() {
         #[derive(serde::Deserialize)]
         struct LegacySession {
@@ -1010,7 +1045,7 @@
         let hint = session_recovery_hint(&workspace, Some("sess-live"))
             .expect("hint for interrupted prior session");
         assert!(hint.contains("prior-sess-prior"), "{hint}");
-        assert!(hint.contains("session_search"), "{hint}");
+        assert!(hint.contains("session_get"), "{hint}");
         assert!(hint.contains("/resume"), "{hint}");
 
         // The live session's own checkpoint is never reported as prior work.

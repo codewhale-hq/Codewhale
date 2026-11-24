@@ -278,11 +278,11 @@ fn raw_slash_input_keeps_a_steady_submit_cue_and_runs_on_enter_without_another_k
 fn launch_recent_click_then_enter_resumes_without_another_mouse_event() {
     for (rows, cols) in SIZES {
         let (_workspace, mut tui) = start(rows, cols, false);
-        wait(&mut tui, TITLE);
+        assert!(!tui.frame().contains(TITLE));
         capture(&mut tui, "home");
-        tui.send(keys::key::down()).unwrap();
-        tui.send(keys::key::down()).unwrap();
-        capture(&mut tui, "selected");
+        click_text(&mut tui, "Recent");
+        wait(&mut tui, TITLE);
+        capture(&mut tui, "recent-expanded");
         click_text(&mut tui, TITLE);
         wait(&mut tui, "Resume");
         tui.wait_for_idle(Duration::from_millis(200), WAIT).unwrap();
@@ -306,15 +306,17 @@ fn launch_recent_click_then_enter_resumes_without_another_mouse_event() {
 fn launch_mcp_summary_opens_manager_by_click_and_keyboard() {
     for (rows, cols) in SIZES {
         let (_workspace, mut tui) = start(rows, cols, true);
-        wait(&mut tui, "MCP");
+        wait(&mut tui, "Connectors");
+        assert!(!tui.frame().contains("launch-proof"));
         capture(&mut tui, "home-mcp");
-        click_text(&mut tui, "MCP");
+        click_text(&mut tui, "Connectors");
         wait_for_plugins_screen(&mut tui);
         wait(&mut tui, "launch-proof");
         capture(&mut tui, "mcp");
         tui.send(keys::key::esc()).unwrap();
         wait(&mut tui, "New session");
-        // New session, the recent row (or compact See all), then MCP.
+        assert!(!tui.frame().contains("launch-proof"));
+        // New session, recent sessions, then MCP.
         for _ in 0..3 {
             tui.send(keys::key::down()).unwrap();
         }
@@ -329,19 +331,27 @@ fn launch_mcp_summary_opens_manager_by_click_and_keyboard() {
 fn launch_resume_buttons_support_mouse_cancel_and_keyboard_choice() {
     for (rows, cols) in SIZES {
         let (_workspace, mut tui) = start(rows, cols, false);
+        tui.send(keys::key::up()).unwrap();
+        wait(&mut tui, TITLE);
         click_text(&mut tui, TITLE);
         wait(&mut tui, "cancel");
         click_text(&mut tui, "cancel");
-        tui.wait_for(|frame| !frame.contains("Resume session"), WAIT)
-            .unwrap();
+        tui.wait_for(
+            |frame| frame.find_text(TITLE).is_some() && !frame.contains("resume  Enter"),
+            WAIT,
+        )
+        .unwrap();
         wait(&mut tui, "New session");
         assert!(!tui.frame().contains(SAVED_TEXT));
         click_text(&mut tui, TITLE);
         wait(&mut tui, "cancel");
         tui.send(keys::key::tab()).unwrap();
         tui.send(keys::key::enter()).unwrap();
-        tui.wait_for(|frame| !frame.contains("Resume session"), WAIT)
-            .unwrap();
+        tui.wait_for(
+            |frame| frame.find_text(TITLE).is_some() && !frame.contains("resume  Enter"),
+            WAIT,
+        )
+        .unwrap();
         wait(&mut tui, "New session");
         assert!(!tui.frame().contains(SAVED_TEXT));
         click_text(&mut tui, TITLE);
@@ -456,6 +466,8 @@ fn launch_long_resume_title_preserves_warning_and_truthful_enter_hint() {
     let title = "Investigate provider timeouts and connection failures across multiple accounts, preserve the original credentials, and verify every saved session can still be restored after the upgrade";
     for (rows, cols) in SIZES {
         let (_workspace, mut tui) = start_titled(rows, cols, false, title);
+        tui.send(keys::key::up()).unwrap();
+        wait(&mut tui, "Investigate provider");
         click_text(&mut tui, "Investigate provider");
         wait(&mut tui, "resume");
         tui.wait_for_idle(Duration::from_millis(200), WAIT).unwrap();
@@ -670,8 +682,9 @@ fn no_color_keeps_home_navigation_and_submit_cues_without_color() {
         let (_workspace, mut tui) =
             start_with_options(rows, cols, false, &[TITLE], Some("shoreline"), false, true);
         wait(&mut tui, "[·]");
-        tui.send(keys::key::down()).unwrap();
-        tui.send(keys::key::down()).unwrap();
+        tui.send(keys::key::up()).unwrap();
+        wait(&mut tui, TITLE);
+        tui.send(keys::key::up()).unwrap();
         capture(&mut tui, "no-color-selected");
         tui.send(keys::key::enter()).unwrap();
         wait(&mut tui, "Resume");
@@ -718,6 +731,8 @@ fn no_color_keeps_home_navigation_and_submit_cues_without_color() {
 fn home_returns_to_the_same_conversation_by_escape_click_and_typing() {
     for (rows, cols) in SIZES {
         let (_workspace, mut tui) = start(rows, cols, false);
+        tui.send(keys::key::up()).unwrap();
+        wait(&mut tui, TITLE);
         click_text(&mut tui, TITLE);
         wait(&mut tui, "Resume");
         tui.wait_for_idle(Duration::from_millis(200), WAIT).unwrap();

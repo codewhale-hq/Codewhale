@@ -2304,21 +2304,36 @@ async fn s4_recent_actions_subagents_model_ignored_and_oversized_request_unavail
     }
     let calls_before_op2 = mock.call_count();
     handle.send(op2).await.expect("send op2");
-    let mut saw_unavailable = false;
+    let mut saw_guardian_receipt = false;
+    let mut saw_fallback_prompt = false;
     let mut rx = handle.rx_event.write().await;
     while let Some(ev) = rx.recv().await {
         match ev {
             Event::ToolGateDecision {
                 gate: crate::core::events::ToolGate::AutoReviewGuardian,
-                decision: crate::core::events::ToolGateVerdict::Unavailable,
                 ..
-            } => saw_unavailable = true,
+            } => saw_guardian_receipt = true,
+            Event::ApprovalRequired {
+                id,
+                description,
+                approval_force_prompt,
+                ..
+            } => {
+                assert!(approval_force_prompt);
+                assert!(
+                    description.contains("Auto-Review could not finish (review context over budget)"),
+                    "{description}"
+                );
+                saw_fallback_prompt = true;
+                handle.deny_tool_call(&id).await.expect("deny fallback card");
+            }
             Event::TurnComplete { .. } => break,
             _ => {}
         }
     }
     drop(rx);
-    assert!(saw_unavailable);
+    assert!(saw_fallback_prompt);
+    assert!(!saw_guardian_receipt);
     assert_eq!(mock.call_count(), calls_before_op2 + 2);
 
     handle.send(Op::Shutdown).await.expect("shutdown");
@@ -2855,4 +2870,228 @@ async fn auto_review_applies_the_reviewers_verdict_when_its_usage_cannot_be_sett
             task.await.expect("engine task");
         }
     }
+}
+
+#[tokio::test]
+async fn guardian_failure_falls_back_to_owner_prompt_when_owner_surface_attached() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let workspace = tempdir().expect("tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("git marker");
+    let call_id = "call-guardian-fallback-person";
+    let mock = std::sync::Arc::new(MockLlmClient::new(vec![canned::tool_call_turn(
+        call_id,
+        "File",
+        r#"{"action":"write","path":".env","content":"secret=1\n"}"#,
+    )]));
+    mock.push_message_response(guardian_fixture_response("not valid guardian JSON"));
+    mock.push_factory(move |request| {
+        let results = guardian_tool_results(request, call_id);
+        assert_eq!(results.len(), 1);
+        assert_ne!(results[0].1, Some(true));
+        canned::simple_text_turn("wrote .env after person approval")
+    });
+
+    let client: crate::core::model_client::SharedModelClient = mock.clone();
+    let config = Config::default();
+    let engine_config = deterministic_engine_config(workspace.path());
+    let (mut engine, mut handle) = Engine::new_with_model_client(engine_config, &config, client);
+    engine.attach_owner_surface_for_tests(&mut handle);
+    let auto_review_state = std::sync::Arc::clone(&engine.auto_review_state);
+    let task = tokio::spawn(engine.run());
+
+    handle
+        .send(auto_review_message_op("Write .env after review fallback.", &config))
+        .await
+        .expect("send guardian turn");
+
+    let mut rx = handle.rx_event.write().await;
+    let mut saw_guardian_receipt = false;
+    let mut saw_approval_prompt = false;
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(15), rx.recv())
+            .await
+            .expect("timed out waiting for guardian fallback turn")
+            .expect("engine event stream closed");
+        match event {
+            Event::ToolGateDecision {
+                gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                ..
+            } => saw_guardian_receipt = true,
+            Event::ApprovalRequired {
+                id,
+                description,
+                approval_force_prompt,
+                ..
+            } => {
+                assert!(approval_force_prompt, "fallback prompt must force a person prompt");
+                assert!(
+                    description.contains("Auto-Review could not finish (unparseable answer)"),
+                    "{description}"
+                );
+                saw_approval_prompt = true;
+                handle.approve_tool_call(&id).await.expect("approve fallback prompt");
+            }
+            Event::TurnComplete { .. } => break,
+            _ => {}
+        }
+    }
+    drop(rx);
+
+    assert!(!saw_guardian_receipt, "a fallback prompt is not an Auto-Review block");
+    assert!(saw_approval_prompt, "expected fallback person approval prompt");
+    assert!(workspace.path().join(".env").exists());
+    assert_eq!(auto_review_state.lock().total_blocks(), 0);
+    assert_eq!(auto_review_state.lock().consecutive_unavailable(), 0);
+
+    handle.send(Op::Shutdown).await.expect("shutdown engine");
+    task.await.expect("engine task");
+}
+
+#[tokio::test]
+async fn guardian_failure_denies_fail_closed_without_owner_surface() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let workspace = tempdir().expect("tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("git marker");
+    let call_id = "call-guardian-fallback-nobody";
+    let mock = std::sync::Arc::new(MockLlmClient::new(vec![canned::tool_call_turn(
+        call_id,
+        "File",
+        r#"{"action":"write","path":".env","content":"secret=1\n"}"#,
+    )]));
+    mock.push_message_response(guardian_fixture_response("not valid guardian JSON"));
+    mock.push_factory(move |request| {
+        let results = guardian_tool_results(request, call_id);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1, Some(true));
+        assert!(
+            results[0].0.contains("fail closed")
+                && results[0]
+                    .0
+                    .contains("This is a review failure, not a determination that the action is unsafe"),
+            "{results:?}"
+        );
+        canned::simple_text_turn("acknowledged review failure")
+    });
+
+    let client: crate::core::model_client::SharedModelClient = mock.clone();
+    let config = Config::default();
+    let engine_config = deterministic_engine_config(workspace.path());
+    let (engine, handle) = Engine::new_with_model_client(engine_config, &config, client);
+    let auto_review_state = std::sync::Arc::clone(&engine.auto_review_state);
+    let task = tokio::spawn(engine.run());
+
+    handle
+        .send(auto_review_message_op("Write .env without an owner.", &config))
+        .await
+        .expect("send guardian turn");
+
+    let mut rx = handle.rx_event.write().await;
+    let mut unavailable_receipts = 0usize;
+    let mut saw_approval_prompt = false;
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(15), rx.recv())
+            .await
+            .expect("timed out waiting for guardian no-owner turn")
+            .expect("engine event stream closed");
+        match event {
+            Event::ToolGateDecision {
+                gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                decision,
+                ..
+            } => {
+                assert_eq!(decision, crate::core::events::ToolGateVerdict::Unavailable);
+                unavailable_receipts += 1;
+            }
+            Event::ApprovalRequired { .. } => saw_approval_prompt = true,
+            Event::TurnComplete { .. } => break,
+            _ => {}
+        }
+    }
+    drop(rx);
+
+    assert_eq!(unavailable_receipts, 1);
+    assert!(!saw_approval_prompt, "no owner surface means no prompt");
+    assert!(!workspace.path().join(".env").exists());
+    assert_eq!(auto_review_state.lock().consecutive_unavailable(), 1);
+    assert_eq!(auto_review_state.lock().total_blocks(), 0);
+
+    handle.send(Op::Shutdown).await.expect("shutdown engine");
+    task.await.expect("engine task");
+}
+
+#[tokio::test]
+async fn third_consecutive_guardian_denial_pauses_to_ask_without_a_fourth_review() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let workspace = tempdir().expect("tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("git marker");
+    let mock = std::sync::Arc::new(MockLlmClient::new(Vec::new()));
+    for n in 1..=3 {
+        mock.push_turn(canned::tool_call_turn(
+            &format!("call-breaker-{n}"),
+            "File",
+            &format!(r#"{{"action":"write","path":".env","content":"secret={n}\n"}}"#),
+        ));
+        mock.push_message_response(guardian_fixture_response(
+            r#"{"risk_level":"medium","decision":"deny","reason":"blocked env write"}"#,
+        ));
+    }
+    mock.push_factory(|request| {
+        assert_ne!(request.stream, Some(false), "no fourth guardian review after the pause");
+        canned::simple_text_turn("Stopping after three blocked writes.")
+    });
+
+    let client: crate::core::model_client::SharedModelClient = mock.clone();
+    let config = Config::default();
+    let engine_config = deterministic_engine_config(workspace.path());
+    let (mut engine, mut handle) = Engine::new_with_model_client(engine_config, &config, client);
+    engine.attach_owner_surface_for_tests(&mut handle);
+    let auto_review_state = std::sync::Arc::clone(&engine.auto_review_state);
+    let task = tokio::spawn(engine.run());
+
+    handle
+        .send(auto_review_message_op("Attempt repeated held env writes.", &config))
+        .await
+        .expect("send guardian turn");
+
+    let mut rx = handle.rx_event.write().await;
+    let mut denied_receipts = 0usize;
+    let mut pause_reason = None;
+    let status = loop {
+        let event = tokio::time::timeout(Duration::from_secs(15), rx.recv())
+            .await
+            .expect("timed out waiting for the paused turn")
+            .expect("engine event stream closed");
+        match event {
+            Event::ToolGateDecision {
+                gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                decision: crate::core::events::ToolGateVerdict::Denied,
+                ..
+            } => denied_receipts += 1,
+            Event::AutoReviewPaused { reason, approval_mode } => {
+                assert_eq!(approval_mode, ApprovalMode::Suggest);
+                pause_reason = Some(reason);
+            }
+            Event::TurnComplete { status, .. } => break status,
+            _ => {}
+        }
+    };
+    drop(rx);
+
+    assert_eq!(status, TurnOutcomeStatus::Completed);
+    assert_eq!(denied_receipts, 3);
+    assert!(
+        pause_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("3 blocked calls in a row")),
+        "{pause_reason:?}"
+    );
+    assert_eq!(mock.captured_requests().len(), 7, "4 model steps and 3 guardian reviews");
+    assert!(auto_review_state.lock().paused_to_ask());
+    assert!(!workspace.path().join(".env").exists());
+
+    handle.send(Op::Shutdown).await.expect("shutdown engine");
+    task.await.expect("engine task");
 }

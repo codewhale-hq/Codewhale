@@ -319,6 +319,11 @@ impl ToolSpec for StartRuntimeMcpServer {
             .map(sanitize_name)
             .unwrap_or(parsed.name)
             .replace('_', "-");
+        if server_name.is_empty() {
+            return Err(ToolError::invalid_input(
+                "MCP server name must contain at least one ASCII letter, digit or '-'",
+            ));
+        }
 
         // Underscores in server names would cause tool name collision.
         // Tool names are formatted as mcp_{server}_{tool}; underscores in
@@ -878,5 +883,46 @@ mod tests {
             matches!(tool.approval_requirement(), ApprovalRequirement::Required),
             "start_mcp_server must require approval before spawning"
         );
+    }
+
+    #[tokio::test]
+    async fn start_mcp_server_rejects_name_sanitizing_to_empty() {
+        let directory = tempfile::tempdir().unwrap();
+        let pool = Arc::new(AsyncMutex::new(McpPool::new(
+            codewhale_mcp::config::McpConfig::default(),
+        )));
+        let tool = StartRuntimeMcpServer::new(Arc::clone(&pool));
+        let context = ToolContext::new(directory.path());
+
+        for bad_name in ["___", "...", "服务"] {
+            let error = tool
+                .execute(
+                    json!({
+                        "server": "node nonexistent-mcp.js",
+                        "name": bad_name,
+                    }),
+                    &context,
+                )
+                .await
+                .expect_err("name sanitizing to empty must be rejected");
+            assert!(
+                matches!(error, ToolError::InvalidInput { .. }),
+                "expected InvalidInput for {bad_name:?}, got {error:?}"
+            );
+        }
+        assert!(pool.lock().await.server_names().is_empty());
+    }
+
+    #[test]
+    fn add_runtime_server_config_rejects_empty_name() {
+        let pool = McpPool::new(codewhale_mcp::config::McpConfig::default());
+        let parsed = parse_mcp_command("node nonexistent-mcp.js").expect("parses");
+        for bad in ["", "   "] {
+            let err = pool
+                .add_runtime_server_config(bad.to_string(), parsed.config.clone())
+                .expect_err("empty runtime server name must be refused");
+            assert!(err.contains("must not be empty"), "{bad:?}: {err}");
+        }
+        assert!(pool.server_names().is_empty());
     }
 }

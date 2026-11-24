@@ -290,6 +290,34 @@ exec /bin/ln "$@"
     f.untouched();
   });
 
+  for (const [label, file, record, accepted] of [
+    ["an unrelated Cargo record", ".crates.toml", '[v1]\n"ripgrep 14.1.0 (registry+https://github.com/rust-lang/crates.io-index)" = ["rg"]\n"codewhale-tui 0.10.3 (registry+https://github.com/rust-lang/crates.io-index)" = ["codewhale-tui"]\n', true],
+    ["a Cargo record listing codewhale", ".crates.toml", '[v1]\n"codewhale-cli 0.10.3 (registry+https://github.com/rust-lang/crates.io-index)" = ["codewhale"]\n', false],
+    ["a Cargo record listing codew", ".crates2.json", '{"installs":{"codewhale-cli 0.10.3":{"bins":["codew"]}}}\n', false],
+    ["an unreadable Cargo record", ".crates.toml", null, false],
+  ]) {
+    test(`${kind}: ${label} beside the install directory is ${accepted ? "accepted" : "refused"}`, t => {
+      const f = fixture(t, kind); f.prepare();
+      const receipt = path.join(path.dirname(f.destination), file);
+      if (record === null) {
+        if (process.getuid && process.getuid() === 0) return t.skip("root can read any file");
+        fs.writeFileSync(receipt, '"codewhale" ', { mode: 0o000 });
+      } else {
+        fs.writeFileSync(receipt, record);
+      }
+      const result = f.run();
+      if (accepted) {
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(fs.readFileSync(path.join(f.destination, "codewhale"), "utf8"), bytes);
+      } else {
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /cargo uninstall/);
+        assert.equal(fs.existsSync(path.join(f.destination, "codewhale")), false);
+      }
+      f.untouched();
+    });
+  }
+
   test(`${kind}: a destination created during publication is never overwritten`, t => {
     const f = fixture(t, kind);
     executable(path.join(f.bin, "ln"), `#!/bin/sh
@@ -506,14 +534,14 @@ const helpWithout = "Usage: codewhale [OPTIONS] [PROMPT]...\n\nCommands:\n  upda
 const helpWith = `${helpWithout}\n  uninstall   Remove this receipt-owned release install`;
 for (const kind of ["website", "archive"]) {
   for (const [label, help, supported] of [["without", helpWithout, false], ["with", helpWith, true]]) {
-    test(`${kind}: a binary ${label} an uninstall command ${supported ? "gets" : "never gets"} the uninstall and update-mode lines`, t => {
+    test(`${kind}: a binary ${label} an uninstall command ${supported ? "gets" : "never gets"} the uninstall line, and the update mode comes from the binary`, t => {
       const f = fixture(t, kind);
       f.env.INSTALL_TEST_HELP = help;
       f.env.SHELL = "/bin/bash";
       const result = f.run();
       assert.equal(result.status, 0, result.stderr);
       assert.equal(result.stdout.includes("uninstall --yes"), supported, result.stdout);
-      assert.equal(result.stdout.includes("update.mode"), supported, result.stdout);
+      assert.equal(result.stdout.includes("update.mode"), false, result.stdout);
       assert.equal(/codewhale uninstall/.test(result.stdout), supported, result.stdout);
       assert.equal(result.stdout.includes("this release has no uninstall command"), !supported, result.stdout);
       if (!supported) {

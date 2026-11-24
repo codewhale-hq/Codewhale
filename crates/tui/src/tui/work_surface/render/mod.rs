@@ -17,9 +17,9 @@ use ratatui::{
     Frame,
     layout::Rect,
     prelude::Widget,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Paragraph},
+    widgets::{Block, BorderType, Borders, Paragraph},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -50,6 +50,15 @@ use rows::{
 };
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
+    render_with_ascii(
+        frame,
+        area,
+        app,
+        crate::tui::color_compat::ascii_safe_enabled(),
+    );
+}
+
+pub(super) fn render_with_ascii(frame: &mut Frame, area: Rect, app: &mut App, ascii: bool) {
     if area.width == 0 || area.height == 0 {
         collapse_strip(app);
         return;
@@ -67,29 +76,32 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         collapse_strip(app);
         return;
     }
-    let body_area = match placement {
-        // Bottom mirrors Top's body/divider split; only the divider edge
-        // differs (below-content for Top, above-content for Bottom).
-        WorkSurfacePlacement::Top => Rect {
-            y: area.y.saturating_add(1),
-            height: area.height.saturating_sub(2),
-            ..area
-        },
-        WorkSurfacePlacement::Bottom => Rect {
-            y: area.y.saturating_add(2),
-            height: area.height.saturating_sub(2),
-            ..area
-        },
-        WorkSurfacePlacement::Left => Rect {
-            width: area.width.saturating_sub(1),
-            ..area
-        },
-        WorkSurfacePlacement::Right => Rect {
+    let framed = area.width >= 4 && area.height >= 3;
+    let body_area = if framed {
+        Rect {
             x: area.x.saturating_add(1),
-            width: area.width.saturating_sub(1),
+            y: area.y.saturating_add(1),
+            width: area.width.saturating_sub(2),
+            height: area.height.saturating_sub(2),
+        }
+    } else if placement.is_strip() {
+        Rect {
+            y: area.y.saturating_add(1),
+            height: area.height.saturating_sub(1),
             ..area
-        },
-        WorkSurfacePlacement::Off => unreachable!("off placement returned above"),
+        }
+    } else {
+        area
+    };
+    let tab_area = if framed {
+        Rect::new(
+            area.x.saturating_add(1),
+            area.y,
+            area.width.saturating_sub(2),
+            1,
+        )
+    } else {
+        Rect::new(area.x, area.y, area.width, 1)
     };
 
     if !placement.is_strip() {
@@ -101,13 +113,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     super::model::resolve_view(app);
     let rows = visible_rows_for_panel(app);
     if app.work_surface.panel == RailPanel::Terminal {
-        Block::default()
-            .style(Style::default().bg(app.ui_theme.panel_bg))
-            .render(area, frame.buffer_mut());
-        render_dock_tabs(frame, area, app);
-        register_dock_targets(app);
+        let _ = render_frame(frame, area, placement, ascii, app);
+        if placement.is_strip() {
+            render_dock_tabs_with_ascii(frame, tab_area, app, ascii);
+            register_dock_targets(app);
+        }
         super::terminal::render(frame, body_area, app);
-        render_divider(frame, area, placement, app);
         app.work_surface.last_area = Some(area);
         return;
     }
@@ -146,11 +157,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // A redraw clamps the viewport, never reveals the remembered selection.
     app.work_surface.clamp_viewport(&rows);
 
-    Block::default()
-        .style(Style::default().bg(app.ui_theme.panel_bg))
-        .render(area, frame.buffer_mut());
-    render_dock_tabs(frame, area, app);
-    register_dock_targets(app);
+    let border_color = render_frame(frame, area, placement, ascii, app);
+    if placement.is_strip() {
+        render_dock_tabs_with_ascii(frame, tab_area, app, ascii);
+        register_dock_targets(app);
+    }
 
     if let Some((goal_text, goal_style)) = goal_title.filter(|_| goal_height > 0) {
         let full_width = usize::from(content_area.width);
@@ -163,7 +174,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         let goal_text = truncate_line_to_width(&goal_text, full_width.saturating_sub(reserved));
         let mut spans = vec![Span::styled(
             goal_text.clone(),
-            goal_style.bg(app.ui_theme.panel_bg),
+            goal_style.bg(app.ui_theme.composer_bg),
         )];
         if let Some(receipt) = receipt {
             let gap = full_width
@@ -173,7 +184,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                 format!("{}{receipt}", " ".repeat(gap)),
                 Style::default()
                     .fg(app.ui_theme.text_muted)
-                    .bg(app.ui_theme.panel_bg),
+                    .bg(app.ui_theme.composer_bg),
             ));
         }
         Paragraph::new(Line::from(spans)).render(
@@ -195,7 +206,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             progress,
             Style::default()
                 .fg(app.ui_theme.text_muted)
-                .bg(app.ui_theme.panel_bg),
+                .bg(app.ui_theme.composer_bg),
         )))
         .render(
             Rect {
@@ -323,7 +334,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                     queued.to_string(),
                     Style::default()
                         .fg(app.ui_theme.warning)
-                        .bg(normal.bg.unwrap_or(app.ui_theme.panel_bg)),
+                        .bg(normal.bg.unwrap_or(app.ui_theme.composer_bg)),
                 ));
             }
             lines.push(Line::from(spans));
@@ -405,7 +416,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             ),
             Style::default()
                 .fg(app.ui_theme.text_muted)
-                .bg(app.ui_theme.panel_bg),
+                .bg(app.ui_theme.composer_bg),
         )));
     }
 
@@ -429,24 +440,34 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             format!("{}{text}", " ".repeat(pad)),
             Style::default()
                 .fg(app.ui_theme.text_muted)
-                .bg(app.ui_theme.panel_bg),
+                .bg(app.ui_theme.composer_bg),
         )));
     }
 
     Paragraph::new(lines).render(content_area, frame.buffer_mut());
-    render_divider(frame, area, placement, app);
     if overflow {
+        let scrollbar_x = if placement == WorkSurfacePlacement::Left {
+            body_area.right().saturating_sub(1)
+        } else {
+            area.right().saturating_sub(1)
+        };
+        let track_color = if placement == WorkSurfacePlacement::Left {
+            app.ui_theme.border
+        } else {
+            border_color
+        };
         render_scrollbar(
             frame,
             Rect {
-                x: body_area.right().saturating_sub(1),
+                x: scrollbar_x,
                 y: content_area.y,
                 width: 1,
                 height: content_area.height,
             },
-            app.work_surface.scroll_offset,
             list_rows,
             rows.len(),
+            track_color,
+            ascii,
             app,
         );
     }
@@ -544,47 +565,81 @@ pub(super) fn top_todo_progress(app: &App, rows: &[WorkRow]) -> Option<String> {
     )
 }
 
-fn render_divider(frame: &mut Frame, area: Rect, placement: WorkSurfacePlacement, app: &App) {
-    let active = app.work_surface.resizing || app.work_surface.divider_hovered;
-    let color = if active {
+const ASCII_BORDER: ratatui::symbols::border::Set<'static> = ratatui::symbols::border::Set {
+    top_left: "+",
+    top_right: "+",
+    bottom_left: "+",
+    bottom_right: "+",
+    vertical_left: "|",
+    vertical_right: "|",
+    horizontal_top: "-",
+    horizontal_bottom: "-",
+};
+
+fn render_frame(
+    frame: &mut Frame,
+    area: Rect,
+    placement: WorkSurfacePlacement,
+    ascii: bool,
+    app: &App,
+) -> Color {
+    let resize_active = app.work_surface.resizing || app.work_surface.divider_hovered;
+    let border_color = if resize_active || app.work_surface.focused {
         app.ui_theme.accent_primary
     } else {
         app.ui_theme.border
     };
-    match placement {
-        WorkSurfacePlacement::Off => {}
-        WorkSurfacePlacement::Top => {
-            let y = area.bottom().saturating_sub(1);
-            for x in area.left()..area.right() {
-                frame.buffer_mut()[(x, y)]
-                    .set_symbol(if active { "━" } else { "─" })
-                    .set_fg(color)
-                    .set_bg(app.ui_theme.panel_bg);
+    let bg = app.ui_theme.composer_bg;
+    if area.width >= 4 && area.height >= 3 {
+        let mut block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(border_color).bg(bg))
+            .style(Style::default().bg(bg));
+        if ascii {
+            block = block.border_set(ASCII_BORDER);
+        }
+        block.render(area, frame.buffer_mut());
+        if resize_active && !ascii {
+            let buf = frame.buffer_mut();
+            match placement {
+                WorkSurfacePlacement::Top => {
+                    let y = area.bottom().saturating_sub(1);
+                    for x in area.left().saturating_add(1)..area.right().saturating_sub(1) {
+                        if let Some(cell) = buf.cell_mut((x, y)) {
+                            cell.set_symbol("━").set_fg(border_color).set_bg(bg);
+                        }
+                    }
+                }
+                WorkSurfacePlacement::Bottom => {
+                    let y = area.top();
+                    for x in area.left().saturating_add(1)..area.right().saturating_sub(1) {
+                        if let Some(cell) = buf.cell_mut((x, y)) {
+                            cell.set_symbol("━").set_fg(border_color).set_bg(bg);
+                        }
+                    }
+                }
+                WorkSurfacePlacement::Left | WorkSurfacePlacement::Right => {
+                    let x = if placement == WorkSurfacePlacement::Left {
+                        area.right().saturating_sub(1)
+                    } else {
+                        area.left()
+                    };
+                    for y in area.top().saturating_add(1)..area.bottom().saturating_sub(1) {
+                        if let Some(cell) = buf.cell_mut((x, y)) {
+                            cell.set_symbol("┃").set_fg(border_color).set_bg(bg);
+                        }
+                    }
+                }
+                WorkSurfacePlacement::Off => {}
             }
         }
-        WorkSurfacePlacement::Bottom => {
-            let y = area.top();
-            for x in area.left()..area.right() {
-                frame.buffer_mut()[(x, y)]
-                    .set_symbol(if active { "━" } else { "─" })
-                    .set_fg(color)
-                    .set_bg(app.ui_theme.panel_bg);
-            }
-        }
-        WorkSurfacePlacement::Left | WorkSurfacePlacement::Right => {
-            let x = if placement == WorkSurfacePlacement::Left {
-                area.right().saturating_sub(1)
-            } else {
-                area.left()
-            };
-            for y in area.top()..area.bottom() {
-                frame.buffer_mut()[(x, y)]
-                    .set_symbol(if active { "┃" } else { "│" })
-                    .set_fg(color)
-                    .set_bg(app.ui_theme.panel_bg);
-            }
-        }
+    } else {
+        Block::default()
+            .style(Style::default().bg(bg))
+            .render(area, frame.buffer_mut());
     }
+    border_color
 }
 
 // Engine supplies the caller's available panels, exact close semantics and
@@ -622,7 +677,17 @@ fn native_target(target: codewhale_ratatui::DockTabTarget) -> DockTabTarget {
     }
 }
 
+#[cfg(test)]
 fn render_dock_tabs(frame: &mut Frame, area: Rect, app: &mut App) {
+    render_dock_tabs_with_ascii(
+        frame,
+        area,
+        app,
+        crate::tui::color_compat::ascii_safe_enabled(),
+    );
+}
+
+fn render_dock_tabs_with_ascii(frame: &mut Frame, area: Rect, app: &mut App, ascii: bool) {
     use codewhale_ratatui::{DockTabRow, DockTabStyles, DockTabTarget as T, WorkbarTab};
     let entries = RailPanel::ORDER
         .into_iter()
@@ -636,11 +701,7 @@ fn render_dock_tabs(frame: &mut Frame, area: Rect, app: &mut App) {
             })
         })
         .collect::<Vec<_>>();
-    let close_mark = if crate::tui::color_compat::ascii_safe_enabled() {
-        "x"
-    } else {
-        "×"
-    };
+    let close_mark = if ascii { "x" } else { "×" };
     // Name Esc only while Engine's actual keyboard action closes this dock.
     let esc_closes = app.work_surface.panel != RailPanel::Terminal
         && app.work_surface.focused
@@ -651,10 +712,15 @@ fn render_dock_tabs(frame: &mut Frame, area: Rect, app: &mut App) {
     } else {
         format!(" {close_mark} ")
     };
+    let active_fg = codewhale_palette::enforce_contrast(
+        app.ui_theme.accent_primary,
+        app.ui_theme.composer_bg,
+        4.5,
+    );
     let row = DockTabRow {
         tabs: &entries,
         active: kit_panel(app.work_surface.panel),
-        bottom: app.work_surface.effective_placement == WorkSurfacePlacement::Bottom,
+        bottom: false,
         close: close.into(),
         hovered: app.work_surface.hovered_tab.map(|target| match target {
             DockTabTarget::Panel(panel) => T::Panel(kit_panel(panel)),
@@ -668,16 +734,17 @@ fn render_dock_tabs(frame: &mut Frame, area: Rect, app: &mut App) {
                 DockTabTarget::Close => None,
             }),
         styles: DockTabStyles {
-            idle: chrome_style(&app.ui_theme, ChromeInk::Metadata),
+            idle: chrome_style(&app.ui_theme, ChromeInk::Metadata).bg(app.ui_theme.composer_bg),
             active: Style::default()
-                .fg(app.ui_theme.text_body)
-                .bg(app.ui_theme.selection_bg)
+                .fg(active_fg)
+                .bg(app.ui_theme.composer_bg)
                 .add_modifier(Modifier::BOLD),
             hovered: Style::default()
                 .fg(app.ui_theme.text_body)
                 .bg(app.ui_theme.elevated_bg)
                 .add_modifier(Modifier::UNDERLINED),
-            close: chrome_style(&app.ui_theme, ChromeInk::MetadataHint),
+            close: chrome_style(&app.ui_theme, ChromeInk::MetadataHint)
+                .bg(app.ui_theme.composer_bg),
             close_hovered: chrome_style(&app.ui_theme, ChromeInk::Info)
                 .bg(app.ui_theme.elevated_bg)
                 .add_modifier(Modifier::UNDERLINED),
@@ -768,23 +835,25 @@ fn register_dock_targets(app: &mut App) {
 fn render_scrollbar(
     frame: &mut Frame,
     area: Rect,
-    offset: usize,
     visible: usize,
     total: usize,
+    track_color: Color,
+    ascii: bool,
     app: &App,
 ) {
+    let (thumb, track) = if ascii { ("#", "|") } else { ("┃", "│") };
     codewhale_ratatui::WorkbarScrollbar {
-        offset,
+        offset: app.work_surface.scroll_offset,
         visible,
         total,
-        thumb: "┃",
-        track: "│",
+        thumb,
+        track,
         thumb_style: Style::default()
             .fg(app.ui_theme.status_working)
-            .bg(app.ui_theme.panel_bg),
+            .bg(app.ui_theme.composer_bg),
         track_style: Style::default()
-            .fg(app.ui_theme.border)
-            .bg(app.ui_theme.panel_bg),
+            .fg(track_color)
+            .bg(app.ui_theme.composer_bg),
     }
     .paint(area, frame.buffer_mut());
 }

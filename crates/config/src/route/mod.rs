@@ -65,7 +65,8 @@ pub use offering::{
 };
 pub use policy::{CatalogPolicy, PolicyAction, PolicyEffect, PolicyRule};
 pub use resolver::{
-    ResolvedModel, RouteRequest, RouteResolver, bundled_offering_wire_id, resolve_model,
+    ResolvedModel, RouteRequest, RouteResolver, aliases_for_wire_model, bundled_offering_wire_id,
+    resolve_model,
 };
 
 #[cfg(test)]

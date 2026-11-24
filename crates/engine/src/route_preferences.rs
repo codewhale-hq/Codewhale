@@ -188,16 +188,19 @@ pub fn scrub_root_model_aliases_for_export(document: &mut toml::value::Table) ->
             scoped.set_provider_model_override(&identity, None)?;
             scoped.legacy_model = None;
             scoped.default_text_model = Some(value.to_string());
-            let wire_model = codewhale_runtime::config::wire_model_for_provider_route(
+            let wire_model = codewhale_config::route::resolve_model(
                 identity.provider,
-                &scoped.active_route_base_url(),
                 &value,
-            );
+                Some(&scoped.active_route_base_url()),
+            )
+            .map_or_else(|_| value.trim().to_string(), |resolved| resolved.wire_id);
             if scoped.default_model() == wire_model {
                 document.remove(root_key);
                 continue;
             }
-            if codewhale_runtime::config::normalize_model_name(&value).is_none() {
+            if !codewhale_config::route::resolve_model(ProviderKind::Deepseek, &value, None)
+                .is_ok_and(|resolved| !resolved.is_auto)
+            {
                 document.remove(root_key);
                 continue;
             }
@@ -282,16 +285,26 @@ pub fn get(path: &Path, key: &str) -> Result<Option<String>> {
         ));
     }
     let identity = model_identity(&config, key)?;
+    let active_key = config
+        .active_provider_identity()
+        .ok()
+        .map(|active| active.key.to_string());
     config
         .scope_to_provider_identity(&identity)
         .map_err(anyhow::Error::msg)?;
+    let has_root_model = config.default_text_model.is_some() || config.legacy_model.is_some();
+    if has_root_model
+        && active_key.as_deref() != Some(identity.key.as_str())
+        && config.configured_model_error().is_some()
+    {
+        config.default_text_model = None;
+        config.legacy_model = None;
+    }
     Ok(config
         .provider_config_for(&identity)
         .and_then(|entry| entry.model.clone())
         .or_else(|| {
-            (provider_model_id(key).is_none()
-                && (config.default_text_model.is_some() || config.legacy_model.is_some()))
-            .then(|| config.default_model())
+            (provider_model_id(key).is_none() && has_root_model).then(|| config.default_model())
         }))
 }
 
@@ -427,16 +440,25 @@ fn admit_reviewed_selection(provider: ProviderKind, requested: Option<&str>) -> 
             .iter()
             .filter(move |row| ProviderKind::parse_config_identity(&row.provider) == Some(provider))
     };
-    let normalize = |value: &str| value.trim().to_ascii_lowercase();
     let row_matches = |row: &codewhale_config::catalog::reviewed::ModelSelection, wanted: &str| {
-        let wanted = normalize(wanted);
-        normalize(&row.id) == wanted || row.aliases.iter().any(|alias| normalize(alias) == wanted)
+        row.id.eq_ignore_ascii_case(wanted.trim())
+    };
+    let resolved_matches_rows = |raw: &str| {
+        codewhale_config::route::resolve_model(provider, raw, None)
+            .ok()
+            .is_some_and(|resolved| {
+                resolved.offering.is_some()
+                    || rows().any(|row| {
+                        row_matches(row, &resolved.wire_id) || row_matches(row, &resolved.logical)
+                    })
+            })
     };
     let default_model = provider.provider().default_model();
     let requested = requested.filter(|name| !name.trim().is_empty());
 
     let Some(name) = requested else {
-        if rows().any(|row| row_matches(row, default_model)) {
+        if rows().any(|row| row_matches(row, default_model)) || resolved_matches_rows(default_model)
+        {
             return Ok(());
         }
         if !default_model.trim().is_empty() && provider != ProviderKind::Ollama {
@@ -457,9 +479,10 @@ fn admit_reviewed_selection(provider: ProviderKind, requested: Option<&str>) -> 
     let trimmed = name.trim();
     let admitted = match provider {
         ProviderKind::Ollama | ProviderKind::OllamaCloud => true,
-        ProviderKind::OpencodeGo => codewhale_config::opencode_go_model_id(name)
-            .is_some_and(|canonical| rows().any(|row| row.id.eq_ignore_ascii_case(canonical))),
-        _ => rows().any(|row| row_matches(row, name)),
+        ProviderKind::OpencodeGo => codewhale_config::route::resolve_model(provider, name, None)
+            .ok()
+            .is_some_and(|resolved| rows().any(|row| row_matches(row, &resolved.wire_id))),
+        _ => resolved_matches_rows(name),
     } || match provider {
         ProviderKind::Atlascloud => !trimmed.is_empty() && trimmed.contains('/'),
         ProviderKind::Arcee => !trimmed.is_empty(),
@@ -561,11 +584,12 @@ pub fn unset(path: &Path, key: &str) -> Result<()> {
                     continue;
                 };
                 scoped.default_text_model = Some(model.to_string());
-                let wire_model = codewhale_runtime::config::wire_model_for_provider_route(
+                let wire_model = codewhale_config::route::resolve_model(
                     identity.provider,
-                    &scoped.active_route_base_url(),
                     model,
-                );
+                    Some(&scoped.active_route_base_url()),
+                )
+                .map_or_else(|_| model.trim().to_string(), |resolved| resolved.wire_id);
                 // Reuse Config's root-model guards: a foreign DeepSeek root
                 // ignored by the active vendor remains that provider's fallback.
                 if scoped.default_model() == wire_model {

@@ -305,12 +305,14 @@ fn is_protocol_or_tls_failure(detail: &str) -> bool {
             .any(|needle| lower.contains(needle))
 }
 
-/// Added to a response-header timeout (#6889). A provider that loads a model
-/// on its first call can hold the headers back longer than this wait, and the
-/// transport advice alone makes that read as a broken connection.
-const COLD_MODEL_HINT: &str = "If this model has not been used recently, the provider may \
-     still be loading it: wait a minute and send the message again, or allow a longer wait with \
-     `codewhale config set stream.open_timeout_secs 180` (up to 300).";
+#[must_use]
+pub fn stream_open_header_timeout(err: &anyhow::Error) -> Option<Duration> {
+    err.chain()
+        .find_map(|cause| match cause.downcast_ref::<LlmError>() {
+            Some(LlmError::HeaderTimeout { waited, .. }) => Some(*waited),
+            _ => None,
+        })
+}
 
 pub async fn open_sse_response<F, Fut>(
     open_req: &StreamOpenRequest,
@@ -333,10 +335,11 @@ where
             }
         }
         Err(_) => {
-            return Err(anyhow::Error::new(LlmError::NetworkError(format!(
-                "SSE stream request did not receive response headers after {}s; request outcome unknown. {COLD_MODEL_HINT}",
-                open_req.open_timeout.as_secs()
-            ))));
+            return Err(anyhow::Error::new(LlmError::HeaderTimeout {
+                waited: open_req.open_timeout,
+                http1: false,
+                retried: 0,
+            }));
         }
     }
     let h1_req = open_req.clone().with_h1_only();
@@ -346,10 +349,11 @@ where
     {
         Ok(Ok(response)) => Ok(response),
         Ok(Err(err)) => Err(h1_fallback_error(err)),
-        Err(_) => Err(anyhow::Error::new(LlmError::NetworkError(format!(
-            "SSE stream request did not receive response headers after {}s on HTTP/1.1; request outcome unknown. {COLD_MODEL_HINT}",
-            h1_req.open_timeout.as_secs()
-        )))),
+        Err(_) => Err(anyhow::Error::new(LlmError::HeaderTimeout {
+            waited: h1_req.open_timeout,
+            http1: true,
+            retried: 0,
+        })),
     }
 }
 
@@ -577,11 +581,22 @@ force_http1 = {pinned}
             .expect("header stall must be a typed LlmError");
         assert!(
             !classified.is_retryable(),
-            "header stall must not be replayable: {classified:?}"
+            "the HTTP retry loop must not replay a header stall: {classified:?}"
+        );
+        assert_eq!(
+            stream_open_header_timeout(&err.context("adapter context")),
+            Some(Duration::from_millis(100)),
+            "the turn loop recognizes the header timeout by type"
         );
         assert!(text.contains("outcome unknown"), "{text}");
-        // #6889: a header wait that ran out may be a model still loading.
-        assert!(text.contains("may still be loading it"), "{text}");
+        assert!(
+            text.contains("prefilling a large or high-thinking request or loading a cold model"),
+            "{text}"
+        );
+        assert!(
+            text.contains("codewhale config set stream.open_timeout_secs 300` (up to 600)"),
+            "{text}"
+        );
         assert!(
             !text.contains("HTTP/2 and HTTP/1.1"),
             "single-protocol stall must not claim a dual-protocol attempt: {text}"
@@ -783,9 +798,14 @@ force_http1 = {pinned}
         );
         let text = err.to_string();
         assert!(!text.contains("HTTP/2 and HTTP/1.1"), "{text}");
-        // #6889: a header wait that ran out may be a model still loading.
-        assert!(text.contains("may still be loading it"), "{text}");
-        assert!(text.contains("stream.open_timeout_secs"), "{text}");
+        assert!(
+            text.contains("prefilling a large or high-thinking request or loading a cold model"),
+            "{text}"
+        );
+        assert!(
+            text.contains("codewhale config set stream.open_timeout_secs 300` (up to 600)"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -830,10 +850,10 @@ force_http1 = {pinned}
 
     #[test]
     fn stream_open_timeout_defaults_and_clamps_env_values() {
-        assert_eq!(stream_open_timeout_from_env(None), Duration::from_secs(45));
+        assert_eq!(stream_open_timeout_from_env(None), Duration::from_secs(180));
         assert_eq!(
             stream_open_timeout_from_env(Some("not-a-number")),
-            Duration::from_secs(45)
+            Duration::from_secs(180)
         );
         assert_eq!(
             stream_open_timeout_from_env(Some("1")),
@@ -844,8 +864,12 @@ force_http1 = {pinned}
             Duration::from_secs(120)
         );
         assert_eq!(
+            stream_open_timeout_from_env(Some("450")),
+            Duration::from_secs(450)
+        );
+        assert_eq!(
             stream_open_timeout_from_env(Some("999")),
-            Duration::from_secs(300)
+            Duration::from_secs(600)
         );
     }
 

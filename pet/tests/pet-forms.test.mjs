@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { projectDotField } from '../dist/core/dot-field.js';
+import { getFormLayout } from '../dist/core/dot-forms.js';
 import { ACTIVITY_LABELS } from '../dist/core/activity-labels.js';
 
 const KINDS = ['reading', 'editing', 'searching', 'testing', 'executing', 'browsing', 'computer', 'memory',
@@ -48,5 +49,31 @@ test('activity captions are the interface labels from the locale packs', () => {
   for (const [language, labels] of Object.entries(ACTIVITY_LABELS)) {
     const pack = JSON.parse(readFileSync(new URL(`../../crates/localization/locales/${language}.json`, import.meta.url), 'utf8'));
     assert.deepEqual(labels, Object.fromEntries(Object.entries(ids).map(([kind, id]) => [kind, pack[id]])), language);
+  }
+});
+
+test('compiled hex-lattice forms preserve 0.32 * pitch dot separation and bounds across styles', () => {
+  const forms = [...KINDS.filter(k => k !== 'tool'), 'waiting', 'done'];
+  for (const style of ['smooth', 'pixel']) {
+    for (const kind of forms) {
+      for (const agents of kind === 'delegating' ? [2, 3] : [3]) {
+        const { pitch, slots } = getFormLayout(kind, style, agents);
+        assert.equal(slots.length, 980, `${style} ${kind}`);
+        assert.ok(pitch > 0.01 && pitch < 0.1, `${style} ${kind} pitch=${pitch}`);
+        const radius = 0.32 * pitch;
+        const minSeparation = 2 * radius;
+        const unique = [];
+        for (const slot of slots) {
+          assert.ok(Math.abs(slot.x) <= 0.94 - radius * 0.5 && Math.abs(slot.y) <= 0.94 - radius * 0.5, `${style} ${kind} out of bounds`);
+          if (!unique.some(u => u.x === slot.x && u.y === slot.y)) unique.push(slot);
+        }
+        for (let i = 0; i < unique.length; i++) {
+          for (let j = i + 1; j < unique.length; j++) {
+            const d = Math.hypot(unique[i].x - unique[j].x, unique[i].y - unique[j].y);
+            assert.ok(d >= minSeparation, `${style} ${kind} dots overlap: ${d} < ${minSeparation}`);
+          }
+        }
+      }
+    }
   }
 });

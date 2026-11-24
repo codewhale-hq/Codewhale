@@ -69,6 +69,8 @@ pub const MAX_STREAM_MAX_DURATION_SECS: u64 = 86_400;
 pub const DEFAULT_STREAM_MAX_RESUMES: u32 = 3;
 /// Largest accepted safe-open retry budget. `0` disables outer open retries.
 pub const MAX_STREAM_MAX_RESUMES: u32 = 10;
+pub const DEFAULT_STREAM_OPEN_RETRIES: u32 = 1;
+pub const MAX_STREAM_OPEN_RETRIES: u32 = 3;
 /// Historical default retained for configuration compatibility; inactive in Core.
 pub const DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES: u32 = 2;
 /// Historical accepted bound for the inactive compatibility setting.
@@ -81,12 +83,13 @@ pub const MIN_STREAM_MAX_ERRORS: u32 = 1;
 /// Largest accepted compatibility value.
 pub const MAX_STREAM_MAX_ERRORS: u32 = 50;
 
-/// Safe-open retries and parsed historical stream settings. The compatibility
+/// Stream-open retries and parsed historical stream settings. The compatibility
 /// fields never authorize replay or error tolerance for an opened stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamRetryLimits {
     /// Proven pre-dispatch stream-open retries.
     pub max_resumes: u32,
+    pub open_retries: u32,
     /// Inactive Core compatibility setting.
     pub max_transparent_retries: u32,
     /// Inactive Core compatibility setting; an uncertain error ends the stream.
@@ -95,13 +98,13 @@ pub struct StreamRetryLimits {
 
 impl Default for StreamRetryLimits {
     fn default() -> Self {
-        resolve_stream_retry_limits(None, None, None)
+        resolve_stream_retry_limits(None, None, None, None)
     }
 }
 
 /// Resolve configured stream retry budgets.
 ///
-/// `None` selects each default. The two retry counts accept `0` (no
+/// `None` selects each default. The retry counts accept `0` (no
 /// retries) and clamp to their maximum. The error streak is a finite stream
 /// budget like `stream_max_content_mb`: `0` selects its default, and other
 /// values clamp to `MIN_STREAM_MAX_ERRORS..=MAX_STREAM_MAX_ERRORS`.
@@ -110,11 +113,15 @@ pub fn resolve_stream_retry_limits(
     max_resumes: Option<u32>,
     max_transparent_retries: Option<u32>,
     max_errors: Option<u32>,
+    open_retries: Option<u32>,
 ) -> StreamRetryLimits {
     StreamRetryLimits {
         max_resumes: max_resumes
             .unwrap_or(DEFAULT_STREAM_MAX_RESUMES)
             .min(MAX_STREAM_MAX_RESUMES),
+        open_retries: open_retries
+            .unwrap_or(DEFAULT_STREAM_OPEN_RETRIES)
+            .min(MAX_STREAM_OPEN_RETRIES),
         max_transparent_retries: max_transparent_retries
             .unwrap_or(DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES)
             .min(MAX_STREAM_MAX_TRANSPARENT_RETRIES),
@@ -349,26 +356,37 @@ mod tests {
 
     #[test]
     fn stream_retry_limits_default_to_historical_values_and_clamp() {
-        let defaults = resolve_stream_retry_limits(None, None, None);
+        let defaults = resolve_stream_retry_limits(None, None, None, None);
         assert_eq!(defaults, StreamRetryLimits::default());
         assert_eq!(defaults.max_resumes, 3);
+        assert_eq!(defaults.open_retries, 1);
         assert_eq!(defaults.max_transparent_retries, 2);
         assert_eq!(defaults.max_errors, 5);
 
-        let disabled = resolve_stream_retry_limits(Some(0), Some(0), Some(0));
+        let disabled = resolve_stream_retry_limits(Some(0), Some(0), Some(0), Some(0));
         assert_eq!(disabled.max_resumes, 0, "0 disables resumes");
+        assert_eq!(
+            disabled.open_retries, 0,
+            "0 disables header-timeout retries"
+        );
         assert_eq!(disabled.max_transparent_retries, 0);
         assert_eq!(
             disabled.max_errors, DEFAULT_STREAM_MAX_ERRORS,
             "0 selects the error-streak default, like the other finite stream budgets"
         );
         assert_eq!(
-            resolve_stream_retry_limits(None, None, Some(1)).max_errors,
+            resolve_stream_retry_limits(None, None, Some(1), None).max_errors,
             MIN_STREAM_MAX_ERRORS
         );
 
-        let huge = resolve_stream_retry_limits(Some(u32::MAX), Some(u32::MAX), Some(u32::MAX));
+        let huge = resolve_stream_retry_limits(
+            Some(u32::MAX),
+            Some(u32::MAX),
+            Some(u32::MAX),
+            Some(u32::MAX),
+        );
         assert_eq!(huge.max_resumes, MAX_STREAM_MAX_RESUMES);
+        assert_eq!(huge.open_retries, MAX_STREAM_OPEN_RETRIES);
         assert_eq!(
             huge.max_transparent_retries,
             MAX_STREAM_MAX_TRANSPARENT_RETRIES

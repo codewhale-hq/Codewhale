@@ -678,9 +678,8 @@ fn fixture(uses_server: bool) -> Fixture {
     let owner = begin(&mut registry, "a");
     let other = begin(&mut registry, "b");
     drop(registry);
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path().to_path_buf();
-    std::mem::forget(dir);
+    let workspace = crate::test_support::test_scratch_dir("codewhale-core-call-tests");
+    std::fs::create_dir_all(&workspace).unwrap();
     std::fs::write(workspace.join("x"), "x").unwrap();
     let mut registry = crate::tools::registry::ToolRegistryBuilder::new()
         .with_file_tools()
@@ -3164,7 +3163,7 @@ async fn dsh_terminal_arm_runs_through_the_gate_in_the_plugins_own_thread_owned_
     assert!(terminal_session::lookup(&workspace, Some("thread-b"), &terminal_id).is_none());
     let receipts = guard_a.receipts().expect("the terminal call is receipted");
     assert_eq!(receipts["total"], 1, "{receipts}");
-    assert!(receipts.to_string().contains("terminal/run"), "{receipts}");
+    assert!(receipts.to_string().contains("terminal_run"), "{receipts}");
 
     terminal_session::get_or_create(
         "thread-a",
@@ -5272,7 +5271,7 @@ async fn dsh_catalog_arm_plans_reviewed_installs_approved_routes_and_a_keyless_b
 
     let _grants = TestGrants::only(&[DshService::Workspace, DshService::Catalog]);
     let mut f = fixture(true);
-    let temp = tempfile::tempdir().unwrap();
+    let temp = codewhale_plugins::test_fixture::PluginTempDir::new().unwrap();
     let workspace = temp.path().join("workspace");
     let user_plugins = temp.path().join("plugins");
     std::fs::create_dir_all(&workspace).unwrap();

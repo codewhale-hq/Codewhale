@@ -930,8 +930,8 @@ async fn plugin_toml_binary_lifecycle_skill_and_stdio_mcp_acceptance() {
     );
 
     submit_tui_command(&mut tui, "call plugin echo");
-    expect_visible(&mut tui, "Do you want to proceed?", "MCP approval prompt");
-    tui.send(keys::key::ch('2'))
+    expect_visible(&mut tui, "✓ Allow", "MCP approval prompt");
+    tui.send(keys::key::ch('a'))
         .expect("approve this reviewed MCP kind for the sealed session");
     wait_for_log(&mut tui, &mcp_log, "started");
     wait_for_log(&mut tui, &mcp_log, "api-key-present:false");

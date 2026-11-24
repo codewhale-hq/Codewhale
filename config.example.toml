@@ -530,6 +530,10 @@ show_whats_new = true
 # human_wait_timeout. 0 or omitted uses 1800; values are clamped to 1..=86400.
 # task_human_wait_cap_seconds = 1800
 #
+# Shell commands a single parallel tool wave may run at once. 0 or omitted
+# uses 4; values above 32 are clamped.
+# max_parallel_shell_exec = 4
+#
 # Bound an interactive approval card's wait (#6101). When the window elapses
 # the card resolves to deny (fail-closed) and the transcript says the bound
 # denied the call; omitted or 0 waits indefinitely.
@@ -1040,13 +1044,13 @@ base_url = "https://api.deepseek.com/beta"
 # Choose which backend the Web tool's search uses. Default is keyless Firecrawl
 # (bounded per-IP quota; `[search] api_key` or FIRECRAWL_API_KEY raises it).
 # Bing and DuckDuckGo HTML scraping need no API key. Tavily, Bocha, Metaso,
-# Baidu, Volcengine, Sofya, Serply and DeepSeek need an api_key; SearXNG needs
-# base_url.
+# Baidu, Volcengine, Sofya, Serply, DeepSeek and SearchApi need an api_key;
+# SearXNG needs base_url.
 # API runtime failures and empty responses visibly degrade through DuckDuckGo
 # then Bing. Missing configuration and network-policy denials fail closed.
 #
 # [search]
-# provider = "firecrawl"   # firecrawl | bing | duckduckgo | tavily | bocha | metaso | searxng | baidu | volcengine | sofya | serply | deepseek
+# provider = "firecrawl"   # firecrawl | bing | duckduckgo | tavily | bocha | metaso | searxng | baidu | volcengine | sofya | serply | deepseek | searchapi
 #                            # firecrawl:  Firecrawl Cloud search, keyless with a bounded per-IP quota
 #                            # duckduckgo: HTML scrape with Bing fallback
 #                            # bing:       HTML scrape, no API key
@@ -1072,9 +1076,12 @@ base_url = "https://api.deepseek.com/beta"
 #                            #             api.deepseek.com/v1/tools/search, needs api_key;
 #                            #             also falls back to the DEEPSEEK_API_KEY env var
 #                            #             (the saved model-provider key is not reused)
+#                            # searchapi:  https://www.searchapi.io — Google organic results
+#                            #             (engine=google) with snippets, needs api_key;
+#                            #             also falls back to the SEARCHAPI_API_KEY env var
 # base_url = "https://search.example/" # optional DuckDuckGo-compatible HTML endpoint;
 #                                      # required SearXNG root or /search endpoint
-# api_key = "YOUR_SEARCH_KEY" # required for tavily, bocha, metaso, baidu, volcengine, sofya, serply and deepseek; optional for firecrawl (raises the keyless quota); unused by searxng
+# api_key = "YOUR_SEARCH_KEY" # required for tavily, bocha, metaso, baidu, volcengine, sofya, serply, deepseek and searchapi; optional for firecrawl (raises the keyless quota); unused by searxng
 #                             # WARNING: treat config.toml like a secret file when
 #                             # storing API keys. Prefer env vars for local smoke tests.
 #
@@ -1091,6 +1098,7 @@ base_url = "https://api.deepseek.com/beta"
 #   VOLCENGINE_API_KEY / VOLCENGINE_ARK_API_KEY / ARK_API_KEY → volcengine key fallback
 #   SOFYA_API_KEY            → sofya key fallback
 #   SERPLY_API_KEY           → serply key fallback
+#   SEARCHAPI_API_KEY        → searchapi key fallback
 #   TAVILY_API_KEY           → tavily autodetect when provider is unset (explicit
 #                              provider = "..." or CODEWHALE_SEARCH_PROVIDER still
 #                              wins; the autodetect is never persisted)
@@ -1185,7 +1193,8 @@ base_url = "https://api.deepseek.com/beta"
 # Model-stream budgets and HTTP transport. `config dump` shows effective values.
 # Legacy [tui] stream_* keys remain fallbacks when a canonical field is absent.
 [stream]
-open_timeout_secs = 45      # response headers, including connect (0 = env/default, 5-300)
+open_timeout_secs = 180     # response headers, including connect (0 = env/default, 5-600)
+open_retries = 1            # re-sends after no response headers arrived in time (0 = off, 0-3)
 chunk_timeout_secs = 900    # per-SSE-chunk idle bound (0 = default, 1-3600)
 max_resumes = 3             # proven pre-dispatch connection recovery (0 = off, 0-10)
 max_transparent_retries = 2 # compatibility value; interrupted streams never reissue

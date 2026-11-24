@@ -141,23 +141,7 @@ fn state_unreachable_reason(error: &anyhow::Error) -> Option<&'static str> {
 }
 
 fn agent_list_event(manager: &SubAgentManager, active_session_id: &str) -> Event {
-    // One clock read shared by every row, so elapsed values in a single
-    // listing are consistent with each other (#5479).
-    let now_ms = crate::tools::subagent::epoch_millis_now();
-    Event::AgentList {
-        owner_session_id: active_session_id.to_string(),
-        agents: manager.list_for_session(active_session_id),
-        coordination: manager.coordination_detail_projection_for_session(
-            active_session_id,
-            None,
-            24,
-        ),
-        queued_follow_ups: manager.queued_follow_up_counts_for_session(active_session_id),
-        roster: crate::agent_roster::build_agent_roster(
-            &manager.list_worker_records_for_session(active_session_id),
-            now_ms,
-        ),
-    }
+    manager.agent_list_event(active_session_id)
 }
 
 /// The `<turn_meta>` line naming the permission posture a turn ran under
@@ -534,12 +518,13 @@ pub struct EngineConfig {
     /// from `[tui].stream_max_duration_secs`. Pre-R1 this was the hard-coded
     /// `DEFAULT_STREAM_MAX_DURATION_SECS`.
     pub stream_max_duration: Duration,
-    /// Proven pre-dispatch open retries from `[tui].stream_max_resumes`.
+    /// Proven pre-dispatch open retries from `[stream].max_resumes` and
+    /// response-header-timeout retries from `[stream].open_retries`.
     /// The parsed max_transparent_retries/max_errors values are inactive
     /// compatibility fields and cannot authorize an inference POST replay.
     pub stream_retry_limits: turn_budget::StreamRetryLimits,
     /// Bounded wait for SSE response headers (#6700). Resolved from
-    /// `[tui].stream_open_timeout_secs`, then
+    /// `[stream].open_timeout_secs`, then
     /// `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`; only the awaiting-model
     /// heartbeat bound reads it here — the client owns the real timeout.
     pub stream_open_timeout: Duration,
@@ -1721,6 +1706,16 @@ impl Engine {
                     reason,
                 })
                 .await;
+        }
+        if crate::core::turn::take_snapshots_resumed_notice(
+            &self.session.workspace,
+            Some(&self.session.id),
+        ) {
+            let line = crate::core::turn::snapshots_resumed_line(
+                &self.session.workspace,
+                codewhale_localization::resolve_locale(&self.config.locale_tag),
+            );
+            let _ = self.send_event(Event::status(line)).await;
         }
     }
 
@@ -6636,14 +6631,15 @@ impl Engine {
             runtime.reasoning_effort = route.reasoning_effort.clone();
             runtime.reasoning_effort_auto = route.reasoning_effort_auto;
             runtime.mcp_pool = mcp_pool.clone();
-            child
-                .authority
-                .tool_registry_builder(
-                    runtime,
-                    self.config.todos.clone(),
-                    self.config.plan_state.clone(),
-                )
-                .with_dynamic_tools(dynamic_tools)
+            let mut builder = child.authority.tool_registry_builder(
+                runtime,
+                self.config.todos.clone(),
+                self.config.plan_state.clone(),
+            );
+            if let Some(pool) = mcp_pool.as_ref() {
+                builder = builder.with_mcp_tools(Arc::clone(pool)).await;
+            }
+            builder.with_dynamic_tools(dynamic_tools)
         } else {
             self.build_turn_tool_registry_builder_for_route(
                 input_policy.mode,
@@ -7017,6 +7013,9 @@ impl Engine {
         let capability = route.capability_profile();
         let always_load = self.effective_tools_always_load();
         self.turn_tool_surface_budget = Some(capability.tool_surface_budget);
+        if !self.lsp_manager.config().enabled {
+            tool_registry.remove_tool("lsp");
+        }
         if self.child_host.is_some() {
             tool_registry.remove_tool("create_goal");
             tool_registry.remove_tool("update_goal");
@@ -8944,6 +8943,9 @@ impl Engine {
         .with_shell_policy(authority.shell_policy())
         .with_trusted_external_paths(trusted_external_paths)
         .with_follow_symlinks(self.config.workspace_follow_symlinks);
+        if self.lsp_manager.config().enabled {
+            ctx = ctx.with_lsp_manager(Arc::clone(&self.lsp_manager));
+        }
         ctx.acp_host = self.is_acp_turn().then_some(authority.mode);
         ctx.disallowed_tools = self.config.disallowed_tools.clone().unwrap_or_default();
         ctx.persist_services_enabled = self.config.runtime_services.persist_services_enabled;
@@ -10128,6 +10130,32 @@ impl Engine {
             }
         };
 
+        let reloaded = pool.lock().await.reload_if_config_changed().await;
+        match reloaded {
+            Ok(true) => {
+                if let Some(previous) = self.mcp_boot_task.take() {
+                    previous.abort();
+                }
+                self.mcp_boot_in_flight = false;
+                self.mcp_boot_generation = None;
+                if let Err(error) = self
+                    .start_mcp_session_boot(McpConnectRefresh::IfChanged)
+                    .await
+                {
+                    tracing::debug!(
+                        "MCP session boot after config change failed: {}",
+                        crate::mcp::format_mcp_error_for_display(&error)
+                    );
+                }
+                self.session.pending_prefix_change_reason = Some("mcp-session-boot".to_string());
+            }
+            Ok(false) => {}
+            Err(error) => tracing::debug!(
+                "MCP config reload failed: {}",
+                crate::mcp::format_mcp_error_for_display(&error)
+            ),
+        }
+
         if self.mcp_boot_in_flight {
             // Optional servers are still connecting in the background. Snapshot
             // currently-ready tools so the first LLM call is not serialized
@@ -10975,9 +11003,8 @@ impl Engine {
             self.emit_session_updated().await;
         }
         for body in notices {
-            self.add_session_message(self.runtime_text_message_with_turn_metadata(
+            self.add_session_message(crate::runtime_handoff::instruction_notice_runtime_message(
                 body,
-                crate::core::ops::UserInputProvenance::Runtime,
             ))
             .await;
         }
@@ -12460,10 +12487,13 @@ pub use context::compact_tool_result_for_route_with_window;
 /// Public so external hosts/wrappers can reuse the engine's input-budget math
 /// (see `context_input_budget_for_route`'s doc) instead of re-deriving it.
 pub use context::context_input_budget_for_route;
+pub(crate) use context::filter_messages_mcp_server_instructions;
 #[cfg(test)]
 use context::route_context_budget_for_provider;
 #[cfg(test)]
 use context::route_context_budget_for_route;
+#[cfg(test)]
+pub use context::tool_result_context_view;
 use context::{
     MAX_CONTEXT_RECOVERY_ATTEMPTS, context_overflow_exhausted_message,
     extract_compaction_summary_prompt, is_context_length_error_message,
@@ -12496,6 +12526,14 @@ pub use dispatch::content_without_approval_note;
 pub use token_estimate_cache::TokenEstimateCache;
 
 pub(super) const MAX_PARALLEL_SHELL_EXEC: usize = 4;
+pub(super) const MAX_PARALLEL_SHELL_EXEC_CAP: usize = 32;
+
+pub(super) fn resolve_max_parallel_shell_exec(configured: Option<usize>) -> usize {
+    configured
+        .filter(|&value| value > 0)
+        .unwrap_or(MAX_PARALLEL_SHELL_EXEC)
+        .min(MAX_PARALLEL_SHELL_EXEC_CAP)
+}
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn default_active_native_tool_names() -> &'static [&'static str] {

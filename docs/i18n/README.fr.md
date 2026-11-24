@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:a3f7ac7d7dc2 -->
+<!-- source: README.md sha256:8f9ce64ce19c -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ Cette commande installe la dernière version sur macOS ou Linux, et elle ne dema
 
 <sub>Cette traduction est un brouillon automatique qui n'a pas encore été relu par un locuteur natif.</sub>
 
-<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale dans un terminal après une vraie tâche avec gemini-4-hydrogen. Il a lancé python3 -m unittest -v test_ls.py, 2 tests passent, et il indique avoir ajouté une option --json à ls.py avec argparse. La ligne d’état affiche accept edits et gemini-4-hydrogen.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale dans un terminal après une vraie tâche avec deepseek-flash. Il a lancé python3 -m unittest -v test_ls.py, 2 tests passent, et il indique avoir ajouté une option --json à ls.py. La ligne d’état affiche accept edits et deepseek-flash.">
 
-<sub>Une vraie session sur une version de développement de la 0.10.3 : gemini-4-hydrogen, via l’API de Google, a écrit la modification, et vous avez autorisé une fois le lancement des tests.</sub>
+<sub>Une vraie session sur une version de développement de la 0.10.3 : deepseek-flash, via l’API de DeepSeek, a écrit la modification, et vous avez autorisé une fois le lancement des tests.</sub>
 
 </div>
 
@@ -96,11 +96,9 @@ L’application de terminal, `exec`, `web` et la Runtime API partagent un même 
 
 ## Comment il reste sûr
 
-Deux réglages disent ce que Codewhale peut faire sans demander. Quand la saisie est vide, `Tab` change de mode : **Plan** lit et cherche mais ne change rien, **Work** modifie des fichiers et exécute des commandes, et **Operate** a les mêmes accès que Work et continue jusqu’à ce que l’objectif soit vérifié ou qu’il ait besoin de vous. `Shift+Tab` change la permission. **Ask**, par défaut, applique les modifications de fichiers de votre dépôt sans demander et demande avant les commandes shell qui ne font pas que lire. **Auto-Review** laisse des règles et un modèle relecteur approuver les appels courants et refuse ceux à haut risque ; passez en Ask pour les approuver vous-même. **Full Access** ne demande jamais et désactive le bac à sable de Codewhale, mais les règles du dépôt et la politique gérée s’appliquent toujours. Le [guide de v0.10.2](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md) donne les détails.
+Un seul sélecteur dit ce que Codewhale peut faire sans demander. `Shift+Tab` le fait avancer : **Ask → Accept Edits → Plan → Auto-Review → Full Access**. **Accept Edits**, par défaut, applique les modifications de fichiers dans le dépôt git sans demander et demande avant les commandes. **Ask** demande avant chaque modification de fichier et chaque commande. **Plan** lit et cherche mais ne change rien. **Auto-Review** laisse des règles et un modèle relecteur approuver les appels courants et refuse ceux à haut risque ; passez en Ask pour les approuver vous-même. **Full Access** ne demande jamais et désactive le bac à sable de Codewhale, mais les règles du dépôt et la politique gérée s’appliquent toujours. `Tab` sert uniquement à compléter et ne change jamais de mode, et Operate est retiré. Le [guide des modes](../MODES.md) donne les détails.
 
-À venir dans 0.10.3 : `Shift+Tab` devient un seul sélecteur qui passe par Ask, Accept Edits, Plan, Auto-Review et Full Access, `Tab` ne change plus de mode et Operate est retiré. Ask demandera aussi avant chaque modification de fichier, et le nouveau réglage par défaut, Accept Edits, appliquera les modifications dans le dépôt git tout en demandant avant les commandes. Le [guide actuel](../MODES.md) le décrit.
-
-En Ask et en Auto-Review, les commandes tournent dans un bac à sable du système quand il en existe un : Seatbelt sur macOS, et bubblewrap sur Linux quand il est installé. Windows n’a pas encore de bac à sable système, et Full Access désactive le bac à sable. Dans le bac à sable, les commandes shell et les sessions de terminal ne peuvent pas lire les magasins d’identifiants comme `~/.ssh`, `~/.aws` et les fichiers `.env`. `/preview-request` affiche un aperçu expurgé de la prochaine requête sans l’envoyer.
+En Ask, en Accept Edits et en Auto-Review, les commandes tournent dans un bac à sable du système quand il en existe un : Seatbelt sur macOS, et bubblewrap sur Linux quand il est installé. Windows n’a pas encore de bac à sable système, et Full Access désactive le bac à sable. Dans le bac à sable, les commandes shell et les sessions de terminal ne peuvent pas lire les magasins d’identifiants comme `~/.ssh`, `~/.aws` et les fichiers `.env`. `/preview-request` affiche un aperçu expurgé de la prochaine requête sans l’envoyer.
 
 Vous n’avez besoin d’aucun compte, et les clés ajoutées avec `/provider` restent sur votre machine. Avec votre propre clé d’API, vous payez directement le fournisseur, et les modèles locaux n’ont pas besoin de clé. Le pied de page et `/cost` indiquent ce qu’une session a coûté quand le prix est connu ; un prix inconnu est affiché comme inconnu, jamais comme gratuit.
 

@@ -53,6 +53,10 @@ pub struct IntrinsicModel {
     #[serde(default)]
     pub reasoning: Option<bool>,
     #[serde(default)]
+    pub thought_signatures_required: Option<bool>,
+    #[serde(default)]
+    pub thinking_can_disable: Option<bool>,
+    #[serde(default)]
     pub family: Option<ModelFamily>,
     #[serde(default)]
     pub display_name: Option<String>,
@@ -71,14 +75,11 @@ pub struct IntrinsicModel {
     pub source: String,
 }
 
-/// Exact provider-scoped selector aliases. Their order preserves the released
-/// first-match contract. These rows do not assert live account availability.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSelection {
     pub provider: String,
     pub id: String,
-    pub aliases: Vec<String>,
     pub supports_tools: bool,
     pub supports_reasoning: bool,
 }
@@ -219,7 +220,6 @@ impl ReviewedCatalog {
                 || provider.is_none_or(|p| {
                     p.as_str() != row.provider || p == crate::ProviderKind::Antigravity
                 })
-                || row.aliases.iter().any(|s| !identifier(s))
             {
                 return Err(format!(
                     "malformed provider selector {}/{}",
@@ -315,6 +315,15 @@ pub fn bundled_reviewed() -> &'static ReviewedCatalog {
 /// Never examine the process's live/custom/account catalog here.
 #[must_use]
 pub fn intrinsic_model(model: &str) -> Option<IntrinsicModel> {
+    let id = model.trim().to_ascii_lowercase();
+    if let Some(reg) = crate::cloud_facts::overlay::pulled_registry()
+        && let Some(mut pulled) = reg.compiled.intrinsic_models.get(&id).cloned()
+    {
+        if let Some(bundled) = intrinsic_model_in(super::bundled_models_dev_catalog(), model) {
+            fill_missing(&mut pulled, &bundled);
+        }
+        return Some(pulled);
+    }
     intrinsic_model_in(super::bundled_models_dev_catalog(), model)
 }
 
@@ -328,6 +337,14 @@ pub fn intrinsic_model_in(catalog: &ModelsDevCatalog, model: &str) -> Option<Int
         .find(|(key, _)| key.eq_ignore_ascii_case(&id))
         .map(|(_, row)| row);
     let mut result = reviewed.cloned().or_else(|| canonical.map(from_canonical));
+    if let Some(base) = result
+        .as_ref()
+        .and_then(|row| row.canonical_id.as_deref())
+        .and_then(|base| catalog.reviewed.intrinsic.get(&base.to_ascii_lowercase()))
+        && let Some(row) = &mut result
+    {
+        fill_missing(row, base);
+    }
     if let Some(canonical) = canonical {
         let canonical = from_canonical(canonical);
         if let Some(row) = &mut result {
@@ -402,7 +419,7 @@ fn consensus<T: Copy + PartialEq>(values: impl IntoIterator<Item = T>) -> Option
     values.all(|value| value == first).then_some(first)
 }
 
-fn from_canonical(row: &ModelsDevModel) -> IntrinsicModel {
+pub(crate) fn from_canonical(row: &ModelsDevModel) -> IntrinsicModel {
     IntrinsicModel {
         canonical_id: (!row.id.is_empty()).then(|| row.id.clone()),
         context_window: row
@@ -435,14 +452,26 @@ fn from_canonical(row: &ModelsDevModel) -> IntrinsicModel {
     }
 }
 
-fn fill_missing(row: &mut IntrinsicModel, other: &IntrinsicModel) {
+pub(crate) fn fill_missing(row: &mut IntrinsicModel, other: &IntrinsicModel) {
     row.context_window = row.context_window.or(other.context_window);
     row.max_output = row.max_output.or(other.max_output);
     row.reasoning = row.reasoning.or(other.reasoning);
+    row.thought_signatures_required = row
+        .thought_signatures_required
+        .or(other.thought_signatures_required);
+    row.thinking_can_disable = row.thinking_can_disable.or(other.thinking_can_disable);
     row.family = row.family.or(other.family);
     if row.display_name.is_none() {
         row.display_name.clone_from(&other.display_name);
     }
+}
+
+#[must_use]
+pub fn selection_supports_reasoning(provider: &str, model: &str) -> bool {
+    let trimmed = model.trim();
+    bundled_reviewed().selections.iter().any(|row| {
+        row.supports_reasoning && row.provider == provider && row.id.eq_ignore_ascii_case(trimmed)
+    })
 }
 
 /// Exact public bundled identifiers only. Live/private/configured model IDs
@@ -587,8 +616,8 @@ mod tests {
     fn reviewed_selection_and_transport_preserve_separate_scopes() {
         let reviewed = bundled_reviewed();
         reviewed.validate().expect("committed data");
-        assert_eq!(reviewed.selections.len(), 189);
-        assert_eq!(reviewed.transports.len(), 123);
+        assert_eq!(reviewed.selections.len(), 190);
+        assert_eq!(reviewed.transports.len(), 112);
         let go = reviewed_transport("opencode-go", "gpt-5.6-luna").unwrap();
         assert_eq!(go.endpoint_key, "responses");
         assert_eq!(
@@ -631,7 +660,6 @@ mod tests {
             selections: vec![ModelSelection {
                 provider: "minimax-anthropic".into(),
                 id: "MiniMax-M3".into(),
-                aliases: vec![],
                 supports_tools: true,
                 supports_reasoning: true,
             }],

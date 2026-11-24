@@ -523,7 +523,7 @@ fn catalog_layer_15_patches_sit_between_models_dev_and_provider_live() {
 /// mid-sequence invalidates that test's ticket. Every overlay test holds this.
 static OVERLAY_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn overlay_test_guard() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn overlay_test_guard() -> std::sync::MutexGuard<'static, ()> {
     OVERLAY_TESTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

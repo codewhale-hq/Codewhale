@@ -839,6 +839,8 @@ impl App {
             dispatch_cancel: None,
             last_enter_instant: None,
             last_clipboard_paste: None,
+            pending_paste: None,
+            paste_shortcut_press_seen: false,
             provider_wait_incident_logged: false,
             prompt_suggestion: None,
             notification_settings: config.notifications_config(),
@@ -942,6 +944,7 @@ impl App {
             ambient_clock_ms: 0,
             ambient_clock_sampled_at: None,
             ambient_idle_since: None,
+            ambient_life_held_ms: None,
             ocean_completion_started_at: None,
             ocean_turn_history_start: 0,
             ocean_receipt_settle_start: None,
@@ -985,6 +988,9 @@ impl App {
             sessions_rail: settings.sessions_rail,
             tool_collapse_threshold: 3,
             expanded_tool_runs: HashSet::new(),
+            turn_work_durations: HashMap::new(),
+            turn_durations_revision: 0,
+            active_turn_user_index: None,
             tool_collapse_mode: ToolCollapseMode::from_setting(&settings.tool_collapse_mode),
             file_tree: None,
             file_tree_visible: false,
@@ -1125,6 +1131,7 @@ impl App {
             mcp_snapshot_generation: 0,
             mcp_snapshot_generation_invalidated: false,
             mcp_connecting,
+            mcp_announced_problems: std::collections::BTreeMap::new(),
             // Read the MCP config once at boot to know how many servers
             // the user has declared. The footer chip uses this even when
             // no live snapshot is available (#502). Cheap (just reads
@@ -1149,7 +1156,7 @@ impl App {
             agent_roster_print_requested: false,
             active_tool_entry_completed_at: HashMap::new(),
             exploring_entries: HashMap::new(),
-            ignored_tool_calls: HashSet::new(),
+            ignored_tool_calls: HashMap::new(),
             last_exec_wait_command: None,
             streaming_message_index: None,
             streaming_source_receipt: None,

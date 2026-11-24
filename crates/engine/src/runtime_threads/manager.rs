@@ -218,54 +218,110 @@ fn agent_mail_address(owner_id: &str, thread: &ThreadRecord) -> Result<AgentMail
     Ok(address)
 }
 
+fn ascii_starts_with_ignore_case(value: &str, prefix: &[u8]) -> bool {
+    value
+        .as_bytes()
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+}
+
+fn ascii_contains_ignore_case(haystack: &str, needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
+fn normalized_key_ends_with(name: &str, suffix: &[u8]) -> bool {
+    let bytes = name.as_bytes();
+    if bytes.len() < suffix.len() {
+        return false;
+    }
+    bytes[bytes.len() - suffix.len()..]
+        .iter()
+        .zip(suffix)
+        .all(|(&actual, &expected)| {
+            let normalized = if actual == b'-' {
+                b'_'
+            } else {
+                actual.to_ascii_lowercase()
+            };
+            normalized == expected
+        })
+}
+
 pub(super) fn agent_mail_token_is_credential(token: &str) -> bool {
     let trimmed = token
         .trim_matches(|ch: char| ch.is_ascii_punctuation() && !matches!(ch, '_' | '-' | '=' | ':'));
-    let lower = trimmed.to_ascii_lowercase();
     if [
-        "sk-",
-        "sk_",
-        "rk-",
-        "pk-",
-        "ghp_",
-        "gho_",
-        "ghu_",
-        "ghs_",
-        "github_pat_",
-        "xoxb-",
-        "xoxp-",
-        "xoxa-",
-        "akia",
-        "aiza",
-        "eyj",
+        b"sk-".as_slice(),
+        b"sk_",
+        b"rk-",
+        b"pk-",
+        b"ghp_",
+        b"gho_",
+        b"ghu_",
+        b"ghs_",
+        b"github_pat_",
+        b"xoxb-",
+        b"xoxp-",
+        b"xoxa-",
+        b"akia",
+        b"aiza",
+        b"eyj",
     ]
     .iter()
-    .any(|prefix| lower.starts_with(prefix))
+    .any(|prefix| ascii_starts_with_ignore_case(trimmed, prefix))
     {
         return true;
     }
-    let Some((name, _)) = lower.split_once(['=', ':']) else {
+    let Some((name, _)) = trimmed.split_once(['=', ':']) else {
         return false;
     };
-    let normalized = name.replace('-', "_");
-    normalized.ends_with("api_key")
-        || normalized.ends_with("token")
-        || normalized.ends_with("secret")
-        || normalized.ends_with("password")
-        || normalized.ends_with("passwd")
+    [
+        b"api_key".as_slice(),
+        b"token",
+        b"secret",
+        b"password",
+        b"passwd",
+    ]
+    .iter()
+    .any(|suffix| normalized_key_ends_with(name, suffix))
+}
+
+async fn runtime_receipt_locale() -> codewhale_localization::Locale {
+    #[cfg(any(test, feature = "test-support"))]
+    let ticket = crate::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = crate::test_support::join_env_scope(ticket);
+        codewhale_localization::resolve_locale(
+            &codewhale_runtime::settings::Settings::load()
+                .unwrap_or_default()
+                .locale,
+        )
+    })
+    .await
+    .unwrap_or(codewhale_localization::Locale::En)
 }
 
 pub(super) fn sanitize_agent_mail_text(raw: &str, max_bytes: usize) -> String {
     let mut out = String::new();
     let mut redact_next_credential = false;
     for token in raw.split_whitespace() {
-        let lower = token.to_ascii_lowercase();
+        if out.len() >= max_bytes {
+            break;
+        }
         let replacement = if redact_next_credential || agent_mail_token_is_credential(token) {
             redact_next_credential = false;
             "[redacted-credential]"
-        } else if matches!(lower.as_str(), "bearer" | "basic" | "digest" | "apikey")
-            || lower.contains("authorization:")
-            || lower.contains("proxy-authorization:")
+        } else if ["bearer", "basic", "digest", "apikey"]
+            .iter()
+            .any(|scheme| token.eq_ignore_ascii_case(scheme))
+            || ascii_contains_ignore_case(token, b"authorization:")
         {
             redact_next_credential = true;
             "[redacted-credential]"
@@ -304,30 +360,35 @@ pub(super) fn sanitize_agent_mail_text(raw: &str, max_bytes: usize) -> String {
             break;
         }
     }
-    out.trim().to_string()
+    let trimmed_len = out.trim_end().len();
+    out.truncate(trimmed_len);
+    out
 }
 
 pub(super) fn agent_mail_looks_like_raw_transcript(raw: &str) -> bool {
-    let lower = raw.to_ascii_lowercase();
     if [
-        "<turn_meta>",
-        "<assistant",
-        "<tool_result",
-        "\"messages\":",
-        "\"role\":\"assistant\"",
-        "\"role\": \"assistant\"",
+        b"<turn_meta>".as_slice(),
+        b"<assistant",
+        b"<tool_result",
+        b"\"messages\":",
+        b"\"role\":\"assistant\"",
+        b"\"role\": \"assistant\"",
     ]
     .iter()
-    .any(|marker| lower.contains(marker))
+    .any(|marker| ascii_contains_ignore_case(raw, marker))
     {
         return true;
     }
-    lower.lines().any(|line| {
+    raw.lines().any(|line| {
         let line = line.trim_start();
-        line.starts_with("assistant:")
-            || line.starts_with("system:")
-            || line.starts_with("tool:")
-            || line.starts_with("tool_result:")
+        [
+            b"assistant:".as_slice(),
+            b"system:",
+            b"tool:",
+            b"tool_result:",
+        ]
+        .iter()
+        .any(|prefix| ascii_starts_with_ignore_case(line, prefix))
     })
 }
 
@@ -826,6 +887,23 @@ fn item_terminal_event(status: TurnItemLifecycleStatus) -> &'static str {
         | TurnItemLifecycleStatus::InProgress
         | TurnItemLifecycleStatus::Completed => "item.completed",
     }
+}
+
+fn legacy_session_checkpoint(
+    messages: &[Message],
+    turns: &[TurnRecord],
+    covered: usize,
+) -> Result<SavedSessionCheckpoint> {
+    Ok(SavedSessionCheckpoint {
+        publication_observation: None,
+        covered_turn_id: covered
+            .checked_sub(1)
+            .and_then(|index| turns.get(index))
+            .map(|turn| turn.id.clone()),
+        messages_sha256: session_messages_sha256(messages)?,
+        messages_len: Some(messages.len()),
+        retained_messages: None,
+    })
 }
 
 pub(super) fn thread_execution_state_matches(left: &ThreadRecord, right: &ThreadRecord) -> bool {
@@ -1494,6 +1572,8 @@ pub enum ThreadListFilter {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CreateThreadRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_selection: Option<crate::model_inventory::RouteSelection>,
     #[serde(default, alias = "operationKey")]
     pub operation_key: Option<String>,
     pub model: Option<String>,
@@ -1569,6 +1649,8 @@ pub struct CreateThreadExecutorConfig {
 /// having to recreate a thread or pass per-turn overrides on every send.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UpdateThreadRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_selection: Option<crate::model_inventory::RouteSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_workspace: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1807,6 +1889,36 @@ pub(super) fn canonical_runtime_reasoning_effort(value: Option<&str>) -> Result<
 #[derive(Debug, thiserror::Error)]
 #[error("operation_key already binds a different thread creation request")]
 pub struct RuntimeThreadCreateConflict;
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Route selection changed or is unavailable. Refresh the model list and reselect the route."
+)]
+pub struct RuntimeThreadCreateRouteConflict;
+
+fn admit_exact_thread_create_route(
+    config: &Config,
+    thread: &mut ThreadRecord,
+    selection: &crate::model_inventory::RouteSelection,
+) -> Result<()> {
+    let identity = config
+        .resolve_persisted_provider_identity(
+            thread.model_provider.as_deref(),
+            thread.model_provider_id.as_deref(),
+        )
+        .map_err(|_| RuntimeThreadCreateRouteConflict)?;
+    let resolved = crate::model_inventory::resolve_inventory_selection(
+        config,
+        &identity,
+        &thread.model,
+        selection,
+    )
+    .map_err(|_| RuntimeThreadCreateRouteConflict)?;
+    thread.model = resolved.candidate.wire_model_id().as_str().to_string();
+    thread.model_provider = Some(resolved.identity.persisted_kind().to_string());
+    thread.model_provider_id = resolved.identity.persisted_id().map(str::to_string);
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct PreparedRuntimeTurnOperation {
@@ -2211,7 +2323,17 @@ pub struct ActiveTurn {
     pub status: RuntimeTurnStatus,
 }
 
-/// One thread with at least one [`ActiveTurn`]. Archive state is ignored:
+#[derive(Debug, Clone, Serialize)]
+pub struct ActiveJob {
+    pub job_id: String,
+    pub background: bool,
+    pub last_progress_at: DateTime<Utc>,
+    #[serde(flatten)]
+    pub hold: Option<crate::tools::shell::ShellJobHold>,
+}
+
+/// One thread with at least one [`ActiveTurn`] or one owner-held
+/// [`ActiveJob`]. Archive state is ignored:
 /// archiving is a plain flag with no quiescence gate, so an archived thread
 /// can still carry live work and quit-accounting must count it.
 #[derive(Debug, Clone, Serialize)]
@@ -2220,6 +2342,9 @@ pub struct RunningThread {
     pub model: String,
     pub title: Option<String>,
     pub active_turns: Vec<ActiveTurn>,
+    pub active_jobs: Vec<ActiveJob>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_progress_at: Option<DateTime<Utc>>,
 }
 
 /// The per-row facts `GET /v1/threads/summary` cannot read off a
@@ -3081,6 +3206,7 @@ pub(super) struct ActiveThreads {
 }
 
 pub(super) struct NativeForkSource {
+    pub(super) verified_checkpoint: Option<SavedSessionCheckpoint>,
     pub(super) sessions_dir: PathBuf,
     pub(super) session: Option<crate::session_manager::SavedSession>,
     pub(super) goal: Option<crate::session_manager::SessionGoalState>,
@@ -3089,6 +3215,7 @@ pub(super) struct NativeForkSource {
 
 pub struct PreparedThreadFork {
     pub(super) source_id: String,
+    pub(super) source_snapshot: ThreadRecord,
     /// The first turn the fork *drops*, when it drops any: the turn whose
     /// prompt the receipt hands back. `None` for a fork that keeps the whole
     /// conversation (a branch point at the last turn).
@@ -3571,6 +3698,8 @@ pub struct RuntimeThreadManager {
         Arc<parking_lot::Mutex<HashMap<String, crate::cost_status::NativeUsageOrigin>>>,
     /// Session approval grants per thread id.
     pub(super) grants: crate::core::authority::grants::GrantStore,
+    pub(super) provider_health:
+        Arc<parking_lot::Mutex<crate::provider_readiness::ProviderReadinessSnapshot>>,
     pub(super) auto_review_blocks: Arc<
         parking_lot::Mutex<
             HashMap<String, Vec<crate::core::authority::auto_review::AutoReviewBlockedAction>>,
@@ -3593,6 +3722,9 @@ pub struct RuntimeThreadManager {
     snapshot_test_hook: Arc<parking_lot::Mutex<Option<mpsc::UnboundedSender<SnapshotTestPoint>>>>,
     #[cfg(any(test, feature = "test-support"))]
     update_admission_test_hook:
+        Arc<parking_lot::Mutex<Option<mpsc::UnboundedSender<oneshot::Sender<()>>>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fork_prepare_test_hook:
         Arc<parking_lot::Mutex<Option<mpsc::UnboundedSender<oneshot::Sender<()>>>>>,
     #[cfg(any(test, feature = "test-support"))]
     replay_test_hook: Arc<parking_lot::Mutex<Option<mpsc::UnboundedSender<ReplayTestPoint>>>>,
@@ -4623,6 +4755,7 @@ impl RuntimeThreadManager {
             pending_approvals: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             turn_accounting_origins: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             grants,
+            provider_health: Arc::default(),
             auto_review_blocks: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             pending_user_inputs: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             pending_dynamic_tools: Arc::new(parking_lot::Mutex::new(HashMap::new())),
@@ -4635,6 +4768,8 @@ impl RuntimeThreadManager {
             snapshot_test_hook: Arc::new(parking_lot::Mutex::new(None)),
             #[cfg(any(test, feature = "test-support"))]
             update_admission_test_hook: Arc::new(parking_lot::Mutex::new(None)),
+            #[cfg(any(test, feature = "test-support"))]
+            fork_prepare_test_hook: Arc::new(parking_lot::Mutex::new(None)),
             #[cfg(any(test, feature = "test-support"))]
             replay_test_hook: Arc::new(parking_lot::Mutex::new(None)),
             #[cfg(any(test, feature = "test-support"))]
@@ -4740,6 +4875,44 @@ impl RuntimeThreadManager {
                 .to_path_buf(),
             execution_scope: self.task_execution_identity().0,
         }
+    }
+
+    /// Requests waiting on a decision from outside this process: tool
+    /// approvals, user-input prompts, and client-executed dynamic tools.
+    ///
+    /// These live only in memory (`pending_approvals` and its siblings), so no
+    /// restart recovers them and no store directory lists them. A host that
+    /// drops the threads they belong to leaves every waiter without an owner,
+    /// which is why they must be settled before the store is released.
+    pub fn has_unsettled_requests(&self) -> bool {
+        !self.pending_approvals.lock().is_empty()
+            || !self.pending_user_inputs.lock().is_empty()
+            || !self.pending_dynamic_tools.lock().is_empty()
+    }
+
+    /// Whether this host can let go of the store it currently holds.
+    ///
+    /// This is *not* [`RuntimeStoreBinding::adoption_refusal`]. That predicate
+    /// answers "may a host take this store over?", and a store any host ever
+    /// opened fails it: opening one writes `owner.json`, `state.json` and the
+    /// work directories, so even a store that has never run a turn reports
+    /// `HasDurableWork`. Asking it about the store being left would refuse
+    /// every switch out of a host that merely started.
+    ///
+    /// What makes a store undroppable is work still in flight *in this
+    /// process*: a loaded engine with an active turn, or a request waiting on a
+    /// decision nobody else can answer ([`Self::has_unsettled_requests`]).
+    /// Finished history is not work — it stays on disk for whichever process
+    /// opens the store next, exactly as it would after a clean exit.
+    pub async fn current_store_is_disposable(&self) -> Result<bool> {
+        if self.has_unsettled_requests() {
+            return Ok(false);
+        }
+        let active = self.active.lock().await;
+        Ok(active
+            .engines
+            .values()
+            .all(|state| state.active_turn.is_none()))
     }
 
     pub async fn close_execution_admission(&self) {
@@ -5930,6 +6103,14 @@ impl RuntimeThreadManager {
             json!({ "grant": grant.clone() }),
         )
         .await
+        .inspect_err(|error| {
+            tracing::warn!(
+                target: "approval",
+                thread_id,
+                turn_id,
+                "session grant event was not recorded: {error:#}"
+            );
+        })
         .ok();
         Some(grant)
     }
@@ -7321,6 +7502,7 @@ impl RuntimeThreadManager {
         let pending_approvals = self.pending_approvals.clone();
         let grants = self.grants.clone();
         let auto_review_blocks = self.auto_review_blocks.clone();
+        let provider_health = self.provider_health.clone();
         let pending_user_inputs = self.pending_user_inputs.clone();
         let pending_dynamic_tools = self.pending_dynamic_tools.clone();
         let pending_commands = self.pending_commands.clone();
@@ -7332,6 +7514,8 @@ impl RuntimeThreadManager {
         let snapshot_test_hook = self.snapshot_test_hook.clone();
         #[cfg(any(test, feature = "test-support"))]
         let update_admission_test_hook = self.update_admission_test_hook.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        let fork_prepare_test_hook = self.fork_prepare_test_hook.clone();
         #[cfg(any(test, feature = "test-support"))]
         let replay_test_hook = self.replay_test_hook.clone();
         #[cfg(any(test, feature = "test-support"))]
@@ -7380,6 +7564,7 @@ impl RuntimeThreadManager {
                 turn_accounting_origins: Arc::new(parking_lot::Mutex::new(HashMap::new())),
                 grants: grants.clone(),
                 auto_review_blocks: auto_review_blocks.clone(),
+                provider_health: provider_health.clone(),
                 pending_user_inputs: pending_user_inputs.clone(),
                 pending_dynamic_tools: pending_dynamic_tools.clone(),
                 pending_commands: pending_commands.clone(),
@@ -7391,6 +7576,8 @@ impl RuntimeThreadManager {
                 snapshot_test_hook: snapshot_test_hook.clone(),
                 #[cfg(any(test, feature = "test-support"))]
                 update_admission_test_hook: update_admission_test_hook.clone(),
+                #[cfg(any(test, feature = "test-support"))]
+                fork_prepare_test_hook: fork_prepare_test_hook.clone(),
                 #[cfg(any(test, feature = "test-support"))]
                 replay_test_hook: replay_test_hook.clone(),
                 #[cfg(any(test, feature = "test-support"))]
@@ -8310,6 +8497,24 @@ impl RuntimeThreadManager {
     ) -> Result<ThreadRecord> {
         let now = Utc::now();
         let reasoning_effort = canonical_runtime_reasoning_effort(req.reasoning_effort.as_deref())?;
+        if let Some(selection) = req.route_selection.as_ref() {
+            let exact_field = |value: &str| {
+                !value.is_empty() && value.trim() == value && !value.chars().any(char::is_control)
+            };
+            anyhow::ensure!(
+                req.model_provider.as_deref().is_some_and(exact_field)
+                    && req.model.as_deref().is_some_and(|model| {
+                        exact_field(model) && !model.eq_ignore_ascii_case("auto")
+                    }),
+                "route_selection requires model_provider and an exact model"
+            );
+            anyhow::ensure!(
+                req.model_provider_id.as_deref().is_none_or(exact_field)
+                    && exact_field(&selection.route_id)
+                    && exact_field(&selection.binding_id),
+                "route_selection and model_provider_id must be exact nonempty values"
+            );
+        }
         if let Some(environment) = req.environment.as_ref() {
             return Err(environment.refusal().into());
         }
@@ -8343,6 +8548,7 @@ impl RuntimeThreadManager {
                     req.model.is_none()
                         && req.model_provider.is_none()
                         && req.model_provider_id.is_none()
+                        && req.route_selection.is_none()
                         && req.reasoning_effort.is_none(),
                     "set another agent's model through executor.config.model; Codewhale provider controls are unavailable"
                 );
@@ -8354,49 +8560,53 @@ impl RuntimeThreadManager {
             }
             None => None,
         };
-        let (model_provider, model_provider_id, default_model) =
-            if let Some(record) = executor.as_ref() {
-                (
-                    None,
-                    None,
-                    record
-                        .model
-                        .clone()
-                        .or_else(|| record.agent_name.clone())
-                        .unwrap_or_else(|| record.agent_id.clone()),
-                )
+        let (model_provider, model_provider_id, model) = if let Some(record) = executor.as_ref() {
+            (
+                None,
+                None,
+                record
+                    .model
+                    .clone()
+                    .or_else(|| record.agent_name.clone())
+                    .unwrap_or_else(|| record.agent_id.clone()),
+            )
+        } else if req.route_selection.is_some() {
+            (
+                req.model_provider,
+                req.model_provider_id,
+                req.model
+                    .context("route_selection requires an exact model")?,
+            )
+        } else {
+            let config = self.read_config().clone();
+            let requested_kind = req
+                .model_provider
+                .as_deref()
+                .filter(|provider| !provider.trim().is_empty());
+            let requested_id = req.model_provider_id.as_deref().map(str::trim);
+            let identity = if requested_kind.is_some() || requested_id.is_some() {
+                config.resolve_persisted_provider_identity(requested_kind, requested_id)
             } else {
-                let config = self.read_config().clone();
-                let requested_kind = req
-                    .model_provider
+                config.active_provider_identity()
+            }
+            .map_err(|reason| anyhow!(reason))?;
+            let default_model = resolve_runtime_route_for_identity(
+                &config,
+                &identity,
+                req.model
                     .as_deref()
-                    .filter(|provider| !provider.trim().is_empty());
-                let requested_id = req.model_provider_id.as_deref().map(str::trim);
-                let identity = if requested_kind.is_some() || requested_id.is_some() {
-                    config.resolve_persisted_provider_identity(requested_kind, requested_id)
-                } else {
-                    config.active_provider_identity()
-                }
-                .map_err(|reason| anyhow!(reason))?;
-                let default_model = resolve_runtime_route_for_identity(
-                    &config,
-                    &identity,
-                    req.model
-                        .as_deref()
-                        .filter(|model| !model.trim().is_empty()),
-                )
-                .map_err(|reason| anyhow!(reason))?
-                .model;
-                (
-                    Some(identity.persisted_kind().to_string()),
-                    identity.persisted_id().map(str::to_string),
-                    default_model,
-                )
-            };
-        let model = req
-            .model
-            .filter(|m| !m.trim().is_empty())
-            .unwrap_or(default_model);
+                    .filter(|model| !model.trim().is_empty()),
+            )
+            .map_err(|reason| anyhow!(reason))?
+            .model;
+            (
+                Some(identity.persisted_kind().to_string()),
+                identity.persisted_id().map(str::to_string),
+                req.model
+                    .filter(|model| !model.trim().is_empty())
+                    .unwrap_or(default_model),
+            )
+        };
         let workspace = req.workspace.unwrap_or_else(|| self.workspace.clone());
         let add_dirs = validate_add_dirs(req.add_dirs)?;
         let requested_mode = req
@@ -8442,7 +8652,7 @@ impl RuntimeThreadManager {
             None => None,
         };
         let disallowed_tools = crate::task_manager::normalize_deny_rules(req.disallowed_tools);
-        let thread = ThreadRecord {
+        let mut thread = ThreadRecord {
             schema_version: super::required_thread_schema_version(&disallowed_tools),
             id: match reserved_id {
                 Some(id) => validated_record_id(&id, "reserved history thread id")?.to_string(),
@@ -8477,6 +8687,7 @@ impl RuntimeThreadManager {
             environment: None,
             agent_preset,
         };
+        let route_selection = req.route_selection;
         if let Some(operation_key) = req.operation_key {
             let key_fingerprint = runtime_turn_operation_key_fingerprint(
                 &self.store.owner_id,
@@ -8510,13 +8721,22 @@ impl RuntimeThreadManager {
             if !thread.disallowed_tools.is_empty() {
                 fingerprint_body["disallowed_tools"] = json!(thread.disallowed_tools);
             }
+            if let Some(selection) = route_selection.as_ref() {
+                fingerprint_body["route_selection"] = json!(selection);
+            }
             let request_fingerprint =
                 codewhale_runtime::hashing::sha256_hex(serde_json::to_vec(&fingerprint_body)?);
             let _emit_order = self.event_emit.lock().await;
             let store = self.store.clone();
+            let route_config = Arc::clone(&self.config);
+            #[cfg(any(test, feature = "test-support"))]
+            let env_ticket = crate::test_support::env_scope_ticket();
             let (thread, event) = tokio::task::spawn_blocking(move || {
+                #[cfg(any(test, feature = "test-support"))]
+                let _membership = crate::test_support::join_env_scope(env_ticket);
                 store.with_turn_operation_claim(Some(&key_fingerprint), || {
                     let path = store.thread_create_operation_path(&key_fingerprint)?;
+                    let mut new_binding = false;
                     let mut binding = match read_store_file(&path) {
                         Ok(raw) => {
                             let binding: RuntimeThreadCreateBinding = serde_json::from_str(&raw)?;
@@ -8544,7 +8764,7 @@ impl RuntimeThreadManager {
                                 committed: false,
                             };
                             binding.validate()?;
-                            write_json_atomic(&path, &binding)?;
+                            new_binding = true;
                             binding
                         }
                         Err(error) => return Err(error),
@@ -8555,7 +8775,24 @@ impl RuntimeThreadManager {
                     let started = store
                         .contains_event(&binding.thread_id, &RuntimeEventMatch::ThreadStarted)?;
                     let thread_path = store.thread_path(&binding.thread_id)?;
-                    let thread = if thread_path.try_exists()? {
+                    let thread_exists = thread_path.try_exists()?;
+                    anyhow::ensure!(
+                        route_selection.is_none() || !new_binding || !thread_exists,
+                        "exact route thread creation requires an unused thread id"
+                    );
+                    let config = route_selection
+                        .as_ref()
+                        .filter(|_| !thread_exists)
+                        .map(|_| route_config.read());
+                    if let (Some(config), Some(selection)) =
+                        (config.as_deref(), route_selection.as_ref())
+                    {
+                        admit_exact_thread_create_route(config, &mut thread, selection)?;
+                    }
+                    if new_binding {
+                        write_json_atomic(&path, &binding)?;
+                    }
+                    let thread = if thread_exists {
                         store.load_thread(&binding.thread_id)?
                     } else {
                         anyhow::ensure!(
@@ -8569,6 +8806,7 @@ impl RuntimeThreadManager {
                         store.save_thread(&thread)?;
                         thread
                     };
+                    drop(config);
                     let event = if started {
                         None
                     } else {
@@ -8593,7 +8831,19 @@ impl RuntimeThreadManager {
             }
             return Ok(thread);
         }
-        self.store.save_thread(&thread)?;
+        if let Some(selection) = route_selection {
+            let store = self.store.clone();
+            let route_config = Arc::clone(&self.config);
+            thread = codewhale_runtime::runtime_control::owner_work(move || {
+                let config = route_config.read();
+                admit_exact_thread_create_route(&config, &mut thread, &selection)?;
+                store.save_thread(&thread)?;
+                Ok(thread)
+            })
+            .await?;
+        } else {
+            self.store.save_thread(&thread)?;
+        }
         self.emit_event(
             &thread.id,
             None,
@@ -8643,6 +8893,18 @@ impl RuntimeThreadManager {
 
     pub async fn delete_thread(&self, thread_id: &str) -> Result<ThreadRecord> {
         let _admission = self.session_checkpoint_guard().await;
+        let _session_lease = match self.store.load_thread(thread_id)?.session_id {
+            Some(session_id) => Some(
+                crate::session_manager::SessionManager::new(self.sessions_dir().to_path_buf())?
+                    .reserve_session_for_external_write(&session_id)
+                    .with_context(|| {
+                        format!(
+                            "thread {thread_id}'s saved session is busy (a fork or save is in progress); retry"
+                        )
+                    })?,
+            ),
+            None => None,
+        };
         let mut active = self.active.lock().await;
         if active
             .engines
@@ -8758,8 +9020,8 @@ impl RuntimeThreadManager {
         Ok(threads)
     }
 
-    /// Threads with at least one queued or in-progress turn, for
-    /// running-work accounting (#6180). One turns scan grouped by thread
+    /// Threads with at least one queued or in-progress turn or one running
+    /// owner-held job, for running-work accounting (#6180). One turns scan grouped by thread
     /// (never a scan per thread, #3757), joined against the thread rows in
     /// store order. Archive state is ignored: see [`RunningThread`].
     pub async fn running_threads(&self) -> Result<Vec<RunningThread>> {
@@ -8776,20 +9038,62 @@ impl RuntimeThreadManager {
                     });
             }
         }
-        if active_by_thread.is_empty() {
+        let managers = self.shell_managers_snapshot().await;
+        let mut jobs_by_thread = tokio::task::spawn_blocking(move || {
+            let mut jobs: std::collections::BTreeMap<String, Vec<ActiveJob>> =
+                std::collections::BTreeMap::new();
+            for (thread_id, manager) in managers {
+                let mut guard = manager.lock().unwrap_or_else(|e| e.into_inner());
+                let running: Vec<ActiveJob> = guard
+                    .running_jobs()
+                    .into_iter()
+                    .map(|job| ActiveJob {
+                        job_id: job.job_id,
+                        background: job.background,
+                        last_progress_at: job.last_progress_at,
+                        hold: job.hold,
+                    })
+                    .collect();
+                if !running.is_empty() {
+                    jobs.insert(thread_id, running);
+                }
+            }
+            jobs
+        })
+        .await
+        .context("running job scan failed")?;
+        if active_by_thread.is_empty()
+            && !jobs_by_thread
+                .values()
+                .flatten()
+                .any(|job| job.hold.is_some())
+        {
+            self.store.forget_thread_progress(&HashSet::new());
             return Ok(Vec::new());
         }
         let mut out = Vec::with_capacity(active_by_thread.len());
         for thread in self.store.list_threads()? {
-            if let Some(active_turns) = active_by_thread.remove(&thread.id) {
-                out.push(RunningThread {
-                    thread_id: thread.id.clone(),
-                    model: thread.model.clone(),
-                    title: thread.title.clone(),
-                    active_turns,
-                });
+            let active_turns = active_by_thread.remove(&thread.id).unwrap_or_default();
+            let active_jobs = jobs_by_thread.remove(&thread.id).unwrap_or_default();
+            if active_turns.is_empty() && !active_jobs.iter().any(|job| job.hold.is_some()) {
+                continue;
             }
+            let last_progress_at = active_jobs
+                .iter()
+                .map(|job| job.last_progress_at)
+                .chain(self.store.thread_last_progress_at(&thread.id))
+                .max();
+            out.push(RunningThread {
+                thread_id: thread.id.clone(),
+                model: thread.model.clone(),
+                title: thread.title.clone(),
+                active_turns,
+                active_jobs,
+                last_progress_at,
+            });
         }
+        self.store
+            .forget_thread_progress(&out.iter().map(|thread| thread.thread_id.clone()).collect());
         Ok(out)
     }
 
@@ -8821,9 +9125,13 @@ impl RuntimeThreadManager {
     /// tell it, because an item's filename carries the item id and not its turn.
     /// That pass is the same one every open used to pay. Paid here, while the
     /// Runtime API is starting and no client is waiting, it is paid once
-    /// instead. See [`RuntimeThreadStore::ensure_item_index`].
+    /// instead — and, because this is the deliberate caller, the answer is also
+    /// cached for the next process. See [`RuntimeThreadStore::cache_item_index`].
     pub fn warm_item_index(&self) -> Result<()> {
-        self.store.ensure_item_index()
+        // Cached as well as built: this is the one caller that has decided the
+        // read is worth paying for, so it is also the one that leaves the answer
+        // on disk for the next process instead of paying it again.
+        self.store.cache_item_index()
     }
 
     /// The [`ThreadListFacts`] for every id in `thread_ids`, read in one pass.
@@ -9677,6 +9985,9 @@ impl RuntimeThreadManager {
         // anything is saved, exactly like the TUI's `/provider`: a provider
         // that cannot serve the next turn is refused, not recorded. History
         // stays with the thread; the next turn installs the new route.
+        if req.route_selection.is_some() && req.model_provider.is_none() {
+            bail!("route_selection requires model_provider and an exact model");
+        }
         let provider_switch = {
             let config = self.read_config().clone();
             match requested_provider_identity(
@@ -9685,6 +9996,17 @@ impl RuntimeThreadManager {
                 req.model_provider_id.as_deref(),
             )? {
                 Some(identity) => {
+                    if let Some(selection) = &req.route_selection {
+                        let model = req
+                            .model
+                            .as_deref()
+                            .ok_or_else(|| anyhow!("route_selection requires an exact model"))?;
+                        crate::model_inventory::validate_inventory_selection(
+                            &config, &identity, model, selection,
+                        )
+                        .await
+                        .map_err(anyhow::Error::msg)?;
+                    }
                     let current_model = self.get_thread(id).await?.model;
                     let requested_model = req.model.clone().or_else(|| {
                         current_model
@@ -9734,6 +10056,24 @@ impl RuntimeThreadManager {
                 wait.await
                     .map_err(|_| anyhow!("update admission hook dropped resume"))?;
             }
+        }
+        if let Some(selection) = req.route_selection.clone() {
+            let config = self.read_config().clone();
+            let identity = requested_provider_identity(
+                &config,
+                req.model_provider.as_deref(),
+                req.model_provider_id.as_deref(),
+            )?
+            .ok_or_else(|| anyhow!("route_selection requires an exact provider"))?;
+            let model = req
+                .model
+                .clone()
+                .ok_or_else(|| anyhow!("route_selection requires an exact model"))?;
+            crate::model_inventory::validate_inventory_selection(
+                &config, &identity, &model, &selection,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
         }
         let configured_sandbox_mode = self.read_config().sandbox_mode.clone();
         let (thread, changes, evicted_engine, posture_engine, ended_grants, permission_receipt) = {
@@ -9950,17 +10290,7 @@ impl RuntimeThreadManager {
             } else {
                 None
             };
-            let permission_receipt = policy_patch.map(|policy| {
-                let label = |policy: RuntimePolicyProjection| {
-                    crate::core::authority::permission_label_for(
-                        codewhale_localization::Locale::En,
-                        policy.mode,
-                        policy.permission,
-                    )
-                    .into_owned()
-                };
-                (label(previous_policy), label(policy))
-            });
+            let permission_receipt = policy_patch.map(|policy| (previous_policy, policy));
             // Archiving ends the conversation's session grants: unarchiving
             // later starts from a clean slate and the next call prompts.
             let ended_grants = if changes.get("archived") == Some(&json!(true)) {
@@ -10032,11 +10362,8 @@ impl RuntimeThreadManager {
             .await?;
         }
 
-        if let Some((from, to)) = permission_receipt
-            && from != to
-        {
-            self.publish_permissions_changed(&thread, &from, &to)
-                .await?;
+        if let Some((from, to)) = permission_receipt {
+            self.publish_permissions_changed(&thread, from, to).await?;
         }
 
         Ok(thread)
@@ -10045,14 +10372,26 @@ impl RuntimeThreadManager {
     pub(super) async fn publish_permissions_changed(
         &self,
         thread: &ThreadRecord,
-        from: &str,
-        to: &str,
+        from: RuntimePolicyProjection,
+        to: RuntimePolicyProjection,
     ) -> Result<()> {
+        let label = |locale, policy: RuntimePolicyProjection| {
+            crate::core::authority::permission_label_for(locale, policy.mode, policy.permission)
+                .into_owned()
+        };
+        let english_from = label(codewhale_localization::Locale::En, from);
+        let english_to = label(codewhale_localization::Locale::En, to);
+        if english_from == english_to {
+            return Ok(());
+        }
+        let receipt_locale = runtime_receipt_locale().await;
+        let localized_to = label(receipt_locale, to);
+        let (from, to) = (english_from, english_to);
         let message = codewhale_localization::tr(
-            codewhale_localization::Locale::En,
+            receipt_locale,
             codewhale_localization::MessageId::PermissionsChangedReceipt,
         )
-        .replace("{label}", to);
+        .replace("{label}", &localized_to);
         if let Some(turn_id) = thread.latest_turn_id.as_deref() {
             let item = TurnItemRecord {
                 schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
@@ -11102,8 +11441,23 @@ impl RuntimeThreadManager {
             } else {
                 (None, None, None, None)
             };
+            let verified_checkpoint = match (&source.saved_session_checkpoint, &session, &prefix) {
+                (Some(checkpoint), Some(session), _) => {
+                    let mut checkpoint = checkpoint.clone();
+                    checkpoint.messages_len =
+                        checkpoint_prefix_len(&checkpoint, &session.messages)?;
+                    Some(checkpoint)
+                }
+                (None, Some(session), Some((_, covered))) => Some(legacy_session_checkpoint(
+                    &session.messages,
+                    &turns,
+                    *covered,
+                )?),
+                _ => source.saved_session_checkpoint.clone(),
+            };
             Ok((
                 NativeForkSource {
+                    verified_checkpoint,
                     sessions_dir,
                     session,
                     goal,
@@ -11266,20 +11620,20 @@ impl RuntimeThreadManager {
         id: &str,
         sessions_dir: &Path,
     ) -> Result<ThreadRecord> {
-        let (admission, _) = self.thread_restore_guard(id).await?;
+        let (admission, source) = self.thread_restore_guard(id).await?;
+        drop(admission);
         let runtime = self.clone();
-        let id = id.to_string();
         let dir = sessions_dir.to_path_buf();
-        tokio::spawn(async move {
-            let _admission = admission;
-            runtime.fork_thread_under_guard(&id, &dir).await
-        })
-        .await
-        .context("native fork outcome uncertain; inspect retained source and fork records")?
+        tokio::spawn(async move { runtime.fork_thread_staged(source, &dir).await })
+            .await
+            .context("native fork outcome uncertain; inspect retained source and fork records")?
     }
 
-    async fn fork_thread_under_guard(&self, id: &str, sessions_dir: &Path) -> Result<ThreadRecord> {
-        let source = self.get_thread(id).await?;
+    async fn fork_thread_staged(
+        &self,
+        source: ThreadRecord,
+        sessions_dir: &Path,
+    ) -> Result<ThreadRecord> {
         anyhow::ensure!(
             source.executor.is_none(),
             "a session with another agent cannot be forked; its history lives in the agent"
@@ -11294,11 +11648,18 @@ impl RuntimeThreadManager {
         forked.last_read = None;
         forked.parent_thread_id = Some(source.id.clone());
 
-        let source_turns = self.store.list_turns_for_thread(&source.id)?;
-        // One read for every turn's items — see `prepared_items_for_turns`: a
-        // whole-thread fork visits every turn, and the per-turn scan made that
-        // quadratic over a store that only grows.
-        let mut items_by_turn = self.prepared_items_for_turns(&source_turns)?;
+        let (source_turns, mut items_by_turn) = {
+            let store = self.store.clone();
+            let source_id = source.id.clone();
+            tokio::task::spawn_blocking(move || -> Result<_> {
+                let turns = store.list_turns_for_thread(&source_id)?;
+                let turn_ids: Vec<String> = turns.iter().map(|turn| turn.id.clone()).collect();
+                let items = store.list_items_for_turns_map(&turn_ids)?;
+                Ok((turns, items))
+            })
+            .await
+            .context("native fork store read failed")??
+        };
         let (captured_source, saved_prefix) = self
             .capture_native_fork_source(&source, &source_turns, sessions_dir)
             .await?;
@@ -11370,10 +11731,20 @@ impl RuntimeThreadManager {
         let covered_turn_id = covered
             .checked_sub(1)
             .map(|index| cloned_records[index].0.id.clone());
-        let (forked, _source_lease, _target_lease) = self
+        let verified_checkpoint = captured_source.verified_checkpoint.clone();
+        self.pause_for_fork_prepare_test_hook().await;
+        let (forked, _source_lease, target_lease) = self
             .bind_fork_to_own_session(forked, captured_source, prefix, covered_turn_id)
             .await?;
-        self.publish_fork(&forked, &cloned_records)?;
+        self.commit_staged_fork(
+            &source,
+            verified_checkpoint,
+            &forked,
+            &cloned_records,
+            sessions_dir,
+            target_lease,
+        )
+        .await?;
 
         self.emit_event(
             &forked.id,
@@ -11445,15 +11816,15 @@ impl RuntimeThreadManager {
         Option<std::num::NonZeroU32>,
     )> {
         let (admission, _) = self.thread_restore_guard(id).await?;
+        drop(admission);
         let runtime = self.clone();
         let id = id.to_string();
         let dir = sessions_dir.to_path_buf();
         tokio::spawn(async move {
-            let _admission = admission;
             let prepared = runtime
                 .prepare_fork_at_user_message_in_sessions_dir(&id, depth, &dir)
                 .await?;
-            runtime.publish_prepared_fork(prepared).await
+            runtime.publish_prepared_fork_guarded(prepared).await
         })
         .await
         .context("native backtrack outcome uncertain; inspect retained source and fork records")?
@@ -11509,16 +11880,16 @@ impl RuntimeThreadManager {
         Option<std::num::NonZeroU32>,
     )> {
         let (admission, _) = self.thread_restore_guard(id).await?;
+        drop(admission);
         let runtime = self.clone();
         let id = id.to_string();
         let turn_id = turn_id.to_string();
         let dir = sessions_dir.to_path_buf();
         tokio::spawn(async move {
-            let _admission = admission;
             let prepared = runtime
                 .prepare_fork_at_user_turn_in_sessions_dir(&id, &turn_id, &dir)
                 .await?;
-            runtime.publish_prepared_fork(prepared).await
+            runtime.publish_prepared_fork_guarded(prepared).await
         })
         .await
         .context(
@@ -11538,16 +11909,16 @@ impl RuntimeThreadManager {
         Option<std::num::NonZeroU32>,
     )> {
         let (admission, _) = self.thread_restore_guard(id).await?;
+        drop(admission);
         let runtime = self.clone();
         let id = id.to_string();
         let turn_id = turn_id.to_string();
         let dir = sessions_dir.to_path_buf();
         tokio::spawn(async move {
-            let _admission = admission;
             let prepared = runtime
                 .prepare_fork_dropping_user_turn_in_sessions_dir(&id, &turn_id, &dir)
                 .await?;
-            runtime.publish_prepared_fork(prepared).await
+            runtime.publish_prepared_fork_guarded(prepared).await
         })
         .await
         .context("native backtrack outcome uncertain; inspect retained source and fork records")?
@@ -11647,17 +12018,55 @@ impl RuntimeThreadManager {
         depth_from_tail: usize,
         sessions_dir: &Path,
     ) -> Result<PreparedThreadFork> {
-        let source = self.get_thread(id).await?;
+        self.prepare_fork_at_user_message_from_source(
+            self.get_thread(id).await?,
+            depth_from_tail,
+            sessions_dir,
+            None,
+        )
+        .await
+    }
+
+    pub async fn prepare_retry_in_sessions_dir(
+        &self,
+        id: &str,
+        depth_from_tail: usize,
+        sessions_dir: &Path,
+    ) -> Result<PreparedThreadFork> {
+        let (admission, source) = self.thread_restore_guard(id).await?;
+        self.prepare_fork_at_user_message_from_source(
+            source,
+            depth_from_tail,
+            sessions_dir,
+            Some(admission),
+        )
+        .await
+    }
+
+    async fn prepare_fork_at_user_message_from_source(
+        &self,
+        source: ThreadRecord,
+        depth_from_tail: usize,
+        sessions_dir: &Path,
+        admission: Option<tokio::sync::OwnedRwLockWriteGuard<()>>,
+    ) -> Result<PreparedThreadFork> {
         anyhow::ensure!(
             source.executor.is_none(),
             "a session with another agent cannot be forked; its history lives in the agent"
         );
-        let source_turns = self.store.list_turns_for_thread(&source.id)?;
-        // Every item of every turn in one read: see `prepared_items_for_turns`.
-        let items_by_turn = self.prepared_items_for_turns(&source_turns)?;
+        let (source_turns, items_by_turn) = {
+            let store = self.store.clone();
+            let source_id = source.id.clone();
+            tokio::task::spawn_blocking(move || -> Result<_> {
+                let turns = store.list_turns_for_thread(&source_id)?;
+                let turn_ids: Vec<String> = turns.iter().map(|turn| turn.id.clone()).collect();
+                let items = store.list_items_for_turns_map(&turn_ids)?;
+                Ok((turns, items))
+            })
+            .await
+            .context("fork preparation store read failed")??
+        };
 
-        // Which turns count as user turns, oldest first; the depth names one
-        // of them counting back from the end.
         let user_turn_indices = Self::user_turn_indices(&source_turns, &items_by_turn);
         if depth_from_tail >= user_turn_indices.len() {
             bail!(
@@ -11667,14 +12076,11 @@ impl RuntimeThreadManager {
             );
         }
         let target_turn_idx = user_turn_indices[user_turn_indices.len() - 1 - depth_from_tail];
-        // A depth-relative cut *drops* the turn it names — `/undo` removes the
-        // exchange a person pointed at — where a named-turn cut keeps it. That
-        // one turn is the whole difference between "undo this" and "branch
-        // after this", and it lives here rather than in either caller.
+        drop(admission);
         let (captured_source, saved_prefix) = self
             .capture_native_fork_source(&source, &source_turns, sessions_dir)
             .await?;
-        self.prepare_fork_from_cutoff(
+        let prepared = self.prepare_fork_from_cutoff(
             source,
             captured_source,
             saved_prefix,
@@ -11683,7 +12089,9 @@ impl RuntimeThreadManager {
             target_turn_idx,
             Some(target_turn_idx),
             depth_from_tail,
-        )
+        )?;
+        self.pause_for_fork_prepare_test_hook().await;
+        Ok(prepared)
     }
 
     pub async fn prepare_fork_dropping_user_turn_in_sessions_dir(
@@ -11697,8 +12105,18 @@ impl RuntimeThreadManager {
             source.executor.is_none(),
             "a session with another agent cannot be forked; its history lives in the agent"
         );
-        let source_turns = self.store.list_turns_for_thread(&source.id)?;
-        let items_by_turn = self.prepared_items_for_turns(&source_turns)?;
+        let (source_turns, items_by_turn) = {
+            let store = self.store.clone();
+            let source_id = source.id.clone();
+            tokio::task::spawn_blocking(move || -> Result<_> {
+                let turns = store.list_turns_for_thread(&source_id)?;
+                let turn_ids: Vec<String> = turns.iter().map(|turn| turn.id.clone()).collect();
+                let items = store.list_items_for_turns_map(&turn_ids)?;
+                Ok((turns, items))
+            })
+            .await
+            .context("fork preparation store read failed")??
+        };
         let user_turn_indices = Self::user_turn_indices(&source_turns, &items_by_turn);
         let position = user_turn_indices
             .iter()
@@ -11711,7 +12129,7 @@ impl RuntimeThreadManager {
         let (captured_source, saved_prefix) = self
             .capture_native_fork_source(&source, &source_turns, sessions_dir)
             .await?;
-        self.prepare_fork_from_cutoff(
+        let prepared = self.prepare_fork_from_cutoff(
             source,
             captured_source,
             saved_prefix,
@@ -11720,7 +12138,9 @@ impl RuntimeThreadManager {
             target_turn_idx,
             Some(target_turn_idx),
             depth_from_tail,
-        )
+        )?;
+        self.pause_for_fork_prepare_test_hook().await;
+        Ok(prepared)
     }
 
     pub async fn prepare_fork_at_user_turn_in_sessions_dir(
@@ -11734,14 +12154,24 @@ impl RuntimeThreadManager {
             source.executor.is_none(),
             "a session with another agent cannot be forked; its history lives in the agent"
         );
-        let source_turns = self.store.list_turns_for_thread(&source.id)?;
-        let items_by_turn = self.prepared_items_for_turns(&source_turns)?;
+        let (source_turns, items_by_turn) = {
+            let store = self.store.clone();
+            let source_id = source.id.clone();
+            tokio::task::spawn_blocking(move || -> Result<_> {
+                let turns = store.list_turns_for_thread(&source_id)?;
+                let turn_ids: Vec<String> = turns.iter().map(|turn| turn.id.clone()).collect();
+                let items = store.list_items_for_turns_map(&turn_ids)?;
+                Ok((turns, items))
+            })
+            .await
+            .context("fork preparation store read failed")??
+        };
         let (cutoff_turn_idx, receipt_turn_idx, depth_from_tail) =
             self.fork_cut_for_user_turn(&source_turns, &items_by_turn, turn_id)?;
         let (captured_source, saved_prefix) = self
             .capture_native_fork_source(&source, &source_turns, sessions_dir)
             .await?;
-        self.prepare_fork_from_cutoff(
+        let prepared = self.prepare_fork_from_cutoff(
             source,
             captured_source,
             saved_prefix,
@@ -11750,7 +12180,9 @@ impl RuntimeThreadManager {
             cutoff_turn_idx,
             receipt_turn_idx,
             depth_from_tail,
-        )
+        )?;
+        self.pause_for_fork_prepare_test_hook().await;
+        Ok(prepared)
     }
 
     /// Clone the turns before `cutoff_turn_idx` into a sibling thread, and name
@@ -12059,7 +12491,8 @@ impl RuntimeThreadManager {
             .map(|index| cloned_records[index].0.id.clone());
         let own_session = (captured_source, prefix, covered_turn_id);
         Ok(PreparedThreadFork {
-            source_id: source.id,
+            source_id: source.id.clone(),
+            source_snapshot: source,
             dropped_turn_id,
             depth_from_tail,
             thread: forked,
@@ -12070,6 +12503,19 @@ impl RuntimeThreadManager {
             own_session,
             dropped_turns,
         })
+    }
+
+    async fn pause_for_fork_prepare_test_hook(&self) {
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let hook = self.fork_prepare_test_hook.lock().clone();
+            if let Some(tx) = hook {
+                let (resume_tx, resume_rx) = oneshot::channel();
+                if tx.send(resume_tx).is_ok() {
+                    let _ = resume_rx.await;
+                }
+            }
+        }
     }
 
     pub async fn publish_prepared_fork(
@@ -12119,6 +12565,239 @@ impl RuntimeThreadManager {
         ))
     }
 
+    pub async fn publish_prepared_fork_guarded(
+        &self,
+        mut prepared: PreparedThreadFork,
+    ) -> Result<(
+        ThreadRecord,
+        Option<String>,
+        Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
+        Option<std::num::NonZeroU32>,
+    )> {
+        let (captured_source, prefix, covered_turn_id) = prepared.own_session;
+        let sessions_dir = captured_source.sessions_dir.clone();
+        let verified_checkpoint = captured_source.verified_checkpoint.clone();
+        let (thread, _source_lease, target_lease) = self
+            .bind_fork_to_own_session(prepared.thread, captured_source, prefix, covered_turn_id)
+            .await?;
+        prepared.thread = thread;
+        self.commit_staged_fork(
+            &prepared.source_snapshot,
+            verified_checkpoint,
+            &prepared.thread,
+            &prepared.records,
+            &sessions_dir,
+            target_lease,
+        )
+        .await?;
+        if let Err(error) = self
+            .emit_event(
+                &prepared.thread.id,
+                None,
+                None,
+                "thread.forked",
+                json!({
+                    "thread": prepared.thread,
+                    "source_thread_id": prepared.source_id,
+                    "backtrack_depth_from_tail": prepared.depth_from_tail,
+                    "dropped_turn_id": prepared.dropped_turn_id,
+                }),
+            )
+            .await
+        {
+            tracing::warn!(
+                thread_id = %prepared.thread.id,
+                "fork {} was saved but its thread.forked event failed: {error:#}",
+                prepared.thread.id
+            );
+        }
+        Ok((
+            prepared.thread,
+            prepared.original_user_text,
+            prepared.original_images,
+            prepared.max_output_tokens,
+        ))
+    }
+
+    async fn delete_unpublished_fork_session(sessions_dir: &Path, session_id: Option<&str>) {
+        let Some(session_id) = session_id.map(str::to_owned) else {
+            return;
+        };
+        let sessions_dir = sessions_dir.to_path_buf();
+        let _ = tokio::task::spawn_blocking(move || {
+            crate::session_manager::SessionManager::new(sessions_dir)
+                .and_then(|manager| manager.delete_session(&session_id))
+        })
+        .await;
+    }
+
+    async fn commit_staged_fork(
+        &self,
+        source_snapshot: &ThreadRecord,
+        verified_checkpoint: Option<SavedSessionCheckpoint>,
+        thread: &ThreadRecord,
+        records: &[(TurnRecord, Vec<TurnItemRecord>)],
+        sessions_dir: &Path,
+        target_lease: crate::session_manager::SessionLease,
+    ) -> Result<()> {
+        let store = self.store.clone();
+        let records_owned = records.to_vec();
+        let thread_id = thread.id.clone();
+        let staging_result = tokio::task::spawn_blocking(move || {
+            Self::stage_fork_records_in_store(&store, &thread_id, &records_owned)
+        })
+        .await
+        .context("fork staging task failed")
+        .and_then(|result| result);
+        let (saved_turn_ids, saved_item_ids) = match staging_result {
+            Ok(saved) => saved,
+            Err(error) => {
+                drop(target_lease);
+                Self::delete_unpublished_fork_session(sessions_dir, thread.session_id.as_deref())
+                    .await;
+                return Err(error);
+            }
+        };
+
+        let admission = self.session_checkpoint_guard().await;
+        let commit_result: Result<()> = async {
+            let current_source = self.get_thread(&source_snapshot.id).await?;
+            self.reject_active_turns_in_workspace(&current_source.workspace)
+                .await?;
+            self.ensure_accepting_execution()?;
+            let same_state = thread_execution_state_matches(source_snapshot, &current_source);
+            let mut migrated_source = source_snapshot.clone();
+            migrated_source.saved_session_checkpoint = verified_checkpoint;
+            anyhow::ensure!(
+                current_source.updated_at == source_snapshot.updated_at
+                    && (same_state
+                        || thread_execution_state_matches(&migrated_source, &current_source)),
+                "source thread changed while preparing fork; source retained"
+            );
+            let store = self.store.clone();
+            let thread = thread.clone();
+            tokio::task::spawn_blocking(move || store.save_thread(&thread))
+                .await
+                .context("fork commit task failed")?
+        }
+        .await;
+
+        let Err(commit_error) = commit_result else {
+            return Ok(());
+        };
+        let store = self.store.clone();
+        let thread_id = thread.id.clone();
+        let (cleanup_result, unpublished) = tokio::task::spawn_blocking(move || {
+            let unpublished = store
+                .thread_path(&thread_id)
+                .is_ok_and(|path| matches!(path.try_exists(), Ok(false)));
+            let result = Self::cleanup_unpublished_fork_in_store(
+                &store,
+                &thread_id,
+                &saved_turn_ids,
+                &saved_item_ids,
+                commit_error,
+            );
+            (result, unpublished)
+        })
+        .await
+        .unwrap_or_else(|error| {
+            (
+                Err(anyhow::anyhow!("fork cleanup task failed: {error}")),
+                false,
+            )
+        });
+        drop(admission);
+        drop(target_lease);
+        if unpublished {
+            Self::delete_unpublished_fork_session(sessions_dir, thread.session_id.as_deref()).await;
+        }
+        cleanup_result
+    }
+
+    fn stage_fork_records_in_store(
+        store: &RuntimeThreadStore,
+        thread_id: &str,
+        records: &[(TurnRecord, Vec<TurnItemRecord>)],
+    ) -> Result<(Vec<String>, Vec<String>)> {
+        let mut saved_turn_ids = Vec::new();
+        let mut saved_item_ids = Vec::new();
+        let staging = (|| -> Result<()> {
+            let batch: Vec<&TurnItemRecord> =
+                records.iter().flat_map(|(_, items)| items.iter()).collect();
+            saved_item_ids.extend(batch.iter().map(|item| item.id.clone()));
+            store.save_items_batch(&batch)?;
+            for (turn, _) in records {
+                store.save_turn(turn)?;
+                saved_turn_ids.push(turn.id.clone());
+            }
+            Ok(())
+        })();
+        if let Err(staging_error) = staging {
+            Self::cleanup_unpublished_fork_in_store(
+                store,
+                thread_id,
+                &saved_turn_ids,
+                &saved_item_ids,
+                staging_error,
+            )?;
+        }
+        Ok((saved_turn_ids, saved_item_ids))
+    }
+
+    fn cleanup_unpublished_fork(
+        &self,
+        thread_id: &str,
+        saved_turn_ids: &[String],
+        saved_item_ids: &[String],
+        persistence_error: anyhow::Error,
+    ) -> Result<()> {
+        Self::cleanup_unpublished_fork_in_store(
+            &self.store,
+            thread_id,
+            saved_turn_ids,
+            saved_item_ids,
+            persistence_error,
+        )
+    }
+
+    fn cleanup_unpublished_fork_in_store(
+        store: &RuntimeThreadStore,
+        thread_id: &str,
+        saved_turn_ids: &[String],
+        saved_item_ids: &[String],
+        persistence_error: anyhow::Error,
+    ) -> Result<()> {
+        let thread_path = store.thread_path(thread_id)?;
+        match thread_path.try_exists() {
+            Ok(false) => {}
+            Ok(true) => bail!(
+                "Fork publication could not be confirmed; retained its records for recovery: {persistence_error}"
+            ),
+            Err(error) => bail!(
+                "Fork publication could not be checked; retained its records for recovery: {error}"
+            ),
+        }
+        let mut cleanup_errors = Vec::new();
+        for turn_id in saved_turn_ids.iter().rev() {
+            if let Err(error) = store.remove_turn(turn_id) {
+                cleanup_errors.push(format!("remove turn {turn_id}: {error}"));
+            }
+        }
+        for item_id in saved_item_ids.iter().rev() {
+            if let Err(error) = store.remove_item(item_id) {
+                cleanup_errors.push(format!("remove item {item_id}: {error}"));
+            }
+        }
+        if cleanup_errors.is_empty() {
+            return Err(persistence_error);
+        }
+        bail!(
+            "Failed to persist fork: {persistence_error}; cleanup also failed: {}",
+            cleanup_errors.join("; ")
+        )
+    }
+
     /// Persist cloned records before publishing their thread. Until the final
     /// atomic thread write succeeds, list/get/start callers cannot observe a
     /// partial fork. Any failed write removes all unpublished clone artifacts.
@@ -12127,54 +12806,14 @@ impl RuntimeThreadManager {
         thread: &ThreadRecord,
         records: &[(TurnRecord, Vec<TurnItemRecord>)],
     ) -> Result<()> {
-        let mut saved_turn_ids = Vec::new();
-        let mut saved_item_ids = Vec::new();
-        let persistence = (|| -> Result<()> {
-            // Every cloned item in one batch. Each `save_item` fsyncs the items
-            // directory, which is right for a single record and ruinous for
-            // the hundreds a fork clones. Items first, turns next, the
-            // thread record that makes them reachable last: the commit point is
-            // unchanged, and the ids are recorded before the batch so a partial
-            // write is still cleaned up.
-            let batch: Vec<&TurnItemRecord> =
-                records.iter().flat_map(|(_, items)| items.iter()).collect();
-            saved_item_ids.extend(batch.iter().map(|item| item.id.clone()));
-            self.store.save_items_batch(&batch)?;
-            for (turn, _) in records {
-                self.store.save_turn(turn)?;
-                saved_turn_ids.push(turn.id.clone());
-            }
-            self.store.save_thread(thread)
-        })();
-
-        if let Err(persistence_error) = persistence {
-            let thread_path = self.store.thread_path(&thread.id)?;
-            match thread_path.try_exists() {
-                Ok(false) => {}
-                Ok(true) => bail!(
-                    "Fork publication could not be confirmed; retained its records for recovery: {persistence_error}"
-                ),
-                Err(error) => bail!(
-                    "Fork publication could not be checked; retained its records for recovery: {error}"
-                ),
-            }
-            let mut cleanup_errors = Vec::new();
-            for turn_id in saved_turn_ids.iter().rev() {
-                if let Err(error) = self.store.remove_turn(turn_id) {
-                    cleanup_errors.push(format!("remove turn {turn_id}: {error}"));
-                }
-            }
-            for item_id in saved_item_ids.iter().rev() {
-                if let Err(error) = self.store.remove_item(item_id) {
-                    cleanup_errors.push(format!("remove item {item_id}: {error}"));
-                }
-            }
-            if cleanup_errors.is_empty() {
-                return Err(persistence_error);
-            }
-            bail!(
-                "Failed to persist fork: {persistence_error}; cleanup also failed: {}",
-                cleanup_errors.join("; ")
+        let (saved_turn_ids, saved_item_ids) =
+            Self::stage_fork_records_in_store(&self.store, &thread.id, records)?;
+        if let Err(persistence_error) = self.store.save_thread(thread) {
+            return self.cleanup_unpublished_fork(
+                &thread.id,
+                &saved_turn_ids,
+                &saved_item_ids,
+                persistence_error,
             );
         }
         Ok(())
@@ -14300,6 +14939,23 @@ impl RuntimeThreadManager {
         .await
     }
 
+    pub fn provider_readiness_snapshot(
+        &self,
+    ) -> crate::provider_readiness::ProviderReadinessSnapshot {
+        self.provider_health.lock().clone()
+    }
+
+    #[must_use]
+    pub fn provider_last_check(
+        &self,
+        identity: &codewhale_runtime::config::ProviderIdentity,
+    ) -> Option<crate::provider_readiness::LastProviderCheck> {
+        self.provider_health
+            .lock()
+            .last_for_provider(identity)
+            .cloned()
+    }
+
     pub async fn start_turn(&self, thread_id: &str, req: StartTurnRequest) -> Result<TurnRecord> {
         self.start_turn_inner(thread_id, req, None).await
     }
@@ -14990,6 +15646,9 @@ impl RuntimeThreadManager {
             .input_summary
             .clone()
             .unwrap_or_else(|| summarize_text(&prompt, SUMMARY_LIMIT));
+        let first_prompt_title = matches!(input_source, RuntimeTurnInputSource::ExternalUser)
+            .then(|| crate::session_manager::truncate_title(&prompt, 60))
+            .filter(|title| !title.is_empty());
         let mut turn = TurnRecord {
 source_usage_origin_turn_id: None,
 
@@ -15300,6 +15959,9 @@ source_usage_records: Default::default(),
                     self.store.save_turn(&turn)?;
                 }
                 current_thread.schema_version = current_thread.schema_version.max(turn.schema_version);
+                if current_thread.title.is_none() && current_thread.latest_turn_id.is_none() {
+                    current_thread.title = first_prompt_title;
+                }
                 current_thread.latest_turn_id = Some(turn_id.clone());
                 current_thread.updated_at = now;
                 self.store.save_thread(&current_thread)?;
@@ -16939,7 +17601,7 @@ source_usage_records: Default::default(),
         turns: &[TurnRecord],
         covered: usize,
     ) {
-        let Ok(messages_sha256) = session_messages_sha256(messages) else {
+        let Ok(checkpoint) = legacy_session_checkpoint(messages, turns, covered) else {
             return;
         };
         let _thread_mutation = self.store.thread_mutation.lock();
@@ -16949,17 +17611,7 @@ source_usage_records: Default::default(),
         if stored.session_id != thread.session_id || stored.saved_session_checkpoint.is_some() {
             return;
         }
-        stored.saved_session_checkpoint = Some(SavedSessionCheckpoint {
-            publication_observation: None,
-
-            covered_turn_id: covered
-                .checked_sub(1)
-                .and_then(|index| turns.get(index))
-                .map(|turn| turn.id.clone()),
-            messages_sha256,
-            messages_len: Some(messages.len()),
-            retained_messages: None,
-        });
+        stored.saved_session_checkpoint = Some(checkpoint);
         if let Err(error) = self.store.save_thread(&stored) {
             tracing::debug!(thread_id = %thread.id, %error, "migrated legacy checkpoint was not saved");
         }
@@ -17600,6 +18252,7 @@ source_usage_records: Default::default(),
         let mut saw_engine_activity = false;
         let mut saw_turn_started = false;
         let mut engine_turn_id: Option<String> = None;
+        let mut health_route: Option<crate::core::events::TurnRoute> = None;
         let mut dispatched_route: Option<EffectiveRouteEnvelope> = None;
         let mut pending_events: VecDeque<EngineEvent> = VecDeque::new();
         let mut event_channel_closed = false;
@@ -17783,6 +18436,7 @@ source_usage_records: Default::default(),
                 } => {
                     saw_turn_started = true;
                     engine_turn_id = Some(started_turn_id);
+                    health_route = route.clone();
                     let started_route = route
                         .as_ref()
                         .and_then(crate::core::events::TurnRoute::cost_envelope);
@@ -18366,6 +19020,12 @@ source_usage_records: Default::default(),
                             }
                             Err(err) => {
                                 item.status = TurnItemLifecycleStatus::Failed;
+                                let failure_meta = err.metadata().map(|value| {
+                                    crate::client::redact_json_model_bound_text(
+                                        value,
+                                        &receipt_secrets,
+                                    )
+                                });
                                 let err = crate::client::redact_model_bound_text(
                                     &err.to_string(),
                                     &receipt_secrets,
@@ -18382,6 +19042,13 @@ source_usage_records: Default::default(),
                                 // result. Without the marker a restart rebuilt
                                 // a call nothing answered (#6803).
                                 if let Some(Value::Object(meta)) = item.metadata.as_mut() {
+                                    if let Some(Value::Object(failure)) = failure_meta {
+                                        for (key, value) in failure {
+                                            if key != "execution_receipt" {
+                                                meta.entry(key).or_insert(value);
+                                            }
+                                        }
+                                    }
                                     meta.insert("tool_result_for".to_string(), json!(id));
                                     meta.insert("is_error".to_string(), json!(true));
                                 }
@@ -19169,6 +19836,17 @@ source_usage_records: Default::default(),
                     .await?;
                 }
                 EngineEvent::Error { envelope, .. } => {
+                    if let Some(route) = health_route.as_ref()
+                        && let Some(receipt) = route.receipt.as_ref()
+                    {
+                        let config = self.config.read();
+                        self.provider_health.lock().record_failure(
+                            &config,
+                            receipt,
+                            &route.model,
+                            &envelope,
+                        );
+                    }
                     turn_status = Some(RuntimeTurnStatus::Failed);
                     turn_error = Some(envelope.message.clone());
                     let message = envelope.message.clone();
@@ -19423,6 +20101,15 @@ source_usage_records: Default::default(),
                             reported_status
                         },
                     );
+                    if turn_status == Some(RuntimeTurnStatus::Completed)
+                        && let Some(route) = health_route.as_ref()
+                        && let Some(receipt) = route.receipt.as_ref()
+                    {
+                        let config = self.config.read();
+                        self.provider_health
+                            .lock()
+                            .record_success(&config, receipt, &route.model);
+                    }
                     if let Some(err) = error {
                         turn_error = Some(err);
                     }
@@ -19549,7 +20236,7 @@ source_usage_records: Default::default(),
                     tools_removed,
                 } => {
                     let mut message = codewhale_localization::tr(
-                        codewhale_localization::Locale::En,
+                        runtime_receipt_locale().await,
                         match decided_by.as_deref().filter(|value| !value.is_empty()) {
                             Some(_) => {
                                 codewhale_localization::MessageId::PluginChangedWithDeciderReceipt

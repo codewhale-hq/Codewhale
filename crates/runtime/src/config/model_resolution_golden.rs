@@ -209,9 +209,6 @@ fn inputs_for(
             .filter(|selection| selection.provider == target.catalog_provider_id)
         {
             add(&selection.id, "alias-target");
-            for alias in &selection.aliases {
-                add(alias, "alias-key");
-            }
         }
     }
 
@@ -300,12 +297,16 @@ fn configured_chain_cells(target: &Target, input: &str, config_path: &Path) -> [
         Err(_) => "-!load".to_string(),
     };
     let cli = match codewhale_config::ConfigStore::load(Some(config_path.to_path_buf())) {
-        Ok(store) => optional_cell(Some(
-            store
+        Ok(store) => {
+            let resolved = store
                 .config
-                .resolve_runtime_options(&codewhale_config::CliRuntimeOverrides::default())
-                .model,
-        )),
+                .resolve_runtime_options(&codewhale_config::CliRuntimeOverrides::default());
+            if resolved.model_error.is_some() {
+                "-!load".to_string()
+            } else {
+                optional_cell(Some(resolved.model))
+            }
+        }
         Err(_) => "-!load".to_string(),
     };
     [tui, cli]
@@ -341,22 +342,17 @@ fn golden_table(config_path: &Path) -> String {
             cells.push(target.label.clone());
             cells.push(input.clone());
             cells.push(kinds.into_iter().collect::<Vec<_>>().join("+"));
-            cells.push(optional_cell(canonical_model_id_for_provider(
-                target.kind,
-                &input,
-            )));
-            cells.push(optional_cell(normalize_model_name_for_provider(
-                target.kind,
-                &input,
-            )));
-            cells.push(optional_cell(Some(wire_model_for_provider(
-                target.kind,
-                &input,
-            ))));
-            cells.push(optional_cell(requested_model_for_provider(
-                target.kind,
-                &input,
-            )));
+            let resolved = codewhale_config::route::resolve_model(target.kind, &input, None).ok();
+            let trimmed = input.trim();
+            let fallback_wire = (!trimmed.is_empty()).then(|| {
+                resolved
+                    .as_ref()
+                    .map_or_else(|| trimmed.to_string(), |r| r.wire_id.clone())
+            });
+            cells.push(optional_cell(resolved.as_ref().map(|r| r.logical.clone())));
+            cells.push(optional_cell(resolved.as_ref().map(|r| r.wire_id.clone())));
+            cells.push(optional_cell(fallback_wire));
+            cells.push(optional_cell(resolved.as_ref().map(|r| r.logical.clone())));
             cells.extend(configured_chain_cells(target, &input, config_path));
             cells.extend(route_cells(target, &input));
             let canonical = &cells[3];

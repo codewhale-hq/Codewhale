@@ -386,6 +386,7 @@ pub(crate) fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> b
         HistoryCell::Tool(_) => "Message".to_string(),
         HistoryCell::SubAgent(_) => "Sub-agent".to_string(),
         HistoryCell::Automation(_) => tr(app.ui_locale, MessageId::AutomationNoun).into_owned(),
+        HistoryCell::ApprovalReceipt(_) => "Approval".to_string(),
         HistoryCell::ArchivedContext { .. } => "Archived Context".to_string(),
     };
     let width = app
@@ -417,6 +418,16 @@ pub(crate) fn open_focused_cell_pager(app: &mut App) -> bool {
     let Some(cell_index) = detail_target_cell_index(app) else {
         return false;
     };
+    if let Some(turn) = app.folded_turn_at(cell_index) {
+        let Some(title) = crate::tui::history::turn_fold_changes(&turn, app.ui_locale) else {
+            return false;
+        };
+        let diff = crate::tui::history::turn_fold_diff(&turn, |index| {
+            app.cell_at_virtual_index(index).cloned()
+        });
+        super::overlays::open_diff_pager(app, title, &diff);
+        return true;
+    }
     let Some(cell) = app.cell_at_virtual_index(cell_index) else {
         return false;
     };
@@ -429,6 +440,7 @@ pub(crate) fn open_focused_cell_pager(app: &mut App) -> bool {
         HistoryCell::Tool(_) => "Tool".to_string(),
         HistoryCell::SubAgent(_) => "Sub-agent".to_string(),
         HistoryCell::Automation(_) => tr(app.ui_locale, MessageId::AutomationNoun).into_owned(),
+        HistoryCell::ApprovalReceipt(_) => "Approval".to_string(),
         HistoryCell::ArchivedContext { .. } => "Archived Context".to_string(),
     };
     let width = app
@@ -886,6 +898,7 @@ fn turn_full_conversation_lines(app: &App, start: usize, end: usize) -> Vec<Stri
             ),
             HistoryCell::Error { .. } => "[!]".to_string(),
             HistoryCell::Automation(_) => "[⏱]".to_string(),
+            HistoryCell::ApprovalReceipt(_) => "[✓]".to_string(),
             HistoryCell::System { .. } | HistoryCell::ArchivedContext { .. } => "[i]".to_string(),
         };
         if !out.is_empty() {
@@ -1153,7 +1166,9 @@ fn turn_timeline_lines(app: &App, start: usize, end: usize) -> Vec<String> {
                     &[],
                 ));
             }
-            HistoryCell::Error { message, severity } => {
+            HistoryCell::Error {
+                message, severity, ..
+            } => {
                 let summary = one_line_summary(message, 96);
                 let status = severity.to_string();
                 rows.push(timeline_row("error", &summary, Some(&status), None, &[]));
@@ -1161,6 +1176,10 @@ fn turn_timeline_lines(app: &App, start: usize, end: usize) -> Vec<String> {
             HistoryCell::Automation(cell) => {
                 let summary = one_line_summary(&cell.plain_summary(), 96);
                 rows.push(timeline_row("automation", &summary, None, None, &[]));
+            }
+            HistoryCell::ApprovalReceipt(cell) => {
+                let summary = one_line_summary(&cell.plain_summary(), 96);
+                rows.push(timeline_row("approval", &summary, None, None, &[]));
             }
             HistoryCell::System { content }
             | HistoryCell::ArchivedContext {

@@ -1586,10 +1586,14 @@ async fn assert_matrix_route(route: &MatrixRoute) {
     let planned_provider = planned.route.identity.provider;
     let planned_base_url = planned.route.candidate.endpoint().base_url.clone();
     let planned_model = planned.route.model.clone();
-    let expected_wire_model = codewhale_runtime::config::wire_model_for_provider_route(
+    let expected_wire_model = codewhale_config::route::resolve_model(
         planned_provider,
-        &planned_base_url,
         &planned_model,
+        Some(&planned_base_url),
+    )
+    .map_or_else(
+        |_| planned_model.trim().to_string(),
+        |resolved| resolved.wire_id,
     );
     assert_eq!(
         planned_base_url.trim_end_matches('/'),
@@ -2142,10 +2146,14 @@ async fn host_supplied_auto_route_receipt_matches_the_production_planner() {
     assert_eq!(planned_identity, "deepseek");
     assert_eq!(
         route.wire_model.as_str(),
-        codewhale_runtime::config::wire_model_for_provider_route(
+        codewhale_config::route::resolve_model(
             planned_provider,
-            &planned_base_url,
             &planned_model,
+            Some(&planned_base_url),
+        )
+        .map_or_else(
+            |_| planned_model.trim().to_string(),
+            |resolved| resolved.wire_id
         ),
         "the wire model is the planner's model after route remapping — not \
              the model the session happens to have installed"

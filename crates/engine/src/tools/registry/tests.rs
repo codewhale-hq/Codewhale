@@ -96,6 +96,10 @@ fn shell_denial_keeps_the_existing_bounded_child_read_only_exception() {
         ("bash", json!({"command":"pwd", "background":true})),
         ("task_shell_start", json!({"command":"pwd"})),
         (
+            "terminal_send",
+            json!({"session":"existing", "text":"pwd\n"}),
+        ),
+        (
             "terminal/send",
             json!({"session":"existing", "text":"pwd\n"}),
         ),
@@ -166,6 +170,30 @@ fn mcp_image_result_uses_typed_block_without_base64_in_text() {
             mime_type: "image/png".to_string(),
             data: image_data.to_string(),
         }]
+    );
+}
+
+#[test]
+fn mcp_transport_metadata_is_dropped_from_the_result() {
+    let icon = format!("data:image/png;base64,{}", "A".repeat(2_048));
+    let payload = json!({
+        "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "github-mcp-server", "icons": [{"src": icon}]}},
+        "resultType": "complete",
+        "content": [{"type": "text", "text": "{\"total_count\":1}", "_meta": {"icon": icon}}]
+    });
+
+    let rich = mcp_result_to_bounded_rich_tool_result(payload);
+
+    assert!(rich.result.success);
+    assert!(
+        !rich.result.content.contains("base64"),
+        "{}",
+        rich.result.content
+    );
+    let sanitized: Value = serde_json::from_str(&rich.result.content).expect("MCP JSON");
+    assert_eq!(
+        sanitized,
+        json!({"content": [{"type": "text", "text": "{\"total_count\":1}"}]})
     );
 }
 
@@ -1966,7 +1994,7 @@ fn agent_tools_with_shell_policy_readonly_exposes_only_run_only_bash() {
         registry
             .names()
             .into_iter()
-            .all(|name| !name.starts_with("terminal/"))
+            .all(|name| !name.starts_with("terminal/") && !name.starts_with("terminal_"))
     );
     let bash = registry
         .to_api_tools()
@@ -2484,6 +2512,7 @@ fn registration_adapter_origins_are_bounded_and_exclude_execution_payloads() {
         ),
         (
             Arc::new(super::McpToolAdapter {
+                delegated_read: None,
                 name: hostile.clone(),
                 server_name: Some("plugin-4-demo-server_with_underscores".into()),
                 tool: crate::mcp::McpTool {
@@ -2721,4 +2750,22 @@ async fn scoped_worker_convert_output_is_judged_on_the_field_it_writes() {
             "original\n"
         );
     }
+}
+
+#[tokio::test]
+async fn subagent_mcp_tools_survive_a_busy_parent_pool() {
+    let mut pool = crate::mcp::McpPool::new(codewhale_mcp::config::McpConfig::default());
+    pool.insert_test_connection("linear", &["list_issues"], None);
+    let pool = Arc::new(tokio::sync::Mutex::new(pool));
+    let held = pool.lock().await;
+    let build = tokio::spawn(ToolRegistryBuilder::new().with_mcp_tools(Arc::clone(&pool)));
+    tokio::task::yield_now().await;
+    assert!(!build.is_finished());
+    drop(held);
+    let tmp = tempdir().unwrap();
+    let registry = build
+        .await
+        .expect("builder task")
+        .build(ToolContext::new(tmp.path()));
+    assert!(registry.contains("mcp_linear_list_issues"));
 }

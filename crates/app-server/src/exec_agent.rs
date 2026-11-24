@@ -12,6 +12,7 @@ use codewhale_engine::exec_events::ExecAgentEvents;
 use codewhale_engine::exec_events::exec_error_event_is_fatal;
 use codewhale_engine::fleet::executor::exec_stream_final_answer_excerpt;
 use codewhale_engine::model_routing;
+use codewhale_engine::route_receipt::ExecRouteBinding;
 use codewhale_engine::session_manager;
 use codewhale_engine::session_manager::SessionManager;
 use codewhale_engine::session_manager::truncate_id;
@@ -128,6 +129,7 @@ async fn persist_exec_checkpoint(
     engine: &codewhale_engine::core::engine::EngineHandle,
     deadline: Instant,
     source: &mut Option<codewhale_engine::session_manager::SessionWriteReceipt>,
+    binding: Option<&ExecRouteBinding>,
 ) {
     if turn_id != Some(request.caller.turn_id.as_str()) {
         request.fail("exec session checkpoint does not match its active turn");
@@ -160,6 +162,7 @@ async fn persist_exec_checkpoint(
         return;
     };
     let write_request = Arc::clone(&request);
+    let binding = binding.cloned();
     let mut writer = tokio::task::spawn_blocking(
         move || -> Result<codewhale_engine::session_manager::SessionPublication> {
             let snapshot = &write_request.snapshot;
@@ -169,6 +172,7 @@ async fn persist_exec_checkpoint(
                 PersistedProviderRoute {
                     kind: &snapshot.model_provider,
                     id: snapshot.model_provider_id.as_deref(),
+                    binding: binding.as_ref(),
                 },
                 &snapshot.workspace,
                 &snapshot.system_prompt,
@@ -226,6 +230,7 @@ pub async fn run_exec_agent(
     explicit_sandbox: Option<&str>,
     json_output: bool,
     resume_session: Option<codewhale_engine::session_manager::SavedSession>,
+    explicitly_reselected_route: bool,
     force_configured_route: bool,
     output_format: ExecOutputFormat,
     max_turns: u32,
@@ -376,6 +381,18 @@ pub async fn run_exec_agent(
     if should_persist_session {
         open_exec_session_manager()?;
     }
+    let required_binding =
+        required_exec_resume_binding(resume_session.as_ref(), explicitly_reselected_route);
+    let binding_key = if required_binding.is_some() || should_persist_session {
+        load_exec_route_binding_key(open_exec_session_manager(), required_binding.is_none()).await
+    } else {
+        None
+    };
+    check_exec_resume_endpoint(
+        required_binding,
+        binding_key.as_ref(),
+        &config.active_route_base_url(),
+    )?;
 
     let accounting_origin = exec_write_receipt.as_ref().and_then(|receipt| {
         match receipt.usage_origin(codewhale_engine::cost_status::scope_token()) {
@@ -395,17 +412,19 @@ pub async fn run_exec_agent(
     )
     .await?;
     let execution_config = config_for_cli_route(config, &route)?;
-    codewhale_engine::provider_lake::refresh_account_catalog_before_first_request(
-        &execution_config,
-    )
-    .await;
+    if required_binding.is_none() {
+        codewhale_engine::provider_lake::refresh_account_catalog_before_first_request(
+            &execution_config,
+        )
+        .await;
+    }
     let auto_model = route.auto_model;
     let effective_identity = execution_config
         .active_provider_identity()
         .map_err(anyhow::Error::msg)?;
     let effective_provider = effective_identity.provider;
     let effective_model = route.model;
-    let validated_route = codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
+    let mut validated_route = codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
         &execution_config,
         &effective_identity,
         Some(&effective_model),
@@ -414,6 +433,26 @@ pub async fn run_exec_agent(
     .validate_for_async(codewhale_engine::route_runtime::RouteErrorSurface::Headless)
     .await
     .map_err(anyhow::Error::msg)?;
+    validated_route.client.pin_exec_auth_scope().await?;
+    let mut deferred_binding = (!should_persist_session).then(|| {
+        (
+            validated_route.client.clone(),
+            validated_route.config.clone(),
+        )
+    });
+    let mut route_binding = match binding_key.as_ref() {
+        Some(key) => validated_route
+            .client
+            .exec_route_binding(key, &validated_route.config)?,
+        None => ExecRouteBinding::default(),
+    };
+    check_exec_resume_authority(required_binding, &route_binding)?;
+    if required_binding.is_some() {
+        codewhale_engine::provider_lake::refresh_account_catalog_before_first_request(
+            &execution_config,
+        )
+        .await;
+    }
     let effective_identity = validated_route.identity.clone();
     let effective_provider_name = effective_identity.key.to_string();
     let (effective_provider_kind, effective_stream_provider_id) =
@@ -950,6 +989,13 @@ pub async fn run_exec_agent(
             break;
         };
 
+        if should_persist_session
+            && let Some((client, config)) = deferred_binding.take()
+            && let Some(key) = load_exec_route_binding_key(open_exec_session_manager(), true).await
+        {
+            route_binding = client.exec_route_binding(&key, &config)?;
+        }
+
         match event {
             Event::TurnStarted { turn_id, .. } => {
                 active_turn_id = Some(turn_id);
@@ -987,6 +1033,9 @@ pub async fn run_exec_agent(
                         omitted_tool_count,
                     )
                 );
+            }
+            Event::SnapshotsDisabled { reason, .. } => {
+                eprintln!("warning: {reason}");
             }
             Event::RequestImageWindow {
                 provider,
@@ -1419,30 +1468,12 @@ pub async fn run_exec_agent(
                 } else if let Ok(mut manager) = exec_shell_manager.lock() {
                     manager.abort_persistent_services();
                 }
-                summary.status = Some(format!("{terminal_status:?}").to_lowercase());
-                if terminal_error.is_some() {
-                    summary.error = terminal_error;
-                }
-                if sandbox_denied
-                    && summary.error.is_none()
-                    && matches!(
-                        terminal_status,
-                        codewhale_engine::core::events::TurnOutcomeStatus::Failed
-                    )
-                {
-                    summary.error = Some(
-                        "exec turn failed after sandbox denial; explicit sandbox elevation was not authorized"
-                            .to_string(),
-                    );
-                }
-                if last_error_category.is_none() {
-                    last_error_category = summary
-                        .error
-                        .as_deref()
-                        .map(codewhale_error_taxonomy::classify_error_message);
-                    summary.error_category =
-                        last_error_category.map(|category| category.to_string());
-                }
+                summary.apply_turn_complete_error_summary(
+                    terminal_status,
+                    terminal_error,
+                    sandbox_denied,
+                    &mut last_error_category,
+                );
                 let saved_session_id = if should_persist_session && !latest_messages.is_empty() {
                     let saved = open_exec_session_manager().and_then(|manager| {
                         if exec_write_receipt.is_none() && exec_is_fresh {
@@ -1466,6 +1497,7 @@ pub async fn run_exec_agent(
                             PersistedProviderRoute {
                                 kind: effective_identity.persisted_kind(),
                                 id: effective_identity.persisted_id(),
+                                binding: Some(&route_binding),
                             },
                             &latest_workspace,
                             &latest_system_prompt,
@@ -1727,6 +1759,7 @@ pub async fn run_exec_agent(
                                 &engine_handle,
                                 exec_deadline,
                                 &mut exec_write_receipt,
+                                Some(&route_binding),
                             )
                             .await
                         }
@@ -1883,7 +1916,8 @@ fn accumulate_exec_retry_count(
 #[cfg(test)]
 mod tests {
     use super::{
-        ExecAgentEvents, exec_automation_services, exec_disallowed_tools, shutdown_exec_engine,
+        ExecAgentEvents, ExecRouteBinding, exec_automation_services, exec_disallowed_tools,
+        shutdown_exec_engine,
     };
 
     use codewhale_engine::core::engine::mock_engine_handle;
@@ -2200,6 +2234,10 @@ mod tests {
             )
         };
         let mut source = Some(manager.expect_absent_session(&snapshot.session_id).unwrap());
+        let binding = ExecRouteBinding {
+            endpoint: Some("fixture-endpoint-tag".into()),
+            authority: Some("fixture-authority-tag".into()),
+        };
         let (request, receive) = checkpoint(caller.clone(), Arc::clone(&snapshot));
         super::persist_exec_checkpoint(
             Arc::clone(&request),
@@ -2210,12 +2248,17 @@ mod tests {
             &engine.handle,
             Instant::now() + Duration::from_secs(3),
             &mut source,
+            Some(&binding),
         )
         .await;
         assert!(receive.await.unwrap().unwrap());
         let persisted = manager.load_session_snapshot(&snapshot.session_id).unwrap();
         assert_eq!(persisted.messages, messages);
         assert_eq!(persisted.metadata.total_tokens, 23);
+        assert_eq!(
+            persisted.metadata.exec_route_binding.as_ref(),
+            Some(&binding)
+        );
         assert_eq!(
             persisted.metadata.model_provider_id.as_deref(),
             Some("review-route")
@@ -2233,6 +2276,7 @@ mod tests {
             crate::exec_agent::PersistedProviderRoute {
                 kind: "custom",
                 id: Some("review-route"),
+                binding: None,
             },
             &workspace,
             &None,
@@ -2257,6 +2301,7 @@ mod tests {
             &engine.handle,
             Instant::now() + Duration::from_secs(3),
             &mut source,
+            None,
         )
         .await;
         assert_eq!(
@@ -2286,6 +2331,7 @@ mod tests {
                 &engine.handle,
                 Instant::now() + Duration::from_secs(3),
                 &mut source,
+                None,
             )
             .await;
             assert!(receive.await.unwrap().is_err(), "{mismatch}");
@@ -2310,6 +2356,7 @@ mod tests {
             &engine.handle,
             Instant::now() + Duration::from_secs(3),
             &mut source,
+            None,
         )
         .await;
         assert!(receive.await.unwrap().is_err());
@@ -2323,6 +2370,7 @@ mod tests {
             &engine.handle,
             Instant::now() + Duration::from_secs(3),
             &mut source,
+            None,
         )
         .await;
         assert!(!receive.await.unwrap().unwrap());
@@ -2342,6 +2390,7 @@ mod tests {
             &engine.handle,
             Instant::now() + Duration::from_secs(3),
             &mut source,
+            None,
         )
         .await;
         assert!(receive.await.unwrap().is_err());
@@ -2355,6 +2404,7 @@ mod tests {
             &engine.handle,
             Instant::now(),
             &mut source,
+            None,
         )
         .await;
         assert!(receive.await.unwrap().is_err());
@@ -2389,6 +2439,7 @@ mod tests {
                 crate::exec_agent::PersistedProviderRoute {
                     kind: "custom",
                     id: None,
+                    binding: None,
                 },
                 &workspace,
                 &None,
@@ -3468,10 +3519,72 @@ fn exec_stream_final_answer_text(
     (!text.is_empty()).then_some(text)
 }
 
+async fn load_exec_route_binding_key(
+    manager: Result<Arc<SessionManager>>,
+    create: bool,
+) -> Option<[u8; 32]> {
+    let result = async {
+        let sessions_dir = tokio::fs::canonicalize(manager?.sessions_dir()).await?;
+        codewhale_runtime::runtime_control::owner_work(move || {
+            SessionManager::exec_route_binding_key(&sessions_dir, create)
+        })
+        .await
+    }
+    .await;
+    match result {
+        Ok(key) => Some(key),
+        Err(error) => {
+            tracing::debug!(%error, "exec route binding key unavailable");
+            None
+        }
+    }
+}
+
+fn required_exec_resume_binding(
+    saved: Option<&session_manager::SavedSession>,
+    explicitly_reselected_route: bool,
+) -> Option<&ExecRouteBinding> {
+    saved
+        .filter(|_| !explicitly_reselected_route)
+        .and_then(|saved| saved.metadata.exec_route_binding.as_ref())
+}
+
+const EXEC_RESUME_RESELECT: &str = "The saved provider binding changed or could not be verified. Re-run with an explicit --provider or --model to confirm the current route.";
+
+fn check_exec_resume_endpoint(
+    required: Option<&ExecRouteBinding>,
+    key: Option<&[u8; 32]>,
+    base_url: &str,
+) -> Result<()> {
+    if let Some(required) = required {
+        anyhow::ensure!(
+            required.authority.is_some()
+                && key.is_some_and(|key| {
+                    required.endpoint.as_deref()
+                        == Some(ExecRouteBinding::endpoint_tag(key, base_url).as_str())
+                }),
+            "{EXEC_RESUME_RESELECT}"
+        );
+    }
+    Ok(())
+}
+
+fn check_exec_resume_authority(
+    required: Option<&ExecRouteBinding>,
+    current: &ExecRouteBinding,
+) -> Result<()> {
+    anyhow::ensure!(
+        required.is_none_or(|required| required.matches(current)),
+        "{EXEC_RESUME_RESELECT}"
+    );
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 struct PersistedProviderRoute<'a> {
     kind: &'a str,
     id: Option<&'a str>,
+    binding: Option<&'a ExecRouteBinding>,
 }
 
 fn persist_exec_session(
@@ -3545,6 +3658,9 @@ fn persist_exec_session(
         provider_route.id,
         workspace,
     );
+    if let Some(binding) = provider_route.binding {
+        saved.metadata.exec_route_binding = Some(binding.clone());
+    }
     if let Some(error) = turn_failure {
         session_manager::push_turn_outcome(
             &mut saved.turn_outcomes,
@@ -3700,6 +3816,40 @@ impl ExecSummary {
     fn record_one_shot_outcome(&mut self, usage: Option<codewhale_models::Usage>) {
         self.success = Some(self.error.is_none() && self.status.as_deref() == Some("completed"));
         self.usage = usage;
+    }
+
+    fn apply_turn_complete_error_summary(
+        &mut self,
+        terminal_status: codewhale_engine::core::events::TurnOutcomeStatus,
+        terminal_error: Option<String>,
+        sandbox_denied: bool,
+        last_error_category: &mut Option<codewhale_error_taxonomy::ErrorCategory>,
+    ) {
+        self.status = Some(format!("{terminal_status:?}").to_lowercase());
+        if terminal_error.is_some() {
+            self.error = terminal_error;
+        }
+        let synthesized_sandbox_denial = if sandbox_denied
+            && self.error.is_none()
+            && matches!(
+                terminal_status,
+                codewhale_engine::core::events::TurnOutcomeStatus::Failed
+            ) {
+            self.error = Some(
+                "exec turn failed after sandbox denial; explicit sandbox elevation was not authorized"
+                    .to_string(),
+            );
+            true
+        } else {
+            false
+        };
+        if last_error_category.is_none() && !synthesized_sandbox_denial {
+            *last_error_category = self
+                .error
+                .as_deref()
+                .map(codewhale_error_taxonomy::classify_error_message);
+            self.error_category = last_error_category.map(|category| category.to_string());
+        }
     }
 }
 
@@ -4003,6 +4153,105 @@ pub fn summarize_tool_output(output: &str) -> String {
 #[cfg(test)]
 mod route_tests {
     use super::*;
+
+    #[test]
+    fn exec_resume_checks_saved_endpoint_and_credential_after_reopen() -> Result<()> {
+        let _env = codewhale_engine::test_support::lock_test_env();
+        let _override_key =
+            codewhale_engine::test_support::EnvVarGuard::remove(codewhale_config::CLI_API_KEY_ENV);
+        let temporary = tempfile::tempdir()?;
+        let store = temporary.path().join("sessions");
+        let binding = |key, base_url, api_key, wire: &str| -> Result<ExecRouteBinding> {
+            let profile = if wire == "responses" {
+                "responses_profile = \"standard\""
+            } else {
+                ""
+            };
+            let config: Config = toml::from_str(&format!(
+                r#"
+provider = "resume-fixture"
+[providers.resume-fixture]
+kind = "openai-compatible"
+base_url = "{base_url}"
+model = "fixture-model"
+api_key = "{api_key}"
+wire = "{wire}"
+{profile}
+"#
+            ))?;
+            codewhale_engine::client::CodewhaleClient::new(&config)?
+                .exec_route_binding(key, &config)
+        };
+        const ORIGINAL: &str = "https://one.example.test/v1";
+        const REBOUND: &str = "https://two.example.test/v1";
+        const ORIGINAL_KEY: &str = "fixture-account-one";
+        const REBOUND_KEY: &str = "fixture-account-two";
+        let manager = SessionManager::new(store.clone())?;
+        let key =
+            SessionManager::exec_route_binding_key(&manager.sessions_dir().canonicalize()?, true)?;
+        let current = binding(&key, ORIGINAL, ORIGINAL_KEY, "chat")?;
+        let mut saved = session_manager::create_saved_session_with_mode(
+            &[],
+            "fixture-model",
+            temporary.path(),
+            0,
+            None,
+            Some("exec"),
+        );
+        saved
+            .metadata
+            .set_model_provider_route("custom", Some("resume-fixture"));
+        assert!(required_exec_resume_binding(Some(&saved), false).is_none());
+        saved.metadata.exec_route_binding = Some(current.clone());
+        let json = serde_json::to_string(&saved.metadata)?;
+        assert!(!json.contains(ORIGINAL));
+        assert!(!json.contains(ORIGINAL_KEY));
+        saved.metadata = serde_json::from_str(&json)?;
+        drop(manager);
+
+        let manager = SessionManager::new(store)?;
+        let reopened_key =
+            SessionManager::exec_route_binding_key(&manager.sessions_dir().canonicalize()?, false)?;
+        let required = required_exec_resume_binding(Some(&saved), false);
+        check_exec_resume_endpoint(required, Some(&reopened_key), ORIGINAL)?;
+        check_exec_resume_authority(
+            required,
+            &binding(&reopened_key, ORIGINAL, ORIGINAL_KEY, "chat")?,
+        )?;
+        assert!(
+            check_exec_resume_authority(
+                required,
+                &binding(&reopened_key, ORIGINAL, ORIGINAL_KEY, "responses")?,
+            )
+            .is_err()
+        );
+
+        let changed_endpoint =
+            check_exec_resume_endpoint(required, Some(&reopened_key), REBOUND).unwrap_err();
+        assert!(
+            changed_endpoint
+                .to_string()
+                .contains("--provider or --model")
+        );
+        assert!(!changed_endpoint.to_string().contains(REBOUND));
+        assert!(check_exec_resume_endpoint(required, None, ORIGINAL).is_err());
+        let rebound_account = binding(&reopened_key, ORIGINAL, REBOUND_KEY, "chat")?;
+        let changed_account = check_exec_resume_authority(required, &rebound_account).unwrap_err();
+        assert!(
+            changed_account
+                .to_string()
+                .contains("--provider or --model")
+        );
+        assert!(!changed_account.to_string().contains(REBOUND_KEY));
+
+        let required = required_exec_resume_binding(Some(&saved), true);
+        check_exec_resume_endpoint(required, Some(&reopened_key), REBOUND)?;
+        check_exec_resume_authority(
+            required,
+            &binding(&reopened_key, REBOUND, REBOUND_KEY, "chat")?,
+        )?;
+        Ok(())
+    }
     #[test]
     fn windows_config_path_compare_normalizes_mixed_separators() {
         assert_eq!(
@@ -5114,5 +5363,60 @@ mod route_tests {
         );
         assert!(!exec_saved_session_line(session_id).contains(session_id));
         assert!(!exec_resumed_session_line(session_id).contains(session_id));
+    }
+
+    #[test]
+    fn sandbox_denial_fallback_preserves_approval_required_termination() {
+        let mut summary = ExecSummary::default();
+        let mut last_error_category = None;
+        summary.apply_turn_complete_error_summary(
+            codewhale_engine::core::events::TurnOutcomeStatus::Failed,
+            None,
+            true,
+            &mut last_error_category,
+        );
+        assert_eq!(
+            summary.error.as_deref(),
+            Some(
+                "exec turn failed after sandbox denial; explicit sandbox elevation was not authorized"
+            )
+        );
+        assert_eq!(last_error_category, None);
+        assert_eq!(summary.error_category, None);
+        let termination = codewhale_engine::core::termination::classify_turn_termination(
+            codewhale_engine::core::events::TurnOutcomeStatus::Failed,
+            last_error_category,
+            false,
+            true,
+        );
+        assert_eq!(
+            termination,
+            codewhale_engine::core::termination::RunTerminationReason::ApprovalRequired
+        );
+        assert_eq!(termination.process_exit_code(), 3);
+
+        let mut timed_out_summary = ExecSummary::default();
+        let mut timed_out_category = None;
+        timed_out_summary.apply_turn_complete_error_summary(
+            codewhale_engine::core::events::TurnOutcomeStatus::Failed,
+            Some("upstream request timed out".to_string()),
+            true,
+            &mut timed_out_category,
+        );
+        assert_eq!(
+            timed_out_category,
+            Some(codewhale_error_taxonomy::ErrorCategory::Timeout)
+        );
+        let timed_out_termination = codewhale_engine::core::termination::classify_turn_termination(
+            codewhale_engine::core::events::TurnOutcomeStatus::Failed,
+            timed_out_category,
+            false,
+            true,
+        );
+        assert_eq!(
+            timed_out_termination,
+            codewhale_engine::core::termination::RunTerminationReason::Timeout
+        );
+        assert_eq!(timed_out_termination.process_exit_code(), 1);
     }
 }

@@ -70,11 +70,14 @@ enum DshSeat {
     Unsupported(&'static str),
 }
 
-const DSH_SEAT_TABLE: [(&str, DshSeat); 30] = [
+const DSH_SEAT_TABLE: [(&str, DshSeat); 33] = [
     ("plugins.bundle.config", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("plugins.row.config", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("plugins.tab", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("plugins.detail.section", DshSeat::Seat(PLUGIN_UI_SLOT)),
+    ("plugins.item", DshSeat::Seat(PLUGIN_UI_SLOT)),
+    ("plugins.detail.actions", DshSeat::Seat(PLUGIN_UI_SLOT)),
+    ("plugins.detail.badge", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("settings.section", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("settings.plugin.item", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("settings.general.item", DshSeat::Seat(PLUGIN_UI_SLOT)),
@@ -314,6 +317,7 @@ pub(super) struct PluginUiSlotResponse {
     pub(super) revision: String,
 }
 
+#[derive(Debug)]
 enum UiFileError {
     Missing,
     TooLarge,
@@ -526,13 +530,17 @@ fn mcp_server_review(
     }
 }
 
-fn file_stem(path: &std::path::Path) -> String {
-    path.file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.display().to_string())
+async fn component_names(
+    paths: &[std::path::PathBuf],
+    extension: Option<&str>,
+    lowercase: bool,
+) -> Vec<String> {
+    codewhale_plugins::runtime::component_file_names(paths, extension, lowercase, 512)
+        .await
+        .0
 }
 
-fn review_payload(
+async fn review_payload(
     plugin: &LoadedPlugin,
     registry: Option<&codewhale_plugins::PluginRegistry>,
 ) -> PluginReviewPayload {
@@ -548,27 +556,9 @@ fn review_payload(
         })
         .unwrap_or_default();
     mcp_servers.sort_by(|a, b| a.name.cmp(&b.name));
-    let mut commands: Vec<_> = plugin
-        .components
-        .commands
-        .iter()
-        .map(|p| file_stem(p))
-        .collect();
-    commands.sort();
-    let mut agents: Vec<_> = plugin
-        .components
-        .agents
-        .iter()
-        .map(|p| file_stem(p))
-        .collect();
-    agents.sort();
-    let mut hooks: Vec<_> = plugin
-        .components
-        .hooks
-        .iter()
-        .map(|p| file_stem(p))
-        .collect();
-    hooks.sort();
+    let commands = component_names(&plugin.components.commands, Some("md"), true).await;
+    let agents = component_names(&plugin.components.agents, Some("toml"), false).await;
+    let hooks = component_names(&plugin.components.hooks, None, false).await;
     let mut skills: Vec<_> = plugin
         .skill_snapshots
         .iter()
@@ -601,7 +591,7 @@ fn review_payload(
     }
 }
 
-fn plugin_detail(
+async fn plugin_detail(
     plugin: &LoadedPlugin,
     registry: Option<&codewhale_plugins::PluginRegistry>,
 ) -> PluginDetailResponse {
@@ -613,7 +603,7 @@ fn plugin_detail(
         staged: plugin.staged_root.is_some(),
         reviewed_at: plugin.reviewed_at.clone(),
         review_history: plugin.review_history.clone(),
-        review: review_payload(plugin, registry),
+        review: review_payload(plugin, registry).await,
     }
 }
 
@@ -696,6 +686,16 @@ fn ui_content_type(path: &FsPath) -> &'static str {
     }
 }
 
+fn is_dsh_static_ui_asset(path: &FsPath) -> bool {
+    matches!(
+        path.extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("css" | "svg" | "png" | "jpg" | "jpeg" | "webp" | "woff" | "woff2" | "ttf")
+    )
+}
+
 fn ui_asset_response(bytes: Vec<u8>, content_type: &'static str) -> Response {
     let mut response = Response::new(Body::from(bytes));
     let headers = response.headers_mut();
@@ -705,6 +705,12 @@ fn ui_asset_response(bytes: Vec<u8>, content_type: &'static str) -> Response {
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
+    if content_type == "image/svg+xml" {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'; sandbox"),
+        );
+    }
     response
 }
 
@@ -725,6 +731,7 @@ struct DshClosure {
     package: String,
     entry: String,
     files: BTreeMap<String, String>,
+    imports: BTreeMap<String, BTreeMap<String, Option<String>>>,
     host_provided: Vec<String>,
 }
 
@@ -936,6 +943,18 @@ fn dsh_client_closure(conversion: &Value) -> Option<DshClosure> {
     if !files.contains_key(&entry) {
         return None;
     }
+    let imports: BTreeMap<String, BTreeMap<String, Option<String>>> =
+        serde_json::from_value(closure.get("imports")?.clone()).ok()?;
+    for (from, edges) in &imports {
+        if !files.contains_key(from)
+            || edges
+                .values()
+                .flatten()
+                .any(|target| !files.contains_key(target))
+        {
+            return None;
+        }
+    }
     Some(DshClosure {
         package: closure
             .get("package")
@@ -944,6 +963,7 @@ fn dsh_client_closure(conversion: &Value) -> Option<DshClosure> {
             .to_string(),
         entry,
         files,
+        imports,
         host_provided: closure
             .get("host_provided")
             .and_then(Value::as_array)
@@ -1095,25 +1115,8 @@ const DSH_BOOTSTRAP_HEAD: &str = r#""use strict";
   var files = {
 "#;
 
-const DSH_BOOTSTRAP_TAIL: &str = r#"  var cache = {};
-  var probes = ["", ".js", ".mjs", ".cjs", ".json", "/index.js", "/index.mjs", "/index.cjs"];
+const DSH_BOOTSTRAP_TAIL: &str = r#"  var cache = Object.create(null);
   var hostRequire = null;
-  function normalize(path) {
-    var out = [];
-    path.split("/").forEach(function (part) {
-      if (part === "" || part === ".") return;
-      if (part === "..") out.pop();
-      else out.push(part);
-    });
-    return out.join("/");
-  }
-  function resolve(from, id) {
-    var base = normalize(from.slice(0, from.lastIndexOf("/")) + "/" + id);
-    for (var i = 0; i < probes.length; i++) {
-      if (Object.prototype.hasOwnProperty.call(files, base + probes[i])) return base + probes[i];
-    }
-    return null;
-  }
   function load(path) {
     if (Object.prototype.hasOwnProperty.call(cache, path)) return cache[path].exports;
     var module = { exports: {} };
@@ -1123,11 +1126,13 @@ const DSH_BOOTSTRAP_TAIL: &str = r#"  var cache = {};
   }
   function makeRequire(from) {
     return function (id) {
-      if (id.charAt(0) === ".") {
-        var resolved = resolve(from, id);
-        if (resolved === null) throw new Error("the plugin client requires a file outside its reviewed closure: " + id);
-        return load(resolved);
+      var edges = imports[from];
+      if (typeof id !== "string" || !edges || !Object.prototype.hasOwnProperty.call(edges, id)) {
+        throw new Error("the plugin client requires an undeclared module: " + id);
       }
+      var resolved = edges[id];
+      if (resolved !== null) return load(resolved);
+      if (hosts.indexOf(id) < 0) throw new Error("the plugin client requires an undeclared host service: " + id);
       return hostRequire(id);
     };
   }
@@ -1157,9 +1162,9 @@ fn dsh_bootstrap(
         out.push_str(&quote(path)?);
         out.push_str(": function (module, exports, require) {\n");
         if path.ends_with(".json") {
-            out.push_str("module.exports = ");
-            out.push_str(text);
-            out.push(';');
+            out.push_str("module.exports = JSON.parse(");
+            out.push_str(&quote(text)?);
+            out.push_str(");");
         } else {
             out.push_str(text);
         }
@@ -1174,6 +1179,15 @@ fn dsh_bootstrap(
             &closure.package
         })?,
         quote(&closure.entry)?
+    ));
+    let imports = serde_json::to_string(&closure.imports)
+        .map_err(|error| UiFileError::Internal(error.to_string()))?;
+    let hosts = serde_json::to_string(&closure.host_provided)
+        .map_err(|error| UiFileError::Internal(error.to_string()))?;
+    out.push_str(&format!(
+        "  var imports = JSON.parse({});\n  var hosts = JSON.parse({});\n",
+        quote(&imports)?,
+        quote(&hosts)?
     ));
     out.push_str(DSH_BOOTSTRAP_TAIL);
     Ok(out.into_bytes())
@@ -1823,7 +1837,7 @@ pub(super) async fn get_plugin(
         .get(&selector)
         .cloned()
         .ok_or_else(|| ApiError::not_found(format!("plugin '{selector}' not found")))?;
-    Ok(Json(plugin_detail(&plugin, Some(&registry))))
+    Ok(Json(plugin_detail(&plugin, Some(&registry)).await))
 }
 
 pub(super) async fn get_plugin_ui(
@@ -1979,7 +1993,8 @@ pub(super) async fn get_plugin_ui_asset(
         ApiError::bad_request(format!("plugin UI path '{path}' is invalid: {reason}"))
     })?;
     let content_type = ui_content_type(&relative);
-    if grant.dsh.is_some() && relative != FsPath::new(DSH_BOOTSTRAP_ENTRY) {
+    let is_dsh_bootstrap = grant.dsh.is_some() && relative == FsPath::new(DSH_BOOTSTRAP_ENTRY);
+    if grant.dsh.is_some() && !is_dsh_bootstrap && !is_dsh_static_ui_asset(&relative) {
         return Err(
             ApiError::not_found("plugin UI file is not in the reviewed client closure")
                 .with_code("plugin_ui_file_not_reviewed"),
@@ -1991,24 +2006,31 @@ pub(super) async fn get_plugin_ui_asset(
         let _scope = codewhale_plugins::activation::PolicyScope::propagate(policy);
         codewhale_plugins::registry::verify_plugin_authority(&grant.authority)
             .map_err(|_| ui_stale_revision())?;
-        let bytes = if let Some(dsh) = &grant.dsh {
+        let bytes = if is_dsh_bootstrap {
+            let dsh = grant
+                .dsh
+                .as_ref()
+                .expect("is_dsh_bootstrap requires a DSH grant");
             let verified =
                 verify_dsh_closure(&grant, &dsh.closure).map_err(|_| ui_stale_revision())?;
             dsh_bootstrap(&grant.selector, &dsh.closure, &verified)
                 .map_err(|_| ui_stale_revision())?
         } else {
-            verified_ui_file(&grant, &grant.ui_prefix.join(&relative)).map_err(
-                |error| match error {
-                    UiFileError::Missing => {
-                        ApiError::not_found("plugin UI file is not in the reviewed bundle")
-                            .with_code("plugin_ui_file_not_reviewed")
-                    }
-                    UiFileError::TooLarge => {
-                        ApiError::payload_too_large("plugin UI file exceeds the 8 MiB limit")
-                    }
-                    _ => ui_stale_revision(),
-                },
-            )?
+            let bundle_path = if grant.dsh.is_some() {
+                relative.clone()
+            } else {
+                grant.ui_prefix.join(&relative)
+            };
+            verified_ui_file(&grant, &bundle_path).map_err(|error| match error {
+                UiFileError::Missing => {
+                    ApiError::not_found("plugin UI file is not in the reviewed bundle")
+                        .with_code("plugin_ui_file_not_reviewed")
+                }
+                UiFileError::TooLarge => {
+                    ApiError::payload_too_large("plugin UI file exceeds the 8 MiB limit")
+                }
+                _ => ui_stale_revision(),
+            })?
         };
         admit_ui_grant(&state_for_asset, &grant)?;
         if state_for_asset.plugin_ui_grants.get(&revision).is_none() {
@@ -2183,20 +2205,34 @@ pub(super) async fn revoke_plugin_api(
 // Handlers — marketplaces
 // ---------------------------------------------------------------------------
 
+async fn with_marketplace_store<T: Send + 'static>(
+    state: &RuntimeApiState,
+    work: impl FnOnce(RuntimeApiState, MarketplaceStore) -> Result<T, ApiError> + Send + 'static,
+) -> Result<T, ApiError> {
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || {
+        let store = open_marketplace_store(&state)?;
+        work(state, store)
+    })
+    .await
+    .map_err(|_| ApiError::internal("marketplace store task failed"))?
+}
+
 /// `GET /v1/apps/marketplaces`
 pub(super) async fn list_marketplaces(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<MarketplacesResponse>, ApiError> {
-    let store = open_marketplace_store(&state)?;
-    let marketplace_state = load_marketplace_state(&store)?;
-    let registry = registry_for_state(&state);
-    Ok(Json(MarketplacesResponse {
-        marketplaces: marketplace_state
+    let marketplaces = with_marketplace_store(&state, |state, store| {
+        let marketplace_state = load_marketplace_state(&store)?;
+        let registry = registry_for_state(&state);
+        Ok(marketplace_state
             .catalogs()
             .iter()
             .map(|(name, entry)| marketplace_catalog_entry(name, entry, &registry))
-            .collect(),
-    }))
+            .collect())
+    })
+    .await?;
+    Ok(Json(MarketplacesResponse { marketplaces }))
 }
 
 /// `GET /v1/apps/marketplaces/{name}`
@@ -2204,16 +2240,19 @@ pub(super) async fn get_marketplace(
     State(state): State<RuntimeApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<MarketplaceCatalogEntry>, ApiError> {
-    let store = open_marketplace_store(&state)?;
-    let marketplace_state = load_marketplace_state(&store)?;
-    let entry = marketplace_state
-        .get(&name)
-        .ok_or_else(|| ApiError::not_found(format!("marketplace '{name}' not found")))?;
-    Ok(Json(marketplace_catalog_entry(
-        &name,
-        entry,
-        &registry_for_state(&state),
-    )))
+    let entry = with_marketplace_store(&state, move |state, store| {
+        let marketplace_state = load_marketplace_state(&store)?;
+        let entry = marketplace_state
+            .get(&name)
+            .ok_or_else(|| ApiError::not_found(format!("marketplace '{name}' not found")))?;
+        Ok(marketplace_catalog_entry(
+            &name,
+            entry,
+            &registry_for_state(&state),
+        ))
+    })
+    .await?;
+    Ok(Json(entry))
 }
 
 /// `POST /v1/apps/marketplaces`
@@ -2221,21 +2260,23 @@ pub(super) async fn add_marketplace(
     State(state): State<RuntimeApiState>,
     Json(req): Json<AddMarketplaceRequest>,
 ) -> Result<(StatusCode, Json<MarketplaceActionResponse>), ApiError> {
-    let store = open_marketplace_store(&state)?;
-    let loaded = load_catalog_document(&req.name, &state.workspace, &req.path)
-        .map_err(ApiError::bad_request)?;
-    store
-        .add(&loaded.entry.catalog.id.clone(), loaded.entry)
-        .map_err(ApiError::conflict)?;
-    Ok((
-        StatusCode::CREATED,
-        Json(MarketplaceActionResponse {
+    let response = with_marketplace_store(&state, move |state, store| {
+        let loaded = load_catalog_document(&req.name, &state.workspace, &req.path)
+            .map_err(ApiError::bad_request)?;
+        let candidate_count = loaded.candidate_count;
+        let warning_count = loaded.warning_count;
+        store
+            .add(&loaded.entry.catalog.id.clone(), loaded.entry)
+            .map_err(ApiError::conflict)?;
+        Ok(MarketplaceActionResponse {
             name: req.name,
             action: "added",
-            candidate_count: Some(loaded.candidate_count),
-            warning_count: Some(loaded.warning_count),
-        }),
-    ))
+            candidate_count: Some(candidate_count),
+            warning_count: Some(warning_count),
+        })
+    })
+    .await?;
+    Ok((StatusCode::CREATED, Json(response)))
 }
 
 /// `DELETE /v1/apps/marketplaces/{name}`
@@ -2243,10 +2284,13 @@ pub(super) async fn remove_marketplace(
     State(state): State<RuntimeApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<MarketplaceActionResponse>, ApiError> {
-    let store = open_marketplace_store(&state)?;
-    let removed = store
-        .remove(&name)
-        .map_err(|error| ApiError::internal(format!("remove marketplace: {error}")))?;
+    let target = name.clone();
+    let removed = with_marketplace_store(&state, move |_, store| {
+        store
+            .remove(&target)
+            .map_err(|error| ApiError::internal(format!("remove marketplace: {error}")))
+    })
+    .await?;
     if !removed {
         return Err(ApiError::not_found(format!(
             "marketplace '{name}' not found"
@@ -2270,48 +2314,53 @@ pub(super) async fn install_marketplace_candidate_api(
     Path(name): Path<String>,
     Json(req): Json<InstallMarketplaceCandidateRequest>,
 ) -> Result<(StatusCode, Json<PluginMutationResponse>), ApiError> {
-    let store = open_marketplace_store(&state)?;
-    let marketplace_state = load_marketplace_state(&store)?;
-    let entry = marketplace_state
-        .get(&name)
-        .ok_or_else(|| ApiError::not_found(format!("marketplace '{name}' not found")))?;
-    let candidate = entry
-        .catalog
-        .candidate_by_name(&req.candidate)
-        .ok_or_else(|| {
-            ApiError::not_found(format!(
-                "candidate '{}' not found in marketplace '{name}'",
+    let spec = with_marketplace_store(&state, move |state, store| {
+        let marketplace_state = load_marketplace_state(&store)?;
+        let entry = marketplace_state
+            .get(&name)
+            .ok_or_else(|| ApiError::not_found(format!("marketplace '{name}' not found")))?;
+        let candidate = entry
+            .catalog
+            .candidate_by_name(&req.candidate)
+            .ok_or_else(|| {
+                ApiError::not_found(format!(
+                    "candidate '{}' not found in marketplace '{name}'",
+                    req.candidate
+                ))
+            })?;
+        let registry = registry_for_state(&state);
+        match resolve_candidate_install(entry, candidate, &registry) {
+            CatalogInstallResolution::Supported { spec, .. } => Ok(spec),
+            CatalogInstallResolution::AlreadyPresent { reason, .. } => {
+                Err(ApiError::conflict(reason))
+            }
+            CatalogInstallResolution::Unsupported { reason } => Err(ApiError::conflict(format!(
+                "candidate '{}' cannot be installed by Codewhale: {reason}",
                 req.candidate
-            ))
-        })?;
-    let registry = registry_for_state(&state);
-    match resolve_candidate_install(entry, candidate, &registry) {
-        CatalogInstallResolution::Supported { spec, .. } => {
-            let response = run_plugin_mutation(
-                &state,
-                PluginMutationRequest::Install {
-                    source: codewhale_plugins::install::PluginInstallSource::parse(&spec).map_err(
-                        |error| {
-                            ApiError::internal(format!(
-                                "resolved install spec '{spec}' no longer parses: {error:#}"
-                            ))
-                        },
-                    )?,
-                },
-            )
-            .await?;
-            Ok((StatusCode::CREATED, Json(response)))
+            ))),
+            CatalogInstallResolution::HasErrors { diagnostics } => {
+                Err(ApiError::conflict(format!(
+                    "candidate '{}' has parse errors and cannot be installed: {diagnostics}",
+                    req.candidate
+                )))
+            }
         }
-        CatalogInstallResolution::AlreadyPresent { reason, .. } => Err(ApiError::conflict(reason)),
-        CatalogInstallResolution::Unsupported { reason } => Err(ApiError::conflict(format!(
-            "candidate '{}' cannot be installed by Codewhale: {reason}",
-            req.candidate
-        ))),
-        CatalogInstallResolution::HasErrors { diagnostics } => Err(ApiError::conflict(format!(
-            "candidate '{}' has parse errors and cannot be installed: {diagnostics}",
-            req.candidate
-        ))),
-    }
+    })
+    .await?;
+    let response = run_plugin_mutation(
+        &state,
+        PluginMutationRequest::Install {
+            source: codewhale_plugins::install::PluginInstallSource::parse(&spec).map_err(
+                |error| {
+                    ApiError::internal(format!(
+                        "resolved install spec '{spec}' no longer parses: {error:#}"
+                    ))
+                },
+            )?,
+        },
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(response)))
 }
 
 // ---------------------------------------------------------------------------
@@ -2675,7 +2724,102 @@ pub(super) async fn put_catalog_settings(
 
 #[cfg(test)]
 mod review_tests {
-    use super::mcp_server_review;
+    use super::{dsh_bootstrap, dsh_client_closure, mcp_server_review};
+
+    #[test]
+    fn dsh_bootstrap_root_entry_closure_resolves_relative_requires_in_node() {
+        let closure = dsh_client_closure(&serde_json::json!({
+            "client_closures": [{
+                "root": "",
+                "entry": "client.js",
+                "files": { "client.js": "h1", "util.js": "h2" },
+                "imports": { "client.js": { "./util": "util.js" } }
+            }]
+        }))
+        .expect("authored closure");
+        let verified = vec![
+            (
+                "client.js".to_string(),
+                b"var util = require(\"./util\");\nexports.apply = function apply() { return [util.v]; };\n".to_vec(),
+            ),
+            ("util.js".to_string(), b"exports.v = 1;\n".to_vec()),
+        ];
+        let bootstrap = dsh_bootstrap("rootentry", &closure, &verified)
+            .unwrap_or_else(|_| panic!("dsh_bootstrap failed"));
+        let source = String::from_utf8(bootstrap).unwrap();
+        assert!(source.contains("\"client.js\""));
+        if let Some(out) = crate::runtime_api::tests::bootstrap_loads_in_node(&source) {
+            let out: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(out["apply"], "function");
+            assert_eq!(out["out"][0], 1);
+        }
+    }
+
+    #[test]
+    fn dsh_bootstrap_uses_only_admitted_edges_for_cycles_json_packages_and_hosts() {
+        for prefix in ["", "lib/"] {
+            let entry = format!("{prefix}client.js");
+            let helper = format!("{prefix}helper.cjs");
+            let verified = vec![
+                (
+                    entry.clone(),
+                    br#"exports.ready = 7;
+var helper = require('./helper');
+var data = require('./data.json');
+var packageValue = require('mapped');
+exports.apply = function () {
+  var denied = 0;
+  for (var id of ['./unlisted', 'unknown-service', './helper.cjs']) {
+    try { require(id); } catch (_) { denied++; }
+  }
+  return [helper.ready, data.value, packageValue.value, require('react').id, denied];
+};"#
+                    .to_vec(),
+                ),
+                (
+                    helper.clone(),
+                    b"exports.ready = require('./client').ready;".to_vec(),
+                ),
+                ("data.json".into(), br#"{"value":2}"#.to_vec()),
+                (
+                    "node_modules/mapped/selected.cjs".into(),
+                    b"exports.value = 3;".to_vec(),
+                ),
+                (
+                    "unlisted.js".into(),
+                    b"throw new Error('must not execute');".to_vec(),
+                ),
+            ];
+            let files: std::collections::BTreeMap<_, _> = verified
+                .iter()
+                .map(|(path, _)| (path.clone(), "hash"))
+                .collect();
+            let conversion = serde_json::json!({"client_closures": [{
+                "root": "", "entry": entry, "files": files, "host_provided": ["react"],
+                "imports": {
+                    (entry.clone()): {"./helper": helper, "./data.json": "data.json", "mapped": "node_modules/mapped/selected.cjs", "react": null},
+                    (helper.clone()): {"./client": entry}
+                }
+            }]});
+            let closure = dsh_client_closure(&conversion).unwrap();
+            let source =
+                String::from_utf8(dsh_bootstrap("mapped", &closure, &verified).unwrap()).unwrap();
+            let out = crate::runtime_api::tests::bootstrap_loads_in_node(&source)
+                .expect("node required for module map regression");
+            let out: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(out["out"], serde_json::json!([7, 2, 3, "react", 3]));
+            let mut missing = conversion.clone();
+            missing["client_closures"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("imports");
+            assert!(dsh_client_closure(&missing).is_none());
+            let mut outside = conversion;
+            outside["client_closures"][0]["imports"][&entry]["./helper"] =
+                serde_json::json!("outside.js");
+            assert!(dsh_client_closure(&outside).is_none());
+        }
+    }
 
     #[test]
     fn plugin_mcp_review_omits_url_credentials_without_changing_the_bundle() {

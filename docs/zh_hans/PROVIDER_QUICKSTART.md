@@ -140,7 +140,7 @@ codewhale
 基础 URL 要用 `https://`。非本机的 `http://` 地址会报 `Refusing insecure base URL`；`localhost`、`127.0.0.1` 这类本机地址可以用 `http://`。自定义提供商写了 `api_key_env`，但启动 Codewhale 的终端里没有这个变量（或为空），会直接报错，不会悄悄改用别的密钥。
 
 **4. 模型列表里有，却用不了；或者第一次特别慢**
-列表里有某个模型，不代表你的账户一定能调用它。每次都报同一个错时，换一个模型试试。有的提供商第一次调用还没加载的模型，要等 90 到 150 秒；不要急着判断「模型坏了」，可以调大 `[stream].open_timeout_secs`（默认 45 秒，最多 300 秒）。模型列表过旧时，运行 `codewhale models --update` 刷新。
+列表里有某个模型，不代表你的账户一定能调用它。每次都报同一个错时，换一个模型试试。有的提供商第一次调用还没加载的模型，要等 90 到 150 秒；不要急着判断「模型坏了」，可以调大 `[stream].open_timeout_secs`（默认 180 秒，最多 600 秒）。模型列表过旧时，运行 `codewhale models --update` 刷新。
 
 **5. 网络连不上**
 如果报 `Network error: SSE stream request failed …`，通常是连不到提供商的服务器。可以用 `curl -sI https://api.deepseek.com` 检查（返回 `401` 也正常，说明连得上）。如果你通过代理服务器上网，确认已经设置了 `HTTPS_PROXY`。也可以运行 `codewhale doctor --probe-api` 检查：连接失败时第一行是 `✗ API connection failed`（超时则是 `✗ API check got no answer in time`），下一行会给出具体原因，例如 `Invalid API key`（密钥无效）、`API key lacks permissions`（密钥没有权限）、`DNS resolution failed`（域名解析失败）或 `Connection failed`（连不上），按提示对照上面几条处理。

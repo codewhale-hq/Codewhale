@@ -1,12 +1,11 @@
 import { WSClient, generateReqId } from "@wecom/aibot-node-sdk";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
   activeTurnBlock,
   commandAction,
   createStreamReply,
-  compactRuntimeError,
   formatPublicError,
   helpText,
   incomingIdentity,
@@ -32,22 +31,15 @@ import {
   decideApproval as decideRuntimeApproval,
   createdByBridge,
   listOwnedThreads,
-  readJsonSafe,
-  readThreadEvents,
   settleLegacyOwners,
   THREAD_NOT_OWNED_MESSAGE,
-  ThreadOwnershipError
+  ThreadOwnershipError,
+  observeTurn,
+  turnOutcomeText
 } from "../../bridge-core/src/lib.mjs";
 
 /** Map of chatId -> latest pending approval info for natural-language approval. */
 const pendingApprovals = new Map();
-// Clean up stale approvals every 2 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [chatId, approval] of pendingApprovals) {
-    if (now - approval.timestamp > 300_000) pendingApprovals.delete(chatId);
-  }
-}, 120_000);
 
 const config = {
   botId: requiredEnv("WECOM_BOT_ID"),
@@ -69,6 +61,17 @@ const config = {
   turnTimeoutMs: Number(process.env.CODEWHALE_TURN_TIMEOUT_MS || 900000),
   approvalTimeoutMs: Number(process.env.CODEWHALE_APPROVAL_TIMEOUT_MS || 300000)
 };
+
+if (!(config.approvalTimeoutMs > 0)) {
+  throw new Error("CODEWHALE_APPROVAL_TIMEOUT_MS must be a positive number of milliseconds");
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [chatId, approval] of pendingApprovals) {
+    if (now - approval.timestamp > config.approvalTimeoutMs) pendingApprovals.delete(chatId);
+  }
+}, Math.min(120_000, config.approvalTimeoutMs));
 
 const { runtimeJson, authHeaders } = createRuntimeClient(config);
 
@@ -143,14 +146,20 @@ async function handleMediaMessage(frame, body, identity) {
   try {
     const { buffer, filename } = await client.downloadFile(content.url, content.aeskey);
     const dir = mediaStorageDir();
-    mkdirSync(dir, { recursive: true });
+    await mkdir(dir, { recursive: true });
     const fallbackExt = kind === "image" ? "jpg" : kind === "video" ? "mp4" : "bin";
     const name = sanitizeFilename(filename, `upload-${Date.now()}.${fallbackExt}`);
-    const target = path.join(dir, name);
-    writeFileSync(target, buffer);
+    let target = path.join(dir, name);
+    try {
+      await writeFile(target, buffer, { flag: "wx" });
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      target = path.join(dir, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${name}`);
+      await writeFile(target, buffer, { flag: "wx" });
+    }
     await replyText(
       frame,
-      `Saved ${name} (${(buffer.length / 1048576).toFixed(1)} MB) to ${target}\n` +
+      `Saved ${path.basename(target)} (${(buffer.length / 1048576).toFixed(1)} MB) to ${target}\n` +
         `Send follow-up instructions in chat to use it.`
     );
   } catch (error) {
@@ -386,6 +395,7 @@ async function runPrompt(chatId, prompt, frame) {
   await threadStore.patchChat(chatId, {
     activeTurnId: turnId || null,
     lastSeq: sinceSeq,
+    responseText: "",
     updatedAt: new Date().toISOString()
   });
   await replyText(frame, `Started turn ${turnId || "(unknown)"}`);
@@ -395,95 +405,60 @@ async function runPrompt(chatId, prompt, frame) {
   }
 }
 
-async function streamTurnEvents(chatId, frame, threadId, turnId, sinceSeq) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), config.turnTimeoutMs);
-  const streamer = createStreamReply(client, frame, { genId: () => generateReqId("stream") });
-  let responseText = "";
-  let latestSeq = sinceSeq;
-
+async function finishStream(streamer, frame, text) {
   try {
-    const response = await fetch(
-      `${config.runtimeUrl}/v1/threads/${encodeURIComponent(threadId)}/events?since_seq=${sinceSeq}`,
-      {
-        headers: authHeaders(),
-        signal: controller.signal
-      }
-    );
-    if (!response.ok) {
-      const body = await readJsonSafe(response);
-      throw new Error(compactRuntimeError(response.status, body));
-    }
-
-    for await (const record of readThreadEvents(response, threadId)) {
-      if (record.event === "stream.end") return false;
-      latestSeq = Math.max(latestSeq, Number(record.seq || 0));
-      await threadStore.patchChat(chatId, { lastSeq: latestSeq });
-
-      if (!turnId || record.turn_id !== turnId) continue;
-
-      if (record.event === "item.delta" && record.payload?.kind === "agent_message") {
-        responseText += record.payload.delta || "";
-        await streamer.update(responseText, false);
-      }
-
-      if (record.event === "approval.required") {
-        const approval = record.payload || {};
-        const approvalId = approval.approval_id || approval.id;
-        // Track latest pending approval per chat for natural-language responses
-        if (approvalId) {
-          pendingApprovals.set(chatId, {
-            approvalId,
-            toolName: approval.tool_name || "unknown",
-            description: approval.description || "",
-            timestamp: Date.now()
-          });
-        }
-        await replyText(
-          frame,
-          [
-            "审批请求",
-            `tool=${approval.tool_name || "unknown"}`,
-            `approval_id=${approvalId}`,
-            approval.description || "",
-            "",
-            `回复 /allow ${approvalId}`,
-            `回复 /deny ${approvalId}`,
-            "也可以直接回复「允许」或「拒绝」"
-          ]
-            .filter(Boolean)
-            .join("\n")
-        );
-      }
-
-      if (record.event === "turn.completed") {
-        const turn = record.payload?.turn || {};
-        const status = turn.status || "completed";
-        const errorText = turn.error ? `\n${turn.error}` : "";
-        const fallback = status === "completed" ? "Turn completed." : `Turn ${status}.${errorText}`;
-        await streamer.update(responseText.trim() || fallback, true);
-        return true;
-      }
-
-      if (record.event === "turn.lifecycle") {
-        const turn = record.payload?.turn || {};
-        const status = turn.status || record.payload?.status;
-        if (["failed", "canceled", "interrupted"].includes(status)) {
-          const errorText = turn.error || record.payload?.error;
-          await streamer.update(`Turn ${status}.${errorText ? `\n${errorText}` : ""}`, true);
-          return true;
-        }
-      }
-    }
-  } catch (error) {
-    if (error.name === "AbortError") {
-      await replyText(frame, `Turn observation timed out after ${Math.round(config.turnTimeoutMs / 1000)}s.`);
-      return false;
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
+    await streamer.update(text, true);
+  } catch {
+    await replyText(frame, text);
   }
+}
+
+async function streamTurnEvents(chatId, frame, threadId, turnId, sinceSeq) {
+  const streamer = createStreamReply(client, frame, { genId: () => generateReqId("stream") });
+  return observeTurn({
+    fetchEvents: (seq, signal) => fetch(
+      `${config.runtimeUrl}/v1/threads/${encodeURIComponent(threadId)}/events?since_seq=${seq}`,
+      { headers: authHeaders(), signal }
+    ),
+    threadId,
+    turnId,
+    sinceSeq,
+    responseText: (await threadStore.getChat(chatId))?.responseText || "",
+    timeoutMs: config.turnTimeoutMs,
+    saveCursor: (cursor) => threadStore.patchChat(chatId, cursor),
+    onDelta: async (text) => {
+      await streamer.update(text, false).catch(() => {});
+      return text;
+    },
+    onApproval: async (approval) => {
+      const approvalId = approval.approval_id || approval.id;
+      if (approvalId) {
+        pendingApprovals.set(chatId, {
+          approvalId,
+          toolName: approval.tool_name || "unknown",
+          description: approval.description || "",
+          timestamp: Date.now()
+        });
+      }
+      await replyText(
+        frame,
+        [
+          "审批请求",
+          `tool=${approval.tool_name || "unknown"}`,
+          `approval_id=${approvalId}`,
+          approval.description || "",
+          "",
+          `回复 /allow ${approvalId}`,
+          `回复 /deny ${approvalId}`,
+          "也可以直接回复「允许」或「拒绝」"
+        ]
+          .filter(Boolean)
+          .join("\n")
+      );
+    },
+    onTerminal: (outcome) => finishStream(streamer, frame, turnOutcomeText(outcome)),
+    onTimeout: () => replyText(frame, `Turn observation timed out after ${Math.round(config.turnTimeoutMs / 1000)}s.`)
+  });
 }
 
 async function sendStatus(chatId, frame) {

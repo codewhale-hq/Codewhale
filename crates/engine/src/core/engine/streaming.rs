@@ -237,13 +237,21 @@ pub(super) fn tool_call_limit_error() -> codewhale_error_taxonomy::ErrorEnvelope
     )
 }
 
-/// Bounded authorization for proven pre-dispatch connection retries.
+/// Bounded authorization for re-sending a request whose stream never opened.
+/// The turn loop holds one budget for proven pre-dispatch connection failures
+/// (`stream.max_resumes`) and one for response-header timeouts
+/// (`stream.open_retries`).
 ///
 /// Mechanism, not comment: [`StreamRetryBudget::authorize`] is the only way
 /// to spend a resume and it returns `None` once `limit` resumes (default
 /// [`DEFAULT_STREAM_MAX_RESUMES`]) have been issued, so no call site can loop past
 /// the budget even if a guard predicate is relaxed. A healthy stream round
 /// resets it.
+///
+/// Not covered: a header-timeout re-send does not know whether the provider
+/// processed (and billed) the first request, so that request's usage stays
+/// recorded as unknown. A stream that opened is never re-sent, and neither is
+/// an RLM completion request.
 #[derive(Debug)]
 pub(super) struct StreamRetryBudget {
     spent: u32,

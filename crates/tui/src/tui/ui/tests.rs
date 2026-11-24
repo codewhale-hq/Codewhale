@@ -533,6 +533,7 @@ fn cjk_composer_cursor_and_mouse_geometry_agree_in_compact_and_wide_frames() {
                 row: first_cursor.1,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now()
         ));
         assert_eq!(
             app.cursor_position,
@@ -1041,10 +1042,13 @@ fn bracketed_paste_returns_dock_focus_to_the_visible_composer() {
         crate::tui::work_surface::RailPanel::Context,
     );
     assert!(app.work_surface.focused);
-    handle_bracketed_paste(&mut app, "/pet status");
+    crate::tui::paste::handle_paste(
+        &mut app,
+        crate::tui::paste::PasteSource::Terminal("/pet status"),
+    );
     assert_eq!(app.input, "/pet status");
     assert!(!app.work_surface.focused);
-    assert!(app.composer_enter_would_submit(true));
+    assert!(app.composer_enter_would_submit(true, Instant::now()));
 }
 
 /// Windows Terminal answers an image-only clipboard with an **empty** bracketed
@@ -1067,7 +1071,7 @@ fn empty_bracketed_paste_attaches_the_clipboard_image() {
         }),
     );
 
-    handle_bracketed_paste(&mut app, "");
+    crate::tui::paste::handle_paste(&mut app, crate::tui::paste::PasteSource::Terminal(""));
 
     assert!(
         app.input
@@ -1262,6 +1266,34 @@ fn shift_tab_cycles_permission_from_every_shell_surface() {
             "launch screen: {key:?}"
         );
     }
+}
+
+#[test]
+fn second_shift_tab_does_not_cycle_permissions_over_a_pending_approval() {
+    let mut app = focus_test_app();
+    app.view_stack.push(ApprovalView::new(ApprovalRequest::new(
+        "approval-permissions",
+        "read_file",
+        "Read a file",
+        &serde_json::json!({"path": "notes.md"}),
+        "approval-permissions-key",
+    )));
+    app.view_stack
+        .push(ConfigView::open_permission_choices(&app));
+    for key in [
+        KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT),
+    ] {
+        assert_eq!(shell_binding_for_key(&app, &key), None);
+    }
+    let _ = app.view_stack.pop();
+    let _ = app.view_stack.pop();
+    app.view_stack.push(ConfigView::new_for_app(&app));
+    let key = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
+    assert_eq!(
+        shell_binding_for_key(&app, &key),
+        Some(ShellBindingId::PermissionCycle)
+    );
 }
 
 #[test]
@@ -2190,6 +2222,7 @@ fn user_input_wheel_routes_by_painted_sheet_and_preserves_side_surface_ownership
                 row: sheet.y + sheet.height / 2,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now(),
         );
         assert!(events.is_empty());
         assert_eq!(app.viewport.pending_scroll_delta, 0);
@@ -2214,6 +2247,7 @@ fn user_input_wheel_routes_by_painted_sheet_and_preserves_side_surface_ownership
                         row: 0,
                         modifiers: KeyModifiers::NONE,
                     },
+                    Instant::now(),
                 );
                 assert_eq!(app.viewport.pending_scroll_delta, expected);
             }
@@ -2402,6 +2436,7 @@ fn approval_mouse_wheel_reviews_transcript_without_closing_card() {
             row: 4,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -2432,6 +2467,7 @@ fn approval_wheel_preserves_work_surface_ownership() {
                 row,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now(),
         );
         assert!(events.is_empty());
         assert_eq!(
@@ -2450,6 +2486,7 @@ fn approval_wheel_preserves_work_surface_ownership() {
                 row,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now(),
         );
         assert!(events.is_empty());
         assert!(
@@ -4694,6 +4731,7 @@ fn mouse_selection_autocopies_on_release_without_ctrl_c() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     // Full-cell coverage (#6228 sends fragments down the exact-text
     // fallback): "alpha beta" spans columns 0-10, so release past it.
@@ -4705,6 +4743,7 @@ fn mouse_selection_autocopies_on_release_without_ctrl_c() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     handle_mouse_event(
         &mut app,
@@ -4714,6 +4753,7 @@ fn mouse_selection_autocopies_on_release_without_ctrl_c() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     // Drag-release autocopy now takes the Markdown-source path (#6156): the
@@ -4774,6 +4814,7 @@ fn mouse_selection_fragment_drag_copies_exact_text() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     // Fragment coverage: "alpha beta" spans columns 0-10, so releasing at
     // column 4 cuts the cell in half and the Markdown path must decline.
@@ -4785,6 +4826,7 @@ fn mouse_selection_fragment_drag_copies_exact_text() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     handle_mouse_event(
         &mut app,
@@ -4794,6 +4836,7 @@ fn mouse_selection_fragment_drag_copies_exact_text() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     let copied = app
@@ -4996,7 +5039,7 @@ fn loading_mouse_filter_allows_sidebar_hover_to_clear() {
     };
 
     assert!(!should_drop_loading_mouse_motion(&app, moved));
-    handle_mouse_event(&mut app, moved);
+    handle_mouse_event(&mut app, moved, Instant::now());
 
     assert_eq!(app.sidebar_hover_tooltip, None);
     assert_eq!(app.last_mouse_pos, Some((12, 5)));
@@ -5019,7 +5062,7 @@ fn loading_mouse_filter_allows_sidebar_exit_to_clear_highlight() {
         !should_drop_loading_mouse_motion(&app, exit_left),
         "first move out of the sidebar must clear stale sidebar hover state"
     );
-    handle_mouse_event(&mut app, exit_left);
+    handle_mouse_event(&mut app, exit_left, Instant::now());
 
     assert_eq!(app.last_mouse_pos, Some((59, 5)));
     assert!(!should_drop_loading_mouse_motion(
@@ -5053,6 +5096,7 @@ fn jump_to_latest_button_click_scrolls_to_tail() {
             row: 6,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5095,6 +5139,7 @@ fn pinned_prompt_click_jumps_to_the_message_it_names() {
             row: 3,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5129,6 +5174,7 @@ fn pinned_prompt_click_only_claims_the_header_row() {
             row: 4,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(
@@ -5175,6 +5221,7 @@ fn transcript_scrollbar_gutter_starts_scrollbar_drag() {
             row: 5,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5197,6 +5244,7 @@ fn transcript_scrollbar_gutter_starts_scrollbar_drag() {
             row: 14,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     assert!(app.viewport.transcript_scrollbar_dragging);
 
@@ -5209,6 +5257,7 @@ fn transcript_scrollbar_gutter_starts_scrollbar_drag() {
             row: 14,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(!app.viewport.transcript_scrollbar_dragging);
@@ -5239,6 +5288,7 @@ fn left_down_inside_transcript_starts_selection() {
             row: 5,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5284,6 +5334,7 @@ fn drag_below_viewport_arms_autoscroll_down() {
             row: 12, // below area.y + area.height (= 8)
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     let state = app.viewport.selection_autoscroll.expect("autoscroll armed");
@@ -5318,6 +5369,7 @@ fn drag_above_viewport_arms_autoscroll_up() {
             row: 1,     // above area.y (= 4)
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     let state = app.viewport.selection_autoscroll.expect("autoscroll armed");
@@ -5369,6 +5421,7 @@ fn drag_back_inside_disarms_autoscroll() {
             row: 0, // inside area
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(app.viewport.selection_autoscroll.is_none());
@@ -5398,6 +5451,7 @@ fn mouse_up_clears_selection_autoscroll() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(app.viewport.selection_autoscroll.is_none());
@@ -5515,6 +5569,7 @@ fn right_click_opens_context_menu() {
             row: 4,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5585,6 +5640,7 @@ fn mouse_events_do_not_mutate_transcript_behind_modal() {
             row: 4,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5618,6 +5674,7 @@ fn composer_mouse_wheel_scrolls_wrapped_draft_not_transcript() {
             row: 12,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5651,6 +5708,7 @@ fn composer_mouse_wheel_up_moves_within_wrapped_draft() {
             row: 12,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now()
     ));
 
     assert!(app.cursor_position < app.input.chars().count());
@@ -5684,6 +5742,7 @@ fn composer_mouse_wheel_with_empty_draft_scrolls_transcript() {
             row: 12,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(
@@ -5722,6 +5781,7 @@ fn composer_mouse_wheel_at_draft_top_falls_through_to_transcript() {
             row: 12,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert_eq!(app.cursor_position, 0, "caret was already at the top");
@@ -5808,6 +5868,7 @@ fn composer_mouse_first_visible_character_maps_to_zero_after_prompt_gutter() {
             row: 11,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now()
     ));
     assert_eq!(
         app.cursor_position, 0,
@@ -5825,6 +5886,7 @@ fn composer_mouse_first_visible_character_maps_to_zero_after_prompt_gutter() {
             row: 11,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now()
     ));
     assert_eq!(app.cursor_position, 1);
 }
@@ -6143,7 +6205,10 @@ fn credential_paste_content_never_enters_traces_or_rendered_status() {
         app.onboarding = onboarding_state;
         app.view_stack.push(picker);
         let logs = CapturedTrace::default().record(|| {
-            handle_bracketed_paste(&mut app, &secret);
+            crate::tui::paste::handle_paste(
+                &mut app,
+                crate::tui::paste::PasteSource::Terminal(&secret),
+            );
         });
         assert!(app.bracketed_paste_seen, "{label}");
         for (width, height) in [(80, 24), (120, 32)] {
@@ -6186,8 +6251,14 @@ fn ordinary_clipboard_text_routes_to_provider_picker_without_typing_shortcut_or_
     app.onboarding = OnboardingState::Provider;
     app.view_stack.push(picker);
 
+    app.clipboard = crate::tui::clipboard::ClipboardHandler::with_content_for_test(
+        crate::tui::clipboard::ClipboardContent::Text(secret.clone()),
+    );
     let logs = CapturedTrace::default().record(|| {
-        assert!(paste_text_into_provider_picker(&mut app, &secret));
+        assert!(crate::tui::paste::handle_paste(
+            &mut app,
+            crate::tui::paste::PasteSource::Shortcut
+        ));
     });
 
     assert!(
@@ -6217,7 +6288,10 @@ fn ordinary_bracketed_paste_keeps_content_but_logs_only_metadata() {
     let ordinary = ["ordinary", "composer", "paste", "7361"].join(" ");
 
     let logs = CapturedTrace::default().record(|| {
-        handle_bracketed_paste(&mut app, &ordinary);
+        crate::tui::paste::handle_paste(
+            &mut app,
+            crate::tui::paste::PasteSource::Terminal(&ordinary),
+        );
     });
 
     assert_eq!(app.input, ordinary);
@@ -6533,7 +6607,7 @@ fn wide_underwater_shell_aligns_transcript_and_composer_on_the_shared_canvas() {
 }
 
 #[test]
-fn failed_mcp_is_a_footer_chip_not_multiline_chat_boot_output() {
+fn failed_mcp_reserves_no_rows_and_paints_no_standing_footer_chip() {
     fn app() -> App {
         let mut app = create_test_app();
         app.onboarding_workspace_trust_gate = false;
@@ -6582,20 +6656,13 @@ fn failed_mcp_is_a_footer_chip_not_multiline_chat_boot_output() {
         baseline_composer,
         "MCP diagnostics must not reserve chat/composer rows"
     );
-    assert!(
-        rendered.contains("MCP · 0 connected · 1 failed"),
-        "{rendered}"
-    );
+    assert!(!rendered.contains("1 failed"), "{rendered}");
     assert!(!rendered.contains("alpha · failed"), "{rendered}");
     assert!(!rendered.contains("/mcp retry alpha"), "{rendered}");
 }
 
-/// The founder's receipt (#5926): of the eight servers the footer called
-/// "failed", seven only needed a login. Rendered, the footer summary now
-/// keeps the three states apart — connected, ◆ auth required, failed — so
-/// an expired login never reads as a broken server.
 #[test]
-fn footer_summary_separates_connected_need_login_and_failed() {
+fn mcp_problems_are_announced_once_per_session_and_never_pinned_in_the_footer() {
     fn server(
         name: &str,
         connected: bool,
@@ -6625,7 +6692,7 @@ fn footer_summary_separates_connected_need_login_and_failed() {
     app.onboarding_workspace_trust_gate = false;
     app.onboarding = OnboardingState::None;
     app.launch.visible = false;
-    app.mcp_snapshot = Some(codewhale_engine::mcp::McpManagerSnapshot {
+    let snapshot = codewhale_engine::mcp::McpManagerSnapshot {
         config_path: PathBuf::from("mcp.json"),
         config_exists: true,
         reload_required: false,
@@ -6644,18 +6711,48 @@ fn footer_summary_separates_connected_need_login_and_failed() {
                 Some("OAuth token refresh failed: Failed to parse server response"),
             ),
         ],
-    });
-    let rendered = render_underwater_test_app(&mut app, 100, 30);
-
+    };
+    super::event_loop::apply_mcp_session_boot_event(
+        &mut app,
+        1,
+        snapshot.clone(),
+        Vec::new(),
+        true,
+    );
+    let announcements = app
+        .status_toasts
+        .iter()
+        .filter(|toast| toast.text.starts_with("MCP"))
+        .map(|toast| toast.text.clone())
+        .collect::<Vec<_>>();
     let expected = format!(
-        "MCP · 1 connected · 1 {} · 1 failed",
-        crate::tui::session_boot::mcp_auth_required_state_label()
+        "MCP · {}: slack · failed: supabase · /mcp",
+        crate::tui::session_boot::mcp_auth_required_state_label(codewhale_localization::Locale::En)
     );
+    assert_eq!(announcements, vec![expected]);
+    let rendered_80 = render_underwater_test_app(&mut app, 80, 30);
+    assert!(rendered_80.contains("/mcp"), "{rendered_80}");
+    assert!(!rendered_80.contains("slack · failed"), "{rendered_80}");
+    app.status_toasts.clear();
+    for generation in 2..=5 {
+        super::event_loop::apply_mcp_session_boot_event(
+            &mut app,
+            generation,
+            snapshot.clone(),
+            Vec::new(),
+            true,
+        );
+    }
     assert!(
-        rendered.contains(&expected),
-        "expected {expected:?} in:\n{rendered}"
+        app.status_toasts
+            .iter()
+            .all(|toast| !toast.text.starts_with("MCP")),
+        "cleared toasts must stay absent across repeated passes: {:?}",
+        app.status_toasts
     );
-    assert!(!rendered.contains("2 failed"), "{rendered}");
+    let rendered = render_underwater_test_app(&mut app, 100, 30);
+    assert!(!rendered.contains("1 failed"), "{rendered}");
+    assert!(!rendered.contains("supabase"), "{rendered}");
 }
 
 #[test]
@@ -7247,7 +7344,7 @@ fn mouse_selection_redraws_and_retargets_reasoning_with_unchanged_revisions() {
 
     app.needs_redraw = false;
     let down_first = mouse_on_cell(&app, 0, MouseEventKind::Down(MouseButton::Left));
-    handle_mouse_event(&mut app, down_first);
+    handle_mouse_event(&mut app, down_first, Instant::now());
     assert!(app.needs_redraw, "mouse Down must schedule owner redraw");
     let _ = render_underwater_test_app(&mut app, 100, 32);
     assert_eq!(reasoning_hint_cells(&app), vec![0]);
@@ -7261,17 +7358,18 @@ fn mouse_selection_redraws_and_retargets_reasoning_with_unchanged_revisions() {
             row: u16::MAX,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     assert!(app.needs_redraw, "click outside must clear + redraw");
     let _ = render_underwater_test_app(&mut app, 100, 32);
     assert_eq!(reasoning_hint_cells(&app), vec![1]);
 
     let down_second = mouse_on_cell(&app, 1, MouseEventKind::Down(MouseButton::Left));
-    handle_mouse_event(&mut app, down_second);
+    handle_mouse_event(&mut app, down_second, Instant::now());
     let _ = render_underwater_test_app(&mut app, 100, 32);
     app.needs_redraw = false;
     let drag_first = mouse_on_cell(&app, 0, MouseEventKind::Drag(MouseButton::Left));
-    handle_mouse_event(&mut app, drag_first);
+    handle_mouse_event(&mut app, drag_first, Instant::now());
     assert!(app.needs_redraw, "mouse Drag must schedule owner redraw");
     let _ = render_underwater_test_app(&mut app, 100, 32);
     assert_eq!(reasoning_hint_cells(&app), vec![0]);
@@ -7286,15 +7384,16 @@ fn mouse_up_preserves_the_single_click_action_and_detail_owner() {
         HistoryCell::Error {
             message: "selected error".into(),
             severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+            code: None,
         },
         running_exec_cell(),
     ];
     app.resync_history_revisions();
     let _ = render_underwater_test_app(&mut app, 100, 32);
     let down = mouse_on_cell(&app, 0, MouseEventKind::Down(MouseButton::Left));
-    handle_mouse_event(&mut app, down);
+    handle_mouse_event(&mut app, down, Instant::now());
     let up = mouse_on_cell(&app, 0, MouseEventKind::Up(MouseButton::Left));
-    handle_mouse_event(&mut app, up);
+    handle_mouse_event(&mut app, up, Instant::now());
 
     assert!(
         app.viewport
@@ -7475,7 +7574,7 @@ fn paste_safety_window_keeps_the_submit_cue_steady_while_routing_waits() {
     app.insert_str("/mcp");
     let now = Instant::now();
     app.paste_burst.extend_window(now);
-    assert!(!app.composer_enter_would_submit(true));
+    assert!(!app.composer_enter_would_submit(true, Instant::now()));
     assert!(app.composer_draft_is_submittable());
     let waiting = render_underwater_test_app(&mut app, 80, 24);
     assert!(waiting.contains("[↵]"), "{waiting}");
@@ -7486,7 +7585,7 @@ fn paste_safety_window_keeps_the_submit_cue_steady_while_routing_waits() {
         now + Duration::from_millis(121)
     ));
     assert!(app.needs_redraw);
-    assert!(app.composer_enter_would_submit(true));
+    assert!(app.composer_enter_would_submit(true, Instant::now()));
     let ready = render_underwater_test_app(&mut app, 80, 24);
     assert!(ready.contains("[↵]"), "{ready}");
     assert_eq!(app.input, "/mcp");
@@ -7494,6 +7593,38 @@ fn paste_safety_window_keeps_the_submit_cue_steady_while_routing_waits() {
         app.paste_burst_next_flush_delay_if_enabled(now + Duration::from_millis(121)),
         None
     );
+}
+
+#[test]
+fn chunked_raw_text_keeps_a_trailing_image_path_literal() {
+    let mut app = create_test_app();
+    app.use_paste_burst_detection = true;
+    app.bracketed_paste_seen = false;
+    app.bracketed_paste_trusted = false;
+    let dir = tempfile::tempdir().unwrap();
+    let image = dir.path().join("test.png");
+    std::fs::write(&image, []).unwrap();
+    let path = image.to_str().unwrap();
+    let now = Instant::now();
+    for _ in 0..100_000 {
+        let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        crate::tui::paste::handle_paste_burst_key(&mut app, &key, now);
+        if !app.input.is_empty() {
+            break;
+        }
+    }
+    let prefix = app.input.clone();
+    assert!(prefix.len() >= 65_536);
+    for ch in path.chars() {
+        let key = KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE);
+        crate::tui::paste::handle_paste_burst_key(&mut app, &key, now);
+    }
+    assert!(flush_paste_burst_before_composer(
+        &mut app,
+        now + codewhale_tui_kit::paste_burst::PasteBurst::recommended_active_flush_delay()
+    ));
+    assert_eq!(app.input, format!("{prefix}{path}"));
+    assert_eq!(app.composer_attachment_count(), 0);
 }
 
 #[test]
@@ -7522,7 +7653,10 @@ fn paste_burst_does_not_leak_into_composer_while_a_modal_owns_keys() {
     );
     app.start_history_search();
     let query = app.history_search_query().unwrap().to_owned();
-    handle_bracketed_paste(&mut app, "中文输入");
+    crate::tui::paste::handle_paste(
+        &mut app,
+        crate::tui::paste::PasteSource::Terminal("中文输入"),
+    );
     assert_eq!(app.history_search_query(), Some(query.as_str()));
     let before = app.input.clone();
     route_key_to_view_stack(
@@ -7615,7 +7749,7 @@ fn lone_letters_remain_composer_input_after_transcript_selection() {
         ));
         assert_eq!(app.input, ch.to_string());
         assert!(app.view_stack.is_empty());
-        assert!(app.composer_enter_would_submit(true));
+        assert!(app.composer_enter_would_submit(true, Instant::now()));
     }
 }
 
@@ -7639,7 +7773,8 @@ fn clicking_composer_releases_transcript_and_work_surface_focus() {
             column: composer.x + 3,
             row: composer.y + 1,
             modifiers: KeyModifiers::NONE,
-        }
+        },
+        Instant::now()
     ));
     assert!(!app.viewport.transcript_selection.is_active());
     assert!(!app.work_surface.focused);
@@ -7992,6 +8127,7 @@ fn error_or_interruption_transfers_reasoning_ownership_truthfully() {
         HistoryCell::Error {
             message: "provider disconnected".to_string(),
             severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+            code: None,
         },
     ];
     app.resync_history_revisions();
@@ -8731,6 +8867,7 @@ fn child_approval_card_hides_always_allow_in_repo() {
             .downcast_mut::<ApprovalView>()
             .expect("approval view");
         let area = ratatui::layout::Rect::new(0, 0, 120, 40);
+        let _ = approval.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
         approval.render(area, &mut ratatui::buffer::Buffer::empty(area));
         let action = approval.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
         assert_eq!(
@@ -8780,6 +8917,7 @@ fn file_edit_card_says_when_it_asks_for_lack_of_a_git_repository() {
             .expect("approval view");
         let area = ratatui::layout::Rect::new(0, 0, 120, 40);
         let mut buf = ratatui::buffer::Buffer::empty(area);
+        let _ = approval.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         approval.render(area, &mut buf);
         let text: String = buf.content.iter().map(|cell| cell.symbol()).collect();
         assert_eq!(
@@ -9545,6 +9683,7 @@ fn saved_session_with_messages(messages: Vec<Message>) -> SavedSession {
             model: "deepseek-v4-pro".to_string(),
             model_provider: "deepseek".to_string(),
             model_provider_id: None,
+            exec_route_binding: None,
             workspace: PathBuf::from("/tmp/resume-recovery"),
             mode: Some("yolo".to_string()),
             cost: codewhale_engine::session_manager::SessionCostSnapshot::default(),
@@ -12889,7 +13028,7 @@ async fn immediate_submit_closed_mailbox_restores_composer_and_skill() {
     app.cursor_position = app.input.chars().count();
     app.active_skill = Some("keep the selected skill".to_string());
     let input = app
-        .handle_composer_enter(true)
+        .handle_composer_enter(true, Instant::now())
         .expect("non-empty composer should submit");
     let queued = build_queued_message(&mut app, input);
     assert!(app.input.is_empty());
@@ -12944,7 +13083,7 @@ async fn immediate_submit_custom_provider_preflight_restores_exact_message() {
     app.input = "preserve 用户 input".to_string();
     app.cursor_position = app.input.chars().count();
     let input = app
-        .handle_composer_enter(true)
+        .handle_composer_enter(true, Instant::now())
         .expect("non-empty composer should submit");
     let queued = build_queued_message(&mut app, input);
     let (_engine, handle) =
@@ -13059,7 +13198,7 @@ async fn immediate_submit_custom_provider_missing_key_preflight_shows_auth_next_
     app.input = "preserve 用户 input".to_string();
     app.cursor_position = app.input.chars().count();
     let input = app
-        .handle_composer_enter(true)
+        .handle_composer_enter(true, Instant::now())
         .expect("non-empty composer should submit");
     let queued = build_queued_message(&mut app, input);
     let (_engine, handle) =
@@ -17528,9 +17667,10 @@ fn ctrl_x_jobs_prefill_only_catches_running_shell_jobs_in_tasks_sidebar() {
     assert!(prefill_jobs_cancel_all_if_tasks_sidebar(&mut app));
     assert_eq!(app.input, "/jobs cancel-all");
     assert_eq!(app.cursor_position, app.input.len());
-    assert_eq!(
-        app.status_message.as_deref(),
-        Some("Press Enter to cancel all running commands")
+    assert!(
+        app.status_toasts
+            .iter()
+            .any(|toast| toast.text == "Press Enter to cancel all running commands")
     );
 }
 
@@ -18781,7 +18921,7 @@ fn update_notice_names_the_command_for_the_actual_install_method() {
         "names the npm command: {npm_block:?}"
     );
     assert!(
-        npm_block.contains("Do not use `codewhale update`"),
+        npm_block.contains("cannot update itself"),
         "warns against self-update: {npm_block:?}"
     );
     assert!(
@@ -18836,7 +18976,7 @@ fn update_notice_block_is_persistent_and_actionable() {
     );
     assert!(block.contains("v0.8.47"), "shows latest version: {block:?}");
     assert!(
-        block.contains("https://github.com/codewhale-hq/CodeWhale/releases/tag/v0.8.47"),
+        block.contains(&codewhale_release::autoupdate::changelog_url("0.8.47")),
         "includes release-notes link: {block:?}"
     );
     assert!(
@@ -19643,6 +19783,69 @@ fn a_failed_turn_reason_is_persisted_and_replayed_on_resume() {
         ),
         "the failure is replayed after the prompt it failed on"
     );
+}
+
+#[test]
+fn apply_engine_error_shows_transmission_and_persists_typed_code() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let manager =
+        codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
+            .expect("manager");
+    let mut app = create_test_app();
+    app.api_messages_mut()
+        .push(text_message("user", "run the check"));
+    app.is_loading = true;
+    let mut envelope = codewhale_error_taxonomy::ErrorEnvelope::new(
+        codewhale_error_taxonomy::ErrorCategory::Network,
+        codewhale_error_taxonomy::ErrorSeverity::Error,
+        false,
+        "llm_network_error",
+        "SSE stream request did not receive response headers after 45s",
+    );
+    envelope.request_transmission =
+        Some(codewhale_error_taxonomy::RequestTransmission::OutcomeUnknown);
+    apply_engine_error_to_app(&mut app, envelope);
+    assert!(matches!(
+        app.history.last(),
+        Some(HistoryCell::Error {
+            message,
+            code: Some(code),
+            ..
+        }) if message == "SSE stream request did not receive response headers after 45s [outcome_unknown]"
+            && code == "llm_network_error"
+    ));
+
+    super::event_loop::present_turn_failure(
+        &mut app,
+        codewhale_engine::core::events::TurnOutcomeStatus::Failed,
+        None,
+    );
+    let snapshot = build_session_snapshot(&mut app, &manager).expect("session snapshot");
+    assert_eq!(snapshot.turn_outcomes.len(), 1);
+    assert_eq!(
+        snapshot.turn_outcomes[0].code.as_deref(),
+        Some("llm_network_error")
+    );
+    assert_eq!(
+        snapshot.turn_outcomes[0].error.as_str(),
+        "SSE stream request did not receive response headers after 45s [outcome_unknown]"
+    );
+
+    manager.save_session(&snapshot).expect("save");
+    let loaded = manager
+        .load_session(&snapshot.metadata.id)
+        .expect("load session");
+    let mut resumed = create_test_app();
+    apply_loaded_session(&mut resumed, &mut Config::default(), &loaded).expect("resume");
+    assert!(resumed.history.iter().any(|cell| matches!(
+        cell,
+        HistoryCell::Error {
+            message,
+            code: Some(code),
+            ..
+        } if message == "SSE stream request did not receive response headers after 45s [outcome_unknown]"
+            && code == "llm_network_error"
+    )));
 }
 
 #[test]
@@ -21354,7 +21557,7 @@ async fn redaction_confirmation_restores_history_before_first_local_provider_req
     submit_initial_input_if_ready(&mut app, &config, &replacement)
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if !server.received_requests().await.unwrap().is_empty() {
                 break;
@@ -21920,6 +22123,30 @@ fn throttled_recovery_snapshot_persists_during_loading_turns() {
         t0 + RECOVERY_SNAPSHOT_INTERVAL,
         &mut last_snapshot_at,
     );
+}
+
+#[test]
+fn recovery_snapshot_waits_for_dispatch_admission_without_error() {
+    let _home = SettingsHomeGuard::new();
+    let mut app = create_test_app();
+    app.api_messages_mut()
+        .push(text_message("user", "first prompt"));
+    app.is_loading = true;
+    app.dispatch_in_flight = true;
+    let history_len = app.history.len();
+
+    let mut last_snapshot_at = None;
+    maybe_throttled_recovery_snapshot(&mut app, Instant::now(), &mut last_snapshot_at);
+    persist_recovery_snapshot(&mut app);
+
+    assert!(last_snapshot_at.is_none());
+    assert_eq!(app.history.len(), history_len);
+    assert!(
+        !app.history
+            .iter()
+            .any(|cell| matches!(cell, HistoryCell::Error { .. }))
+    );
+    assert!(app.status_toasts.is_empty() && app.sticky_status.is_none());
 }
 
 #[tokio::test]
@@ -22573,6 +22800,7 @@ fn visible_error_becomes_full_detail_target_ahead_of_adjacent_tool() {
             message: "Refusing insecure base URL.\nSet CODEWHALE_ALLOW_INSECURE_HTTP=1 only for a trusted LAN host."
                 .to_string(),
             severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+            code: None,
         },
     ];
     app.resync_history_revisions();
@@ -23226,7 +23454,11 @@ fn launch_submit_holds_oversized_draft_before_creating_a_session() {
     app.input = draft.clone();
     app.cursor_position = app.input.chars().count();
 
-    assert!(super::event_loop::launch_submit_held(&mut app, true));
+    assert!(super::event_loop::launch_submit_held(
+        &mut app,
+        true,
+        Instant::now()
+    ));
     assert_eq!(app.input, draft, "the full text stays in the composer");
     // The toast row sheds clauses to fit, so it carries only the short form;
     // the full reason (with the write error) lives in the transcript.
@@ -23261,17 +23493,33 @@ fn launch_submit_holds_oversized_draft_before_creating_a_session() {
         notes[0]
     );
     // Retrying the same held submit does not stack identical notes.
-    assert!(super::event_loop::launch_submit_held(&mut app, true));
+    assert!(super::event_loop::launch_submit_held(
+        &mut app,
+        true,
+        Instant::now()
+    ));
     assert_eq!(held_notes(&app).len(), 1);
 
     app.input = "hello".to_string();
     app.cursor_position = app.input.chars().count();
-    assert!(!super::event_loop::launch_submit_held(&mut app, true));
+    assert!(!super::event_loop::launch_submit_held(
+        &mut app,
+        true,
+        Instant::now()
+    ));
     app.paste_burst.extend_window(Instant::now());
-    assert!(!super::event_loop::launch_submit_held(&mut app, false));
+    assert!(!super::event_loop::launch_submit_held(
+        &mut app,
+        false,
+        Instant::now()
+    ));
     assert_eq!(app.input, "hello");
     app.startup_input_unproven = true;
-    assert!(super::event_loop::launch_submit_held(&mut app, false));
+    assert!(super::event_loop::launch_submit_held(
+        &mut app,
+        false,
+        Instant::now()
+    ));
     assert_eq!(app.input, "hello");
 }
 
@@ -23580,7 +23828,7 @@ fn hydrated_result(
     content: &str,
 ) -> Result<codewhale_engine::tools::spec::ToolResult, codewhale_engine::tools::spec::ToolError> {
     Ok(
-        codewhale_engine::tools::spec::ToolResult::success(content).with_metadata(
+        codewhale_engine::tools::spec::ToolResult::error(content).with_metadata(
             serde_json::json!({
                 "event": "tool.schema_hydrated",
                 "tool": "exec_shell",
@@ -23794,6 +24042,92 @@ fn failed_tool_result_with_hydration_metadata_stays_failed() {
     let text = rendered_text(&HistoryCell::Tool(ToolCell::Generic(generic.clone())).lines(120));
     assert!(text.contains("tool failed"), "{text}");
     assert!(!text.contains("loaded, not run"), "{text}");
+}
+
+#[test]
+fn task_shell_wait_folds_into_its_shell_row_instead_of_adding_rows() {
+    let mut app = create_test_app();
+    app.push_history_cell(HistoryCell::Tool(ToolCell::Exec(ExecCell {
+        command: "cargo test --workspace".to_string(),
+        status: ToolStatus::Running,
+        output: None,
+        live_output: None,
+        shell_task_id: Some("shell_ab08".to_string()),
+        owner_agent_id: None,
+        owner_agent_name: None,
+        started_at: None,
+        duration_ms: None,
+        stale_elapsed_since_output_ms: None,
+        waiting: None,
+        source: ExecSource::Assistant,
+        description: None,
+        interaction: None,
+        output_summary: None,
+    })));
+    let cells_before = app.virtual_cell_count();
+
+    for id in ["poll-1", "poll-2"] {
+        handle_tool_call_started(
+            &mut app,
+            id,
+            "task_shell_wait",
+            &serde_json::json!({"task_id": "shell_ab08"}),
+        );
+        assert!(
+            app.ignored_tool_calls.contains_key(id),
+            "{id} drew its own row"
+        );
+    }
+    assert_eq!(app.virtual_cell_count(), cells_before);
+    handle_tool_call_complete(
+        &mut app,
+        "poll-1",
+        "task_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult::success(
+            "Background task running (no new output).",
+        )),
+    );
+    assert_eq!(app.virtual_cell_count(), cells_before);
+    handle_tool_call_complete(
+        &mut app,
+        "poll-2",
+        "task_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult::error(
+            "unknown background task",
+        )),
+    );
+    assert_eq!(
+        app.virtual_cell_count(),
+        cells_before + 1,
+        "a failed poll still shows its error"
+    );
+
+    for input in [
+        serde_json::json!({"task_id": "shell_ab08", "cancel": true}),
+        serde_json::json!({"task_id": "shell_ab08", "gate": "test"}),
+        serde_json::json!({"task_ids": ["shell_ab08"]}),
+    ] {
+        handle_tool_call_started(&mut app, "visible", "task_shell_wait", &input);
+        assert!(
+            !app.ignored_tool_calls.contains_key("visible"),
+            "{input} must stay visible"
+        );
+        app.tool_cells.remove("visible");
+    }
+    let cancelled = app
+        .active_cell
+        .as_ref()
+        .expect("active cell")
+        .entries()
+        .iter()
+        .any(|cell| {
+            matches!(
+                cell,
+                HistoryCell::Tool(ToolCell::Exec(exec))
+                    if exec.interaction.as_deref() == Some("Cancelled command shell_ab08")
+            )
+        });
+    assert!(cancelled);
 }
 
 #[test]
@@ -24851,8 +25185,8 @@ fn contended_work_restore_leaves_current_session_wholly_unchanged() {
     assert_eq!(app.current_session_id.as_deref(), Some("current-session"));
 }
 
-#[test]
-fn missing_named_custom_provider_resume_leaves_current_session_wholly_unchanged() {
+#[tokio::test]
+async fn missing_named_custom_provider_resume_leaves_current_session_wholly_unchanged() {
     let mut app = create_test_app();
     app.api_messages_mut()
         .push(text_message("user", "keep the current conversation"));
@@ -24882,6 +25216,7 @@ fn missing_named_custom_provider_resume_leaves_current_session_wholly_unchanged(
         Config::default(),
         true,
     )
+    .await
     .expect_err("removed custom provider must fail closed");
 
     assert!(err.contains("[providers.lm-studio]"), "{err}");
@@ -25023,8 +25358,8 @@ fn same_workspace_named_custom_switch_requires_engine_respawn() {
     ));
 }
 
-#[test]
-fn file_load_uses_one_fresh_config_snapshot_for_custom_route_and_app_state() {
+#[tokio::test]
+async fn file_load_uses_one_fresh_config_snapshot_for_custom_route_and_app_state() {
     let workspace = PathBuf::from("/tmp/atomic-file-load");
     let mut stale_config =
         named_custom_session_config("custom-a", "http://127.0.0.1:18181/v1", "model-a");
@@ -25051,9 +25386,10 @@ fn file_load_uses_one_fresh_config_snapshot_for_custom_route_and_app_state() {
         fresh_config,
         true,
     )
+    .await
     .expect("fresh disk config should atomically restore custom B");
 
-    assert!(respawn);
+    assert!(respawn.respawn);
     assert_eq!(app.provider_identity_for_persistence(), "custom-b");
     assert_eq!(app.model_selection_for_persistence(), "model-b");
     assert_eq!(*app.api_messages, session.messages);
@@ -25168,8 +25504,8 @@ fn session_load_rejects_empty_custom_id_when_root_and_table_coexist() {
     assert_eq!(config.active_route_base_url(), "http://127.0.0.1:18182/v1");
 }
 
-#[test]
-fn file_load_respawns_engine_when_same_custom_identity_changes_endpoint() {
+#[tokio::test]
+async fn file_load_respawns_engine_when_same_custom_identity_changes_endpoint() {
     let workspace = PathBuf::from("/tmp/atomic-file-load-same-custom");
     let mut stale_config =
         named_custom_session_config("custom-a", "http://127.0.0.1:18181/v1", "model-a");
@@ -25204,9 +25540,13 @@ fn file_load_respawns_engine_when_same_custom_identity_changes_endpoint() {
         fresh_config,
         true,
     )
+    .await
     .expect("same-key fresh config should load atomically");
 
-    assert!(respawn, "file loads must install the fresh engine config");
+    assert!(
+        respawn.respawn,
+        "file loads must install the fresh engine config"
+    );
     assert_eq!(app.provider_identity_for_persistence(), "custom-a");
     assert_eq!(
         stale_config.active_route_base_url(),
@@ -25226,8 +25566,8 @@ fn file_load_respawns_engine_when_same_custom_identity_changes_endpoint() {
     );
 }
 
-#[test]
-fn file_load_route_refresh_preserves_effective_permission_and_feature_overlays() {
+#[tokio::test]
+async fn file_load_route_refresh_preserves_effective_permission_and_feature_overlays() {
     let workspace = PathBuf::from("/tmp/atomic-file-load-policy");
     let mut effective_config =
         named_custom_session_config("custom-a", "http://127.0.0.1:18181/v1", "model-a");
@@ -25271,9 +25611,10 @@ fn file_load_route_refresh_preserves_effective_permission_and_feature_overlays()
         raw_disk_config,
         true,
     )
+    .await
     .expect("fresh route plus effective policy should load");
 
-    assert!(respawn);
+    assert!(respawn.respawn);
     assert_eq!(
         effective_config.active_route_base_url(),
         "http://127.0.0.1:18199/v1"
@@ -25932,19 +26273,27 @@ async fn model_picker_auto_restores_raw_preference_after_fixed_normalization() {
 }
 
 #[tokio::test]
-async fn auto_model_effort_picker_persists_unresolved_tier_verbatim() {
+async fn auto_model_shift_d_persists_unresolved_effort_tier_verbatim() {
     let _guard = SettingsHomeGuard::new();
     let mut app = create_test_app();
     app.set_model_selection("auto".to_string());
     app.reasoning_effort = ReasoningEffort::Auto;
     app.reasoning_effort_preference = None;
-    let engine = mock_engine_handle();
+    let mut engine = mock_engine_handle();
+    let mut config =
+        <Config as Default>::default().with_legacy_root(Some("test-key".to_string()), None);
 
-    apply_picker_effort_choice(
+    let selected_identity = app.admitted_provider_identity().unwrap().clone();
+    apply_model_picker_choice(
         &mut app,
-        &engine.handle,
+        &mut engine.handle,
+        &mut config,
+        "auto".to_string(),
+        Some(selected_identity),
         ReasoningEffort::Low,
+        "auto".to_string(),
         ReasoningEffort::Auto,
+        true,
     )
     .await;
 
@@ -26028,7 +26377,49 @@ async fn reselecting_live_model_and_thinking_is_session_local() {
 }
 
 #[tokio::test]
-async fn reselecting_live_thinking_only_persists_startup_default() {
+async fn shift_d_on_project_pinned_model_leaves_global_default_alone() {
+    let _guard = SettingsHomeGuard::new();
+    let global_config = codewhale_runtime::config::home_config_path().expect("global config path");
+    let startup_before = std::fs::read(&global_config).ok();
+    let mut app = create_test_app();
+    app.set_model_selection("deepseek-v4-pro".to_string());
+    app.reasoning_effort = ReasoningEffort::High;
+    let mut engine = mock_engine_handle();
+    let mut config =
+        <Config as Default>::default().with_legacy_root(Some("test-key".to_string()), None);
+    config.project_model = Some("deepseek-v4-pro".to_string());
+
+    let selected_identity = app.admitted_provider_identity().unwrap().clone();
+    apply_model_picker_choice(
+        &mut app,
+        &mut engine.handle,
+        &mut config,
+        "deepseek-v4-pro".to_string(),
+        Some(selected_identity),
+        ReasoningEffort::High,
+        "deepseek-v4-pro".to_string(),
+        ReasoningEffort::High,
+        true,
+    )
+    .await;
+
+    assert_eq!(std::fs::read(global_config).ok(), startup_before);
+    assert_eq!(
+        codewhale_runtime::settings::Settings::load()
+            .expect("load settings")
+            .reasoning_effort
+            .as_deref(),
+        None
+    );
+    assert!(
+        app.status_message
+            .as_deref()
+            .is_some_and(|message| message.contains("project"))
+    );
+}
+
+#[tokio::test]
+async fn reselecting_live_thinking_in_picker_is_session_local() {
     let _guard = SettingsHomeGuard::new();
     let mut app = create_test_app();
     app.set_model_selection("deepseek-v4-pro".to_string());
@@ -26048,13 +26439,13 @@ async fn reselecting_live_thinking_only_persists_startup_default() {
             .expect("load settings")
             .reasoning_effort
             .as_deref(),
-        Some("high")
+        None
     );
     assert_eq!(app.reasoning_effort_preference, Some(ReasoningEffort::High));
     assert!(
         app.status_message
             .as_deref()
-            .is_some_and(|message| message.contains("saved as startup default"))
+            .is_some_and(|message| message.contains("Thinking unchanged"))
     );
 }
 
@@ -26765,9 +27156,6 @@ fn exploring_labels_follow_the_ui_locale() {
     );
     assert_eq!(label("list_files", serde_json::json!({})), "正在列出文件");
 }
-
-// `running_status_label_with_elapsed` lives in `crate::tui::history` next to
-// the other tool-header helpers — its tests live there too.
 
 // ---- P2.4: auto-scroll churn regressions ----
 //
@@ -28015,6 +28403,7 @@ async fn timed_out_approval_denial_reaches_the_engine_as_a_timeout() {
             approval_key: "approval-timeout-key".to_string(),
             approval_grouping_key: "approval-group".to_string(),
             persistent_rules: Vec::new(),
+            subject: None,
         },
     )
     .await;
@@ -28057,6 +28446,7 @@ async fn approval_decision_persists_ask_rules_to_permissions_file() {
             approval_key: "approval-key".to_string(),
             approval_grouping_key: "approval-group".to_string(),
             persistent_rules: vec![rule.clone()],
+            subject: None,
         },
     )
     .await;
@@ -28115,6 +28505,7 @@ async fn approval_decision_persists_exact_workspace_allow_rule() {
             approval_key: "approval-key".to_string(),
             approval_grouping_key: "approval-group".to_string(),
             persistent_rules: vec![rule.clone()],
+            subject: None,
         },
     )
     .await;
@@ -29271,6 +29662,7 @@ async fn child_card_abort_decision_never_cancels_parent_turn() {
             approval_key: "k".to_string(),
             approval_grouping_key: "g".to_string(),
             persistent_rules: Vec::new(),
+            subject: None,
         },
     )
     .await;
@@ -29892,7 +30284,11 @@ async fn keyless_engine_error_stays_visible_after_a_config_ack() {
     assert!(!app.is_loading);
     for (width, height) in [(80, 24), (140, 40)] {
         let frame = render_test_app(&mut app, &config, width, height);
-        let text = frame.split_whitespace().collect::<Vec<_>>().join(" ");
+        let text = frame
+            .split_whitespace()
+            .filter(|word| *word != "\u{258f}")
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(
             text.contains("API key not found"),
             "{width}x{height}: {text}"
@@ -31871,6 +32267,44 @@ fn translation_placeholder_keeps_a_calm_refresh_without_repainting_still_mode() 
 }
 
 #[test]
+fn status_animation_holds_still_while_transcript_is_scrolled_away() {
+    let mut app = create_test_app();
+    app.low_motion = false;
+    app.fancy_animations = true;
+    app.is_loading = true;
+    app.turn_started_at = Some(Instant::now());
+    app.viewport.working_glow_visible = true;
+    app.history.push(running_generic_tool_cell("workflow"));
+    let history_motion = history_has_live_motion(&app.history);
+
+    assert!(should_tick_status_animation(
+        &app,
+        true,
+        history_motion,
+        true,
+        true
+    ));
+
+    app.viewport.transcript_scroll = TranscriptScroll::at_line(0);
+    assert!(!should_tick_status_animation(
+        &app,
+        true,
+        history_motion,
+        true,
+        true
+    ));
+
+    app.scroll_to_bottom();
+    assert!(should_tick_status_animation(
+        &app,
+        true,
+        history_motion,
+        true,
+        true
+    ));
+}
+
+#[test]
 fn background_notice_waits_for_finite_work_and_a_busy_parent() {
     use crate::tui::background_finished::{FinishedOutcome, FinishedWork};
     // #6565: `final-only` used to fire only for the last child, by raw id.
@@ -32182,7 +32616,7 @@ fn queued_terminal_events_keep_receipt_gap_for_late_unbracketed_submit() {
             continue;
         }
         if key.code == KeyCode::Enter {
-            submitted = app.handle_composer_enter(true);
+            submitted = app.handle_composer_enter(true, observed.observed_at);
         }
     }
 
@@ -32190,6 +32624,71 @@ fn queued_terminal_events_keep_receipt_gap_for_late_unbracketed_submit() {
         submitted.as_deref(),
         Some(prompt),
         "a deliberate Enter observed 150ms after raw input must submit even when the event loop drains the backlog without delay"
+    );
+}
+
+#[test]
+fn queued_mid_stream_enter_inserts_newline_not_submit_under_backlog() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let first_at = Instant::now()
+        .checked_sub(Duration::from_millis(880))
+        .expect("stale stream origin");
+    for (index, ch) in "pasted payload".chars().enumerate() {
+        tx.send(TerminalInputMessage::Event(ObservedTerminalEvent::new(
+            Event::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
+            first_at + Duration::from_millis(index as u64 * 5),
+        )))
+        .expect("queue paste char");
+    }
+    let last_char_at = first_at + Duration::from_millis(13 * 5);
+    let enter_at = last_char_at + Duration::from_millis(40);
+    tx.send(TerminalInputMessage::Event(ObservedTerminalEvent::new(
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        enter_at,
+    )))
+    .expect("queue mid-stream Enter");
+
+    let input = TerminalInputPump {
+        rx,
+        retired_rx: Default::default(),
+        child_windows: Default::default(),
+        stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused_ack: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        handle: None,
+        last_alive_at: std::cell::Cell::new(Instant::now()),
+    };
+    let mut pending = VecDeque::new();
+    let mut app = create_test_app();
+    app.use_paste_burst_detection = true;
+    app.bracketed_paste_seen = false;
+    let mut submitted = None;
+
+    for _ in 0..="pasted payload".len() {
+        let observed = next_terminal_event(&input, &mut pending, Duration::from_millis(1))
+            .expect("read queued terminal event")
+            .expect("queued event remains");
+        let Event::Key(key) = observed.event else {
+            panic!("queued stream contains only keys");
+        };
+        flush_paste_burst_before_composer(&mut app, observed.observed_at);
+        if handle_plain_key_before_composer(&mut app, &key, observed.observed_at) {
+            continue;
+        }
+        if key.code == KeyCode::Enter {
+            submitted = app.handle_composer_enter(true, observed.observed_at);
+        }
+    }
+
+    assert_eq!(
+        submitted, None,
+        "an Enter observed inside the suppression window must not submit just because processing ran late"
+    );
+    flush_paste_burst_before_composer(&mut app, enter_at + Duration::from_millis(200));
+    assert!(
+        app.input.contains("pasted payload\n"),
+        "the absorbed Enter must land as a newline after the pasted text, got {:?}",
+        app.input
     );
 }
 
@@ -33757,6 +34256,7 @@ fn focused_agent_transcript_receives_wheel_scroll_through_the_frame() {
             row: 4,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     assert!(events.is_empty());
     terminal
@@ -34194,7 +34694,7 @@ fn drive_composer_events(app: &mut App, pending: &mut VecDeque<Event>) -> Option
         let Event::Key(key) = event else { continue };
         match key.code {
             KeyCode::Char(c) => app.insert_char(c),
-            KeyCode::Enter => submitted = app.handle_composer_enter(true),
+            KeyCode::Enter => submitted = app.handle_composer_enter(true, Instant::now()),
             KeyCode::Backspace => app.delete_char(),
             _ => {}
         }
@@ -34266,7 +34766,7 @@ fn startup_that_cannot_account_for_its_bytes_keeps_the_line_in_the_composer() {
         "queued Enters cannot clear the hold"
     );
     assert!(
-        app.handle_composer_enter(true).is_none(),
+        app.handle_composer_enter(true, Instant::now()).is_none(),
         "the first fresh Enter explains the hold"
     );
     assert!(
@@ -34278,7 +34778,7 @@ fn startup_that_cannot_account_for_its_bytes_keeps_the_line_in_the_composer() {
     );
 
     // The user has now seen it; a deliberate second Enter sends what is shown.
-    let resent = app.handle_composer_enter(true);
+    let resent = app.handle_composer_enter(true, Instant::now());
     assert_eq!(
         resent.as_deref(),
         Some("gin install /tmp/bundle\n\nsecond line\n")
@@ -34317,10 +34817,16 @@ fn startup_terminal_replies_allow_a_fresh_long_paste_to_send_once() {
     let mut app = App::new(create_test_options(), &Config::default());
     app.startup_input_unproven = !receipt.whole_line_proven();
     let prompt = "Keep the complete pasted draft: 日本語, café, العربية.\n".repeat(30);
-    handle_bracketed_paste(&mut app, &prompt);
-    assert!(app.composer_enter_would_submit(true));
-    assert_eq!(app.handle_composer_enter(true), Some(prompt));
-    assert!(app.handle_composer_enter(true).is_none(), "no double send");
+    crate::tui::paste::handle_paste(&mut app, crate::tui::paste::PasteSource::Terminal(&prompt));
+    assert!(app.composer_enter_would_submit(true, Instant::now()));
+    assert_eq!(
+        app.handle_composer_enter(true, Instant::now()),
+        Some(prompt)
+    );
+    assert!(
+        app.handle_composer_enter(true, Instant::now()).is_none(),
+        "no double send"
+    );
 }
 
 #[test]
@@ -34334,13 +34840,13 @@ fn startup_integrity_hold_keeps_send_available_for_acknowledgement() {
         "pasting cannot erase known loss"
     );
     assert!(
-        app.composer_enter_would_submit(true),
+        app.composer_enter_would_submit(true, Instant::now()),
         "the send button must remain usable to acknowledge an integrity hold"
     );
-    assert!(app.handle_composer_enter(true).is_none());
+    assert!(app.handle_composer_enter(true, Instant::now()).is_none());
     assert_eq!(app.input, "gin install /tmp/bundle");
     assert!(
-        app.composer_enter_would_submit(true),
+        app.composer_enter_would_submit(true, Instant::now()),
         "fresh acknowledgement can send"
     );
 }
@@ -34358,7 +34864,7 @@ fn a_command_line_that_stops_looking_like_one_is_held_not_reinterpreted() {
     // @-mention. That rewrite must never silently turn a command line into a
     // prose turn for the model (#5925).
     app.composer.pending_paste_reference = Some("@.codewhale/pastes/p.md".to_string());
-    let submitted = app.handle_composer_enter(true);
+    let submitted = app.handle_composer_enter(true, Instant::now());
     assert!(
         submitted.is_none(),
         "a claimed command is never re-read as a prose prompt"
@@ -34386,7 +34892,7 @@ fn deleting_the_leading_slash_releases_the_command_claim() {
         "the claim is released by an edit"
     );
     assert_eq!(
-        app.handle_composer_enter(true).as_deref(),
+        app.handle_composer_enter(true, Instant::now()).as_deref(),
         Some("plugin"),
         "the edited line submits normally"
     );
@@ -34922,6 +35428,7 @@ async fn notification_approval_settlement_retires_the_prompt_and_preserves_warni
             approval_key: "key-a".into(),
             approval_grouping_key: "group-a".into(),
             persistent_rules: Vec::new(),
+            subject: None,
         },
     )
     .await;
@@ -35098,7 +35605,8 @@ async fn background_review_fast_durable_completion_survives_inventory_failures()
     let mut app = create_test_app();
     app.current_session_id = Some("session-a".into());
     app.session_started_at = chrono::Utc::now() - chrono::Duration::minutes(1);
-    super::task_projection::refresh_active_task_panel(&mut app, &tasks).await;
+    app.runtime_services.task_manager = Some(tasks.clone());
+    super::task_projection::refresh_active_task_panel(&mut app).await;
     assert!(app.task_panel.iter().any(|row| row.id == record.id));
     assert_eq!(
         app.background_finished.len(),
@@ -35106,20 +35614,20 @@ async fn background_review_fast_durable_completion_survives_inventory_failures()
         "first observed after completion"
     );
     app.background_finished.clear();
-    super::task_projection::refresh_active_task_panel(&mut app, &tasks).await;
+    super::task_projection::refresh_active_task_panel(&mut app).await;
     assert!(app.background_finished.is_empty(), "no repeated completion");
     let queue = root.path().join("queue.json");
     let saved = std::fs::read(&queue)?;
     std::fs::write(&queue, b"{corrupt")?;
     assert_eq!(
-        super::task_projection::refresh_active_task_panel(&mut app, &tasks).await,
+        super::task_projection::refresh_active_task_panel(&mut app).await,
         LiveRefresh::Changed
     );
     assert!(app.task_panel_unavailable);
     assert!(app.task_panel.iter().any(|row| row.id == record.id));
     app.current_session_id = Some("session-b".into());
     assert_eq!(
-        super::task_projection::refresh_active_task_panel(&mut app, &tasks).await,
+        super::task_projection::refresh_active_task_panel(&mut app).await,
         LiveRefresh::Changed
     );
     assert!(app.task_panel_unavailable);
@@ -35128,7 +35636,7 @@ async fn background_review_fast_durable_completion_survives_inventory_failures()
         "session A's stale rows cannot cross into B"
     );
     std::fs::write(queue, saved)?;
-    super::task_projection::refresh_active_task_panel(&mut app, &tasks).await;
+    super::task_projection::refresh_active_task_panel(&mut app).await;
     assert!(!app.task_panel_unavailable);
     assert!(app.task_panel.is_empty());
     tasks.shutdown_and_wait().await?;
@@ -37095,4 +37603,392 @@ fn a_silent_background_shell_job_keeps_the_quiet_poll_for_its_whole_life() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn approval_prompt_docks_one_row_and_emits_settled_receipt() {
+    for width in [80u16, 120u16] {
+        let mut app = create_test_app();
+        app.onboarding_workspace_trust_gate = false;
+        app.onboarding = OnboardingState::None;
+        let input = serde_json::json!({ "command": "cargo test -p codewhale-tui" });
+        push_approval_request_view(
+            &mut app,
+            "call-dock",
+            "exec_shell",
+            "Run cargo test",
+            &input,
+            "approval-key",
+            "approval-group",
+            None,
+            codewhale_runtime::config::ApprovalDefaultSelection::Deny,
+            None,
+        );
+        let rendered = render_underwater_test_app(&mut app, width, 24);
+        let prompt = app
+            .viewport
+            .last_prompt_area
+            .expect("docked approval prompt area");
+        let composer = app.viewport.last_composer_area.expect("composer area");
+        assert_eq!(prompt.height, 1, "{width} cols: {prompt:?}\n{rendered}");
+        assert_eq!(
+            prompt.bottom(),
+            composer.y,
+            "{width} cols: prompt {prompt:?} must sit directly above composer {composer:?}\n{rendered}"
+        );
+        assert!(rendered.contains("Allow"), "{width} cols: {rendered}");
+        assert!(rendered.contains("Deny"), "{width} cols: {rendered}");
+    }
+
+    for (key_sequence, expected_receipt) in [
+        (
+            vec![KeyCode::Char('y')],
+            "Allowed once · cargo test -p codewhale-tui",
+        ),
+        (
+            vec![KeyCode::Char('n')],
+            "Denied · cargo test -p codewhale-tui",
+        ),
+        (
+            vec![KeyCode::Char('m'), KeyCode::Char('3')],
+            "Always allowed in this repo · cargo test -p codewhale-tui",
+        ),
+    ] {
+        let tmp = TempDir::new().expect("tempdir");
+        let mut app = create_test_app();
+        app.workspace = tmp.path().to_path_buf();
+        app.config_path = Some(tmp.path().join("config.toml"));
+        app.onboarding_workspace_trust_gate = false;
+        app.onboarding = OnboardingState::None;
+        let input = serde_json::json!({ "command": "cargo test -p codewhale-tui" });
+        push_approval_request_view(
+            &mut app,
+            "call-receipt",
+            "exec_shell",
+            "Run cargo test",
+            &input,
+            "approval-key",
+            "approval-group",
+            None,
+            codewhale_runtime::config::ApprovalDefaultSelection::Deny,
+            None,
+        );
+        let area = ratatui::layout::Rect::new(0, 0, 100, 30);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        let mut view = app.view_stack.pop().expect("approval view");
+        let mut emitted = None;
+        for code in key_sequence {
+            view.render(area, &mut buf);
+            if let ViewAction::EmitAndClose(event) =
+                view.handle_key(KeyEvent::new(code, KeyModifiers::NONE))
+            {
+                emitted = Some(event);
+            }
+        }
+        let Some(ViewEvent::ApprovalDecision {
+            tool_id,
+            tool_name,
+            decision,
+            timed_out,
+            approval_key,
+            approval_grouping_key,
+            persistent_rules,
+            subject,
+        }) = emitted
+        else {
+            panic!("expected ApprovalDecision for {expected_receipt}");
+        };
+        let mut config = Config::default();
+        let mut engine = mock_engine_handle();
+        let accepted = apply_approval_decision(
+            &mut app,
+            &mut engine.handle,
+            &mut config,
+            ApprovalDecisionEvent {
+                tool_id,
+                tool_name,
+                decision,
+                timed_out,
+                approval_key,
+                approval_grouping_key,
+                persistent_rules,
+                subject,
+            },
+        )
+        .await;
+        assert!(accepted);
+        let rendered = render_underwater_test_app(&mut app, 100, 24);
+        assert!(
+            rendered.contains(expected_receipt),
+            "missing receipt {expected_receipt:?}:\n{rendered}"
+        );
+    }
+
+    let sneaky = crate::tui::history::ApprovalReceiptCell::new(
+        crate::tui::history::ApprovalReceiptOutcome::AllowedOnce,
+        "echo ok\n\u{202e}rm -rf /",
+    );
+    let summary = sneaky.plain_summary();
+    assert!(!summary.contains('\n'), "{summary:?}");
+    assert!(!summary.contains('\u{202e}'), "{summary:?}");
+    assert!(summary.contains("RLO"), "{summary:?}");
+    let lines = sneaky.render(120);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let rendered_line: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+    assert!(!rendered_line.contains('\u{202e}'), "{rendered_line:?}");
+    assert!(rendered_line.contains("RLO"), "{rendered_line:?}");
+}
+
+/// A gateway can open a text block inside a thinking stream. The reasoning
+/// that arrives afterwards must return to a thinking card, not continue
+/// inside the prose body (#7123, opposite ordering).
+#[test]
+fn reasoning_after_an_interposed_text_block_returns_to_a_thinking_card() {
+    use crate::tui::ui::frame::{
+        append_streaming_text, commit_streaming_display_tick,
+        ensure_streaming_assistant_history_cell,
+    };
+    use codewhale_tui_kit::streaming::StreamDisplayClock;
+
+    let mut app = create_test_app();
+    let mut clock = StreamDisplayClock::new(Duration::from_millis(33));
+    // One clock, one time base: `note_delta` schedules the next beat at
+    // `last_commit_at + interval`, so a second beat taken at a fresh
+    // `Instant::now()` lands before it is due and commits nothing.
+    let t0 = Instant::now();
+
+    // 1. The first half of the sentence reaches its card the way a delta does:
+    //    buffered, then taken by a display beat.
+    app.streaming_state.reset();
+    app.streaming_state.start_thinking(0);
+    let first_entry = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
+    app.streaming_state.push_content(0, "first half. ");
+    clock.note_delta(t0);
+    let _ = commit_streaming_display_tick(&mut app, &mut clock, t0 + Duration::from_millis(50));
+
+    // 2. The gateway opens a text block mid-reasoning: MessageStarted
+    //    finalizes the live entry and starts a text block.
+    crate::tui::streaming_thinking::finalize_current(&mut app);
+    app.streaming_state.reset();
+    app.streaming_state.start_text(0);
+
+    // 3. The rest of the reasoning arrives. Without the resync it would be
+    //    committed into the prose body, because block 0 is marked text.
+    assert!(
+        crate::tui::streaming_thinking::resync_block_kind(&mut app, true),
+        "the block kind must be taken back"
+    );
+    let second_entry = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
+    app.streaming_state.push_content(0, "second half.");
+    clock.note_delta(t0 + Duration::from_millis(60));
+    let _ = commit_streaming_display_tick(&mut app, &mut clock, t0 + Duration::from_millis(200));
+
+    let first = match app
+        .active_cell
+        .as_ref()
+        .and_then(|active| active.entries().get(first_entry))
+    {
+        Some(HistoryCell::Thinking { content, .. }) => content.clone(),
+        other => panic!("expected a thinking entry at {first_entry}: {other:?}"),
+    };
+    let second = match app
+        .active_cell
+        .as_ref()
+        .and_then(|active| active.entries().get(second_entry))
+    {
+        Some(HistoryCell::Thinking { content, .. }) => content.clone(),
+        other => panic!("expected a thinking entry at {second_entry}: {other:?}"),
+    };
+    assert_eq!(first, "first half. ", "the first half keeps its card");
+    assert_eq!(
+        second, "second half.",
+        "reasoning after an interposed text block must stay in a thinking cell"
+    );
+
+    // 4. Commit the active cell to history and verify the split did not happen
+    //    there: a real assistant cell exists, and it holds no reasoning.
+    app.flush_active_cell();
+    let message_index = ensure_streaming_assistant_history_cell(&mut app);
+    append_streaming_text(&mut app, message_index, "answer");
+    assert!(
+        app.history.iter().any(|cell| {
+            matches!(cell, HistoryCell::Assistant { content, .. } if content.contains("answer"))
+        }),
+        "the assistant cell must hold the answer"
+    );
+    let prose_has_reasoning = app.history.iter().any(|cell| {
+        matches!(cell, HistoryCell::Assistant { content, .. } if content.contains("second half."))
+    });
+    assert!(
+        !prose_has_reasoning,
+        "the assistant cell must not absorb reasoning text"
+    );
+}
+
+/// A kind change inside one live block closes the reasoning card: the spinner
+/// must not keep turning, and the reasoning must survive for replay.
+#[test]
+fn a_relabel_to_text_finishes_the_reasoning_card() {
+    let mut app = create_test_app();
+
+    // `ThinkingDelta` records the text in `reasoning_buffer` and then buffers
+    // it for display; both are needed for `last_reasoning` to be populated.
+    app.streaming_state.reset();
+    app.streaming_state.start_thinking(0);
+    let entry = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
+    app.reasoning_buffer.push_str("reasoning");
+    app.streaming_state.push_content(0, "reasoning");
+
+    // Prose arrives with no MessageStarted between: a gateway switching kinds
+    // inside one block.
+    assert!(
+        crate::tui::streaming_thinking::resync_block_kind(&mut app, false),
+        "the block kind must be taken back"
+    );
+
+    assert_eq!(
+        app.streaming_thinking_active_entry, None,
+        "the reasoning entry must be finalized"
+    );
+    let streaming = match app
+        .active_cell
+        .as_ref()
+        .and_then(|active| active.entries().get(entry))
+    {
+        Some(HistoryCell::Thinking {
+            streaming, content, ..
+        }) => {
+            assert_eq!(
+                content, "reasoning",
+                "the pending tail reaches the card once"
+            );
+            *streaming
+        }
+        other => panic!("expected a thinking entry at {entry}: {other:?}"),
+    };
+    assert!(!streaming, "the card must not keep its spinner");
+    assert_eq!(
+        app.last_reasoning.as_deref(),
+        Some("reasoning"),
+        "the reasoning text must survive for replay"
+    );
+    assert!(
+        app.reasoning_buffer.is_empty(),
+        "the stash clears the buffer"
+    );
+}
+
+/// The same flip under translation leaves the card's entry and buffer alone.
+///
+/// This is the helper's contract, not a fix for translation: on the real path
+/// `MessageDelta` calls `flush_active_cell` right after the resync, which takes
+/// the entry anyway. A relabel must not clear it *earlier* than that.
+#[test]
+fn a_relabel_to_text_keeps_the_card_alive_under_translation() {
+    let mut app = create_test_app();
+    app.translation_enabled = true;
+
+    app.streaming_state.reset();
+    app.streaming_state.start_thinking(0);
+    let entry = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
+    app.reasoning_buffer.push_str("reasoning");
+    app.streaming_state.push_content(0, "reasoning");
+
+    assert!(crate::tui::streaming_thinking::resync_block_kind(
+        &mut app, false
+    ));
+
+    assert_eq!(
+        app.streaming_thinking_active_entry,
+        Some(entry),
+        "the entry must stay live so ThinkingComplete can translate it"
+    );
+    assert_eq!(
+        app.reasoning_buffer, "reasoning",
+        "the buffer must survive for the translation pass"
+    );
+}
+
+/// The mirror case: a thinking block opens mid-prose, then more prose arrives.
+#[test]
+fn prose_after_an_interposed_thinking_block_returns_to_the_assistant_cell() {
+    use crate::tui::ui::frame::{
+        append_streaming_text, commit_streaming_display_tick,
+        ensure_streaming_assistant_history_cell,
+    };
+    use codewhale_tui_kit::streaming::StreamDisplayClock;
+
+    let mut app = create_test_app();
+
+    app.streaming_state.reset();
+    app.streaming_state.start_text(0);
+    app.streaming_state.push_content(0, "answer start. ");
+    let message_index = ensure_streaming_assistant_history_cell(&mut app);
+    let first = app.streaming_state.commit_text(0, usize::MAX);
+    append_streaming_text(&mut app, message_index, &first);
+
+    app.streaming_state.reset();
+    app.streaming_state.start_thinking(0);
+    let entry = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
+    app.reasoning_buffer.push_str("reasoning tail. ");
+    app.streaming_state.push_content(0, "reasoning tail. ");
+
+    // Prose arrives with no MessageStarted between. The relabel must first hand
+    // the buffered reasoning to its own card, then route the prose to the
+    // assistant cell.
+    assert!(
+        crate::tui::streaming_thinking::resync_block_kind(&mut app, false),
+        "the block kind must be taken back"
+    );
+    app.streaming_state.push_content(0, "answer tail.");
+
+    let mut clock = StreamDisplayClock::new(Duration::from_millis(33));
+    let now = Instant::now();
+    clock.note_delta(now);
+    let _ = commit_streaming_display_tick(&mut app, &mut clock, now + Duration::from_millis(50));
+
+    let prose = match app.history.get(message_index) {
+        Some(HistoryCell::Assistant { content, .. }) => content.clone(),
+        other => panic!("expected the assistant cell at {message_index}: {other:?}"),
+    };
+    assert!(
+        prose.contains("answer tail."),
+        "prose after an interposed thinking block must stay in the assistant cell: {prose:?}"
+    );
+    assert!(
+        !prose.contains("reasoning tail."),
+        "the assistant cell must not absorb the reasoning tail: {prose:?}"
+    );
+    let card = match app
+        .active_cell
+        .as_ref()
+        .and_then(|active| active.entries().get(entry))
+    {
+        Some(HistoryCell::Thinking { content, .. }) => content.clone(),
+        other => panic!("expected a thinking entry at {entry}: {other:?}"),
+    };
+    assert_eq!(
+        card, "reasoning tail. ",
+        "the buffered reasoning must reach its own card before the relabel"
+    );
+}
+
+#[test]
+fn status_toast_event_pushes_typed_error_toast_visible_when_done() {
+    let mut app = create_test_app();
+    let message =
+        "! other_code/model is locked — Open /provider and select other_code to authenticate, then refresh."
+            .to_string();
+
+    super::handlers::apply_status_toast_event(&mut app, message.clone(), StatusToastLevel::Error);
+
+    assert!(
+        app.status_message.is_none(),
+        "typed StatusToast events must not write to the legacy status_message sink"
+    );
+    let toast = app
+        .active_status_toast(crate::tui::underwater::ShellPhase::Done)
+        .expect("error toast must stay visible when ShellPhase::Done");
+    assert_eq!(toast.level, StatusToastLevel::Error);
+    assert_eq!(toast.text, message);
 }

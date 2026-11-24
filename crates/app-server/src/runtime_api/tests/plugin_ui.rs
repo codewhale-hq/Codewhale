@@ -63,6 +63,40 @@ fn write_dsh_package(dir: &Path, name: &str, client: &str) -> Result<PathBuf> {
     Ok(package)
 }
 
+fn write_dsh_root_entry_package(dir: &Path, name: &str) -> Result<PathBuf> {
+    let package = dir.join(name);
+    fs::create_dir_all(&package)?;
+    fs::write(
+        package.join("package.json"),
+        serde_json::json!({
+            "name": format!("@demo/{name}"),
+            "version": "1.0.0",
+            "exports": { "./client": { "default": "./client.js" } },
+            "dsh": {
+                "bundle": { "patch": "./cordis.patch.yml" },
+                "client": { "platform": "web" }
+            }
+        })
+        .to_string(),
+    )?;
+    fs::write(
+        package.join("cordis.patch.yml"),
+        "- insert:\n  - id: skills\n    name: \"@deepseek-ai/dsh-skill-filesystem\"\n    config:\n      customSkillDirs:\n        - ./skills\n",
+    )?;
+    fs::create_dir_all(package.join("skills/greet"))?;
+    fs::write(
+        package.join("skills/greet/SKILL.md"),
+        "---\nname: greet\ndescription: Greets a person\n---\nSay hi.\n",
+    )?;
+    fs::write(
+        package.join("client.js"),
+        "var util = require(\"./util\");\n\
+exports.apply = function apply(ctx) { return [util.v, [\"sidebar.right.pane.tab\"], ctx]; };\n",
+    )?;
+    fs::write(package.join("util.js"), "exports.v = 1;\n")?;
+    Ok(package)
+}
+
 fn write_native_ui_bundle(dir: &Path, name: &str) -> Result<PathBuf> {
     let bundle = write_plugin_source_bundle(dir, name)?;
     fs::write(
@@ -79,44 +113,44 @@ fn write_native_ui_bundle(dir: &Path, name: &str) -> Result<PathBuf> {
     Ok(bundle)
 }
 
+async fn send_json_ok(request: reqwest::RequestBuilder, step: &str) -> Result<serde_json::Value> {
+    let response = request.send().await?;
+    let status = response.status();
+    let body = response.text().await?;
+    anyhow::ensure!(status.is_success(), "{step} failed with {status}: {body}");
+    Ok(serde_json::from_str(&body)?)
+}
+
 pub(super) async fn install_active(
     client: &reqwest::Client,
     base: &str,
     source: String,
 ) -> Result<serde_json::Value> {
-    let install: serde_json::Value = client
-        .post(format!("{base}/install"))
-        .json(&serde_json::json!({ "source": source }))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let install = send_json_ok(
+        client
+            .post(format!("{base}/install"))
+            .json(&serde_json::json!({ "source": source })),
+        "install plugin",
+    )
+    .await?;
     let name = install["name"]
         .as_str()
         .expect("installed name")
         .to_string();
-    let detail: serde_json::Value = client
-        .get(format!("{base}/{name}"))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let detail = send_json_ok(client.get(format!("{base}/{name}")), "get plugin detail").await?;
     let token = detail["review"]["token"].as_str().unwrap().to_string();
-    client
-        .post(format!("{base}/{name}/trust"))
-        .json(&serde_json::json!({ "token": token }))
-        .send()
-        .await?
-        .error_for_status()?;
-    let enabled: serde_json::Value = client
-        .post(format!("{base}/{name}/enable"))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let _ = send_json_ok(
+        client
+            .post(format!("{base}/{name}/trust"))
+            .json(&serde_json::json!({ "token": token })),
+        "trust plugin",
+    )
+    .await?;
+    let enabled = send_json_ok(
+        client.post(format!("{base}/{name}/enable")),
+        "enable plugin",
+    )
+    .await?;
     assert_eq!(enabled["state"], "active", "{enabled}");
     Ok(serde_json::json!({ "name": name, "path": detail["path"] }))
 }
@@ -183,25 +217,6 @@ fn assert_consumer_contract(name: &str, minted: &serde_json::Value, seat: &str, 
     );
 }
 
-fn bootstrap_loads_in_node(source: &str) -> Option<String> {
-    let dir = tempfile::tempdir().ok()?;
-    let script = dir.path().join("run.js");
-    let harness = format!(
-        "var captured;\nvar window = {{ __ModuleLoader__: {{ load: function (r) {{ captured = r; }} }} }};\n{source}\nvar mod = captured.factory(function (id) {{ return {{ id: id }}; }});\nprocess.stdout.write(JSON.stringify({{ id: captured.id, apply: typeof mod.apply, out: mod.apply('ctx') }}));\n"
-    );
-    fs::write(&script, harness).ok()?;
-    let output = std::process::Command::new("node")
-        .arg(&script)
-        .output()
-        .ok()?;
-    assert!(
-        output.status.success(),
-        "the served bootstrap failed under node: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Some(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
 #[tokio::test]
 async fn plugin_ui_dsh_client_serves_admitted_seats_and_denies_and_revokes() -> Result<()> {
     let tmp = tempfile::tempdir()?;
@@ -209,6 +224,20 @@ async fn plugin_ui_dsh_client_serves_admitted_seats_and_denies_and_revokes() -> 
     let workspace = tmp.path().join("ws");
     fs::create_dir_all(&root)?;
     let package = write_dsh_package(tmp.path(), "panel", DSH_CLIENT)?;
+    fs::write(
+        package.join("lib/util.js"),
+        "require('./client'); exports.v = require('./data.json').value + require('mapped').value; if (require('react-dom/client').id !== 'react-dom/client' || require('react/jsx-runtime').id !== 'react/jsx-runtime') throw new Error('host subpath mismatch');",
+    )?;
+    fs::write(package.join("lib/data.json"), r#"{"value":-2}"#)?;
+    fs::create_dir_all(package.join("node_modules/mapped"))?;
+    fs::write(
+        package.join("node_modules/mapped/package.json"),
+        r#"{"exports":{".":{"import":"./selected.cjs","default":"./missing.cjs"}}}"#,
+    )?;
+    fs::write(
+        package.join("node_modules/mapped/selected.cjs"),
+        "exports.value = 3;",
+    )?;
 
     let Some((addr, handle)) = spawn_plugin_api_server(root, workspace).await? else {
         return Ok(());
@@ -414,6 +443,51 @@ async fn plugin_ui_dsh_client_serves_admitted_seats_and_denies_and_revokes() -> 
 }
 
 #[tokio::test]
+async fn plugin_ui_dsh_bootstrap_resolves_relative_requires_from_a_root_entry() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().join("runtime");
+    let workspace = tmp.path().join("ws");
+    fs::create_dir_all(&root)?;
+    let package = write_dsh_root_entry_package(tmp.path(), "rootentry")?;
+
+    let Some((addr, handle)) = spawn_plugin_api_server(root, workspace).await? else {
+        return Ok(());
+    };
+    let client = codewhale_release::tls::reqwest_client();
+    let base = format!("http://{addr}/v1/apps/plugins");
+    let installed = install_active(&client, &base, format!("dsh:{}", package.display())).await?;
+    let name = installed["name"].as_str().unwrap().to_string();
+
+    let (status, panel) = ui(&client, &base, &name, "slot=workpane.panel").await?;
+    assert_eq!(status, 200, "{panel}");
+    let revision = panel["revision"].as_str().unwrap().to_string();
+    let asset_url = format!(
+        "{}{}",
+        panel["base"].as_str().unwrap(),
+        panel["entry"].as_str().unwrap()
+    );
+    let served = client
+        .get(&asset_url)
+        .header("If-Match", &revision)
+        .send()
+        .await?;
+    assert_eq!(served.status(), StatusCode::OK);
+    let bootstrap = served.text().await?;
+    assert!(bootstrap.contains("\"source/util.js\""));
+    match bootstrap_loads_in_node(&bootstrap) {
+        Some(out) => {
+            let out: serde_json::Value = serde_json::from_str(&out)?;
+            assert_eq!(out["apply"], "function");
+            assert_eq!(out["out"][0], 1);
+        }
+        None => eprintln!("node is unavailable; the bootstrap execution check was skipped"),
+    }
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn plugin_ui_dsh_client_with_unprovided_modules_or_ambient_dependencies_is_unsupported()
 -> Result<()> {
     let tmp = tempfile::tempdir()?;
@@ -531,6 +605,113 @@ async fn plugin_ui_native_client_serves_only_the_detail_seat_and_is_revoked() ->
         .send()
         .await?;
     assert_eq!(after.status(), StatusCode::PRECONDITION_FAILED);
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn plugin_ui_dsh_serves_reviewed_static_assets_and_detail_slots() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().join("runtime");
+    let workspace = tmp.path().join("ws");
+    fs::create_dir_all(&root)?;
+    let package = write_dsh_package(
+        tmp.path(),
+        "styled-detail",
+        r#"const util = require('./util');
+exports.apply = function (ctx) {
+  ctx.slot.register('plugins.item', { id: 'item' });
+  ctx.slot.register('plugins.detail.actions', { id: 'actions' });
+  ctx.slot.register('plugins.detail.badge', { id: 'badge' });
+  return util.one;
+};"#,
+    )?;
+    fs::write(
+        package.join("lib/style.css"),
+        ".badge { color: #1976d2; }\n",
+    )?;
+    fs::write(
+        package.join("lib/icon.svg"),
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 8 8\"></svg>",
+    )?;
+
+    let Some((addr, handle)) = spawn_plugin_api_server(root, workspace).await? else {
+        return Ok(());
+    };
+    let client = codewhale_release::tls::reqwest_client();
+    let base = format!("http://{addr}/v1/apps/plugins");
+    let installed = install_active(&client, &base, format!("dsh:{}", package.display())).await?;
+    let name = installed["name"].as_str().unwrap().to_string();
+
+    for key in [
+        "plugins.item",
+        "plugins.detail.actions",
+        "plugins.detail.badge",
+    ] {
+        let (status, body) = ui(
+            &client,
+            &base,
+            &name,
+            &format!("slot=customize.plugins.detail&dsh_slot={key}"),
+        )
+        .await?;
+        assert_eq!(status, 200, "{key}: {body}");
+        assert_consumer_contract(&name, &body, "customize.plugins.detail", key);
+    }
+
+    let (status, detail) = ui(
+        &client,
+        &base,
+        &name,
+        "slot=customize.plugins.detail&dsh_slot=plugins.item",
+    )
+    .await?;
+    assert_eq!(status, 200, "{detail}");
+    let revision = detail["revision"].as_str().unwrap().to_string();
+    let asset_base = detail["base"].as_str().unwrap().to_string();
+
+    let css = client
+        .get(format!("{asset_base}source/lib/style.css"))
+        .header("If-Match", &revision)
+        .send()
+        .await?;
+    assert_eq!(css.status(), StatusCode::OK);
+    assert_eq!(
+        css.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("text/css; charset=utf-8")
+    );
+    assert!(css.text().await?.contains(".badge"));
+
+    let svg = client
+        .get(format!("{asset_base}source/lib/icon.svg"))
+        .header("If-Match", &revision)
+        .send()
+        .await?;
+    assert_eq!(svg.status(), StatusCode::OK);
+    assert_eq!(
+        svg.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("image/svg+xml")
+    );
+    assert!(
+        svg.headers()
+            .get("content-security-policy")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.contains("default-src 'none'"))
+    );
+
+    let raw_js = client
+        .get(format!("{asset_base}source/lib/util.js"))
+        .header("If-Match", &revision)
+        .send()
+        .await?;
+    assert_eq!(raw_js.status(), StatusCode::NOT_FOUND);
+    let body: serde_json::Value = raw_js.json().await?;
+    assert_eq!(body["error"]["code"], "plugin_ui_file_not_reviewed");
 
     handle.abort();
     Ok(())

@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:a3f7ac7d7dc2 -->
+<!-- source: README.md sha256:8f9ce64ce19c -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ curl -fsSL https://codewhale.net/install.sh | sh
 
 <sub>이 번역은 기계 번역 초안이며 원어민 검토를 아직 받지 않았습니다.</sub>
 
-<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="gemini-4-hydrogen으로 실제 작업을 마친 터미널의 Codewhale. python3 -m unittest -v test_ls.py를 실행해 테스트 2개가 통과했고, argparse로 ls.py에 --json 옵션을 추가했다고 보고합니다. 상태 줄에는 accept edits와 gemini-4-hydrogen이 표시됩니다.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="deepseek-flash으로 실제 작업을 마친 터미널의 Codewhale. python3 -m unittest -v test_ls.py를 실행해 테스트 2개가 통과했고, ls.py에 --json 옵션을 추가했다고 보고합니다. 상태 줄에는 accept edits와 deepseek-flash이 표시됩니다.">
 
-<sub>0.10.3 개발 빌드에서의 실제 세션입니다. Google API를 통해 gemini-4-hydrogen이 변경을 작성했고, 테스트 실행은 사용자가 한 번 허용했습니다.</sub>
+<sub>0.10.3 개발 빌드에서의 실제 세션입니다. DeepSeek API를 통해 deepseek-flash이 변경을 작성했고, 테스트 실행은 사용자가 한 번 허용했습니다.</sub>
 
 </div>
 
@@ -96,11 +96,9 @@ Anthropic, OpenAI, DeepSeek, Google, Mistral, Moonshot, OpenRouter, xAI를 비�
 
 ## 안전을 지키는 방법
 
-두 개의 스위치가 Codewhale이 묻지 않고 할 수 있는 범위를 정합니다. 입력창이 비어 있을 때 `Tab`은 모드를 바꿉니다. **Plan**은 읽고 검색만 하며 아무것도 바꾸지 않고, **Work**는 파일을 편집하고 명령을 실행하며, **Operate**는 Work와 같은 권한으로 목표가 검증되거나 사용자의 입력이 필요할 때까지 계속 작업합니다. `Shift+Tab`은 권한을 바꿉니다. 기본값인 **Ask**는 저장소 안의 파일 편집을 묻지 않고 적용하고, 읽기 전용이 아닌 셸 명령 전에는 묻습니다. **Auto-Review**는 규칙과 검토 모델이 일상적인 호출을 승인하게 하고 위험도가 높은 호출은 거부합니다. 그런 호출을 직접 승인하려면 Ask로 바꾸세요. **Full Access**는 절대 묻지 않고 Codewhale의 샌드박스를 끄지만, 저장소 규칙과 관리 정책은 계속 적용됩니다. 자세한 내용은 [v0.10.2 가이드](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md)에 있습니다.
+하나의 다이얼이 Codewhale이 묻지 않고 할 수 있는 범위를 정합니다. `Shift+Tab`으로 차례로 바꿉니다: **Ask → Accept Edits → Plan → Auto-Review → Full Access**. 기본값인 **Accept Edits**는 git 저장소 안의 파일 편집을 묻지 않고 적용하고, 명령 전에는 묻습니다. **Ask**는 모든 파일 편집과 모든 명령 전에 묻습니다. **Plan**은 읽고 검색만 하며 아무것도 바꾸지 않습니다. **Auto-Review**는 규칙과 검토 모델이 일상적인 호출을 승인하게 하고 위험도가 높은 호출은 거부합니다. 그런 호출을 직접 승인하려면 Ask로 바꾸세요. **Full Access**는 절대 묻지 않고 Codewhale의 샌드박스를 끄지만, 저장소 규칙과 관리 정책은 계속 적용됩니다. `Tab`은 자동 완성에만 쓰이고 모드를 바꾸지 않으며, Operate는 폐지되었습니다. 자세한 내용은 [모드 가이드](../MODES.md)에 있습니다.
 
-0.10.3 예정: `Shift+Tab`은 Ask, Accept Edits, Plan, Auto-Review, Full Access를 차례로 거치는 하나의 다이얼이 되고, `Tab`은 더 이상 모드를 바꾸지 않으며, Operate는 폐지됩니다. Ask는 모든 파일 편집 전에도 묻게 되며, 새 기본값인 Accept Edits는 git 저장소 안의 편집을 적용하고 명령 전에는 계속 묻습니다. [현재 가이드](../MODES.md)에서 설명합니다.
-
-Ask와 Auto-Review에서는 시스템에 OS 샌드박스가 있으면 그 안에서 명령을 실행합니다. macOS에서는 Seatbelt, Linux에서는 bubblewrap이 설치되어 있을 때 bubblewrap입니다. Windows에는 아직 OS 샌드박스가 없고, Full Access는 샌드박스를 끕니다. 샌드박스 안에서는 셸 명령과 터미널 세션이 `~/.ssh`, `~/.aws`, `.env` 파일 같은 자격 증명 저장소를 읽을 수 없습니다. `/preview-request`는 다음 요청을 보내지 않고 민감한 정보를 가린 미리 보기를 보여 줍니다.
+Ask, Accept Edits, Auto-Review에서는 시스템에 OS 샌드박스가 있으면 그 안에서 명령을 실행합니다. macOS에서는 Seatbelt, Linux에서는 bubblewrap이 설치되어 있을 때 bubblewrap입니다. Windows에는 아직 OS 샌드박스가 없고, Full Access는 샌드박스를 끕니다. 샌드박스 안에서는 셸 명령과 터미널 세션이 `~/.ssh`, `~/.aws`, `.env` 파일 같은 자격 증명 저장소를 읽을 수 없습니다. `/preview-request`는 다음 요청을 보내지 않고 민감한 정보를 가린 미리 보기를 보여 줍니다.
 
 계정은 필요 없고, `/provider`로 추가한 키는 당신의 컴퓨터에만 남습니다. 자신의 API 키를 쓰면 제공자에게 직접 비용을 내고, 로컬 모델은 키가 필요 없습니다. 가격을 알 때는 바닥글과 `/cost`가 세션 비용을 보여 주고, 모르는 가격은 무료가 아니라 알 수 없음으로 표시합니다.
 

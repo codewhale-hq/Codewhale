@@ -847,6 +847,9 @@ binary.
 
 ## ACP stdio adapter: `codewhale serve --acp`
 
+For editor setup (including Zed), permissions and limits, see
+[Use Codewhale from your editor](ACP.md).
+
 ACP JSON-RPC over newline-delimited stdio is a transport over the existing
 RuntimeThreadManager and Engine. It has no provider/tool round loop, executable
 registry, prompt composer, or conversation writer of its own. The server loads
@@ -913,6 +916,13 @@ produced.
 
 Tool updates begin `pending`. `in_progress` means Core reached final dispatch;
 `completed`/`failed` and typed image blocks come from the actual Core result.
+A read or edit tool call names its file in `locations` as an absolute path
+(relative paths resolve against the session workspace). A file write or edit
+start carries an ACP `diff` of the requested text: `oldText` is the edit's
+search text and is absent for a write, so it is not a whole-file before image
+and `apply_patch` has none. The same diff leads the content of the call's
+permission request and completion update, so the editor keeps showing it. Shell output arrives as text content; ACP has no
+editor-owned `terminal` content on this transport.
 `session/request_permission` correlates a private JSON-RPC ID to the same
 Runtime-minted pending approval and Core execution ID. When a plugin tool asks
 the core to run a tool that needs approval (`exec.core`), the request is shown
@@ -1431,7 +1441,23 @@ tools remain blocked even if listed in `allowed_tools`, and non-empty rules
 participate in creation idempotency fingerprints. These fields are additive:
 older thread records and clients that omit them retain their previous behavior.
 
+When `GET /v1/runtime/info` advertises
+`capabilities.exact_route_thread_create: true`, clients can send the model
+list's `route.selection` object (`route_id` and `binding_id`) as
+`route_selection` on thread creation. Send the selected `model_provider`,
+exact wire `model` and `model_provider_id` when the list supplies one.
+Missing or malformed required fields return HTTP 400. If the selected route
+has changed or is unavailable,
+the server returns HTTP 409 with `error.code: "route_selection_stale"` before
+creating a thread or emitting `thread.started`. Refresh the model list and
+ask the user to reselect. The selection participates in the creation
+fingerprint when using `operation_key`. A matching committed retry still
+returns the original thread if the route has since changed.
+
 ### Sessions on other agents (external agent threads)
+
+For installation, sign-in and a runnable example, see
+[Run other agents in Codewhale](OTHER_AGENTS.md).
 
 `POST /v1/threads` with `executor` runs the thread's turns on an agent CLI
 already installed and signed in on this computer, over Agent Client Protocol,
@@ -1656,8 +1682,13 @@ count until it does, and a notice added to a turn after it finished (such as a
 permissions change) does not count.
 
 `GET /v1/threads/running` is the running-work accounting surface
-(#6180): threads with at least one queued or in-progress turn, each with
-`thread_id`, `model`, `title`, and `active_turns` (`turn_id` + `status`).
+(#6180): threads with at least one queued or in-progress turn or one running
+owner-held job, each with `thread_id`, `model`, `title`, `active_turns`
+(`turn_id` + `status`), `active_jobs` (`job_id`, `background`,
+`last_progress_at`, and the hold fields above when held), and
+`last_progress_at`: the newest event or job output this process has seen on
+the thread, absent when it has seen neither since it started. A thread with
+only held jobs has an empty `active_turns`.
 Background-capable clients use it for quit/background decisions — one call,
 no inference from latest-turn status. Archive state is ignored (archiving
 has no quiescence gate); an empty array means no owned work is live.
@@ -2343,6 +2374,7 @@ degrade with an explanation otherwise.
 - `POST /v1/automations/{id}/run`
 - `POST /v1/automations/{id}/pause`
 - `POST /v1/automations/{id}/resume`
+- `POST /v1/automations/{id}/adopt`
 - `GET /v1/automations/{id}/runs?limit=20`
 
 Create and update requests accept an optional `model`. When present, each
@@ -2567,13 +2599,13 @@ conversations that both use `term-1` in one folder get two shells. These
 routes attach to those shells and never create one, because conjuring a shell
 from an HTTP request would give the client a terminal the Engine does not
 know about. Input is attributable by route: `input` is the client's writer,
-`terminal/send` is the agent's.
+`terminal_send` is the agent's.
 
 - `GET /v1/threads/{id}/terminals` → `{thread_id, workspace, instance,
   terminals: [{terminal_id, name, state, running, exit_code, updated_at}]}` —
   the thread's live shells, newest activity first. `terminal_id` is issued
   when the shell starts and is never reused; the agent's terminal tool results
-  carry the same value as `terminal_session_id`, and `terminal/reset` also
+  carry the same value as `terminal_session_id`, and `terminal_reset` also
   reports `previous_session_id`. `instance` names this Engine process's
   terminal registry. While a shell lives, `state` is its latest command's
   state (`running`, `idle`, `canceled`, `failed`, `stale_lost` or `reset`);
@@ -2619,7 +2651,7 @@ Reconnect and restart semantics:
   confirm `instance` is the one recorded, and resume each `terminal_id` from
   its stored cursor. Only retained output is replayed; `gap` reports what the
   ring lost.
-- **Reset** (`terminal/reset`): the shell is killed and a new one starts under
+- **Reset** (`terminal_reset`): the shell is killed and a new one starts under
   the same name with a new `terminal_id`. The old identity is `404`; the list
   shows the replacement, and a client switches to it only on the person's
   choice.
@@ -2627,7 +2659,7 @@ Reconnect and restart semantics:
   `exit_code` until the agent resets it or the Engine restarts.
 - **Engine restart**: live shells end with the process. The list reports a
   different `instance` and none of the old identities, which answer `404`. No
-  shell is recreated and no command is rerun; a later `terminal/run` with the
+  shell is recreated and no command is rerun; a later `terminal_run` with the
   same name starts a new identity.
 - **Input across a failure**: input already sent cannot be retracted. A client
   that loses the connection before the response cannot know whether the bytes
@@ -2676,6 +2708,18 @@ wrapper yet — the raw routes are the contract for now.
 - `POST /v1/threads/{id}/jobs/{job_id}/kill` — bounded SIGTERM → SIGKILL
   escalation on the process group → `{ "job", "result" }` with the final
   snapshot
+- Owner-held jobs: the create body may add `owner_keepalive_seconds`
+  (1-3600) and `deadline_at` (RFC 3339, at most 24 h ahead). The Engine stops
+  the job with its whole process group when the owner misses a keepalive
+  (`stop_reason: "owner_lost"`) or the deadline passes
+  (`stop_reason: "deadline"`); a keyed operation's terminal record carries the
+  same `stop_reason`. `POST /v1/threads/{id}/jobs/{job_id}/keepalive` renews
+  the keepalive → `{ "job" }`; `409 job_keepalive_expired` once it lapsed
+  (final), `409 job_not_held` without one, `409 job_not_running` after exit.
+  Job views carry `owner_keepalive_seconds`, `keepalive_expires_at`,
+  `deadline_at`, `stop_reason`, and `last_progress_at` (newest output, or the
+  start) while running. An Engine without this support refuses the fields
+  with `422`.
 
 Reads are non-consuming: several clients may hold independent cursors, and
 polling never steals output from the engine's own delta consumer. The
@@ -3249,10 +3293,15 @@ a remote request on the local machine.
 **LSP** (workspace language intelligence, APPS-93)
 - `GET /v1/lsp` — capability: `enabled`, supported `languages` with their
   server commands, `custom_languages`, operations, poll and diagnostic caps
-- `GET /v1/diagnostics?path=` — file diagnostics
-- `GET /v1/definition?path=&line=&character=` (1-based)
-- `GET /v1/references?path=&line=&character=` (1-based)
-- `GET /v1/symbols?path=&query=` — empty query returns document symbols
+- `GET /v1/diagnostics?path=` — file diagnostics (`items[].line`/`column` are
+  1-based; response carries `position_base: 1`)
+- `GET /v1/definition?path=&line=&character=` (1-based input; `locations[].range`
+  and `result` keep raw 0-based LSP positions, `position_base: 0`,
+  `position_encoding: "utf-16"`)
+- `GET /v1/references?path=&line=&character=` (same input/output position
+  contract as `/v1/definition`)
+- `GET /v1/symbols?path=&query=` — empty query returns document symbols (same
+  0-based output positions as `/v1/definition`)
 
 One lazily-built workspace-level `LspManager` serves these; engine threads
 keep their own per-thread managers for the post-edit hook, and a server that
@@ -3357,6 +3406,15 @@ metadata. `credentialState` is not a provider canary: `configured` does not
 prove endpoint reachability, credential validity, model entitlement, or a
 successful request. The models route below is also only a selection catalog; a
 non-empty list does not prove that the route can currently serve a request.
+
+`lastCheck` is the outcome of the last real call this process made on the
+provider, and is absent until a turn has used it:
+`{ "ok": true }` after a completed turn, or
+`{ "ok": false, "category": "rate_limit", "message": "HTTP 402: …" }` after a
+provider-owned failure (network, authentication, authorization, rate limit or
+quota such as HTTP 402, timeout). `message` is the provider's error text cut to
+120 characters. The record lives in memory and starts empty when the Engine
+restarts.
 
 ### `GET /v1/providers/{id}/models`
 
@@ -3558,8 +3616,11 @@ refuses OpenAI Codex. An Engine without this route answers `404`.
 ```
 
 Reports which external agent CLIs this computer already has, without starting a
-session. It covers Claude, Codex, DeepSeek Harness, Antigravity (`agy acp`),
-OpenCode, Kimi Code, Mistral Vibe, Qoder, CodeBuddy, Grok, Qwen Code and GitHub Copilot CLI. `state` is `installed` or `not_installed`; a binary is looked up on `PATH` (absolute entries only; on Windows the spawnable PATHEXT suffixes `.com/.exe/.bat/.cmd` and `%APPDATA%\npm`) and in the usual per-user bin directories. For an installed
+session. The [agent registry](../crates/engine/src/fleet/agents.rs) lists the
+recognized agents. `state` is `installed` or `not_installed`; a binary is
+looked up on `PATH` (absolute entries only; on Windows the spawnable PATHEXT
+suffixes `.com/.exe/.bat/.cmd` and `%APPDATA%\npm`) and in the usual per-user
+bin directories. For an installed
 agent the route runs `--version` and, where the CLI speaks Agent Client Protocol
 itself, one `initialize` request on stdin, concurrently. `acp` is `native` when
 that handshake answered, `adapter` for CLIs that need a separate adapter
@@ -3965,9 +4026,10 @@ usage and outcome. An observed send or absent response headers do not prove
 provider acceptance or free work. Unknown primary outcomes remain unpriced in
 the turn diagnostics and usage totals; known primary usage stays in parent
 accounting. These receipts do not yet reconcile late cumulative primary usage.
-Inference automatically retries only an ordinary rate limit or a proven
-transient connection failure before dispatch. A later explicit user turn is a
-new request, not an automatic replay of an uncertain request.
+Inference automatically retries only an ordinary rate limit, a proven
+transient connection failure before dispatch, or a request that received no
+response headers (`stream.open_retries` times, default once). A later explicit
+user turn is a new request, not an automatic replay of an uncertain request.
 
 `turn.completed` carries the turn's authoritative cumulative token usage in
 `payload.turn.usage`, including routed work. It replaces the running token
@@ -4386,3 +4448,6 @@ establish complete chat or Codex parity.
 A local whale's `SOUL.md` describes its personality and voice. Read the exact local file with `GET /v1/whale/soul` and save it with `PUT /v1/whale/soul`. Both operations require the host Runtime token. The response carries the path, text, revision and writable state. Send the returned revision quoted in `If-Match` with a JSON object containing `text`. A stale edit returns HTTP 412 so the editor can keep the draft. Files are private to the current OS user (mode 0600 on Unix), UTF-8, regular single-link files with a 16 KiB limit. An existing `SOUL.md` requires a matching `whale.toml` identity (`id = "default"`); an absent local whale is created only by an explicit save. A concurrent edit returns HTTP 409 instead of waiting for the other writer. An explicitly imported account whale has a read-only local copy.
 
 The root Engine captures the local whale's voice at turn admission and charges it to the global instruction budget. The instruction receipt includes `whale_soul_source_path` and `whale_soul_revision`; internal follow-ups reuse the captured voice. Its personality applies within the existing permissions.
+
+
+The additive exact-route inventory and fenced thread-selection fields are documented in [Route inventory](ROUTE_INVENTORY.md).

@@ -1,8 +1,43 @@
 {
   "format": "codewhale.release-baseline.v1",
-  "tag": "v0.10.2",
-  "version": "0.10.2",
+  "tag": "v0.10.4",
+  "version": "0.10.4",
   "features": [
+    {
+      "id": "undo-range",
+      "name": "Request range undo",
+      "summary": "/undo select rewinds a chosen request and its file changes; Runtime clients can preview and confirm an exact turn range.",
+      "status": "experimental",
+      "since": "0.10.3"
+    },
+    {
+      "id": "unix-uninstall",
+      "name": "Receipt-owned uninstall",
+      "summary": "Remove a receipt-owned release install or print its package manager's command; data kept unless --purge-data.",
+      "status": "experimental",
+      "since": "0.10.3"
+    },
+    {
+      "id": "install-cleanup",
+      "name": "Installation cleanup",
+      "summary": "doctor --all expands diagnostics; --installs lists owners, --fix recovers old copies and --restore reverses it.",
+      "status": "stable",
+      "since": "0.10.3"
+    },
+    {
+      "id": "auto-update",
+      "name": "Automatic updates",
+      "summary": "Release-binary installs download updates in the background and apply them at the next start; update --rollback undoes.",
+      "status": "stable",
+      "since": "0.10.3"
+    },
+    {
+      "id": "cloud-computer-dispatch",
+      "name": "Cloud computer conversations",
+      "summary": "Dispatch, inspect, continue and stop one account cloud conversation from terminal and desktop, saved whales included.",
+      "status": "experimental",
+      "since": "0.10.3"
+    },
     {
       "id": "shell-tool",
       "name": "Shell tool",
@@ -40,10 +75,17 @@
     },
     {
       "id": "mcp-client",
-      "name": "MCP client",
-      "summary": "Connects local stdio and remote HTTP MCP servers and exposes their tools.",
+      "name": "MCP connectors",
+      "summary": "A plugin kind: connects MCP servers, exposes permitted tools and records connection status for the model.",
       "status": "stable",
       "since": "0.1.0"
+    },
+    {
+      "id": "mcp-tool-approval",
+      "name": "MCP tool approval rules",
+      "summary": "Global per-tool Always, Ask and Off rules stay bound to the current server and preserve required consent.",
+      "status": "experimental",
+      "since": "0.10.3"
     },
     {
       "id": "exec-policy",
@@ -76,9 +118,16 @@
     {
       "id": "extension-host",
       "name": "Extension host",
-      "summary": "Runs reviewed plugins' native TypeScript/JavaScript tool and slash-command code in a Bun or Node sidecar.",
+      "summary": "Runs reviewed TypeScript/JavaScript tools, commands and bounded Git review scopes through Engine approvals in a sidecar.",
       "status": "flagged",
       "since": "0.10.1"
+    },
+    {
+      "id": "plugin-creator",
+      "name": "Plugin creator",
+      "summary": "Enables the built-in plugin_manager tool and Creator mode host module while Rust retains permission gates.",
+      "status": "experimental",
+      "since": "0.10.3"
     },
     {
       "id": "finance-host",
@@ -146,14 +195,14 @@
     {
       "id": "modes",
       "name": "Modes",
-      "summary": "Plan, Work and Operate modes set what the agent may do in a session; a finished plan offers to start the work.",
+      "summary": "Plan and Work modes on the Shift+Tab dial; a conversation is Standard or Creator mode, fixed after its first message.",
       "status": "stable",
       "since": null
     },
     {
       "id": "permission-postures",
       "name": "Permission postures",
-      "summary": "Ask, Auto-Review and Full Access postures decide when a tool call needs approval.",
+      "summary": "One Shift+Tab dial: Ask, Accept Edits (default), Plan, Auto-Review, Full Access; cards default to Deny.",
       "status": "stable",
       "since": null
     },
@@ -167,7 +216,7 @@
     {
       "id": "providers",
       "name": "Providers",
-      "summary": "Provider routes with endpoint-scoped model facts, explicit limits and sourced price estimates.",
+      "summary": "Provider routes including Tinker, Runcrate and Tencent TokenHub, with scoped facts, limits and price estimates.",
       "status": "stable",
       "since": null
     },
@@ -177,6 +226,20 @@
       "summary": "Picks a model per turn under Auto; /router sets up the router.",
       "status": "stable",
       "since": null
+    },
+    {
+      "id": "model-catalog-refresh",
+      "name": "Model catalog refresh",
+      "summary": "Refresh model facts and exact provider rosters; selection is fenced to the account and endpoint.",
+      "status": "stable",
+      "since": "0.10.3"
+    },
+    {
+      "id": "output-limit-answer-recovery",
+      "name": "Answerless output-limit recovery",
+      "summary": "Opt-in bounded answer retries after an output-limit stop, including Fleet, with request-scoped nudge receipts.",
+      "status": "flagged",
+      "since": "0.10.3"
     },
     {
       "id": "fleet",
@@ -209,9 +272,23 @@
     {
       "id": "goals",
       "name": "Goals",
-      "summary": "/goal keeps the agent working toward one objective across turns.",
+      "summary": "/goal keeps the agent on one objective across turns; optional [goal] judges can independently check complete or blocked.",
       "status": "stable",
       "since": null
+    },
+    {
+      "id": "thread-scheduled-turns",
+      "name": "Reminders into the same thread",
+      "summary": "send_later, automations and /v1/triggers deliver scheduled turns; a run parked on a human answer pauses its wall clock.",
+      "status": "experimental",
+      "since": "0.10.3"
+    },
+    {
+      "id": "task-suggestions",
+      "name": "Suggested tasks",
+      "summary": "The tasks tool's suggest action offers the person a task as a Start/Hide card; it starts nothing and needs no approval.",
+      "status": "experimental",
+      "since": "unreleased"
     },
     {
       "id": "todos",
@@ -230,16 +307,30 @@
     {
       "id": "receipts",
       "name": "Receipts",
-      "summary": "/receipts lists what a session did: files, commands, calls, approvals and failures.",
+      "summary": "/receipts lists files, commands, calls, approvals and failures; the API serves the same receipt as JSON or Markdown.",
       "status": "stable",
       "since": "0.10.1"
     },
     {
       "id": "preview-request",
       "name": "Request preview",
-      "summary": "/preview-request shows the redacted outbound request without sending it.",
+      "summary": "/preview-request shows the redacted outbound request and bounded route-omission facts without sending it.",
       "status": "stable",
       "since": null
+    },
+    {
+      "id": "present-handoff",
+      "name": "Present final files",
+      "summary": "Declare existing workspace files as final deliverables with a read-only handoff receipt.",
+      "status": "experimental",
+      "since": "0.10.3"
+    },
+    {
+      "id": "show-data",
+      "name": "Charts in the transcript",
+      "summary": "Read-only show_data tool: display sparklines, labelled bars or trends, with matching text summaries.",
+      "status": "experimental",
+      "since": "0.10.3"
     },
     {
       "id": "read-media",
@@ -247,6 +338,27 @@
       "summary": "Reads and preprocesses images for vision-capable models with size and privacy guards.",
       "status": "stable",
       "since": null
+    },
+    {
+      "id": "clipboard-image-preview",
+      "name": "Clipboard image paste preview",
+      "summary": "Attaches an image from the clipboard and previews it as a truecolor cell thumbnail above the composer.",
+      "status": "stable",
+      "since": null
+    },
+    {
+      "id": "clipboard-image-prune",
+      "name": "Pasted image cleanup",
+      "summary": "codewhale sessions prune-images reports pasted clipboard images no saved session still names; --apply deletes them.",
+      "status": "experimental",
+      "since": "0.10.3"
+    },
+    {
+      "id": "sessions-migrate",
+      "name": "Workspace session migration",
+      "summary": "codewhale sessions migrate updates saved sessions, checkpoints, and Runtime thread bindings after a workspace rename.",
+      "status": "stable",
+      "since": "0.10.3"
     },
     {
       "id": "memory",
@@ -257,15 +369,15 @@
     },
     {
       "id": "skills",
-      "name": "Skills",
-      "summary": "Installs and loads trusted instruction packages with owned-root precedence and separate user/model invocation controls.",
+      "name": "Skill plugins",
+      "summary": "Trusted instruction packages with bundle policy, invocation controls, and project-first catalog lookup.",
       "status": "stable",
       "since": null
     },
     {
       "id": "plugins",
       "name": "Plugins",
-      "summary": "Installs, reviews and trusts plugin bundles, including the first-party marketplace.",
+      "summary": "Install, review and trust bundles, preview and import local DSH packages, and restore reviewed snapshots.",
       "status": "stable",
       "since": null
     },
@@ -299,8 +411,8 @@
     },
     {
       "id": "hooks",
-      "name": "Hooks",
-      "summary": "Runs user commands on session and tool events, with an execution receipt after shell tools.",
+      "name": "Hook plugins",
+      "summary": "A plugin kind: runs user commands on session and tool events, with an execution receipt after shell tools.",
       "status": "stable",
       "since": null
     },
@@ -319,9 +431,16 @@
       "since": null
     },
     {
+      "id": "runtime-watch-events",
+      "name": "Attested watch events",
+      "summary": "Master-bearer watch turns retain typed non-person provenance, exact replay and read-only operation recovery.",
+      "status": "experimental",
+      "since": "0.10.3"
+    },
+    {
       "id": "compatibility-tool-free-turns",
       "name": "Compatibility turn admission",
-      "summary": "Compatibility transports require explicit tool-free turns; interactive clients use the full HTTP/SSE API.",
+      "summary": "Initialized local controls use the held Runtime for tool-free turns, loaded-thread paging, names; clients use HTTP/SSE.",
       "status": "stable",
       "since": "0.10.2"
     },
@@ -391,7 +510,7 @@
     {
       "id": "localization",
       "name": "Localization",
-      "summary": "Interface text in 15 locales.",
+      "summary": "Interface text in 15 locales, including tool activity, file receipts and language-aware transcript caches.",
       "status": "stable",
       "since": null
     },
@@ -419,8 +538,15 @@
     {
       "id": "account-login",
       "name": "Account login",
-      "summary": "/login signs in to an optional Codewhale account; plugin providers connect with /connect.",
+      "summary": "Cancellable account sign-in inside the TUI; account sign-out preserves local model connections and work.",
       "status": "stable",
+      "since": null
+    },
+    {
+      "id": "claude-org-billing",
+      "name": "Claude organization billing",
+      "summary": "Link a Claude Platform organization so Anthropic bills it directly; auth_mode = \"claude-org\".",
+      "status": "experimental",
       "since": null
     },
     {
@@ -452,11 +578,25 @@
       "since": null
     },
     {
+      "id": "conversation-export",
+      "name": "Conversation export",
+      "summary": "/export saves a redacted conversation as Markdown, HTML or JSON, to the clipboard or an auto-named file.",
+      "status": "stable",
+      "since": "0.3.31"
+    },
+    {
       "id": "live-thinking",
       "name": "Live thinking",
-      "summary": "/verbose toggles live model thinking in the transcript.",
+      "summary": "Model thinking shows live in the transcript, then collapses under a Thought header; /verbose shows it in full.",
       "status": "stable",
       "since": null
+    },
+    {
+      "id": "local-model-reasoning",
+      "name": "Local model reasoning compatibility",
+      "summary": "The vLLM Chat route sends reviewed model-template effort values instead of assuming a universal ladder.",
+      "status": "stable",
+      "since": "0.10.3"
     },
     {
       "id": "workbar",
@@ -494,18 +634,18 @@
       "since": null
     },
     {
-      "id": "chatgpt-plan-sign-in",
-      "name": "Sign in with ChatGPT",
-      "summary": "Uses official OAuth and the selected account catalog for eligible ChatGPT plan requests in the local OSS app.",
+      "id": "harmonyos-native",
+      "name": "HarmonyOS (native)",
+      "summary": "Signed arm64 release archive for native HarmonyOS and OpenHarmony.",
       "status": "experimental",
-      "since": "0.10.1"
+      "since": null
     },
     {
-      "id": "claude-plan-sign-in",
-      "name": "Sign in with Claude",
-      "summary": "Adds Claude subscription sign-in and native Messages routing. Live provider acceptance remains unverified.",
+      "id": "chatgpt-plan-sign-in",
+      "name": "Sign in with ChatGPT",
+      "summary": "Official OAuth and the selected account catalog serve ChatGPT plan requests, with distinct token-verification errors.",
       "status": "experimental",
-      "since": "0.10.2"
+      "since": "0.10.1"
     },
     {
       "id": "plugin-oauth-providers",
@@ -529,6 +669,13 @@
       "since": "unreleased"
     },
     {
+      "id": "local-whale-voice",
+      "name": "Local whale voice",
+      "summary": "Edit SOUL.md for a local whale and inspect the personality captured for each turn.",
+      "status": "experimental",
+      "since": "0.10.3"
+    },
+    {
       "id": "profile-constitution",
       "name": "Profile constitution",
       "summary": "Account preferences are captured per turn and previewed by the Engine.",
@@ -548,6 +695,83 @@
       "summary": "Reports idle, working or blocked to the Herdr multiplexer and reopens the session after a restart.",
       "status": "stable",
       "since": "0.10.2"
+    },
+    {
+      "id": "instruction-budgets",
+      "name": "Instruction budgets",
+      "summary": "Global and project standing instructions get separate token budgets, with every trim or skip reported.",
+      "status": "stable",
+      "since": "0.10.3"
+    },
+    {
+      "id": "github-action-review",
+      "name": "GitHub Action review",
+      "summary": "Generate pinned workflows for automatic or authorized mention reviews; publish findings with recorded evidence.",
+      "status": "experimental",
+      "since": "0.10.1"
+    },
+    {
+      "id": "telegram-agent",
+      "name": "Telegram agent bridge",
+      "summary": "Use an Engine from Telegram with durable prompt recovery, human-owned approvals and retained replies.",
+      "status": "experimental",
+      "since": "0.8.53"
+    },
+    {
+      "id": "dingtalk-agent",
+      "name": "DingTalk agent bridge",
+      "summary": "Connect an internal DingTalk app to the same Engine with scoped identity and durable message recovery.",
+      "status": "experimental",
+      "since": "0.10.3"
+    },
+    {
+      "id": "compaction-archive-recall",
+      "name": "Compaction archive recall",
+      "summary": "context_archive_search and context_archive_get read the pre-compaction transcript a summary replaced.",
+      "status": "experimental",
+      "since": "0.10.3"
+    },
+    {
+      "id": "usage-statistics",
+      "name": "Usage statistics",
+      "summary": "Read-only native usage subtotals and execution diagnostics; missing coverage stays explicit.",
+      "status": "experimental",
+      "since": "0.10.3"
+    },
+    {
+      "id": "cache-call-receipts",
+      "name": "Per-call cache receipts",
+      "summary": "/cache calls shows bounded native receipts with frozen prices, selected currency and missing cache telemetry.",
+      "status": "experimental",
+      "since": "0.10.3"
+    },
+    {
+      "id": "local-proxy-fallback",
+      "name": "Local proxy fallback",
+      "summary": "Long-lived clients go direct while a loopback proxy port refuses connections, then resume proxying.",
+      "status": "experimental",
+      "since": "0.10.3"
+    },
+    {
+      "id": "rate-limit-recovery",
+      "name": "Bounded HTTP rate-limit retries",
+      "summary": "Bound HTTP transport retries for 429 independently of network retries and honor provider reset minima.",
+      "status": "experimental",
+      "since": null
+    },
+    {
+      "id": "custom-responses-profile",
+      "name": "Custom Responses profile",
+      "summary": "A custom provider with wire = responses can name an allowlisted responses_profile; omitted means standard.",
+      "status": "stable",
+      "since": "0.10.3"
+    },
+    {
+      "id": "native-runtime-attachment",
+      "name": "Native Runtime attachment",
+      "summary": "Attach-only native clients select an authenticated existing owner and a fixed workspace.",
+      "status": "experimental",
+      "since": "0.10.3"
     }
   ],
   "providers": [
@@ -804,6 +1028,118 @@
   ],
   "models": [
     {
+      "id": "gemini-4-neon",
+      "provider": "Google",
+      "contextWindow": 1048576,
+      "maxOutput": 65536,
+      "reasoning": true,
+      "addedAt": "2026-11-18"
+    },
+    {
+      "id": "gpt-6.2-astra",
+      "provider": "OpenAI",
+      "contextWindow": 1050000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-11-17"
+    },
+    {
+      "id": "gpt-6.2-sol",
+      "provider": "OpenAI",
+      "contextWindow": 1050000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-11-17"
+    },
+    {
+      "id": "gemini-4-hydrogen",
+      "provider": "Google",
+      "contextWindow": 1048576,
+      "maxOutput": 65536,
+      "reasoning": true,
+      "addedAt": "2026-11-12"
+    },
+    {
+      "id": "gemini-4-carbon",
+      "provider": "Google",
+      "contextWindow": 1048576,
+      "maxOutput": 65536,
+      "reasoning": true,
+      "addedAt": "2026-11-10"
+    },
+    {
+      "id": "qwen4-max-preview",
+      "provider": "Qwen",
+      "contextWindow": null,
+      "maxOutput": null,
+      "reasoning": false,
+      "addedAt": "2026-11-10"
+    },
+    {
+      "id": "claude-fable-5-2",
+      "provider": "Anthropic",
+      "contextWindow": 1000000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-11-09"
+    },
+    {
+      "id": "muse-ember-1.0",
+      "provider": "Meta",
+      "contextWindow": 1048576,
+      "maxOutput": 524288,
+      "reasoning": true,
+      "addedAt": "2026-11-09"
+    },
+    {
+      "id": "mistral-large-4",
+      "provider": "Mistral",
+      "contextWindow": 1048576,
+      "maxOutput": 262144,
+      "reasoning": true,
+      "addedAt": "2026-11-05"
+    },
+    {
+      "id": "tencent/hy4",
+      "provider": "OpenRouter",
+      "contextWindow": 1048576,
+      "maxOutput": 65536,
+      "reasoning": true,
+      "addedAt": "2026-11-05"
+    },
+    {
+      "id": "gpt-6.1-terra",
+      "provider": "OpenAI",
+      "contextWindow": 1050000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-10-26"
+    },
+    {
+      "id": "kimi-k3.1-pro",
+      "provider": "Moonshot/Kimi",
+      "contextWindow": 1048576,
+      "maxOutput": 1048576,
+      "reasoning": true,
+      "addedAt": "2026-10-23"
+    },
+    {
+      "id": "kimi-k3.1-pro-highspeed",
+      "provider": "Moonshot/Kimi",
+      "contextWindow": 1048576,
+      "maxOutput": 1048576,
+      "reasoning": true,
+      "addedAt": "2026-10-23"
+    },
+    {
+      "id": "MiniMax-M3.1-Flash",
+      "provider": "MiniMax",
+      "contextWindow": 1000000,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-10-19"
+    },
+    {
       "id": "claude-fable-5-1",
       "provider": "Anthropic",
       "contextWindow": 1000000,
@@ -847,8 +1183,8 @@
       "id": "gemini-4-argon",
       "provider": "Google",
       "contextWindow": 1048576,
-      "maxOutput": null,
-      "reasoning": false,
+      "maxOutput": 65536,
+      "reasoning": true,
       "addedAt": "2026-10-17"
     },
     {
@@ -1532,5 +1868,5 @@
       "addedAt": "2026-03-02"
     }
   ],
-  "toolCount": 79
+  "toolCount": 83
 }

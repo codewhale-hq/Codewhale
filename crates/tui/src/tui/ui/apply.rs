@@ -206,6 +206,10 @@ pub(crate) fn apply_engine_error_to_app(
 ) {
     let recoverable = envelope.recoverable;
     let message = envelope.message.clone();
+    let history_message = envelope.request_transmission.map_or_else(
+        || message.clone(),
+        |transmission| format!("{message} [{transmission}]"),
+    );
     let severity = envelope.severity;
     let turn_was_in_progress =
         app.is_loading || matches!(app.runtime_turn_status.as_deref(), Some("in_progress"));
@@ -254,16 +258,18 @@ pub(crate) fn apply_engine_error_to_app(
         }
     }
 
+    let turn_error_notice = history_message.clone();
     app.add_message(HistoryCell::Error {
-        message: message.clone(),
+        message: history_message,
         severity,
+        code: crate::tui::history::normalize_error_code(&envelope.code),
     });
     app.is_loading = turn_remains_active;
     if !turn_remains_active {
         app.dispatch_started_at = None;
     }
     app.turn_error_posted = true;
-    app.turn_error_notice = Some(message.clone());
+    app.turn_error_notice = Some(turn_error_notice);
     if credential_rejected_before_output {
         // #6566: the provider refused the key before any model output, so the
         // engine takes the question back out of the session. Give it back to
@@ -897,7 +903,7 @@ pub(crate) async fn apply_model_picker_choice(
         if !model_is_auto {
             apply_picker_effort_choice(app, engine_handle, effort, previous_effort).await;
             if save_as_startup_default {
-                app.status_message = Some(app.save_live_route_as_startup_default());
+                app.status_message = Some(save_picker_route_as_default(app, config, effort));
             }
             return;
         }
@@ -1040,8 +1046,36 @@ pub(crate) async fn apply_model_picker_choice(
         record_provider_model_setup_progress(app, config);
     }
     if save_as_startup_default {
-        app.status_message = Some(app.save_live_route_as_startup_default());
+        app.status_message = Some(save_picker_route_as_default(app, config, effort));
     }
+}
+
+fn save_picker_route_as_default(app: &mut App, config: &Config, effort: ReasoningEffort) -> String {
+    use codewhale_localization::MessageId;
+    if config.project_model.as_deref() == Some(app.model.as_str()) {
+        return app
+            .tr(MessageId::ProjectModelNotSavedAsDefault)
+            .replace("{model}", &app.model);
+    }
+    let mut receipt = app.save_live_route_as_startup_default();
+    if let Err(error) = app.startup_defaults.apply_blocking(
+        crate::tui::startup_defaults::StartupDefaults::reasoning_effort(effort.as_setting()),
+    ) {
+        receipt.push_str(" · ");
+        receipt.push_str(
+            &app.tr(MessageId::StartupDefaultNotSaved)
+                .replace("{setting}", &app.tr(MessageId::SettingSubjectThinking))
+                .replace("{error}", &error.to_string()),
+        );
+    }
+    if let Some(project_model) = config.project_model.as_deref() {
+        receipt.push_str(" · ");
+        receipt.push_str(
+            &app.tr(MessageId::ProjectConfigStillPinsModel)
+                .replace("{model}", project_model),
+        );
+    }
+    receipt
 }
 
 pub(crate) async fn apply_picker_effort_choice(
@@ -1073,14 +1107,6 @@ pub(crate) async fn apply_picker_effort_choice(
         app.update_model_compaction_budget();
     }
 
-    let persist_warning = app
-        .startup_defaults
-        .apply_blocking(
-            crate::tui::startup_defaults::StartupDefaults::reasoning_effort(effort.as_setting()),
-        )
-        .err()
-        .map(|err| format!(" (not persisted: {err})"));
-
     if live_changed {
         apply_model_and_compaction_update(
             engine_handle,
@@ -1091,8 +1117,7 @@ pub(crate) async fn apply_picker_effort_choice(
         .await;
     }
 
-    let persisted = persist_warning.is_none();
-    let mut summary = if selection_changed {
+    let summary = if selection_changed {
         format!(
             "Thinking: {} → {} · model {}",
             previous_effort.display_label_for_provider(app.api_provider),
@@ -1100,20 +1125,12 @@ pub(crate) async fn apply_picker_effort_choice(
             app.model_display_label()
         )
     } else {
-        let mut summary = format!(
+        format!(
             "Thinking unchanged: {} · model {}",
             effort.display_label_for_provider(app.api_provider),
             app.model_display_label()
-        );
-        if persisted {
-            summary.push_str(" · ");
-            summary.push_str(&app.tr(codewhale_localization::MessageId::SavedAsStartupDefault));
-        }
-        summary
+        )
     };
-    if let Some(warning) = persist_warning {
-        summary.push_str(&warning);
-    }
     app.status_message = Some(summary);
 }
 
@@ -1617,14 +1634,12 @@ pub(crate) fn apply_command_result<'a>(
     terminal: &'a mut AppTerminal,
     app: &'a mut App,
     engine_handle: &'a mut EngineHandle,
-    task_manager: &'a SharedTaskManager,
     config: &'a mut Config,
     result: commands::CommandResult,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool>> + 'a>> {
     Box::pin(async move {
         let outcome =
-            apply_command_result_inner(terminal, app, engine_handle, task_manager, config, result)
-                .await;
+            apply_command_result_inner(terminal, app, engine_handle, config, result).await;
         // A save the command made may have moved legacy top-level `base_url` /
         // `api_key` into their provider tables (#6394); say so once.
         for notice in codewhale_config::legacy_root::take_notices() {
@@ -1638,10 +1653,15 @@ async fn apply_command_result_inner(
     terminal: &mut AppTerminal,
     app: &mut App,
     engine_handle: &mut EngineHandle,
-    task_manager: &SharedTaskManager,
     config: &mut Config,
     result: commands::CommandResult,
 ) -> Result<bool> {
+    // Read the slot for this dispatch. Only the task actions below consume it,
+    // and they each report their own failure, so a host between managers
+    // (`None`) must not swallow an unrelated command such as `/quit`. A switch
+    // cannot land between these reads and their use: the dispatcher owns the
+    // command result being applied.
+    let task_manager = app.task_manager();
     if app.pending_fresh_session.is_some()
         && !matches!(
             result.action.as_ref(),
@@ -1698,11 +1718,37 @@ async fn apply_command_result_inner(
                 // Session files can be large; this is the UI action path, so
                 // the read must not park a Tokio worker (blocking-call
                 // convention, #6149).
-                let parsed: SavedSession = match tokio::fs::read_to_string(&path)
+                const MAX_LOAD_SESSION_BYTES: u64 = 256 * 1024 * 1024;
+                let read = async {
+                    let len = tokio::fs::metadata(&path)
+                        .await
+                        .map_err(|err| err.to_string())?
+                        .len();
+                    if len > MAX_LOAD_SESSION_BYTES {
+                        return Err(format!(
+                            "session file is {len} bytes, over the {MAX_LOAD_SESSION_BYTES}-byte load limit"
+                        ));
+                    }
+                    let mut raw = String::new();
+                    tokio::io::AsyncReadExt::read_to_string(
+                        &mut tokio::io::AsyncReadExt::take(
+                            tokio::fs::File::open(&path)
+                                .await
+                                .map_err(|err| err.to_string())?,
+                            MAX_LOAD_SESSION_BYTES + 1,
+                        ),
+                        &mut raw,
+                    )
                     .await
-                    .map_err(|err| err.to_string())
-                    .and_then(|raw| serde_json::from_str(&raw).map_err(|err| err.to_string()))
-                {
+                    .map_err(|err| err.to_string())?;
+                    if raw.len() as u64 > MAX_LOAD_SESSION_BYTES {
+                        return Err(format!(
+                            "session file is over the {MAX_LOAD_SESSION_BYTES}-byte load limit"
+                        ));
+                    }
+                    serde_json::from_str::<SavedSession>(&raw).map_err(|err| err.to_string())
+                };
+                let parsed: SavedSession = match read.await {
                     Ok(session) => session,
                     Err(err) => {
                         crate::tui::ui::session_state::surface_session_load_failure(
@@ -1745,13 +1791,19 @@ async fn apply_command_result_inner(
                     &session.metadata.title,
                 );
                 codewhale_engine::runtime_threads::prepare_canonical_sessions_root().await;
-                let respawn = match apply_loaded_session_config_snapshot(
+                // Adoption happens inside the load call, as preflight: a
+                // refusal or a failed open returns here with the live session
+                // still installed, so a failure is reported and nothing else
+                // runs.
+                let outcome = match apply_loaded_session_config_snapshot(
                     app,
                     config,
                     session,
                     fresh_config,
                     true,
-                ) {
+                )
+                .await
+                {
                     Ok(outcome) => {
                         lease.commit();
                         outcome
@@ -1764,7 +1816,8 @@ async fn apply_command_result_inner(
                         return Ok(false);
                     }
                 };
-                sync_runtime_workspace_state(task_manager, app.workspace.clone()).await;
+                let respawn = outcome.respawn;
+                sync_runtime_workspace_state(app, app.workspace.clone()).await;
                 if respawn {
                     replace_tui_engine(app, config, engine_handle).await;
                 } else {
@@ -1795,6 +1848,7 @@ async fn apply_command_result_inner(
                         config: app.compaction_config(),
                     })
                     .await;
+                let _ = engine_handle.try_send(Op::ListSubAgents);
                 // Restore may have queued a legacy configuration notice.
                 // Admit it first so the confirmed resume remains the latest
                 // toast instead of being immediately covered on the next draw.
@@ -1845,10 +1899,13 @@ async fn apply_command_result_inner(
                     };
                     install_offline_queue_transition(app, transition);
                 }
-                let workspace_changed = task_manager.default_workspace().await != workspace;
+                let workspace_changed = match task_manager.as_ref() {
+                    Some(manager) => manager.default_workspace().await != workspace,
+                    None => true,
+                };
                 if workspace_changed {
                     apply_workspace_runtime_state(app, config, workspace.clone());
-                    sync_runtime_workspace_state(task_manager, workspace.clone()).await;
+                    sync_runtime_workspace_state(app, workspace.clone()).await;
                 }
                 let identity =
                     match app
@@ -1916,6 +1973,7 @@ async fn apply_command_result_inner(
                         config: app.compaction_config(),
                     })
                     .await;
+                let _ = engine_handle.try_send(Op::ListSubAgents);
                 if is_full_reset {
                     persist_full_reset_snapshot(app);
                 }
@@ -2322,13 +2380,7 @@ async fn apply_command_result_inner(
                 }
             }
             AppAction::RouterSetup { request } => {
-                crate::tui::views::router_setup::handle_router_request(
-                    app,
-                    config,
-                    task_manager,
-                    request,
-                )
-                .await;
+                crate::tui::views::router_setup::handle_router_request(app, config, request).await;
             }
             AppAction::FetchBalance => {
                 let provider = app.api_provider;
@@ -3051,17 +3103,17 @@ async fn apply_command_result_inner(
             AppAction::OpenSetupWizard => {
                 if app.view_stack.top_kind() != Some(ModalKind::SetupWizard) {
                     let _ = app.next_draft_gen();
-                    app.view_stack
-                        .push(crate::tui::setup::SetupWizardView::new_for_app(app, config));
+                    let view = crate::tui::setup::SetupWizardView::load_for_app(app, config).await;
+                    app.view_stack.push(view);
                 }
             }
             AppAction::OpenSetupWizardAt { step } => {
                 if app.view_stack.top_kind() != Some(ModalKind::SetupWizard) {
                     let _ = app.next_draft_gen();
-                    app.view_stack
-                        .push(crate::tui::setup::SetupWizardView::new_for_app_at(
-                            app, config, step,
-                        ));
+                    let view =
+                        crate::tui::setup::SetupWizardView::load_for_app_at(app, config, step)
+                            .await;
+                    app.view_stack.push(view);
                 }
             }
             AppAction::OpenConstitutionManager { review } => {
@@ -3138,6 +3190,16 @@ async fn apply_command_result_inner(
                     owner_session_id: Some(owner_session_id),
                     disallowed_tools: Vec::new(),
                 };
+                let Some(task_manager) = task_manager.as_ref() else {
+                    app.add_message(HistoryCell::System {
+                        content: codewhale_localization::tr(
+                            app.ui_locale,
+                            codewhale_localization::MessageId::TaskInventoryUnavailable,
+                        )
+                        .to_string(),
+                    });
+                    return Ok(false);
+                };
                 match task_manager.add_task(request).await {
                     Ok(task) => {
                         app.add_message(HistoryCell::System {
@@ -3155,18 +3217,21 @@ async fn apply_command_result_inner(
                         });
                     }
                 }
-                refresh_active_task_panel(app, task_manager).await;
+                refresh_active_task_panel(app).await;
             }
             AppAction::TaskList => {
                 let tasks = match app.current_session_id.as_deref() {
-                    Some(session_id) => {
-                        task_manager
-                            .list_tasks_for_owner(Some(30), None, session_id)
-                            .await
-                    }
+                    Some(session_id) => match task_manager.as_ref() {
+                        Some(manager) => {
+                            manager
+                                .list_tasks_for_owner(Some(30), None, session_id)
+                                .await
+                        }
+                        None => Ok(Vec::new()),
+                    },
                     None => Ok(Vec::new()),
                 };
-                refresh_active_task_panel(app, task_manager).await;
+                refresh_active_task_panel(app).await;
                 app.add_message(HistoryCell::System {
                     content: match tasks {
                         Ok(tasks) => format_task_list(&tasks),
@@ -3191,11 +3256,14 @@ async fn apply_command_result_inner(
             },
             AppAction::TaskShow { id } => {
                 let task = match app.current_session_id.as_deref() {
-                    Some(session_id) => {
-                        task_manager
-                            .get_task_for_interactive_session(&id, session_id)
-                            .await
-                    }
+                    Some(session_id) => match task_manager.as_ref() {
+                        Some(manager) => {
+                            manager
+                                .get_task_for_interactive_session(&id, session_id)
+                                .await
+                        }
+                        None => Err(anyhow::anyhow!("Task not found: {id}")),
+                    },
                     None => Err(anyhow::anyhow!("Task not found: {id}")),
                 };
                 match task {
@@ -3209,11 +3277,14 @@ async fn apply_command_result_inner(
             }
             AppAction::TaskCancel { id } => {
                 let cancellation = match app.current_session_id.as_deref() {
-                    Some(session_id) => {
-                        task_manager
-                            .cancel_task_for_interactive_session(&id, session_id)
-                            .await
-                    }
+                    Some(session_id) => match task_manager.as_ref() {
+                        Some(manager) => {
+                            manager
+                                .cancel_task_for_interactive_session(&id, session_id)
+                                .await
+                        }
+                        None => Err(anyhow::anyhow!("Task not found: {id}")),
+                    },
                     None => Err(anyhow::anyhow!("Task not found: {id}")),
                 };
                 match cancellation {
@@ -3231,24 +3302,23 @@ async fn apply_command_result_inner(
                         });
                     }
                 }
-                refresh_active_task_panel(app, task_manager).await;
+                refresh_active_task_panel(app).await;
             }
             AppAction::Automation(action) => {
-                crate::tui::automation_routing::handle_action(app, config, action, task_manager)
-                    .await;
+                crate::tui::automation_routing::handle_action(app, config, action).await;
             }
             AppAction::ShellJob(action) => {
                 handle_shell_job_action(app, action);
                 // Immediately sync the task panel after cancel/poll so the
                 // Activity sidebar stays accurate without waiting for the
                 // next 2.5 s periodic refresh (#2937).
-                refresh_active_task_panel(app, task_manager).await;
+                refresh_active_task_panel(app).await;
             }
             AppAction::Mcp(action) => {
                 handle_mcp_ui_action(app, engine_handle, config, action).await;
             }
             AppAction::SwitchWorkspace { workspace } => {
-                switch_workspace(app, engine_handle, task_manager, config, workspace).await;
+                switch_workspace(app, engine_handle, config, workspace).await;
             }
             AppAction::SwitchProfile { profile } => {
                 let previous_profile = app.config_profile.clone();
@@ -3698,14 +3768,12 @@ pub(crate) async fn apply_approval_decision(
             .insert(event.approval_grouping_key.clone());
     }
 
-    if matches!(
+    let rules_persisted = matches!(
         event.decision,
         ReviewDecision::Approved | ReviewDecision::ApprovedForSession
     ) && !event.persistent_rules.is_empty()
         && !event.timed_out
-    {
-        persist_rules_from_approval(app, config, &event.persistent_rules);
-    }
+        && persist_rules_from_approval(app, config, &event.persistent_rules);
 
     if event.decision == ReviewDecision::Denied && !event.timed_out {
         app.approval_session_denied.insert(event.approval_key);
@@ -3715,6 +3783,46 @@ pub(crate) async fn apply_approval_decision(
         .resolve_pending_approval(&event.tool_id, approved);
     note_human_decision_delivered(app, &event.tool_id);
     app.retire_action_notices(Some(&event.tool_id));
+    if !event.timed_out
+        && let Some(subject) = event.subject
+    {
+        let (outcome, receipt_subject) = if event.decision == ReviewDecision::Approved
+            && rules_persisted
+            && event
+                .persistent_rules
+                .iter()
+                .any(|rule| rule.action == codewhale_execpolicy::PermissionAction::Allow)
+        {
+            let pattern = crate::tui::approval::format_allow_rules_pattern(&event.persistent_rules)
+                .unwrap_or(subject);
+            (
+                crate::tui::history::ApprovalReceiptOutcome::AlwaysAllowedInRepo,
+                pattern,
+            )
+        } else {
+            let outcome = match event.decision {
+                ReviewDecision::Approved => {
+                    crate::tui::history::ApprovalReceiptOutcome::AllowedOnce
+                }
+                ReviewDecision::ApprovedForSession => {
+                    crate::tui::history::ApprovalReceiptOutcome::AllowedInConversation
+                }
+                ReviewDecision::Denied => crate::tui::history::ApprovalReceiptOutcome::Denied,
+                ReviewDecision::Abort => unreachable!(),
+            };
+            (outcome, subject)
+        };
+        let receipt = HistoryCell::ApprovalReceipt(crate::tui::history::ApprovalReceiptCell::new(
+            outcome,
+            receipt_subject,
+        ));
+        if let Some(active_cell) = app.active_cell.as_mut() {
+            active_cell.push_untracked(receipt);
+            app.bump_active_cell_revision();
+        } else {
+            app.add_message(receipt);
+        }
+    }
     true
 }
 
@@ -4106,7 +4214,12 @@ pub(crate) async fn apply_provider_picker_test_connection_with_verifier(
     }
     match outcome {
         Ok(roster) => {
-            publish_verified_roster(&identity, &base_url, roster);
+            if scoped_config
+                .active_route_api_key_read_only()
+                .is_ok_and(|current| current == api_key)
+            {
+                publish_verified_roster(&scoped_config, &identity, &base_url, roster);
+            }
             app.provider_health.record_models_probe_success(
                 &scoped_config,
                 &identity,
@@ -4211,7 +4324,15 @@ pub(crate) async fn apply_provider_picker_api_key_with_verifier(
         Ok(roster) => {
             // Before the model pick reads the route roster: list what this
             // key can call today, not catalog rows the provider has retired.
-            publish_verified_roster(&identity, &base_url, roster);
+            if scoped_config
+                .set_provider_api_key_override(&identity, Some(api_key.clone()))
+                .is_ok()
+                && scoped_config
+                    .active_route_api_key_read_only()
+                    .is_ok_and(|current| current == codewhale_secrets::normalize_api_key(&api_key))
+            {
+                publish_verified_roster(&scoped_config, &identity, &base_url, roster);
+            }
             // Keep the readiness row aligned with the live check the wizard
             // just completed. This probe only proves the endpoint and
             // credentials are reachable: the model is chosen after the probe,
@@ -4638,7 +4759,114 @@ pub(crate) fn apply_loaded_session(
     config: &mut Config,
     session: &SavedSession,
 ) -> Result<(), String> {
-    apply_loaded_session_with_goal(app, config, session.clone(), None)
+    apply_loaded_session_with_goal(app, config, session.clone(), None).map(|_| ())
+}
+
+/// Decide which Runtime store the loaded conversation needs, and whether this
+/// host may take it over — without changing anything.
+///
+/// Split out from [`apply_loaded_session_with_goal`] so the decision can be
+/// made *before* the conversation state moves. Adoption is the one step here
+/// that can fail after it has already released the previous manager, so it has
+/// to run as preflight: a refusal must leave the displayed session, its
+/// workspace and its usable manager exactly as they were.
+///
+/// `Ok(Some(binding))` means this host must move onto `binding`.
+/// `Ok(None)` covers the three cases that need no move: the conversation
+/// names no store, it names the one this host already holds, or its store is
+/// missing or stale and the document is repaired onto this host instead.
+fn plan_store_adoption(
+    app: &App,
+    session: &SavedSession,
+) -> Result<Option<codewhale_engine::runtime_threads::RuntimeStoreBinding>, String> {
+    let Some(binding) = session.metadata.runtime_store.as_ref() else {
+        return Ok(None);
+    };
+    let Some(tasks) = app.runtime_services.task_manager.as_ref() else {
+        return Ok(None);
+    };
+    if tasks.session_store_binding().as_ref() == Some(binding) {
+        return Ok(None);
+    }
+    // A missing store is repaired into this host's own store; that is the
+    // opposite direction from adopting the target, and the two must not both
+    // run.
+    let target_is_missing = binding
+        .is_missing_session_store()
+        .map_err(|error| error.to_string())?;
+    if target_is_missing {
+        return Ok(None);
+    }
+    if let Some(codewhale_engine::runtime_threads::StoreAdoptionRefusal::HeldByLiveProcess) =
+        binding
+            .adoption_refusal()
+            .map_err(|error| error.to_string())?
+    {
+        // A fresh `codewhale resume` would meet the same live holder, so name
+        // the step that actually frees the store (#6418).
+        return Err(format!(
+            "This session's saved Runtime store is open in another running \
+             Codewhale process. Close that session there, then open this one \
+             again, or run `codewhale resume {}` after it exits.",
+            session.metadata.id
+        ));
+    }
+    // A store whose recorded scope no longer matches its own owner file is not
+    // adoptable: the binding is stale, and adopting it would claim an authority
+    // the store does not carry. `apply_loaded_session_with_goal` repairs the
+    // document onto this host's store instead (#6144, #6207).
+    if binding.validate_existing_store().is_err() {
+        return Ok(None);
+    }
+    // A populated store is no longer a reason to refuse.
+    //
+    // The old rule refused any target whose `threads/` directory held a single
+    // record, on the theory that a switch "cannot carry that store's queued
+    // work across". It still cannot — but it does not have to. A switch never
+    // discards a store: the host keeps the one it holds, and the target stays
+    // on disk for whichever process opens it next. What a switch must not do is
+    // release a store that still needs *this* process, which is a property of
+    // the store being left, not of the one being entered.
+    //
+    // The refusals that remain are the ones that make the target unusable from
+    // here: another process holds its lock, the path is not a confined store
+    // directory, or an automation is pinned to its execution scope.
+    if let Some(refusal) = binding
+        .adoption_refusal()
+        .map_err(|error| error.to_string())?
+        .filter(|refusal| {
+            matches!(
+                refusal,
+                codewhale_engine::runtime_threads::StoreAdoptionRefusal::Unconfined
+                    | codewhale_engine::runtime_threads::StoreAdoptionRefusal::NotADirectory
+                    | codewhale_engine::runtime_threads::StoreAdoptionRefusal::ScopePinnedAutomation
+            )
+        })
+    {
+        return Err(format!(
+            "This session's saved Runtime store cannot be opened from here ({refusal}): \
+             run `codewhale resume {}` from your shell.",
+            session.metadata.id
+        ));
+    }
+    if app.session_transition_blocked() {
+        return Err(
+            "runtime work is active; wait for the current turn, maintenance, and background tasks to finish, or cancel that specific work before switching sessions".to_string(),
+        );
+    }
+    // Releasing the store this host holds is only safe when nothing in it still
+    // waits on this process. Approvals and user-input prompts live in memory,
+    // so a restart could not recover them either — dropping them here would
+    // strand every waiter. The engine half of the check needs the Runtime's
+    // `active` lock, so `adopt_runtime_store` performs it.
+    if tasks.has_unsettled_requests() {
+        return Err(
+            "This session's Runtime store has tool approvals or user input still waiting. \
+             Answer them, or stop that work, before switching sessions."
+                .to_string(),
+        );
+    }
+    Ok(Some(binding.clone()))
 }
 
 /// Install a loaded session as the live conversation. The session is taken
@@ -4650,71 +4878,36 @@ pub(crate) fn apply_loaded_session_with_goal(
     config: &mut Config,
     mut session: SavedSession,
     goal: Option<&codewhale_engine::session_manager::SessionGoalState>,
-) -> Result<(), String> {
-    let mut recovered_binding = None;
-    if let Some(binding) = session.metadata.runtime_store.as_ref()
-        && let Some(tasks) = app.runtime_services.task_manager.as_ref()
-        && tasks.session_store_binding().as_ref() != Some(binding)
-    {
-        // A switch can rebind the conversation but cannot carry the saved
-        // store's durable work into the running host, so it may only adopt a
-        // store there is nothing to lose from leaving: one that is missing, or
-        // one that exists and is provably empty *and* provably unheld, with no
-        // scope-pinned automation. A force-quit leaves the second shape — the
-        // store is on disk, ownerless and holding zero events — and refusing
-        // it protected nothing while making the session unopenable (#6207).
-        let refusal = if binding
-            .is_missing_session_store()
-            .map_err(|error| error.to_string())?
-        {
-            None
-        } else {
-            binding
-                .adoption_refusal()
-                .map_err(|error| error.to_string())?
-        };
-        if refusal.is_none() {
-            recovered_binding = tasks.session_store_binding();
-        }
-        if let Some(codewhale_engine::runtime_threads::StoreAdoptionRefusal::HeldByLiveProcess) =
-            refusal
-        {
-            // A fresh `codewhale resume` would meet the same live holder, so
-            // name the step that actually frees the store (#6418).
-            return Err(format!(
-                "This session's saved Runtime store is open in another running \
-                 Codewhale process. Close that session there, then open this one \
-                 again, or run `codewhale resume {}` after it exits.",
-                session.metadata.id
-            ));
-        }
-        if recovered_binding.is_none() {
-            let reason = refusal
-                .map(|refusal| format!(" ({refusal})"))
-                .unwrap_or_default();
-            // Name the real condition and the path that actually works. The
-            // old wording ("resume it in a new Codewhale process") sent users
-            // in circles: starting a new process and then picking the session
-            // from `/resume` lands here again, because that is this same
-            // switch path. Opening the session *at launch* is a different
-            // route — `TaskManager::start` passes the saved binding through to
-            // `open_for_session`, which validates the existing store and
-            // adopts it (runtime_threads.rs, `validate_existing_store` then
-            // `open_inner`). So the advice has to say which one (#6207, #6225).
-            return Err(format!(
-                "This session's saved Runtime store belongs to a different host{reason}. \
-                 Switching to it from inside a running session cannot carry that \
-                 store's queued work across, but opening it directly can: run \
-                 `codewhale resume {}` from your shell.",
-                session.metadata.id
-            ));
-        }
-    }
+) -> Result<Option<codewhale_engine::runtime_threads::RuntimeStoreBinding>, String> {
+    // A switch never runs over live work, whether or not it also changes
+    // stores. This belongs here rather than in `plan_store_adoption` because a
+    // plain resume takes this path too, and it must refuse for the same reason.
     if app.session_transition_blocked() {
         return Err(
             "runtime work is active; wait for the current turn, maintenance, and background tasks to finish, or cancel that specific work before switching sessions".to_string(),
         );
     }
+    // Whether this load must move the host onto another store is decided by
+    // `plan_store_adoption` before anything is installed; by the time state
+    // changes, the host already owns the store the conversation names.
+    let mut recovered_binding = None;
+    if let Some(binding) = session.metadata.runtime_store.as_ref()
+        && let Some(tasks) = app.runtime_services.task_manager.as_ref()
+        && tasks.session_store_binding().as_ref() != Some(binding)
+    {
+        // The two repairs that keep the document pointing at this host: a
+        // missing store, and one whose recorded scope no longer matches its own
+        // owner file. Both are the opposite direction from adopting the target,
+        // and `plan_store_adoption` deliberately reports neither as adoptable.
+        let target_is_missing = binding
+            .is_missing_session_store()
+            .map_err(|error| error.to_string())?;
+        let binding_is_stale = !target_is_missing && binding.validate_existing_store().is_err();
+        if target_is_missing || binding_is_stale {
+            recovered_binding = tasks.session_store_binding();
+        }
+    }
+
     if let Some(goal) = goal {
         goal.validate()
             .map_err(|error| format!("saved session goal is invalid: {error}"))?;
@@ -4810,6 +5003,7 @@ pub(crate) fn apply_loaded_session_with_goal(
             app.extend_history(std::iter::once(HistoryCell::Error {
                 message: outcome.error.clone(),
                 severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+                code: outcome.code.clone(),
             }));
         }
     };
@@ -4997,16 +5191,55 @@ pub(crate) fn apply_loaded_session_with_goal(
     }
     app.refresh_agent_approved_plugins_notice();
     app.scroll_to_bottom();
-    Ok(())
+    // Any adoption already happened: `plan_store_adoption` decided it and the
+    // async caller moved the host before this ran. What is left is the repair
+    // direction — a `recovered_binding` rewrites the *document* to name this
+    // host's store — and that is reported through the App, not returned.
+    Ok(None)
 }
 
-pub(crate) fn apply_loaded_session_config_snapshot(
+#[derive(Debug)]
+pub(crate) struct LoadedSessionOutcome {
+    /// Whether the engine must be rebuilt (provider, workspace, or route
+    /// changed, or a file `/load` supplied a fresh snapshot).
+    pub(crate) respawn: bool,
+}
+
+/// Switch the live conversation to a saved session, adopting its Runtime
+/// store when the conversation names one this host does not hold.
+///
+/// Async because adoption is a real state transition, not a bookkeeping
+/// change: it settles the engines this host was running, releases its
+/// process-owner lock and opens another. Doing it after the conversation
+/// state had already moved — the original shape of this function — left the
+/// displayed session and the Runtime owner free to disagree, and a failed
+/// adoption had no way back because the previous manager was already shut
+/// down. It now runs as preflight: a refusal or a failed open returns the
+/// error with the live session untouched.
+pub(crate) fn apply_loaded_session_config_snapshot<'a>(
+    app: &'a mut App,
+    config: &'a mut Config,
+    session: SavedSession,
+    next_config: Config,
+    force_engine_respawn: bool,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<LoadedSessionOutcome, String>> + 'a>>
+{
+    Box::pin(apply_loaded_session_config_snapshot_inner(
+        app,
+        config,
+        session,
+        next_config,
+        force_engine_respawn,
+    ))
+}
+
+async fn apply_loaded_session_config_snapshot_inner(
     app: &mut App,
     config: &mut Config,
     session: SavedSession,
     mut next_config: Config,
     force_engine_respawn: bool,
-) -> Result<bool, String> {
+) -> Result<LoadedSessionOutcome, String> {
     if force_engine_respawn {
         // File `/load` supplies a freshly loaded disk snapshot, but the live
         // Config also contains CLI and workspace/project overlays that are not
@@ -5022,6 +5255,16 @@ pub(crate) fn apply_loaded_session_config_snapshot(
     let goal = SessionManager::default_location()
         .and_then(|manager| manager.load_session_goal(&session.metadata.id))
         .map_err(|error| format!("saved session goal could not be loaded: {error}"))?;
+
+    // Decide, without touching the live conversation, whether this load needs
+    // another Runtime store and whether this host may release its own. Every
+    // refusal below leaves the App, its workspace and its manager as they
+    // were.
+    if let Some(binding) = plan_store_adoption(app, &session)? {
+        adopt_runtime_store(app, config, binding).await?;
+    }
+    // Only now, with the host already owning the store the conversation names,
+    // does anything about the live session move.
     apply_loaded_session_with_goal(app, &mut next_config, session, goal.as_ref())?;
     // A file load reads a fresh disk snapshot. Even when the route's enum and
     // exact identity are unchanged, endpoint, key, headers, TLS, or retry
@@ -5038,7 +5281,122 @@ pub(crate) fn apply_loaded_session_config_snapshot(
     app.configured_models = config.custom_models.clone().unwrap_or_default();
     codewhale_runtime::config::initialize_cloud_facts(config);
     app.refresh_notification_settings(config);
-    Ok(respawn)
+    Ok(LoadedSessionOutcome { respawn })
+}
+
+/// Point this host's task manager at the Runtime store the loaded session
+/// names, releasing the one it held.
+///
+/// A session switch used to refuse this outright: `TaskManager` was built at
+/// launch and never replaced, so a target store with any history read as "work
+/// this switch would abandon". It would not have abandoned anything — the
+/// conversation it was leaving keeps its store, and the target keeps its own —
+/// but the process could not *become* the target's owner either. Rebuilding the
+/// manager is what makes the target usable rather than merely readable.
+///
+/// Ordering is load-bearing: `shutdown_and_wait` settles the turns this host
+/// was running and drops its engines, then `drop` releases the process-owner
+/// lock, and only then can `TaskManager::start` acquire the target's lock
+/// (`open_for_session` takes it before the store opens and holds it for the
+/// manager's lifetime). Callers must already have established that nothing in
+/// the current store still needs this process — see the checks in
+/// `apply_loaded_session_with_goal`.
+/// Rebinding onto a store returns a boxed future on purpose.
+///
+/// It contains `TaskManager::start`, whose state machine is large enough on
+/// its own to matter to a caller's stack frame (the launch path already
+/// documents ~1.1 MiB for the task-manager futures). An `async fn` here would
+/// inline that machine into every caller's frame — including the session-load
+/// path, which libtest runs on a 2 MiB thread. Boxing pins the machine on the
+/// heap and leaves the caller holding a pointer.
+pub(crate) fn adopt_runtime_store<'a>(
+    app: &'a mut App,
+    config: &'a Config,
+    binding: crate::runtime_threads::RuntimeStoreBinding,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(adopt_runtime_store_inner(app, config, binding))
+}
+
+async fn adopt_runtime_store_inner(
+    app: &mut App,
+    config: &Config,
+    binding: crate::runtime_threads::RuntimeStoreBinding,
+) -> Result<(), String> {
+    // Nothing in the store being left may still need this process. The
+    // synchronous half (approvals, user input, dynamic tools) was checked by
+    // the loader; this half needs the Runtime's `active` lock, which is why it
+    // lives here rather than there.
+    if let Some(tasks) = app.runtime_services.task_manager.as_ref()
+        && let Some(disposable) = tasks.current_store_is_disposable().await
+        && !disposable.map_err(|error| error.to_string())?
+    {
+        return Err(
+            "The Runtime store this session is running on still has work in flight. \
+             Finish or stop it before switching sessions."
+                .to_string(),
+        );
+    }
+    let Some(previous) = app.runtime_services.task_manager.clone() else {
+        return Err(
+            "This session needs its own Runtime store, but this host has no task manager to rebind."
+                .to_string(),
+        );
+    };
+    let abandoned = previous.session_store_binding();
+
+    // Open the target *before* releasing the store this host holds.
+    //
+    // The previous shape took the manager out of the App, shut it down and then
+    // tried to open the target, so a failed open left the host with no manager
+    // at all and no way back. Ordering it this way means a refusal or a failed
+    // open costs nothing: the old manager is still running, still holds its
+    // lock, and the caller reports the error with the live session intact.
+    //
+    // The two stores are distinct paths with distinct owner locks, so holding
+    // both briefly is legal — that is what makes the trial possible.
+    let session_id = crate::tui::ui::event_loop::ensure_runtime_session_id(app);
+    let manager = crate::task_manager::TaskManager::start(
+        crate::task_manager::TaskManagerConfig::from_runtime(
+            config,
+            app.workspace.clone(),
+            Some(app.model.clone()),
+            Some(app.max_subagents.clamp(1, 4)),
+        ),
+        config.clone(),
+        std::sync::Arc::clone(&app.plugin_registry),
+        &session_id,
+        Some(&binding),
+    )
+    .await
+    .map_err(|error| {
+        format!(
+            "This session's Runtime store could not be opened ({error}). \
+             The current session is unchanged."
+        )
+    })?;
+
+    // Committed: the target opened. Now settle and release the old store.
+    previous.shutdown_and_wait().await.map_err(|error| {
+        format!("Could not settle the Runtime work this session was running: {error}")
+    })?;
+    app.runtime_services.task_manager = Some(manager);
+    drop(previous);
+
+    // The store just released holds nothing this host still needs (the caller
+    // checked), so let the reconciler set it aside if no document binds it. It
+    // never unlinks: `retire_unbound_store` moves to `.set-aside/` and writes a
+    // manifest, and refuses a store any document still names.
+    if let Some(abandoned) = abandoned
+        && abandoned.data_dir != binding.data_dir
+        && let Ok(manager) = crate::session_manager::SessionManager::default_location()
+    {
+        codewhale_engine::session_reconcile::retire_unbound_store_in_background(
+            manager,
+            abandoned.data_dir,
+            "conversation switched to another session's store",
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

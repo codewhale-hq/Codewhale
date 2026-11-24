@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:a3f7ac7d7dc2 -->
+<!-- source: README.md sha256:8f9ce64ce19c -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ Perintah ini memasang rilis terbaru di macOS atau Linux, dan tidak memerlukan ak
 
 <sub>Terjemahan ini adalah draf mesin yang belum ditinjau oleh penutur asli.</sub>
 
-<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale di terminal setelah tugas nyata dengan gemini-4-hydrogen. Ia menjalankan python3 -m unittest -v test_ls.py, 2 tes lulus, dan melaporkan bahwa ia menambahkan opsi --json ke ls.py dengan argparse. Baris status menampilkan accept edits dan gemini-4-hydrogen.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale di terminal setelah tugas nyata dengan deepseek-flash. Ia menjalankan python3 -m unittest -v test_ls.py, 2 tes lulus, dan melaporkan bahwa ia menambahkan opsi --json ke ls.py. Baris status menampilkan accept edits dan deepseek-flash.">
 
-<sub>Sesi nyata pada build pengembangan 0.10.3: gemini-4-hydrogen melalui API Google menulis perubahannya, dan Anda mengizinkan tes dijalankan satu kali.</sub>
+<sub>Sesi nyata pada build pengembangan 0.10.3: deepseek-flash melalui API DeepSeek menulis perubahannya, dan Anda mengizinkan tes dijalankan satu kali.</sub>
 
 </div>
 
@@ -96,11 +96,9 @@ Aplikasi terminal, `exec`, `web`, dan Runtime API memakai satu mesin yang sama (
 
 ## Cara ia tetap aman
 
-Dua sakelar menentukan seberapa banyak Codewhale boleh bertindak sendiri. Saat kolom input kosong, `Tab` mengganti mode: **Plan** membaca dan mencari tanpa mengubah apa pun, **Work** mengedit file dan menjalankan perintah, dan **Operate** punya akses yang sama dengan Work dan terus bekerja sampai tujuan terverifikasi atau ia membutuhkan Anda. `Shift+Tab` mengganti izin. **Ask**, bawaannya, menerapkan suntingan file di repositori Anda tanpa bertanya dan bertanya sebelum perintah shell yang tidak hanya membaca. **Auto-Review** membiarkan aturan dan model peninjau menyetujui panggilan rutin dan menolak yang berisiko tinggi; beralih ke Ask untuk menyetujuinya sendiri. **Full Access** tidak pernah bertanya dan mematikan sandbox Codewhale, meskipun aturan repositori dan kebijakan terkelola tetap berlaku. [Panduan v0.10.2](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md) berisi detailnya.
+Satu tombol putar menentukan seberapa banyak Codewhale boleh bertindak sendiri. `Shift+Tab` memutarnya berurutan: **Ask → Accept Edits → Plan → Auto-Review → Full Access**. **Accept Edits**, bawaannya, menerapkan suntingan file di dalam repositori git tanpa bertanya dan bertanya sebelum perintah. **Ask** bertanya sebelum setiap suntingan file dan setiap perintah. **Plan** membaca dan mencari tanpa mengubah apa pun. **Auto-Review** membiarkan aturan dan model peninjau menyetujui panggilan rutin dan menolak yang berisiko tinggi; beralih ke Ask untuk menyetujuinya sendiri. **Full Access** tidak pernah bertanya dan mematikan sandbox Codewhale, meskipun aturan repositori dan kebijakan terkelola tetap berlaku. `Tab` hanya untuk melengkapi dan tidak pernah mengganti mode, dan Operate sudah dihapus. [Panduan mode](../MODES.md) berisi detailnya.
 
-Hadir di 0.10.3: `Shift+Tab` menjadi satu tombol putar melalui Ask, Accept Edits, Plan, Auto-Review dan Full Access, `Tab` tidak lagi mengganti mode, dan Operate dihapus. Ask akan bertanya juga sebelum setiap suntingan file, dan bawaan baru, Accept Edits, akan menerapkan suntingan di dalam repositori git dan tetap bertanya sebelum perintah. [Panduan saat ini](../MODES.md) menjelaskannya.
-
-Di Ask dan Auto-Review, perintah berjalan di sandbox sistem operasi jika sistemnya punya: Seatbelt di macOS, dan bubblewrap di Linux jika terpasang. Windows belum punya sandbox sistem operasi, dan Full Access mematikan sandbox. Di dalam sandbox, perintah shell dan sesi terminal tidak dapat membaca penyimpanan kredensial seperti `~/.ssh`, `~/.aws`, dan file `.env`. `/preview-request` menampilkan pratinjau permintaan berikutnya dengan data sensitif disamarkan, tanpa mengirimkannya.
+Di Ask, Accept Edits, dan Auto-Review, perintah berjalan di sandbox sistem operasi jika sistemnya punya: Seatbelt di macOS, dan bubblewrap di Linux jika terpasang. Windows belum punya sandbox sistem operasi, dan Full Access mematikan sandbox. Di dalam sandbox, perintah shell dan sesi terminal tidak dapat membaca penyimpanan kredensial seperti `~/.ssh`, `~/.aws`, dan file `.env`. `/preview-request` menampilkan pratinjau permintaan berikutnya dengan data sensitif disamarkan, tanpa mengirimkannya.
 
 Anda tidak memerlukan akun, dan kunci yang Anda tambahkan dengan `/provider` tetap di mesin Anda. Dengan kunci API sendiri, Anda membayar penyedia secara langsung, dan model lokal tidak memerlukan kunci. Footer dan `/cost` menampilkan biaya sebuah sesi jika harganya diketahui, dan harga yang tidak diketahui ditampilkan sebagai tidak diketahui, tidak pernah sebagai gratis.
 

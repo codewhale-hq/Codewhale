@@ -471,9 +471,8 @@ pub fn render_notice_body(notices: &[InstructionNotice], locale_tag: &str) -> Op
     const MAX_LINES: usize = 12;
     const MAX_BYTES: usize = 2_000;
     let locale = resolve_locale(locale_tag);
-    let footer = tr(locale, MessageId::InstructionNoticeFooter);
     let more = tr(locale, MessageId::InstructionNoticeMore);
-    let reserve = footer.len() + more.len() + 16;
+    let reserve = more.len() + 16;
     let mut body = tr(locale, MessageId::InstructionNoticeHeader).into_owned();
     body.push('\n');
     let mut shown = 0usize;
@@ -493,8 +492,7 @@ pub fn render_notice_body(notices: &[InstructionNotice], locale_tag: &str) -> Op
         ));
         body.push('\n');
     }
-    body.push_str(&footer);
-    Some(body)
+    Some(body.trim_end().to_string())
 }
 
 /// Raw instruction content, kept per source so a scope can be trimmed by

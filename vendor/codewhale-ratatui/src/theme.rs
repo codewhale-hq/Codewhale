@@ -8,7 +8,7 @@
 //! |---|---|---|---|
 //! | TrueColor | exact token RGB | exact RGB | exact RGB |
 //! | Ansi256 | nearest fixed index | generated table, audited for contrast | generated table |
-//! | Ansi16 | none (the terminal owns its ground) | `Reset`; `Muted`, `Hint` and `Dim` add `DIM` | Blue, Green, Yellow, Red |
+//! | Ansi16 | none (the terminal owns its ground) | `Reset`; `Muted`, `Hint` and `Dim` add `DIM` | Blue, Cyan, Yellow, Red (bright 9–14 on Dark) |
 //! | Monochrome (`NO_COLOR`) | none | `Reset`; hierarchy by `BOLD`/`DIM` only | `Reset`: the mark and word carry state |
 //!
 //! Dark terminals take the blue ombre by default ([`Ground::Ocean`]): the
@@ -96,12 +96,16 @@ impl Role {
 
     /// The named color a 16-color terminal shows for this role, or `None`
     /// when the role takes the terminal's own foreground.
-    const fn ansi16(self) -> Option<Color> {
-        match self {
-            Role::Accent => Some(Color::Blue),
-            Role::Live => Some(Color::Green),
-            Role::Attention => Some(Color::Yellow),
-            Role::Danger => Some(Color::Red),
+    const fn ansi16(self, appearance: Appearance) -> Option<Color> {
+        match (self, appearance) {
+            (Role::Accent, Appearance::Dark) => Some(Color::LightBlue),
+            (Role::Accent, _) => Some(Color::Blue),
+            (Role::Live | Role::LivePeak, Appearance::Dark) => Some(Color::LightCyan),
+            (Role::Live | Role::LivePeak, _) => Some(Color::Cyan),
+            (Role::Attention, Appearance::Dark) => Some(Color::LightYellow),
+            (Role::Attention, _) => Some(Color::Yellow),
+            (Role::Danger, Appearance::Dark) => Some(Color::LightRed),
+            (Role::Danger, _) => Some(Color::Red),
             _ => None,
         }
     }
@@ -346,7 +350,7 @@ impl Theme {
         }
         match self.caps.depth {
             ColorDepth::Monochrome => None,
-            _ => role.ansi16(),
+            _ => role.ansi16(self.caps.appearance),
         }
     }
 
@@ -357,6 +361,12 @@ impl Theme {
         match self.color(role) {
             Some(color) => style.fg(color),
             None if role.recedes() => style.add_modifier(Modifier::DIM),
+            None if role == Role::Subagent
+                && (self.caps.depth == ColorDepth::Monochrome
+                    || self.caps.appearance == Appearance::Dark) =>
+            {
+                style.add_modifier(Modifier::BOLD)
+            }
             None => style,
         }
     }
@@ -496,7 +506,7 @@ mod tests {
         let t = theme(ColorDepth::TrueColor, Appearance::Unknown);
         assert_eq!(t.bg(Role::Background), Style::default());
         assert_eq!(t.color(Role::Foreground), None);
-        assert_eq!(t.color(Role::Live), Some(Color::Green));
+        assert_eq!(t.color(Role::Live), Some(Color::Cyan));
         assert!(t.fg(Role::Muted).add_modifier.contains(Modifier::DIM));
     }
 
@@ -575,11 +585,20 @@ mod tests {
         let light16 = theme(ColorDepth::Ansi16, Appearance::Light);
         let unknown256 = theme(ColorDepth::Ansi256, Appearance::Unknown);
         for role in Role::ALL {
-            assert_eq!(light16.fg(role), dark16.fg(role), "{role:?}");
+            assert_eq!(light16.fg(role), unknown256.fg(role), "{role:?}");
             assert_eq!(light16.bg(role), Style::default(), "{role:?}");
-            assert_eq!(unknown256.fg(role), dark16.fg(role), "{role:?}");
             assert_eq!(unknown256.bg(role), Style::default(), "{role:?}");
         }
+        assert_eq!(dark16.color(Role::Accent), Some(Color::LightBlue));
+        assert_eq!(dark16.color(Role::Live), Some(Color::LightCyan));
+        assert_eq!(dark16.color(Role::LivePeak), Some(Color::LightCyan));
+        assert_eq!(dark16.color(Role::Attention), Some(Color::LightYellow));
+        assert_eq!(dark16.color(Role::Danger), Some(Color::LightRed));
+        assert_eq!(light16.color(Role::Accent), Some(Color::Blue));
+        assert_eq!(light16.color(Role::Live), Some(Color::Cyan));
+        assert_eq!(light16.color(Role::LivePeak), Some(Color::Cyan));
+        assert_eq!(light16.color(Role::Attention), Some(Color::Yellow));
+        assert_eq!(light16.color(Role::Danger), Some(Color::Red));
     }
 
     /// Grounds that quantize to one color at 256 colors. Each one needs an
@@ -636,9 +655,11 @@ mod tests {
                     let bg = t.color(ground).unwrap();
                     for (ink, floor) in [
                         (Role::Foreground, 4.5),
+                        (Role::Subagent, 4.5),
                         (Role::Muted, 4.5),
                         (Role::Accent, 4.5),
                         (Role::Live, 4.5),
+                        (Role::LivePeak, 4.5),
                         (Role::Attention, 4.5),
                         (Role::Danger, 4.5),
                         (Role::Hint, 4.5),
@@ -791,9 +812,9 @@ mod tests {
     }
 
     #[test]
-    fn nineteen_roles_one_of_them_derived() {
-        assert_eq!(Role::COUNT, 19);
-        assert_eq!(Role::ALL.len(), 19);
+    fn twenty_one_roles_one_of_them_derived() {
+        assert_eq!(Role::COUNT, 21);
+        assert_eq!(Role::ALL.len(), 21);
         let derived: Vec<Role> = Role::ALL.into_iter().filter(|r| r.is_derived()).collect();
         assert_eq!(derived, [Role::Hint]);
         for role in Role::ALL {

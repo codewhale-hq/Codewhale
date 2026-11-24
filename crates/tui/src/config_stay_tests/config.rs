@@ -3081,7 +3081,9 @@ fn provider_capability_scenario() {
             cap.request_payload_mode,
             RequestPayloadMode::AnthropicMessages
         );
-        assert!(provider_passes_model_through(ProviderKind::Openmodel));
+        assert!(
+            codewhale_config::descriptors::provider_passes_model_through(ProviderKind::Openmodel)
+        );
     }
     // from provider_capability_deepseek_v4_flash_has_1m_window_and_thinking
     {
@@ -4043,7 +4045,9 @@ default_text_model = "DeepSeek-V4-Flash"
         assert_eq!(resolved, MODEL, "{label}: default_model() rewrote the id");
 
         assert_eq!(
-            wire_model_for_provider_route(provider, &base_url, &resolved),
+            codewhale_config::route::resolve_model(provider, &resolved, Some(&base_url))
+                .expect("resolve wire model")
+                .wire_id,
             MODEL,
             "{label}: the wire id must match the configured id byte-for-byte"
         );

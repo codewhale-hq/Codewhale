@@ -5,7 +5,10 @@
 How Codewhale keeps model metadata current — what already auto-updates, what
 is hand-maintained, and what a scheduled catalog job should (and should not) do.
 
-Related docs: [`PROVIDERS.md`](./PROVIDERS.md), RFC
+Related docs: [`MODELS_AND_PROVIDERS.md`](./MODELS_AND_PROVIDERS.md) (single
+owner for model-ID resolution, per-provider `models` naming rules, signed
+`registry.json` updates, and the planned Platform registry cutover),
+[`PROVIDERS.md`](./PROVIDERS.md), RFC
 [`rfcs/UNIFIED_PROVIDER_LOGIN.md`](./rfcs/UNIFIED_PROVIDER_LOGIN.md).
 
 ---
@@ -276,7 +279,7 @@ hand: CI runs `seed render --check` and fails on any difference.
 | `scripts/catalog/models_dev_seed.toml` | Which upstream rows to carry, their Codewhale provider id, wire id, default, canonical join, and the few curated rows upstream does not list | Hand, reviewed |
 | `scripts/catalog/models_dev_seed.lock.json` | The referenced upstream rows, allowlisted, plus the source URL, fetch time and sha256 | `seed lock` only |
 | `crates/config/assets/catalog_corrections.json` | Deliberate holds: withheld prices, clamped limits, reasoning controls | Hand, reviewed; applies online too |
-| `crates/config/assets/catalog_corrections.json` `reviewed` | Source-preserved intrinsic facts, scoped aliases, completion references, public labels/source-support dates, pure route facts and reference prices | Hand, reviewed; source receipts retained |
+| `crates/config/assets/catalog_corrections.json` `reviewed` | Source-preserved intrinsic facts, completion references, public labels/source-support dates, pure route facts and reference prices (per-provider model naming rules live in `provider_descriptors.json`; see [`MODELS_AND_PROVIDERS.md`](./MODELS_AND_PROVIDERS.md)) | Hand, reviewed; source receipts retained |
 | `crates/config/assets/models_dev.bundled.json` | The rendered seed including the reviewed supplement | `seed render` only |
 
 The spec selects and maps; it cannot state a value that disagrees with
@@ -484,3 +487,32 @@ remains distinct from direct/membership route limits. Unknown capabilities and
 name-suffix budgets remain explicitly unverified. Website model dates describe
 source support, with the prior proven dates retained in the same reviewed owner;
 they do not assert a provider release date or current API availability.
+
+## PR 7368 pinned seed recovery
+
+The release recovery uses only the lock bytes in commit
+`f252419bd33b8fb2bb6e1c0f00519082d61fee6a`, Git blob
+`7ccbc152c4f080da9cb6541a1df06948fcecc274`, with the current seed spec and
+corrections. The existing `seed render` derivation regenerates the bundled
+asset; the PR's older corrections and generated web facts are not copied.
+Neon's vendor review, source receipt, reference prices and provider listing
+remain intact, as do all other routes.
+
+The lock records `https://models.dev/catalog.json`, fetched at
+`2026-11-20T05:19:54Z`, and upstream SHA-256
+`d178146b38f5687ea10d945730a7b714c890ba85a09b45fed7a6e74c9ecea9a0`.
+Relative to the carried 18 November lock, the only row changes are these
+OpenRouter reference costs (USD per million tokens):
+
+| Model | Input | Output | Cache read |
+|---|---:|---:|---:|
+| `deepseek/deepseek-v4-pro` | 0.9 (unchanged) | 1.5 (unchanged) | 0.25 → 0.2 |
+| `z-ai/glm-5.2` | 0.007 → 0.62 | 6.8 → 2.42 | 0.006 → 0.14 |
+
+Evidence limit: these values are substantiated by the exact pinned Git blob,
+not by its later timestamp. That commit has no embedded signature. The full
+upstream response bytes were not available for rehashing, so the recorded
+upstream SHA-256 is retained provenance, not a newly verified payload digest.
+Neither changed price row is independently substantiated here by a signed
+catalog or provider-origin response. This local recovery makes no claim about
+current endpoint/account billing and performs no inference or paid calls.

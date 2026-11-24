@@ -107,6 +107,8 @@ pub struct RuntimeCapabilities {
     #[serde(default)]
     pub thread_create_idempotency: bool,
     #[serde(default)]
+    pub exact_route_thread_create: bool,
+    #[serde(default)]
     pub thread_idle_precondition: bool,
     #[serde(default)]
     pub thread_patch_undo_turn_id: bool,
@@ -544,6 +546,7 @@ mod tests {
             session_provider_keys: false,
             threads: true,
             thread_create_idempotency: true,
+            exact_route_thread_create: true,
             thread_idle_precondition: true,
             thread_patch_undo_turn_id: true,
             thread_scoped_reads: true,

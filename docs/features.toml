@@ -42,7 +42,7 @@ name = "Request range undo"
 summary = "/undo select rewinds a chosen request and its file changes; Runtime clients can preview and confirm an exact turn range."
 status = "experimental"
 surfaces = { tui = "preview" }
-since = "unreleased"
+since = "0.10.3"
 docs = "docs/GUIDE.md"
 owner = "crates/tui/src/tui/ui/apply.rs"
 
@@ -52,7 +52,7 @@ name = "Receipt-owned uninstall"
 summary = "Remove a receipt-owned release install or print its package manager's command; data kept unless --purge-data."
 status = "experimental"
 surfaces = { tui = "preview" }
-since = "unreleased"
+since = "0.10.3"
 docs = "docs/INSTALL.md"
 owner = "crates/cli/src/update/uninstall.rs"
 
@@ -62,7 +62,7 @@ name = "Installation cleanup"
 summary = "doctor --all expands diagnostics; --installs lists owners, --fix recovers old copies and --restore reverses it."
 status = "stable"
 surfaces = { tui = "stable" }
-since = "unreleased"
+since = "0.10.3"
 docs = "docs/INSTALL.md#clean-up-old-copies"
 owner = "crates/release/src/installs.rs"
 
@@ -72,7 +72,7 @@ name = "Automatic updates"
 summary = "Release-binary installs download updates in the background and apply them at the next start; update --rollback undoes."
 status = "stable"
 surfaces = { tui = "stable" }
-since = "unreleased"
+since = "0.10.3"
 docs = "docs/INSTALL.md#automatic-updates"
 owner = "crates/release/src/autoupdate.rs"
 
@@ -82,7 +82,7 @@ name = "Cloud computer conversations"
 summary = "Dispatch, inspect, continue and stop one account cloud conversation from terminal and desktop, saved whales included."
 status = "experimental"
 surfaces = { tui = "preview" }
-since = "unreleased"
+since = "0.10.3"
 docs = "docs/CLOUD_DISPATCH.md"
 owner = "crates/account-cli/src/computer.rs"
 
@@ -156,7 +156,7 @@ name = "MCP tool approval rules"
 summary = "Global per-tool Always, Ask and Off rules stay bound to the current server and preserve required consent."
 status = "experimental"
 surfaces = { tui = "partial", api = "preview" }
-since = "unreleased"
+since = "0.10.3"
 docs = "docs/MCP.md"
 owner = "crates/engine/src/core/engine/tool_preparation.rs"
 
@@ -221,7 +221,7 @@ name = "Plugin creator"
 summary = "Enables the built-in plugin_manager tool and Creator mode host module while Rust retains permission gates."
 status = "experimental"
 surfaces = { tui = "preview", web = "none", api = "preview" }
-since = "unreleased"
+since = "0.10.3"
 flag = "plugin_creator"
 docs = "docs/MODES.md"
 owner = "crates/engine/src/extension_host"
@@ -375,7 +375,7 @@ owner = "crates/engine/src/model_routing.rs"
 [[feature]]
 id = "model-catalog-refresh"
 name = "Model catalog refresh"
-summary = "Refresh public model facts and exact provider rosters during use; failures retain the last good snapshot."
+summary = "Refresh model facts and exact provider rosters; selection is fenced to the account and endpoint."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 since = "0.10.3"
@@ -388,7 +388,7 @@ name = "Answerless output-limit recovery"
 summary = "Opt-in bounded answer retries after an output-limit stop, including Fleet, with request-scoped nudge receipts."
 status = "flagged"
 surfaces = { tui = "preview", api = "preview" }
-since = "unreleased"
+since = "0.10.3"
 docs = "docs/CONFIGURATION.md#reasoning-only-recovery-reasoning_only"
 owner = "crates/engine/src/core/engine/turn_loop/continuation.rs"
 
@@ -443,7 +443,7 @@ name = "Reminders into the same thread"
 summary = "send_later, automations and /v1/triggers deliver scheduled turns; a run parked on a human answer pauses its wall clock."
 status = "experimental"
 surfaces = { api = "preview" }
-since = "unreleased"
+since = "0.10.3"
 docs = "docs/RUNTIME_API.md"
 owner = "crates/engine/src/automation_manager.rs"
 
@@ -499,7 +499,7 @@ name = "Present final files"
 summary = "Declare existing workspace files as final deliverables with a read-only handoff receipt."
 status = "experimental"
 surfaces = { tui = "preview", api = "partial" }
-since = "unreleased"
+since = "0.10.3"
 owner = "crates/engine/src/tools/present.rs"
 
 [[feature]]
@@ -508,7 +508,7 @@ name = "Charts in the transcript"
 summary = "Read-only show_data tool: display sparklines, labelled bars or trends, with matching text summaries."
 status = "experimental"
 surfaces = { tui = "preview", api = "partial" }
-since = "unreleased"
+since = "0.10.3"
 owner = "crates/engine/src/tools/show_data.rs"
 
 [[feature]]
@@ -535,7 +535,7 @@ name = "Pasted image cleanup"
 summary = "codewhale sessions prune-images reports pasted clipboard images no saved session still names; --apply deletes them."
 status = "experimental"
 surfaces = { tui = "preview" }
-since = "unreleased"
+since = "0.10.3"
 docs = "docs/READ_MEDIA.md#pasted-image-storage"
 owner = "crates/engine/src/session_image_prune.rs"
 
@@ -545,7 +545,7 @@ name = "Workspace session migration"
 summary = "codewhale sessions migrate updates saved sessions, checkpoints, and Runtime thread bindings after a workspace rename."
 status = "stable"
 surfaces = { tui = "stable" }
-since = "unreleased"
+since = "0.10.3"
 docs = "docs/GUIDE.md#how-do-i-continue-previous-work"
 owner = "crates/engine/src/session_manager.rs"
 
@@ -563,7 +563,7 @@ owner = "crates/memory"
 [[feature]]
 id = "skills"
 name = "Skill plugins"
-summary = "A plugin kind: trusted instruction packages with bundle policy, invocation controls and configurable index limits."
+summary = "Trusted instruction packages with bundle policy, invocation controls, and project-first catalog lookup."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/SKILLS.md"
@@ -572,7 +572,7 @@ owner = "crates/skills/src"
 [[feature]]
 id = "plugins"
 name = "Plugins"
-summary = "Everything you add is a plugin: installs, reviews and trusts bundles, shows status, restores missing reviewed snapshots."
+summary = "Install, review and trust bundles, preview and import local DSH packages, and restore reviewed snapshots."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/PLUGINS.md"
@@ -646,7 +646,7 @@ name = "Attested watch events"
 summary = "Master-bearer watch turns retain typed non-person provenance, exact replay and read-only operation recovery."
 status = "experimental"
 surfaces = { api = "preview" }
-since = "unreleased"
+since = "0.10.3"
 docs = "docs/RUNTIME_API.md"
 owner = "crates/app-server/src/runtime_api.rs"
 
@@ -794,7 +794,7 @@ id = "claude-org-billing"
 name = "Claude organization billing"
 summary = "Link a Claude Platform organization so Anthropic bills it directly; auth_mode = \"claude-org\"."
 status = "experimental"
-surfaces = { tui = "preview" }
+surfaces = { tui = "preview", api = "preview" }
 docs = "docs/PROVIDERS.md"
 owner = "crates/account-cli/src/claude_org.rs"
 
@@ -837,7 +837,7 @@ name = "Conversation export"
 summary = "/export saves a redacted conversation as Markdown, HTML or JSON, to the clipboard or an auto-named file."
 status = "stable"
 surfaces = { tui = "stable" }
-since = "unreleased"
+since = "0.3.31"
 docs = "docs/GUIDE.md#exporting-a-conversation"
 owner = "crates/tui/src/commands/groups/session/export.rs"
 
@@ -855,7 +855,7 @@ name = "Local model reasoning compatibility"
 summary = "The vLLM Chat route sends reviewed model-template effort values instead of assuming a universal ladder."
 status = "stable"
 surfaces = { tui = "stable", web = "stable", api = "stable" }
-since = "unreleased"
+since = "0.10.3"
 docs = "docs/LOCAL_MODEL_REASONING.md"
 owner = "crates/config/src/local_reasoning.rs"
 
@@ -961,7 +961,7 @@ name = "Local whale voice"
 summary = "Edit SOUL.md for a local whale and inspect the personality captured for each turn."
 status = "experimental"
 surfaces = { tui = "preview", api = "preview" }
-since = "unreleased"
+since = "0.10.3"
 docs = "docs/RUNTIME_API.md#local-whale-voice"
 owner = "crates/engine/src/whale_soul.rs"
 
@@ -999,7 +999,7 @@ id = "instruction-budgets"
 name = "Instruction budgets"
 summary = "Global and project standing instructions get separate token budgets, with every trim or skip reported."
 status = "stable"
-since = "unreleased"
+since = "0.10.3"
 surfaces = { tui = "stable" }
 docs = "docs/CONFIGURATION.md#instruction-budget-instruction_budget-6526"
 owner = "crates/engine/src/project_context/budget.rs"
@@ -1009,7 +1009,7 @@ id = "github-action-review"
 name = "GitHub Action review"
 summary = "Generate pinned workflows for automatic or authorized mention reviews; publish findings with recorded evidence."
 status = "experimental"
-since = "unreleased"
+since = "0.10.1"
 surfaces = { tui = "preview" }
 docs = "docs/GITHUB_ACTION.md"
 owner = "scripts/github-action/review.mjs"
@@ -1019,7 +1019,7 @@ id = "telegram-agent"
 name = "Telegram agent bridge"
 summary = "Use an Engine from Telegram with durable prompt recovery, human-owned approvals and retained replies."
 status = "experimental"
-since = "unreleased"
+since = "0.8.53"
 surfaces = { api = "preview" }
 docs = "integrations/telegram-bridge/README.md"
 owner = "integrations/telegram-bridge/src/index.mjs"
@@ -1029,7 +1029,7 @@ id = "dingtalk-agent"
 name = "DingTalk agent bridge"
 summary = "Connect an internal DingTalk app to the same Engine with scoped identity and durable message recovery."
 status = "experimental"
-since = "unreleased"
+since = "0.10.3"
 surfaces = { api = "preview" }
 docs = "integrations/dingtalk-bridge/README.md"
 owner = "integrations/dingtalk-bridge/src/index.mjs"
@@ -1039,7 +1039,7 @@ id = "compaction-archive-recall"
 name = "Compaction archive recall"
 summary = "context_archive_search and context_archive_get read the pre-compaction transcript a summary replaced."
 status = "experimental"
-since = "unreleased"
+since = "0.10.3"
 surfaces = { tui = "preview" }
 owner = "crates/engine/src/tools/context_archive.rs"
 
@@ -1049,7 +1049,7 @@ name = "Usage statistics"
 summary = "Read-only native usage subtotals and execution diagnostics; missing coverage stays explicit."
 status = "experimental"
 surfaces = { tui = "partial" }
-since = "unreleased"
+since = "0.10.3"
 docs = "docs/CONFIGURATION.md#usage-and-execution-statistics"
 owner = "crates/cli/src/metrics.rs"
 
@@ -1059,7 +1059,7 @@ name = "Per-call cache receipts"
 summary = "/cache calls shows bounded native receipts with frozen prices, selected currency and missing cache telemetry."
 status = "experimental"
 surfaces = { tui = "partial" }
-since = "unreleased"
+since = "0.10.3"
 docs = "docs/CONFIGURATION.md#usage-and-execution-statistics"
 owner = "crates/tui/src/commands/contract/debug_diagnostics.rs"
 
@@ -1069,7 +1069,7 @@ name = "Local proxy fallback"
 summary = "Long-lived clients go direct while a loopback proxy port refuses connections, then resume proxying."
 status = "experimental"
 surfaces = { tui = "partial", api = "partial" }
-since = "unreleased"
+since = "0.10.3"
 docs = "docs/INSTALL.md#a-local-proxy-that-closed-after-the-session-started"
 owner = "crates/net/src/proxy.rs"
 
@@ -1088,7 +1088,7 @@ name = "Custom Responses profile"
 summary = "A custom provider with wire = responses can name an allowlisted responses_profile; omitted means standard."
 status = "stable"
 surfaces = { tui = "stable" }
-since = "unreleased"
+since = "0.10.3"
 docs = "docs/CONFIGURATION.md"
 owner = "crates/config/src/provider_toml.rs"
 
@@ -1098,6 +1098,6 @@ name = "Native Runtime attachment"
 summary = "Attach-only native clients select an authenticated existing owner and a fixed workspace."
 status = "experimental"
 surfaces = { api = "partial" }
-since = "unreleased"
+since = "0.10.3"
 owner = "crates/app-server/src/native_runtime.rs"
 docs = "docs/NATIVE_RUNTIME.md"

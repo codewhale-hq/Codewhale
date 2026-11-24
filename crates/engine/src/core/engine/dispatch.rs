@@ -173,7 +173,12 @@ impl FleetDenialGuard {
         // neither new evidence nor a failure. Its own timeouts still govern it.
         if matches!(
             action,
-            "exec_shell_wait" | "exec_wait" | "terminal/wait" | "wait_for_dev_server" | "sleep"
+            "exec_shell_wait"
+                | "exec_wait"
+                | "terminal_wait"
+                | "terminal/wait"
+                | "wait_for_dev_server"
+                | "sleep"
         ) || name == "agent"
             && input
                 .get("action")
@@ -311,7 +316,7 @@ impl ToolApprovalStamp {
         }
     }
 
-    fn model_visible_note(self) -> &'static str {
+    fn legacy_model_visible_note(self) -> &'static str {
         match self {
             Self::ApprovedByUser => {
                 "[approval] This tool call required approval and was approved by the user before execution."
@@ -327,7 +332,6 @@ pub(super) fn stamp_tool_result_approval(result: &mut ToolResult, approval: Tool
     let approval_metadata = json!({
         "required": true,
         "decision": approval.decision(),
-        "model_visible": true,
     });
     let metadata = result.metadata.get_or_insert_with(|| json!({}));
     if let Some(object) = metadata.as_object_mut() {
@@ -339,20 +343,11 @@ pub(super) fn stamp_tool_result_approval(result: &mut ToolResult, approval: Tool
             object.insert("approval".to_string(), approval_metadata);
         }
     }
-
-    let note = approval.model_visible_note();
-    if result.content.starts_with("[approval] ") {
-        return;
-    }
-    if result.content.is_empty() {
-        result.content = note.to_string();
-    } else {
-        result.content = format!("{note}\n\n{}", result.content);
-    }
 }
 
-/// The tool output a person reads: the result without the note
-/// [`stamp_tool_result_approval`] put in front of it for the model (#6566).
+/// The tool output a person reads: a result recorded by an earlier Codewhale
+/// without the approval note those versions put in front of it for the model
+/// (#6566).
 ///
 /// Only a result the engine stamped (`metadata.approval.model_visible`) loses
 /// a note, and only that decision's exact note text followed by a blank line
@@ -381,7 +376,7 @@ pub fn content_without_approval_note(result: &ToolResult) -> &str {
     else {
         return content;
     };
-    match content.strip_prefix(stamp.model_visible_note()) {
+    match content.strip_prefix(stamp.legacy_model_visible_note()) {
         Some("") => "",
         Some(rest) => rest.strip_prefix("\n\n").unwrap_or(content),
         None => content,
@@ -430,6 +425,8 @@ fn mentions_mode_word(lower: &str) -> bool {
 pub(super) fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
     format_tool_error_with_schema(err, tool_name, None)
 }
+
+const VALID_SHAPE_MAX_BYTES: usize = 2 * 1024;
 
 pub(super) fn format_tool_error_with_schema(
     err: &ToolError,
@@ -497,12 +494,23 @@ pub(super) fn format_tool_error_with_schema(
         ToolError::NotAvailable { .. } => ("tool_not_available", Some("tool_name")),
         _ => return message,
     };
-    let valid_shape = input_schema.cloned().unwrap_or_else(|| {
-        serde_json::json!({
+    let valid_shape = match input_schema {
+        Some(schema) if schema.to_string().len() <= VALID_SHAPE_MAX_BYTES => schema.clone(),
+        Some(schema) => serde_json::json!({
+            "type": "object",
+            "required": schema.get("required").cloned().unwrap_or_else(|| serde_json::json!([])),
+            "properties": schema
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
+                .map(|properties| properties.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default(),
+            "guidance": format!("Full field types are in the advertised input schema for '{tool_name}'")
+        }),
+        None => serde_json::json!({
             "type": "object",
             "guidance": format!("Use the advertised input schema for '{tool_name}'")
-        })
-    });
+        }),
+    };
     let feedback = serde_json::json!({
         "category": category,
         "bad_field": bad_field,

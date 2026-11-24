@@ -19,8 +19,11 @@ name: Main landing gate
 # feature receipts. Measured at 45 s on a warm Linux runner.
 #
 # Since 2026-11-08 (founder) the `full-ci` job also dispatches `ci.yml` on every
-# push to main, so every gate and the three-OS suite run on each landing. The
-# preflight job stays narrow so a red landing still shows up in minutes.
+# push to main, so every gate and the three-OS suite run on each landing. Since
+# 2026-11-22 (founder) it skips that dispatch when the exact pushed SHA already
+# has a green full `ci.yml` run (scripts/release/require-full-ci-receipt.sh);
+# any doubt dispatches as before. The preflight job stays narrow so a red
+# landing still shows up in minutes.
 
 on:
   push:
@@ -69,7 +72,83 @@ jobs:
       actions: write
       contents: read
     steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts/release
+          persist-credentials: false
       - name: Run ci.yml with every gate on the pushed commit
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run ci.yml --repo "${GITHUB_REPOSITORY}" --ref main -f expected_sha="${GITHUB_SHA}"
+        run: |
+          set -euo pipefail
+          if receipt="$(bash scripts/release/require-full-ci-receipt.sh "${GITHUB_REPOSITORY}" "${GITHUB_SHA}" 2>&1)"; then
+            echo "Not dispatching a duplicate full run. ${receipt}" | tee -a "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          echo "${receipt}"
+          gh workflow run ci.yml --repo "${GITHUB_REPOSITORY}" --ref main -f expected_sha="${GITHUB_SHA}"
+
+  web_changes:
+    name: Web change detection
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      web: ${{ steps.detect.outputs.web }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - name: Detect website input changes
+        id: detect
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" || ! "${BEFORE_SHA}" =~ ^[0-9a-fA-F]{40}$ || "${BEFORE_SHA}" =~ ^0+$ ]] \
+            || ! git rev-parse --verify --quiet "${BEFORE_SHA}^{commit}" >/dev/null; then
+            echo "web=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          mapfile -t changed < <(git diff --name-only "${BEFORE_SHA}" "${GITHUB_SHA}" -- | sort)
+          web=false
+          for path in "${changed[@]}"; do
+            case "${path}" in
+              web/*|docs/*|CHANGELOG.md|Cargo.toml|CONTRIBUTING.md|LICENSE|README.md|npm/codewhale/package.json|npm/codewhale/README.md|npm/codewhale/scripts/artifacts.js|crates/config/assets/*|crates/config/src/cloud_facts/keys.rs|crates/config/src/app_mode.rs|crates/sandbox/src/lib.rs|crates/engine/src/tools/*|crates/engine/src/core/engine/tool_catalog.rs|crates/app-server/src/runtime_api.rs|crates/app-server/src/runtime_web/*|crates/palette/src/rgb.rs|crates/cli/Cargo.toml|crates/execpolicy/src/approval_mode.rs|crates/runtime/src/audit.rs|crates/runtime/src/config.rs|crates/runtime/src/config/subagent_limits.rs|crates/runtime/src/settings.rs|crates/tui/src/tui/app.rs|crates/tui/src/tui/app/init.rs|scripts/export-design-tokens.py|vendor/codewhale-design/*|integrations/dingtalk-bridge/README.md|integrations/telegram-bridge/README.md|telemetry-ingest/*|.github/workflows/web.yml|.github/workflows/main-landing.yml)
+                web=true
+                ;;
+            esac
+          done
+          echo "web=${web}" >> "${GITHUB_OUTPUT}"
+          echo "Web gates required: ${web}"
+
+  web:
+    name: Web gates
+    needs: web_changes
+    if: needs.web_changes.outputs.web == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Run tests
+        run: npm test
+      - name: Check web surface
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: npm run check

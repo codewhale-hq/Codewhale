@@ -4,7 +4,7 @@
 //! request building (`build_chat_messages*`), and SSE parsing
 //! (`parse_sse_chunk_with_reasoning_style`) all live here.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::pin::Pin;
 use std::time::Duration;
@@ -19,7 +19,7 @@ use codewhale_runtime::config::{
     is_exact_direct_moonshot_k3_route, is_exact_kimi_code_k3_route, is_exact_zai_chat_route,
     is_exact_zai_forced_thinking_route, is_exact_zai_tiered_effort_route,
     is_kimi_code_membership_model, minimax_m3_route_uses_max_completion_tokens,
-    moonshot_base_url_is_exact_kimi_code, wire_model_for_provider_route,
+    moonshot_base_url_is_exact_kimi_code,
 };
 
 use crate::llm_client::StreamEventBox;
@@ -717,32 +717,19 @@ fn is_google_openai_compat_chat_route(base_url: &str) -> bool {
     host == "generativelanguage.googleapis.com" && path == "v1beta/openai"
 }
 
-/// Gemini models whose thinking makes thought signatures load-bearing on
-/// the OpenAI-compat route. Gemini 2.5 Flash-Lite ships with thinking off
-/// by default, so a missing signature there degrades with a warning
-/// instead of failing the turn.
-fn google_model_requires_thought_signatures(model: &str) -> bool {
-    let model = model.trim().to_ascii_lowercase();
-    // Google names the same model both ways on this endpoint, and a route
-    // configured as `models/gemini-3-pro` matched none of the prefixes below:
-    // the model that most needs a signature looked like one that needs none,
-    // so the fail-closed check waved it through and Google rejected the replay
-    // instead (#6018).
-    let model = model.strip_prefix("models/").unwrap_or(&model);
-    if model.starts_with("gemini-3") {
-        return true;
-    }
-    if model.starts_with("gemini-2.5-pro") {
-        return true;
-    }
-    model.starts_with("gemini-2.5-flash") && !model.starts_with("gemini-2.5-flash-lite")
+fn resolve_google_route_model(model: &str) -> Option<String> {
+    codewhale_config::route::resolve_model(ProviderKind::Google, model, None)
+        .ok()
+        .filter(|resolved| !resolved.is_auto)
+        .map(|resolved| resolved.wire_id)
 }
 
-/// Google's compatibility endpoint accepts the ordinary `reasoning_effort`
-/// field across Gemini 2.5 and 3. A top-level `google` object is rejected;
-/// native thinking controls would require `extra_body.google` instead.
-/// Use one control, since the endpoint rejects overlapping effort and native
-/// thinking settings. https://ai.google.dev/gemini-api/docs/openai#thinking
+fn google_model_requires_thought_signatures(model: &str) -> bool {
+    resolve_google_route_model(model)
+        .as_deref()
+        .is_some_and(codewhale_models::model_requires_thought_signatures)
+}
+
 fn apply_google_reasoning_effort(
     body: &mut serde_json::Value,
     base_url: &str,
@@ -755,17 +742,57 @@ fn apply_google_reasoning_effort(
     let Some(effort) = effort else {
         return;
     };
-    let model = model.trim().to_ascii_lowercase();
-    let model = model.strip_prefix("models/").unwrap_or(&model);
-    let can_disable = model.starts_with("gemini-2.5-") && !model.starts_with("gemini-2.5-pro");
-    let effort = match effort.trim().to_ascii_lowercase().as_str() {
+    let resolved = resolve_google_route_model(model);
+    let can_disable = resolved
+        .as_deref()
+        .is_some_and(codewhale_models::model_can_disable_thinking);
+    let offering = resolved.as_deref().and_then(|wire_id| {
+        crate::provider_lake::bundled_catalog_offering_for_model(ProviderKind::Google, wire_id)
+    });
+    let declared_efforts: Option<Vec<&str>> = offering.as_ref().and_then(|row| {
+        row.reasoning_options
+            .iter()
+            .find(|option| option["type"] == "effort")
+            .and_then(|option| option["values"].as_array())
+            .map(|values| values.iter().filter_map(Value::as_str).collect())
+    });
+    let has_declared = |target: &str| {
+        declared_efforts
+            .as_ref()
+            .is_some_and(|efforts| efforts.contains(&target))
+    };
+    let normalized = effort.trim().to_ascii_lowercase();
+    if matches!(normalized.as_str(), "auto" | "automatic") {
+        if let Some(object) = body.as_object_mut() {
+            object.remove("reasoning_effort");
+        }
+        return;
+    }
+    let effort = match normalized.as_str() {
         "off" | "disabled" | "none" | "false" if can_disable => "none",
-        // Gemini 3 and 2.5 Pro cannot disable thinking. The compatibility
-        // layer maps minimal to the selected model's lowest supported level.
-        "off" | "disabled" | "none" | "false" | "minimal" => "minimal",
-        "low" => "low",
-        "medium" | "mid" | "" => "medium",
-        "high" | "xhigh" | "max" | "highest" | "ultra" | "ultracode" => "high",
+        "off" | "disabled" | "none" | "false" | "minimal" | "minimum" => {
+            if declared_efforts.is_some() && !has_declared("minimal") && has_declared("low") {
+                "low"
+            } else {
+                "minimal"
+            }
+        }
+        "low" | "light" => "low",
+        "medium" | "mid" | "" => {
+            if declared_efforts.is_some() && !has_declared("medium") {
+                if has_declared("high") { "high" } else { "low" }
+            } else {
+                "medium"
+            }
+        }
+        "high" => "high",
+        "xhigh" | "max" | "maximum" | "highest" | "ultra" | "ultracode" => {
+            if has_declared("xhigh") {
+                "xhigh"
+            } else {
+                "high"
+            }
+        }
         _ => return,
     };
     body["reasoning_effort"] = json!(effort);
@@ -796,23 +823,24 @@ fn validate_google_thought_signature_replay(
         let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) else {
             continue;
         };
-        for call in tool_calls {
-            let missing = call
-                .pointer("/extra_content/google/thought_signature")
-                .and_then(Value::as_str)
-                .is_none();
-            if missing {
-                let id = call.get("id").and_then(Value::as_str).unwrap_or("?");
-                if requires_signatures {
-                    anyhow::bail!(
-                        "Gemini model `{model}` requires a thought signature to replay tool call \
-                         `{id}`, but none was captured (the turn predates signature capture, or \
-                         the provider omitted it). Start a new session before using tools on \
-                         this route."
-                    );
-                }
-                unsigned_call_ids.push(id);
+        let Some(call) = tool_calls.first() else {
+            continue;
+        };
+        let missing = call
+            .pointer("/extra_content/google/thought_signature")
+            .and_then(Value::as_str)
+            .is_none_or(|signature| signature.is_empty());
+        if missing {
+            let id = call.get("id").and_then(Value::as_str).unwrap_or("?");
+            if requires_signatures {
+                anyhow::bail!(
+                    "Gemini model `{model}` requires a thought signature to replay tool call \
+                     `{id}`, but none was captured (the turn predates signature capture, or \
+                     the provider omitted it). Start a new session before using tools on \
+                     this route."
+                );
             }
+            unsigned_call_ids.push(id);
         }
     }
     if !unsigned_call_ids.is_empty() {
@@ -1239,7 +1267,11 @@ pub fn build_chat_wire_body_with_window(
         effective_window,
     );
     let model = {
-        let wire = wire_model_for_provider_route(provider, base_url, &request.model);
+        let wire = codewhale_config::route::resolve_model(provider, &request.model, Some(base_url))
+            .map_or_else(
+                |_| request.model.trim().to_string(),
+                |resolved| resolved.wire_id,
+            );
         codewhale_models::effective_muse_wire_id(&wire).to_string()
     };
     validate_google_thought_signature_replay(base_url, &model, &messages)?;
@@ -1574,7 +1606,7 @@ impl CodewhaleClient {
             let mut content_index: u32 = 0;
             let mut text_started = false;
             let mut thinking_started = false;
-            let mut tool_indices: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+            let mut tool_indices = ChatToolStream::for_base_url(&base_url);
             let mut reasoning_detail_buffers: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
             let mut inline_reasoning_tags = InlineReasoningTagState::default();
             let reasoning_stream_style = reasoning_stream_style_for_route(
@@ -1835,6 +1867,9 @@ impl CodewhaleClient {
 
             release_stream_buffer(byte_buf);
             if !stream_failed && (saw_done || saw_finish_reason) {
+                for event in tool_indices.finish() {
+                    yield Ok(event);
+                }
                 yield Ok(StreamEvent::MessageStop);
             } else if !stream_failed {
                 yield Err(anyhow::anyhow!(
@@ -4014,12 +4049,16 @@ fn parse_chat_message_for_route(
     }
 
     if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
-        for call in tool_calls {
+        let mut assigned_ids = tool_calls
+            .iter()
+            .filter_map(|call| call.get("id").and_then(Value::as_str).map(str::to_owned))
+            .collect();
+        for (call_index, call) in tool_calls.iter().enumerate() {
             let id = call
                 .get("id")
                 .and_then(Value::as_str)
-                .unwrap_or("tool_call")
-                .to_string();
+                .map(str::to_string)
+                .unwrap_or_else(|| synthesize_chat_call_id(call_index, &mut assigned_ids));
             let function = call.get("function");
             let name = tool_name_or_fallback(
                 function.and_then(|f| f.get("name")).and_then(Value::as_str),
@@ -4264,6 +4303,129 @@ enum SseDataFrame {
     Events(Vec<StreamEvent>),
 }
 
+#[derive(Default)]
+pub(super) struct ChatToolStream {
+    google: bool,
+    calls: Vec<ChatToolSlot>,
+    by_index: HashMap<u64, usize>,
+    by_id: HashMap<String, usize>,
+    previous_batch: Vec<usize>,
+}
+
+struct ChatToolSlot {
+    block: u32,
+    wire_index: Option<u64>,
+    id: Option<String>,
+}
+
+impl ChatToolStream {
+    fn for_base_url(base_url: &str) -> Self {
+        Self {
+            google: is_google_openai_compat_chat_route(base_url),
+            ..Self::default()
+        }
+    }
+
+    fn slot(
+        &self,
+        index: Option<u64>,
+        id: Option<&str>,
+        has_name: bool,
+        position: usize,
+        batch_len: usize,
+    ) -> Result<Option<usize>, &'static str> {
+        let by_index = index.and_then(|i| self.by_index.get(&i).copied());
+        if !self.google {
+            if by_index
+                .and_then(|slot| self.calls[slot].id.as_deref())
+                .zip(id)
+                .is_some_and(|(previous, current)| previous != current)
+            {
+                return Err("Conflicting tool call identities in provider stream");
+            }
+            return Ok(by_index);
+        }
+        let by_id = id.and_then(|id| self.by_id.get(id).copied());
+        if let Some(slot) = by_index.or(by_id) {
+            let call = &self.calls[slot];
+            if by_index.zip(by_id).is_some_and(|(a, b)| a != b)
+                || index.zip(call.wire_index).is_some_and(|(a, b)| a != b)
+                || id.zip(call.id.as_deref()).is_some_and(|(a, b)| a != b)
+            {
+                return Err("Conflicting tool call identities in provider stream");
+            }
+            return Ok(Some(slot));
+        }
+        if has_name {
+            return Ok(None);
+        }
+        if index.is_none() && id.is_none() && self.previous_batch.len() == batch_len {
+            return Ok(self.previous_batch.get(position).copied());
+        }
+        Err("Cannot match a tool call delta to its provider stream block")
+    }
+
+    fn record_identity(&mut self, slot: usize, index: Option<u64>, id: Option<&str>) -> bool {
+        let call = &mut self.calls[slot];
+        if call.wire_index.is_none()
+            && let Some(index) = index
+        {
+            self.by_index.insert(index, slot);
+            call.wire_index = Some(index);
+        }
+        if call.id.is_none()
+            && let Some(id) = id
+        {
+            if self.google {
+                self.by_id.insert(id.to_owned(), slot);
+            }
+            call.id = Some(id.to_owned());
+            return true;
+        }
+        false
+    }
+
+    fn finish(&mut self) -> Vec<StreamEvent> {
+        self.previous_batch.clear();
+        self.by_index.clear();
+        self.by_id.clear();
+        finish_chat_tool_calls(self.calls.drain(..).map(|call| (call.block, call.id))).collect()
+    }
+}
+
+fn synthesize_chat_call_id(ordinal: usize, assigned: &mut HashSet<String>) -> String {
+    let base = format!("call_missing_{ordinal}");
+    let mut id = base.clone();
+    let mut suffix = 0usize;
+    while !assigned.insert(id.clone()) {
+        suffix += 1;
+        id = format!("{base}_{suffix}");
+    }
+    id
+}
+
+fn finish_chat_tool_calls(
+    calls: impl Iterator<Item = (u32, Option<String>)>,
+) -> impl Iterator<Item = StreamEvent> {
+    let mut calls: Vec<_> = calls.collect();
+    calls.sort_unstable_by_key(|(block, _)| *block);
+    let mut assigned = calls.iter().filter_map(|(_, id)| id.clone()).collect();
+    calls
+        .into_iter()
+        .enumerate()
+        .flat_map(move |(ordinal, (index, id))| {
+            let pairing = id.is_none().then(|| StreamEvent::ContentBlockDelta {
+                index,
+                delta: Delta::ToolCallIdDelta {
+                    id: synthesize_chat_call_id(ordinal, &mut assigned),
+                },
+            });
+            pairing
+                .into_iter()
+                .chain([StreamEvent::ContentBlockStop { index }])
+        })
+}
+
 // The six `&mut` streaming-state fields plus the style flag are a deliberate,
 // shared parser-state set (mirrored by `parse_sse_chunk*`); bundling them into a
 // struct would only add reborrow noise on this hot SSE path.
@@ -4273,7 +4435,7 @@ fn parse_sse_data_frame(
     content_index: &mut u32,
     text_started: &mut bool,
     thinking_started: &mut bool,
-    tool_indices: &mut std::collections::HashMap<u32, u32>,
+    tool_indices: &mut ChatToolStream,
     reasoning_detail_buffers: &mut std::collections::HashMap<u32, String>,
     inline_reasoning_tags: &mut InlineReasoningTagState,
     reasoning_stream_style: ReasoningStreamStyle,
@@ -4307,7 +4469,7 @@ pub(super) fn parse_sse_chunk(
     content_index: &mut u32,
     text_started: &mut bool,
     thinking_started: &mut bool,
-    tool_indices: &mut std::collections::HashMap<u32, u32>,
+    tool_indices: &mut ChatToolStream,
     reasoning_detail_buffers: &mut std::collections::HashMap<u32, String>,
     is_reasoning_model: bool,
 ) -> Vec<StreamEvent> {
@@ -4336,7 +4498,7 @@ fn parse_sse_chunk_with_reasoning_style(
     content_index: &mut u32,
     text_started: &mut bool,
     thinking_started: &mut bool,
-    tool_indices: &mut std::collections::HashMap<u32, u32>,
+    tool_indices: &mut ChatToolStream,
     reasoning_detail_buffers: &mut std::collections::HashMap<u32, String>,
     inline_reasoning_tags: &mut InlineReasoningTagState,
     reasoning_stream_style: ReasoningStreamStyle,
@@ -4595,12 +4757,78 @@ fn parse_sse_chunk_with_reasoning_style(
             }
 
             // Handle tool calls
-            if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
-                for tc in tool_calls {
-                    let tc_index = tc.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
-                    let tool_block_index = match tool_indices.entry(tc_index) {
-                        std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
-                        std::collections::hash_map::Entry::Vacant(entry) => {
+            if let Some(tool_calls) = delta
+                .get("tool_calls")
+                .and_then(Value::as_array)
+                .filter(|calls| !calls.is_empty())
+            {
+                let mut batch = if tool_indices.google {
+                    Vec::with_capacity(tool_calls.len())
+                } else {
+                    Vec::new()
+                };
+                let mut batch_slots = HashSet::new();
+                let mut inferred_positions = 0;
+                let mut changed_positions = false;
+                let mut carries_call_data = false;
+                for (tc_pos, tc) in tool_calls.iter().enumerate() {
+                    let wire_index = tc.get("index").and_then(Value::as_u64);
+                    let wire_index = if tool_indices.google {
+                        wire_index
+                    } else {
+                        Some(u64::from(wire_index.unwrap_or(0) as u32))
+                    };
+                    let id = tc
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .filter(|id| !tool_indices.google || !id.is_empty());
+                    let name = tc.pointer("/function/name").and_then(Value::as_str);
+                    let has_name = name.is_some_and(|name| !name.trim().is_empty());
+                    let args = tc
+                        .pointer("/function/arguments")
+                        .and_then(Value::as_str)
+                        .filter(|args| !args.is_empty());
+                    let slot =
+                        match tool_indices.slot(wire_index, id, has_name, tc_pos, tool_calls.len())
+                        {
+                            Ok(slot) => slot,
+                            Err(message) => {
+                                return vec![StreamEvent::Error {
+                                    error: json!({ "message": message }),
+                                }];
+                            }
+                        };
+                    let (slot, tool_block_index) = match slot {
+                        Some(slot) => {
+                            if tool_indices.google && !batch_slots.insert(slot) {
+                                return vec![StreamEvent::Error {
+                                    error: json!({ "message": "Duplicate tool call in provider stream batch" }),
+                                }];
+                            }
+                            let accepted_id = tool_indices.record_identity(slot, wire_index, id);
+                            let call = &tool_indices.calls[slot];
+                            if accepted_id && let Some(id) = call.id.as_ref() {
+                                events.push(StreamEvent::ContentBlockDelta {
+                                    index: call.block,
+                                    delta: Delta::ToolCallIdDelta { id: id.clone() },
+                                });
+                            }
+                            if tool_indices.google
+                                && let Some(sig) = tc
+                                    .pointer("/extra_content/google/thought_signature")
+                                    .and_then(Value::as_str)
+                                    .filter(|s| !s.is_empty())
+                            {
+                                events.push(StreamEvent::ContentBlockDelta {
+                                    index: call.block,
+                                    delta: Delta::ThoughtSignatureDelta {
+                                        thought_signature: sig.to_string(),
+                                    },
+                                });
+                            }
+                            (slot, call.block)
+                        }
+                        None => {
                             // Close text block if transitioning to tool use
                             if *text_started {
                                 events.push(StreamEvent::ContentBlockStop {
@@ -4618,25 +4846,9 @@ fn parse_sse_chunk_with_reasoning_style(
                             }
 
                             let block_index = *content_index;
-                            let id = tc
-                                .get("id")
-                                .and_then(Value::as_str)
-                                .map(str::to_string)
-                                // Some upstream gateways (and the responses-API
-                                // bridge) elide the `id` on the first chunk of a
-                                // tool call. Falling back to a constant string
-                                // collides when the model emits parallel tool
-                                // calls in the same delta — every call ended up
-                                // with the same id and downstream tool-result
-                                // routing matched the first one twice. Index by
-                                // the content-block position to keep the
-                                // fallback unique within the response.
-                                .unwrap_or_else(|| format!("call_{block_index}"));
-                            let name = tc
-                                .get("function")
-                                .and_then(|f| f.get("name"))
-                                .and_then(Value::as_str);
-                            let name = tool_name_or_fallback(name, &id, "Streaming response chunk");
+                            let block_id = id.unwrap_or_default().to_owned();
+                            let name =
+                                tool_name_or_fallback(name, &block_id, "Streaming response chunk");
                             let caller = tc.get("caller").and_then(|v| {
                                 v.get("type").and_then(Value::as_str).map(|caller_type| {
                                     ToolCaller {
@@ -4656,7 +4868,7 @@ fn parse_sse_chunk_with_reasoning_style(
                             events.push(StreamEvent::ContentBlockStart {
                                 index: block_index,
                                 content_block: ContentBlockStart::ToolUse {
-                                    id,
+                                    id: block_id,
                                     name: from_api_tool_name(&name),
                                     input: json!({}),
                                     caller,
@@ -4664,18 +4876,29 @@ fn parse_sse_chunk_with_reasoning_style(
                                 },
                             });
                             *content_index = (*content_index).saturating_add(1);
-                            entry.insert(block_index);
-                            block_index
+                            let slot = tool_indices.calls.len();
+                            tool_indices.calls.push(ChatToolSlot {
+                                block: block_index,
+                                wire_index: None,
+                                id: None,
+                            });
+                            tool_indices.record_identity(slot, wire_index, id);
+                            if tool_indices.google {
+                                batch_slots.insert(slot);
+                            }
+                            (slot, block_index)
                         }
                     };
+                    if tool_indices.google {
+                        inferred_positions +=
+                            usize::from(wire_index.is_none() && id.is_none() && !has_name);
+                        changed_positions |= tool_indices.previous_batch.get(tc_pos) != Some(&slot);
+                        carries_call_data |= has_name || args.is_some();
+                        batch.push(slot);
+                    }
 
                     // Stream tool call arguments
-                    if let Some(args) = tc
-                        .get("function")
-                        .and_then(|f| f.get("arguments"))
-                        .and_then(Value::as_str)
-                        && !args.is_empty()
-                    {
+                    if let Some(args) = args {
                         events.push(StreamEvent::ContentBlockDelta {
                             index: tool_block_index,
                             delta: Delta::InputJsonDelta {
@@ -4683,6 +4906,14 @@ fn parse_sse_chunk_with_reasoning_style(
                             },
                         });
                     }
+                }
+                if inferred_positions > 1 || (inferred_positions == 1 && changed_positions) {
+                    return vec![StreamEvent::Error {
+                        error: json!({ "message": "Cannot infer positions in an ambiguous tool call batch" }),
+                    }];
+                }
+                if carries_call_data {
+                    tool_indices.previous_batch = batch;
                 }
             }
         }
@@ -4763,14 +4994,7 @@ fn parse_sse_chunk_with_reasoning_style(
                 *thinking_started = false;
             }
             // Close tool blocks
-            let mut open_tool_indices: Vec<u32> =
-                tool_indices.drain().map(|(_, idx)| idx).collect();
-            open_tool_indices.sort_unstable();
-            for tool_block_index in open_tool_indices {
-                events.push(StreamEvent::ContentBlockStop {
-                    index: tool_block_index,
-                });
-            }
+            events.extend(tool_indices.finish());
 
             // Emit usage from the chunk if available
             let chunk_usage = chunk.get("usage").map(|u| parse_usage(Some(u)));
@@ -4841,7 +5065,7 @@ mod stream_diagnostics_tests {
         let mut content_index = 0u32;
         let mut text_started = false;
         let mut thinking_started = false;
-        let mut tool_indices = std::collections::HashMap::new();
+        let mut tool_indices = ChatToolStream::default();
         let mut reasoning_buffers = std::collections::HashMap::new();
         for chunk in [
             json!({ "error": { "message": "rate limit exceeded", "type": "rate_limit_error" } }),
@@ -8645,21 +8869,27 @@ mod google_thought_signature_tests {
     /// that needs none and the replay reached Google unsigned (#6018).
     #[test]
     fn google_route_fails_closed_for_a_models_prefixed_thinking_id() {
-        let mut request = google_request_with_signed_tool(None);
-        request.model = "models/gemini-3-pro-preview".to_string();
-        let error = build_chat_wire_body(
-            &request,
-            ProviderKind::Google,
-            DEFAULT_GOOGLE_BASE_URL,
-            false,
-            None,
-        )
-        .err()
-        .expect("a models/-prefixed thinking id must fail closed like its bare spelling");
-        assert!(
-            error.to_string().contains("thought signature"),
-            "error must name the missing signature: {error}"
-        );
+        for model in [
+            "models/gemini-3-pro-preview",
+            "gemini-4-hydrogen",
+            "models/gemini-4-hydrogen",
+        ] {
+            let mut request = google_request_with_signed_tool(None);
+            request.model = model.to_string();
+            let error = build_chat_wire_body(
+                &request,
+                ProviderKind::Google,
+                DEFAULT_GOOGLE_BASE_URL,
+                false,
+                None,
+            )
+            .err()
+            .expect("a thinking id must fail closed across bare and models/-prefixed spellings");
+            assert!(
+                error.to_string().contains("thought signature"),
+                "error must name the missing signature for {model}: {error}"
+            );
+        }
     }
 
     #[test]
@@ -8965,7 +9195,7 @@ mod google_thought_signature_tests {
         let mut content_index = 0u32;
         let mut text_started = false;
         let mut thinking_started = false;
-        let mut tool_indices = std::collections::HashMap::new();
+        let mut tool_indices = ChatToolStream::default();
         let mut reasoning_buffers = std::collections::HashMap::new();
         let mut inline_tags = InlineReasoningTagState::default();
         let events = parse_sse_chunk_with_reasoning_style(

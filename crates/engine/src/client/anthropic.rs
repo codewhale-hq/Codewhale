@@ -37,7 +37,6 @@ use codewhale_models::tool_projection::{
 use codewhale_models::{
     ContentBlock, ContentBlockStart, MessageRequest, MessageResponse, StreamEvent, Usage,
 };
-use codewhale_runtime::config::wire_model_for_provider_route;
 use codewhale_runtime::logging;
 
 use super::CodewhaleClient;
@@ -66,8 +65,15 @@ impl CodewhaleClient {
         request: &MessageRequest,
         stream: bool,
     ) -> Result<(Value, Vec<String>)> {
-        let model =
-            wire_model_for_provider_route(self.api_provider, &self.base_url, &request.model);
+        let model = codewhale_config::route::resolve_model(
+            self.api_provider,
+            &request.model,
+            Some(&self.base_url),
+        )
+        .map_or_else(
+            |_| request.model.trim().to_string(),
+            |resolved| resolved.wire_id,
+        );
         let mut body = json!({
             "model": model,
             "max_tokens": request.max_tokens,

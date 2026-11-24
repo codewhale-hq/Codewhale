@@ -61,7 +61,8 @@ struct Inner {
     budget: BudgetSnapshot,
     spend_per_task: u64,
     next_id: u64,
-    held: Vec<oneshot::Sender<TaskCompletion>>,
+    held: Vec<(String, oneshot::Sender<TaskCompletion>)>,
+    cancelled: Vec<String>,
 }
 
 /// In-memory [`WorkflowDriver`] with scripted replies.
@@ -132,6 +133,10 @@ impl FakeDriver {
         self.lock().events.clone()
     }
 
+    pub fn cancelled_tasks(&self) -> Vec<String> {
+        self.lock().cancelled.clone()
+    }
+
     /// How many times `cancel_all` has been invoked.
     pub fn cancel_all_calls(&self) -> usize {
         self.cancel_calls.load(Ordering::SeqCst)
@@ -176,7 +181,7 @@ impl WorkflowDriver for FakeDriver {
 
         let (tx, rx) = oneshot::channel();
         match reply {
-            FakeReply::Never => self.lock().held.push(tx),
+            FakeReply::Never => self.lock().held.push((task_id.clone(), tx)),
             FakeReply::DropCompletion => drop(tx),
             reply => {
                 let completion = match reply {
@@ -213,6 +218,15 @@ impl WorkflowDriver for FakeDriver {
 
     fn cancel_all(&self) {
         self.cancel_calls.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn cancel_task(&self, task_id: &str) {
+        let mut inner = self.lock();
+        inner.cancelled.push(task_id.to_string());
+        if let Some(index) = inner.held.iter().position(|(id, _)| id == task_id) {
+            let (_, tx) = inner.held.remove(index);
+            let _ = tx.send(TaskCompletion::Cancelled);
+        }
     }
 
     fn budget(&self) -> BudgetSnapshot {

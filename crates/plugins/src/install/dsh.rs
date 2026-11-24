@@ -1164,6 +1164,7 @@ pub struct DshClientClosure {
     pub inject: Vec<String>,
     pub host_provided: Vec<String>,
     pub files: BTreeMap<String, String>,
+    pub imports: BTreeMap<String, BTreeMap<String, Option<String>>>,
     pub bytes: usize,
 }
 
@@ -1279,6 +1280,7 @@ fn package_target(manifest: &Value, subpath: &str) -> Option<String> {
 struct ClientScan<'a> {
     files: &'a BTreeMap<String, Vec<u8>>,
     closure: BTreeMap<String, String>,
+    imports: BTreeMap<String, BTreeMap<String, Option<String>>>,
     host: std::collections::BTreeSet<String>,
     bytes: usize,
 }
@@ -1347,7 +1349,7 @@ impl ClientScan<'_> {
             || name == "cosmokit"
             || name.starts_with("@deepseek-ai/")
         {
-            self.host.insert(name);
+            self.host.insert(specifier.to_string());
             return Ok(None);
         }
         Err(format!(
@@ -1371,6 +1373,7 @@ impl ClientScan<'_> {
         let dynamic = pattern(
             r#"\b(?:require|import)\s*\(\s*(?:[^\s"'\)]|"[^"\n]*"\s*[^\s,\)]|'[^'\n]*'\s*[^\s,\)])"#,
         );
+        let dynamic_import = pattern(r"\bimport\s*\(");
         let mut pending = vec![entry];
         while let Some(path) = pending.pop() {
             if self.closure.contains_key(&path) {
@@ -1391,6 +1394,9 @@ impl ClientScan<'_> {
             let text = std::str::from_utf8(&self.files[&path])
                 .map_err(|_| format!("`{path}` is not UTF-8"))?
                 .to_string();
+            if dynamic_import.is_match(&text) {
+                return Err(format!("`{path}` uses unsupported dynamic import"));
+            }
             if dynamic.is_match(&text) {
                 return Err(format!("`{path}` loads a module by a computed specifier"));
             }
@@ -1399,7 +1405,12 @@ impl ClientScan<'_> {
                     .get(1)
                     .or_else(|| capture.get(2))
                     .map_or("", |m| m.as_str());
-                if let Some(resolved) = self.resolve(&path, specifier)? {
+                let resolved = self.resolve(&path, specifier)?;
+                self.imports
+                    .entry(path.clone())
+                    .or_default()
+                    .insert(specifier.to_string(), resolved.clone());
+                if let Some(resolved) = resolved {
                     pending.push(resolved);
                 }
             }
@@ -1430,6 +1441,7 @@ fn client_closure(
     let mut scan = ClientScan {
         files,
         closure: BTreeMap::new(),
+        imports: BTreeMap::new(),
         host: Default::default(),
         bytes: 0,
     };
@@ -1458,6 +1470,7 @@ fn client_closure(
         inject,
         host_provided: scan.host.into_iter().collect(),
         files: scan.closure,
+        imports: scan.imports,
         bytes: scan.bytes,
     })
 }
@@ -2429,6 +2442,10 @@ impl OutputFiles {
 /// Walk a contained directory without following links, bounded.
 pub fn walk_files(root: &Path, mut visit: impl FnMut(&Path, bool) -> Result<()>) -> Result<()> {
     let canonical_root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    require(
+        !codewhale_util::path_identity::metadata_is_link_or_reparse(&fs::symlink_metadata(root)?),
+        "Source paths must not contain links or reparse points.",
+    )?;
     let mut pending = vec![root.to_path_buf()];
     let mut visited = 0usize;
     while let Some(directory) = pending.pop() {
@@ -2449,16 +2466,20 @@ pub fn walk_files(root: &Path, mut visit: impl FnMut(&Path, bool) -> Result<()>)
                     .components()
                     .any(|part| part.as_os_str().to_str() == Some("node_modules"));
                 let contained_target = dependency_link
-                    && fs::canonicalize(&path).is_ok_and(|target| {
-                        target.starts_with(&canonical_root)
-                            && fs::metadata(&target)
-                                .is_ok_and(|target| target.is_file() || target.is_dir())
-                    });
-                require(
-                    contained_target,
-                    "Source paths must not contain links or reparse points.",
-                )?;
-                continue;
+                    .then(|| fs::canonicalize(&path).ok())
+                    .flatten()
+                    .filter(|target| target.starts_with(&canonical_root));
+                match contained_target {
+                    Some(target) if target.is_dir() => {
+                        return refuse(
+                            "This source links `node_modules` dependencies (pnpm-style installs); the converted bundle cannot materialize linked dependency directories. Install dependencies in a real layout, or remove `node_modules` before converting.",
+                        );
+                    }
+                    Some(target) if target.is_file() => continue,
+                    _ => {
+                        return refuse("Source paths must not contain links or reparse points.");
+                    }
+                }
             }
             visit(&path, metadata.is_dir())?;
             if metadata.is_dir() {
@@ -2480,7 +2501,12 @@ fn relative_slash(path: &Path, root: &Path) -> String {
 
 /// Convert one skill directory or Markdown file into native skill files.
 fn skill_files(source: &Path, output: &mut OutputFiles) -> Result<String> {
-    let is_dir = source.is_dir();
+    let source_metadata = fs::symlink_metadata(source)?;
+    require(
+        !codewhale_util::path_identity::metadata_is_link_or_reparse(&source_metadata),
+        "Source paths must not contain links or reparse points.",
+    )?;
+    let is_dir = source_metadata.is_dir();
     let entry = if is_dir {
         source.join("SKILL.md")
     } else {
@@ -3528,21 +3554,25 @@ pub fn convert_package_with_network(
         )?;
     }
     let loaded = load_bundle(&package)?;
-    let _staged_npm = if let Some(policy) = network {
-        if let Some(dir) = super::npm_deps::maybe_stage_with_dependencies(
+    let staged_npm = if let Some(policy) = network {
+        if let Some(stage) = super::npm_deps::maybe_stage_with_dependencies(
             &package.root,
             &loaded.manifest,
             &loaded.entries,
             policy,
         )? {
-            package = Package::open(dir.path())?;
-            Some(dir)
+            package = Package::open(stage.path())?;
+            Some(stage)
         } else {
             None
         }
     } else {
         None
     };
+    let fetched_npm = staged_npm
+        .as_ref()
+        .map(|stage| stage.fetched.clone())
+        .unwrap_or_default();
     let mut output_files = OutputFiles::default();
     let mut client_outcomes = Vec::new();
     let mut client_closures = Vec::new();
@@ -3558,6 +3588,9 @@ pub fn convert_package_with_network(
     )?;
     let requires_native = !native_rows.is_empty();
     let mut notes = loaded.notes;
+    if let Some(note) = fetched_npm_note(&fetched_npm) {
+        notes.push(note);
+    }
     let mut components = Components::default();
     if !requires_native {
         components.walk(&package, &loaded.entries, None)?;
@@ -3598,6 +3631,12 @@ pub fn convert_package_with_network(
             if child.file_name().to_string_lossy().starts_with('.') {
                 continue;
             }
+            require(
+                !codewhale_util::path_identity::metadata_is_link_or_reparse(&fs::symlink_metadata(
+                    &path,
+                )?),
+                "Source paths must not contain links or reparse points.",
+            )?;
             if path.join("SKILL.md").is_file() || path.extension().is_some_and(|ext| ext == "md") {
                 skill_sources.push(path);
             }
@@ -3858,7 +3897,7 @@ pub fn convert_package_with_network(
     };
     output_files.add(
         "CONVERSION.md".into(),
-        conversion_markdown(&conversion).into_bytes(),
+        conversion_markdown(&conversion, !fetched_npm.is_empty()).into_bytes(),
     )?;
     let mut counts = json!({
         "skills": conversion.skills.len(),
@@ -3916,7 +3955,30 @@ pub fn convert_package_with_network(
     Ok(conversion)
 }
 
-fn conversion_markdown(conversion: &DshConversion) -> String {
+const MAX_FETCHED_NPM_NAMES: usize = 40;
+
+pub(super) fn fetched_npm_note(fetched: &[String]) -> Option<String> {
+    if fetched.is_empty() {
+        return None;
+    }
+    let shown = fetched
+        .iter()
+        .take(MAX_FETCHED_NPM_NAMES)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = fetched.len().saturating_sub(MAX_FETCHED_NPM_NAMES);
+    Some(format!(
+        "Fetched from registry.npmjs.org (sha512-verified; install scripts not run): {shown}{}",
+        if more > 0 {
+            format!(", +{more} more")
+        } else {
+            String::new()
+        }
+    ))
+}
+
+pub(super) fn conversion_markdown(conversion: &DshConversion, fetched_npm: bool) -> String {
     let mut lines = vec![
         "# Conversion receipt".to_string(),
         String::new(),
@@ -4004,10 +4066,18 @@ fn conversion_markdown(conversion: &DshConversion) -> String {
         );
         lines.push(String::new());
     }
+    lines.push(if fetched_npm {
+        "No selected-package code, package manager, install hook or credential lookup ran; the pinned pure review evaluator parsed configuration."
+    } else {
+        "No selected-package code, package manager, install hook, network request or credential lookup ran; the pinned pure review evaluator parsed configuration."
+    }.to_string());
+    lines.push(if fetched_npm {
+        "No environment variable values were resolved. Files inside the selected package and the npm packages listed under Bundle diagnostics were read;"
+    } else {
+        "No environment variable values were resolved. Only files inside the selected package were read;"
+    }.to_string());
     lines.extend(
         [
-            "No selected-package code, package manager, install hook, network request or credential lookup ran; the pinned pure review evaluator parsed configuration.",
-            "No environment variable values were resolved. Only files inside the selected package were read;",
             "host paths are never inferred from expressions or copied.",
             "Companion skill files and packaged Node source were copied as data.",
             "Local MCP runs with host-user process authority, not an OS sandbox; stdio does not confine its network or files.",

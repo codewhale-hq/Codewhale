@@ -1765,7 +1765,7 @@ fn headless_update_reports_current_or_new_version_and_network_approval() {
     .to_string();
     assert!(
         err.contains(
-            "Network approval required for example.com; use /network allow example.com, then retry"
+            "Network approval required for example.com; run `/network allow example.com` in the terminal UI, or add \"example.com\" to `allow` under [network] in config.toml, then retry"
         ),
         "{err}"
     );
@@ -2244,7 +2244,7 @@ fn plugin_create_says_why_when_creator_is_unavailable_and_changes_nothing() {
         let expected = crate::tui::conversation_mode::unavailable_message(
             app.ui_locale,
             "Creator mode",
-            &crate::tui::conversation_mode::display_reason(app.ui_locale, forced_reason),
+            &crate::tui::conversation_mode::display_reason(app.ui_locale, Some(forced_reason)),
         );
 
         let result = crate::commands::execute_with_config(

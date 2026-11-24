@@ -297,10 +297,12 @@ fn format_step_counter(steps: u32, max_steps: u32) -> String {
 }
 
 fn resolve_max_steps(role: FleetRole, explicit: Option<u32>, configured: Option<u32>) -> u32 {
-    narrow_model_steps(
-        WorkerRuntimeProfile::default_max_steps(role),
-        narrow_model_steps(configured.unwrap_or(0), explicit.unwrap_or(0)),
-    )
+    let owner = narrow_model_steps(configured.unwrap_or(0), explicit.unwrap_or(0));
+    if owner > 0 {
+        owner
+    } else {
+        WorkerRuntimeProfile::default_max_steps(role)
+    }
 }
 
 /// A queued child whose launch slot never opened did no work: it is a
@@ -476,6 +478,8 @@ const COMPLETED_AGENT_RETENTION: Duration = Duration::from_secs(60 * 60);
 const MAX_AGENT_WORKER_RECORDS: usize = 256;
 const MAX_AGENT_WORKER_EVENTS_PER_RECORD: usize = 128;
 const MAX_QUEUED_PARENT_MESSAGES: usize = 64;
+const MAX_PARENT_MESSAGE_BYTES: usize = 16 * 1024;
+const MAX_QUEUED_PARENT_MAIL_BYTES: usize = 256 * 1024;
 /// Byte budget for the message tail retained in a [`SubAgentCheckpoint`]
 /// (#3882). Checkpoints fire on every step of every worker and are cloned
 /// into snapshots, projections, and `subagents.v1.json`; an unbounded
@@ -2543,7 +2547,12 @@ impl SubAgentTerminalDeliveryContext {
     /// Publish to every live sink without blocking or awaiting while the
     /// manager owns the terminal claim. The public agent/worker states remain
     /// Running until all three sends have been attempted.
-    fn deliver(&self, manager: &SubAgentManager, result: &SubAgentResult) {
+    fn deliver(
+        &self,
+        manager: &SubAgentManager,
+        result: &SubAgentResult,
+        suppress_parent_completion: bool,
+    ) {
         let report_ref = spill_subagent_final_report(&self.session_id, result);
         let completion = manager.completion_from_result_with_ref_for_session(
             &self.session_id,
@@ -2565,6 +2574,7 @@ impl SubAgentTerminalDeliveryContext {
                     })
             });
         if !caller_owned
+            && !suppress_parent_completion
             && self.spawn_depth > 0
             && let Some(tx) = self.parent_completion_tx.as_ref()
         {
@@ -3165,6 +3175,7 @@ pub struct SubAgentRuntime {
     pub root_approved_plan: Option<String>,
     pub parent_pinned_project_instructions:
         std::sync::Arc<crate::project_context::PinnedProjectInstructions>,
+    pub isolated_worktree: bool,
     pub parent_auto_review_state: Option<
         std::sync::Arc<
             parking_lot::Mutex<crate::core::authority::auto_review::AutoReviewConversationState>,
@@ -3265,6 +3276,7 @@ impl SubAgentRuntime {
             root_person_messages: std::sync::Arc::default(),
             root_approved_plan: None,
             parent_pinned_project_instructions: std::sync::Arc::default(),
+            isolated_worktree: false,
             parent_auto_review_state: None,
             approval_receipt_store: None,
             compaction: crate::compaction::CompactionConfig::default(),
@@ -3659,6 +3671,7 @@ impl SubAgentRuntime {
             parent_pinned_project_instructions: std::sync::Arc::clone(
                 &self.parent_pinned_project_instructions,
             ),
+            isolated_worktree: false,
             parent_auto_review_state: self.parent_auto_review_state.clone(),
         }
     }
@@ -3737,6 +3750,27 @@ impl SubAgentWorkLifecycle {
         }
         self.work.reconcile_operation(&self.session_id, snapshot)
     }
+}
+
+fn fail_aborted_durable_launch(
+    agent_id: &str,
+    lifecycle: Option<&SubAgentWorkLifecycle>,
+    persist_error: anyhow::Error,
+) -> anyhow::Error {
+    if let Some(reconcile_error) =
+        lifecycle.and_then(|lifecycle| lifecycle.reconcile_state(OwnerState::Failed, 1, None).err())
+    {
+        tracing::warn!(
+            target: "subagent",
+            agent_id = %agent_id,
+            %reconcile_error,
+            "failed to mark aborted write-capable launch as Failed"
+        );
+        return anyhow!(
+            "failed to durably register write-capable sub-agent before launch: {persist_error}; additionally failed to settle lifecycle owner: {reconcile_error}"
+        );
+    }
+    anyhow!("failed to durably register write-capable sub-agent before launch: {persist_error}")
 }
 
 /// Translate the persisted worker owner record after its manager has applied
@@ -3833,6 +3867,7 @@ pub struct SubAgent {
     // Captured only for an actual admitted executor; never reconstructed on load.
     stop_token: Option<CancellationToken>,
     requested_stop: Option<(SubAgentStatus, Option<String>)>,
+    suppress_parent_completion: bool,
     // An unresolved forced-stop retains the exact existing capacity/barrier
     // guards until owner teardown; it cannot be replayed as completed work.
     unsettled_launch: Option<Vec<governor::DynamicGatePermit>>,
@@ -3891,6 +3926,7 @@ impl SubAgent {
             task_handle: None,
             stop_token: None,
             requested_stop: None,
+            suppress_parent_completion: false,
             unsettled_launch: None,
             unsettled_foreground: None,
             activation: None,
@@ -4086,6 +4122,7 @@ pub struct SubAgentManager {
     /// Taken when the task settles.
     rerouted_requests: HashMap<String, ReroutedRequest>,
     member_starts: HashMap<(String, String), (String, String)>,
+    terminal_notify: Arc<tokio::sync::Notify>,
 }
 
 /// One child request waiting on a person (approvals C2). The store is the
@@ -4661,6 +4698,7 @@ impl SubAgentManager {
             refused_routes: HashMap::new(),
             rerouted_requests: HashMap::new(),
             member_starts: HashMap::new(),
+            terminal_notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -6463,6 +6501,7 @@ impl SubAgentManager {
             task_handle: None,
             stop_token: None,
             requested_stop: None,
+            suppress_parent_completion: false,
             unsettled_launch: None,
             unsettled_foreground: None,
             activation: None,
@@ -8301,11 +8340,25 @@ impl SubAgentManager {
     }
 
     pub fn cancel_agent(&mut self, agent_ref: &str) -> Result<SubAgentResult> {
-        self.with_store_transaction(|held| held.cancel_agent_inner(agent_ref))
+        self.with_store_transaction(|held| held.cancel_agent_inner(agent_ref, false))
     }
 
-    fn cancel_agent_inner(&mut self, agent_ref: &str) -> Result<SubAgentResult> {
+    fn cancel_agent_suppressing_parent_completion(
+        &mut self,
+        agent_ref: &str,
+    ) -> Result<SubAgentResult> {
+        self.with_store_transaction(|held| held.cancel_agent_inner(agent_ref, true))
+    }
+
+    fn cancel_agent_inner(
+        &mut self,
+        agent_ref: &str,
+        suppress_parent_completion: bool,
+    ) -> Result<SubAgentResult> {
         let agent_id = self.resolve_agent_ref(agent_ref)?;
+        if suppress_parent_completion && let Some(agent) = self.agents.get_mut(&agent_id) {
+            agent.suppress_parent_completion = true;
+        }
         if let Some(pending) = self
             .agents
             .get(&agent_id)
@@ -8434,6 +8487,23 @@ impl SubAgentManager {
         active_session_id: &str,
         agent_ref: &str,
     ) -> Result<SubAgentResult> {
+        self.cancel_agent_for_session_inner(active_session_id, agent_ref, false)
+    }
+
+    pub fn cancel_agent_for_session_by_parent(
+        &mut self,
+        active_session_id: &str,
+        agent_ref: &str,
+    ) -> Result<SubAgentResult> {
+        self.cancel_agent_for_session_inner(active_session_id, agent_ref, true)
+    }
+
+    fn cancel_agent_for_session_inner(
+        &mut self,
+        active_session_id: &str,
+        agent_ref: &str,
+        suppress_parent_completion: bool,
+    ) -> Result<SubAgentResult> {
         // Resolution and mutation share this manager write borrow, so an alias
         // cannot be rebound between the owner check and the exact-id action.
         let source = self.resolve_agent_ref_for_session(active_session_id, agent_ref)?;
@@ -8454,9 +8524,17 @@ impl SubAgentManager {
             .map(|agent| agent.id.clone())
             .collect::<Vec<_>>();
         for descendant in descendants {
-            self.cancel_agent(&descendant)?;
+            if suppress_parent_completion {
+                self.cancel_agent_suppressing_parent_completion(&descendant)?;
+            } else {
+                self.cancel_agent(&descendant)?;
+            }
         }
-        self.cancel_agent(&agent_id)
+        if suppress_parent_completion {
+            self.cancel_agent_suppressing_parent_completion(&agent_id)
+        } else {
+            self.cancel_agent(&agent_id)
+        }
     }
 
     /// Queue parent mail without waking the child (`agents/message`).
@@ -8466,6 +8544,12 @@ impl SubAgentManager {
         text: String,
         wake: bool,
     ) -> Result<ParentMailReceipt> {
+        if text.len() > MAX_PARENT_MESSAGE_BYTES {
+            return Err(anyhow!(
+                "Parent message is {} bytes; maximum allowed is {MAX_PARENT_MESSAGE_BYTES} bytes",
+                text.len()
+            ));
+        }
         let agent_id = self.resolve_agent_ref(agent_ref)?;
         let status = self
             .agents
@@ -8481,6 +8565,12 @@ impl SubAgentManager {
         if queue.len() >= MAX_QUEUED_PARENT_MESSAGES {
             return Err(anyhow!(
                 "Agent {agent_id} already has {MAX_QUEUED_PARENT_MESSAGES} queued parent messages; wait for it to read them before sending more"
+            ));
+        }
+        let queued_bytes: usize = queue.iter().map(|queued| queued.text.len()).sum();
+        if queued_bytes.saturating_add(entry.text.len()) > MAX_QUEUED_PARENT_MAIL_BYTES {
+            return Err(anyhow!(
+                "Agent {agent_id} queued parent mail would exceed {MAX_QUEUED_PARENT_MAIL_BYTES} bytes; wait for it to read pending messages before sending more"
             ));
         }
         queue.push_back(entry);
@@ -10130,6 +10220,7 @@ impl SubAgentManager {
             }
         };
         let write_capable = runtime_profile.permissions.write;
+        runtime.isolated_worktree = options.isolated_worktree;
         let delivery_paths =
             delivery::declared_paths(&options.deliverables, options.expected_artifact.as_deref())
                 .map_err(anyhow::Error::msg)?;
@@ -10404,11 +10495,10 @@ impl SubAgentManager {
                 self.coordination = coordination;
                 self.worker_origins = origins;
                 self.worker_origin_schema = schema;
-                if let Some(lifecycle) = agent.work_lifecycle.as_ref() {
-                    let _ = lifecycle.reconcile_state(OwnerState::Failed, 1, None);
-                }
-                return Err(anyhow!(
-                    "failed to durably register write-capable sub-agent before launch: {error}"
+                return Err(fail_aborted_durable_launch(
+                    &agent_id,
+                    agent.work_lifecycle.as_ref(),
+                    error,
                 ));
             }
         }
@@ -10630,6 +10720,7 @@ impl SubAgentManager {
                 route_source: None,
                 display_name: Some(subagent_result_display_name(&snapshot)),
             });
+            let _ = event_tx.try_send(self.agent_list_event(&identity.owner_session_id));
         }
         Ok((snapshot, context))
     }
@@ -10829,6 +10920,15 @@ impl SubAgentManager {
         self.terminal_results_excluding_inner(Some(active_session_id), delivered_ids)
     }
 
+    fn parent_completion_suppressed(&self, agent: &SubAgent) -> bool {
+        agent.suppress_parent_completion
+            && (agent.status == SubAgentStatus::Cancelled
+                || self
+                    .worker_records
+                    .get(&agent.id)
+                    .is_some_and(|record| record.status == AgentWorkerStatus::Cancelled))
+    }
+
     fn terminal_results_excluding_inner(
         &self,
         active_session_id: Option<&str>,
@@ -10838,6 +10938,7 @@ impl SubAgentManager {
             .agents
             .values()
             .filter(|agent| agent.status != SubAgentStatus::Running)
+            .filter(|agent| !self.parent_completion_suppressed(agent))
             .filter(|agent| agent.session_boot_id == self.current_session_boot_id)
             .filter(|agent| {
                 active_session_id.is_none_or(|session_id| agent.owner_session_id == session_id)
@@ -10878,6 +10979,7 @@ impl SubAgentManager {
     ) -> bool {
         self.agents.values().any(|agent| {
             agent.session_boot_id == self.current_session_boot_id
+                && !self.parent_completion_suppressed(agent)
                 && active_session_id
                     .is_none_or(|session_id| self.agent_is_owned_by_session(agent, session_id))
                 && self
@@ -11101,6 +11203,24 @@ impl SubAgentManager {
             .filter(|agent| self.agent_is_owned_by_session(agent, active_session_id))
             .map(|agent| self.snapshot_for_listing(agent))
             .collect()
+    }
+
+    pub fn agent_list_event(&self, active_session_id: &str) -> Event {
+        let now_ms = epoch_millis_now();
+        Event::AgentList {
+            owner_session_id: active_session_id.to_string(),
+            agents: self.list_for_session(active_session_id),
+            coordination: self.coordination_detail_projection_for_session(
+                active_session_id,
+                None,
+                24,
+            ),
+            queued_follow_ups: self.queued_follow_up_counts_for_session(active_session_id),
+            roster: crate::agent_roster::build_agent_roster(
+                &self.list_worker_records_for_session(active_session_id),
+                now_ms,
+            ),
+        }
     }
 
     /// Legacy test-global projection for boot-origin filtering (#405).
@@ -11830,14 +11950,25 @@ impl SubAgentManager {
         {
             handle.abort();
         }
+        let suppress_parent_completion = result.status == SubAgentStatus::Cancelled
+            && self
+                .agents
+                .get(agent_id)
+                .is_some_and(|agent| agent.suppress_parent_completion);
+        let refresh_target = delivery
+            .as_ref()
+            .and_then(|ctx| ctx.event_tx.clone().map(|tx| (tx, ctx.session_id.clone())));
         if let Some(delivery) = delivery {
-            delivery.deliver(self, &result);
+            delivery.deliver(self, &result, suppress_parent_completion);
         }
         let agent = self
             .agents
             .get_mut(agent_id)
             .expect("claimed terminal owner");
         agent.status = result.status.clone();
+        if agent.status != SubAgentStatus::Cancelled {
+            agent.suppress_parent_completion = false;
+        }
         agent.assignment = result.assignment;
         agent.result = result.result;
         agent.steps_taken = result.steps_taken;
@@ -11862,6 +11993,10 @@ impl SubAgentManager {
                 .retain(|record| record.claim.owner != agent_id);
             self.coordination.prune_claim_scopes();
         }
+        if let Some((event_tx, session_id)) = refresh_target {
+            let _ = event_tx.try_send(self.agent_list_event(&session_id));
+        }
+        self.terminal_notify.notify_waiters();
         Ok(true)
     }
 
@@ -12348,15 +12483,19 @@ pub async fn settle_requested_child(
     let deadline = tokio::time::Instant::now() + CHILD_STOP_SETTLE_GRACE;
     let mut latest = snapshot;
     loop {
-        let Ok(manager) = tokio::time::timeout_at(deadline, manager.read()).await else {
+        let Ok(guard) = tokio::time::timeout_at(deadline, manager.read()).await else {
             return latest;
         };
-        latest = manager.get_result(&latest.agent_id).unwrap_or(latest);
-        drop(manager);
+        latest = guard.get_result(&latest.agent_id).unwrap_or(latest);
         if latest.status != SubAgentStatus::Running || tokio::time::Instant::now() >= deadline {
             return latest;
         }
-        tokio::time::sleep(SUBAGENT_WAIT_CHECK_INTERVAL).await;
+        let notify = Arc::clone(&guard.terminal_notify);
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        drop(guard);
+        let _ = tokio::time::timeout_at(deadline, notified).await;
     }
 }
 
@@ -12367,19 +12506,22 @@ pub async fn settle_requested_children_for_session(
 ) {
     let deadline = tokio::time::Instant::now() + CHILD_STOP_SETTLE_GRACE;
     loop {
-        let live = {
-            let Ok(manager) = tokio::time::timeout_at(deadline, manager.read()).await else {
-                return;
-            };
-            parent.map_or_else(
-                || manager.live_count_for_session(session),
-                |parent| manager.live_count_for_parent(session, parent),
-            )
+        let Ok(guard) = tokio::time::timeout_at(deadline, manager.read()).await else {
+            return;
         };
+        let live = parent.map_or_else(
+            || guard.live_count_for_session(session),
+            |parent| guard.live_count_for_parent(session, parent),
+        );
         if live == 0 || tokio::time::Instant::now() >= deadline {
             return;
         }
-        tokio::time::sleep(SUBAGENT_WAIT_CHECK_INTERVAL).await;
+        let notify = Arc::clone(&guard.terminal_notify);
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        drop(guard);
+        let _ = tokio::time::timeout_at(deadline, notified).await;
     }
 }
 
@@ -12480,6 +12622,49 @@ fn subagent_checkpoint_is_continuable(snapshot: &SubAgentResult) -> bool {
             .is_some_and(|checkpoint| checkpoint.continuable && !checkpoint.messages.is_empty())
 }
 
+async fn ensure_subagent_transcript_handle(
+    context: &ToolContext,
+    snapshot: &SubAgentResult,
+    timed_out: bool,
+) -> VarHandle {
+    let transcript_session_id = format!("agent:{}", snapshot.agent_id);
+    let continuable = subagent_checkpoint_is_continuable(snapshot);
+    let transcript_payload = json!({
+        "kind": "subagent_session_snapshot",
+        "agent_id": snapshot.agent_id.clone(),
+        "name": snapshot.name.clone(),
+        "status": subagent_status_name(&snapshot.status),
+        "context_mode": snapshot.context_mode.clone(),
+        "fork_context": snapshot.fork_context,
+        "result": snapshot.result.clone(),
+        "steps_taken": snapshot.steps_taken,
+        "duration_ms": snapshot.duration_ms,
+        "assignment": snapshot.assignment.clone(),
+        "checkpoint": snapshot.checkpoint.clone(),
+        "needs_input": snapshot.needs_input.clone(),
+        "needs_continuation": continuable,
+        "timed_out_with_checkpoint": timed_out && continuable,
+        "snapshot": snapshot.clone(),
+    });
+    let mut store = context.runtime.handle_store.lock().await;
+    let full_transcript_lookup = VarHandle {
+        kind: "var_handle".to_string(),
+        session_id: transcript_session_id.clone(),
+        name: "full_transcript".to_string(),
+        type_name: String::new(),
+        length: 0,
+        repr_preview: String::new(),
+        sha256: String::new(),
+    };
+    if snapshot.status != SubAgentStatus::Running
+        && let Some(record) = store.get(&full_transcript_lookup)
+    {
+        record.handle.clone()
+    } else {
+        store.insert_json(transcript_session_id, "transcript", transcript_payload)
+    }
+}
+
 async fn subagent_session_projection(
     manager: &SharedSubAgentManager,
     snapshot: SubAgentResult,
@@ -12505,44 +12690,8 @@ async fn subagent_session_projection(
     } else {
         worker_record
     };
-    let transcript_session_id = format!("agent:{}", snapshot.agent_id);
     let continuable = subagent_checkpoint_is_continuable(&snapshot);
-    let transcript_payload = json!({
-        "kind": "subagent_session_snapshot",
-        "agent_id": snapshot.agent_id.clone(),
-        "name": snapshot.name.clone(),
-        "status": subagent_status_name(&snapshot.status),
-        "context_mode": snapshot.context_mode.clone(),
-        "fork_context": snapshot.fork_context,
-        "result": snapshot.result.clone(),
-        "steps_taken": snapshot.steps_taken,
-        "duration_ms": snapshot.duration_ms,
-        "assignment": snapshot.assignment.clone(),
-        "checkpoint": snapshot.checkpoint.clone(),
-        "needs_input": snapshot.needs_input.clone(),
-        "needs_continuation": continuable,
-        "timed_out_with_checkpoint": timed_out && continuable,
-        "snapshot": snapshot.clone(),
-    });
-    let transcript_handle = {
-        let mut store = context.runtime.handle_store.lock().await;
-        let full_transcript_lookup = VarHandle {
-            kind: "var_handle".to_string(),
-            session_id: transcript_session_id.clone(),
-            name: "full_transcript".to_string(),
-            type_name: String::new(),
-            length: 0,
-            repr_preview: String::new(),
-            sha256: String::new(),
-        };
-        if snapshot.status != SubAgentStatus::Running
-            && let Some(record) = store.get(&full_transcript_lookup)
-        {
-            record.handle.clone()
-        } else {
-            store.insert_json(transcript_session_id, "transcript", transcript_payload)
-        }
-    };
+    let transcript_handle = ensure_subagent_transcript_handle(context, &snapshot, timed_out).await;
     let run_id = worker_record
         .as_ref()
         .map(|record| agent_worker_run_id(&record.spec))
@@ -14995,6 +15144,7 @@ impl ToolSpec for AgentTool {
                         ).await);
                     }
                 }
+                let no_fleet_models = matches!(&selected_models, Ok(models) if models.is_empty());
                 let payload = json!({
                     "action": "roster",
                     "count": members.len(),
@@ -15004,7 +15154,12 @@ impl ToolSpec for AgentTool {
                     "models": model_rows,
                     "model_total_count": selected_models.as_ref().map_or(0, Vec::len),
                     "model_load_error": selected_models.err().map(|error| error.to_string()),
-                    "model_help": "Choose an exact model selector with an unpinned type. The session model is allowed for unpinned roles. Model rows describe the selected route independently of role pins. Empty models retains current-provider model/strength choices. Manual role and saved profile pins remain exact.",
+                    "model_help": if no_fleet_models {
+                        "No Fleet is selected, so there are no model rows: an unpinned role accepts the session model or any provider/model this session can route. Manual role and saved profile pins remain exact."
+                    } else {
+                        "Choose an exact model selector with an unpinned type. The session model is allowed for unpinned roles. Model rows describe the selected route independently of role pins. Manual role and saved profile pins remain exact."
+                    },
+                    "cost_basis": "route cost_class uses current uncached text input/output rates; other token classes, tools and future usage may differ",
                     "profiles": profiles,
                     "profile_count": profiles.len(),
                     "profile_total_count": roster.members().iter().filter(|member| member.origin != crate::fleet::roster::ProfileOrigin::BuiltIn).count(),
@@ -15140,9 +15295,24 @@ impl ToolSpec for AgentTool {
                 .await;
         let mut value = serde_json::to_value(&projection)
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
-        value["next"] =
-            json!("Results arrive automatically; continue other work or end your turn.");
+        value["action"] = json!("start");
+        value["role"] = json!(projection.snapshot.agent_type.as_str());
+        if projection.snapshot.status == SubAgentStatus::Running {
+            value["status"] = json!("running");
+        }
+        value["next"] = if verbose {
+            json!("Results arrive automatically; continue other work or end your turn.")
+        } else {
+            json!("Results arrive automatically.")
+        };
         compact_spawn_receipt(&mut value, verbose);
+        if let Some(note) = projection
+            .child_route
+            .as_ref()
+            .and_then(lifecycle::reasoning_override_note)
+        {
+            value["reasoning_note"] = json!(note);
+        }
         if !ignored_limits.is_empty() {
             value["ignored_limit_fields"] = json!(ignored_limits);
             value["limits_note"] = json!(
@@ -15154,7 +15324,8 @@ impl ToolSpec for AgentTool {
         let metadata = json!({
             "action": "start",
             "agent_id": projection.agent_id,
-            "status": projection.status,
+            "role": projection.snapshot.agent_type.as_str(),
+            "status": value["status"],
             "terminal": projection.terminal,
             "context_mode": projection.context_mode,
             "prefix_cache": projection.prefix_cache,
@@ -15177,6 +15348,32 @@ fn compact_spawn_receipt(value: &mut Value, verbose: bool) {
     let Some(object) = value.as_object_mut() else {
         return;
     };
+    if !object.contains_key("role")
+        && let Some(role) = object
+            .get("snapshot")
+            .and_then(|snapshot| snapshot.get("agent_type"))
+            .and_then(Value::as_str)
+            .or_else(|| {
+                object
+                    .get("child_route")
+                    .and_then(|route| route.get("canonical_role"))
+                    .and_then(Value::as_str)
+            })
+            .or_else(|| {
+                object
+                    .get("worker_record")
+                    .and_then(|worker| worker.pointer("/spec/agent_type"))
+                    .and_then(Value::as_str)
+            })
+            .map(str::to_string)
+    {
+        object.insert("role".into(), json!(role));
+    }
+    if object.get("status").and_then(Value::as_str) == Some("starting")
+        && object.get("terminal").and_then(Value::as_bool) == Some(false)
+    {
+        object.insert("status".into(), json!("running"));
+    }
     object.remove("snapshot");
     // Context mode already states whether the prefix is inherited. These
     // repeated descriptions otherwise crowd out the effective budget receipt.
@@ -15192,6 +15389,12 @@ fn compact_spawn_receipt(value: &mut Value, verbose: bool) {
     }
     if let Some(route) = object.get_mut("child_route") {
         *route = lifecycle::compact_child_route(std::mem::take(route));
+    }
+    if let Some(preview) = object
+        .get_mut("transcript_handle")
+        .and_then(|handle| handle.get_mut("repr_preview"))
+    {
+        *preview = json!("");
     }
     if let Some(follow_up) = object.get_mut("follow_up").and_then(Value::as_object_mut) {
         follow_up.remove("session_name");
@@ -15229,13 +15432,9 @@ fn compact_spawn_receipt(value: &mut Value, verbose: bool) {
     object.remove("checkpoint");
     object.remove("artifacts");
     object.remove("takeover");
-    object.remove("transcript_handle");
     object.remove("verification");
     object.insert("compact".to_string(), json!(true));
-    object.insert(
-        "compact_note".to_string(),
-        json!("Inspect with agent_id, detail=true; start verbose: true."),
-    );
+    object.insert("compact_note".to_string(), json!("More: verbose: true."));
     // Declared output paths can be numerous and long. Keep every path that
     // fits verbatim and make omissions explicit; addressed detail has them all.
     let mut omitted = 0;
@@ -15290,7 +15489,7 @@ async fn inspect_agent_from_input(
         .await
         .map_err(|error| ToolError::execution_failed(error.to_string()))?;
         let mut manager = manager.write().await;
-        let payload = if let Some(agent_ref) = agent_ref.as_ref() {
+        let (mut payload, peek_snapshot) = if let Some(agent_ref) = agent_ref.as_ref() {
             let source = manager
                 .resolve_agent_ref_for_session(&context.state_namespace, agent_ref)
                 .map_err(|error| ToolError::invalid_input(error.to_string()))?;
@@ -15299,6 +15498,10 @@ async fn inspect_agent_from_input(
                 .map_err(|error| ToolError::invalid_input(error.to_string()))?;
             let agent = manager.agents.get(&target).expect("resolved agent");
             let mut row = lifecycle::compact_row(&manager, agent);
+            if peek {
+                lifecycle::attach_peek_recent_events(&mut row, manager.worker_records.get(&target));
+            }
+            let snapshot = peek.then(|| manager.snapshot_for_listing(agent));
             row["addressed_agent_id"] = json!(source);
             row["action"] = json!(if peek { "peek" } else { "status" });
             if agent.status == SubAgentStatus::Running
@@ -15335,15 +15538,18 @@ async fn inspect_agent_from_input(
             }
             row["detail_hint"] =
                 json!("Use detail=true with agent_id for a bounded diagnostic page.");
-            row
+            (row, snapshot)
         } else {
-            lifecycle::compact_roster(
-                &manager,
-                input,
-                &context.state_namespace,
-                include_archived,
-                peek,
-            )?
+            (
+                lifecycle::compact_roster(
+                    &manager,
+                    input,
+                    &context.state_namespace,
+                    include_archived,
+                    peek,
+                )?,
+                None,
+            )
         };
         let evicted = manager.drain_pending_handle_evictions_for_session(&context.state_namespace);
         drop(manager);
@@ -15352,6 +15558,12 @@ async fn inspect_agent_from_input(
             for id in evicted {
                 store.evict_session(&format!("agent:{id}"));
             }
+        }
+        if let Some(snapshot) = peek_snapshot {
+            let handle = ensure_subagent_transcript_handle(context, &snapshot, false).await;
+            payload["transcript_handle"] = lifecycle::compact_transcript_handle(
+                serde_json::to_value(&handle).unwrap_or(Value::Null),
+            );
         }
         return lifecycle::status_result(payload, peek);
     }
@@ -15464,7 +15676,7 @@ async fn cancel_agent_from_input(
                 "agent/cancel",
             )
             .map_err(|error| anyhow::Error::new(ToolError::invalid_input(error.to_string())))?;
-        let snapshot = manager.cancel_agent_for_session(&session, &agent_ref)?;
+        let snapshot = manager.cancel_agent_for_session_by_parent(&session, &agent_ref)?;
         let worker_record = manager.get_worker_record_for_session(&session, &snapshot.agent_id);
         Ok((snapshot, worker_record))
     })
@@ -15482,8 +15694,13 @@ async fn cancel_agent_from_input(
         .or(worker_record);
     let projection =
         subagent_session_projection(&manager, snapshot, false, context, worker_record).await;
-    let mut tool_result = ToolResult::json(&projection)
-        .map_err(|err| ToolError::execution_failed(err.to_string()))?;
+    let receipt = lifecycle::compact_cancel_receipt(
+        &projection.snapshot,
+        &projection,
+        projection.worker_record.as_ref(),
+    );
+    let mut tool_result =
+        ToolResult::json(&receipt).map_err(|err| ToolError::execution_failed(err.to_string()))?;
     tool_result.metadata = Some(json!({
         "action": "cancel",
         "status": projection.status,
@@ -15674,7 +15891,7 @@ async fn wait_result_payload(
         .map(|snapshot| {
             json!({
                 "agent_id": snapshot.agent_id,
-                "name": snapshot.name,
+                "name": subagent_result_display_name(snapshot),
                 "status": subagent_status_name(&snapshot.status),
             })
         })
@@ -15764,6 +15981,7 @@ async fn spawn_subagent_from_input(
     // role with no declared scope claims the workspace root ('.'), which the
     // coordination ledger then arbitrates against live peers.
     validate_spawn_write_contract(&mut spawn_request, false)?;
+    refuse_write_brief_for_read_only_role(&runtime, &spawn_request, member_roster)?;
 
     if runtime.would_exceed_depth() {
         return Err(ToolError::execution_failed(format!(
@@ -16089,11 +16307,13 @@ async fn spawn_subagent_from_input(
         model: Some(effective_model),
         model_route: Some(model_route),
         child_route: Some(child_route),
-        // A workflow child goes by its task label everywhere: the label is
-        // its explicit nickname, so every snapshot, event and host reads
-        // the same name (#6565).
+        // A workflow child goes by its task label, and a named child by its
+        // caller-supplied name, everywhere: that name is its explicit
+        // nickname, so every snapshot, event and host reads the same name
+        // (#6565).
         nickname: workflow_identity
             .and_then(|identity| identity.workflow_task_label.as_deref())
+            .or(spawn_request.session_name.as_deref())
             .map(str::trim)
             .filter(|label| !label.is_empty())
             .map(str::to_string),
@@ -16610,7 +16830,7 @@ fn write_capable_child_needs_verify_contract(agent_type: &FleetRole) -> bool {
     )
 }
 
-fn build_subagent_system_prompt_with_skills(
+fn build_subagent_system_prompt_with_memory(
     agent_type: &FleetRole,
     assignment: &SubAgentAssignment,
     context: &ToolContext,
@@ -16624,12 +16844,101 @@ fn build_subagent_system_prompt_with_skills(
         prompt.push_str("\n\n");
         prompt.push_str(&section);
     }
-    let catalog = subagent_skill_catalog(context);
-    if !catalog.is_empty() {
-        prompt.push_str("\n\n");
-        prompt.push_str(&catalog);
-    }
     prompt
+}
+
+const INHERITED_INSTRUCTIONS_SCOPE_MAX_BYTES: usize = 64 * 1024;
+
+fn subagent_inherited_instructions_section(
+    pinned: &crate::project_context::PinnedProjectInstructions,
+) -> Option<String> {
+    let mut body = String::new();
+    for (scope, text) in [
+        ("user", pinned.user_level.as_deref()),
+        ("project", pinned.repository_level.as_deref()),
+    ] {
+        let Some(text) = text.map(str::trim).filter(|text| !text.is_empty()) else {
+            continue;
+        };
+        let cut = crate::tools::shell_output::char_boundary_at_or_before(
+            text,
+            INHERITED_INSTRUCTIONS_SCOPE_MAX_BYTES,
+        );
+        body.push_str(&format!(
+            "\n\n<inherited_instructions scope=\"{scope}\">\n{}{}\n</inherited_instructions>",
+            &text[..cut],
+            if cut < text.len() {
+                "\n[truncated: read the source instruction file for the rest]"
+            } else {
+                ""
+            }
+        ));
+    }
+    (!body.is_empty()).then(|| {
+        format!(
+            "## Inherited instructions\nThe parent session runs under these user and project instructions. They bind your work the same way. Your task brief can narrow them; neither the brief nor these instructions widen your permissions.{body}"
+        )
+    })
+}
+
+fn subagent_capability_block(
+    owner_agent_name: &str,
+    runtime: &SubAgentRuntime,
+    grant: &codewhale_agent_contract::worker_profile::ChildGrant,
+    branch: Option<&str>,
+) -> String {
+    use codewhale_agent_contract::worker_profile::{FileGrant, ShellGrant};
+    let workspace = &runtime.context.workspace;
+    let location = match (runtime.isolated_worktree, branch) {
+        (true, Some(branch)) => format!(
+            "{} (an isolated git worktree on branch `{branch}`, yours alone)",
+            workspace.display()
+        ),
+        (true, None) => format!(
+            "{} (an isolated git worktree, yours alone)",
+            workspace.display()
+        ),
+        (false, Some(branch)) => format!(
+            "{} (branch `{branch}`, shared with the parent)",
+            workspace.display()
+        ),
+        (false, None) => format!("{} (shared with the parent)", workspace.display()),
+    };
+    let files = match grant.files {
+        FileGrant::Write => {
+            "you may edit files inside your write scope (stated above when narrowed); keep to what this task assigns"
+        }
+        FileGrant::Read => "read-only; you cannot write or edit files",
+        FileGrant::None => "none; no tools were granted",
+    };
+    let shell = match grant.shell {
+        ShellGrant::Full => "full shell",
+        ShellGrant::Verify => {
+            "no shell; only the bounded verification tools (Run tests/verifiers in their default or test-filter form, Git fetch, Git merge_tree)"
+        }
+        ShellGrant::Inspect => {
+            "read-only inspection commands only (navigation, rg, safe Git reads, read-only GitHub views)"
+        }
+        ShellGrant::None => "none",
+    };
+    let approvals = if runtime.parent_can_prompt {
+        "Approvals, Auto-Review and sandbox policy still apply to every call."
+    } else {
+        "Approvals, Auto-Review and sandbox policy still apply to every call; nobody can answer an approval prompt for you, so a call that needs approval is denied."
+    };
+    format!(
+        "## Your identity and capabilities\nYou are {owner_agent_name}. Your final answer is delivered to the parent automatically; include the result and its evidence.\n- Workspace: {location}\n- Files: {files}\n- Shell: {shell}\n- Network: {}\n- Delegation: {}\n{approvals}\nIf a step needs a capability you lack, do not work around it: return it to the parent as a BLOCKER naming the exact command or edit you would have run.",
+        if grant.network {
+            "available"
+        } else {
+            "unavailable"
+        },
+        if grant.spawn {
+            "you may start sub-agents"
+        } else {
+            "you cannot start sub-agents"
+        },
+    )
 }
 
 /// The inherited memory packet for a child, paired with the hygiene guidance
@@ -16651,22 +16960,6 @@ fn subagent_memory_section(context: &ToolContext) -> Option<String> {
         &context.workspace,
     )?;
     crate::prompts::memory_prompt_section(Some(&block))
-}
-
-/// Render the same workspace/plugin-qualified Skill authority available to
-/// `load_skill`, without leaking a mutable source or staged filesystem path.
-/// Every fresh and nested child derives this from its inherited ToolContext;
-/// forked children receive it at system precedence as well.
-fn subagent_skill_catalog(context: &ToolContext) -> String {
-    codewhale_skills::render_index(
-        &context.workspace,
-        context.skills_dir.as_deref(),
-        &context.skills_config,
-        "en",
-        context.plugin_registry.as_deref(),
-        context.route_context_window,
-    )
-    .unwrap_or_default()
 }
 
 fn subagent_request_system_prompt(subagent_system_prompt: &str) -> SystemPrompt {
@@ -16705,6 +16998,13 @@ fn build_initial_subagent_messages_with_system(
     let mut messages = fork_context
         .map(|context| context.messages.clone())
         .unwrap_or_default();
+
+    if matches!(agent_type, FleetRole::Scout | FleetRole::Reviewer) {
+        crate::core::engine::filter_messages_mcp_server_instructions(
+            &mut messages,
+            &HashSet::new(),
+        );
+    }
 
     if let Some(context) = fork_context {
         if let Some(state) = context
@@ -16952,7 +17252,7 @@ async fn supervise_subagent_task_body_with_runtime(
 /// The deterministic fallback makes no additional request. An earlier
 /// reporting attempt may have timed out, so do not claim it never happened.
 fn budget_partial_result(
-    result: SubAgentResult,
+    mut result: SubAgentResult,
     cause: &str,
     preservation_note: Option<&str>,
 ) -> SubAgentResult {
@@ -16962,7 +17262,18 @@ fn budget_partial_result(
         ),
         None => "Reporting allowance was unavailable or expired. This deterministic fallback makes no further model request.".to_string(),
     };
-    budget_partial_result_with_note(result, cause, &note)
+    let partial = result.result.take().filter(|text| !text.trim().is_empty());
+    let partial = match partial {
+        Some(text) => budget_handback::preview_partial_text(&text),
+        None => budget_handback::fallback_partial_text(
+            result
+                .checkpoint
+                .as_ref()
+                .map(|checkpoint| checkpoint.messages.as_slice())
+                .unwrap_or_default(),
+        ),
+    };
+    budget_partial_result_with_note(result, cause, &note, &partial)
 }
 
 /// Cancelling keeps the work (addendum F4, fleet-5). A Stop used to end a
@@ -17190,18 +17501,8 @@ fn budget_partial_result_with_note(
     mut result: SubAgentResult,
     cause: &str,
     handback_note: &str,
+    partial: &str,
 ) -> SubAgentResult {
-    let text = result.result.take().filter(|text| !text.trim().is_empty());
-    let partial = match text {
-        Some(text) => text.chars().take(4_000).collect::<String>(),
-        None => result.checkpoint.as_ref().map_or_else(
-            || {
-                "No assistant text was recorded; inspect the checkpoint for completed tool work."
-                    .to_string()
-            },
-            |checkpoint| budget_handback::fallback_partial_text(&checkpoint.messages),
-        ),
-    };
     let measured = result
         .usage
         .as_ref()
@@ -17767,7 +18068,8 @@ async fn apply_auto_review_return_check(
                         reason,
                         review.usage,
                     ),
-                    ReviewerOutcome::Unavailable { reason } => (
+                    ReviewerOutcome::TimedOut { reason }
+                    | ReviewerOutcome::Failed { reason, .. } => (
                         format_subagent_return_warning_unavailable(&reason),
                         ToolGateVerdict::Unavailable,
                         "unavailable",
@@ -18220,7 +18522,7 @@ fn subagent_done_sentinel(agent_id: &str, res: &SubAgentResult, truncated: bool)
         "agent_id": agent_id,
         // Whale name — a stable, human-friendly handle the orchestrator can use
         // to refer to this child in its own reasoning/output.
-        "name": res.nickname,
+        "name": subagent_result_display_name(res),
         "agent_type": res.agent_type.as_str(),
         "status": subagent_status_name(&res.status),
         "summary_location": "previous_line",
@@ -18232,6 +18534,9 @@ fn subagent_done_sentinel(agent_id: &str, res: &SubAgentResult, truncated: bool)
         payload["needs_input"] = json!(needs_input);
     }
     if let Some(child_route) = res.child_route.clone() {
+        if let Some(note) = lifecycle::reasoning_override_note(&child_route) {
+            payload["reasoning_note"] = json!(note);
+        }
         payload["child_route"] = json!(child_route);
     }
     format!("<codewhale:subagent.done>{payload}</codewhale:subagent.done>")
@@ -18266,11 +18571,11 @@ fn subagent_failure_class(status: &SubAgentStatus, error: &str) -> &'static str 
 /// line; this sentinel carries only bounded routing and recovery metadata.
 fn subagent_failed_sentinel(res: &SubAgentResult, error: &str) -> String {
     let transcript_handle = format!("agent:{}/full_transcript", res.agent_id);
-    let payload = json!({
+    let mut payload = json!({
         "event": "subagent.failed",
         "priority": "high",
         "agent_id": res.agent_id,
-        "name": res.nickname.as_deref().unwrap_or(&res.name),
+        "name": subagent_result_display_name(res),
         "agent_type": res.agent_type.as_str(),
         "status": subagent_status_name(&res.status),
         "failure_class": subagent_failure_class(&res.status, error),
@@ -18280,6 +18585,13 @@ fn subagent_failed_sentinel(res: &SubAgentResult, error: &str) -> String {
         "error_location": "previous_line",
         "child_route": res.child_route,
     });
+    if let Some(note) = res
+        .child_route
+        .as_ref()
+        .and_then(lifecycle::reasoning_override_note)
+    {
+        payload["reasoning_note"] = json!(note);
+    }
     format!("<codewhale:subagent.done>{payload}</codewhale:subagent.done>")
 }
 
@@ -18297,6 +18609,29 @@ pub fn incomplete_subagent_response_failure(stop_reason: Option<&str>) -> String
     }
 }
 
+fn sync_transcript_artifact_metadata(
+    transcript_artifact: Option<&mut SubAgentTranscriptArtifactWriter>,
+    agent_id: &str,
+    messages: &[Message],
+    durable: bool,
+) -> Option<Value> {
+    transcript_artifact.map(|writer| {
+        let synced = match writer.sync_projected_messages(messages, durable) {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::warn!(
+                    target: "subagent",
+                    ?err,
+                    agent_id,
+                    "failed to persist complete sub-agent transcript artifact"
+                );
+                false
+            }
+        };
+        writer.metadata(synced && writer.synced_live_messages == messages.len())
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn insert_subagent_full_transcript_handle(
     runtime: &SubAgentRuntime,
@@ -18307,6 +18642,44 @@ async fn insert_subagent_full_transcript_handle(
     result: Option<&String>,
     checkpoint: Option<&SubAgentCheckpoint>,
     transcript_artifact: Option<&mut SubAgentTranscriptArtifactWriter>,
+    messages: &[Message],
+    steps_taken: u32,
+    duration_ms: u64,
+    fork_context: bool,
+) -> VarHandle {
+    let transcript_artifact = sync_transcript_artifact_metadata(
+        transcript_artifact,
+        agent_id,
+        messages,
+        *status != SubAgentStatus::Running,
+    );
+    insert_subagent_full_transcript_handle_with_metadata(
+        runtime,
+        agent_id,
+        agent_type,
+        assignment,
+        status,
+        result,
+        checkpoint,
+        transcript_artifact,
+        messages,
+        steps_taken,
+        duration_ms,
+        fork_context,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn insert_subagent_full_transcript_handle_with_metadata(
+    runtime: &SubAgentRuntime,
+    agent_id: &str,
+    agent_type: &FleetRole,
+    assignment: &SubAgentAssignment,
+    status: &SubAgentStatus,
+    result: Option<&String>,
+    checkpoint: Option<&SubAgentCheckpoint>,
+    transcript_artifact: Option<Value>,
     messages: &[Message],
     steps_taken: u32,
     duration_ms: u64,
@@ -18323,22 +18696,6 @@ async fn insert_subagent_full_transcript_handle(
         omitted_messages: checkpoint.message_count,
         messages: Vec::new(),
         ..checkpoint.clone()
-    });
-    let transcript_artifact = transcript_artifact.map(|writer| {
-        let synced =
-            match writer.sync_projected_messages(messages, *status != SubAgentStatus::Running) {
-                Ok(()) => true,
-                Err(err) => {
-                    tracing::warn!(
-                        target: "subagent",
-                        ?err,
-                        agent_id,
-                        "failed to persist complete sub-agent transcript artifact"
-                    );
-                    false
-                }
-            };
-        writer.metadata(synced && writer.synced_live_messages == messages.len())
     });
     let payload = json!({
         "kind": "subagent_full_transcript",
@@ -18864,7 +19221,7 @@ async fn cancelled_subagent_result(
     max_steps: u32,
     latest_checkpoint: Option<&SubAgentCheckpoint>,
     turn_end_parking: Option<&Arc<std::sync::atomic::AtomicBool>>,
-    transcript_artifact: &mut Option<SubAgentTranscriptArtifactWriter>,
+    transcript_artifact_metadata: Option<Value>,
     started_at: Instant,
     fork_context_enabled: bool,
     progress_suffix: &str,
@@ -18887,7 +19244,7 @@ async fn cancelled_subagent_result(
         ),
     );
     let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-    insert_subagent_full_transcript_handle(
+    insert_subagent_full_transcript_handle_with_metadata(
         runtime,
         agent_id,
         agent_type,
@@ -18895,7 +19252,7 @@ async fn cancelled_subagent_result(
         &status,
         result.as_ref(),
         checkpoint.as_ref(),
-        transcript_artifact.as_mut(),
+        transcript_artifact_metadata,
         messages,
         steps,
         duration_ms,
@@ -20650,8 +21007,134 @@ fn validate_spawn_pin_request(
         return Ok(());
     }
     Err(ToolError::invalid_input(format!(
-        "{} pins route '{provider}/{pinned}'; the requested model conflicts with that route. Omit the task model or change the saved pin.",
+        "{} pins route '{provider}/{pinned}'; the requested model conflicts with that route. {} Or omit the task model, or change the saved pin.",
         selection.source.as_str(),
+        spawn_model_alternatives(runtime, requested),
+    )))
+}
+
+fn spawn_model_alternatives(runtime: &SubAgentRuntime, requested: &str) -> String {
+    let roster = spawn_roster(runtime);
+    let overrides = runtime
+        .api_config
+        .as_deref()
+        .map(codewhale_runtime::config::Config::subagent_model_overrides)
+        .unwrap_or_default();
+    let saved = || {
+        roster
+            .members()
+            .iter()
+            .filter(|member| member.origin != crate::fleet::roster::ProfileOrigin::BuiltIn)
+    };
+    let profiles = saved()
+        .filter(|member| {
+            member.profile.model.as_deref().is_some_and(|model| {
+                requested_spawn_model_matches_pin(
+                    runtime,
+                    requested,
+                    model,
+                    member.profile.provider.as_deref(),
+                )
+            })
+        })
+        .take(8)
+        .map(|member| {
+            format!(
+                "profile={}",
+                crate::fleet::identity::bounded_identity_field(&member.id)
+            )
+        })
+        .collect::<Vec<_>>();
+    let roles = FleetRole::all()
+        .into_iter()
+        .filter(|role| {
+            configured_role_model_override(&overrides, None, role).is_none()
+                && !saved().any(|member| {
+                    FleetRole::parse(&member.profile.role.name).as_ref() == Some(role)
+                        && member
+                            .profile
+                            .model
+                            .as_deref()
+                            .is_some_and(|model| !model.trim().is_empty())
+                })
+        })
+        .map(|role| format!("type={}", role.as_str()))
+        .collect::<Vec<_>>();
+    let choices = profiles.into_iter().chain(roles).collect::<Vec<_>>();
+    if choices.is_empty() {
+        "No role or saved profile on this roster accepts that model without changing a pin."
+            .to_string()
+    } else {
+        format!(
+            "Choices that accept this task model: {}.",
+            choices.join(", ")
+        )
+    }
+}
+
+fn refuse_write_brief_for_read_only_role(
+    runtime: &SubAgentRuntime,
+    request: &SpawnRequest,
+    roster: Option<&crate::fleet::roster::FleetRoster>,
+) -> Result<(), ToolError> {
+    if spawn_request_is_write_capable(request) {
+        return Ok(());
+    }
+    let asks = [
+        ("deliverables", request.deliverables.is_empty()),
+        ("write_roots", request.write_roots.is_empty()),
+        ("exact_files", request.exact_files.is_empty()),
+        (
+            "coordination_contracts",
+            request.coordination_contracts.is_empty(),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(field, empty)| (!empty).then_some(field))
+    .collect::<Vec<_>>();
+    if asks.is_empty() {
+        return Ok(());
+    }
+    let loaded;
+    let roster = match roster {
+        Some(roster) => roster,
+        None => {
+            loaded = spawn_roster(runtime);
+            &loaded
+        }
+    };
+    let profiles = roster
+        .members()
+        .iter()
+        .filter(|member| member.origin != crate::fleet::roster::ProfileOrigin::BuiltIn)
+        .filter(|member| {
+            matches!(
+                FleetRole::parse(&member.profile.role.name),
+                Some(FleetRole::Worker | FleetRole::Builder)
+            )
+        })
+        .take(8)
+        .map(|member| {
+            format!(
+                "profile={}",
+                crate::fleet::identity::bounded_identity_field(&member.id)
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut choices = vec![
+        format!("type={}", FleetRole::Worker.as_str()),
+        format!("type={}", FleetRole::Builder.as_str()),
+        format!(
+            "type={} with write_authority=workspace_write",
+            FleetRole::Custom.as_str()
+        ),
+    ];
+    choices.extend(profiles);
+    let asks = asks.join(", ");
+    Err(ToolError::invalid_input(format!(
+        "type={} cannot write files, but this start declares {asks}; nothing was started. Roles that can write: {}. Or drop {asks} and have the child return the content for you to write.",
+        request.agent_type.as_str(),
+        choices.join(", "),
     )))
 }
 
@@ -20756,7 +21239,6 @@ async fn resolved_spawn_roster_entry(
                 "capability_badges": capabilities.as_ref().map(|facts| &facts.badges),
                 "capability_source": capabilities.as_ref().map(|facts| facts.provenance),
                 "cost_class": cost_class,
-                "cost_basis": "current uncached text input/output rates; other token classes, tools and future usage may differ",
                 "unpriced_reason": audit.unpriced_reason.map(|reason| reason.label()),
                 "reachability": "unverified",
             });
@@ -21059,11 +21541,9 @@ pub fn normalize_requested_subagent_model(
     if trimmed.is_empty() {
         return Err(ToolError::invalid_input(format!("{field} cannot be blank")));
     }
-    // #3018: Use provider-aware validation so non-DeepSeek providers can
-    // accept their own model IDs instead of failing with "Expected a
-    // DeepSeek model id".
-    let normalized = codewhale_runtime::config::requested_model_for_provider(provider, trimmed)
-        .ok_or_else(|| {
+    let normalized = codewhale_config::route::resolve_model(provider, trimmed, None)
+        .map(|resolved| resolved.logical)
+        .map_err(|_| {
             let valid_names = crate::provider_lake::all_catalog_models_for_provider(provider);
             let valid_hint = if valid_names.is_empty() {
                 String::new()
@@ -21461,6 +21941,7 @@ fn worker_profile_subagent_assignment_route(
     let reasoning_effort = subagent_reasoning_effort_for_request(
         runtime,
         &model,
+        agent_type,
         requested_fast_lane,
         requested_thinking,
         role_reasoning_default.as_deref(),
@@ -21471,9 +21952,34 @@ fn worker_profile_subagent_assignment_route(
     resolved
 }
 
+fn cap_explore_default_reasoning_effort(
+    inherited: Option<String>,
+    normalize: impl Fn(ReasoningEffort) -> ReasoningEffort,
+) -> Option<String> {
+    match inherited {
+        Some(effort) => {
+            let parsed = ReasoningEffort::from_setting(&effort);
+            if matches!(
+                parsed,
+                ReasoningEffort::High
+                    | ReasoningEffort::XHigh
+                    | ReasoningEffort::Ultra
+                    | ReasoningEffort::Max
+                    | ReasoningEffort::Auto
+            ) {
+                Some(normalize(ReasoningEffort::Medium).as_setting().to_string())
+            } else {
+                Some(effort)
+            }
+        }
+        None => Some(normalize(ReasoningEffort::Medium).as_setting().to_string()),
+    }
+}
+
 fn subagent_reasoning_effort_for_request(
     runtime: &SubAgentRuntime,
     model: &str,
+    agent_type: &FleetRole,
     requested_fast_lane: bool,
     requested_thinking: SubAgentThinking,
     role_reasoning_default: Option<&str>,
@@ -21515,7 +22021,14 @@ fn subagent_reasoning_effort_for_request(
             };
             Some(normalize(effort).as_setting().to_string())
         }
-        SubAgentThinking::Inherit => fallback_subagent_reasoning_effort(runtime, model),
+        SubAgentThinking::Inherit => {
+            let inherited = fallback_subagent_reasoning_effort(runtime, model);
+            if matches!(agent_type, FleetRole::Scout) {
+                cap_explore_default_reasoning_effort(inherited, normalize)
+            } else {
+                inherited
+            }
+        }
     }
 }
 
@@ -22363,6 +22876,7 @@ fn subagent_failure_message(err: &anyhow::Error) -> String {
         Some(LlmError::QuotaExhausted(_)) => Some("quota_exhausted"),
         Some(LlmError::ServerError { .. }) => Some("server"),
         Some(LlmError::NetworkError(_))
+        | Some(LlmError::HeaderTimeout { .. })
         | Some(LlmError::ConnectError { .. })
         | Some(LlmError::Timeout(_)) => Some("network"),
         Some(LlmError::AuthenticationError(_)) | Some(LlmError::AuthorizationError(_)) => {
@@ -22697,6 +23211,8 @@ const WRITE_CHILD_VERIFY_CONTRACT: &str = concat!(
     "   COMMANDS: <exact commands run, one per line, or NONE with reason>\n",
     "   EVIDENCE: <exit codes, failing assertion, or concise proof of PASS>\n",
     "3. Do not claim PASS without command or inspection evidence. If you cannot run checks, report FAIL or BLOCKED with the blocker — never invent success.\n",
+    "\n## Worktrees (write child)\n",
+    "Work in your own git worktree: the isolated one you were given, or, when other agents may be writing the same checkout, ask the parent to restart you with worktree=true. One agent per worktree. Base new work on the current upstream main. Never switch branches, reset, stash or clean a checkout you share with others. In your own worktree, commit coherent slices with real messages and report the branch and commit SHA; in a shared checkout, leave committing to the parent unless the brief assigns it. Leave pushing, merging and worktree cleanup to the parent unless the brief assigns them.\n",
 );
 
 const CONSULTANT_AGENT_INTRO: &str = concat!(
@@ -22734,6 +23250,8 @@ mod tests;
 
 #[cfg(test)]
 pub use tests::kimi_general_child_request_tools_fixture;
+#[cfg(test)]
+pub(crate) use tests::stub_runtime;
 
 #[cfg(any(test, feature = "test-support"))]
 #[test]

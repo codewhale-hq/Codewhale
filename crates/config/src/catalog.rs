@@ -577,11 +577,24 @@ pub fn bundled_models_dev_catalog() -> &'static ModelsDevCatalog {
 /// [`BUNDLED_MODELS_DEV_JSON`], tagged [`CatalogSource::Bundled`], with
 /// Codewhale's [`corrections`] applied. Live Models.dev rows override these on
 /// `(provider, wire_model_id)` when available.
+static SEED_CATALOG_OFFERINGS: OnceLock<Vec<CatalogOffering>> = OnceLock::new();
+
+pub(crate) fn seed_catalog_offerings() -> &'static [CatalogOffering] {
+    SEED_CATALOG_OFFERINGS
+        .get_or_init(|| {
+            let mut rows = bundled_offerings_from_models_dev(bundled_models_dev_catalog());
+            corrections::bundled_corrections().apply_to(&mut rows);
+            rows
+        })
+        .as_slice()
+}
+
 #[must_use]
 pub fn bundled_catalog_offerings() -> Vec<CatalogOffering> {
-    let mut rows = bundled_offerings_from_models_dev(bundled_models_dev_catalog());
-    corrections::bundled_corrections().apply_to(&mut rows);
-    rows
+    if let Some(reg) = crate::cloud_facts::overlay::pulled_registry() {
+        return reg.compiled.catalog_offerings.clone();
+    }
+    seed_catalog_offerings().to_vec()
 }
 
 /// The bundled list's own default for `provider`, when a row is flagged.

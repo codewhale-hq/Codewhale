@@ -1531,6 +1531,20 @@ fn tool_error_messages_include_actionable_hints() {
     let formatted = format_tool_error_with_schema(&missing_field, "read_file", Some(&schema));
     assert!(formatted.contains("\"required\":[\"path\"]"));
 
+    let large_schema = json!({
+        "type": "object",
+        "properties": {
+            "prompt": {"type": "string", "description": "x".repeat(8 * 1024)},
+            "action": {"type": "string"}
+        },
+        "required": ["action"]
+    });
+    let invalid = ToolError::invalid_input("conflict");
+    let formatted = format_tool_error_with_schema(&invalid, "agent", Some(&large_schema));
+    assert!(formatted.len() < 1024, "{formatted}");
+    assert!(formatted.contains("\"required\":[\"action\"]"));
+    assert!(formatted.contains("\"properties\":[\"prompt\",\"action\"]"));
+
     let timeout = ToolError::Timeout { seconds: 5 };
     let formatted = format_tool_error(&timeout, "exec_shell");
     assert!(formatted.contains("timed out"));
@@ -1612,24 +1626,12 @@ fn approval_stamp_scenario() {
 
         stamp_tool_result_approval(&mut result, ToolApprovalStamp::ApprovedByUser);
 
-        assert!(
-            result
-                .content
-                .starts_with("[approval] This tool call required approval"),
-            "{}",
-            result.content
-        );
-        assert!(
-            result
-                .content
-                .contains("approved by the user before execution")
-        );
-        assert!(result.content.ends_with("stdout"));
+        assert_eq!(result.content, "stdout");
 
         let metadata = result.metadata.expect("approval metadata");
         assert_eq!(metadata["approval"]["required"], true);
         assert_eq!(metadata["approval"]["decision"], "approved_by_user");
-        assert_eq!(metadata["approval"]["model_visible"], true);
+        assert_eq!(metadata["approval"].get("model_visible"), None);
     }
     // from approval_stamp_preserves_existing_metadata
     {
@@ -1642,7 +1644,7 @@ fn approval_stamp_scenario() {
         let metadata = result.metadata.expect("metadata");
         assert_eq!(metadata["summary"], "kept");
         assert_eq!(metadata["approval"]["decision"], "approved_with_policy");
-        assert!(result.content.contains("adjusted execution policy"));
+        assert_eq!(result.content, "ok");
     }
 }
 
@@ -1670,8 +1672,6 @@ fn only_the_stamped_approval_note_is_hidden_from_the_person() {
         forged_one_line.content
     );
 
-    // Stamped, but the tool's own output already began with "[approval] ",
-    // so the engine added no note: nothing is removed.
     let mut own = ToolResult::success("[approval] from the tool\n\nrest");
     stamp_tool_result_approval(&mut own, ToolApprovalStamp::ApprovedByUser);
     assert_eq!(content_without_approval_note(&own), own.content);
@@ -2906,7 +2906,6 @@ async fn interactive_tui_turn_preserves_ask_and_auto_review_interactive_behavior
 async fn auto_review_s2_block_text_invites_other_route_or_approval_without_bypass_hints() {
     use crate::core::authority::auto_review::format_auto_review_block_message;
     use crate::llm_client::mock::{MockLlmClient, canned};
-    use codewhale_models::{ContentBlock, MessageResponse, Usage};
 
     let _lock = lock_test_env();
     let with_rule = format_auto_review_block_message("publish blocked.", Some("publish_like"));
@@ -2917,39 +2916,14 @@ async fn auto_review_s2_block_text_invites_other_route_or_approval_without_bypas
     assert!(!with_rule.contains("Full Access"), "{with_rule}");
 
     let workspace = tempdir().expect("tempdir");
-    let nonexistent = workspace.path().join("absent-for-unavailable");
-    let rm_args = serde_json::to_string(&json!({
-        "action": "run",
-        "command": format!("rm -rf \"{}\"", nonexistent.display()),
-        "background": false,
-    }))
-    .expect("serialize rm args");
     let mock = Arc::new(MockLlmClient::new(vec![
         canned::tool_call_turn(
             "call_pub_block",
             "Bash",
             r#"{"action":"run","command":"npm publish --dry-run","background":false}"#,
         ),
-        canned::tool_call_turn("call_unavail_block", "Bash", &rm_args),
         canned::simple_text_turn("stopped"),
     ]));
-    mock.push_message_response(MessageResponse {
-        id: "guardian-malformed".to_string(),
-        r#type: "message".to_string(),
-        role: "assistant".to_string(),
-        content: vec![ContentBlock::Text {
-            text: "not-valid-json".to_string(),
-            cache_control: None,
-        }],
-        model: "mock-model".to_string(),
-        stop_reason: Some("end_turn".to_string()),
-        stop_sequence: None,
-        container: None,
-        usage: Usage::default(),
-        title: None,
-        stop_details: None,
-        refusal: None,
-    });
     let config = Config::default();
     let (mut engine, mut handle) = Engine::new_with_model_client(
         deterministic_engine_config(workspace.path()),
@@ -2991,19 +2965,13 @@ async fn auto_review_s2_block_text_invites_other_route_or_approval_without_bypas
         .expect("shutdown timeout")
         .expect("engine task");
 
-    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert_eq!(errors.len(), 1, "{errors:?}");
     let det_msg = &errors[0].1;
     assert!(det_msg.contains("publish-like"), "{det_msg}");
     assert!(det_msg.contains("different route"), "{det_msg}");
     assert!(det_msg.contains("approve it from the receipt"), "{det_msg}");
     assert!(!det_msg.to_ascii_lowercase().contains("work around"), "{det_msg}");
     assert!(!det_msg.contains("Full Access"), "{det_msg}");
-
-    let unavail_msg = &errors[1].1;
-    assert!(unavail_msg.contains("unavailable"), "{unavail_msg}");
-    assert!(unavail_msg.contains("fail closed"), "{unavail_msg}");
-    assert!(!unavail_msg.to_ascii_lowercase().contains("work around"), "{unavail_msg}");
-    assert!(!unavail_msg.contains("Full Access"), "{unavail_msg}");
 }
 
 #[tokio::test]
@@ -3701,22 +3669,33 @@ async fn auto_review_s2_interactive_fallback_to_ask_trips_and_resumes() {
             .await
             .expect("send u turn");
         let mut saw_pause = false;
+        let mut fallback_prompts = 0usize;
         let mut rx = handle.rx_event.write().await;
         while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
             .await
             .expect("timeout")
         {
             match event {
-                Event::AutoReviewPaused { approval_mode, .. } => {
-                    assert_eq!(approval_mode, ApprovalMode::Suggest);
-                    saw_pause = true;
+                Event::AutoReviewPaused { .. } => saw_pause = true,
+                Event::ApprovalRequired {
+                    id,
+                    description,
+                    approval_force_prompt,
+                    ..
+                } => {
+                    assert!(approval_force_prompt);
+                    assert!(description.contains("Auto-Review could not finish"), "{description}");
+                    fallback_prompts += 1;
+                    handle.deny_tool_call(&id).await.expect("deny fallback card");
                 }
                 Event::TurnComplete { .. } => break,
                 _ => {}
             }
         }
-        assert_eq!(saw_pause, idx == 3, "paused must fire exactly on 3rd unavailable");
+        assert!(!saw_pause, "an attended review failure asks the owner instead of counting");
+        assert_eq!(fallback_prompts, 1, "u turn {idx} must open one fallback card");
     }
+    assert!(!workspace.path().join("absent-u").exists());
 
     handle
         .send(Op::ChangeMode {

@@ -528,6 +528,67 @@ jobs:
             npm publish --access public
           fi
 
+  crates:
+    timeout-minutes: 360
+    needs: [npm, release, resolve]
+    if: ${{ !cancelled() && needs.release.result == 'success' && needs.npm.result == 'success' && needs.resolve.outputs.prerelease != 'true' && github.repository == 'codewhale-hq/Codewhale' && github.ref == format('refs/tags/{0}', needs.resolve.outputs.tag) }}
+    runs-on: ubuntu-24.04
+    environment: release
+    concurrency:
+      group: crates-io-${{ needs.resolve.outputs.tag }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      RUSTFLAGS: ''
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      # No rust-cache or sccache: a shared cache must not feed builds in the job that holds the registry token.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-07-18
+        with:
+          toolchain: 1.100.0
+      - name: Install Linux system dependencies
+        run: |
+          for i in 1 2 3 4 5; do
+            sudo apt-get update && break
+            echo "apt-get update failed (attempt $i); retrying in 15s"
+            sleep 15
+          done
+          sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: Ubuntu build headroom
+        shell: bash
+        run: bash scripts/prepare-ubuntu-build-headroom.sh
+      - name: Require the clean release tag checkout before crates.io publish
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: ./scripts/release/require-release-tag-checkout.sh "${VERSION}"
+      - name: Publish crates to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${CARGO_REGISTRY_TOKEN:-}" ]]; then
+            echo "::error::Secret CARGO_REGISTRY_TOKEN is not set in the 'release' environment. Store a crates.io publish token there and re-run this job, or publish with the manual fallback in docs/RELEASE_RUNBOOK.md (Rust Crates Release, step 5)." >&2
+            exit 1
+          fi
+          root="${RUNNER_TEMP}/crates-publish"
+          mkdir "${root}"
+          CARGO_HOME="${root}/cargo-home" CARGO_TARGET_DIR="${root}/target" \
+            ./scripts/release/publish-crates.sh publish
+      - name: Verify crates.io and npm serve the release
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: ./scripts/release/check-published.sh "${VERSION}"
+
   homebrew:
     timeout-minutes: 20
     needs: [release, resolve]
@@ -631,10 +692,10 @@ jobs:
           set -euo pipefail
           paths=(
             web/data/latest-published-release.json
+            web/data/release-baseline.json
             docs/public-surface-facts.json
             docs/cloud-facts/stable.json
             web/lib/facts.generated.ts
-            web/data/agent-docs.generated.json
             web/data/agent-docs.release.json
             web/data/agent-docs.release-index.json
             web/data/features.generated.json
@@ -673,4 +734,112 @@ jobs:
             exit 0
           fi
           echo "::error title=Release record PR not opened::Branch ${branch} is pushed; open and merge it: ${compare}"
+          exit 1
+
+  web_deploy:
+    name: Deploy website
+    timeout-minutes: 45
+    needs: [npm, release, resolve]
+    if: ${{ !cancelled() && needs.release.result == 'success' && needs.npm.result == 'success' && needs.resolve.outputs.prerelease != 'true' && github.repository == 'codewhale-hq/Codewhale' && github.ref == format('refs/tags/{0}', needs.resolve.outputs.tag) }}
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: release-web-deploy-${{ needs.resolve.outputs.tag }}
+      cancel-in-progress: false
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Dispatch web.yml on main and wait for deploy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
+          if [[ "${#main_sha}" -ne 40 || "${main_sha}" =~ [^0-9a-f] ]]; then
+            echo "::error::Could not resolve main to a 40-character commit SHA, got '${main_sha}'." >&2
+            exit 1
+          fi
+          relation="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${RELEASE_SHA}...${main_sha}" --jq .status)"
+          if [[ "${relation}" != "identical" && "${relation}" != "ahead" ]]; then
+            echo "::error::main (${main_sha}) does not contain release commit ${RELEASE_SHA} (compare status: ${relation})." >&2
+            exit 1
+          fi
+
+          before_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/web.yml/runs?event=workflow_dispatch&per_page=1" --jq '.workflow_runs[0].id // 0')"
+          if ! [[ "${before_id}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unexpected workflow run id '${before_id}' before dispatch." >&2
+            exit 1
+          fi
+
+          gh workflow run web.yml --repo "${GITHUB_REPOSITORY}" --ref main -f expected_sha="${main_sha}"
+
+          run_id=""
+          run_url=""
+          for _ in $(seq 1 24); do
+            sleep 5
+            matched="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/web.yml/runs?event=workflow_dispatch&branch=main&per_page=20" \
+              --jq ".workflow_runs | map(select(.id > ${before_id} and .event == \"workflow_dispatch\" and .head_branch == \"main\" and .head_sha == \"${main_sha}\" and .path == \".github/workflows/web.yml\")) | sort_by(.id) | .[0] | select(. != null) | [.id, .html_url] | @tsv")"
+            if [[ -n "${matched}" ]]; then
+              IFS=$'\t' read -r run_id run_url <<< "${matched}"
+              break
+            fi
+          done
+          if [[ -z "${run_id}" || ! "${run_id}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Timed out waiting for dispatched web.yml run for main (${main_sha}) to appear." >&2
+            exit 1
+          fi
+          echo "Watching dispatched web.yml run for ${main_sha}: ${run_url}"
+
+          completed=false
+          conclusion=""
+          for _ in $(seq 1 140); do
+            state="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq '[.status, (.conclusion // "")] | @tsv')"
+            IFS=$'\t' read -r status conclusion <<< "${state}"
+            if [[ "${status}" == "completed" ]]; then
+              completed=true
+              break
+            fi
+            sleep 15
+          done
+          if [[ "${completed}" != "true" ]]; then
+            echo "::error::Timed out after 35m waiting for web.yml run ${run_url} to complete." >&2
+            exit 1
+          fi
+          if [[ "${conclusion}" != "success" ]]; then
+            echo "::error::Dispatched web.yml run ${run_url} finished with conclusion='${conclusion}'." >&2
+            exit 1
+          fi
+
+          jobs_verdict='if (.jobs | length) != .total_count then "incomplete job list"
+            elif (any(.jobs[]; .name == "Lint & Type Check" and .conclusion == "success") and any(.jobs[]; .name == "Deploy to Cloudflare" and .conclusion == "success")) | not then "deploy job did not succeed"
+            else "ok"
+            end'
+          verdict="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?filter=latest&per_page=100" --jq "${jobs_verdict}")"
+          if [[ "${verdict}" != "ok" ]]; then
+            echo "::error::Web Frontend run ${run_url} did not complete both Lint & Type Check and Deploy to Cloudflare (${verdict})." >&2
+            exit 1
+          fi
+
+      - name: Verify live site names the released version
+        shell: bash
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          expected="Version ${VERSION} is released"
+          page=""
+          for attempt in $(seq 1 24); do
+            if page="$(curl -fsSL --max-time 15 -H 'User-Agent: codewhale-release-verify' https://codewhale.net/en 2>/dev/null)" \
+              && grep -Fq "${expected}" <<< "${page}"; then
+              echo "Verified https://codewhale.net/en prints '${expected}' (attempt ${attempt})." | tee -a "${GITHUB_STEP_SUMMARY}"
+              exit 0
+            fi
+            if [[ "${attempt}" -lt 24 ]]; then
+              sleep 5
+            fi
+          done
+          observed="$(grep -Eo 'Version [0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)? is released' <<< "${page}" | head -n1 || true)"
+          echo "::error::https://codewhale.net/en did not print '${expected}' within 120s after deploy (observed: '${observed:-none}')." >&2
           exit 1

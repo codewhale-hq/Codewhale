@@ -76,8 +76,8 @@ use codewhale_command_contract::facets::{
 };
 use codewhale_command_contract::facets::{
     CommandSessionExportContext, ConversationExportProjection, ExportBlock, ExportMessage,
-    ExportMetadata, HistoryEntry, RestorePointProjection, RestoreSnapshot, ToolCallerProjection,
-    TranscriptProjection, TurnHandoffProjection,
+    ExportMetadata, ExportTurnOutcome, HistoryEntry, RestorePointProjection, RestoreSnapshot,
+    ToolCallerProjection, TranscriptProjection, TurnHandoffProjection,
 };
 #[cfg(test)]
 use codewhale_command_contract::handler::ContextParts;
@@ -808,6 +808,7 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
             source_session.metadata.model_provider.as_str(),
             source_session.metadata.model_provider_id.as_deref(),
         );
+        forked.metadata.exec_route_binding = source_session.metadata.exec_route_binding.clone();
         forked.metadata.copy_cost_from(&source_session.metadata);
         forked.context_references = source_session.context_references.clone();
         forked.artifacts = source_session.artifacts.clone();
@@ -1794,11 +1795,12 @@ impl CommandSessionExportContext for SessionExportAdapter<'_> {
     /// borrowed projection (tracked with the FEAT-043/046 extraction work); it is
     /// not something this slice can fix locally.
     fn conversation_projection(&self) -> ConversationExportProjection {
-        let (metadata, transcript, workspace) = {
+        let (metadata, transcript, turn_outcomes, workspace) = {
             let app = self.host.app.borrow();
             (
                 export_metadata(&app),
                 project_transcript(&app),
+                project_turn_outcomes(&app),
                 app.workspace.clone(),
             )
         };
@@ -1811,6 +1813,7 @@ impl CommandSessionExportContext for SessionExportAdapter<'_> {
             metadata,
             transcript,
             restore_points,
+            turn_outcomes,
         }
     }
 
@@ -1910,6 +1913,34 @@ fn export_metadata(app: &App) -> ExportMetadata {
         message_count,
         exported_at_unix: chrono::Utc::now().timestamp(),
     }
+}
+
+fn project_turn_outcomes(app: &App) -> Vec<ExportTurnOutcome> {
+    app.session_turn_outcomes
+        .iter()
+        .filter(|outcome| {
+            matches!(
+                outcome.status,
+                codewhale_engine::core::events::TurnOutcomeStatus::Failed
+                    | codewhale_engine::core::events::TurnOutcomeStatus::Interrupted
+            )
+        })
+        .map(|outcome| ExportTurnOutcome {
+            status: match outcome.status {
+                codewhale_engine::core::events::TurnOutcomeStatus::Failed => "failed".to_string(),
+                codewhale_engine::core::events::TurnOutcomeStatus::Interrupted => {
+                    "interrupted".to_string()
+                }
+                codewhale_engine::core::events::TurnOutcomeStatus::Completed => {
+                    "completed".to_string()
+                }
+            },
+            error: outcome.error.clone(),
+            code: outcome.code.clone(),
+            ended_at_unix: outcome.ended_at.timestamp(),
+            after_message_count: outcome.after_message_count,
+        })
+        .collect()
 }
 
 /// Authoritative transcript when API messages exist, otherwise the visible
@@ -2069,9 +2100,16 @@ fn project_history_cell(cell: &HistoryCell) -> HistoryEntry {
             role: "system".to_string(),
             body: "[internal context omitted]".to_string(),
         },
-        HistoryCell::Error { message, severity } => HistoryEntry::Sanitized {
+        HistoryCell::Error {
+            message,
+            severity,
+            code,
+        } => HistoryEntry::Sanitized {
             role: error_severity_role(*severity).to_string(),
-            body: message.clone(),
+            body: match crate::tui::history::display_error_code(message, code.as_deref()) {
+                Some(code) => format!("[{code}] {message}"),
+                None => message.clone(),
+            },
         },
         HistoryCell::Thinking { .. } => HistoryEntry::Literal {
             role: "internal reasoning".to_string(),
@@ -2088,6 +2126,10 @@ fn project_history_cell(cell: &HistoryCell) -> HistoryEntry {
         HistoryCell::Automation(cell) => HistoryEntry::Sanitized {
             role: "automation".to_string(),
             body: flatten_history_lines(cell.render(120)),
+        },
+        HistoryCell::ApprovalReceipt(cell) => HistoryEntry::Sanitized {
+            role: "approval".to_string(),
+            body: cell.plain_summary(),
         },
         HistoryCell::ArchivedContext {
             level,
@@ -3069,7 +3111,7 @@ where
     tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
 }
 
-fn run_owner_blocking<T, F>(work: F) -> Result<T, String>
+pub(crate) fn run_owner_blocking<T, F>(work: F) -> Result<T, String>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, String> + Send + 'static,
@@ -7368,8 +7410,6 @@ mod tests {
             name: "demo".to_string(),
             scope: SkillScope::Global,
             safe_target_path: "/tmp/demo".to_string(),
-            before_digest: None,
-            after_digest: None,
             outcome,
         };
         let installed = portable_mutation_receipt(&make(TuiOutcome::Installed));

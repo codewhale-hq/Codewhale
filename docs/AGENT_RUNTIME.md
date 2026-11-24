@@ -61,12 +61,15 @@ nested assignment.
 
 Detached `agent` children and Runtime workers must preserve the same request
 evidence and recovery state. A timeout after possible dispatch is an unknown
-outcome on both paths and cannot authorize automatic inference replay.
+outcome on both paths and cannot authorize automatic inference replay, apart
+from the bounded header-timeout re-send described next.
 
 The compatibility `agent` runtime retries ordinary rate limits and proven
-transient connection failures before dispatch. A header timeout, interrupted
-stream or other uncertain outcome preserves a checkpoint and returns a
-continuation handle without automatically sending another inference request.
+transient connection failures before dispatch. A request that received no
+response headers is sent again `stream.open_retries` times (default once).
+After that, a header timeout, like an interrupted stream or other uncertain
+outcome, preserves a checkpoint and returns a continuation handle without
+automatically sending another inference request.
 Reported usage stays attached to the original request; missing usage remains
 unknown. Restart, remote execution and Runtime-ledger scheduling retain their
 own durability requirements.

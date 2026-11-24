@@ -338,20 +338,8 @@ fn save_state(path: &Path, state: &HarnessState) -> Result<()> {
     fs::create_dir_all(parent)
         .with_context(|| format!("create continual harness directory {}", parent.display()))?;
     let payload = serde_json::to_vec_pretty(state)?;
-    let tmp = path.with_extension(format!("{}.tmp", Uuid::new_v4().simple()));
-    fs::write(&tmp, payload)
-        .with_context(|| format!("write continual harness temporary state {}", tmp.display()))?;
-    if let Err(error) = fs::rename(&tmp, path) {
-        let _ = fs::remove_file(&tmp);
-        return Err(error).with_context(|| {
-            format!(
-                "publish continual harness state {} -> {}",
-                tmp.display(),
-                path.display()
-            )
-        });
-    }
-    Ok(())
+    codewhale_config::persistence::atomic_write(path, &payload)
+        .with_context(|| format!("publish continual harness state {}", path.display()))
 }
 
 /// Serialize the write transaction, not just the final rename. A surviving

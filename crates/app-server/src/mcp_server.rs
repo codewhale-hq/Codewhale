@@ -63,9 +63,38 @@ struct McpServerSettings {
 impl McpServerSettings {
     fn load() -> Result<Self> {
         let path = default_config_path();
-        if let Some(path) = path.filter(|p| p.exists()) {
-            let contents = std::fs::read_to_string(&path)
-                .with_context(|| format!("Failed to read MCP server config: {}", path.display()))?;
+        Self::load_from_path(path.as_deref())
+    }
+
+    fn load_from_path(path: Option<&std::path::Path>) -> Result<Self> {
+        let contents = match path {
+            Some(path) => match std::fs::File::open(path) {
+                Ok(file) => {
+                    let cap = codewhale_engine::mcp::MAX_MCP_CONFIG_BYTES as usize;
+                    let (contents, len) =
+                        codewhale_engine::prompts::read_prompt_text_bounded(file, cap)
+                            .with_context(|| {
+                                format!("Failed to read MCP server config: {}", path.display())
+                            })?;
+                    if len.max(contents.len()) > cap {
+                        anyhow::bail!(
+                            "MCP server config {} exceeds the {} MiB limit",
+                            path.display(),
+                            cap / (1024 * 1024)
+                        );
+                    }
+                    Some(contents)
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("Failed to read MCP server config: {}", path.display())
+                    });
+                }
+            },
+            None => None,
+        };
+        if let (Some(path), Some(contents)) = (path, contents) {
             Self::from_toml(&contents)
                 .with_context(|| format!("Failed to parse MCP server config: {}", path.display()))
         } else {
@@ -1115,5 +1144,20 @@ mod tests {
             assert_eq!(missing["error"]["code"], -32602);
             pipe.finish().await.unwrap();
         }
+    }
+
+    #[test]
+    fn load_from_path_rejects_oversized_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.toml");
+        let defaults = McpServerSettings::load_from_path(Some(&missing)).expect("missing defaults");
+        assert!(defaults.require_approval);
+
+        let oversized = dir.path().join("mcp_server.toml");
+        let cap = codewhale_engine::mcp::MAX_MCP_CONFIG_BYTES as usize;
+        std::fs::write(&oversized, format!("# {}\n", "a".repeat(cap + 16))).unwrap();
+        let err = McpServerSettings::load_from_path(Some(&oversized))
+            .expect_err("oversized config must be rejected");
+        assert!(err.to_string().contains("exceeds the 1 MiB limit"), "{err}");
     }
 }

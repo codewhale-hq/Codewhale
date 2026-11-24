@@ -11,9 +11,327 @@ use crate::provider_lake::models_for_provider;
 use crate::provider_lake::provider_capability;
 use crate::provider_readiness::has_api_key_for;
 use codewhale_config::ProviderKind;
-use codewhale_runtime::config::{
-    AutoRouterKind, Config, ProviderIdentity, normalize_model_name_for_provider,
-};
+use codewhale_runtime::config::{AutoRouterKind, Config, ProviderIdentity};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InventoryEvidence {
+    Advertised,
+    ConfiguredUnverified,
+    MetadataOnly,
+    Absent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct RouteSelection {
+    pub route_id: String,
+    pub binding_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExactRouteModel {
+    pub selection: RouteSelection,
+    pub model: String,
+    pub provider_rank: Option<usize>,
+    pub evidence: InventoryEvidence,
+    pub readiness: crate::provider_readiness::ResolvedProviderReadiness,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExactRouteInventory {
+    #[serde(skip)]
+    generation: u64,
+    #[serde(skip)]
+    observation_revision: u64,
+    #[serde(skip)]
+    pub fetched_at: Option<u64>,
+    pub revision: String,
+    pub status: codewhale_config::catalog::CatalogStatus,
+    pub discovery_supported: bool,
+    pub models: Vec<ExactRouteModel>,
+}
+
+impl ExactRouteInventory {
+    pub fn is_current(&self, config: &Config, identity: &ProviderIdentity) -> bool {
+        crate::provider_catalog_live::inventory_scope(config, identity)
+            .ok()
+            .is_some_and(|(_, generation)| generation == self.generation)
+            && crate::provider_catalog_live::inventory_observation_revision(
+                identity,
+                self.generation,
+            ) == Some(self.observation_revision)
+    }
+}
+
+pub fn exact_route_inventory(
+    config: &Config,
+    identity: &ProviderIdentity,
+    health: &crate::provider_readiness::ProviderReadinessSnapshot,
+    retained: &[String],
+) -> Result<ExactRouteInventory, String> {
+    use codewhale_config::catalog::{CatalogRefreshError, CatalogStatus};
+    config.verify_provider_identity(identity)?;
+    let (binding_id, generation) = crate::provider_catalog_live::inventory_scope(config, identity)?;
+    let observation_revision =
+        crate::provider_catalog_live::inventory_observation_revision(identity, generation)
+            .ok_or("Inventory publication in progress; retry the exact route")?;
+    let base = config.base_url_for_route(identity);
+    let entry = crate::provider_catalog_live::cached_entry_for_route(
+        identity.provider,
+        identity.key.as_str(),
+        &base,
+    )
+    .map_err(|error| error.to_string())?;
+    let mut status = entry
+        .as_ref()
+        .map(|entry| {
+            if matches!(entry.status, CatalogStatus::Failed { .. }) {
+                entry.status.clone()
+            } else if entry.is_stale(codewhale_config::catalog::now_unix()) {
+                CatalogStatus::Stale {
+                    age_secs: entry.age_secs(codewhale_config::catalog::now_unix()),
+                }
+            } else {
+                CatalogStatus::Fresh
+            }
+        })
+        .unwrap_or(CatalogStatus::Unknown);
+    let codex = (identity.provider == ProviderKind::OpenaiCodex)
+        .then(|| crate::codex_model_cache::model_roster_for(config));
+    if let Some(roster) = &codex {
+        use codewhale_runtime::codex_model_roster::CodexModelCacheFreshness;
+        status = match roster.freshness {
+            CodexModelCacheFreshness::Fresh => CatalogStatus::Fresh,
+            CodexModelCacheFreshness::Stale => CatalogStatus::Stale { age_secs: 0 },
+            CodexModelCacheFreshness::Invalid => CatalogStatus::Failed {
+                reason: CatalogRefreshError::InvalidResponse,
+            },
+            CodexModelCacheFreshness::Missing => CatalogStatus::Unknown,
+        };
+    }
+    if let Some(reason) = crate::provider_catalog_live::inventory_error(identity, generation) {
+        status = CatalogStatus::Failed { reason };
+    }
+    let discovery_supported = identity.provider == ProviderKind::OpenaiCodex
+        || !crate::client::model_listing_unavailable(identity.provider, &base)
+            && !crate::provider_lake::live_catalog_unavailable(config, identity)
+            && !matches!(
+                status,
+                CatalogStatus::Failed {
+                    reason: CatalogRefreshError::NotFound
+                }
+            );
+    let default_model = (config.active_provider_identity().ok().as_ref() == Some(identity))
+        .then(|| provider_default_model(config, identity));
+    let configured = config
+        .provider_config_for(identity)
+        .and_then(|row| row.model.as_deref());
+    let mut ids: Vec<_> = configured
+        .map(str::to_string)
+        .into_iter()
+        .chain(default_model.iter().cloned())
+        .collect();
+    if let Some(roster) = &codex {
+        ids.extend(roster.model_ids());
+    } else if !config.model_ids_pass_through_for_provider(identity)
+        || entry.as_ref().is_some_and(|entry| entry.fetched_at > 0)
+        || crate::provider_lake::live_catalog_unavailable(config, identity)
+    {
+        ids.extend(models_for_provider(config, identity));
+    }
+    ids.extend(retained.iter().cloned());
+    if let Some(entry) = &entry {
+        ids.extend(entry.offerings.iter().map(|row| row.wire_model_id.clone()));
+    }
+    ids.extend(
+        config
+            .custom_models
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|model| {
+                codewhale_runtime::config::configured_model_for_route(
+                    config,
+                    identity.provider,
+                    identity.key.as_str(),
+                    &base,
+                    &model.id,
+                )
+                .is_some()
+            })
+            .map(|model| model.id.clone()),
+    );
+    ids.retain(|id| {
+        !id.is_empty()
+            && !id.eq_ignore_ascii_case("auto")
+            && (identity.provider != ProviderKind::Ollama
+                || !codewhale_runtime::config::is_unresolved_local_ollama_model(id))
+    });
+    let mut seen = std::collections::HashSet::new();
+    ids.retain(|id| seen.insert(id.clone()));
+    let readiness = crate::provider_readiness::RouteReadinessScope::for_route(config, identity);
+    let models: Vec<_> = ids
+        .into_iter()
+        .map(|model| {
+            let advertised = codex
+                .as_ref()
+                .is_some_and(|roster| roster.models.iter().any(|row| row.id == model))
+                || entry.as_ref().is_some_and(|entry| {
+                    entry.fetched_at > 0
+                        && entry.offerings.iter().any(|row| row.wire_model_id == model)
+                });
+            let manual = default_model.as_deref() == Some(model.as_str())
+                || configured == Some(model.as_str())
+                || (retained.contains(&model)
+                    && crate::provider_lake::configured_catalog_offering_for_route(
+                        config,
+                        identity.provider,
+                        identity.key.as_str(),
+                        &base,
+                        &model,
+                    )
+                    .is_none())
+                || codewhale_runtime::config::configured_model_for_route(
+                    config,
+                    identity.provider,
+                    identity.key.as_str(),
+                    &base,
+                    &model,
+                )
+                .is_some();
+            let evidence = if advertised {
+                InventoryEvidence::Advertised
+            } else if matches!(status, CatalogStatus::Fresh)
+                && crate::provider_lake::catalog_offering_for_route(
+                    identity.provider,
+                    identity.key.as_str(),
+                    &base,
+                    &model,
+                )
+                .is_none()
+            {
+                InventoryEvidence::Absent
+            } else if manual {
+                InventoryEvidence::ConfiguredUnverified
+            } else {
+                InventoryEvidence::MetadataOnly
+            };
+            let route_id = codewhale_runtime::hashing::sha256_hex(
+                serde_json::to_vec(&(
+                    identity.persisted_kind(),
+                    identity.persisted_id(),
+                    identity.key.as_str(),
+                    &model,
+                ))
+                .expect("route identity is serializable"),
+            );
+            let mut ready = readiness.resolve(config, &model, health);
+            if evidence == InventoryEvidence::Absent {
+                ready = crate::provider_readiness::ResolvedProviderReadiness::InvalidRoute;
+            }
+            let provider_rank = codex
+                .as_ref()
+                .and_then(|roster| roster.models.iter().position(|row| row.id == model));
+            ExactRouteModel {
+                provider_rank,
+                selection: RouteSelection {
+                    route_id,
+                    binding_id: binding_id.clone(),
+                },
+                readiness: ready,
+                evidence,
+                model,
+            }
+        })
+        .collect();
+    let revision_status = if matches!(status, CatalogStatus::Stale { .. }) {
+        CatalogStatus::Stale { age_secs: 0 }
+    } else {
+        status.clone()
+    };
+    let revision = codewhale_runtime::hashing::sha256_hex(
+        serde_json::to_vec(&(
+            &binding_id,
+            generation,
+            observation_revision,
+            &revision_status,
+            &models,
+        ))
+        .map_err(|error| error.to_string())?,
+    );
+    if crate::provider_catalog_live::inventory_observation_revision(identity, generation)
+        != Some(observation_revision)
+    {
+        return Err("Inventory changed while reading; retry the exact route".to_string());
+    }
+    Ok(ExactRouteInventory {
+        generation,
+        observation_revision,
+        fetched_at: if let Some(roster) = &codex {
+            roster
+                .observed_at
+                .or(roster.fetched_at)
+                .and_then(|time| u64::try_from(time.timestamp()).ok())
+        } else {
+            entry.as_ref().map(|entry| entry.fetched_at)
+        }
+        .filter(|time| *time > 0),
+        revision,
+        status,
+        discovery_supported,
+        models,
+    })
+}
+
+pub async fn validate_inventory_selection(
+    config: &Config,
+    identity: &ProviderIdentity,
+    model: &str,
+    selection: &RouteSelection,
+) -> Result<(), String> {
+    let config = config.clone();
+    let identity = identity.clone();
+    let model = model.to_string();
+    let selection = selection.clone();
+    #[cfg(any(test, feature = "test-support"))]
+    let ticket = crate::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = crate::test_support::join_env_scope(ticket);
+        resolve_inventory_selection(&config, &identity, &model, &selection).map(|_| ())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+pub fn resolve_inventory_selection(
+    config: &Config,
+    identity: &ProviderIdentity,
+    model: &str,
+    selection: &RouteSelection,
+) -> Result<crate::route_runtime::ResolvedRuntimeRoute, String> {
+    let inventory =
+        exact_route_inventory(config, identity, &Default::default(), &[model.to_string()])?;
+    let row = inventory
+        .models
+        .iter()
+        .find(|row| row.model == model && row.selection == *selection)
+        .ok_or("Route binding changed; refresh the inventory and explicitly reselect the model")?;
+    if !row.readiness.can_attempt() {
+        return Err("Selected exact route is unavailable".to_string());
+    }
+    let resolved =
+        crate::route_runtime::resolve_runtime_route_for_identity(config, identity, Some(model))?;
+    if resolved.candidate.wire_model_id().as_str() != model {
+        return Err(
+            "Selection did not resolve to the exact wire model; reselect the route".to_string(),
+        );
+    }
+    if crate::provider_catalog_live::inventory_scope(config, identity)?.0 != selection.binding_id {
+        return Err("Route binding changed; explicitly reselect the model".to_string());
+    }
+    Ok(resolved)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -645,7 +963,9 @@ fn push_model(models: &mut Vec<String>, provider: ProviderKind, model: &str) {
     {
         return;
     }
-    let Some(model) = normalize_model_name_for_provider(provider, model)
+    let Some(model) = codewhale_config::route::resolve_model(provider, model, None)
+        .ok()
+        .map(|resolved| resolved.wire_id)
         .or_else(|| codewhale_runtime::config::normalize_custom_model_id(model))
     else {
         return;
@@ -779,6 +1099,327 @@ fn env_keys_for_provider(provider: ProviderKind) -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_inventory_selection_and_observation_matrix() {
+        use crate::provider_catalog_live::{
+            begin_refresh_for_identity, record_failure_if_current, record_success_if_current,
+        };
+        use codewhale_config::catalog::{
+            CatalogOffering, CatalogRefreshError, CatalogStatus, ProviderCatalogDelta,
+            base_url_fingerprint, now_unix,
+        };
+        let _env = crate::test_support::lock_test_env();
+        let _live = crate::provider_lake::lock_live_snapshot();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
+        crate::provider_catalog_live::reset_cache_for_test();
+        let mut config: Config = toml::from_str(
+            r#"
+provider = "alpha"
+[[custom_models]]
+provider = "alpha"
+base_url = "http://127.0.0.1:18001/v1"
+id = "Same"
+modalities = { input = ["text", "image"], output = ["text"] }
+[[custom_models]]
+provider = "beta"
+base_url = "http://127.0.0.1:18002/v1"
+id = "Same"
+modalities = { input = ["text"], output = ["text"] }
+[providers.alpha]
+kind = "openai-compatible"
+base_url = "http://127.0.0.1:18001/v1"
+auth_mode = "none"
+model = "Same"
+[providers.beta]
+kind = "openai-compatible"
+base_url = "http://127.0.0.1:18002/v1"
+auth_mode = "none"
+model = "Same"
+"#,
+        )
+        .unwrap();
+        config.session_provider_keys_only = true;
+        let alpha = config.resolve_provider_pin_identity("alpha").unwrap();
+        let beta = config.resolve_provider_pin_identity("beta").unwrap();
+        let read = |config: &Config, identity: &ProviderIdentity| {
+            exact_route_inventory(config, identity, &Default::default(), &[]).unwrap()
+        };
+        let row = |inventory: &ExactRouteInventory, id: &str| {
+            inventory
+                .models
+                .iter()
+                .find(|row| row.model == id)
+                .unwrap()
+                .clone()
+        };
+        let a = row(&read(&config, &alpha), "Same");
+        let b = row(&read(&config, &beta), "Same");
+        assert_eq!(a.evidence, InventoryEvidence::ConfiguredUnverified);
+        assert_ne!(a.selection.route_id, b.selection.route_id);
+        for (identity, selected) in [(&alpha, &a), (&beta, &b)] {
+            let route = resolve_inventory_selection(&config, identity, "Same", &selected.selection)
+                .unwrap();
+            assert_eq!(route.candidate.wire_model_id().as_str(), "Same");
+            assert_eq!(
+                route.candidate.capabilities().image_input,
+                if identity == &alpha {
+                    codewhale_config::route::CapabilityState::Unknown
+                } else {
+                    codewhale_config::route::CapabilityState::Unsupported
+                },
+                "executable image capability for {identity:?}"
+            );
+            assert_eq!(
+                route.candidate.endpoint().base_url,
+                config.base_url_for_route(identity)
+            );
+        }
+        assert!(resolve_inventory_selection(&config, &beta, "Same", &a.selection).is_err());
+        let base = config.base_url_for_route(&alpha);
+        let fingerprint = base_url_fingerprint(&base);
+        let delta = |ids: &[&str], fetched_at| ProviderCatalogDelta {
+            provider: alpha.key.to_string(),
+            base_url_fingerprint: fingerprint.clone(),
+            fetched_at,
+            offerings: ids
+                .iter()
+                .map(|id| CatalogOffering {
+                    provider: alpha.key.to_string(),
+                    wire_model_id: (*id).to_string(),
+                    endpoint_key: "chat".into(),
+                    ..Default::default()
+                })
+                .collect(),
+        };
+        let ticket = begin_refresh_for_identity(alpha.provider, alpha.key.as_str(), &base);
+        let (_, generation) =
+            crate::provider_catalog_live::inventory_scope(&config, &alpha).unwrap();
+        let before_publication =
+            crate::provider_catalog_live::inventory_observation_revision(&alpha, generation)
+                .unwrap();
+        record_success_if_current(&ticket, delta(&["Same", "same"], now_unix())).unwrap();
+        assert_ne!(
+            Some(before_publication),
+            crate::provider_catalog_live::inventory_observation_revision(&alpha, generation)
+        );
+        let full = read(&config, &alpha);
+        assert_eq!(row(&full, "Same").evidence, InventoryEvidence::Advertised);
+        assert_ne!(
+            row(&full, "Same").selection.route_id,
+            row(&full, "same").selection.route_id
+        );
+        assert_ne!(full.revision, read(&config, &beta).revision);
+        record_failure_if_current(
+            &ticket,
+            alpha.key.as_str(),
+            &fingerprint,
+            CatalogRefreshError::Network,
+        )
+        .unwrap();
+        let failed = read(&config, &alpha);
+        assert!(matches!(failed.status, CatalogStatus::Failed { .. }));
+        assert_eq!(row(&failed, "Same").evidence, InventoryEvidence::Advertised);
+        assert_ne!(failed.revision, full.revision);
+        record_success_if_current(&ticket, delta(&["Same"], 1)).unwrap();
+        assert!(matches!(
+            read(&config, &alpha).status,
+            CatalogStatus::Stale { .. }
+        ));
+        record_success_if_current(&ticket, delta(&[], now_unix())).unwrap();
+        let empty = read(&config, &alpha);
+        assert_eq!(empty.status, CatalogStatus::Fresh);
+        assert_eq!(row(&empty, "Same").evidence, InventoryEvidence::Absent);
+        assert!(resolve_inventory_selection(&config, &alpha, "Same", &a.selection).is_err());
+        record_failure_if_current(
+            &ticket,
+            alpha.key.as_str(),
+            &fingerprint,
+            CatalogRefreshError::NotFound,
+        )
+        .unwrap();
+        let unsupported = read(&config, &alpha);
+        assert!(!unsupported.discovery_supported);
+        assert_eq!(
+            row(&unsupported, "Same").evidence,
+            InventoryEvidence::ConfiguredUnverified
+        );
+        let mut changed = config.clone();
+        changed.provider_config_for_mut(&alpha).unwrap().base_url =
+            Some("http://127.0.0.1:18003/v1".into());
+        let rebound = row(&read(&changed, &alpha), "Same");
+        assert_eq!(rebound.selection.route_id, a.selection.route_id);
+        assert_ne!(rebound.selection.binding_id, a.selection.binding_id);
+        assert!(resolve_inventory_selection(&changed, &alpha, "Same", &a.selection).is_err());
+        assert!(record_success_if_current(&ticket, delta(&["late-old"], now_unix())).is_none());
+        assert!(
+            !read(&changed, &alpha)
+                .models
+                .iter()
+                .any(|row| row.model == "late-old")
+        );
+        crate::provider_catalog_live::reset_cache_for_test();
+        crate::provider_lake::clear_live_snapshot();
+    }
+
+    #[test]
+    fn exact_inventory_account_renewal_and_delayed_account_change() {
+        use crate::provider_catalog_live::{
+            begin_refresh_for_identity, inventory_scope, record_failure_if_current,
+            record_success_if_current,
+        };
+        use codewhale_config::catalog::{
+            CatalogRefreshError, ProviderCatalogDelta, base_url_fingerprint, now_unix,
+        };
+        use codewhale_runtime::credentials::Credential;
+        let _env = crate::test_support::lock_test_env();
+        let _live = crate::provider_lake::lock_live_snapshot();
+        let home = tempfile::tempdir().unwrap();
+        let home_path = home.path().canonicalize().unwrap();
+        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &home_path);
+        crate::provider_catalog_live::reset_cache_for_test();
+        let mut config = Config::default();
+        config.session_provider_keys_only = true;
+        config.provider = Some("codewhale".to_string());
+        let identity = config
+            .builtin_provider_identity(ProviderKind::Codewhale)
+            .unwrap();
+        let base = config.base_url_for_route(&identity);
+        let attach = |account: &str, key: &str| {
+            let credential = Credential::ApiKey {
+                key: key.to_string(),
+            };
+            config
+                .session_provider_keys
+                .write()
+                .insert(identity.clone(), (base.clone(), credential.clone()));
+            *config.account_model_access.write() =
+                Some(codewhale_runtime::config::AccountModelAccess {
+                    session_id: account.to_string(),
+                    credential,
+                    expires_at: i64::MAX,
+                    profile: None,
+                });
+        };
+        attach("fixture-account-a", "fixture-key-a");
+        let a = inventory_scope(&config, &identity).unwrap();
+        let refresh_guard = crate::provider_catalog_live::try_inventory_refresh(&identity).unwrap();
+        assert!(crate::provider_catalog_live::try_inventory_refresh(&identity).is_none());
+        let old = begin_refresh_for_identity(identity.provider, identity.key.as_str(), &base);
+        let late = || ProviderCatalogDelta {
+            provider: identity.key.to_string(),
+            base_url_fingerprint: base_url_fingerprint(&base),
+            fetched_at: now_unix(),
+            offerings: vec![codewhale_config::catalog::CatalogOffering {
+                provider: identity.key.to_string(),
+                wire_model_id: "account-a-only".to_string(),
+                endpoint_key: "chat".to_string(),
+                ..Default::default()
+            }],
+        };
+        record_success_if_current(&old, late()).unwrap();
+        assert!(
+            exact_route_inventory(&config, &identity, &Default::default(), &[])
+                .unwrap()
+                .models
+                .iter()
+                .any(|row| row.model == "account-a-only"
+                    && row.evidence == InventoryEvidence::Advertised)
+        );
+        attach("fixture-account-a", "fixture-renewed-key-a");
+        let renewed = inventory_scope(&config, &identity).unwrap();
+        assert!(crate::provider_catalog_live::try_inventory_refresh(&identity).is_some());
+        drop(refresh_guard);
+        assert_eq!(a.0, renewed.0);
+        assert_ne!(a.1, renewed.1);
+        assert!(record_success_if_current(&old, late()).is_none());
+        let renewed_ticket =
+            begin_refresh_for_identity(identity.provider, identity.key.as_str(), &base);
+        attach("fixture-account-b", "fixture-key-b");
+        let b = inventory_scope(&config, &identity).unwrap();
+        assert_ne!(renewed.0, b.0);
+        assert!(
+            crate::provider_catalog_live::inventory_observation_revision(&identity, renewed.1)
+                .is_none()
+        );
+        assert!(
+            crate::provider_catalog_live::begin_inventory_refresh(&identity, &base, renewed.1)
+                .is_none()
+        );
+
+        let current = begin_refresh_for_identity(identity.provider, identity.key.as_str(), &base);
+        record_failure_if_current(
+            &current,
+            identity.key.as_str(),
+            &base_url_fingerprint(&base),
+            CatalogRefreshError::Network,
+        )
+        .unwrap();
+        assert!(record_success_if_current(&renewed_ticket, late()).is_none());
+        let inventory =
+            exact_route_inventory(&config, &identity, &Default::default(), &[]).unwrap();
+        assert!(
+            inventory
+                .models
+                .iter()
+                .all(|row| row.evidence != InventoryEvidence::Advertised)
+        );
+        let mut codex = Config::default();
+        codewhale_runtime::oauth::install_test_chatgpt_registration_for(
+            &mut codex,
+            "fixture-oauth-account",
+            "oaiapp_fixture_workspace",
+        )
+        .unwrap();
+        let codex_identity = codex
+            .builtin_provider_identity(ProviderKind::OpenaiCodex)
+            .unwrap();
+        codewhale_runtime::codex_model_roster::install_test_chatgpt_roster(
+            &codex,
+            &["first-model"],
+        )
+        .unwrap();
+        let first =
+            exact_route_inventory(&codex, &codex_identity, &Default::default(), &[]).unwrap();
+        let metadata_revision = crate::provider_lake::catalog_revision();
+        codewhale_runtime::codex_model_roster::install_test_chatgpt_roster(
+            &codex,
+            &["second-model"],
+        )
+        .unwrap();
+        let second =
+            exact_route_inventory(&codex, &codex_identity, &Default::default(), &[]).unwrap();
+        assert_eq!(metadata_revision, crate::provider_lake::catalog_revision());
+        assert_ne!(first.revision, second.revision);
+        let codex_ticket = crate::provider_catalog_live::begin_scoped_refresh(
+            &codex,
+            &codex_identity,
+            &codex.base_url_for_route(&codex_identity),
+        )
+        .unwrap();
+        crate::provider_catalog_live::record_inventory_error(
+            &codex_ticket,
+            Some(CatalogRefreshError::Network),
+        );
+        let failed_codex =
+            exact_route_inventory(&codex, &codex_identity, &Default::default(), &[]).unwrap();
+        assert!(matches!(
+            failed_codex.status,
+            codewhale_config::catalog::CatalogStatus::Failed { .. }
+        ));
+        assert!(failed_codex.models.iter().any(
+            |row| row.model == "second-model" && row.evidence == InventoryEvidence::Advertised
+        ));
+        crate::provider_catalog_live::record_inventory_error(&codex_ticket, None);
+
+        assert!(second.models.iter().any(
+            |row| row.model == "second-model" && row.evidence == InventoryEvidence::Advertised
+        ));
+
+        crate::provider_catalog_live::reset_cache_for_test();
+        crate::provider_lake::clear_live_snapshot();
+    }
 
     #[test]
     fn inventory_env_keys_follow_provider_metadata() {

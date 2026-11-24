@@ -11,6 +11,8 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde_json::Value;
 use tracing::debug;
 
+const MAX_SUGGESTION_RESPONSE_BYTES: usize = 64 * 1024;
+
 use codewhale_config::ProviderKind;
 use codewhale_engine::core::events::TurnRoute;
 use codewhale_engine::route_receipt::{TurnRouteReceipt, endpoint_identity};
@@ -454,12 +456,46 @@ pub async fn generate_suggestion(
     }
     let response = match request.send().await {
         Ok(r) => r,
-        Err(_) => return None,
+        Err(error) => {
+            debug!(error = %error.without_url(), "prompt suggestion request failed");
+            return None;
+        }
     };
-
-    let value: Value = match response.json().await {
+    if response
+        .content_length()
+        .is_some_and(|len| len > MAX_SUGGESTION_RESPONSE_BYTES as u64)
+    {
+        debug!("prompt suggestion response exceeds the size limit");
+        return None;
+    }
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+        match chunk {
+            Ok(chunk)
+                if body.len().saturating_add(chunk.len()) <= MAX_SUGGESTION_RESPONSE_BYTES =>
+            {
+                body.extend_from_slice(&chunk);
+            }
+            Ok(_) => {
+                debug!("prompt suggestion response exceeds the size limit");
+                return None;
+            }
+            Err(error) => {
+                debug!(
+                    error = %error.without_url(),
+                    "prompt suggestion response read failed"
+                );
+                return None;
+            }
+        }
+    }
+    let value: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
-        Err(_) => return None,
+        Err(error) => {
+            debug!(%error, "prompt suggestion response is not valid JSON");
+            return None;
+        }
     };
 
     let suggestion = value["choices"][0]["message"]["content"]
@@ -1847,6 +1883,104 @@ mod tests {
         assert!(
             plan_suggestion_launch_with_config(&config, true, true, 4, Some(snapshot)).is_none(),
             "an absent turn endpoint must fail closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_suggestion_response_returns_none() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let oversized_json = serde_json::json!({
+            "padding": "a".repeat(super::MAX_SUGGESTION_RESPONSE_BYTES + 1024),
+            "choices": [{ "message": { "content": "Next step?" } }]
+        })
+        .to_string();
+
+        // With Content-Length header (fast-path rejection).
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(oversized_json.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert!(
+            generate_suggestion(
+                "fixture-key",
+                &format!("{}/v1", server.uri()),
+                "fixture/model",
+                "User: hello",
+                None,
+            )
+            .await
+            .is_none()
+        );
+
+        // Without Content-Length header (streaming byte-cap rejection).
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let serve = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut req = [0u8; 4096];
+            let _ = socket.read(&mut req).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{oversized_json}"
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.shutdown().await;
+        });
+        assert!(
+            generate_suggestion(
+                "fixture-key",
+                &format!("http://{addr}/v1"),
+                "fixture/model",
+                "User: hello",
+                None,
+            )
+            .await
+            .is_none()
+        );
+        let _ = serve.await;
+    }
+
+    #[tokio::test]
+    async fn malformed_json_suggestion_response_logs_debug_and_returns_none() {
+        use std::io::{Read, Seek, SeekFrom};
+        use tracing::instrument::WithSubscriber;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not-valid-json"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut output = tempfile::tempfile().unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(std::sync::Mutex::new(output.try_clone().unwrap()))
+            .finish();
+
+        let suggestion = generate_suggestion(
+            "fixture-key",
+            &format!("{}/v1", server.uri()),
+            "fixture/model",
+            "User: hello",
+            None,
+        )
+        .with_subscriber(subscriber)
+        .await;
+        assert!(suggestion.is_none());
+
+        output.seek(SeekFrom::Start(0)).unwrap();
+        let mut logs = String::new();
+        output.read_to_string(&mut logs).unwrap();
+        assert!(
+            logs.contains("prompt suggestion response is not valid JSON"),
+            "{logs}"
         );
     }
 }

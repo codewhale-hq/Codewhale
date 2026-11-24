@@ -73,12 +73,41 @@ require_literal \
   'exit $LASTEXITCODE' \
   "native linker exit-status propagation"
 
-if grep -qF -- '$env:CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_LINKER = $clang' scripts/ohos-env.ps1; then
+direct_clang_status=0
+grep -qF -- '$env:CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_LINKER = $clang' scripts/ohos-env.ps1 || direct_clang_status=$?
+if ((direct_clang_status == 0)); then
   echo "::error::OHOS Windows Cargo linker points directly at clang.exe instead of the target-aware wrapper." >&2
   exit 1
+elif ((direct_clang_status > 1)); then
+  echo "::error::Failed to inspect scripts/ohos-env.ps1 for direct clang linker usage (grep exit ${direct_clang_status})." >&2
+  exit "${direct_clang_status}"
 fi
 
 echo "OHOS Windows linker wrapper contract OK."
+
+grep_matches() {
+  local input="$1"
+  shift
+  local -a pipe_status=()
+  local rc_printf
+  local rc_grep
+
+  set +e
+  printf '%s\n' "${input}" | grep "$@"
+  pipe_status=("${PIPESTATUS[@]}")
+  set -e
+
+  rc_printf="${pipe_status[0]:-2}"
+  rc_grep="${pipe_status[1]:-2}"
+  if ((rc_grep > 1)); then
+    return "${rc_grep}"
+  fi
+  if ((rc_printf != 0)); then
+    echo "::error::Failed to pipe dependency graph to grep (printf exit ${rc_printf})." >&2
+    return 2
+  fi
+  return "${rc_grep}"
+}
 
 cargo_tree_with_retry() {
   local package="$1"
@@ -86,7 +115,8 @@ cargo_tree_with_retry() {
   local attempt
   local max_attempts="${CODEWHALE_OHOS_DEP_RETRIES:-3}"
   local delay_seconds="${CODEWHALE_OHOS_DEP_RETRY_DELAY_SECONDS:-10}"
-  local err_file
+  local tmp_root="${TMPDIR:-/tmp}"
+  local err_file=""
   local output
   local status
 
@@ -95,7 +125,18 @@ cargo_tree_with_retry() {
     return 1
   fi
 
-  err_file="$(mktemp)"
+  tmp_root="${tmp_root%/}"
+  tmp_root="${tmp_root:-/}"
+  if ! err_file="$(mktemp "${tmp_root}/check-ohos-deps.XXXXXX")"; then
+    echo "::error::Failed to create temporary file in ${tmp_root}; set TMPDIR to a writable directory with free space." >&2
+    return 1
+  fi
+  trap "rm -f -- $(printf '%q' "${err_file}")" EXIT
+  if ! printf 'probe\n' >"${err_file}" || ! : >"${err_file}"; then
+    echo "::error::Temporary directory ${tmp_root} is not writable or out of space." >&2
+    return 1
+  fi
+
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     if output="$(
       cargo tree \
@@ -106,9 +147,13 @@ cargo_tree_with_retry() {
         "$@" \
         2>"${err_file}"
     )"; then
-      rm -f "${err_file}"
-      printf '%s\n' "${output}"
-      return 0
+      if [[ -n "${output}" ]]; then
+        rm -f "${err_file}"
+        printf '%s\n' "${output}"
+        return 0
+      fi
+      echo "::error::cargo tree returned empty output for ${package} on ${target}." >&2
+      status=1
     else
       status=$?
     fi
@@ -125,11 +170,28 @@ cargo_tree_with_retry() {
 
 tree="$(cargo_tree_with_retry "${package}" --all-features --no-dedupe)"
 
-disallowed="$(
-  grep -E '^(nix v0\.(28|29)\.|portable-pty v|starlark v|arboard v|keyring v)' <<<"${tree}" || true
-)"
+if [[ -z "${tree}" ]]; then
+  echo "::error::OHOS dependency graph for ${package} on ${target} was empty." >&2
+  exit 1
+fi
 
-if [[ -n "${disallowed}" ]]; then
+if [[ "${tree}" != "${package} v"* ]]; then
+  echo "::error::OHOS dependency graph for ${package} on ${target} did not contain root package ${package}." >&2
+  exit 1
+fi
+
+disallowed=""
+disallowed_status=0
+disallowed="$(
+  grep_matches "${tree}" -E '^(nix v0\.(28|29)\.|portable-pty v|starlark v|arboard v|keyring v)'
+)" || disallowed_status=$?
+
+if ((disallowed_status > 1)); then
+  echo "::error::Failed to inspect OHOS dependency graph for ${package} on ${target} (exit ${disallowed_status})." >&2
+  exit "${disallowed_status}"
+fi
+
+if ((disallowed_status == 0)) || [[ -n "${disallowed}" ]]; then
   {
     echo "::error::OHOS target graph for ${package} includes unsupported dependencies:"
     echo "${disallowed}"
@@ -152,11 +214,29 @@ echo "OHOS dependency graph OK for ${package} on ${target}."
 # upgrade renamed the feature.
 workflow_js_features="$(cargo_tree_with_retry "${workflow_js_package}" --edges features)"
 
-if ! grep -qF 'rquickjs feature "bindgen"' <<<"${workflow_js_features}" \
-  || ! grep -qF 'rquickjs-sys feature "bindgen"' <<<"${workflow_js_features}"; then
+if [[ -z "${workflow_js_features}" ]]; then
+  echo "::error::OHOS feature graph for ${workflow_js_package} on ${target} was empty." >&2
+  exit 1
+fi
+
+rquickjs_status=0
+grep_matches "${workflow_js_features}" -F -- 'rquickjs feature "bindgen"' >/dev/null || rquickjs_status=$?
+if ((rquickjs_status > 1)); then
+  echo "::error::Failed to inspect OHOS feature graph for ${workflow_js_package} on ${target} (exit ${rquickjs_status})." >&2
+  exit "${rquickjs_status}"
+fi
+
+rquickjs_sys_status=0
+grep_matches "${workflow_js_features}" -F -- 'rquickjs-sys feature "bindgen"' >/dev/null || rquickjs_sys_status=$?
+if ((rquickjs_sys_status > 1)); then
+  echo "::error::Failed to inspect OHOS feature graph for ${workflow_js_package} on ${target} (exit ${rquickjs_sys_status})." >&2
+  exit "${rquickjs_sys_status}"
+fi
+
+if ((rquickjs_status != 0)) || ((rquickjs_sys_status != 0)); then
   {
     echo "::error::OHOS target graph for ${workflow_js_package} lost the rquickjs bindgen feature edges:"
-    grep -E '^(rquickjs|rquickjs-sys|rquickjs-core|bindgen)( v| feature)' <<<"${workflow_js_features}" || true
+    grep_matches "${workflow_js_features}" -E '^(rquickjs|rquickjs-sys|rquickjs-core|bindgen)( v| feature)' || true
     echo
     echo "crates/workflow-js/Cargo.toml must keep activating rquickjs's \`bindgen\`"
     echo "feature under cfg(target_env = \"ohos\"); rquickjs ships no pre-generated"

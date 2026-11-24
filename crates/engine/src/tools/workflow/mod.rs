@@ -6,6 +6,7 @@
 mod plan_schema;
 #[cfg(test)]
 mod shortlist_tests;
+mod verified_candidate;
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -56,6 +57,7 @@ use crate::work_graph::{
 };
 use codewhale_agent_contract::role::{FleetRole, public_role_label};
 use codewhale_util::utils::spawn_supervised;
+use verified_candidate::{VerifiedCandidateEvaluator, authorized_workflow_source};
 
 /// Keep promoted artifacts compact without clipping ordinary evidence reports.
 /// A 900-character cap cut six-line source receipts in half during live Fleet
@@ -1424,6 +1426,37 @@ async fn start_workflow(
         WorkflowFleetBinding::None
     };
     let run_id = format!("workflow_{}", &Uuid::new_v4().to_string()[..8]);
+    let evaluator = if let Some(request) = args.get("evaluator") {
+        if args.get("strategy").and_then(Value::as_str) != Some("search")
+            || !authorized_workflow_source(&source.source)
+        {
+            return Err(ToolError::invalid_input(
+                "verified evaluator requires the checked-in search Workflow",
+            ));
+        }
+        let manifest = request
+            .get("manifestPath")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::invalid_input("evaluator.manifestPath is required"))?;
+        let brief = args
+            .get("brief")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::invalid_input("evaluator requires an explicit brief"))?;
+        let path = PathBuf::from(manifest);
+        let workspace = context.workspace.clone();
+        let id = run_id.clone();
+        let brief = brief.to_owned();
+        Some(
+            tokio::task::spawn_blocking(move || {
+                VerifiedCandidateEvaluator::freeze(&path, &workspace, &id, &brief)
+            })
+            .await
+            .map_err(|error| ToolError::execution_failed(error.to_string()))?
+            .map_err(ToolError::invalid_input)?,
+        )
+    } else {
+        None
+    };
     let gate_specs = source
         .spec
         .as_ref()
@@ -1533,6 +1566,13 @@ async fn start_workflow(
         gate_specs,
         context.workspace.clone(),
     );
+    if let Some(evaluator) = evaluator {
+        *driver
+            .evaluator
+            .lock()
+            .map_err(|_| ToolError::execution_failed("evaluator lock poisoned"))? =
+            Some(Arc::new(Mutex::new(evaluator)));
+    }
     let vm_cancel = WorkflowRunCancel::new();
     let controller = Arc::new(
         WorkflowRunController::new(driver.clone(), vm_cancel.clone()).with_parent_completion(!wait),
@@ -3125,14 +3165,14 @@ fn validate_runtime_gates(gates: &mut [GateSpec]) -> Result<(), ToolError> {
                 "Workflow gates require non-empty, unique ids",
             ));
         }
-        gate.role = gate.role.trim().to_lowercase();
+        gate.role = public_role_label(&gate.role).to_lowercase();
         if gate.role.is_empty() {
             return Err(ToolError::invalid_input(
                 "Workflow gate role must not be empty",
             ));
         }
         if let Some(role) = gate.blocks_role.as_mut() {
-            *role = role.trim().to_lowercase();
+            *role = public_role_label(role).to_lowercase();
             if role.is_empty() {
                 return Err(ToolError::invalid_input(
                     "Workflow gate blocks_role must not be empty",
@@ -3185,7 +3225,9 @@ fn validate_gate_phase_order(spec: &WorkflowSpec) -> Result<(), ToolError> {
             match node {
                 WorkflowNode::Leaf(leaf) if leaf.profile.is_none() => {
                     let role = leaf.role.as_ref()?;
-                    first.entry(role.trim().to_lowercase()).or_insert(order);
+                    first
+                        .entry(public_role_label(role).to_lowercase())
+                        .or_insert(order);
                     order += 1;
                 }
                 WorkflowNode::Sequence(sequence) => {
@@ -4019,6 +4061,7 @@ struct SubAgentWorkflowDriver {
     /// Workspace root, for durable `responseSchema` raw-output artifacts
     /// written beside the run report (#5583).
     workspace: PathBuf,
+    evaluator: Mutex<Option<Arc<Mutex<VerifiedCandidateEvaluator>>>>,
 }
 
 /// A single-consumer handoff remains reserved during admission. If routing,
@@ -4061,9 +4104,13 @@ impl SubAgentWorkflowDriver {
         state: Arc<WorkflowWorkspaceState>,
         total_budget: Option<u64>,
         fleet: WorkflowFleetBinding,
-        gate_specs: Vec<GateSpec>,
+        mut gate_specs: Vec<GateSpec>,
         workspace: PathBuf,
     ) -> Arc<Self> {
+        for spec in &mut gate_specs {
+            spec.role = public_role_label(&spec.role);
+            spec.blocks_role = spec.blocks_role.as_deref().map(public_role_label);
+        }
         let fleet_name = fleet.name();
         let workflow_cfg = workflow_config_for(&runtime);
         let parent_cancel_token = runtime.cancel_token.clone();
@@ -4103,6 +4150,7 @@ impl SubAgentWorkflowDriver {
             fleet_name,
             fleet,
             workspace,
+            evaluator: Mutex::new(None),
         });
         spawn_completion_pump(driver.clone(), completion_rx);
         driver
@@ -4280,25 +4328,36 @@ impl SubAgentWorkflowDriver {
         &self,
         request: &mut TaskRequest,
     ) -> Result<Vec<HandoffArtifact>, DriverError> {
-        let Some(role) = request.role.as_deref().filter(|role| !role.is_empty()) else {
-            return Ok(Vec::new());
-        };
         if self.gate_specs.is_empty() {
             return Ok(Vec::new());
         }
+        let role = request
+            .role
+            .as_deref()
+            .filter(|role| !role.trim().is_empty())
+            .map(public_role_label)
+            .unwrap_or_else(|| {
+                request
+                    .subagent_type
+                    .as_deref()
+                    .and_then(FleetRole::parse)
+                    .unwrap_or(FleetRole::Worker)
+                    .as_str()
+                    .to_string()
+            });
 
         let (blocked, handoffs) = {
             let mut board = self
                 .gate_board
                 .lock()
                 .map_err(|_| DriverError::Rejected("workflow gate board lock poisoned".into()))?;
-            let blocked = board.role_is_blocked(&self.gate_specs, role).cloned();
+            let blocked = board.role_is_blocked(&self.gate_specs, &role).cloned();
             // Handoffs are consumed (removed from the board) as they are
             // delivered — but only when the role is actually admitted. A
             // blocked task must leave them in place for the retry after the
             // gate clears.
             let handoffs = if blocked.is_none() {
-                board.consume_handoffs_for(role, 4)
+                board.consume_handoffs_for(&role, 4)
             } else {
                 Vec::new()
             };
@@ -4333,7 +4392,12 @@ impl SubAgentWorkflowDriver {
     }
 
     fn evaluate_gates_for_completed_role(&self, record: &RuntimeTaskRecord) {
-        let Some(role) = record.role.as_deref().filter(|role| !role.is_empty()) else {
+        let Some(role) = record
+            .role
+            .as_deref()
+            .filter(|role| !role.trim().is_empty())
+            .map(public_role_label)
+        else {
             return;
         };
         if self.gate_specs.is_empty() {
@@ -4342,7 +4406,7 @@ impl SubAgentWorkflowDriver {
         let specs = self
             .gate_specs
             .iter()
-            .filter(|spec| spec.on == GateOn::RoleComplete && spec.role.eq_ignore_ascii_case(role))
+            .filter(|spec| spec.on == GateOn::RoleComplete && spec.role.eq_ignore_ascii_case(&role))
             .cloned()
             .collect::<Vec<_>>();
         if specs.is_empty() {
@@ -5061,8 +5125,103 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
         result
     }
 
+    async fn verify_candidate(&self, request: Value) -> Result<Value, DriverError> {
+        let evaluator = self
+            .evaluator
+            .lock()
+            .map_err(|_| DriverError::Unavailable("evaluator lock poisoned".to_string()))?
+            .clone()
+            .ok_or_else(|| {
+                DriverError::Rejected("evaluator was not frozen before Workflow start".to_string())
+            })?;
+        let action = request
+            .get("action")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DriverError::Rejected("evaluator action is required".to_string()))?;
+        if action == "summary" {
+            return evaluator
+                .lock()
+                .map_err(|_| DriverError::Unavailable("evaluator lock poisoned".to_string()))
+                .map(|evaluator| evaluator.summary());
+        }
+        if action != "evaluate" && action != "replay" {
+            return Err(DriverError::Rejected(
+                "unsupported evaluator action".to_string(),
+            ));
+        }
+        let id = request
+            .get("candidate_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DriverError::Rejected("candidate_id is required".to_string()))?
+            .to_owned();
+        let record = if action == "evaluate" {
+            let records = self
+                .task_records
+                .lock()
+                .map_err(|_| DriverError::Unavailable("task ledger lock poisoned".to_string()))?;
+            let matches = records
+                .values()
+                .filter(|record| record.label.as_deref() == Some(id.as_str()))
+                .collect::<Vec<_>>();
+            if matches.len() != 1 || matches[0].status != IrWorkflowRunStatus::Succeeded {
+                return Err(DriverError::Rejected(
+                    "candidate task did not complete uniquely".to_string(),
+                ));
+            }
+            Some(matches[0].clone())
+        } else {
+            None
+        };
+        let manager = self.manager.clone();
+        let cancel = self.runtime.cancel_token.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut evaluator = evaluator
+                .lock()
+                .map_err(|_| "evaluator lock poisoned".to_string())?;
+            if let Some(record) = record {
+                let result = manager
+                    .blocking_read()
+                    .get_result(&record.agent_id)
+                    .map_err(|error| error.to_string())?;
+                let workspace = result
+                    .workspace
+                    .as_ref()
+                    .ok_or("completed worker has no worktree receipt")?;
+                evaluator.evaluate(
+                    &id,
+                    workspace,
+                    matches!(result.status, SubAgentStatus::Completed),
+                    &cancel,
+                )
+            } else {
+                evaluator.replay(&id, &cancel)
+            }
+        })
+        .await
+        .map_err(|error| DriverError::Unavailable(error.to_string()))?
+        .map_err(DriverError::Rejected)
+    }
+
     fn cancel_all(&self) {
         self.force_cancel_all();
+    }
+
+    fn cancel_task(&self, task_id: &str) {
+        let running = self
+            .completion_state
+            .lock()
+            .is_ok_and(|state| state.waiters.contains_key(task_id));
+        if !running {
+            return;
+        }
+        cancel_child_agents(
+            self.manager.clone(),
+            self.owner_session_id.clone(),
+            vec![task_id.to_string()],
+            self.owner_runtime.clone(),
+            self.runtime.event_tx.clone(),
+        );
+        self.deliver_completion(task_id.to_string(), TaskCompletion::Cancelled, None);
     }
 
     fn budget_is_metered(&self) -> bool {
@@ -5673,6 +5832,13 @@ async fn rerouted_task_note(manager: &SharedSubAgentManager, agent_id: &str) -> 
 /// notably the workflow `run_id` that `finish_workflow_controller` sends for a
 /// detached nested workflow. Those fail closed here rather than being waited
 /// on.
+fn is_failed_delivery_verification_status(status: &str) -> bool {
+    matches!(
+        status,
+        "deliverable_missing" | "claim_mismatch" | "verification_incomplete"
+    )
+}
+
 async fn completion_from_manager(
     manager: SharedSubAgentManager,
     agent_id: &str,
@@ -5696,10 +5862,7 @@ async fn completion_from_manager(
         let completion = match snapshot.status {
             SubAgentStatus::Completed
                 if verification.as_ref().is_some_and(|receipt| {
-                    matches!(
-                        receipt.status.as_str(),
-                        "deliverable_missing" | "claim_mismatch"
-                    )
+                    is_failed_delivery_verification_status(&receipt.status)
                 }) =>
             {
                 TaskCompletion::Failed {
@@ -7374,15 +7537,13 @@ permissions = "read_only"
             .expect_err("a blocking gate on `implement` must still see `implement`");
         assert!(err.to_string().contains("implement"), "{err}");
 
-        // The same gate does *not* block a task carrying the member id, which
-        // is exactly why stamping the id into `role` silently disabled it.
-        let mut by_id = exact_task_request("builder");
-        by_id.role = Some("implementer".to_string());
-        by_id.profile = None;
-        assert!(
-            driver.prepare_request_for_gates(&mut by_id).is_ok(),
-            "the profile id is not the semantic role the gate keys on"
-        );
+        let mut alias = exact_task_request("builder");
+        alias.role = Some("implementer".to_string());
+        alias.profile = None;
+        let err = driver
+            .prepare_request_for_gates(&mut alias)
+            .expect_err("the legacy implementer alias must see the same gate");
+        assert!(err.to_string().contains("implement"), "{err}");
     }
 
     /// A task whose `role` and `profile` name different members is rejected
@@ -11808,6 +11969,19 @@ FINAL RECEIPT
         }
     }
 
+    #[test]
+    fn failed_delivery_verification_status_includes_verification_incomplete() {
+        assert!(is_failed_delivery_verification_status(
+            "deliverable_missing"
+        ));
+        assert!(is_failed_delivery_verification_status("claim_mismatch"));
+        assert!(is_failed_delivery_verification_status(
+            "verification_incomplete"
+        ));
+        assert!(!is_failed_delivery_verification_status("verified"));
+        assert!(!is_failed_delivery_verification_status("not_required"));
+    }
+
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn task_completed_and_run_completed_carry_usage_telemetry() {
@@ -13535,6 +13709,74 @@ FINAL RECEIPT
     }
 
     #[tokio::test]
+    async fn workflow_gate_admission_uses_dispatch_role_without_changing_fleet_identity() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        for (requested_role, legacy_type, profile, resolved_role) in [
+            (Some("planner"), None, None, "planner"),
+            (Some("plan"), None, None, "planner"),
+            (None, Some("plan"), None, "planner"),
+            (None, None, None, "general"),
+            (Some("auditor"), None, Some("review-member"), "auditor"),
+        ] {
+            let gate: GateSpec = serde_json::from_value(json!({
+                "id": "findings", "role": "scout", "on": "role_complete",
+                "gate": "approve", "on_fail": "block", "blocks_role": resolved_role,
+                "artifact_kind": "findings", "require_explicit_verdict": true
+            }))
+            .expect("gate fixture");
+            let driver = native_lifecycle_driver(tmp.path(), vec![gate]);
+            let mut request = exact_task_request("planner");
+            request.role = requested_role.map(str::to_string);
+            request.subagent_type = legacy_type.map(str::to_string);
+            request.profile = profile.map(str::to_string);
+            let original = request.clone();
+            for verdict in [None, Some("FAIL\nmissing evidence")] {
+                if let Some(verdict) = verdict {
+                    driver.evaluate_gates_for_completed_role(&RuntimeTaskRecord {
+                        agent_id: "scout-1".to_string(),
+                        label: None,
+                        role: Some("scout".to_string()),
+                        status: IrWorkflowRunStatus::Succeeded,
+                        output: Some(verdict.to_string()),
+                        schema_error: None,
+                        usage: None,
+                    });
+                }
+                let error = driver
+                    .prepare_request_for_gates(&mut request)
+                    .expect_err("pending and failed gates reject the dispatch role");
+                assert!(error.to_string().contains(resolved_role), "{error}");
+                assert_eq!(request.description, original.description);
+            }
+            driver.evaluate_gates_for_completed_role(&RuntimeTaskRecord {
+                agent_id: "scout-2".to_string(),
+                label: None,
+                role: Some("scout".to_string()),
+                status: IrWorkflowRunStatus::Succeeded,
+                output: Some("PASS\nFindings:\n- both input results verified".to_string()),
+                schema_error: None,
+                usage: None,
+            });
+            let handoffs = driver
+                .prepare_request_for_gates(&mut request)
+                .expect("passed gate admits the dispatch role");
+            assert_eq!(handoffs.len(), 1);
+            assert!(request.description.contains("both input results verified"));
+            assert_eq!(request.role, original.role);
+            assert_eq!(request.profile, original.profile);
+            assert_eq!(request.subagent_type, original.subagent_type);
+            assert!(
+                driver
+                    .gate_board
+                    .lock()
+                    .expect("board")
+                    .artifacts
+                    .is_empty()
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn native_handoff_survives_rejected_spawn_and_pending_gates_block_completion() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let gate: GateSpec = serde_json::from_value(json!({
@@ -13694,8 +13936,12 @@ FINAL RECEIPT
         let mut gates: Vec<GateSpec> = serde_json::from_value(json!([gate])).expect("gates");
         validate_runtime_gates(&mut gates).expect("normalize gate");
         assert_eq!(gates[0].id, "check");
-        assert_eq!(gates[0].role, "scout");
+        assert_eq!(gates[0].role, "explore");
         assert_eq!(gates[0].blocks_role.as_deref(), Some("reviewer"));
+        let mut custom = gates.clone();
+        custom[0].role = " Release_Lead ".to_string();
+        validate_runtime_gates(&mut custom).expect("custom gate role");
+        assert_eq!(custom[0].role, "release_lead");
         let mut duplicate = vec![gates[0].clone(), gates[0].clone()];
         assert!(validate_runtime_gates(&mut duplicate).is_err());
         for (field, value) in [
@@ -13725,14 +13971,14 @@ FINAL RECEIPT
         for needle in ["`v1`", "blocks_role", "`implement`"] {
             assert!(message.contains(needle), "{message}");
         }
-        gates[0].blocks_role = Some(" Implement ".to_string());
+        gates[0].blocks_role = Some(" Implementer ".to_string());
         assert!(validate_runtime_gates(&mut gates).is_err());
         gates[0].blocks_role = Some("verify".to_string());
         validate_runtime_gates(&mut gates).expect("blocking a later role stays valid");
         let mut reverse = gates[0].clone();
         reverse.id = "reverse".to_string();
-        reverse.role = "verify".to_string();
-        reverse.blocks_role = Some("implement".to_string());
+        reverse.role = "verifier".to_string();
+        reverse.blocks_role = Some("builder".to_string());
         gates.push(reverse);
         assert!(
             validate_runtime_gates(&mut gates)
@@ -13743,7 +13989,7 @@ FINAL RECEIPT
         let mut board = LaneGateBoard::new("cycle");
         board.install_gates(&gates);
         assert!(board.role_is_blocked(&gates, "implement").is_some());
-        assert!(board.role_is_blocked(&gates, "verify").is_some());
+        assert!(board.role_is_blocked(&gates, "test").is_some());
         gates.pop();
         for backward in [false, true] {
             let mut phases = vec![

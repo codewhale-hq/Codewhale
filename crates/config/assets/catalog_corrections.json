@@ -1611,36 +1611,75 @@
         "source": "preserved exact cited model lookup; see source_receipts",
         "context_window": 1048576,
         "max_output": 65536,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       },
       "gemini-3.8-flash": {
         "source": "official vendor model docs, verified 2026-10-17; see source_receipts",
         "context_window": 1048576,
         "max_output": 65536,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       },
       "gemini-3.6-flash": {
         "source": "preserved exact cited model lookup; see source_receipts",
         "context_window": 1048576,
         "max_output": 65536,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       },
       "gemini-3.5-flash": {
         "source": "preserved exact cited model lookup; see source_receipts",
         "context_window": 1048576,
         "max_output": 65536,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       },
       "gemini-3.5-flash-lite": {
         "source": "preserved exact cited model lookup; see source_receipts",
         "context_window": 1048576,
         "max_output": 65536,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
+        "family": "Google"
+      },
+      "gemini-3.1-flash-lite": {
+        "source": "official vendor model docs, verified 2026-11-17; see source_receipts",
+        "context_window": 1048576,
+        "max_output": 65536,
+        "reasoning": true,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
+        "family": "Google"
+      },
+      "gemini-3.1-flash-lite-preview": {
+        "source": "official vendor model docs, verified 2026-11-17; see source_receipts",
+        "context_window": 1048576,
+        "max_output": 65536,
+        "reasoning": true,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
+        "family": "Google"
+      },
+      "gemini-3.1-pro": {
+        "source": "official vendor model docs, verified 2026-11-17; see source_receipts",
+        "context_window": 1048576,
+        "max_output": 65536,
+        "reasoning": true,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       },
       "gemini-3.1-pro-preview": {
         "source": "preserved exact cited model lookup; see source_receipts",
         "context_window": 1048576,
         "max_output": 65536,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       },
       "gemini-4-argon": {
@@ -1648,6 +1687,8 @@
         "context_window": 1048576,
         "max_output": 65536,
         "reasoning": true,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       },
       "gemini-4-carbon": {
@@ -1655,24 +1696,76 @@
         "context_window": 1048576,
         "max_output": 65536,
         "reasoning": true,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
+        "family": "Google"
+      },
+      "gemini-4-neon": {
+        "source": "official vendor model docs, verified 2026-11-19; see source_receipts",
+        "context_window": 1048576,
+        "max_output": 65536,
+        "reasoning": true,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
+        "family": "Google"
+      },
+      "gemini-3-pro": {
+        "source": "official vendor model docs, verified 2026-11-17; see source_receipts",
+        "context_window": 1048576,
+        "max_output": 65536,
+        "reasoning": true,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       },
       "gemini-3-pro-preview": {
         "source": "preserved exact cited model lookup; see source_receipts",
         "context_window": 1048576,
         "max_output": 65536,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       },
       "gemini-2.5-pro": {
         "source": "preserved exact cited model lookup; see source_receipts",
         "context_window": 1048576,
         "max_output": 65536,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       },
       "gemini-2.5-flash": {
         "source": "preserved exact cited model lookup; see source_receipts",
         "context_window": 1048576,
         "max_output": 65536,
+        "thought_signatures_required": true,
+        "thinking_can_disable": true,
+        "family": "Google"
+      },
+      "gemini-2.5-flash-lite": {
+        "source": "official vendor model docs, verified 2026-11-17; see source_receipts",
+        "context_window": 1048576,
+        "max_output": 65536,
+        "thought_signatures_required": false,
+        "thinking_can_disable": true,
+        "family": "Google"
+      },
+      "gemini-flash-latest": {
+        "source": "official vendor model docs, verified 2026-11-17; see source_receipts",
+        "context_window": 1048576,
+        "max_output": 65536,
+        "reasoning": true,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
+        "family": "Google"
+      },
+      "gemini-flash-lite-latest": {
+        "source": "official vendor model docs, verified 2026-11-17; see source_receipts",
+        "context_window": 1048576,
+        "max_output": 65536,
+        "reasoning": true,
+        "thought_signatures_required": false,
+        "thinking_can_disable": true,
         "family": "Google"
       },
       "dots-studio/dots-3-note-preview:free": {
@@ -1929,7 +2022,30 @@
         "context_window": 1048576,
         "max_output": 65536,
         "reasoning": true,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
+      },
+      "muse-ember-1.0": {
+        "source": "models.dev meta/muse-ember-1.0, discovered 2026-11-18; unreviewed",
+        "context_window": 1048576,
+        "max_output": 524288,
+        "reasoning": true,
+        "family": "Meta"
+      },
+      "gpt-6.2-astra": {
+        "source": "models.dev openai/gpt-6.2-astra, discovered 2026-11-18; unreviewed",
+        "context_window": 1050000,
+        "max_output": 128000,
+        "reasoning": true,
+        "family": "OpenAi"
+      },
+      "gpt-6.2-sol": {
+        "source": "models.dev openai/gpt-6.2-sol, discovered 2026-11-18; unreviewed",
+        "context_window": 1050000,
+        "max_output": 128000,
+        "reasoning": true,
+        "family": "OpenAi"
       }
     },
     "openai_reasoning_ids": {
@@ -1962,1588 +2078,954 @@
     "selections": [
       {
         "id": "deepseek-v4-pro",
-        "aliases": [],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "deepseek"
       },
       {
         "id": "deepseek-flash",
-        "aliases": [
-          "deepseek-chat",
-          "deepseek-reasoner",
-          "deepseek-r1",
-          "deepseek-v3",
-          "deepseek-v3.2",
-          "flash-vision",
-          "deepseek-v4flashvisionexp"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "deepseek"
       },
       {
         "id": "deepseek-v4-flash",
-        "aliases": [],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "deepseek"
       },
       {
         "id": "deepseek-v4-flash-vision-exp",
-        "aliases": [],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "deepseek"
       },
       {
         "id": "deepseek-ai/deepseek-v4-pro",
-        "aliases": [
-          "deepseek-v4-pro",
-          "nvidia-deepseek-v4-pro",
-          "nim-deepseek-v4-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "nvidia-nim"
       },
       {
         "id": "deepseek-ai/deepseek-v4-flash",
-        "aliases": [
-          "deepseek-v4-flash",
-          "deepseek-chat",
-          "deepseek-reasoner",
-          "nvidia-deepseek-v4-flash",
-          "nim-deepseek-v4-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "nvidia-nim"
       },
       {
         "id": "deepseek-v4-pro",
-        "aliases": [
-          "openai-compatible-deepseek-v4-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openai"
       },
       {
         "id": "deepseek-v4-flash",
-        "aliases": [
-          "openai-compatible-deepseek-v4-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openai"
       },
       {
         "id": "gpt-5.3-codex",
-        "aliases": [
-          "gpt53-codex"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openai"
       },
       {
         "id": "gpt-5.5",
-        "aliases": [
-          "openai-gpt-5.5"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openai"
       },
       {
         "id": "gpt-5.5-pro",
-        "aliases": [
-          "openai-gpt-5.5-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openai"
       },
       {
         "id": "gpt-5.6",
-        "aliases": [
-          "gpt56"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openai"
       },
       {
         "id": "gpt-5.6-sol",
-        "aliases": [
-          "gpt56-sol"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openai"
       },
       {
         "id": "gpt-5.6-terra",
-        "aliases": [
-          "gpt56-terra"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openai"
       },
       {
         "id": "gpt-5.6-luna",
-        "aliases": [
-          "gpt56-luna"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openai"
       },
       {
         "id": "deepseek-ai/deepseek-v4-flash",
-        "aliases": [
-          "deepseek-v4-flash",
-          "atlascloud-deepseek-v4-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "atlascloud"
       },
       {
         "id": "deepseek-ai/deepseek-v4-pro",
-        "aliases": [
-          "deepseek-v4-pro",
-          "atlascloud-deepseek-v4-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "atlascloud"
       },
       {
         "id": "deepseek-reasoner",
-        "aliases": [
-          "wanjie-deepseek-reasoner",
-          "ark-wanjie-deepseek-reasoner"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "wanjie-ark"
       },
       {
         "id": "DeepSeek-V4-Pro",
-        "aliases": [
-          "deepseek-v4-pro",
-          "volcengine-deepseek-v4-pro",
-          "ark-deepseek-v4-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "volcengine"
       },
       {
         "id": "DeepSeek-V4-Flash",
-        "aliases": [
-          "deepseek-v4-flash",
-          "deepseek-chat",
-          "volcengine-deepseek-v4-flash",
-          "ark-deepseek-v4-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "volcengine"
       },
       {
         "id": "trinity-large-thinking",
-        "aliases": [
-          "trinity",
-          "arcee-trinity",
-          "arcee-trinity-large-thinking"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "arcee"
       },
       {
         "id": "trinity-mini",
-        "aliases": [
-          "arcee-trinity-mini"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "arcee"
       },
       {
         "id": "deepseek/deepseek-v4-pro",
-        "aliases": [
-          "deepseek-v4-pro",
-          "openrouter-deepseek-v4-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "deepseek/deepseek-v4-flash",
-        "aliases": [
-          "deepseek-v4-flash",
-          "deepseek-chat",
-          "deepseek-reasoner",
-          "openrouter-deepseek-v4-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "deepseek/deepseek-v4-pro",
-        "aliases": [
-          "orcarouter-deepseek-v4-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "orcarouter"
       },
       {
         "id": "deepseek/deepseek-v4-flash",
-        "aliases": [
-          "orcarouter-deepseek-v4-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "orcarouter"
       },
       {
         "id": "orcarouter/auto",
-        "aliases": [
-          "orcarouter-auto"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "orcarouter"
       },
       {
         "id": "arcee-ai/trinity-large-thinking",
-        "aliases": [
-          "trinity",
-          "trinity-large-thinking",
-          "arcee-trinity-large-thinking"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "xiaomi/mimo-v2.5-pro",
-        "aliases": [
-          "openrouter-mimo-v2.5-pro",
-          "openrouter-xiaomi-mimo-v2.5-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "xiaomi/mimo-v2.5",
-        "aliases": [
-          "openrouter-mimo-v2.5",
-          "openrouter-xiaomi-mimo-v2.5"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "qwen/qwen3.6-flash",
-        "aliases": [
-          "qwen3.6-flash",
-          "qwen-3.6-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "qwen/qwen3.6-35b-a3b",
-        "aliases": [
-          "qwen3.6-35b-a3b",
-          "qwen-3.6-35b-a3b"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "qwen/qwen3.6-max-preview",
-        "aliases": [
-          "qwen3.6-max-preview",
-          "qwen-3.6-max-preview",
-          "qwen-max-preview"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "qwen/qwen3.6-27b",
-        "aliases": [
-          "qwen3.6-27b",
-          "qwen-3.6-27b"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "qwen/qwen3.6-plus",
-        "aliases": [
-          "qwen3.6-plus",
-          "qwen-3.6-plus"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "qwen/qwen3.7-plus",
-        "aliases": [
-          "qwen3.7-plus",
-          "qwen-3.7-plus"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "moonshotai/kimi-k2.7-code",
-        "aliases": [
-          "kimi-k2.7-code",
-          "openrouter-kimi-k2.7-code"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "moonshotai/kimi-k2.6",
-        "aliases": [
-          "openrouter-kimi-k2.6"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "minimax/minimax-m3",
-        "aliases": [
-          "minimax-m3",
-          "minimax-m-3",
-          "openrouter-minimax-m3"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "z-ai/glm-5.1",
-        "aliases": [
-          "glm-5.1",
-          "zai-glm-5.1"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "z-ai/glm-5.2",
-        "aliases": [
-          "glm-5.2",
-          "zai-glm-5.2"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "z-ai/glm-5.3",
-        "aliases": [
-          "glm-5.3",
-          "zai-glm-5.3"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "z-ai/glm-5.3-flash",
-        "aliases": [
-          "glm-5.3-flash",
-          "zai-glm-5.3-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "z-ai/glm-5-turbo",
-        "aliases": [
-          "glm-5-turbo",
-          "zai-glm-5-turbo"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "GLM-5.3",
-        "aliases": [
-          "glm-5.3",
-          "glm-5-3",
-          "zai-glm-5.3",
-          "zai-glm-5-3"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "zai"
       },
       {
         "id": "GLM-5.3-Flash",
-        "aliases": [
-          "glm-5.3-flash",
-          "glm-5-3-flash",
-          "zai-glm-5.3-flash",
-          "zai-glm-5-3-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "zai"
       },
       {
         "id": "GLM-5.2",
-        "aliases": [
-          "glm-5.2",
-          "glm-5-2",
-          "zai-glm-5.2",
-          "zai-glm-5-2"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "zai"
       },
       {
         "id": "GLM-5.1",
-        "aliases": [
-          "glm-5.1",
-          "glm-5-1",
-          "zai-glm-5.1",
-          "zai-glm-5-1"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "zai"
       },
       {
         "id": "GLM-5-Turbo",
-        "aliases": [
-          "glm-5-turbo",
-          "glm-5turbo",
-          "zai-glm-5-turbo"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "zai"
       },
       {
         "id": "tencent/hy4",
-        "aliases": [
-          "hy4",
-          "tencent-hy4",
-          "hunyuan-hy4"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "tencent/hy3-preview",
-        "aliases": [
-          "hy3-preview",
-          "tencent-hy3-preview",
-          "hy3",
-          "hunyuan",
-          "tencent-hunyuan",
-          "hunyuan-hy3"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "google/gemma-4-31b-it",
-        "aliases": [
-          "gemma-4-31b",
-          "gemma-4-31b-it"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "google/gemma-4-26b-a4b-it",
-        "aliases": [
-          "gemma-4-26b-a4b",
-          "gemma-4-26b-a4b-it"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-        "aliases": [
-          "nemotron-3-nano-omni",
-          "nemotron-3-nano-omni-reasoning"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "mimo-v2.6-pro",
-        "aliases": [
-          "mimo",
-          "pro",
-          "xiaomi-mimo-v2.6-pro",
-          "xiaomi-mimo-v2-6-pro",
-          "mimo-v2.5-pro",
-          "xiaomi-mimo-v2.5-pro",
-          "xiaomi-mimo-v2-5-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "xiaomi-mimo"
       },
       {
         "id": "mimo-v2.6-flash",
-        "aliases": [
-          "omni",
-          "mimo-omni",
-          "v2.5-omni",
-          "mimo-v2.5-omni",
-          "mimo-v2.5",
-          "xiaomi-mimo-v2.5",
-          "xiaomi-mimo-v2.5-omni",
-          "xiaomi-mimo-v2.6-flash",
-          "xiaomi-mimo-v2-6-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "xiaomi-mimo"
       },
       {
         "id": "mimo-v2.5-asr",
-        "aliases": [
-          "asr",
-          "speech-to-text",
-          "transcribe"
-        ],
         "supports_tools": false,
         "supports_reasoning": false,
         "provider": "xiaomi-mimo"
       },
       {
         "id": "mimo-v2.5-tts",
-        "aliases": [
-          "tts",
-          "speech",
-          "mimo-tts"
-        ],
         "supports_tools": false,
         "supports_reasoning": false,
         "provider": "xiaomi-mimo"
       },
       {
         "id": "mimo-v2.5-tts-voicedesign",
-        "aliases": [
-          "voicedesign",
-          "voice-design",
-          "mimo-voice-design"
-        ],
         "supports_tools": false,
         "supports_reasoning": false,
         "provider": "xiaomi-mimo"
       },
       {
         "id": "mimo-v2.5-tts-voiceclone",
-        "aliases": [
-          "voiceclone",
-          "voice-clone",
-          "mimo-voice-clone"
-        ],
         "supports_tools": false,
         "supports_reasoning": false,
         "provider": "xiaomi-mimo"
       },
       {
         "id": "mimo-v2-tts",
-        "aliases": [
-          "mimo-v2-speech"
-        ],
         "supports_tools": false,
         "supports_reasoning": false,
         "provider": "xiaomi-mimo"
       },
       {
         "id": "deepseek/deepseek-v4-pro",
-        "aliases": [
-          "deepseek-v4-pro",
-          "novita-deepseek-v4-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "novita"
       },
       {
         "id": "deepseek/deepseek-v4-flash",
-        "aliases": [
-          "deepseek-v4-flash",
-          "deepseek-chat",
-          "deepseek-reasoner",
-          "novita-deepseek-v4-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "novita"
       },
       {
         "id": "accounts/fireworks/models/deepseek-v4-pro",
-        "aliases": [
-          "deepseek-v4-pro",
-          "fireworks-deepseek-v4-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "fireworks"
       },
       {
         "id": "deepseek-ai/DeepSeek-V4-Pro",
-        "aliases": [
-          "deepseek-v4-pro",
-          "siliconflow-deepseek-v4-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "siliconflow"
       },
       {
         "id": "deepseek-ai/DeepSeek-V4-Flash",
-        "aliases": [
-          "deepseek-v4-flash",
-          "deepseek-chat",
-          "deepseek-v3",
-          "siliconflow-deepseek-v4-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "siliconflow"
       },
       {
         "id": "trinity-large-preview",
-        "aliases": [
-          "arcee-trinity-large-preview"
-        ],
         "supports_tools": true,
         "supports_reasoning": false,
         "provider": "arcee"
       },
       {
         "id": "kimi-k2.7-code",
-        "aliases": [
-          "kimi",
-          "kimi-k2",
-          "kimi-k2.7",
-          "kimi-code",
-          "moonshot-kimi-k2.7-code"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "moonshot"
       },
       {
         "id": "kimi-k2.6",
-        "aliases": [
-          "kimi-k2.6",
-          "moonshot-kimi-k2.6"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "moonshot"
       },
       {
         "id": "kimi-k3",
-        "aliases": [
-          "moonshot-kimi-k3"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "moonshot"
       },
       {
         "id": "k3",
-        "aliases": [
-          "kimi-code-k3"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "moonshot"
       },
       {
         "id": "deepseek-ai/DeepSeek-V4-Pro",
-        "aliases": [
-          "deepseek-v4-pro",
-          "sglang-deepseek-v4-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "sglang"
       },
       {
         "id": "deepseek-ai/DeepSeek-V4-Flash",
-        "aliases": [
-          "deepseek-v4-flash",
-          "deepseek-chat",
-          "deepseek-reasoner",
-          "sglang-deepseek-v4-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "sglang"
       },
       {
         "id": "deepseek-ai/DeepSeek-V4-Pro",
-        "aliases": [
-          "deepseek-v4-pro",
-          "vllm-deepseek-v4-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "vllm"
       },
       {
         "id": "deepseek-ai/DeepSeek-V4-Flash",
-        "aliases": [
-          "deepseek-v4-flash",
-          "deepseek-chat",
-          "deepseek-reasoner",
-          "vllm-deepseek-v4-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "vllm"
       },
       {
         "id": "deepseek-v4-flash",
-        "aliases": [],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "ollama"
       },
       {
         "id": "gpt-oss:120b",
-        "aliases": [],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "ollama-cloud"
       },
       {
         "id": "deepseek-ai/DeepSeek-V4-Pro",
-        "aliases": [
-          "deepseek-v4-pro",
-          "hf-deepseek-v4-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "huggingface"
       },
       {
         "id": "deepseek-ai/DeepSeek-V4-Flash",
-        "aliases": [
-          "deepseek-v4-flash",
-          "deepseek-chat",
-          "deepseek-reasoner",
-          "hf-deepseek-v4-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "huggingface"
       },
       {
         "id": "Qwen/Qwen3.5-397B-A17B",
-        "aliases": [
-          "qwen3.5-397b-a17b",
-          "modelscope-qwen3.5-397b-a17b"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "modelscope"
       },
       {
         "id": "Qwen/Qwen3.5-122B-A10B",
-        "aliases": [
-          "qwen3.5-122b-a10b",
-          "modelscope-qwen3.5-122b-a10b"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "modelscope"
       },
       {
         "id": "Qwen/Qwen3.5-27B",
-        "aliases": [
-          "qwen3.5-27b",
-          "modelscope-qwen3.5-27b"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "modelscope"
       },
       {
         "id": "Qwen/Qwen3.5-35B-A3B",
-        "aliases": [
-          "qwen3.5-35b-a3b",
-          "modelscope-qwen3.5-35b-a3b"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "modelscope"
       },
       {
         "id": "Qwen/Qwen3.8-27B",
-        "aliases": [
-          "qwen3.8-27b",
-          "modelscope-qwen3.8-27b"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "modelscope"
       },
       {
         "id": "Qwen/Qwen3.8-Flash-Next",
-        "aliases": [
-          "qwen3.8-flash-next",
-          "modelscope-qwen3.8-flash-next"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "modelscope"
       },
       {
         "id": "deepseek-ai/DeepSeek-V4-Pro",
-        "aliases": [
-          "deepseek-v4-pro",
-          "modelscope-deepseek-v4-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "modelscope"
       },
       {
         "id": "deepseek-ai/DeepSeek-V4-Pro-0813",
-        "aliases": [
-          "deepseek-v4-pro-0813",
-          "modelscope-deepseek-v4-pro-0813"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "modelscope"
       },
       {
         "id": "deepseek-ai/DeepSeek-V4.1-Flash",
-        "aliases": [
-          "deepseek-v4.1-flash",
-          "modelscope-deepseek-v4.1-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "modelscope"
       },
       {
         "id": "ZhipuAI/GLM-4.7-Flash",
-        "aliases": [
-          "glm-4.7-flash",
-          "modelscope-glm-4.7-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "modelscope"
       },
       {
         "id": "ZhipuAI/GLM-5.2",
-        "aliases": [
-          "glm-5.2",
-          "modelscope-glm-5.2"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "modelscope"
       },
       {
         "id": "glm_for_coding",
-        "aliases": [
-          "glm-for-coding",
-          "csdn-glm-for-coding"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "csdn"
       },
       {
         "id": "deepseek-ai/DeepSeek-V4-Pro",
-        "aliases": [
-          "deepseek-v4-pro",
-          "together-deepseek-v4-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "together"
       },
       {
         "id": "deepseek-ai/DeepSeek-V4-Flash",
-        "aliases": [
-          "deepseek-v4-flash",
-          "deepseek-chat",
-          "together-deepseek-v4-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "together"
       },
       {
         "id": "thinkingmachines/inkling",
-        "aliases": [
-          "inkling",
-          "together-inkling"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "together"
       },
       {
         "id": "qwen/qwen3.7-max",
-        "aliases": [
-          "qwen3.7-max",
-          "qwen-3.7-max"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "gpt-5.5",
-        "aliases": [
-          "codex-gpt-5.5",
-          "chatgpt-gpt-5.5"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openai-codex"
       },
       {
         "id": "claude-opus-4-8",
-        "aliases": [
-          "opus",
-          "claude-opus"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "anthropic"
       },
       {
         "id": "claude-opus-5",
-        "aliases": [
-          "opus-5"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "anthropic"
       },
       {
         "id": "claude-sonnet-4-6",
-        "aliases": [
-          "sonnet",
-          "claude-sonnet"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "anthropic"
       },
       {
         "id": "claude-haiku-4-5",
-        "aliases": [
-          "haiku",
-          "claude-haiku"
-        ],
         "supports_tools": true,
         "supports_reasoning": false,
         "provider": "anthropic"
       },
       {
         "id": "claude-sonnet-5",
-        "aliases": [
-          "sonnet-5"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "anthropic"
       },
       {
         "id": "claude-fable-5",
-        "aliases": [
-          "fable",
-          "fable-5"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "anthropic"
       },
       {
         "id": "claude-opus-5-5",
-        "aliases": [
-          "opus-5-5",
-          "opus-5.5"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "anthropic"
       },
       {
         "id": "claude-sonnet-5-5",
-        "aliases": [
-          "sonnet-5-5",
-          "sonnet-5.5"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "anthropic"
       },
       {
         "id": "claude-haiku-5-5",
-        "aliases": [
-          "haiku-5-5",
-          "haiku-5.5"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "anthropic"
       },
       {
         "id": "claude-fable-5-1",
-        "aliases": [
-          "fable-5-1",
-          "fable-5.1"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "anthropic"
       },
       {
         "id": "deepseek-v4-flash",
-        "aliases": [
-          "openmodel",
-          "openmodel-deepseek"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openmodel"
       },
       {
         "id": "minimax/minimax-m2.7",
-        "aliases": [
-          "minimax-2.7",
-          "minimax-2-7",
-          "openrouter-minimax-2.7"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "step-3.7-flash",
-        "aliases": [
-          "stepfun",
-          "stepflash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "stepfun"
       },
       {
         "id": "step-5-preview",
-        "aliases": [],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "stepfun"
       },
       {
         "id": "step-3.5-flash",
-        "aliases": [],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "stepfun"
       },
       {
         "id": "step-3.5-flash-2603",
-        "aliases": [],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "stepfun"
       },
       {
         "id": "MiniMax-M3",
-        "aliases": [
-          "minimax",
-          "minimax-m3",
-          "minimax-m-3"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "minimax"
       },
       {
         "id": "MiniMax-M2.7",
-        "aliases": [
-          "minimax-m2.7",
-          "minimax-m2-7",
-          "minimax-m-2.7",
-          "minimax-m-2-7"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "minimax"
       },
       {
         "id": "MiniMax-M3",
-        "aliases": [
-          "minimax-anthropic",
-          "minimax-anthropic-m3",
-          "minimax-m3"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "minimax-anthropic"
       },
       {
         "id": "MiniMax-M2.7",
-        "aliases": [
-          "minimax-anthropic-m2.7",
-          "minimax-anthropic-m2-7",
-          "minimax-m2.7"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "minimax-anthropic"
       },
       {
         "id": "MiniMax-M2.7-highspeed",
-        "aliases": [
-          "minimax-m2.7-highspeed",
-          "minimax-m2-7-highspeed",
-          "minimax-m-2.7-highspeed",
-          "minimax-m-2-7-highspeed"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "minimax"
       },
       {
         "id": "MiniMax-M2.5",
-        "aliases": [
-          "minimax-m2.5",
-          "minimax-m2-5",
-          "minimax-m-2.5",
-          "minimax-m-2-5"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "minimax"
       },
       {
         "id": "MiniMax-M2.5-highspeed",
-        "aliases": [
-          "minimax-m2.5-highspeed",
-          "minimax-m2-5-highspeed",
-          "minimax-m-2.5-highspeed",
-          "minimax-m-2-5-highspeed"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "minimax"
       },
       {
         "id": "MiniMax-M2.1",
-        "aliases": [
-          "minimax-m2.1",
-          "minimax-m2-1",
-          "minimax-m-2.1",
-          "minimax-m-2-1"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "minimax"
       },
       {
         "id": "MiniMax-M2.1-highspeed",
-        "aliases": [
-          "minimax-m2.1-highspeed",
-          "minimax-m2-1-highspeed",
-          "minimax-m-2.1-highspeed",
-          "minimax-m-2-1-highspeed"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "minimax"
       },
       {
         "id": "MiniMax-M2",
-        "aliases": [
-          "minimax-m2",
-          "minimax-m-2"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "minimax"
       },
       {
         "id": "nvidia/nemotron-3-ultra-550b-a55b",
-        "aliases": [
-          "nvidia/nemotron-3-ultra",
-          "nemotron-3-ultra",
-          "nemotron-3-ultra-550b-a55b",
-          "nvidia-nemotron-3-ultra",
-          "nvidia-nemotron-3-ultra-550b-a55b"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "openrouter"
       },
       {
         "id": "deepseek-ai/DeepSeek-V4-Pro",
-        "aliases": [
-          "deepseek-v4-pro",
-          "di-deepseek-v4-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "deepinfra"
       },
       {
         "id": "deepseek-ai/DeepSeek-V4-Flash",
-        "aliases": [
-          "deepseek-v4-flash",
-          "di-deepseek-v4-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "deepinfra"
       },
       {
         "id": "deepseek-ai/DeepSeek-V4-Pro-0813",
-        "aliases": [
-          "deepseek-v4-pro-0813",
-          "di-deepseek-v4-pro-0813"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "deepinfra"
       },
       {
         "id": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
-        "aliases": [
-          "di-deepseek-v4.1-flash-1017"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "deepinfra"
       },
       {
         "id": "deepseek-ai/DeepSeek-V4.1-Flash",
-        "aliases": [
-          "deepseek-v4.1-flash",
-          "di-deepseek-v4.1-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "deepinfra"
       },
       {
         "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
-        "aliases": [
-          "di-deepseek-v4-flash-0731"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "deepinfra"
       },
       {
         "id": "fugu",
-        "aliases": [
-          "sakana-fugu",
-          "sakana/fugu"
-        ],
         "supports_tools": true,
         "supports_reasoning": false,
         "provider": "sakana"
       },
       {
         "id": "fugu-ultra-20260615",
-        "aliases": [
-          "fugu-ultra",
-          "sakana-fugu-ultra"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "sakana"
       },
       {
         "id": "LongCat-2.0",
-        "aliases": [
-          "longcat",
-          "longcat-2.0"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "longcat"
       },
       {
         "id": "muse-spark-1.3",
-        "aliases": [
-          "muse-spark",
-          "muse"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "meta"
       },
       {
         "id": "muse-spark-1.3-contributor",
-        "aliases": [
-          "muse-spark-contributor"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "meta"
       },
       {
         "id": "muse-wonder-1.0",
-        "aliases": [
-          "muse-wonder"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "meta"
       },
       {
         "id": "muse-spark-1.2",
-        "aliases": [],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "meta"
       },
       {
         "id": "muse-spark-1.2-contributor",
-        "aliases": [],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "meta"
       },
       {
         "id": "grok-4.6",
-        "aliases": [],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "xai"
       },
       {
         "id": "grok-4.7",
-        "aliases": [
-          "grok"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "xai"
       },
       {
         "id": "grok-4.5",
-        "aliases": [
-          "xai-grok-4.5"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "xai"
       },
       {
         "id": "grok-4.3",
-        "aliases": [
-          "xai-grok-4.3"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "xai"
       },
       {
         "id": "grok-build",
-        "aliases": [
-          "xai-grok-build"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "xai"
       },
       {
         "id": "grok-composer-2.5-fast",
-        "aliases": [
-          "xai-grok-composer"
-        ],
         "supports_tools": true,
         "supports_reasoning": false,
         "provider": "xai"
       },
       {
         "id": "grok-4.20-0309-reasoning",
-        "aliases": [
-          "xai-grok-reasoning"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "xai"
       },
       {
         "id": "grok-4.20-0309-non-reasoning",
-        "aliases": [
-          "xai-grok-fast"
-        ],
         "supports_tools": true,
         "supports_reasoning": false,
         "provider": "xai"
       },
       {
         "id": "gemini-4-hydrogen",
-        "aliases": [],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "google"
       },
       {
         "id": "gemini-4-argon",
-        "aliases": [],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "google"
       },
       {
         "id": "gemini-3.1-pro-preview",
-        "aliases": [
-          "gemini-3.1-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "google"
       },
       {
         "id": "gemini-3-pro-preview",
-        "aliases": [
-          "gemini-3-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "google"
       },
       {
         "id": "gemini-3.8-flash",
-        "aliases": [
-          "gemini-3.7-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "google"
       },
       {
         "id": "gemini-3.6-flash",
-        "aliases": [
-          "gemini-3.5-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "google"
       },
       {
         "id": "gemini-3.5-flash-lite",
-        "aliases": [],
         "supports_tools": true,
         "supports_reasoning": false,
         "provider": "google"
       },
       {
         "id": "gemini-2.5-pro",
-        "aliases": [],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "google"
       },
       {
         "id": "gemini-2.5-flash",
-        "aliases": [],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "google"
       },
       {
         "id": "mistral-code-latest",
-        "aliases": [
-          "codestral",
-          "codestral-latest",
-          "mistral-code"
-        ],
         "supports_tools": true,
         "supports_reasoning": false,
         "provider": "mistral"
       },
       {
         "id": "mistral-medium-latest",
-        "aliases": [
-          "mistral-medium",
-          "mistral-medium-3-5"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "mistral"
       },
       {
         "id": "mistral-small-latest",
-        "aliases": [
-          "mistral-small",
-          "mistral-small-2603"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "mistral"
       },
       {
         "id": "magistral-small-latest",
-        "aliases": [
-          "magistral",
-          "magistral-small"
-        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "mistral"
       },
       {
         "id": "mistral-large-latest",
-        "aliases": [
-          "mistral-large"
-        ],
         "supports_tools": true,
         "supports_reasoning": false,
         "provider": "mistral"
@@ -3551,272 +3033,188 @@
       {
         "provider": "opencode-go",
         "id": "deepseek-v4-pro",
-        "aliases": [
-          "opencode-go/deepseek-v4-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true
       },
       {
         "provider": "opencode-go",
         "id": "grok-4.5",
-        "aliases": [
-          "opencode-go/grok-4.5"
-        ],
         "supports_tools": true,
         "supports_reasoning": true
       },
       {
         "provider": "opencode-go",
         "id": "glm-5.2",
-        "aliases": [
-          "opencode-go/glm-5.2"
-        ],
         "supports_tools": true,
         "supports_reasoning": true
       },
       {
         "provider": "opencode-go",
         "id": "glm-5.1",
-        "aliases": [
-          "opencode-go/glm-5.1"
-        ],
         "supports_tools": true,
         "supports_reasoning": true
       },
       {
         "provider": "opencode-go",
         "id": "kimi-k3",
-        "aliases": [
-          "opencode-go/kimi-k3"
-        ],
         "supports_tools": true,
         "supports_reasoning": true
       },
       {
         "provider": "opencode-go",
         "id": "kimi-k2.7-code",
-        "aliases": [
-          "opencode-go/kimi-k2.7-code"
-        ],
         "supports_tools": true,
         "supports_reasoning": true
       },
       {
         "provider": "opencode-go",
         "id": "kimi-k2.6",
-        "aliases": [
-          "opencode-go/kimi-k2.6"
-        ],
         "supports_tools": true,
         "supports_reasoning": true
       },
       {
         "provider": "opencode-go",
         "id": "deepseek-v4-flash",
-        "aliases": [
-          "opencode-go/deepseek-v4-flash"
-        ],
         "supports_tools": true,
         "supports_reasoning": true
       },
       {
         "provider": "opencode-go",
         "id": "mimo-v2.5",
-        "aliases": [
-          "opencode-go/mimo-v2.5"
-        ],
         "supports_tools": true,
         "supports_reasoning": true
       },
       {
         "provider": "opencode-go",
         "id": "mimo-v2.5-pro",
-        "aliases": [
-          "opencode-go/mimo-v2.5-pro"
-        ],
         "supports_tools": true,
         "supports_reasoning": true
       },
       {
         "provider": "opencode-go",
         "id": "glm-5.3-flash",
-        "aliases": [
-          "opencode-go/glm-5.3-flash"
-        ],
         "supports_tools": false,
         "supports_reasoning": false
       },
       {
         "provider": "opencode-go",
         "id": "glm-5.3",
-        "aliases": [
-          "opencode-go/glm-5.3"
-        ],
         "supports_tools": false,
         "supports_reasoning": false
       },
       {
         "provider": "opencode-go",
         "id": "longcat-2.0",
-        "aliases": [
-          "opencode-go/longcat-2.0"
-        ],
         "supports_tools": false,
         "supports_reasoning": false
       },
       {
         "provider": "opencode-go",
         "id": "deepseek-v4-flash-vision-exp",
-        "aliases": [
-          "opencode-go/deepseek-v4-flash-vision-exp"
-        ],
         "supports_tools": false,
         "supports_reasoning": false
       },
       {
         "provider": "opencode-go",
         "id": "hy4-preview",
-        "aliases": [
-          "opencode-go/hy4-preview"
-        ],
         "supports_tools": false,
         "supports_reasoning": false
       },
       {
         "provider": "opencode-go",
         "id": "hy3",
-        "aliases": [
-          "opencode-go/hy3"
-        ],
         "supports_tools": false,
         "supports_reasoning": false
       },
       {
         "provider": "opencode-go",
         "id": "omen-alpha",
-        "aliases": [
-          "opencode-go/omen-alpha"
-        ],
         "supports_tools": false,
         "supports_reasoning": false
       },
       {
         "provider": "opencode-go",
         "id": "deepseek-v4.1-flash",
-        "aliases": [
-          "opencode-go/deepseek-v4.1-flash"
-        ],
         "supports_tools": false,
         "supports_reasoning": false
       },
       {
         "provider": "opencode-go",
         "id": "grok-4.6",
-        "aliases": [
-          "opencode-go/grok-4.6"
-        ],
         "supports_tools": false,
         "supports_reasoning": false
       },
       {
         "provider": "opencode-go",
         "id": "gpt-5.6-luna",
-        "aliases": [
-          "opencode-go/gpt-5.6-luna"
-        ],
         "supports_tools": false,
         "supports_reasoning": false
       },
       {
         "provider": "opencode-go",
         "id": "muse-spark-1.3-contributor",
-        "aliases": [
-          "opencode-go/muse-spark-1.3-contributor"
-        ],
         "supports_tools": false,
         "supports_reasoning": false
       },
       {
         "provider": "opencode-go",
         "id": "muse-spark-1.2-contributor",
-        "aliases": [
-          "opencode-go/muse-spark-1.2-contributor"
-        ],
         "supports_tools": false,
         "supports_reasoning": false
       },
       {
         "provider": "opencode-go",
         "id": "minimax-m3",
-        "aliases": [
-          "opencode-go/minimax-m3"
-        ],
         "supports_tools": false,
         "supports_reasoning": false
       },
       {
         "provider": "opencode-go",
         "id": "minimax-m2.7",
-        "aliases": [
-          "opencode-go/minimax-m2.7"
-        ],
         "supports_tools": false,
         "supports_reasoning": false
       },
       {
         "provider": "opencode-go",
         "id": "minimax-m2.5",
-        "aliases": [
-          "opencode-go/minimax-m2.5"
-        ],
         "supports_tools": false,
         "supports_reasoning": false
       },
       {
         "provider": "opencode-go",
         "id": "qwen3.8-max",
-        "aliases": [
-          "opencode-go/qwen3.8-max"
-        ],
         "supports_tools": false,
         "supports_reasoning": false
       },
       {
         "provider": "opencode-go",
         "id": "qwen3.8-flash",
-        "aliases": [
-          "opencode-go/qwen3.8-flash"
-        ],
         "supports_tools": false,
         "supports_reasoning": false
       },
       {
         "provider": "opencode-go",
         "id": "qwen3.7-max",
-        "aliases": [
-          "opencode-go/qwen3.7-max"
-        ],
         "supports_tools": false,
         "supports_reasoning": false
       },
       {
         "provider": "opencode-go",
         "id": "qwen3.7-plus",
-        "aliases": [
-          "opencode-go/qwen3.7-plus"
-        ],
         "supports_tools": false,
         "supports_reasoning": false
       },
       {
         "provider": "opencode-go",
         "id": "qwen3.6-plus",
-        "aliases": [
-          "opencode-go/qwen3.6-plus"
-        ],
         "supports_tools": false,
         "supports_reasoning": false
+      },
+      {
+        "id": "gemini-4-neon",
+        "supports_tools": true,
+        "supports_reasoning": true,
+        "provider": "google"
       }
     ],
     "public_models": [
@@ -4623,6 +4021,38 @@
         "aliases": [
           "gemini-4-hydrogen"
         ]
+      },
+      {
+        "id": "muse-ember-1.0",
+        "label": "Meta",
+        "added_at": "2026-11-09",
+        "aliases": [
+          "muse-ember-1.0"
+        ]
+      },
+      {
+        "id": "gpt-6.2-astra",
+        "label": "OpenAI",
+        "added_at": "2026-11-17",
+        "aliases": [
+          "gpt-6.2-astra"
+        ]
+      },
+      {
+        "id": "gpt-6.2-sol",
+        "label": "OpenAI",
+        "added_at": "2026-11-17",
+        "aliases": [
+          "gpt-6.2-sol"
+        ]
+      },
+      {
+        "id": "gemini-4-neon",
+        "label": "Google",
+        "added_at": "2026-11-18",
+        "aliases": [
+          "gemini-4-neon"
+        ]
       }
     ],
     "constants": {
@@ -4796,7 +4226,8 @@
       "https://platform.claude.com/docs/en/models/haiku-4-5/overview": "verified 2026-10-22: claude-haiku-4-5 supports manual extended thinking and image input, with 200K context and 64K output; no adaptive-thinking or default-effort support inferred",
       "https://qwencloud.com/pricing/token-plan": "verified 2026-11-11: the Supported Models table lists qwen4-max-preview marked New with Text Generation, Reasoning Model and Visual Understanding, so image input is recorded; the page gives no context window, maximum output, tool calling or thinking control, so none is recorded and Codewhale sends no thinking switch",
       "https://aistudio.google.com/docs/models/gemini-4-hydrogen": "verified 2026-11-17: stable model code gemini-4-hydrogen, 1,048,576 context, 65,536 output by default for synchronous requests (1,048,576 with long decode), function calling, thinking levels low/medium/high/xhigh, implicit caching only",
-      "https://aistudio.google.com/docs/models": "verified 2026-11-17: gemini-3-pro-preview is shut down; gemini-2.5-pro and gemini-2.5-flash are deprecated and route to gemini-3.8-flash and gemini-3.5-flash-lite from 2026-12-01; Google recommends gemini-4-hydrogen for new projects"
+      "https://aistudio.google.com/docs/models": "verified 2026-11-17: gemini-3-pro-preview is shut down; gemini-2.5-pro and gemini-2.5-flash are deprecated and route to gemini-3.8-flash and gemini-3.5-flash-lite from 2026-12-01; Google recommends gemini-4-hydrogen for new projects",
+      "https://aistudio.google.com/docs/models/gemini-4-neon": "verified 2026-11-19: model code gemini-4-neon, 1,048,576 context, 65,536 output by default; thinking levels low, medium, high (default), xhigh; paid tier $3 input, $15 output, $0.15 cache-read per 1M tokens; text, image, audio, video and PDF input; text output"
     },
     "transports": [
       {
@@ -5307,13 +4738,6 @@
       },
       {
         "provider": "opencode-zen",
-        "id": "muse-spark-1.3-contributor-free",
-        "endpoint_key": "responses",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
         "id": "muse-spark-1.2",
         "endpoint_key": "responses",
         "default_for_provider": false,
@@ -5322,13 +4746,6 @@
       {
         "provider": "opencode-zen",
         "id": "muse-spark-1.2-contributor",
-        "endpoint_key": "responses",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
-        "id": "muse-spark-1.2-contributor-free",
         "endpoint_key": "responses",
         "default_for_provider": false,
         "source": "preserved reviewed exact transport snapshot; see source_receipts"
@@ -5588,69 +5005,6 @@
       {
         "provider": "opencode-zen",
         "id": "big-pickle",
-        "endpoint_key": "chat",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
-        "id": "space-bunny-free",
-        "endpoint_key": "chat",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
-        "id": "longcat-2.5-preview-free",
-        "endpoint_key": "chat",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
-        "id": "mimo-v2.6-flash-free",
-        "endpoint_key": "chat",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
-        "id": "mimo-v2.5-free",
-        "endpoint_key": "chat",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
-        "id": "ling-3.0-flash-fin-free",
-        "endpoint_key": "chat",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
-        "id": "north-mini-code-free",
-        "endpoint_key": "chat",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
-        "id": "nemotron-3-ultra-free",
-        "endpoint_key": "chat",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
-        "id": "nemotron-3.5-lightning-free",
-        "endpoint_key": "chat",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
-        "id": "deepseek-v4-flash-free",
         "endpoint_key": "chat",
         "default_for_provider": false,
         "source": "preserved reviewed exact transport snapshot; see source_receipts"
@@ -6404,6 +5758,18 @@
         "output": 0.33,
         "source": "preserved exact cited reference; not endpoint/account pricing"
       },
+      "google/gemini-4-neon": {
+        "cache_read": 0.15,
+        "input": 3.0,
+        "output": 15.0,
+        "source": "preserved exact cited reference; not endpoint/account pricing"
+      },
+      "gemini-4-neon": {
+        "cache_read": 0.15,
+        "input": 3.0,
+        "output": 15.0,
+        "source": "preserved exact cited reference; not endpoint/account pricing"
+      },
       "tencent/hy3-preview": {
         "cache_read": 0.021,
         "input": 0.063,
@@ -6641,6 +6007,7 @@
       ],
       "google": [
         "gemini-4-hydrogen",
+        "gemini-4-neon",
         "$DEFAULT_GOOGLE_MODEL",
         "gemini-4-argon",
         "gemini-3.8-flash",

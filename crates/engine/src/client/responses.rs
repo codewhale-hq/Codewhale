@@ -880,6 +880,19 @@ impl CodewhaleClient {
                                         },
                                         usage: usage_data.take(),
                                     });
+                                } else {
+                                    yield Ok(StreamEvent::MessageDelta {
+                                        delta: MessageDelta {
+                                            stop_reason: Some(
+                                                "incomplete:unknown_status".to_string(),
+                                            ),
+                                            stop_sequence: None,
+                                            title: None,
+                                            stop_details: None,
+                                            refusal: None,
+                                        },
+                                        usage: usage_data.take(),
+                                    });
                                 }
                                 // DeepSeek terminates semantic Responses
                                 // streams with this event and deliberately does
@@ -1103,10 +1116,14 @@ impl CodewhaleClient {
                                 buf.push_str(&partial_json);
                             }
                         }
-                        Delta::SignatureDelta { .. } => {
-                            // Anthropic-native signature deltas never occur on
-                            // the Responses bridge (#3014).
+                        Delta::ToolCallIdDelta { id } => {
+                            if let Some(ContentBlock::ToolUse { id: existing, .. }) =
+                                response.content.get_mut(i)
+                            {
+                                *existing = id;
+                            }
                         }
+                        Delta::SignatureDelta { .. } | Delta::ThoughtSignatureDelta { .. } => {}
                         Delta::ReasoningStateDelta { state } => {
                             if let Some(ContentBlock::Thinking {
                                 state: existing, ..
@@ -1637,14 +1654,15 @@ fn responses_event_error_details(event: &Value) -> (String, String) {
 }
 
 fn responses_stop_reason(response: &Value, saw_tool_call: bool) -> String {
-    match string_at(response, "/status").unwrap_or("completed") {
-        "completed" if saw_tool_call => "tool_use".to_string(),
-        "completed" => "end_turn".to_string(),
-        "incomplete" => format!(
+    match string_at(response, "/status") {
+        Some("completed") if saw_tool_call => "tool_use".to_string(),
+        Some("completed") => "end_turn".to_string(),
+        Some("incomplete") => format!(
             "incomplete:{}",
             string_at(response, "/incomplete_details/reason").unwrap_or("max_tokens")
         ),
-        _ => "end_turn".to_string(),
+        Some(other) => format!("incomplete:unknown_status:{other}"),
+        None => "incomplete:unknown_status".to_string(),
     }
 }
 
@@ -1685,10 +1703,10 @@ fn admit_shared_responses_usage(profile: &ResponsesDialectProfile) {
 
 /// Parse usage from a Responses API usage object.
 fn parse_responses_usage(val: &Value) -> Usage {
-    let input = val
+    let reported_input = val
         .get("input_tokens")
         .and_then(|v| v.as_u64())
-        .map_or(0, super::saturating_u32);
+        .map(super::saturating_u32);
     let output = val
         .get("output_tokens")
         .and_then(|v| v.as_u64())
@@ -1710,13 +1728,17 @@ fn parse_responses_usage(val: &Value) -> Usage {
         .map(super::saturating_u32);
     // DeepSeek reports the miss explicitly; otherwise mirror the
     // Chat-Completions parser: derive the miss as input minus the cached hit
-    // when the payload reported cached input tokens. Responses nests
+    // when the payload reported both total and cached input tokens. Responses nests
     // reasoning under `output_tokens_details` (not `completion_tokens_details`).
     let prompt_cache_miss_tokens = val
         .get("prompt_cache_miss_tokens")
         .and_then(|v| v.as_u64())
         .map(super::saturating_u32)
-        .or_else(|| prompt_cache_hit_tokens.map(|hit| input.saturating_sub(hit)));
+        .or_else(|| {
+            reported_input
+                .zip(prompt_cache_hit_tokens)
+                .map(|(input, hit)| input.saturating_sub(hit))
+        });
     // Cache-creation tokens, kept as their own class so pricing can apply the
     // write rate where the provider publishes one. DeepSeek-style payloads
     // nest these under `input_tokens_details`; accept a top-level spelling
@@ -1745,7 +1767,7 @@ fn parse_responses_usage(val: &Value) -> Usage {
     // billable classes and the context budget measures the window with it.
     // Reducing it here to miss-only would double-subtract at those surfaces.
     Usage {
-        input_tokens: input,
+        input_tokens: reported_input.unwrap_or_default(),
         output_tokens: output,
         prompt_cache_hit_tokens,
         prompt_cache_miss_tokens,

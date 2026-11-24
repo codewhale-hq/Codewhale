@@ -1894,3 +1894,176 @@
             io::ErrorKind::InvalidData
         );
     }
+
+    #[test]
+    fn oversized_ledger_compacts_diagnostic_receipts_before_failing() {
+        let tmp = tempdir().unwrap();
+        let manager = SessionManager::new(tmp.path().join("sessions")).unwrap();
+        let route = crate::cost_status::EffectiveRouteEnvelope::capture(
+            None,
+            ProviderKind::Deepseek,
+            "deepseek",
+            "deepseek-v4-flash",
+            Some("https://api.deepseek.com/v1"),
+            Utc::now(),
+        );
+        let spend = LateUsageRecord {
+            source_fingerprint: crate::cost_status::usage_source_fingerprint("spend"),
+            turn_fingerprint: crate::cost_status::usage_source_fingerprint("turn"),
+            route,
+            usage: Some(codewhale_models::Usage {
+                input_tokens: 1,
+                ..Default::default()
+            }),
+            reason: crate::cost_status::RuntimeUsageMissingReason::default(),
+            decision: None,
+            settlement: None,
+            diagnostic_only: false,
+        };
+        let diagnostic = LateUsageRecord {
+            source_fingerprint: crate::cost_status::usage_source_fingerprint("small"),
+            usage: None,
+            diagnostic_only: true,
+            ..spend.clone()
+        };
+        let mut decision = crate::cost_status::decision_receipt_fixture("oldest");
+        for index in 0..40 {
+            decision
+                .evidence
+                .probabilities_bp
+                .insert(format!("{index:0120}"), 100);
+        }
+        assert!(decision.is_bounded());
+        let oldest = LateUsageRecord {
+            source_fingerprint: crate::cost_status::usage_source_fingerprint("oldest"),
+            decision: Some(decision),
+            ..diagnostic.clone()
+        };
+        let unresolved = LateUsageRecord {
+            source_fingerprint: crate::cost_status::usage_source_fingerprint("unresolved"),
+            usage: None,
+            ..spend.clone()
+        };
+        let mut expected = LateUsageLedger {
+            records: vec![spend, unresolved],
+            ..Default::default()
+        };
+        let limit = usize::try_from(MAX_LATE_USAGE_LEDGER_BYTES).unwrap();
+        let record_bytes = serde_json::to_vec(&diagnostic).unwrap().len() + 1;
+        let room = limit - serde_json::to_vec(&expected).unwrap().len();
+        for index in 0..room / record_bytes {
+            expected.records.push(LateUsageRecord {
+                source_fingerprint: crate::cost_status::usage_source_fingerprint(&format!(
+                    "small-{index}"
+                )),
+                ..diagnostic.clone()
+            });
+        }
+        let mut oversized = expected.clone();
+        oversized.records.insert(1, oldest);
+        assert!(serde_json::to_vec(&expected).unwrap().len() <= limit);
+        assert!(serde_json::to_vec(&oversized).unwrap().len() > limit + 2 * record_bytes);
+
+        let (path, _) = manager
+            .ensure_late_usage_paths("compact-diagnostics")
+            .unwrap();
+        SessionManager::write_late_usage_ledger(&path, &oversized).unwrap();
+
+        let loaded = manager.load_late_usage("compact-diagnostics").unwrap();
+        assert_eq!(
+            serde_json::to_value(loaded).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+        assert!(fs::metadata(&path).unwrap().len() <= MAX_LATE_USAGE_LEDGER_BYTES);
+    }
+
+    #[test]
+    fn session_saves_succeed_when_late_usage_ledger_is_at_or_above_size_bound() {
+        let tmp = tempdir().unwrap();
+        let manager = SessionManager::new(tmp.path().join("sessions")).unwrap();
+        let session_id = "cw-8230-full-ledger";
+        let mut session = create_saved_session_with_id_and_mode(
+            session_id.to_string(),
+            &[],
+            "deepseek-v4-flash",
+            tmp.path(),
+            0,
+            None,
+            Some("agent"),
+        );
+        manager.save_session(&session).unwrap();
+
+        let route = crate::cost_status::EffectiveRouteEnvelope::capture(
+            None,
+            ProviderKind::Deepseek,
+            "deepseek",
+            "deepseek-v4-flash",
+            Some("https://api.deepseek.com/v1"),
+            Utc::now(),
+        );
+        let record = LateUsageRecord {
+            source_fingerprint: crate::cost_status::usage_source_fingerprint("retained"),
+            turn_fingerprint: crate::cost_status::usage_source_fingerprint("turn"),
+            route,
+            usage: Some(codewhale_models::Usage {
+                input_tokens: 1,
+                ..Default::default()
+            }),
+            reason: crate::cost_status::RuntimeUsageMissingReason::default(),
+            decision: None,
+            settlement: None,
+            diagnostic_only: false,
+        };
+        let empty_bytes = serde_json::to_vec(&LateUsageLedger::default())
+            .unwrap()
+            .len();
+        let record_bytes = serde_json::to_vec(&record).unwrap().len() + 1;
+        let count =
+            (usize::try_from(MAX_LATE_USAGE_LEDGER_BYTES).unwrap() - empty_bytes) / record_bytes;
+        let full = LateUsageLedger {
+            records: (0..count)
+                .map(|index| LateUsageRecord {
+                    source_fingerprint: crate::cost_status::usage_source_fingerprint(&format!(
+                        "retained-{index}"
+                    )),
+                    ..record.clone()
+                })
+                .collect(),
+            overflowed: true,
+            ..Default::default()
+        };
+        let (path, _) = manager.ensure_late_usage_paths(session_id).unwrap();
+        SessionManager::write_late_usage_ledger(&path, &full).unwrap();
+
+        session.metadata.title = "Saved despite full ledger".to_string();
+        manager.save_session(&session).unwrap();
+        let loaded = manager.load_session_snapshot(session_id).unwrap();
+        assert_eq!(loaded.metadata.title, "Saved despite full ledger");
+        assert!(
+            loaded
+                .metadata
+                .cost
+                .unpriced_reasons
+                .contains("late_usage_ledger_overflow")
+        );
+
+        fs::write(
+            &path,
+            vec![b' '; usize::try_from(MAX_LATE_USAGE_LEDGER_BYTES + 1).unwrap()],
+        )
+        .unwrap();
+        session.metadata.title = "Saved despite oversized ledger".to_string();
+        manager.save_session(&session).unwrap();
+        let loaded_oversized = manager.load_session_snapshot(session_id).unwrap();
+        assert_eq!(
+            loaded_oversized.metadata.title,
+            "Saved despite oversized ledger"
+        );
+        assert!(
+            loaded_oversized
+                .metadata
+                .cost
+                .unpriced_reasons
+                .contains(LATE_USAGE_UNAVAILABLE_REASON)
+        );
+    }

@@ -611,7 +611,7 @@ const HOOK_PIPE_CAPTURE_MAX_BYTES: usize = 64 * 1024;
 /// Largest serialized `updatedInput` object accepted from a decision hook.
 /// This is intentionally smaller than the pipe cap so the surrounding JSON
 /// and other fields still have headroom.
-const HOOK_UPDATED_INPUT_MAX_BYTES: usize = 32 * 1024;
+pub const HOOK_UPDATED_INPUT_MAX_BYTES: usize = 32 * 1024;
 
 /// Largest replacement message accepted from `message_submit`.
 const HOOK_MESSAGE_REPLACEMENT_MAX_CHARS: usize = 32_000;
@@ -6797,6 +6797,7 @@ command = "echo project"
             ("read", "safe"),
             ("write", "file_write"),
             ("edit", "file_write"),
+            ("list_dir", "other"),
             // Searches the workspace without caller-named write targets, so it
             // keeps the classification it already had as a deferred tool.
             ("file_search", "other"),
@@ -6808,9 +6809,6 @@ command = "echo project"
             // Goal controls retain their existing hook classification when
             // promoted from deferred discovery to the eager catalog.
             ("create_goal", "other"),
-            ("get_goal", "other"),
-            ("update_goal", "other"),
-            ("task_shell_wait", "other"),
             ("present", "other"),
             // Reads the skill registry, not caller-named paths, so it keeps
             // the classification it already had as a deferred tool. Making it

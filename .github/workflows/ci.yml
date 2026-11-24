@@ -31,6 +31,14 @@ on:
         required: false
         default: ubuntu-latest
         type: string
+      macos_runner:
+        description: macOS suite runner for a full run (default follows the CW_SELF_HOSTED_MAC repository variable; self-hosted is the codewhale-mac runner)
+        type: choice
+        default: default
+        options:
+          - default
+          - self-hosted
+          - hosted
 
 permissions:
   contents: read
@@ -66,6 +74,7 @@ jobs:
       trusted: ${{ steps.trust.outputs.trusted }}
       scoped: ${{ steps.scope.outputs.scoped }}
       scoped_os: ${{ steps.scope.outputs.scoped_os }}
+      macos_self_hosted: ${{ steps.macos.outputs.self_hosted }}
     steps:
       - name: Classify event trust
         id: trust
@@ -85,6 +94,26 @@ jobs:
           else
             echo "trusted=false" >> "$GITHUB_OUTPUT"
           fi
+      - name: Choose the macOS suite runner
+        id: macos
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          THIS_REPO: ${{ github.repository }}
+          REQUESTED: ${{ inputs.macos_runner }}
+          SWITCH: ${{ vars.CW_SELF_HOSTED_MAC }}
+        run: |
+          set -euo pipefail
+          # Only a dispatch in this repository (write access required) may use the self-hosted Mac; pull requests, forks included, never do.
+          self_hosted=false
+          if [ "${EVENT_NAME}" = workflow_dispatch ] && [ "${THIS_REPO}" = codewhale-hq/Codewhale ]; then
+            case "${REQUESTED:-default}" in
+              self-hosted) self_hosted=true ;;
+              hosted) ;;
+              *) if [ "${SWITCH}" = true ]; then self_hosted=true; fi ;;
+            esac
+          fi
+          echo "self_hosted=${self_hosted}" >> "${GITHUB_OUTPUT}"
       - name: Classify scoped dispatch
         id: scope
         shell: bash
@@ -218,7 +247,7 @@ jobs:
               crates/*|docs/HOOKS.md|docs/KEYBINDINGS.md|docs/TELEMETRY.md|docs/FLEET.md|docs/FLEET_WORKFLOW_TUTORIAL.md|docs/zh_hans/FLEET.md|docs/2512.24601v2.pdf|docs/cloud-facts/*|docs/examples/*)
                 heavy=true
                 ;;
-              docs/*|*.md|packaging/aur/*|.github/PULL_REQUEST_TEMPLATE.md|.github/ISSUE_TEMPLATE/*|.github/scripts/agent-task-metadata.test.sh|.github/workflows/auto-tag.yml|.github/workflows/stale.yml|.github/workflows/triage.yml|scripts/release/check-versions.sh|scripts/release/check-versions.test.sh|scripts/release/check-ohos-deps.sh|scripts/release/install-dogfood.sh|scripts/release/install-dogfood.test.sh|scripts/release/prepare-release.sh|scripts/release/prepare-release.test.sh|scripts/dev-cache.sh|scripts/dev-cache.test.sh|scripts/dev-cargo.sh|scripts/dev-test.sh)
+              docs/*|*.md|packaging/aur/*|.github/PULL_REQUEST_TEMPLATE.md|.github/ISSUE_TEMPLATE/*|.github/scripts/agent-task-metadata.test.sh|.github/workflows/auto-tag.yml|.github/workflows/stale.yml|.github/workflows/triage.yml|scripts/release/check-versions.sh|scripts/release/check-versions.test.sh|scripts/release/check-ohos-deps.sh|scripts/release/check-ohos-deps.test.sh|scripts/release/install-dogfood.sh|scripts/release/install-dogfood.test.sh|scripts/release/prepare-release.sh|scripts/release/prepare-release.test.sh|scripts/dev-cache.sh|scripts/dev-cache.test.sh|scripts/dev-cargo.sh|scripts/dev-test.sh)
                 ;;
               *)
                 heavy=true
@@ -315,12 +344,14 @@ jobs:
           bash .github/scripts/agent-task-metadata.test.sh
           bash scripts/release/app-server-smoke.test.sh
           bash scripts/release/check-feature-release-notes.test.sh
+          bash scripts/release/check-ohos-deps.test.sh
           bash scripts/release/check-versions.test.sh
           bash scripts/release/generate-release-body.test.sh
           bash scripts/release/install-dogfood.test.sh
           bash scripts/release/prepare-release.test.sh
           bash scripts/release/prune-actions-caches.test.sh
           bash scripts/release/require-rc-receipt.test.sh
+          bash scripts/release/require-full-ci-receipt.test.sh
           bash scripts/release/require-release-tag-checkout.test.sh
           bash scripts/release/validate-crate-publish-order.test.sh
           python3 scripts/release/contributor-wall.test.py
@@ -806,6 +837,10 @@ jobs:
       - name: Check TUI product vocabulary
         if: github.event_name != 'schedule'
         run: sh scripts/check-tui-product-vocabulary.sh
+      - name: Report docs findings (warn-only)
+        if: github.event_name != 'schedule'
+        continue-on-error: true
+        run: sh scripts/docs/run-checks.sh
       - name: Check website locale dictionary parity
         if: github.event_name != 'schedule'
         run: node web/scripts/check-locales.mjs
@@ -1078,9 +1113,10 @@ jobs:
     uses: ./.github/workflows/ci-test-suite.yml
     with:
       os: macos-latest
-      shards: 3
-      shard_list: '[1,2,3]'
-      build_jobs: '1'
+      self_hosted: ${{ needs.changes.outputs.macos_self_hosted == 'true' }}
+      shards: ${{ needs.changes.outputs.macos_self_hosted == 'true' && 1 || 3 }}
+      shard_list: ${{ needs.changes.outputs.macos_self_hosted == 'true' && '[1]' || '[1,2,3]' }}
+      build_jobs: ${{ needs.changes.outputs.macos_self_hosted == 'true' && '6' || '1' }}
       debug: '0'
 
   test-windows:
@@ -1096,7 +1132,7 @@ jobs:
       os: windows-latest
       shards: 4
       shard_list: '[1,2,3,4]'
-      build_jobs: '2'
+      build_jobs: '4'
       debug: '0'
 
   portable-boundaries:

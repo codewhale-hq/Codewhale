@@ -18,13 +18,13 @@ use super::tokens::{
     ACCENT_REASONING_LIVE, DIFF_ADDED, DIFF_ADDED_BG, DIFF_DELETED_BG, GRAYSCALE_BORDER,
     GRAYSCALE_ELEVATED, GRAYSCALE_PANEL, GRAYSCALE_REASONING, GRAYSCALE_SURFACE,
     GRAYSCALE_TEXT_BODY, GRAYSCALE_TEXT_HINT, GRAYSCALE_TEXT_SOFT, LIGHT_ACTION, LIGHT_BORDER,
-    LIGHT_DANGER, LIGHT_ELEVATED, LIGHT_HUMAN, LIGHT_LIVE, LIGHT_PANEL, LIGHT_REASONING,
-    LIGHT_SELECTION_BG, LIGHT_SUCCESS_FG, LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_HINT,
-    LIGHT_WARNING, MODE_AGENT, MODE_PLAN, MODE_YOLO, SELECTION_BG, SOLARIZED_PANEL,
-    SOLARIZED_SURFACE, SOLARIZED_TEXT_BODY, SOLARIZED_TEXT_HINT, STATUS_ERROR, STATUS_WARNING,
-    SURFACE_ERROR, SURFACE_REASONING, SURFACE_REASONING_TINT, SURFACE_TOOL_ACTIVE, TEXT_BODY,
-    TEXT_HINT, TEXT_REASONING, TEXT_TOOL_OUTPUT, WHALE_ACTION, WHALE_BG, WHALE_ERROR, WHALE_HUMAN,
-    WHALE_LIVE, WHALE_PANEL,
+    LIGHT_DANGER, LIGHT_ELEVATED, LIGHT_ERROR, LIGHT_HUMAN, LIGHT_LIVE, LIGHT_PANEL,
+    LIGHT_REASONING, LIGHT_SELECTION_BG, LIGHT_SUCCESS, LIGHT_SUCCESS_FG, LIGHT_SURFACE,
+    LIGHT_TEXT_BODY, LIGHT_TEXT_HINT, LIGHT_WARNING, MODE_AGENT, MODE_PLAN, MODE_YOLO,
+    SELECTION_BG, SOLARIZED_PANEL, SOLARIZED_SURFACE, SOLARIZED_TEXT_BODY, SOLARIZED_TEXT_HINT,
+    STATUS_ERROR, STATUS_WARNING, SURFACE_ERROR, SURFACE_REASONING, SURFACE_REASONING_TINT,
+    SURFACE_TOOL_ACTIVE, TEXT_BODY, TEXT_HINT, TEXT_REASONING, TEXT_TOOL_OUTPUT, WHALE_ACTION,
+    WHALE_BG, WHALE_ERROR, WHALE_HUMAN, WHALE_LIVE, WHALE_PANEL,
 };
 use ratatui::style::Color;
 
@@ -498,6 +498,7 @@ fn every_selectable_theme_keeps_action_and_working_roles_distinct_on_ansi16() {
             continue;
         }
         let ui = theme_id.ui_theme();
+        let is_light = matches!(ui.mode, PaletteMode::Light | PaletteMode::SolarizedLight);
         assert_eq!(
             adapt_fg_for_depth(
                 ui.accent_primary,
@@ -505,7 +506,11 @@ fn every_selectable_theme_keeps_action_and_working_roles_distinct_on_ansi16() {
                 ColorDepth::Ansi16,
                 &ui,
             ),
-            Color::LightBlue,
+            if is_light {
+                Color::Blue
+            } else {
+                Color::LightBlue
+            },
             "theme '{}' lost the action lane",
             theme_id.name(),
         );
@@ -516,11 +521,35 @@ fn every_selectable_theme_keeps_action_and_working_roles_distinct_on_ansi16() {
                 ColorDepth::Ansi16,
                 &ui,
             ),
-            Color::LightCyan,
+            if is_light {
+                Color::Cyan
+            } else {
+                Color::LightCyan
+            },
             "theme '{}' lost the live working lane",
             theme_id.name(),
         );
     }
+}
+
+#[test]
+fn adapt_bg_preserves_diff_hues_on_ansi256() {
+    assert_eq!(
+        adapt_bg(DIFF_ADDED_BG, ColorDepth::Ansi256),
+        Color::Indexed(22)
+    );
+    assert_eq!(
+        adapt_bg(DIFF_DELETED_BG, ColorDepth::Ansi256),
+        Color::Indexed(52)
+    );
+    assert_eq!(
+        adapt_bg(LIGHT_SUCCESS, ColorDepth::Ansi256),
+        Color::Indexed(158)
+    );
+    assert_eq!(
+        adapt_bg(LIGHT_ERROR, ColorDepth::Ansi256),
+        Color::Indexed(224)
+    );
 }
 
 #[test]

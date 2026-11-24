@@ -7,8 +7,8 @@ use ratatui::{buffer::Buffer, layout::Rect};
 
 use super::Entry;
 use crate::{
-    BubbleField, Caps, FishSchool, Habitat, HabitatDensity, Heading, Jellyfish, Message,
-    MotionMode, Paint, Theme, Whale, WhaleState,
+    BubbleField, Caps, DistantWhale, FishSchool, Habitat, HabitatDensity, Heading, Jellyfish,
+    MarineSnow, Message, MotionMode, Paint, Shoal, Theme, Whale, WhaleState,
 };
 
 fn fish(area: Rect, buf: &mut Buffer, theme: &Theme) {
@@ -24,6 +24,24 @@ fn jelly(area: Rect, buf: &mut Buffer, theme: &Theme) {
 fn bubbles(area: Rect, buf: &mut Buffer, theme: &Theme) {
     BubbleField::new(Duration::from_millis(1_200), MotionMode::Full)
         .density(HabitatDensity::Rich)
+        .paint(area, buf, theme);
+}
+
+fn shoal(area: Rect, buf: &mut Buffer, theme: &Theme) {
+    Shoal::new(Duration::from_millis(9_000), MotionMode::Full)
+        .density(HabitatDensity::Rich)
+        .paint(area, buf, theme);
+}
+
+fn snow(area: Rect, buf: &mut Buffer, theme: &Theme) {
+    MarineSnow::new(Duration::from_millis(4_000), MotionMode::Full)
+        .density(HabitatDensity::Rich)
+        .paint(area, buf, theme);
+}
+
+fn distant_whale(area: Rect, buf: &mut Buffer, theme: &Theme) {
+    DistantWhale::new(Duration::from_millis(40_000), MotionMode::Full)
+        .hold_visit(true)
         .paint(area, buf, theme);
 }
 
@@ -48,7 +66,7 @@ fn scene_with(area: Rect, buf: &mut Buffer, theme: &Theme, motion: MotionMode) {
     .intersection(area);
     Message::new(
         "One ocean",
-        "A small school.\nOne visiting jellyfish.\nBubbles in the deep water.",
+        "A small school, a far shoal.\nOne visiting jellyfish.\nSnow, bubbles, a distant whale.",
     )
     .paint(words, buf, theme);
     let whale = Rect {
@@ -59,7 +77,7 @@ fn scene_with(area: Rect, buf: &mut Buffer, theme: &Theme, motion: MotionMode) {
     }
     .intersection(area);
     Whale::new(WhaleState::Rest).paint(whale, buf, theme);
-    Habitat::new(Duration::from_millis(1_500), motion)
+    Habitat::new(Duration::from_millis(70_000), motion)
         .density(HabitatDensity::Rich)
         .hold_jellyfish_visit(true)
         .paint(area, buf, theme);
@@ -101,6 +119,24 @@ pub(crate) fn entries() -> Vec<Entry> {
             width: 72,
             height: 9,
             draw: bubbles,
+        },
+        Entry {
+            name: "shoal",
+            width: 72,
+            height: 12,
+            draw: shoal,
+        },
+        Entry {
+            name: "marine-snow",
+            width: 72,
+            height: 10,
+            draw: snow,
+        },
+        Entry {
+            name: "distant-whale",
+            width: 72,
+            height: 12,
+            draw: distant_whale,
         },
         Entry {
             name: "habitat-scene",

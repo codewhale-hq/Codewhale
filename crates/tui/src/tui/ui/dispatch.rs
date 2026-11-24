@@ -122,6 +122,14 @@ pub(crate) fn echoed_user_turn_cell(app: &App, display: &str) -> Option<usize> {
         })
 }
 
+fn reject_if_queue_full(app: &mut App, message: QueuedMessage) -> Option<QueuedMessage> {
+    if app.queued_messages.len() >= crate::tui::app::MAX_QUEUED_MESSAGES {
+        app.queue_message(message);
+        return None;
+    }
+    Some(message)
+}
+
 pub(crate) fn enqueue_offline_message(app: &mut App, message: QueuedMessage) {
     app.queue_message(message);
     persist_offline_queue_state(app);
@@ -696,6 +704,7 @@ pub(crate) fn prepare_user_dispatch(
         history_revisions_len: app.history_revisions.len(),
         api_messages_len: app.api_messages.len(),
         last_send_at: app.last_send_at,
+        active_turn_user_index: app.active_turn_user_index,
     };
 
     // --- Sync prepare: show the user message and spinner immediately so the
@@ -711,6 +720,7 @@ pub(crate) fn prepare_user_dispatch(
     // Already painted at Queue time — reuse that cell for reference
     // recording instead of duplicating the bubble.
     let history_cell = paint_user_turn_cell(app, &message, message.display.clone());
+    app.active_turn_user_index = (!extension_command).then_some(history_cell);
     app.scroll_to_bottom();
     // Anchor the tail-flash to the moment the user message appears, not to
     // the async dispatch completion (which can lag by a route plan). The
@@ -1310,6 +1320,7 @@ pub(crate) fn build_dispatch_error_closure(
             app.history_version = app.history_version.wrapping_add(1);
             app.truncate_api_messages(prepare.snapshot.api_messages_len);
             app.last_send_at = prepare.snapshot.last_send_at;
+            app.active_turn_user_index = prepare.snapshot.active_turn_user_index;
             app.needs_redraw = true;
 
             match recovery {
@@ -1652,7 +1663,9 @@ pub(crate) async fn attempt_steer_with_queue_fallback(
 /// Unlike a steer, the message is NOT forwarded immediately — it waits for
 /// the current turn to finish, then dispatches as a normal user message.
 pub(crate) async fn queue_follow_up(app: &mut App, message: QueuedMessage) -> Result<()> {
-    let mut message = message;
+    let Some(mut message) = reject_if_queue_full(app, message) else {
+        return Ok(());
+    };
     echo_queued_user_turn(app, &mut message);
     enqueue_offline_message(app, message);
     let toast = queued_follow_up_toast(app);
@@ -1770,7 +1783,9 @@ pub(crate) async fn dispatch_composer_message(
             Ok(())
         }
         SubmitDisposition::Queue => {
-            let mut message = message;
+            let Some(mut message) = reject_if_queue_full(app, message) else {
+                return Ok(());
+            };
             echo_queued_user_turn(app, &mut message);
             enqueue_offline_message(app, message);
             // A second, empty Enter inside the window sends this now.

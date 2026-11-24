@@ -13,7 +13,7 @@
 #                                   is far slower than everything else here, and it
 #                                   is the one Lint step nothing else covered.
 #   scripts/preflight.sh --base REF compare feature receipts against REF
-#                                   (default: merge base with origin/main)
+#                                   (default: BEFORE_SHA if set, else merge base with origin/main)
 #
 # As a pre-push hook it runs in --check mode:
 #   ln -s ../../scripts/preflight.sh "$(git rev-parse --git-path hooks)/pre-push"
@@ -95,7 +95,7 @@ step "bare git spawns" "start the command from codewhale_dependencies::Git" \
   python3 scripts/check-bare-git.py
 if command -v node >/dev/null 2>&1; then
   step "website generated facts" \
-    "cd web && npm ci (if node_modules is missing) && npm run prebuild, then commit web/lib/facts.generated.ts and web/data/*.generated.json and web/data/agent-docs.release.json and agent-docs.release-index.json (check-facts.mjs and check-release-docs.mjs name the stale file); for a stale docs/RUNTIME_ROUTES.md run node web/scripts/check-runtime-routes.mjs --write, then node web/scripts/derive-facts.mjs" \
+    "cd web && npm ci (if node_modules is missing) && npm run prebuild, then commit web/lib/facts.generated.ts and web/data/features.generated.json and web/data/agent-docs.release.json and agent-docs.release-index.json (check-facts.mjs and check-release-docs.mjs name the stale file); for a stale docs/RUNTIME_ROUTES.md run node web/scripts/check-runtime-routes.mjs --write, then node web/scripts/derive-facts.mjs; if the release tag is not in this checkout, run git fetch --tags, or set CODEWHALE_ALLOW_SHALLOW_CHECKOUT=1 to skip only the tagged-source comparison" \
     bash -c 'rc=0; node web/scripts/check-facts.mjs || rc=1; node web/scripts/check-cloud-facts.mjs || rc=1; node web/scripts/check-release-docs.mjs || rc=1; node web/scripts/check-runtime-routes.mjs || rc=1; exit "${rc}"'
 else
   echo "== website generated facts: SKIPPED, node is not on PATH; run cd web && npm run check:facts && node scripts/check-runtime-routes.mjs before pushing" >&2
@@ -125,6 +125,12 @@ if [[ "${clippy}" == "1" ]]; then
     -A clippy::unnecessary_map_or
 fi
 
+if [[ -z "${base}" && -n "${BEFORE_SHA:-}" && "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" && "${BEFORE_SHA}" != -* ]]; then
+  base="$(git rev-parse --verify --quiet "${BEFORE_SHA}^{commit}" 2>/dev/null || true)"
+  if [[ ! "${base}" =~ ^[0-9a-f]{40}$ ]]; then
+    base=""
+  fi
+fi
 if [[ -z "${base}" ]]; then
   base="$(git merge-base HEAD origin/main 2>/dev/null || true)"
 fi

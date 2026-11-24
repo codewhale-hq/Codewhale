@@ -51,6 +51,7 @@ struct TurnLoopProgress {
     empty_stop_retries: u32,
     reasoning_only_nudge: Option<String>,
     stream_retry_budget: StreamRetryBudget,
+    stream_open_timeout_retry_budget: StreamRetryBudget,
     image_omission_notified: bool,
     child_request_retries: crate::tools::subagent::engine::ChildRequestRetries,
 }
@@ -820,7 +821,7 @@ pub(super) fn replace_runtime_mcp_tools(
     refreshed.sort_by(|a, b| a.name.cmp(&b.name));
     for tool in refreshed {
         let stays_active = previously_active.contains(&tool.name)
-            || always_load.contains(&tool.name)
+            || super::tool_catalog::always_load_matches(always_load, &tool.name)
             || !tool.defer_loading.unwrap_or(false);
         if stays_active {
             active_tool_names.insert(tool.name.clone());
@@ -878,8 +879,8 @@ fn code_execution_offered(
 }
 
 impl Engine {
-    /// Inline ```repl blocks run model-written Python in the session kernel,
-    /// so they are admitted exactly like a `code_execution` call carrying
+    /// A recursive RLM round runs model-written Python in a child kernel,
+    /// so it is admitted exactly like a `code_execution` call carrying
     /// the same code: planned by `plan_tool_calls` (mode, allow/deny lists,
     /// before-tool hooks, Auto-Review floor and reviewer, repo law, the
     /// registry approval) and, when the plan still needs it, approved through
@@ -889,8 +890,8 @@ impl Engine {
     async fn repl_fence_blocked_reason(
         &mut self,
         blocks: &[codewhale_repl::ReplBlock],
-        // What the approval card says would run, e.g. "the reply's ```repl
-        // block(s) in the session REPL kernel".
+        // What the approval card says would run, e.g. "a recursive RLM
+        // round's Python in a child kernel".
         what_runs: &str,
         approval_id: &str,
         client: &dyn crate::core::model_client::ModelClient,
@@ -994,9 +995,9 @@ impl Engine {
                 Ok(ApprovalResult::TimedOut) => {
                     Some("the approval request timed out before anyone answered".to_string())
                 }
-                Ok(ApprovalResult::RetryWithPolicy(_)) => {
-                    Some("inline REPL blocks cannot run under a changed sandbox policy".to_string())
-                }
+                Ok(ApprovalResult::RetryWithPolicy(_)) => Some(
+                    "recursive RLM rounds cannot run under a changed sandbox policy".to_string(),
+                ),
                 Err(error) => Some(error.to_string()),
             };
             if let Some(refusal) = refusal {
@@ -1079,12 +1080,12 @@ impl Engine {
         policy: &ToolSurfacePolicy,
         catalog: &mut Vec<Tool>,
         active: &mut std::collections::HashSet<String>,
-    ) {
+    ) -> bool {
         if !self.config.features.enabled(Feature::Mcp) {
-            return;
+            return false;
         }
         let Some(pool) = self.mcp_pool.as_ref() else {
-            return;
+            return false;
         };
         let (universe, mut refreshed) = {
             let pool = pool.lock().await;
@@ -1094,23 +1095,27 @@ impl Engine {
         // A config/authority change during handshake can remove a server;
         // `replace_runtime_mcp_tools` owns every MCP name already in the
         // catalog, so its previous names leave this turn's catalog too.
-        refreshed.retain(|tool| {
-            policy.passes_allow_list(&tool.name)
-                && !policy.denies_tool(&tool.name)
-                && (self.child_host.is_none() || policy.registry.contains(&tool.name))
-        });
-        if replace_runtime_mcp_tools(
+        if let Some(child) = &self.child_host {
+            refreshed = child
+                .authority
+                .connected_mcp_tools_for_model(&policy.registry, refreshed);
+        }
+        refreshed.retain(|tool| policy.allows_tool(&tool.name));
+        let always_load = self.effective_tools_always_load();
+        let changed = replace_runtime_mcp_tools(
             catalog,
             active,
             &universe,
             refreshed,
             self.current_mode,
-            &self.config.tools_always_load,
+            &always_load,
             self.turn_tool_surface_budget
                 .unwrap_or(crate::model_profile::ToolSurfaceBudget::Standard),
-        ) {
+        );
+        if changed {
             self.session.pending_prefix_change_reason = Some("mcp-session-boot".to_string());
         }
+        changed
     }
 
     /// A gated MCP-focused search is explicit discovery of already configured
@@ -1230,22 +1235,24 @@ impl Engine {
         completions
             .into_iter()
             .map(|mut completion| {
-                let tool_call_id =
-                    format!("background-shell-completion-{}", completion.event.task_id);
-                let artifact_id =
-                    codewhale_runtime::artifacts::artifact_id_for_tool_call(&tool_call_id);
-                let bytes = completion.artifact_bytes();
-                match codewhale_runtime::artifacts::write_session_artifact_immutable(
-                    &self.session.id,
-                    &artifact_id,
-                    &bytes,
-                ) {
-                    Ok(_) => completion.event.evidence_ref = Some(artifact_id),
-                    Err(error) => tracing::warn!(
-                        task_id = %completion.event.task_id,
-                        %error,
-                        "background shell completion evidence could not be retained"
-                    ),
+                if completion.needs_evidence_artifact() {
+                    let tool_call_id =
+                        format!("background-shell-completion-{}", completion.event.task_id);
+                    let artifact_id =
+                        codewhale_runtime::artifacts::artifact_id_for_tool_call(&tool_call_id);
+                    let bytes = completion.artifact_bytes();
+                    match codewhale_runtime::artifacts::write_session_artifact_immutable(
+                        &self.session.id,
+                        &artifact_id,
+                        &bytes,
+                    ) {
+                        Ok(_) => completion.event.evidence_ref = Some(artifact_id),
+                        Err(error) => tracing::warn!(
+                            task_id = %completion.event.task_id,
+                            %error,
+                            "background shell completion evidence could not be retained"
+                        ),
+                    }
                 }
                 completion.event
             })
@@ -1463,8 +1470,9 @@ impl Engine {
         in_auto_mode: bool,
         allow_retry_receipt: bool,
         person_approved_retry: bool,
+        can_fallback_to_person: bool,
     ) -> Result<
-        (),
+        Option<&'static str>,
         Box<(
             ToolError,
             crate::core::authority::auto_review::AutoReviewOutcomeEffect,
@@ -1484,11 +1492,28 @@ impl Engine {
             ) {
                 Ok(text) => text,
                 Err(reason) => {
-                    let outcome = super::reviewer::ReviewerOutcome::Unavailable {
+                    let outcome = super::reviewer::ReviewerOutcome::Failed {
+                        kind: super::reviewer::ReviewerFailureKind::OverBudget,
                         reason: reason.to_string(),
                     };
                     let decision = outcome.audit_decision();
                     let risk = outcome.audit_risk();
+                    let fallback_kind = outcome.failure_prompt_kind();
+                    if can_fallback_to_person {
+                        emit_tool_audit(json!({
+                            "event": "tool.auto_review",
+                            "gate": "guardian",
+                            "tool_id": tool_id,
+                            "reviewer_model": reviewer_model.as_str(),
+                            "decision": decision,
+                            "attempts": 0,
+                            "fallback": "prompt",
+                            "risk": risk,
+                            "reason": reason,
+                        }))
+                        .await;
+                        return Ok(fallback_kind);
+                    }
                     let is_child_host = self.child_host.is_some();
                     let owner_present = self.current_turn_authority().owner_present();
                     let recorded = self.record_auto_review_block(
@@ -1511,6 +1536,8 @@ impl Engine {
                     "tool_id": tool_id,
                     "reviewer_model": reviewer_model.as_str(),
                     "decision": decision,
+                    "attempts": 0,
+                    "fallback": "deny",
                     "risk": risk,
                     "reason": result.as_ref().map_or_else(|error| error.to_string(), Clone::clone),
                 }))
@@ -1533,7 +1560,7 @@ impl Engine {
                         })
                         .await;
                     return result
-                        .map(|_| ())
+                        .map(|_| None)
                         .map_err(|error| Box::new((error, recorded.effect)));
                 }
             };
@@ -1616,6 +1643,19 @@ impl Engine {
         }
         let decision = review.outcome.audit_decision();
         let risk = review.outcome.audit_risk();
+        let attempts = review.attempts;
+        let fallback_prompt_kind = if can_fallback_to_person {
+            review.outcome.failure_prompt_kind()
+        } else {
+            None
+        };
+        let fallback_audit = if fallback_prompt_kind.is_some() {
+            Some("prompt")
+        } else if review.outcome.failure_reason().is_some() {
+            Some("deny")
+        } else {
+            None
+        };
         let is_child_host = self.child_host.is_some();
         let owner_present = self.current_turn_authority().owner_present();
         let (receipt, effect) = match &review.outcome {
@@ -1660,40 +1700,55 @@ impl Engine {
                     recorded.effect,
                 )
             }
-            super::reviewer::ReviewerOutcome::Unavailable { reason } => {
-                let recorded = self.record_auto_review_block(
-                    in_auto_mode,
-                    owner_present,
-                    is_child_host,
-                    allow_retry_receipt,
-                    tool_id,
-                    context.tool_name.as_ref(),
-                    tool_input,
-                    Some("guardian-unavailable"),
-                    reason,
-                    "auto_review_guardian",
-                    "unavailable",
-                );
-                (
-                    Some((
-                        crate::core::events::ToolGateVerdict::Unavailable,
-                        reason.clone(),
-                        Some("guardian-unavailable".to_string()),
-                        recorded.receipt_id,
-                        recorded.call_digest,
-                        (!recorded.action_summary.is_empty()).then_some(recorded.action_summary),
-                    )),
-                    recorded.effect,
-                )
+            super::reviewer::ReviewerOutcome::TimedOut { reason }
+            | super::reviewer::ReviewerOutcome::Failed { reason, .. } => {
+                let verdict = crate::core::events::ToolGateVerdict::Unavailable;
+                if fallback_prompt_kind.is_some() {
+                    (None, AutoReviewOutcomeEffect::Continue)
+                } else {
+                    let recorded = self.record_auto_review_block(
+                        in_auto_mode,
+                        owner_present,
+                        is_child_host,
+                        allow_retry_receipt,
+                        tool_id,
+                        context.tool_name.as_ref(),
+                        tool_input,
+                        Some("guardian-unavailable"),
+                        reason,
+                        "auto_review_guardian",
+                        verdict.as_str(),
+                    );
+                    (
+                        Some((
+                            verdict,
+                            reason.clone(),
+                            Some("guardian-unavailable".to_string()),
+                            recorded.receipt_id,
+                            recorded.call_digest,
+                            (!recorded.action_summary.is_empty())
+                                .then_some(recorded.action_summary),
+                        )),
+                        recorded.effect,
+                    )
+                }
             }
             super::reviewer::ReviewerOutcome::Cancelled => {
                 (None, AutoReviewOutcomeEffect::Continue)
             }
         };
-        let result = review.outcome.into_tool_result_with_rule(
-            context.tool_name.as_ref(),
-            Some(soft_rule.unwrap_or("guardian")),
-        );
+        let result = if fallback_prompt_kind.is_some() {
+            Ok(review
+                .outcome
+                .failure_reason()
+                .unwrap_or_default()
+                .to_string())
+        } else {
+            review.outcome.into_tool_result_with_rule(
+                context.tool_name.as_ref(),
+                Some(soft_rule.unwrap_or("guardian")),
+            )
+        };
         emit_tool_audit(json!({
             "event": "tool.auto_review",
             "gate": "guardian",
@@ -1701,6 +1756,8 @@ impl Engine {
             "rule_id": soft_rule,
             "reviewer_model": review.reviewer_model.as_str(),
             "decision": decision,
+            "attempts": attempts,
+            "fallback": fallback_audit,
             "risk": risk,
             "reason": result.as_ref().map_or_else(|error| error.to_string(), Clone::clone),
         }))
@@ -1724,7 +1781,7 @@ impl Engine {
                 .await;
         }
         result
-            .map(|_| ())
+            .map(|_| fallback_prompt_kind)
             .map_err(|error| Box::new((error, effect)))
     }
 
@@ -1813,6 +1870,57 @@ impl Engine {
                 .names()
                 .map(str::to_string),
         );
+        if self
+            .config
+            .goal_state
+            .lock()
+            .is_ok_and(|goal| goal.is_active())
+        {
+            let _ = super::tool_catalog::activate_goal_followup_tools(
+                &tool_catalog,
+                &mut active_tool_names,
+                &mut self.session.tool_activation_cache,
+                &mut |names| {
+                    super::tool_catalog::measure_deferred_tools(
+                        client.as_ref(),
+                        &self.session.model,
+                        self.session.reasoning_effort.as_deref(),
+                        tool_policy.strict_tool_mode,
+                        &tool_catalog,
+                        names,
+                    )
+                },
+            );
+        }
+        let has_active_background_shells = self
+            .shell_manager
+            .lock()
+            .map(|mut manager| {
+                manager
+                    .list_jobs_for_session(&self.session.id)
+                    .into_iter()
+                    .any(|job| {
+                        !job.stale && job.status == crate::tools::shell::ShellStatus::Running
+                    })
+            })
+            .unwrap_or(false);
+        if has_active_background_shells {
+            let _ = super::tool_catalog::activate_background_shell_tools(
+                &tool_catalog,
+                &mut active_tool_names,
+                &mut self.session.tool_activation_cache,
+                &mut |names| {
+                    super::tool_catalog::measure_deferred_tools(
+                        client.as_ref(),
+                        &self.session.model,
+                        self.session.reasoning_effort.as_deref(),
+                        tool_policy.strict_tool_mode,
+                        &tool_catalog,
+                        names,
+                    )
+                },
+            );
+        }
         // This is a fresh admitted turn, whose permitted outbound tools may
         // differ from the previous turn (ACP narrowing or a child report).
         // Declare only that actual boundary change; the request-time C5 guard
@@ -1880,13 +1988,16 @@ impl Engine {
         // status receipt with its exact text (C02-04, "model-visible means
         // logged"): the runtime event log can reconstruct the request.
         let reasoning_only_nudge: Option<String> = None;
-        // Outer stream-open retry budget: only a typed transient connection
-        // failure proven to precede dispatch can spend it. An opened stream
+        // Outer stream-open retry budgets: a typed transient connection
+        // failure proven to precede dispatch spends the first, a typed
+        // response-header timeout spends the second. An opened stream
         // never reissues its request automatically.
-        // `StreamRetryBudget` enforces that bound in mechanism —
+        // `StreamRetryBudget` enforces each bound in mechanism —
         // `authorize()` is the only way to spend a resume.
         let stream_retry_budget =
             StreamRetryBudget::with_limit(self.config.stream_retry_limits.max_resumes);
+        let stream_open_timeout_retry_budget =
+            StreamRetryBudget::with_limit(self.config.stream_retry_limits.open_retries);
         // The user hears about images the route cannot see once per turn,
         // not once per step and not for images replayed from history.
         let image_omission_notified = false;
@@ -1910,6 +2021,7 @@ impl Engine {
             empty_stop_retries,
             reasoning_only_nudge,
             stream_retry_budget,
+            stream_open_timeout_retry_budget,
             image_omission_notified,
             child_request_retries: Default::default(),
         };
@@ -1948,7 +2060,7 @@ impl Engine {
                 }
             };
             let response = match self
-                .continue_model_step(turn, &tool_policy, &mut progress, &client, response)
+                .continue_model_step(turn, &tool_policy, &mut progress, response)
                 .await
             {
                 PhaseResult::Ready(value) => value,
@@ -2241,6 +2353,25 @@ impl Engine {
                     &tool_name,
                     tool_catalog,
                 )));
+            }
+
+            if blocked_error.is_none()
+                && let Some(child) = self.child_host.as_ref()
+                && !registry_has_spec
+                && McpPool::is_mcp_tool(&tool_name)
+                && (child.authority.grant.desktop
+                    || !crate::tools::subagent::is_machine_control_tool(&tool_name))
+            {
+                let reason = match self.mcp_pool.as_ref() {
+                    Some(pool) => pool
+                        .lock()
+                        .await
+                        .subagent_unavailable_tool_reason(&tool_name),
+                    None => format!(
+                        "MCP tool '{tool_name}' is unavailable to this sub-agent: the parent session has no MCP servers available to share."
+                    ),
+                };
+                blocked_error = Some(ToolError::not_available(reason));
             }
 
             if blocked_error.is_none()
@@ -2976,7 +3107,9 @@ impl Engine {
                                     .and_then(serde_json::Value::as_str)
                                     .map(str::trim)
                                     .filter(|id| !id.is_empty());
-                                if let Err(failure) = self
+                                let can_fallback_to_person =
+                                    owner_can_prompt && self.child_host.is_none();
+                                match self
                                     .consult_auto_review_guardian(
                                         client,
                                         &review_context,
@@ -2988,19 +3121,32 @@ impl Engine {
                                         batch_approval_mode == ApprovalMode::Auto,
                                         allow_retry_receipt,
                                         person_approved_retry,
+                                        can_fallback_to_person,
                                     )
                                     .await
                                 {
-                                    let (error, effect) = *failure;
-                                    blocked_error = Some(error);
-                                    if let crate::core::authority::auto_review::AutoReviewOutcomeEffect::PauseToAsk {
-                                        reason: pause_reason,
-                                    } = effect
-                                    {
-                                        pending_pause_reason = Some(pause_reason);
+                                    Err(failure) => {
+                                        let (error, effect) = *failure;
+                                        blocked_error = Some(error);
+                                        if let crate::core::authority::auto_review::AutoReviewOutcomeEffect::PauseToAsk {
+                                            reason: pause_reason,
+                                        } = effect
+                                        {
+                                            pending_pause_reason = Some(pause_reason);
+                                        }
                                     }
-                                } else if !hook_requires_approval && !approval_force_prompt {
-                                    approval_required = false;
+                                    Ok(Some(kind)) => {
+                                        approval_required = true;
+                                        approval_force_prompt = true;
+                                        approval_description = format!(
+                                            "Auto-Review could not finish ({kind}); please decide."
+                                        );
+                                    }
+                                    Ok(None) => {
+                                        if !hook_requires_approval && !approval_force_prompt {
+                                            approval_required = false;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -3288,34 +3434,38 @@ impl Engine {
                 cache.record_use(&plan.name);
             }
         }
-        let activation = cache.activate_measured(
-            tool_catalog,
-            &deferred_tools_hydrated_in_order,
-            &mut |names| {
-                super::tool_catalog::measure_deferred_tools(
-                    client,
-                    &self.session.model,
-                    self.session.reasoning_effort.as_deref(),
-                    tool_policy.strict_tool_mode,
-                    tool_catalog,
-                    names,
-                )
-            },
-        );
-        let activation = match activation {
-            Ok(activation) => activation,
-            Err(error) => {
-                for plan in &mut plans {
-                    if deferred_tools_hydrated_in_order.contains(&plan.name)
-                        && plan.guard_result.is_some()
-                        && plan.blocked_error.is_none()
-                    {
-                        tool_call_budget.refund();
-                        plan.guard_result = None;
-                        plan.blocked_error = Some(error.clone());
+        let active_before_hydration = active_tool_names.clone();
+        let activation = if deferred_tools_hydrated_in_order.is_empty() {
+            Default::default()
+        } else {
+            match cache.activate_measured(
+                tool_catalog,
+                &deferred_tools_hydrated_in_order,
+                &mut |names| {
+                    super::tool_catalog::measure_deferred_tools(
+                        client,
+                        &self.session.model,
+                        self.session.reasoning_effort.as_deref(),
+                        tool_policy.strict_tool_mode,
+                        tool_catalog,
+                        names,
+                    )
+                },
+            ) {
+                Ok(activation) => activation,
+                Err(error) => {
+                    for plan in &mut plans {
+                        if deferred_tools_hydrated_in_order.contains(&plan.name)
+                            && plan.guard_result.is_some()
+                            && plan.blocked_error.is_none()
+                        {
+                            tool_call_budget.refund();
+                            plan.guard_result = None;
+                            plan.blocked_error = Some(error.clone());
+                        }
                     }
+                    Default::default()
                 }
-                Default::default()
             }
         };
         for plan in &mut plans {
@@ -3339,12 +3489,12 @@ impl Engine {
             active_tool_names,
             activation.evicted.iter().cloned(),
         );
+        active_tool_names.extend(activation.admitted.iter().cloned());
         // Admitting or evicting deferred tools changes the request-visible
         // tool catalog for the rest of this turn. That is a legitimate,
         // nameable header change — declare it so the prefix pin re-pins under
         // `change:tool_surface` instead of tripping the C5 drift guard.
-        if !activation.admitted.is_empty() || !activation.evicted.is_empty() {
-            active_tool_names.extend(activation.admitted.iter().cloned());
+        if *active_tool_names != active_before_hydration {
             self.session.pending_prefix_change_reason = Some("tool_surface".to_string());
         }
         PlannedToolCalls {
@@ -3362,6 +3512,84 @@ impl Engine {
     /// model-visible tool-result messages; those are handled by the result phase.
     /// The optional outcome slots retain the existing index-based collector shape.
     #[allow(clippy::too_many_arguments)] // phase fns mirror the turn pipeline shape
+    async fn execute_tool_search_plan(
+        &mut self,
+        plan: ToolExecutionPlan,
+        nested_gate_env: &mut NestedGateEnv<'_>,
+        tool_catalog: &mut Vec<codewhale_models::Tool>,
+        active_tool_names: &mut std::collections::HashSet<String>,
+    ) -> ToolExecOutcome {
+        let started_at = Instant::now();
+        let activity_tx = self.tx_event.clone();
+        let activity = super::tool_execution::OperationSpanGuard::start(
+            &activity_tx,
+            &plan.id,
+            codewhale_protocol::engine_owner::OwnerActivityKind::Searching,
+            Some(crate::tools::activity::action_id(&plan.name, &plan.input)),
+            Some(self.cancel_token.clone()),
+        )
+        .await;
+        let active_before_search = active_tool_names.clone();
+        let discovery = self
+            .discover_mcp_for_tool_search(
+                (&plan.name, &plan.input),
+                nested_gate_env.tool_policy,
+                tool_catalog,
+                active_tool_names,
+                None,
+            )
+            .await;
+        let result = discovery.and_then(|()| {
+            super::tool_catalog::execute_tool_search_measured(
+                &plan.name,
+                &plan.input,
+                tool_catalog,
+                active_tool_names,
+                &mut self.session.tool_activation_cache,
+                &mut |names| {
+                    super::tool_catalog::measure_deferred_tools(
+                        nested_gate_env.client,
+                        &self.session.model,
+                        self.session.reasoning_effort.as_deref(),
+                        nested_gate_env.tool_policy.strict_tool_mode,
+                        tool_catalog,
+                        names,
+                    )
+                },
+            )
+        });
+        activity
+            .complete(crate::tools::activity::operation_outcome(
+                &result.clone().map(RichToolResult::plain),
+                self.cancel_token.is_cancelled(),
+            ))
+            .await;
+        if *active_tool_names != active_before_search {
+            self.session.pending_prefix_change_reason = Some("tool_surface".to_string());
+        }
+
+        let _ = self
+            .send_event(Event::ToolCallComplete {
+                model_call: plan.model_call.clone(),
+                id: plan.id.clone(),
+                name: plan.name.clone(),
+                result: result.clone(),
+            })
+            .await;
+
+        ToolExecOutcome {
+            model_call: plan.model_call,
+            index: plan.index,
+            id: plan.id,
+            name: plan.name,
+            input: plan.input,
+            started_at,
+            terminal: ToolExecutionOutcome::from_legacy(result),
+            content_blocks: Vec::new(),
+            original_content_digest: None,
+        }
+    }
+
     async fn execute_planned_tools(
         &mut self,
         plans: Vec<ToolExecutionPlan>,
@@ -3554,7 +3782,21 @@ impl Engine {
                     })
                     .collect();
                 let mut tool_tasks = FuturesUnordered::new();
-                let shell_permits = Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_SHELL_EXEC));
+                let mut deferred_tool_searches = Vec::new();
+                let shell_permits = Arc::new(tokio::sync::Semaphore::new(
+                    resolve_max_parallel_shell_exec(
+                        self.config
+                            .tools
+                            .as_ref()
+                            .and_then(|tools| tools.max_parallel_shell_exec)
+                            .or_else(|| {
+                                self.api_config
+                                    .tools
+                                    .as_ref()
+                                    .and_then(|tools| tools.max_parallel_shell_exec)
+                            }),
+                    ),
+                ));
                 for plan in plans {
                     if let Some(result) = plan.guard_result.clone() {
                         let result = Ok(result);
@@ -3599,6 +3841,10 @@ impl Engine {
                             content_blocks: Vec::new(),
                             original_content_digest: None,
                         });
+                        continue;
+                    }
+                    if is_tool_search_tool(&plan.name) {
+                        deferred_tool_searches.push(plan);
                         continue;
                     }
                     let registry = tool_registry;
@@ -3755,6 +4001,24 @@ impl Engine {
                 // completed results finish guarded projection in the same
                 // FuturesUnordered authority before cancelled fallbacks settle.
                 drop(tool_tasks);
+                if !deferred_tool_searches.is_empty() {
+                    if self.cancel_token.is_cancelled() {
+                        parallel_cancelled = true;
+                    } else {
+                        for plan in deferred_tool_searches {
+                            let index = plan.index;
+                            let outcome = self
+                                .execute_tool_search_plan(
+                                    plan,
+                                    nested_gate_env,
+                                    tool_catalog,
+                                    active_tool_names,
+                                )
+                                .await;
+                            outcomes[index] = Some(outcome);
+                        }
+                    }
+                }
                 if parallel_cancelled {
                     for (index, model_call, id, name, input) in parallel_plan_receipts {
                         if outcomes[index].is_some() {
@@ -3841,80 +4105,16 @@ impl Engine {
                     }
 
                     if is_tool_search_tool(&tool_name) {
-                        let started_at = Instant::now();
-                        let activity_tx = self.tx_event.clone();
-                        let activity = super::tool_execution::OperationSpanGuard::start(
-                            &activity_tx,
-                            &tool_id,
-                            codewhale_protocol::engine_owner::OwnerActivityKind::Searching,
-                            Some(crate::tools::activity::action_id(&tool_name, &tool_input)),
-                            Some(self.cancel_token.clone()),
-                        )
-                        .await;
-                        // Tool-search activation changes the request-visible
-                        // catalog for the rest of the turn; declare it so the
-                        // next request re-pins under `change:tool_surface`
-                        // instead of tripping the C5 drift guard.
-                        let active_before_search = active_tool_names.clone();
-                        let discovery = self
-                            .discover_mcp_for_tool_search(
-                                (&tool_name, &tool_input),
-                                nested_gate_env.tool_policy,
+                        let index = plan.index;
+                        let outcome = self
+                            .execute_tool_search_plan(
+                                plan,
+                                nested_gate_env,
                                 tool_catalog,
                                 active_tool_names,
-                                None,
                             )
                             .await;
-                        let result = discovery.and_then(|()| {
-                            super::tool_catalog::execute_tool_search_measured(
-                                &tool_name,
-                                &tool_input,
-                                tool_catalog,
-                                active_tool_names,
-                                &mut self.session.tool_activation_cache,
-                                &mut |names| {
-                                    super::tool_catalog::measure_deferred_tools(
-                                        nested_gate_env.client,
-                                        &self.session.model,
-                                        self.session.reasoning_effort.as_deref(),
-                                        nested_gate_env.tool_policy.strict_tool_mode,
-                                        tool_catalog,
-                                        names,
-                                    )
-                                },
-                            )
-                        });
-                        activity
-                            .complete(crate::tools::activity::operation_outcome(
-                                &result.clone().map(RichToolResult::plain),
-                                self.cancel_token.is_cancelled(),
-                            ))
-                            .await;
-                        if *active_tool_names != active_before_search {
-                            self.session.pending_prefix_change_reason =
-                                Some("tool_surface".to_string());
-                        }
-
-                        let _ = self
-                            .send_event(Event::ToolCallComplete {
-                                model_call: plan.model_call.clone(),
-                                id: tool_id.clone(),
-                                name: tool_name.clone(),
-                                result: result.clone(),
-                            })
-                            .await;
-
-                        outcomes[plan.index] = Some(ToolExecOutcome {
-                            model_call: plan.model_call.clone(),
-                            index: plan.index,
-                            id: tool_id,
-                            name: tool_name,
-                            input: tool_input,
-                            started_at,
-                            terminal: ToolExecutionOutcome::from_legacy(result),
-                            content_blocks: Vec::new(),
-                            original_content_digest: None,
-                        });
+                        outcomes[index] = Some(outcome);
                         continue;
                     }
 
@@ -5361,6 +5561,7 @@ impl Engine {
         active_tool_names: &mut std::collections::HashSet<String>,
         hook_contexts: &std::collections::HashMap<String, String>,
         mut fleet_denial_guard: Option<&mut FleetDenialGuard>,
+        mode: AppMode,
     ) -> FleetDenialAction {
         let strict_tool_mode = tool_policy.strict_tool_mode;
         let mut denial_batch = FleetDenialBatch::default();
@@ -5380,6 +5581,26 @@ impl Engine {
             let routed_duration_ms =
                 u64::try_from(outcome.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
             let result = outcome.terminal.into_legacy_result();
+            if let Some(extension_host) = self.extension_host.as_ref().filter(|_| {
+                self.config
+                    .features
+                    .enabled(codewhale_runtime::features::Feature::ExtensionHost)
+            }) {
+                let is_error = result.as_ref().map_or(true, |output| !output.success);
+                extension_host.spawn_tool_after_hooks(
+                    crate::extension_host::protocol::HookCallPayload {
+                        name: outcome.name.clone(),
+                        call_id: outcome.id.clone(),
+                        input: serde_json::json!({
+                            "is_error": is_error,
+                            "duration_ms": routed_duration_ms,
+                        }),
+                        mode: format!("{mode:?}"),
+                        workspace: self.session.workspace.to_string_lossy().into_owned(),
+                        model: self.config.model.clone(),
+                    },
+                );
+            }
             let plugin_change = extract_verified_plugin_change(&outcome.name, &result);
             if let Some(guard) = fleet_denial_guard.as_deref_mut() {
                 guard.observe(
@@ -5435,6 +5656,65 @@ impl Engine {
                             output.content.push_str(&format!("\nDeferred retrieval schema unavailable: {error}. The evidence is retained; tool_search can rediscover the recovery tool."));
                             false
                         });
+                    if (outcome.name == "create_goal" && output.success)
+                        || (goal_tool_ran
+                            && self
+                                .config
+                                .goal_state
+                                .lock()
+                                .is_ok_and(|goal| goal.is_active()))
+                    {
+                        tool_surface_changed |= super::tool_catalog::activate_goal_followup_tools(
+                            tool_catalog,
+                            active_tool_names,
+                            &mut self.session.tool_activation_cache,
+                            &mut |names| {
+                                super::tool_catalog::measure_deferred_tools(
+                                    client,
+                                    &self.session.model,
+                                    self.session.reasoning_effort.as_deref(),
+                                    strict_tool_mode,
+                                    tool_catalog,
+                                    names,
+                                )
+                            },
+                        )
+                        .unwrap_or(false);
+                    }
+                    if super::tool_catalog::is_shell_tool_name(&outcome.name)
+                        && self
+                            .shell_manager
+                            .lock()
+                            .map(|mut manager| {
+                                manager
+                                    .list_jobs_for_session(&self.session.id)
+                                    .into_iter()
+                                    .any(|job| {
+                                        !job.stale
+                                            && job.status
+                                                == crate::tools::shell::ShellStatus::Running
+                                    })
+                            })
+                            .unwrap_or(false)
+                    {
+                        tool_surface_changed |=
+                            super::tool_catalog::activate_background_shell_tools(
+                                tool_catalog,
+                                active_tool_names,
+                                &mut self.session.tool_activation_cache,
+                                &mut |names| {
+                                    super::tool_catalog::measure_deferred_tools(
+                                        client,
+                                        &self.session.model,
+                                        self.session.reasoning_effort.as_deref(),
+                                        strict_tool_mode,
+                                        tool_catalog,
+                                        names,
+                                    )
+                                },
+                            )
+                            .unwrap_or(false);
+                    }
                     // A runtime MCP connection change — a completed login OR
                     // a live 401 that dropped one — rewrites the callable
                     // tool surface. Replace the pool's whole slice before
@@ -5447,24 +5727,14 @@ impl Engine {
                         .and_then(|metadata| metadata.get("mcp_catalog_changed"))
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false);
-                    if mcp_catalog_changed && let Some(pool) = self.mcp_pool.as_ref().cloned() {
-                        let (universe, refreshed) = {
-                            let pool = pool.lock().await;
-                            let refreshed = pool.to_api_tools();
-                            (pool.model_tool_names(&refreshed), refreshed)
-                        };
-                        let surface_budget = self
-                            .turn_tool_surface_budget
-                            .unwrap_or(crate::model_profile::ToolSurfaceBudget::Standard);
-                        tool_surface_changed |= replace_runtime_mcp_tools(
-                            tool_catalog,
-                            active_tool_names,
-                            &universe,
-                            refreshed,
-                            self.current_mode,
-                            &self.config.tools_always_load,
-                            surface_budget,
-                        );
+                    if mcp_catalog_changed {
+                        tool_surface_changed |= self
+                            .refresh_current_mcp_catalog(
+                                tool_policy,
+                                tool_catalog,
+                                active_tool_names,
+                            )
+                            .await;
                     }
                     // Any of the legitimate mid-turn tool-surface changes above
                     // re-pin the header under a declared `change:tool_surface`
@@ -5504,7 +5774,7 @@ impl Engine {
                         self.session.working_set.observe_tool_call(
                             &tool_name_for_ws,
                             &tool_input,
-                            Some(&output_for_context),
+                            output.success.then_some(output_for_context.as_str()),
                             &self.session.workspace,
                         );
                         let category = crate::core::authority::get_tool_category_for_call(
@@ -5617,7 +5887,7 @@ impl Engine {
                     self.session.working_set.observe_tool_call(
                         &tool_name_for_ws,
                         &tool_input,
-                        Some(&error),
+                        None,
                         &self.session.workspace,
                     );
                     if let Some(model_call) = outcome.model_call {
@@ -5741,7 +6011,7 @@ impl Engine {
                 _ => crate::llm_client::ProviderUsageCoverage::Missing,
             }
         };
-        let accounting_error: Option<String> = None;
+        let mut accounting_error: Option<String> = None;
         let accounting_record = if pending.primary && !pending.accounting_owned_elsewhere {
             let reason = if matches!(outcome, "completed" | "review_response") {
                 crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
@@ -5755,20 +6025,26 @@ impl Engine {
                 reason,
                 &wire,
             );
-            crate::cost_status::record_runtime_usage_async(
+            match crate::cost_status::try_record_runtime_usage_async(
                 pending.accounting_scope,
                 pending.accounting_origin.as_ref(),
                 &record,
             )
-            .await;
-            Some(record)
+            .await
+            {
+                Ok(()) => Some(record),
+                Err(error) => {
+                    accounting_error = Some(error.to_string());
+                    None
+                }
+            }
         } else {
             None
         };
         let _ = self.send_event(Event::ProviderRequestReceipt {
             receipt: json!({
                 "source_accounting": pending.primary,
-                "accounting_error": accounting_error,
+                "accounting_error": accounting_error.as_deref(),
                 "session_id": self.session.id,
                 "turn_id": pending.turn_id,
                 "request_index": pending.request_index,
@@ -5792,6 +6068,9 @@ impl Engine {
                 "cache_attribution": "Local prefix changes and wire schema measurements are context for reported usage, not proof that eviction caused a miss or that unreported retries were free.",
             }),
         }).await;
+        if let Some(error) = accounting_error {
+            return Err(error);
+        }
         Ok(accounting_record)
     }
 
@@ -6347,6 +6626,21 @@ impl Engine {
                             // unconditionally overwrote (#6213 T4).
                         }
                     }
+                    Delta::ThoughtSignatureDelta { thought_signature } => {
+                        if let Some(&tool_idx) = current_tool_indices.get(&index)
+                            && let Some(tool_state) = tool_uses.get_mut(tool_idx)
+                            && !thought_signature.is_empty()
+                        {
+                            tool_state.thought_signature = Some(thought_signature);
+                        }
+                    }
+                    Delta::ToolCallIdDelta { id } => {
+                        if let Some(&tool_idx) = current_tool_indices.get(&index)
+                            && let Some(tool_state) = tool_uses.get_mut(tool_idx)
+                        {
+                            tool_state.id = id;
+                        }
+                    }
                     Delta::CitationsDelta { .. } => {}
                     Delta::RefusalDelta { refusal } => {
                         refusal_text.push_str(&refusal);
@@ -6810,29 +7104,6 @@ impl Engine {
         self.session.messages.clone().into()
     }
 
-    /// The persistent working kernel gets the full durable transcript as data,
-    /// not as another prompt. Python helpers can search and chunk it without
-    /// reinflating the model's visible context, while ordinary variables stay
-    /// in the same kernel across steps and user turns.
-    fn repl_kernel_context(&self) -> String {
-        let payload = serde_json::json!({
-            "schema": "codewhale.persistent_kernel_context.v1",
-            "session": {
-                "id": self.session.id,
-                "workspace": self.session.workspace,
-                "model": self.session.model,
-                "message_count": self.session.messages.len(),
-            },
-            "messages": self.messages_with_turn_metadata(),
-        });
-        serde_json::to_string_pretty(&payload).unwrap_or_else(|error| {
-            format!(
-                "{{\"schema\":\"codewhale.persistent_kernel_context.v1\",\"serialization_error\":{}}}",
-                serde_json::Value::String(error.to_string())
-            )
-        })
-    }
-
     /// This session's authoritative To-do state (#3983).
     ///
     /// Read at explicit seams only — forking a sub-agent, `/relay`, the UI.
@@ -6979,6 +7250,11 @@ fn awaiting_model_bound(config: &EngineConfig) -> Duration {
         config.stream_chunk_timeout,
     )
     .saturating_add(super::turn_heartbeat::STALL_BOUND_GRACE)
+}
+
+fn first_stream_event_timeout(config: &EngineConfig) -> Duration {
+    crate::client::stream_first_byte_timeout(config.stream_chunk_timeout)
+        .min(stream_chunk_timeout_budget(config).1)
 }
 
 /// Whether a per-tool pre-execution snapshot should be taken before running
@@ -7720,7 +7996,9 @@ fn stream_event_has_actionable_content(event: &StreamEvent) -> bool {
             Delta::TextDelta { text } => !text.is_empty(),
             Delta::ThinkingDelta { thinking } => !thinking.is_empty(),
             Delta::InputJsonDelta { partial_json } => !partial_json.is_empty(),
+            Delta::ToolCallIdDelta { .. } => false,
             Delta::SignatureDelta { signature } => !signature.is_empty(),
+            Delta::ThoughtSignatureDelta { thought_signature } => !thought_signature.is_empty(),
             Delta::ReasoningStateDelta { .. }
             | Delta::CitationsDelta { .. }
             | Delta::WebSearchCallDelta { .. }
@@ -7788,12 +8066,31 @@ fn stream_event_content_bytes(event: &StreamEvent) -> usize {
             Delta::TextDelta { text } => text.len(),
             Delta::ThinkingDelta { thinking } => thinking.len(),
             Delta::InputJsonDelta { partial_json } => partial_json.len(),
+            Delta::ToolCallIdDelta { id } => id.len(),
             Delta::SignatureDelta { signature } => signature.len(),
+            Delta::ThoughtSignatureDelta { thought_signature } => thought_signature.len(),
             Delta::RefusalDelta { refusal } => refusal.len(),
-            Delta::ReasoningStateDelta { .. }
-            | Delta::CitationsDelta { .. }
-            | Delta::WebSearchCallDelta { .. }
-            | Delta::ServerToolCallsDelta { .. } => 0,
+            Delta::WebSearchCallDelta {
+                status,
+                kind,
+                action,
+                sources,
+                page,
+                signature,
+                error,
+            } => {
+                status.as_ref().map_or(0, String::len)
+                    + kind.as_ref().map_or(0, String::len)
+                    + action.as_ref().map_or(0, |v| v.to_string().len())
+                    + sources.as_ref().map_or(0, |v| v.to_string().len())
+                    + page.as_ref().map_or(0, |v| v.to_string().len())
+                    + signature.as_ref().map_or(0, String::len)
+                    + error.as_ref().map_or(0, |v| v.to_string().len())
+            }
+            Delta::ServerToolCallsDelta { steps } => {
+                steps.iter().map(|s| s.to_string().len()).sum()
+            }
+            Delta::ReasoningStateDelta { .. } | Delta::CitationsDelta { .. } => 0,
         },
         _ => 0,
     }
@@ -7912,6 +8209,49 @@ mod tests {
             tool_choice: None,
             reasoning_effort: None,
         })
+    }
+
+    #[tokio::test]
+    async fn late_thought_signature_is_retained_on_the_target_tool() {
+        use crate::llm_client::mock::canned;
+
+        let tmp = tempdir().unwrap();
+        let (mut engine, _, _rx) = stream_backpressure_fixture(tmp.path(), 16);
+        let starts = (0..2).map(|index| {
+            Ok(StreamEvent::ContentBlockStart {
+                index,
+                content_block: ContentBlockStart::ToolUse {
+                    id: format!("call_{index}"),
+                    name: "read_file".into(),
+                    input: json!({}),
+                    caller: None,
+                    thought_signature: None,
+                },
+            })
+        });
+        let stream = futures_util::stream::iter(starts.chain([
+            Ok(StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: Delta::ThoughtSignatureDelta {
+                    thought_signature: "first_signature".into(),
+                },
+            }),
+            Ok(canned::message_stop()),
+        ]));
+        let outcome = engine
+            .process_stream(
+                Box::pin(stream),
+                &stream_backpressure_request(),
+                Instant::now(),
+                None,
+            )
+            .await;
+        assert_eq!(outcome.tool_uses.len(), 2);
+        assert_eq!(
+            outcome.tool_uses[0].thought_signature.as_deref(),
+            Some("first_signature")
+        );
+        assert!(outcome.tool_uses[1].thought_signature.is_none());
     }
 
     #[tokio::test]
@@ -8755,6 +9095,197 @@ mod tests {
             }),
             3
         );
+    }
+
+    #[test]
+    fn server_tool_deltas_count_payload_bytes_for_stream_cap() {
+        let big_sources =
+            serde_json::json!([{"url": "https://example.com", "body": "x".repeat(4096)}]);
+        let web_bytes = stream_event_content_bytes(&StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: codewhale_models::Delta::WebSearchCallDelta {
+                status: Some("completed".to_string()),
+                kind: None,
+                action: None,
+                sources: Some(big_sources),
+                page: None,
+                signature: None,
+                error: None,
+            },
+        });
+        assert!(web_bytes > 4096, "web search delta bytes={web_bytes}");
+
+        let steps = vec![serde_json::json!({"tool": "search", "output": "y".repeat(2048)})];
+        let step_bytes = stream_event_content_bytes(&StreamEvent::ContentBlockDelta {
+            index: 1,
+            delta: codewhale_models::Delta::ServerToolCallsDelta { steps },
+        });
+        assert!(step_bytes > 2048, "server tool delta bytes={step_bytes}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn server_tool_deltas_trip_stream_content_cap_overflow() {
+        use crate::llm_client::mock::canned;
+
+        let tmp = tempdir().unwrap();
+        let _home = crate::test_support::SealedHome::at(tmp.path());
+        let (mut engine, _model, mut rx) = stream_backpressure_fixture(tmp.path(), 16);
+        engine.config.stream_max_content_bytes = 64;
+        let request = stream_backpressure_request();
+
+        let web_stream: Vec<anyhow::Result<StreamEvent>> = vec![
+            Ok(StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStart::WebSearchCall {
+                    id: "ws-1".into(),
+                    status: "searching".into(),
+                    kind: None,
+                    action: None,
+                },
+            }),
+            Ok(StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: Delta::WebSearchCallDelta {
+                    status: Some("completed".into()),
+                    kind: None,
+                    action: None,
+                    sources: Some(json!([{ "body": "x".repeat(256) }])),
+                    page: None,
+                    signature: None,
+                    error: None,
+                },
+            }),
+            Ok(canned::message_stop()),
+        ];
+        let web_outcome = engine
+            .process_stream(
+                Box::pin(futures_util::stream::iter(web_stream)),
+                &request,
+                Instant::now(),
+                None,
+            )
+            .await;
+        assert!(
+            web_outcome
+                .stream_error
+                .as_deref()
+                .is_some_and(|message| message.contains("maximum content size")),
+            "expected stream overflow error, got {:?}",
+            web_outcome.stream_error
+        );
+        assert!(
+            std::iter::from_fn(|| rx.try_recv().ok()).any(|event| matches!(
+                event,
+                Event::Error { envelope, .. } if envelope.code == "stream_overflow"
+            )),
+            "expected stream_overflow event for WebSearchCallDelta"
+        );
+        assert!(matches!(
+            web_outcome.server_blocks.as_slice(),
+            [ContentBlock::WebSearchCall { sources: None, .. }]
+        ));
+
+        let (mut engine, _model, mut rx) = stream_backpressure_fixture(tmp.path(), 16);
+        engine.config.stream_max_content_bytes = 64;
+        let tool_stream: Vec<anyhow::Result<StreamEvent>> = vec![
+            Ok(StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStart::ServerToolCalls { steps: Vec::new() },
+            }),
+            Ok(StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: Delta::ServerToolCallsDelta {
+                    steps: vec![json!({ "output": "y".repeat(256) })],
+                },
+            }),
+            Ok(canned::message_stop()),
+        ];
+        let tool_outcome = engine
+            .process_stream(
+                Box::pin(futures_util::stream::iter(tool_stream)),
+                &request,
+                Instant::now(),
+                None,
+            )
+            .await;
+        assert!(
+            tool_outcome
+                .stream_error
+                .as_deref()
+                .is_some_and(|message| message.contains("maximum content size")),
+            "expected stream overflow error, got {:?}",
+            tool_outcome.stream_error
+        );
+        assert!(
+            std::iter::from_fn(|| rx.try_recv().ok()).any(|event| matches!(
+                event,
+                Event::Error { envelope, .. } if envelope.code == "stream_overflow"
+            )),
+            "expected stream_overflow event for ServerToolCallsDelta"
+        );
+        assert!(matches!(
+            tool_outcome.server_blocks.as_slice(),
+            [ContentBlock::ServerToolCalls { steps }] if steps.is_empty()
+        ));
+    }
+
+    #[tokio::test]
+    async fn provider_request_receipt_records_accounting_error_when_owner_work_fails() {
+        let tmp = tempdir().unwrap();
+        let _home = crate::test_support::SealedHome::at(tmp.path());
+        let (engine, model, mut rx) = stream_backpressure_fixture(tmp.path(), 16);
+        let retry_observation = engine.request_retry_observation();
+        let route = crate::core::model_client::ModelClient::effective_route_envelope(
+            model.as_ref(),
+            "test-model",
+            chrono::Utc::now(),
+        );
+        let accounting_source = crate::cost_status::NativeUsageSource::capture_with_origin(
+            retry_observation.request_id.clone(),
+            crate::cost_status::UsageSpendOwner::Primary,
+            None,
+        );
+        let mut pending = Some(PendingProviderRequestReceipt {
+            request_id: retry_observation.request_id.clone(),
+            accounting_source,
+            accounting_scope: crate::cost_status::scope_token(),
+            accounting_origin: None,
+            route,
+            primary: true,
+            accounting_owned_elsewhere: false,
+            invoked: true,
+            turn_id: "turn-accounting-err".to_string(),
+            request_index: 1,
+            prefix_check: json!({ "outcome": "stable" }),
+            reused_preparation: false,
+            wire: retry_observation.wire_observations.clone(),
+            transport_retries: retry_observation.retries.clone(),
+            started_at: Instant::now(),
+        });
+        let usage = Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            ..Usage::default()
+        };
+
+        let result = crate::cost_status::with_test_runtime_usage_error(
+            "blocking work is queued behind busy runtime owner",
+            engine.settle_provider_request_receipt(&mut pending, Some(&usage), "completed"),
+        )
+        .await;
+
+        let err = result.expect_err("failed usage settlement must return Err");
+        assert!(
+            err.contains("blocking work is queued"),
+            "unexpected settlement error: {err}"
+        );
+        let event = rx
+            .try_recv()
+            .expect("ProviderRequestReceipt must still be emitted");
+        let Event::ProviderRequestReceipt { receipt } = event else {
+            panic!("expected ProviderRequestReceipt, got {event:?}");
+        };
+        assert_eq!(receipt["accounting_error"].as_str(), Some(err.as_str()));
     }
 
     /// Regression test for the OpenAI streaming batch tool_calls bug.
@@ -10040,6 +10571,7 @@ impl Engine {
                 &mut active,
                 &planned.hook_contexts,
                 None,
+                mode,
             )
             .await;
             surface.cache = self.session.tool_activation_cache.clone();

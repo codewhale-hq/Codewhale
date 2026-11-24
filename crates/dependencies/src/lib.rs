@@ -1616,7 +1616,7 @@ pub fn run_bounded_git_with_timeout(
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let mut child = cmd.spawn()?;
+    let (mut child, tree) = codewhale_runtime::process_tree::spawn_contained_std(cmd)?;
     // Drain both pipes while waiting: the restore path's `ls-tree -r` and
     // the diff commands emit output that grows with workspace size, and a
     // child blocked on a full pipe buffer never exits — it would turn every
@@ -1651,6 +1651,7 @@ pub fn run_bounded_git_with_timeout(
     drop(done_tx);
 
     let Some(status) = child.wait_timeout(timeout)? else {
+        let _ = tree.kill();
         let _ = child.kill();
         // Reap off the pipeline thread (see the doc comment): the kernel may
         // not deliver the kill until an uninterruptible syscall returns.
@@ -1662,6 +1663,7 @@ pub fn run_bounded_git_with_timeout(
             format!("git {subcommand} timed out after {}s", timeout.as_secs()),
         ));
     };
+    tree.release();
     // Wait for the readers up to the grace, then return what was captured. A
     // clean git already closed its write ends, so both readers deliver
     // immediately; the grace only covers a pipe still held open by an
@@ -1812,6 +1814,38 @@ mod tests {
         let output = probe_output(&mut command, true, VERSION_PROBE_TIMEOUT).unwrap();
         assert!(output.status.success());
         assert_eq!(output.stdout, b"version");
+        let pid = codewhale_runtime::process_tree::read_pid_file(
+            &pid_file,
+            std::time::Duration::from_secs(1),
+        );
+        assert!(codewhale_runtime::process_tree::wait_for_pid_exit(
+            pid,
+            std::time::Duration::from_secs(2)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_git_timeout_kills_descendants_holding_pipes() {
+        let root = tempfile::tempdir().unwrap();
+        let pid_file = root.path().join("git-descendant.pid");
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "sleep 30 & echo $! > \"$1\"; wait",
+                "git-timeout-test",
+            ])
+            .arg(&pid_file);
+        let started = std::time::Instant::now();
+        let error = run_bounded_git_with_timeout(
+            &mut command,
+            "sleep",
+            std::time::Duration::from_millis(250),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
         let pid = codewhale_runtime::process_tree::read_pid_file(
             &pid_file,
             std::time::Duration::from_secs(1),

@@ -672,6 +672,9 @@ fn shell_denial_filters_search_catalog_without_expanding_allow_grants() {
         "exec_shell",
         "task_shell_start",
         "task_gate_run",
+        "terminal_run",
+        "terminal_send",
+        "terminal_reset",
         "terminal/run",
         "terminal/send",
         "terminal/reset",
@@ -720,6 +723,7 @@ fn shell_denial_preserves_task_reads_and_denies_verification_actions() {
             tasks,
             catalog_tool("Run"),
             catalog_tool("task_shell_wait"),
+            catalog_tool("terminal_cancel"),
             catalog_tool("terminal/cancel"),
         ],
         None,
@@ -737,6 +741,7 @@ fn shell_denial_preserves_task_reads_and_denies_verification_actions() {
     assert!(!surface.denies_call("tasks", &json!({"action":"list"})));
     assert!(surface.denies_call("tasks", &json!({"action":"gate_run"})));
     assert!(!surface.denies_call("task_shell_wait", &json!({})));
+    assert!(!surface.denies_call("terminal_cancel", &json!({})));
     assert!(!surface.denies_call("terminal/cancel", &json!({})));
     for input in [
         json!({"action":"tests"}),
@@ -772,6 +777,8 @@ fn shell_denial_covers_every_code_executing_action_or_names_an_exemption() {
             "tasks/pr_attempt_preflight",
             "git apply --check of a stored patch",
         ),
+        ("terminal_cancel", "stops an existing terminal session"),
+        ("terminal_wait", "reads an existing terminal session"),
         ("terminal/cancel", "stops an existing terminal session"),
         ("terminal/wait", "reads an existing terminal session"),
         (
@@ -780,11 +787,11 @@ fn shell_denial_covers_every_code_executing_action_or_names_an_exemption() {
         ),
         (
             "workflow/start",
-            "runs sub-agents that inherit this deny list; the verify input is denied by the flag list below",
+            "runs sub-agents that inherit this deny list; verify and args.evaluator are denied by execution_envelope",
         ),
         (
             "workflow/run",
-            "runs sub-agents that inherit this deny list; the verify input is denied by the flag list below",
+            "runs sub-agents that inherit this deny list; verify and args.evaluator are denied by execution_envelope",
         ),
         (
             "workflow/cancel",
@@ -954,6 +961,15 @@ fn shell_denial_keeps_only_the_bounded_verifier_its_default_gate() {
     let workflow_verify = json!({"action":"run", "script":"return 1;", "verify":true});
     assert!(enforce_tool_denial(&operator, "workflow", &workflow_verify).is_err());
     assert!(enforce_tool_denial(&verifier, "workflow", &workflow_verify).is_ok());
+    let workflow_evaluator = json!({
+        "action": "run",
+        "args": {
+            "strategy": "search",
+            "evaluator": {"manifestPath": "/trusted/evaluator.json"}
+        }
+    });
+    assert!(enforce_tool_denial(&operator, "workflow", &workflow_evaluator).is_err());
+    assert!(enforce_tool_denial(&verifier, "workflow", &workflow_evaluator).is_err());
 
     let surface = ToolSurfacePolicy::new(
         crate::tools::ToolRegistry::new(verifier.clone()),
@@ -985,12 +1001,15 @@ fn shell_denial_covers_workflow_completion_verification_but_not_plain_runs() {
         json!({"action":"run", "verify":true, "script":"return 1;"}),
         json!({"action":"wait", "verify":true}),
         json!({"action":" RUN ", "verify":true}),
+        json!({"action":"run", "args":{"strategy":"search", "evaluator":{"manifestPath":"/trusted/evaluator.json"}}}),
+        json!({"action":"start", "args":{"evaluator":{"manifestPath":"/trusted/evaluator.json"}}}),
     ] {
         assert!(tool_call_denied(Some(&rules), "workflow", &input), "{input}");
     }
     for input in [
         json!({"action":"run", "script":"return 1;"}),
         json!({"action":"run", "verify":false}),
+        json!({"action":"run", "args":{"strategy":"search", "evaluator":null}}),
         json!({"action":"status", "run_id":"workflow_1"}),
         json!({"action":"cancel", "run_id":"workflow_1"}),
     ] {
@@ -1412,20 +1431,26 @@ async fn user_steer_during_parent_answer_still_gets_a_reply_with_healthy_childre
                 })
                 .await
                 .expect("steer channel open");
-            assert_eq!(accepted.await.unwrap(), handle::SteerOutcome::Accepted);
+            let outcome = tokio::time::timeout(Duration::from_secs(5), accepted)
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("{phase}: steering must preempt an indefinitely silent request")
+                })
+                .unwrap();
+            assert_eq!(outcome, handle::SteerOutcome::Accepted);
             assert!(
                 dropped.load(Ordering::SeqCst),
                 "{phase}: obsolete request must close before steer acceptance"
             );
         };
-        let ((status, error), ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        let ((status, error), ()) = tokio::time::timeout(Duration::from_secs(60), async {
             tokio::join!(
                 engine.run_turn(&mut turn, surface, Some(Arc::clone(&children)), None),
                 steer
             )
         })
         .await
-        .expect("steering must preempt an indefinitely silent request");
+        .unwrap_or_else(|_| panic!("{phase}: steered turn must finish"));
         assert_eq!(status, TurnOutcomeStatus::Completed, "{phase}: {error:?}");
         assert_eq!(client.calls.load(Ordering::SeqCst), 3, "{phase}");
         let requests = client.requests.lock().unwrap().clone();

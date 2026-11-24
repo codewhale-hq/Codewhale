@@ -27,6 +27,7 @@ const FAILURE_CALL_ID: &str = "call_bash_failure";
 const RETRIEVE_CALL_ID: &str = "call_retrieve_omitted_range";
 const SUCCESS_SENTINEL: &str = "DEEP_SUCCESS_EVIDENCE_SENTINEL_4619";
 const FAILURE_SENTINEL: &str = "DEEP_FAILURE_EVIDENCE_SENTINEL_4619";
+const BASH_STEP_TIMEOUT_SECS: u64 = 30;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn headless_bash_success_and_failure_are_distinct_bounded_exact_evidence() {
@@ -317,7 +318,10 @@ fn run_exec(workspace: &Path, home: &Path, server: &MockServer) -> std::process:
         .env("RUST_LOG", "warn")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    run_with_timeout(command, Duration::from_secs(45))
+    run_with_timeout(
+        command,
+        Duration::from_secs(2 * BASH_STEP_TIMEOUT_SECS + 15),
+    )
 }
 
 fn find_artifact_dir(home: &Path) -> Option<PathBuf> {
@@ -360,7 +364,7 @@ fn bash_tool_sse(call_id: &str, success: bool) -> String {
     tool_call_sse(
         call_id,
         "Bash",
-        &json!({"action": "run", "command": command, "timeout_ms": 30_000}),
+        &json!({"action": "run", "command": command, "timeout_ms": BASH_STEP_TIMEOUT_SECS * 1_000}),
     )
 }
 
@@ -492,18 +496,24 @@ fn run_with_timeout(mut command: Command, timeout: Duration) -> std::process::Ou
     let mut child = command.spawn().expect("spawn codewhale exec");
     let stdout = read_in_background(child.stdout.take().expect("stdout"));
     let stderr = read_in_background(child.stderr.take().expect("stderr"));
-    let status = child
-        .wait_timeout(timeout)
-        .expect("wait")
-        .unwrap_or_else(|| {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("codewhale exec timed out")
-        });
+    let status = child.wait_timeout(timeout).expect("wait");
+    if status.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let stdout = stdout.join().expect("stdout thread").expect("read stdout");
+    let stderr = stderr.join().expect("stderr thread").expect("read stderr");
+    let status = status.unwrap_or_else(|| {
+        panic!(
+            "codewhale exec timed out after {timeout:?}\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        )
+    });
     std::process::Output {
         status,
-        stdout: stdout.join().expect("stdout thread").expect("read stdout"),
-        stderr: stderr.join().expect("stderr thread").expect("read stderr"),
+        stdout,
+        stderr,
     }
 }
 

@@ -32,6 +32,8 @@ pub struct Envelope {
     pub applies_to: Option<String>,
     #[serde(default)]
     pub published_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_after: Option<String>,
     pub payload_b64: String,
     pub sig_b64: String,
     #[serde(default)]
@@ -243,6 +245,10 @@ pub(crate) fn authenticate(
             .as_ref()
             .is_some_and(|value| value.len() > 40)
         || envelope
+            .not_after
+            .as_ref()
+            .is_some_and(|value| value.len() > 40)
+        || envelope
             .sha256
             .as_ref()
             .is_some_and(|value| value.len() != 64)
@@ -383,6 +389,11 @@ pub fn verify_envelope(
         .is_some_and(|outer| outer != &facts.published_at)
     {
         return Err(FactsRejection::Mismatch("published_at".into()));
+    }
+    if let Some(outer) = envelope.not_after.as_deref()
+        && Some(outer) != facts.not_after.as_deref()
+    {
+        return Err(FactsRejection::Mismatch("not_after".into()));
     }
     if facts.schema_version == 0 || facts.facts_version == 0 {
         return Err(FactsRejection::BadPayload(
@@ -641,15 +652,40 @@ pub fn automation_scope_violation(
     if *facts_version != published_at {
         return Some("facts_version is not the publication time".into());
     }
+    automation_window_violation(published_at, not_after).map(str::to_string)
+}
+
+pub const MAX_AUTOMATION_WINDOW_SECS: u64 = AUTOMATION_MAX_VALIDITY_SECS;
+
+#[must_use]
+pub fn automation_window_violation(
+    published_at: u64,
+    not_after: Option<u64>,
+) -> Option<&'static str> {
     match not_after {
-        None => Some("no not_after".into()),
+        None => Some("no not_after"),
         Some(expires)
-            if expires <= published_at || expires - published_at > AUTOMATION_MAX_VALIDITY_SECS =>
+            if expires <= published_at || expires - published_at > MAX_AUTOMATION_WINDOW_SECS =>
         {
-            Some("validity outside the automation limit".into())
+            Some("validity outside the automation limit")
         }
         Some(_) => None,
     }
+}
+
+pub fn check_automation_window(
+    published_at: u64,
+    not_after: Option<u64>,
+    now_unix: u64,
+) -> Result<u64, FactsRejection> {
+    if let Some(violation) = automation_window_violation(published_at, not_after) {
+        return Err(FactsRejection::OutOfScope(violation.into()));
+    }
+    let expires = not_after.expect("checked above");
+    if now_unix >= expires {
+        return Err(FactsRejection::OutOfScope("not_after has expired".into()));
+    }
+    Ok(expires)
 }
 
 /// Evaluate a Cargo-style semver requirement against the running version.

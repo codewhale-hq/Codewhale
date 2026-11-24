@@ -1623,3 +1623,93 @@
             );
         }
     }
+
+    #[tokio::test]
+    async fn registry_admitted_custom_hosts_refuse_private_addresses_at_connect_time() {
+        use codewhale_config::cloud_facts::{
+            BuiltinNames, KeyRole, REGISTRY_SCHEMA, Registry, VerifiedRegistry, admit_registry,
+            overlay,
+        };
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let _ = socket.read(&mut buf).await;
+                    let _ = socket
+                        .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+                        .await;
+                });
+            }
+        });
+        let base_url = format!("http://localhost:{port}/v1");
+        let probe = |provider: ProviderKind| {
+            let client =
+                CodewhaleClient::build_http_client("sk-test", &HashMap::new(), provider, &base_url)
+                    .expect("client");
+            let url = format!("{base_url}/models");
+            async move { client.get(url).send().await }
+        };
+
+        overlay::clear();
+        assert!(probe(ProviderKind::Custom).await.is_ok());
+
+        let registry: Registry = serde_json::from_value(json!({
+            "schema": REGISTRY_SCHEMA,
+            "revision": overlay::highest_seen(REGISTRY_SCHEMA).unwrap_or(0) + 1,
+            "generated_at": "2026-11-17T00:00:00Z",
+            "providers": [{
+                "id": "acme-rebind",
+                "label": "Acme Rebind",
+                "wire_policy": "openai-compatible",
+                "base_url": "https://api.acme-rebind.example/v1",
+                "admission": {"founder_signature": "required"}
+            }],
+            "models": [],
+            "offerings": [],
+            "dialects": {}
+        }))
+        .expect("registry");
+        let mut admitted = admit_registry(
+            VerifiedRegistry {
+                registry,
+                key_id: "engine-guard-test".to_string(),
+                key_role: KeyRole::Founder,
+                sha256: String::new(),
+                generated_at_unix: 0,
+                not_after: None,
+            },
+            &BuiltinNames::bundled(),
+        );
+        assert_eq!(admitted.providers.len(), 1, "{:?}", admitted.refused);
+        admitted.providers[0].base_url.clone_from(&base_url);
+        let ticket = overlay::configure(true, "engine-pulled-guard-test").expect("ticket");
+        assert!(overlay::publish_registry(
+            &ticket,
+            Some(std::sync::Arc::new(admitted)),
+            |_| {}
+        ));
+
+        let refused = probe(ProviderKind::Custom).await.expect_err("guarded");
+        let chain = format!("{:?}", anyhow::Error::from(refused));
+        assert!(chain.contains("restricted address"), "{chain}");
+        assert!(probe(ProviderKind::Ollama).await.is_ok());
+        assert!(probe(ProviderKind::Vllm).await.is_ok());
+        assert!(
+            CodewhaleClient::build_http_client(
+                "sk-test",
+                &HashMap::new(),
+                ProviderKind::Custom,
+                "http://127.0.0.1:1/v1",
+            )
+            .is_ok()
+        );
+
+        overlay::clear();
+        assert!(probe(ProviderKind::Custom).await.is_ok());
+    }

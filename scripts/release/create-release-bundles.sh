@@ -103,6 +103,10 @@ bundle() {
   local stage_dir="${stage_root}/${stem}"
   mkdir -p "${stage_dir}"
 
+  mkdir -p "${stage_dir}/codewhale-notices/docs"
+  cp LICENSE THIRD_PARTY_NOTICES.md "${stage_dir}/codewhale-notices/"
+  cp docs/THIRD_PARTY_NOTICES.md "${stage_dir}/codewhale-notices/docs/"
+
   cp "${cli_path}" "${stage_dir}/${cli_dst}"
   cp "${shim_path}" "${stage_dir}/${shim_dst}"
 

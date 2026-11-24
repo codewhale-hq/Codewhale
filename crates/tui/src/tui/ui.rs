@@ -47,7 +47,6 @@ use windows::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleMo
 
 use crate::commands;
 use crate::tui::auto_router;
-use crate::tui::clipboard::ClipboardContent;
 use crate::tui::color_compat::ColorCompatBackend;
 use crate::tui::command_palette::{
     CommandPaletteView, build_entries_with_plugins as build_command_palette_entries,
@@ -223,6 +222,8 @@ const TOOL_HANG_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(600);
 // braille pattern reads as continuous motion instead of teleport-frames.
 const UI_STATUS_ANIMATION_MS: u64 = codewhale_tui_kit::spinner::BRAILLE_SPINNER_FRAME_MS;
 const UI_QUIET_STATUS_ANIMATION_MS: u64 = 1_000;
+const UI_ACTIVITY_ANIMATION_MS: u64 =
+    (1_000.0 / codewhale_ratatui::tokens::MOTION_LOOP_FPS_CAP) as u64;
 /// Ambient fish, the idle-mark caustic, and the completion wake use a modest
 /// ~12.5fps clock by default. On measured high-Hz displays the adaptive probe
 /// may raise this (still bounded); low_motion always freezes the cadence.
@@ -989,7 +990,7 @@ pub(crate) mod fatal_signal_guard;
 // rebuild on continue. Sits next to the fatal guard because both write the same
 // teardown table.
 pub(crate) mod job_control_guard;
-mod motion;
+pub(crate) mod motion;
 mod observer_hooks;
 mod provider_setup;
 mod release_check;
@@ -1035,7 +1036,6 @@ async fn execute_command_input(
     terminal: &mut AppTerminal,
     app: &mut App,
     engine_handle: &mut EngineHandle,
-    task_manager: &SharedTaskManager,
     config: &mut Config,
     input: &str,
 ) -> Result<bool> {
@@ -1080,7 +1080,7 @@ async fn execute_command_input(
         app.api_key_env_only =
             codewhale_runtime::config::active_provider_uses_env_only_api_key(config);
     }
-    apply_command_result(terminal, app, engine_handle, task_manager, config, result).await
+    apply_command_result(terminal, app, engine_handle, config, result).await
 }
 
 #[derive(Debug, Clone)]
@@ -1151,6 +1151,7 @@ pub(crate) struct ApprovalDecisionEvent {
     approval_key: String,
     approval_grouping_key: String,
     persistent_rules: Vec<codewhale_config::ToolAskRule>,
+    subject: Option<String>,
 }
 
 fn mark_active_turn_cancelled_locally(app: &mut App) {
@@ -1324,7 +1325,8 @@ pub(crate) fn prefill_jobs_cancel_all_if_tasks_sidebar(app: &mut App) -> bool {
 
     app.input = "/jobs cancel-all".to_string();
     app.cursor_position = app.input.len();
-    app.status_message = Some("Press Enter to cancel all running commands".to_string());
+    let prompt = tr(app.ui_locale, MessageId::JobsCancelAllPrompt).replace("{key}", "Enter");
+    app.push_status_toast(prompt, StatusToastLevel::Info, None);
     true
 }
 
@@ -1498,19 +1500,26 @@ impl UpdateNotice {
             "Run `/update install` here (preview it with a bare `/update`), or `codewhale update` in a shell, then restart Codewhale."
                 .to_string()
         } else {
+            let exe = std::env::current_exe().unwrap_or_default();
             format!(
-                "Installed via {label}. Run `{command}`, then restart Codewhale.\n\
-                 Do not use `codewhale update` here — it would replace a binary {label} manages.",
-                label = install.label(),
-                command = install.update_command()
+                "{} Then restart Codewhale.",
+                codewhale_release::installs::update_answer(install, &exe)
             )
         };
+        let failure = codewhale_config::codewhale_home()
+            .ok()
+            .and_then(|home| codewhale_release::autoupdate::load_state(&home).last_failure)
+            .map(|reason| {
+                format!("\nThe last automatic update failed: {reason}. Details: codewhale doctor")
+            })
+            .unwrap_or_default();
         format!(
             "Update available: v{current} -> v{latest}\n\
-             Release notes: https://github.com/codewhale-hq/CodeWhale/releases/tag/v{latest}\n\
-             {action}",
+             Release notes: {notes}\n\
+             {action}{failure}",
             current = self.current,
-            latest = self.latest
+            latest = self.latest,
+            notes = codewhale_release::autoupdate::changelog_url(&self.latest),
         )
     }
 }
@@ -1866,7 +1875,7 @@ mod provider_key_validation_tests {
             Some(codewhale_config::catalog::CatalogStatus::Fresh)
         );
         let generic = make_roster(&["qwen3:4b", "nomic-embed-text:latest"], &fingerprint);
-        publish_verified_roster(&identity, base_url, Some(generic));
+        publish_verified_roster(&config, &identity, base_url, Some(generic));
         let cached = codewhale_engine::provider_catalog_live::cached_entry_for_route(
             ProviderKind::Ollama,
             identity.key.as_str(),
@@ -1896,7 +1905,7 @@ mod provider_key_validation_tests {
             &["qwen3:4b", "nomic-embed-text:latest"],
             &base_url_fingerprint(empty_base_url),
         );
-        publish_verified_roster(&identity, empty_base_url, Some(generic));
+        publish_verified_roster(&config, &identity, empty_base_url, Some(generic));
         assert!(
             codewhale_engine::provider_catalog_live::cached_entry_for_route(
                 ProviderKind::Ollama,

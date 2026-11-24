@@ -34,7 +34,7 @@ polished "done".
 
 ### Tools
 Use `edit`/`write` for changes and read a file before editing it. For inspection
-and search, `bash`, `read`, `grep_files`, and `file_search` are all fine — use
+and search, `bash`, `read`, `list_dir`, `grep_files`, and `file_search` are all fine — use
 whichever gets the answer in one call. Skills: call `load_skill` with
 `name="list"` or `query="..."` to find one, then load it by name before starting
 that work. Independent parts go to `agent` children together; never poll for
