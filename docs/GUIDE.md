@@ -427,7 +427,7 @@ Common commands for first-time users:
 | `/statusline` | Choose which footer status chips are visible |
 | `/anchor` | Pin a fact that stays when Codewhale makes room; `/anchor list` and `/anchor remove <n>` manage pins |
 | `/structcopy` | Copy one session object (`turn <n>`, `tool <call-id>`, `plan`, `workflow <run-id>`) as redacted JSON |
-| `/remote-env` | Open new hosted Work from a GitHub or CNB branch tip |
+| `/remote-env` | Show hosted Work options; `/remote-env open` opens new hosted Work from a GitHub or CNB branch tip |
 | `/color` | Give this chat's composer box its own color: bare `/color` cycles red, orange, amber, green, cyan, blue, purple and pink, `/color blue` picks one, `/color off` returns to the theme |
 | `/receipts` | List what this session did: files changed, commands run, web and MCP calls, agents, approvals and who gave them, failures |
 | `/compact` | Summarize long context to recover token budget |

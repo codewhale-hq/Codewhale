@@ -2226,7 +2226,8 @@ Common settings keys:
 - `composer_border` (`true`/`false`; default `true`): draws the composer's
   border.
 - `thinking_highlight` (`true`/`false`; default `true`): fills the background
-  behind model reasoning; the dashed reasoning rule stays when it is off.
+  behind model reasoning while `calm_mode` is off; calm mode, on by default,
+  never fills it. The dashed reasoning rule stays when it is off.
 - `transcript_spacing` (`compact` or `spacious`; default `spacious`): blank
   lines between transcript entries.
 - `focus_texture` (`off`, `scrim`, or `grain`; default `off`): focus-context
