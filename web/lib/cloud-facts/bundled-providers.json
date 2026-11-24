@@ -652,6 +652,25 @@
       },
       "wire_policy": "chat_completions"
     },
+    "atmorouter": {
+      "aliases": [
+        "atmo-router"
+      ],
+      "api_key_env": "ATMOROUTER_API_KEY",
+      "auth": {
+        "env_vars": [
+          "ATMOROUTER_API_KEY"
+        ],
+        "secret_slot": "atmorouter"
+      },
+      "base_url": "https://atmorouter.dev/v1",
+      "credential_url": "https://atmorouter.dev/dashboard/keys",
+      "discovery": "models_endpoint",
+      "docs_url": "https://atmorouter.dev/docs/quickstart",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
     "baseten": {
       "aliases": [
         "base-ten",
@@ -1656,6 +1675,22 @@
       },
       "wire_policy": "chat_completions"
     },
+    "onomeo": {
+      "api_key_env": "ONOMEO_API_KEY",
+      "auth": {
+        "env_vars": [
+          "ONOMEO_API_KEY"
+        ],
+        "secret_slot": "onomeo"
+      },
+      "base_url": "https://onomeo.com/v1",
+      "credential_url": "https://onomeo.com/dashboard",
+      "discovery": "models_endpoint",
+      "docs_url": "https://onomeo.com/integrations",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
     "openai": {
       "aliases": [
         "open-ai"
@@ -2263,6 +2298,25 @@
         "order": 21
       },
       "wire_policy": "chat_completions"
+    },
+    "trustedrouter": {
+      "aliases": [
+        "trusted-router"
+      ],
+      "api_key_env": "TRUSTEDROUTER_API_KEY",
+      "auth": {
+        "env_vars": [
+          "TRUSTEDROUTER_API_KEY"
+        ],
+        "secret_slot": "trustedrouter"
+      },
+      "base_url": "https://api.trustedrouter.com/v1",
+      "credential_url": "https://trustedrouter.com/console/api-keys",
+      "discovery": "public_models_endpoint",
+      "docs_url": "https://trustedrouter.com/docs",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
     },
     "tsubasa": {
       "api_key_env": "TSUBASA_API_KEY",

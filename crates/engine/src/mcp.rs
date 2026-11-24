@@ -7284,6 +7284,9 @@ impl McpPool {
         config: McpServerConfig,
         runtime_added: bool,
     ) -> Result<(), String> {
+        if name.trim().is_empty() {
+            return Err("MCP server name must not be empty".to_string());
+        }
         self.require_server(&name)
             .map_err(|error| error.to_string())?;
         if self.config.servers.contains_key(&name) {
@@ -7764,6 +7767,13 @@ pub fn read_bounded_mcp_config_file(path: &Path, max_bytes: u64) -> Result<Optio
     let file_type = metadata.file_type();
     if file_type.is_symlink() || !file_type.is_file() {
         anyhow::bail!("MCP config path must be a regular file: {}", path.display());
+    }
+    if metadata.len() > max_bytes {
+        anyhow::bail!(
+            "MCP config {} exceeds the {} MiB limit",
+            path.display(),
+            max_bytes / (1024 * 1024)
+        );
     }
 
     let file = open_mcp_config_file(path)

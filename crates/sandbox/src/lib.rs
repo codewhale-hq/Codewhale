@@ -467,6 +467,15 @@ fn insert_private_tmp_env(env: &mut HashMap<String, String>, dir: &std::path::Pa
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SandboxResourceLimits {
+    pub address_space_bytes: u64,
+    pub file_size_bytes: u64,
+    pub open_files: u64,
+    pub processes: u64,
+    pub cpu_seconds: u64,
+}
+
 impl ExecEnv {
     /// Get the program to execute (first element of command).
     pub fn program(&self) -> &str {
@@ -493,6 +502,42 @@ impl ExecEnv {
             return bwrap::spawn(move || command.spawn())?;
         }
         command.spawn()
+    }
+
+    pub fn spawn_background_limited(
+        &self,
+        command: std::process::Command,
+        limits: SandboxResourceLimits,
+    ) -> std::io::Result<std::process::Child> {
+        #[cfg(unix)]
+        let mut command = command;
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                command.pre_exec(move || {
+                    for (resource, value) in [
+                        (libc::RLIMIT_AS, limits.address_space_bytes),
+                        (libc::RLIMIT_FSIZE, limits.file_size_bytes),
+                        (libc::RLIMIT_NOFILE, limits.open_files),
+                        (libc::RLIMIT_NPROC, limits.processes),
+                        (libc::RLIMIT_CPU, limits.cpu_seconds),
+                    ] {
+                        let limit = libc::rlimit {
+                            rlim_cur: value as libc::rlim_t,
+                            rlim_max: value as libc::rlim_t,
+                        };
+                        if libc::setrlimit(resource, &raw const limit) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
+                    Ok(())
+                });
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = limits;
+        self.spawn_background(command)
     }
 
     #[cfg(not(target_env = "ohos"))]
@@ -607,6 +652,36 @@ pub fn bwrap_setup_failure(stderr: &str) -> Option<&str> {
         .lines()
         .map(str::trim_start)
         .find(|line| line.starts_with("bwrap:"))
+}
+
+/// Resolve `strerror(errno)` for the active environment `LC_MESSAGES` locale
+/// without mutating the process-global locale or child environment.
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
+pub(crate) fn localized_errno_message(errno: libc::c_int) -> Option<String> {
+    // SAFETY: `newlocale`, `uselocale`, `strerror_r`, and `freelocale` operate
+    // only on the calling thread's locale and a stack-owned NUL-terminated buffer.
+    unsafe {
+        let loc = libc::newlocale(libc::LC_MESSAGES_MASK, c"".as_ptr(), std::ptr::null_mut());
+        if loc.is_null() {
+            return None;
+        }
+        let prev = libc::uselocale(loc);
+        let mut buf = [0 as libc::c_char; 256];
+        let rc = libc::strerror_r(errno, buf.as_mut_ptr(), buf.len());
+        if !prev.is_null() {
+            libc::uselocale(prev);
+        }
+        libc::freelocale(loc);
+        if rc != 0 {
+            return None;
+        }
+        buf[buf.len() - 1] = 0;
+        let msg = std::ffi::CStr::from_ptr(buf.as_ptr()).to_str().ok()?;
+        (!msg.is_empty()).then(|| msg.to_string())
+    }
 }
 
 /// Manager for sandbox operations.
@@ -1321,7 +1396,7 @@ impl SandboxManager {
             SandboxType::LinuxBubblewrap => {
                 if let Some(error) = bwrap_setup_failure(stderr) {
                     format!("Bubblewrap could not create the sandbox: {}", error)
-                } else if stderr.contains("Read-only file system") {
+                } else if bwrap::is_erofs_stderr(stderr) {
                     "Bubblewrap blocked access outside the writable workspace view.".to_string()
                 } else {
                     format!(

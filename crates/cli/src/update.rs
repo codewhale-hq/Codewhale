@@ -547,6 +547,22 @@ fn stage_release(beta: bool, proxy_arg: Option<String>) -> Result<()> {
     Ok(())
 }
 
+fn record_declined_update(
+    home: &Path,
+    staged: &mut autoupdate::StagedUpdate,
+    current: &str,
+    version: &str,
+) -> String {
+    staged.declined = true;
+    if let Err(error) = autoupdate::store_staged(home, staged) {
+        tracing::warn!(error = %format!("{error:#}"), "could not record declined update");
+        return format!(
+            "Kept v{current}, but the decision was not saved ({error:#}); you will be asked again."
+        );
+    }
+    format!("Kept v{current}. Run `codewhale update` whenever you want v{version}.")
+}
+
 pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
     use std::io::IsTerminal;
     let Ok(home) = codewhale_config::codewhale_home() else {
@@ -637,15 +653,10 @@ pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
         let accepted = std::io::stdin().read_line(&mut answer).is_ok()
             && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes");
         if !accepted {
-            staged.declined = true;
-            if let Err(error) = autoupdate::store_staged(&home, &staged) {
-                tracing::warn!(error = %format!("{error:#}"), "could not record declined update");
-                eprintln!(
-                    "Kept v{current}, but the decision was not saved ({error:#}); you will be asked again."
-                );
-                return;
-            }
-            eprintln!("Kept v{current}. Run `codewhale update` whenever you want v{version}.");
+            eprintln!(
+                "{}",
+                record_declined_update(&home, &mut staged, current, &version)
+            );
             return;
         }
     }
@@ -5461,5 +5472,34 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
             release_tag_from_github_release_html("<a href=\"/releases/tag/a%2Fb\">"),
             None
         );
+    }
+
+    #[test]
+    fn record_declined_update_warns_when_persist_fails_and_saves_on_success() {
+        let sample = |target_dir: PathBuf| autoupdate::StagedUpdate {
+            version: "0.10.5".to_string(),
+            sha256: "a".repeat(64),
+            signed: false,
+            source: "https://example.invalid/codewhale".to_string(),
+            target_dir,
+            declined: false,
+            staged_at_unix: 1,
+        };
+
+        let unwritable_home = tempfile::tempdir().unwrap();
+        // Blocking `updates` with a regular file forces `store_staged` to fail portably.
+        std::fs::write(unwritable_home.path().join("updates"), b"not-a-dir").unwrap();
+        let mut staged = sample(unwritable_home.path().to_path_buf());
+        let warning =
+            record_declined_update(unwritable_home.path(), &mut staged, "0.10.4", "0.10.5");
+        assert!(warning.contains("not saved"), "{warning}");
+        assert!(warning.contains("you will be asked again"), "{warning}");
+        assert!(!warning.contains("whenever you want"), "{warning}");
+
+        let ok_home = tempfile::tempdir().unwrap();
+        let mut staged = sample(ok_home.path().to_path_buf());
+        let ok_msg = record_declined_update(ok_home.path(), &mut staged, "0.10.4", "0.10.5");
+        assert!(ok_msg.contains("whenever you want v0.10.5"), "{ok_msg}");
+        assert!(autoupdate::load_staged(ok_home.path()).unwrap().declined);
     }
 }

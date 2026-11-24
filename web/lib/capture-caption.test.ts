@@ -7,6 +7,7 @@ const released = RELEASED_CAPTURE_FRAMES as Record<string, ReleasedCaptureFrame>
 const dir = new URL("./terminal-captures/released/", import.meta.url);
 const provenance = JSON.parse(readFileSync(new URL("provenance.json", dir), "utf8")) as {
   binary: { version_line: string };
+  model: { model: string };
   frames: { id: string; file: string; columns: number; rows: number }[];
 };
 const visibleText = (frame: ReleasedCaptureFrame) => frame.lines.map((runs) => runs.map(([text]) => text).join(""));
@@ -18,7 +19,7 @@ const stripped = (file: string) =>
 
 describe("capture caption", () => {
   it("gives a released task sequence that shows the test run the released caption", () => {
-    const sequence = ["02-task-prompt", "03-task-diff", "04-task-approval", "05-task-result"].map((n) => released[`cols48/${n}`]);
+    const sequence = ["02-task-prompt", "03-task-diff", "04-task-approval", "05-task-result"].map((n) => released[`cols100/${n}`]);
     expect(captureCaption(sequence)).toMatchObject({ caption: "captionReleased", reason: null });
   });
 
@@ -67,7 +68,7 @@ describe("released capture", () => {
     for (const frame of Object.values(released)) {
       const text = visibleText(frame).join("\n");
       expect(frame.shows.askPosture, frame.id).toBe(text.includes("● accept edits"));
-      expect(frame.shows.modelName, frame.id).toBe(text.includes("deepseek-flash"));
+      expect(frame.shows.modelName, frame.id).toBe(text.includes(provenance.model.model));
       expect(frame.shows.testRun, frame.id).toBe(/Ran \d+ tests? in [0-9.]+s/.test(text) && /\bOK\b/.test(text));
     }
   });

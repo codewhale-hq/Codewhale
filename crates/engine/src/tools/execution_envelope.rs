@@ -514,6 +514,10 @@ fn starts_workspace_execution(
             (name.eq_ignore_ascii_case("send_later")
                 && input.get("action").and_then(Value::as_str) == Some("schedule"))
                 || (name.eq_ignore_ascii_case("workflow")
+                    && input
+                        .pointer("/args/evaluator")
+                        .is_some_and(|value| !value.is_null()))
+                || (name.eq_ignore_ascii_case("workflow")
                     && input.get("verify").and_then(Value::as_bool) == Some(true)
                     && !holds_bounded_verification)
         }

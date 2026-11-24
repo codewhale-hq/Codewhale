@@ -15,6 +15,7 @@ import { STATE_CHROME_KEY, SURFACE_IDS, SURFACE_STATES, stateLabel, surfaceCapab
 import { DesktopDownloadBlock } from "../components/desktop-download";
 import HomePage from "../app/[locale]/page";
 import ContributePage from "../app/[locale]/contribute/page";
+import { extractHtmlText } from "./test-html-text";
 
 const holder = vi.hoisted(() => ({ release: null as unknown }));
 vi.mock("./desktop-release", async (importOriginal) => {
@@ -239,7 +240,7 @@ describe("with both founder switches off, no page offers a download or a request
     const downloadWords = [getChrome("en").downloadMacos, getChrome("zh").downloadMacos];
     for (const [name, load] of pages) {
       const html = await render((await load()).default as Page, locale);
-      const text = html.replace(/<script[\s\S]*?<\/script>/g, " ").replace(/<[^>]+>/g, " ");
+      const text = extractHtmlText(html, { stripScripts: true, tagReplacement: " " });
       const hrefs = [...html.matchAll(/href="([^"]*)"/g)].map((match) => match[1]);
       expect(hrefs.find((href) => INSTALLER.test(href)), `${locale}/${name} installer link`).toBeUndefined();
       expect(text.match(REQUEST_PATH)?.[0], `${locale}/${name} request path`).toBeUndefined();

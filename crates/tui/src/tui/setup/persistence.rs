@@ -1,6 +1,5 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use crate::tui::app::App;
 use codewhale_runtime::config::Config;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,14 +28,18 @@ impl Default for SetupPersistenceFacts {
 }
 
 impl SetupPersistenceFacts {
-    pub(super) fn from_app_config(app: &App, config: &Config, codewhale_home: &Path) -> Self {
+    pub(super) fn from_paths(
+        config_path_override: Option<PathBuf>,
+        config: &Config,
+        codewhale_home: &Path,
+    ) -> Self {
         let home_source = if codewhale_config::codewhale_home_is_explicit() {
             "explicit"
         } else {
             "default"
         };
         let home_presence = dir_presence(codewhale_home);
-        let config_path = codewhale_config::resolve_config_path(app.config_path.clone())
+        let config_path = codewhale_config::resolve_config_path(config_path_override)
             .unwrap_or_else(|_| codewhale_home.join("config.toml"));
         let state_path = codewhale_config::SetupState::path().unwrap_or_else(|_| {
             codewhale_home.join(codewhale_config::setup_state::SETUP_STATE_FILE_NAME)

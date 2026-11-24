@@ -2856,5 +2856,14 @@
   "OnboardingMarkFailed": "No s'ha pogut desar el progrés de la configuració inicial: {error}",
   "FeatureIntroFlagSaveFailed": "No s'ha pogut desar el paràmetre del consell de funcions: {error}",
   "QueueFullNotice": "La cua de seguiment és plena ({max} missatges); el teu missatge ha tornat a l'editor.",
-  "ConfigLookupFailed": "No s'ha pogut llegir `{key}`: la configuració no s'ha pogut carregar ({error})"
+  "ConfigLookupFailed": "No s'ha pogut llegir `{key}`: la configuració no s'ha pogut carregar ({error})",
+  "CtxMenuNoSelectionToOpen": "Cap selecció per obrir",
+  "CtxMenuSelectionCleared": "Selecció esborrada",
+  "CtxMenuNoSelectionToClear": "Cap selecció per esborrar",
+  "CtxMenuNoDetailsForLine": "No hi ha detalls disponibles per a aquesta línia",
+  "CtxMenuExtensionUnlisted": "Aquesta extensió ja no figura a la llista",
+  "CtxMenuCellHidden": "Cel·la amagada",
+  "CtxMenuCellShown": "Cel·la mostrada",
+  "CtxMenuHiddenCellsRestored": "{count} cel·la(es) amagada(es) restaurada(es)",
+  "CtxMenuNoSelectionToCopy": "Cap selecció per copiar"
 }
