@@ -654,6 +654,36 @@ pub fn bwrap_setup_failure(stderr: &str) -> Option<&str> {
         .find(|line| line.starts_with("bwrap:"))
 }
 
+/// Resolve `strerror(errno)` for the active environment `LC_MESSAGES` locale
+/// without mutating the process-global locale or child environment.
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
+pub(crate) fn localized_errno_message(errno: libc::c_int) -> Option<String> {
+    // SAFETY: `newlocale`, `uselocale`, `strerror_r`, and `freelocale` operate
+    // only on the calling thread's locale and a stack-owned NUL-terminated buffer.
+    unsafe {
+        let loc = libc::newlocale(libc::LC_MESSAGES_MASK, c"".as_ptr(), std::ptr::null_mut());
+        if loc.is_null() {
+            return None;
+        }
+        let prev = libc::uselocale(loc);
+        let mut buf = [0 as libc::c_char; 256];
+        let rc = libc::strerror_r(errno, buf.as_mut_ptr(), buf.len());
+        if !prev.is_null() {
+            libc::uselocale(prev);
+        }
+        libc::freelocale(loc);
+        if rc != 0 {
+            return None;
+        }
+        buf[buf.len() - 1] = 0;
+        let msg = std::ffi::CStr::from_ptr(buf.as_ptr()).to_str().ok()?;
+        (!msg.is_empty()).then(|| msg.to_string())
+    }
+}
+
 /// Manager for sandbox operations.
 ///
 /// User-configured bwrap bind-mount extensions (#5410).
@@ -1366,7 +1396,7 @@ impl SandboxManager {
             SandboxType::LinuxBubblewrap => {
                 if let Some(error) = bwrap_setup_failure(stderr) {
                     format!("Bubblewrap could not create the sandbox: {}", error)
-                } else if stderr.contains("Read-only file system") {
+                } else if bwrap::is_erofs_stderr(stderr) {
                     "Bubblewrap blocked access outside the writable workspace view.".to_string()
                 } else {
                     format!(

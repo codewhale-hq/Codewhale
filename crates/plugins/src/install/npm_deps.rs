@@ -1358,6 +1358,26 @@ mod tests {
     }
 
     #[test]
+    fn non_utf8_source_file_still_records_declared_dependency() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("lib")).unwrap();
+        let mut bytes = b"// invalid utf-8 byte: ".to_vec();
+        bytes.extend_from_slice(&[0xff, 0xfe]);
+        bytes.extend_from_slice(b"\nimport \"declared-dep\";\n");
+        fs::write(dir.path().join("lib/index.js"), bytes).unwrap();
+        let manifest = Value::Map(vec![(
+            "dependencies".to_string(),
+            Value::Map(vec![(
+                "declared-dep".to_string(),
+                Value::Str("^1.0.0".to_string()),
+            )]),
+        )]);
+        let (_, seeds) = collect_unresolved_seeds(dir.path(), &manifest, &[]).unwrap();
+        let names: BTreeSet<_> = seeds.iter().map(|(_, name, _)| name.as_str()).collect();
+        assert_eq!(names, BTreeSet::from(["declared-dep"]));
+    }
+
+    #[test]
     fn prompt_and_deny_network_policies_fail_before_npm_fetch() {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("lib")).unwrap();
