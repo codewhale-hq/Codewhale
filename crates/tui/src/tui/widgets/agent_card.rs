@@ -55,14 +55,26 @@ impl AgentLifecycle {
     }
 
     #[must_use]
+    pub fn label_in(
+        self,
+        locale: codewhale_localization::Locale,
+    ) -> std::borrow::Cow<'static, str> {
+        let id = match self {
+            Self::Pending => codewhale_localization::MessageId::AgentStatusPending,
+            Self::Running => codewhale_localization::MessageId::AgentStatusRunning,
+            Self::Completed => codewhale_localization::MessageId::AgentStatusCompleted,
+            Self::Failed => codewhale_localization::MessageId::AgentStatusFailed,
+            Self::Cancelled => codewhale_localization::MessageId::AgentStatusCancelled,
+            Self::Interrupted => codewhale_localization::MessageId::AgentStatusInterrupted,
+        };
+        codewhale_localization::tr(locale, id)
+    }
+
+    #[must_use]
     pub fn label(self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Running => "running",
-            Self::Completed => "done",
-            Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
-            Self::Interrupted => "interrupted",
+        match self.label_in(codewhale_localization::Locale::En) {
+            std::borrow::Cow::Borrowed(text) => text,
+            std::borrow::Cow::Owned(_) => "",
         }
     }
 

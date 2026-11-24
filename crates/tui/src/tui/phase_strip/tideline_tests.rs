@@ -343,7 +343,7 @@ fn cycle_keys_show_at_zero_and_one_use_and_go_bare_at_two() {
     let facts = tideline_footer_from_app(&mut app, 120);
     assert_eq!(
         facts.permission_chip.0,
-        "plan · files: read-only (unenforced)"
+        "Plan · files: read-only (unenforced)"
     );
 }
 

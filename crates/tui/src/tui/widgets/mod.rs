@@ -372,7 +372,7 @@ impl ChatWidget {
                 if let Some(HistoryCell::SubAgent(agent)) = cell_at(index) {
                     fold_summaries.push((
                         index,
-                        agent_line_summary_cell(agent),
+                        agent_line_summary_cell(agent, app.ui_locale),
                         members_summary_revision(
                             0xA6E7_11FE_0000_2233,
                             std::iter::once(index),
@@ -874,11 +874,14 @@ fn turn_fold_summary_cell(
     }))
 }
 
-fn agent_line_summary_cell(agent: &crate::tui::history::SubAgentCell) -> HistoryCell {
+fn agent_line_summary_cell(
+    agent: &crate::tui::history::SubAgentCell,
+    locale: codewhale_localization::Locale,
+) -> HistoryCell {
     use crate::tui::history::SubAgentCell;
     let (tag, rest) = match agent {
         SubAgentCell::Delegate(card) => {
-            let mut rest = format!(" \u{00B7} {}", card.status.label());
+            let mut rest = format!(" \u{00B7} {}", card.status.label_in(locale));
             if let (Some(started), Some(finished)) = (card.started_at, card.finished_at) {
                 rest.push_str(" \u{00B7} ");
                 rest.push_str(&codewhale_command_contract::elapsed::format_elapsed_ms(
@@ -5224,7 +5227,7 @@ mod tests {
             "{rendered}"
         );
         assert!(
-            rendered.contains("1 file changed +3 -1 \u{00B7} Enter to review"),
+            rendered.contains("1 file changed +3 \u{2212}1 \u{00B7} Enter to review"),
             "{rendered}"
         );
         assert!(!rendered.contains("full output from"), "{rendered}");

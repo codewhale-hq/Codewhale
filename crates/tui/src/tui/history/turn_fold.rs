@@ -12,8 +12,8 @@ pub struct TurnFold {
     pub members: Vec<usize>,
     pub failed: usize,
     pub files: usize,
-    pub added: usize,
-    pub deleted: usize,
+    pub added: Option<usize>,
+    pub deleted: Option<usize>,
     pub duration: Option<Duration>,
 }
 
@@ -49,6 +49,7 @@ struct OpenTurn {
     agents: Vec<usize>,
     failed: usize,
     paths: BTreeSet<String>,
+    repeated_file: bool,
     added: usize,
     deleted: usize,
     live: bool,
@@ -195,8 +196,11 @@ pub fn detect_turn_folds(
                 ) => {}
             HistoryCell::Tool(ToolCell::PatchSummary(patch)) => {
                 if let Some(receipt) = patch.receipt.as_ref() {
-                    turn.paths
-                        .extend(receipt.files.iter().map(|file| file.path.clone()));
+                    for file in &receipt.files {
+                        if !turn.paths.insert(file.path.clone()) {
+                            turn.repeated_file = true;
+                        }
+                    }
                     turn.added += receipt.added;
                     turn.deleted += receipt.deleted;
                 }
@@ -240,8 +244,8 @@ fn close_turn(
         members: turn.members,
         failed: turn.failed,
         files: turn.paths.len(),
-        added: turn.added,
-        deleted: turn.deleted,
+        added: (!turn.repeated_file).then_some(turn.added),
+        deleted: (!turn.repeated_file).then_some(turn.deleted),
         duration: durations.get(&turn.key).copied(),
     });
 }
@@ -287,6 +291,11 @@ pub fn turn_fold_headline(fold: &TurnFold, locale: Locale) -> String {
 
 #[must_use]
 pub fn turn_fold_changes(fold: &TurnFold, locale: Locale) -> Option<String> {
+    turn_fold_changes_in(fold, locale, false)
+}
+
+#[must_use]
+pub fn turn_fold_changes_in(fold: &TurnFold, locale: Locale, ascii_safe: bool) -> Option<String> {
     (fold.files > 0).then(|| {
         let files = super::tool_run::counted(
             fold.files,
@@ -294,7 +303,13 @@ pub fn turn_fold_changes(fold: &TurnFold, locale: Locale) -> Option<String> {
             MessageId::TurnFileChangedOne,
             MessageId::BackgroundFilesChanged,
         );
-        format!("{files} +{} -{}", fold.added, fold.deleted)
+        match (fold.added, fold.deleted) {
+            (Some(added), Some(deleted)) => {
+                let minus = if ascii_safe { "-" } else { "\u{2212}" };
+                format!("{files} +{added} {minus}{deleted}")
+            }
+            _ => files,
+        }
     })
 }
 
@@ -312,4 +327,83 @@ pub fn turn_fold_diff(fold: &TurnFold, cells: impl Fn(usize) -> Option<HistoryCe
         }
     }
     diff
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::history::file_mutation::{
+        FileMutationFile, FileMutationOutcome, FileMutationReceipt,
+    };
+    use crate::tui::history::{PatchSummaryCell, ToolCell};
+
+    fn patch_cell(path: &str, added: usize, deleted: usize) -> HistoryCell {
+        HistoryCell::Tool(ToolCell::PatchSummary(PatchSummaryCell {
+            path: path.to_string(),
+            summary: String::new(),
+            status: ToolStatus::Success,
+            error: None,
+            receipt: Some(FileMutationReceipt {
+                exact_diff: String::new(),
+                display_diff: String::new(),
+                files: vec![FileMutationFile {
+                    path: path.to_string(),
+                    previous_path: None,
+                    outcome: FileMutationOutcome::Updated,
+                }],
+                added,
+                deleted,
+            }),
+        }))
+    }
+
+    #[test]
+    fn turn_fold_changes_uses_typographic_minus_and_ascii_fallback() {
+        let fold = TurnFold {
+            key: 0,
+            members: vec![1],
+            failed: 0,
+            files: 2,
+            added: Some(10),
+            deleted: Some(3),
+            duration: None,
+        };
+        assert_eq!(
+            turn_fold_changes(&fold, Locale::En).as_deref(),
+            Some("2 files changed +10 \u{2212}3")
+        );
+        assert_eq!(
+            turn_fold_changes_in(&fold, Locale::En, true).as_deref(),
+            Some("2 files changed +10 -3")
+        );
+    }
+
+    #[test]
+    fn repeated_edits_to_same_file_clear_ambiguous_line_counts() {
+        let history = vec![
+            HistoryCell::User {
+                content: "edit".to_string(),
+            },
+            patch_cell("src/a.rs", 5, 2),
+            patch_cell("src/a.rs", 3, 1),
+        ];
+        let projection = detect_turn_folds(
+            &history,
+            &[],
+            false,
+            None,
+            0,
+            &HashSet::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(projection.turns.len(), 1);
+        let fold = &projection.turns[0];
+        assert_eq!(fold.files, 1);
+        assert_eq!(fold.added, None);
+        assert_eq!(fold.deleted, None);
+        assert_eq!(
+            turn_fold_changes(fold, Locale::En).as_deref(),
+            Some("1 file changed")
+        );
+    }
 }

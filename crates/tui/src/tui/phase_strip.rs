@@ -665,14 +665,9 @@ mod tests {
 // a glancing user looks; the clock lives here.
 // ---------------------------------------------------------------------------
 
-/// The context cap warning at ≥80% (spec §5a/§5e). The reading itself lives
-/// in the metrics line; this bar still says what to do about it.
-const DEPTH_WARN: &str = "surface soon — /compact";
-
-/// What the caller owes the posture bar. All injected, deterministic.
 pub struct TidelineFooter<'a> {
     pub theme: &'a codewhale_palette::UiTheme,
-    /// Permission dial chip (`ask` / `accept edits` / `plan` / `auto` /
+    /// Permission dial chip (`Ask` / `Accept Edits` / `Plan` / `Auto-Review` /
     /// `Full Access`, plus the filesystem scope notice when it deviates) in
     /// its ink. Never sheds.
     pub permission_chip: (&'a str, codewhale_palette::ChromeInk),
@@ -702,6 +697,7 @@ pub struct TidelineFooter<'a> {
     /// the remote-control state.
     pub right: Option<(&'a str, codewhale_palette::ChromeInk)>,
     pub ascii_safe: bool,
+    pub locale: codewhale_localization::Locale,
     /// `tui.posture_bar = "compact"` (#5950): start the shed ladder at
     /// the kit's compact rung instead of rung 0, so the row states its posture —
     /// the permission dial chip, and the cap warning when it is owed —
@@ -731,9 +727,16 @@ impl<'a> TidelineFooter<'a> {
             context_percent: 0,
             right: None,
             ascii_safe: false,
+            locale: codewhale_localization::Locale::En,
             compact: false,
             working_glow: None,
         }
+    }
+
+    #[must_use]
+    pub fn locale(mut self, locale: codewhale_localization::Locale) -> Self {
+        self.locale = locale;
+        self
     }
 
     #[must_use]
@@ -816,7 +819,7 @@ impl<'a> TidelineFooter<'a> {
         let mut bar = PostureBar::new(self.permission_chip.0)
             .permission_role(ink_role(self.permission_chip.1))
             .context_percent(self.context_percent)
-            .cap_warning(DEPTH_WARN)
+            .cap_warning(tr(self.locale, MessageId::PostureDepthWarn))
             .compact(self.compact);
         bar.permission_key = self.permission_key.map(Into::into);
         bar.turn_clock = self.turn_clock.map(posture_fact);
@@ -895,6 +898,7 @@ pub(crate) struct TidelineFooterFacts {
     pub hint: Option<(String, codewhale_palette::ChromeInk)>,
     pub context_percent: u8,
     pub right: Option<(String, codewhale_palette::ChromeInk)>,
+    pub locale: codewhale_localization::Locale,
 }
 
 impl TidelineFooterFacts {
@@ -919,6 +923,7 @@ impl TidelineFooterFacts {
         .context_percent(self.context_percent)
         .right(borrow(&self.right))
         .ascii_safe(ascii_safe)
+        .locale(self.locale)
     }
 }
 
@@ -1236,6 +1241,7 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
         hint,
         context_percent: context_percent_from_app(app),
         right,
+        locale: app.ui_locale,
     }
 }
 
