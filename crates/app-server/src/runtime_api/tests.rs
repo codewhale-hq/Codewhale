@@ -18872,6 +18872,69 @@ async fn skill_detail_404s_for_unknown_skill() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn list_skills_and_set_skill_enabled_offload_discovery_from_async_worker() -> Result<()> {
+    let _env = lock_test_env();
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().join("runtime");
+    let sessions_dir = tmp.path().join("sessions");
+    let workspace = tmp.path().join("workspace");
+    let (state_tx, state_rx) = oneshot::channel();
+    let Some((_listener, _app, _addr, _runtime_threads, _owner)) = build_test_server(
+        root,
+        sessions_dir,
+        None,
+        false,
+        workspace,
+        TestServerOverrides {
+            state_handle: Some(state_tx),
+            ..Default::default()
+        },
+    )
+    .await?
+    else {
+        return Ok(());
+    };
+    let state = state_rx.await?;
+
+    let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let holder_state = state.clone();
+    let holder = std::thread::spawn(move || {
+        let _config_write = holder_state.config.write();
+        let _ = locked_tx.send(());
+        let _ = release_rx.recv();
+    });
+    locked_rx.await?;
+    let list_task = tokio::spawn(super::list_skills(State(state.clone())));
+    let enable_task = tokio::spawn(super::set_skill_enabled(
+        State(state.clone()),
+        axum::extract::Path("no-such-skill".to_string()),
+        Json(super::SetSkillEnabledRequest { enabled: false }),
+    ));
+    tokio::task::yield_now().await;
+    assert!(!list_task.is_finished());
+    assert!(!enable_task.is_finished());
+    drop(release_tx);
+    holder
+        .join()
+        .map_err(|_| anyhow::anyhow!("config write holder panicked"))?;
+
+    let list_resp = list_task
+        .await?
+        .map_err(|err| anyhow::anyhow!(err.message))?;
+    assert!(
+        list_resp
+            .0
+            .skills
+            .iter()
+            .all(|row| row.name != "no-such-skill")
+    );
+    let err = enable_task.await?.unwrap_err();
+    assert_eq!(err.status, StatusCode::NOT_FOUND);
+    Ok(())
+}
+
 #[tokio::test]
 async fn skill_list_rows_carry_routing_metadata() -> Result<()> {
     let _env = lock_test_env();

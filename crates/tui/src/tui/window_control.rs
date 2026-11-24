@@ -485,9 +485,11 @@ mod imp {
         use super::*;
 
         #[test]
-        fn desktop_shell_matches_lowercased_shell_experience_host_image() {
+        fn desktop_shell_filter_matches_image_names() {
             assert!(is_desktop_shell("ShellExperienceHost.exe"));
-            assert!(!is_desktop_shell("WindowsTerminal.exe"));
+            assert!(is_desktop_shell("explorer.exe"));
+            assert!(is_desktop_shell("dwm.exe"));
+            assert!(!is_desktop_shell("code.exe"));
         }
 
         #[test]

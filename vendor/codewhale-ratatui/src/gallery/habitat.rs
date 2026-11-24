@@ -77,7 +77,7 @@ fn scene_with(area: Rect, buf: &mut Buffer, theme: &Theme, motion: MotionMode) {
     }
     .intersection(area);
     Whale::new(WhaleState::Rest).paint(whale, buf, theme);
-    Habitat::new(Duration::from_millis(40_000), motion)
+    Habitat::new(Duration::from_millis(70_000), motion)
         .density(HabitatDensity::Rich)
         .hold_jellyfish_visit(true)
         .paint(area, buf, theme);

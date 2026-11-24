@@ -1120,17 +1120,20 @@ pub(crate) fn begin_launch_session(
     })
 }
 
-pub(crate) async fn sync_runtime_workspace_state(
-    task_manager: &SharedTaskManager,
-    workspace: PathBuf,
-) {
-    task_manager.set_default_workspace(workspace).await;
+/// Point the manager the App currently owns at `workspace`.
+///
+/// Reads through the slot rather than a captured handle: a session switch can
+/// replace the manager, and a stale handle would update a store this host no
+/// longer holds.
+pub(crate) async fn sync_runtime_workspace_state(app: &App, workspace: PathBuf) {
+    if let Some(current) = app.runtime_services.task_manager.as_ref() {
+        current.set_default_workspace(workspace).await;
+    }
 }
 
 pub(crate) async fn switch_workspace(
     app: &mut App,
     engine_handle: &mut EngineHandle,
-    task_manager: &SharedTaskManager,
     config: &Config,
     workspace: PathBuf,
 ) {
@@ -1151,7 +1154,7 @@ pub(crate) async fn switch_workspace(
     }
 
     apply_workspace_runtime_state(app, config, workspace.clone());
-    sync_runtime_workspace_state(task_manager, workspace.clone()).await;
+    sync_runtime_workspace_state(app, workspace.clone()).await;
 
     replace_tui_engine(app, config, engine_handle).await;
     if !app.api_messages.is_empty() {

@@ -1,7 +1,7 @@
 //! The native marine habitat: a fish school, a far shoal of minnows, one
 //! visiting jellyfish, marine snow, bubbles and a distant whale.
 //!
-//! This is the one ocean Codewhale draws: the Engine paints its Underwater
+//! This is the one ocean Codewhale draws, built for the Engine's Underwater
 //! field through [`Habitat`]. These components own no clock, simulation,
 //! input handler or runtime state. The host supplies elapsed time, motion
 //! policy, an optional ink and a presence. Reduced and still motion remove
@@ -21,13 +21,14 @@
 //!
 //! Known limits: creatures interact only through that open-water rule; the
 //! distant whale is withheld for the frame when any part of it would touch
-//! text; ASCII themes keep the fish, jellyfish and bubbles only; non-RGB
-//! water or ink falls back to the plain role colour without a glow.
+//! text; ASCII themes keep the fish, jellyfish and bubbles only; non-truecolor
+//! themes, unknown grounds or non-RGB water or ink fall back to the plain role
+//! colour without a glow.
 
 use std::time::Duration;
 
 use ratatui::{
-    buffer::Buffer,
+    buffer::{Buffer, CellDiffOption},
     layout::Rect,
     style::{Color, Style},
 };
@@ -99,9 +100,6 @@ const CLEAR_COLS: u16 = 2;
 const CLEAR_ROWS: u16 = 1;
 const GLOW_STEPS: f32 = 12.0;
 
-/// How a creature's ink meets the water: an optional host ink (otherwise the
-/// role's token) lerped from each cell's background by a quantised glow,
-/// scaled by `presence` in thousandths.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Brush {
     ink: Option<Color>,
@@ -113,25 +111,51 @@ impl Brush {
         self.presence > 0
     }
 
-    fn style(self, theme: &Theme, role: Role, glow: f32, water: Color) -> Style {
+    fn amount(self, glow: f32) -> f32 {
         let amount = glow * f32::from(self.presence) / 1_000.0;
-        let amount = (amount.clamp(0.0, 1.0) * GLOW_STEPS).round() / GLOW_STEPS;
-        let ink = self.ink.unwrap_or_else(|| theme.token(role));
-        let rich = matches!(theme.depth(), ColorDepth::TrueColor | ColorDepth::Ansi256);
-        match crate::color::glow_over(ink, water, amount) {
-            Some(color) if rich => Style::default().fg(color),
-            _ => theme.fg(role),
-        }
+        (amount.clamp(0.0, 1.0) * GLOW_STEPS).round() / GLOW_STEPS
     }
 
-    fn put(self, buf: &mut Buffer, at: Rect, text: &str, theme: &Theme, role: Role, glow: f32) {
-        for (offset, ch) in text.chars().take(usize::from(at.width)).enumerate() {
+    fn style(self, theme: &Theme, role: Role, glow: f32, water: Color) -> Option<Style> {
+        let amount = self.amount(glow);
+        if amount == 0.0 {
+            return None;
+        }
+        let can_glow = theme.paints_grounds() && theme.depth() == ColorDepth::TrueColor;
+        let ink = self.ink.unwrap_or_else(|| theme.token(role));
+        Some(match crate::color::glow_over(ink, water, amount) {
+            Some(color) if can_glow => Style::default().fg(color),
+            _ => theme.fg(role),
+        })
+    }
+
+    fn put(
+        self,
+        buf: &mut Buffer,
+        at: Rect,
+        chars: impl IntoIterator<Item = char>,
+        theme: &Theme,
+        role: Role,
+        glow: f32,
+    ) -> bool {
+        if self.amount(glow) == 0.0 {
+            return false;
+        }
+        let mut painted = false;
+        for (offset, ch) in chars.into_iter().take(usize::from(at.width)).enumerate() {
+            if ch == ' ' {
+                continue;
+            }
             let Some(cell) = buf.cell_mut((at.x + offset as u16, at.y)) else {
                 continue;
             };
-            let style = self.style(theme, role, glow, cell.bg);
+            let Some(style) = self.style(theme, role, glow, cell.bg) else {
+                continue;
+            };
             cell.set_char(ch).set_style(style);
+            painted = true;
         }
+        painted
     }
 }
 
@@ -253,7 +277,8 @@ impl FishSchool {
         // All members see the host's original text, rather than mistaking a
         // neighbouring member of their wedge for a word.
         for (at, body, glow) in marks {
-            self.brush.put(buf, at, body, theme, Role::Hint, glow);
+            self.brush
+                .put(buf, at, body.chars(), theme, Role::Hint, glow);
         }
     }
 }
@@ -311,6 +336,7 @@ impl Shoal {
             || !self.brush.visible()
             || theme.ascii()
             || count == 0
+            || area.width < 3
             || area.height < 6
         {
             return;
@@ -351,7 +377,8 @@ impl Shoal {
             }
         }
         for (at, body, glow) in marks {
-            self.brush.put(buf, at, body, theme, Role::Dim, glow);
+            self.brush
+                .put(buf, at, body.chars(), theme, Role::Dim, glow);
         }
     }
 }
@@ -464,6 +491,9 @@ impl Jellyfish {
         let arms = JELLY_GLOW.0
             + (JELLY_GLOW.1 - JELLY_GLOW.0)
                 * wave01(t.saturating_sub(JELLY_ARM_LAG_MS), JELLY_PULSE_MS, 0);
+        if self.brush.amount(bell) == 0.0 || self.brush.amount(arms) == 0.0 {
+            return;
+        }
         let rows: [&str; 3] = if theme.ascii() {
             let pulse = ((t % JELLY_PULSE_MS) * 2 / JELLY_PULSE_MS) as usize;
             let sway = ((t.saturating_add(3_100) / 1_100) % 4) as usize;
@@ -499,7 +529,7 @@ impl Jellyfish {
             } else {
                 (Role::Dim, arms)
             };
-            self.brush.put(buf, at, body, theme, role, glow);
+            self.brush.put(buf, at, body.chars(), theme, role, glow);
         }
     }
 }
@@ -584,7 +614,7 @@ impl BubbleField {
             let fade = 1.0 - 0.75 * rise as f32 / BUBBLE_RISE_ROWS as f32;
             let glow = glint(t, 2_600 + phase % 700, 600, BUBBLE_GLOW.0, phase) * BUBBLE_GLOW.1;
             self.brush
-                .put(buf, at, glyph, theme, Role::Dim, glow * fade);
+                .put(buf, at, glyph.chars(), theme, Role::Dim, glow * fade);
         }
     }
 }
@@ -663,7 +693,8 @@ impl MarineSnow {
                 + (SNOW_GLOW.1 - SNOW_GLOW.0)
                     * wave01(t, 6_700 + jitter(seed + 7) % 4_000, seed * 911);
             let glyph = poses::mote((x_dots % 2) as usize, (y_dots % 4) as usize);
-            self.brush.put(buf, at, glyph, theme, Role::Dim, glow);
+            self.brush
+                .put(buf, at, glyph.chars(), theme, Role::Dim, glow);
         }
     }
 }
@@ -679,6 +710,7 @@ impl Paint for MarineSnow {
 
 const WHALE_CELL_MS: u128 = 900;
 const WHALE_CYCLE_MS: u128 = 210_000;
+const WHALE_ABSENCE_MS: u128 = 60_000;
 const WHALE_FIRST_MS: u128 = 12_000;
 const WHALE_COLS: i32 = 10;
 const WHALE_FLOOR_GAP: u16 = 8;
@@ -719,29 +751,36 @@ impl DistantWhale {
     brush_builders!();
 
     /// Whether the whale is crossing `area` at this moment, before any
-    /// collision check. A habitat keeps the jellyfish away while it is.
+    /// collision check. A habitat keeps an unheld jellyfish away while the
+    /// whale is painted.
     #[must_use]
     pub fn visiting(&self, area: Rect, theme: &Theme) -> bool {
         self.crossing(area, theme).is_some()
     }
 
+    fn glow_at(&self) -> f32 {
+        WHALE_GLOW.0 + (WHALE_GLOW.1 - WHALE_GLOW.0) * wave01(self.elapsed.as_millis(), 8_200, 0)
+    }
+
     fn crossing(&self, area: Rect, theme: &Theme) -> Option<(bool, i32)> {
-        if !self.motion.animates() || theme.ascii() || area.height < WHALE_FLOOR_GAP + 2 {
+        if !self.motion.animates()
+            || theme.ascii()
+            || area.width == 0
+            || area.height < WHALE_FLOOR_GAP + 2
+            || self.brush.amount(self.glow_at()) == 0.0
+        {
             return None;
         }
         let t = self.elapsed.as_millis();
         let crossing_ms = (u128::from(area.width) + WHALE_COLS as u128 + 2) * WHALE_CELL_MS;
-        let cycle = WHALE_CYCLE_MS.max(crossing_ms + 1);
+        let cycle = WHALE_CYCLE_MS.max(crossing_ms.saturating_add(WHALE_ABSENCE_MS));
         let clock = t.saturating_add(cycle - WHALE_FIRST_MS.min(cycle));
-        let pos = if self.hold_visit {
-            clock % crossing_ms
-        } else {
-            clock % cycle
-        };
+        let period = if self.hold_visit { crossing_ms } else { cycle };
+        let pos = clock % period;
         if pos >= crossing_ms {
             return None;
         }
-        let right = swims_right((clock / cycle).wrapping_add(7));
+        let right = swims_right((clock / period).wrapping_add(7));
         let step = (pos * 2 / WHALE_CELL_MS) as i32;
         let dot_x = if right {
             step - WHALE_COLS * 2
@@ -753,13 +792,16 @@ impl DistantWhale {
 }
 
 impl DistantWhale {
-    fn paint_except(&self, area: Rect, buf: &mut Buffer, theme: &Theme, protected: &[Rect]) {
+    fn paint_except(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        theme: &Theme,
+        protected: &[Rect],
+    ) -> bool {
         let area = area.intersection(buf.area);
-        if !self.brush.visible() {
-            return;
-        }
         let Some((right, dot_x)) = self.crossing(area, theme) else {
-            return;
+            return false;
         };
         let t = self.elapsed.as_millis();
         let dot_y = i32::from(area.height - WHALE_FLOOR_GAP) * 4 + i32::from(sine_bob(t, 6_400, 3));
@@ -776,21 +818,24 @@ impl DistantWhale {
         let take = ((i32::from(area.width) - x).clamp(0, WHALE_COLS) as usize)
             .min((WHALE_COLS as usize).saturating_sub(skip));
         let Some(target) = local_rect(area, x, dot_y.div_euclid(4), take as u16, 3) else {
-            return;
+            return false;
         };
         if take == 0 || !open_water(target, buf, protected) {
-            return;
+            return false;
         }
-        let glow = WHALE_GLOW.0 + (WHALE_GLOW.1 - WHALE_GLOW.0) * wave01(t, 8_200, 0);
+        let glow = self.glow_at();
+        let mut painted = false;
         for (row, glyph) in rows.iter().enumerate() {
-            let visible: String = glyph.chars().skip(skip).take(take).collect();
             let at = Rect {
                 y: target.y + row as u16,
                 height: 1,
                 ..target
             };
-            self.brush.put(buf, at, &visible, theme, Role::Dim, glow);
+            painted |= self
+                .brush
+                .put(buf, at, glyph.chars().skip(skip), theme, Role::Dim, glow);
         }
+        painted
     }
 }
 
@@ -901,8 +946,9 @@ impl Habitat {
     }
 
     /// Keep the corner visitor present for a preview or dedicated marine
-    /// surface. False (the default) retains its long absence between visits.
-    /// Full-silhouette collision checks still give all existing text priority.
+    /// surface, even while the distant whale crosses. False (the default)
+    /// retains its long absence between visits. Full-silhouette collision
+    /// checks still give all existing text priority.
     #[must_use]
     pub const fn hold_jellyfish_visit(mut self, hold: bool) -> Self {
         self.hold_jellyfish_visit = hold;
@@ -914,15 +960,13 @@ impl Paint for Habitat {
     fn paint(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
         let (t, motion, density, brush) = (self.elapsed, self.motion, self.density, self.brush);
         let protected = &self.protected;
-        let whale = DistantWhale {
-            brush,
-            ..DistantWhale::new(t, motion)
-        };
-        let whale_visiting = self.whale && whale.visiting(area.intersection(buf.area), theme);
-        if self.whale {
-            whale.paint_except(area, buf, theme, protected);
-        }
-        if self.jellyfish && !whale_visiting {
+        let whale_painted = self.whale
+            && DistantWhale {
+                brush,
+                ..DistantWhale::new(t, motion)
+            }
+            .paint_except(area, buf, theme, protected);
+        if self.jellyfish && (self.hold_jellyfish_visit || !whale_painted) {
             Jellyfish {
                 brush,
                 ..Jellyfish::new(t, motion)
@@ -999,7 +1043,16 @@ fn open_water(at: Rect, buf: &Buffer, protected: &[Rect]) -> bool {
     {
         return false;
     }
-    (y0..y1).all(|y| (x0..x1).all(|x| buf[(x, y)].symbol().chars().all(char::is_whitespace)))
+    (y0..y1).all(|y| {
+        if x0 > buf.area.x && crate::text::width(buf[(x0 - 1, y)].symbol()) > 1 {
+            return false;
+        }
+        (x0..x1).all(|x| {
+            let cell = &buf[(x, y)];
+            cell.diff_option != CellDiffOption::Skip
+                && cell.symbol().chars().all(char::is_whitespace)
+        })
+    })
 }
 
 fn swims_right(cycle: u128) -> bool {

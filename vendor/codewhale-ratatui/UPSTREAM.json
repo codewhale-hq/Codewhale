@@ -320,16 +320,15 @@
     }
   },
   "habitat_update": {
-    "commit": "b18d770f18ba1d26ce2bf87fe64a67f0ef95133b",
-    "scope": "The whole-ocean Habitat (FishSchool, Shoal, Jellyfish, MarineSnow, BubbleField, DistantWhale), its poses, color::glow_over, the habitat gallery entries and the habitat example. The Engine paints its Underwater field through Habitat; standalone tests, tools and README assets are outside this source synchronization.",
+    "commit": "0481d4e00e3da13a56f6d2f40433c85b1cbf0d53",
+    "scope": "The whole-ocean Habitat as merged on upstream main (FishSchool, Shoal, Jellyfish, MarineSnow, BubbleField, DistantWhale, with strict truecolor-only glow, no foreground-equals-background glyphs, ultrawide whale spacing and wide-grapheme clearance), its poses, color::glow_over, the habitat gallery entries and the habitat example. The Engine paints its Underwater field through Habitat; standalone tests, tools and README assets are outside this source synchronization.",
     "local_changes": "None: these five files match upstream at this commit byte for byte.",
     "files": {
       "src/color.rs": "d7647e683dd19a3b3c5947adcbd0fd329643c36b59e2cd5fb6879c100f83ebd8",
-      "src/components/habitat.rs": "8788f581fd32e7ae6d1da34694ee4f84b84582c19d64803b5e94d61f68803e7c",
-      "src/components/habitat_poses.rs": "a9572968ddcf12b427404a4d41e11a3a0c9596c6dda06415d224eb84930e0919",
-      "src/gallery/habitat.rs": "12c46ce0ad9baee3931b5dff330bf42ed54ee55f72380692ed33ee109b69108b",
+      "src/components/habitat.rs": "720bc083f699280ef96819a1f3ee44a4878870a4c14709517606d367cdad00be",
+      "src/components/habitat_poses.rs": "25067903aaaf63a4db80511f896ab190d7a0a4ecbcdcf21ea8ca409ad214a8ca",
+      "src/gallery/habitat.rs": "641b949c898d2966a4649e4af2defd06700399257fa3c9828b70eeb44ffa91e9",
       "examples/habitat.rs": "c063f79997fd3fdde9c853fd85b20a1b61b1ec4270ae71231b4e1437c8a8d9b7"
-    },
-    "upstream_main_note": "b18d770 is the review branch head. Upstream main merged it as 0481d4e with further Habitat fixes (strict truecolor-only glow, no fg-equals-bg glyphs, ultrawide whale spacing, wide-grapheme clearance) that are not vendored here."
+    }
   }
 }

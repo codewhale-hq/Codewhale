@@ -128,12 +128,12 @@ impl Shared {
             }
             "session/load" => self.load(params, responder, cx).await,
             _ => {
-                let result = self
-                    .server
-                    .lock()
-                    .await
-                    .handle_request(&method, params)
-                    .await;
+                let result = Box::pin(AcpServer::handle_request_shared(
+                    &self.server,
+                    &method,
+                    params,
+                ))
+                .await;
                 let _ = responder.respond_with_result(result);
             }
         }
@@ -170,26 +170,34 @@ impl Shared {
         }
         let shared = Arc::clone(self);
         let _ = cx.spawn(async move {
-            let result = shared
-                .server
-                .lock()
-                .await
-                .handle_request(&method, params)
-                .await;
+            let result = Box::pin(AcpServer::handle_request_shared(
+                &shared.server,
+                &method,
+                params,
+            ))
+            .await;
             let _ = responder.respond_with_result(result);
             Ok(())
         });
     }
 
     async fn load(&self, params: Value, responder: Responder<Value>, cx: Cx) {
-        let mut server = self.server.lock().await;
         let result = async {
-            let loaded = server.load_session(params).await.map_err(SdkError::from)?;
+            let loaded = Box::pin(AcpServer::load_session_shared(&self.server, params))
+                .await
+                .map_err(SdkError::from)?;
             if let Some(session) = loaded.get("sessionId").and_then(Value::as_str) {
-                let updates = server
-                    .history_updates(session)
-                    .await
-                    .map_err(|error| SdkError::new(-32603, error.to_string()))?;
+                let (sessions_dir, config) = {
+                    let server = self.server.lock().await;
+                    (server.sessions_dir.clone(), Arc::clone(&server.config))
+                };
+                let updates = Box::pin(history_updates_for(
+                    sessions_dir,
+                    config,
+                    session.to_string(),
+                ))
+                .await
+                .map_err(|error| SdkError::new(-32603, error.to_string()))?;
                 for update in updates {
                     cx.send_notification(acp::SessionNotification::new(
                         session.to_string(),
@@ -200,7 +208,6 @@ impl Shared {
             Ok::<_, SdkError>(loaded)
         }
         .await;
-        drop(server);
         let _ = responder.respond_with_result(result);
     }
 
