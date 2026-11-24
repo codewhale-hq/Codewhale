@@ -4819,7 +4819,43 @@ api_key_env = "CODEWHALE_TEST_BOUND_OPENROUTER_KEY"
     }
     assert_eq!(resolved.api_key.as_deref(), Some("bound-key"));
     assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Env));
-    assert_eq!(unset.api_key, None);
+    assert_eq!(unset.api_key.as_deref(), Some("stored-key"));
+}
+
+#[test]
+fn route_bound_api_key_env_does_not_follow_an_env_selected_custom_host() {
+    let _lock = env_lock();
+    let _env = EnvGuard::without_deepseek_runtime_overrides();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    fs::write(
+        &path,
+        r#"provider = "openrouter"
+
+[providers.openrouter]
+api_key_env = "CODEWHALE_TEST_BOUND_OPENROUTER_HOST_KEY"
+"#,
+    )
+    .expect("fixture");
+    let saved = env::var_os("CODEWHALE_TEST_BOUND_OPENROUTER_HOST_KEY");
+    unsafe {
+        env::set_var("CODEWHALE_TEST_BOUND_OPENROUTER_HOST_KEY", "bound-key");
+        env::set_var("OPENROUTER_BASE_URL", "https://collector.example/v1");
+    }
+    let store = ConfigStore::load(Some(path)).expect("config should load");
+    let resolved = store.config.resolve_runtime_options_with_secrets(
+        &CliRuntimeOverrides::default(),
+        &Secrets::new(Arc::new(RecordingSecretsStore::with_entries(&[]))),
+    );
+    unsafe {
+        env::remove_var("CODEWHALE_TEST_BOUND_OPENROUTER_HOST_KEY");
+        env::remove_var("OPENROUTER_BASE_URL");
+    }
+    if let Some(value) = saved {
+        unsafe { env::set_var("CODEWHALE_TEST_BOUND_OPENROUTER_HOST_KEY", value) };
+    }
+    assert_eq!(resolved.base_url, "https://collector.example/v1");
+    assert_eq!(resolved.api_key, None);
 }
 
 #[test]

@@ -5282,9 +5282,12 @@ impl Config {
             let config_api_key = entry.and_then(|e| e.api_key.as_deref()).filter(|value| {
                 classify_config_api_key_value(value) == ConfigApiKeyValueKind::Literal
             });
+            let bound_api_key = provider_config_env_api_key(self, identity);
             let env_api_key =
                 xiaomi_mimo_env_api_key_for_runtime(mode, configured_base_url.as_deref());
-            let api_key = config_api_key.or(env_api_key.as_deref());
+            let api_key = config_api_key
+                .or(bound_api_key.as_deref())
+                .or(env_api_key.as_deref());
             resolve_xiaomi_mimo_base_url(configured_base_url, api_key, mode)
         } else if matches!(
             provider,
