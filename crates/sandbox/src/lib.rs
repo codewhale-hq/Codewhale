@@ -629,7 +629,7 @@ pub(crate) fn localized_errno_message(errno: libc::c_int) -> Option<String> {
         if !prev.is_null() {
             libc::uselocale(prev);
         }
-        let _ = libc::freelocale(loc);
+        libc::freelocale(loc);
         if rc != 0 {
             return None;
         }
