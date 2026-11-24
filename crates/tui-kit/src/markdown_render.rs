@@ -2411,6 +2411,9 @@ fn render_table_group(
         .unwrap_or(1);
 
     let widths = table_col_widths(blocks, num_cols, width);
+    if widths.iter().sum::<usize>() + 3 * num_cols + 1 > width {
+        return render_stacked_table(blocks, width, base_style);
+    }
 
     let mut lines = Vec::new();
 
@@ -2464,6 +2467,57 @@ fn render_table_group(
         "\u{2500}\u{2518}",
     ));
 
+    lines
+}
+
+fn render_stacked_table(
+    blocks: &[Block],
+    width: usize,
+    base_style: Style,
+) -> Vec<RenderedMarkdownLine> {
+    let header_end = blocks
+        .iter()
+        .position(|b| matches!(b, Block::TableSeparator))
+        .unwrap_or(0);
+    let has_data = blocks[header_end..]
+        .iter()
+        .any(|b| matches!(b, Block::TableRow(_)));
+    let (headers, rows) = if has_data {
+        let headers = blocks[..header_end].iter().find_map(|b| match b {
+            Block::TableRow(cells) => Some(cells.as_slice()),
+            _ => None,
+        });
+        (headers.unwrap_or(&[]), &blocks[header_end..])
+    } else {
+        (&[][..], blocks)
+    };
+
+    let mut lines = Vec::new();
+    for block in rows {
+        let Block::TableRow(cells) = block else {
+            continue;
+        };
+        if !lines.is_empty() {
+            lines.extend(render_line_with_links_tagged(
+                "",
+                width,
+                base_style,
+                link_style(),
+            ));
+        }
+        for (col, cell) in cells.iter().enumerate() {
+            let text = match headers.get(col) {
+                Some(header) if !header.is_empty() => format!("{header}: {cell}"),
+                _ => cell.clone(),
+            };
+            lines.extend(render_line_with_links_tagged(
+                &text,
+                width,
+                base_style,
+                link_style(),
+            ));
+        }
+    }
     lines
 }
 
@@ -4208,6 +4262,26 @@ mod tests {
                 "width={width}: emoji content lost"
             );
         }
+    }
+
+    #[test]
+    fn narrow_table_stacks_rows_as_header_value_lines() {
+        let target = "https://example.com/x";
+        let src =
+            format!("| Key | Link |\n|---|---|\n| a | [go]({target}) |\n| b | longer value |\n");
+        let rows = render_markdown_tagged(&src, 8, Style::default());
+        let text: Vec<String> = rows.iter().map(|row| row.line.to_string()).collect();
+        for row in &rows {
+            assert!(row.line.width() <= 8, "row overflows width 8: {text:?}");
+        }
+        assert!(
+            !text.concat().contains('│'),
+            "narrow table kept columns: {text:?}"
+        );
+        assert_eq!(text[0], "Key: a");
+        let link_row = rows.iter().find(|row| !row.links.is_empty()).unwrap();
+        assert_eq!(link_row.links[0].target, target);
+        assert!(text.contains(&"Key: b".to_string()), "{text:?}");
     }
 
     #[test]
