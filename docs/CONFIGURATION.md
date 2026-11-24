@@ -2163,8 +2163,9 @@ compaction runs before the active model limit and carries the compacted summary
 forward into the next request. The trigger defaults to
 `auto_compact_threshold_percent = 80`. Users who prefer manual continuity can
 persist `auto_compact = false`; manual `/compact` / Ctrl+L remains available.
-You can inspect or update these from the TUI with `/settings` and `/config`
-(interactive editor).
+Bare `/settings` opens the typed settings editor, where rows can be changed and
+saved; `/settings text` prints the resolved values instead. `/config <key>
+<value>` changes one key, and `--save` persists it.
 
 Common settings keys:
 
@@ -2220,6 +2221,14 @@ Common settings keys:
   ceilings for the top strip's height and the side workbar's width. Both are
   normally persisted by dragging the divider rather than edited by hand; the
   strip still auto-fits its content below the ceiling.
+- `composer_density` (`compact`, `comfortable`, or `spacious`; default
+  `comfortable`): vertical padding inside the composer.
+- `composer_border` (`true`/`false`; default `true`): draws the composer's
+  border.
+- `thinking_highlight` (`true`/`false`; default `true`): fills the background
+  behind model reasoning; the dashed reasoning rule stays when it is off.
+- `transcript_spacing` (`compact` or `spacious`; default `spacious`): blank
+  lines between transcript entries.
 - `focus_texture` (`off`, `scrim`, or `grain`; default `off`): focus-context
   texture for modal views. `scrim` dims the already-rendered background
   outside the focused modal toward the theme surface; `grain` sprinkles
@@ -2377,7 +2386,8 @@ If you are upgrading from older releases:
 - Old: visible `Normal` mode or `default_mode = "normal"`
   New: use `Agent` / `default_mode = "agent"`; legacy `normal` still maps to `agent`
 - Old: discover `/set` in slash UX/help
-  New: use `/config` for editing and `/settings` for read-only inspection
+  New: use `/settings` for the typed editor, `/settings text` for a read-only
+  listing, and `/config <key> <value>` for one key
 
 ## Key Reference
 

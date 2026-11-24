@@ -423,7 +423,11 @@ Common commands for first-time users:
 | `/workflow` | Orchestrate the current work as a Workflow; `status`, `cancel`, `settings` answer without a model turn |
 | `/workflows` | Open the live Workflow run dashboard: every run this workspace's journal keeps, with phases, children, progress, and host-side cancel |
 | `/config` | Edit runtime and provider settings |
+| `/settings` | Open the typed settings editor; `/settings text` prints the resolved values |
 | `/statusline` | Choose which footer status chips are visible |
+| `/anchor` | Pin a fact that stays when Codewhale makes room; `/anchor list` and `/anchor remove <n>` manage pins |
+| `/structcopy` | Copy one session object (`turn <n>`, `tool <call-id>`, `plan`, `workflow <run-id>`) as redacted JSON |
+| `/remote-env` | Open new hosted Work from a GitHub or CNB branch tip |
 | `/color` | Give this chat's composer box its own color: bare `/color` cycles red, orange, amber, green, cyan, blue, purple and pink, `/color blue` picks one, `/color off` returns to the theme |
 | `/receipts` | List what this session did: files changed, commands run, web and MCP calls, agents, approvals and who gave them, failures |
 | `/compact` | Summarize long context to recover token budget |
