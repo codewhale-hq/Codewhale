@@ -139,6 +139,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **MCP stdio shutdown kills the process group before reaping a timed-out leader:** when a stdio MCP server ignores `SIGTERM` past the shutdown grace period, `process_broker` now signals its `ProcessTree` before reaping the leader child so descendants are terminated while the process group ID is still pinned. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Refs #6558)
 
+### Fixed
+
+- **Stale pet telemetry and corrupt history lines no longer drop state:** `PetLiveTape` now ignores non-zero out-of-order telemetry sequence regressions without lowering its high-water mark (preserving sequence `0` as an in-place producer restart baseline), and composer history loading skips invalid UTF-8 lines instead of discarding all remaining history entries. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Refs #6557, #6559)
+
 ## [0.10.4] - 2026-11-23
 
 Codewhale v0.10.4 is a hotfix release. Ctrl+V no longer pastes text twice in Windows Terminal, which also doubled API keys pasted into `/provider`; the fix was checked on a real Windows Terminal. `codewhale update` no longer refuses a release binary because an unrelated `cargo install` left a Cargo record beside it. The refusal happens inside the installed 0.10.3, so an install it affects cannot update itself to 0.10.4: rerun the installer once (`curl -fsSL https://codewhale.net/install.sh | sh` on macOS and Linux, or `install.bat` from the 0.10.4 Windows archive), and later updates work. `/provider` now works for projects on a second Windows drive such as D:, Computer Use installs from the Marketplace, and every terminal draws the dot whale in `/pet`. `url` is updated to 2.5.9 for RUSTSEC-2026-0592. DeepSeek Harness compatibility is limited: of 32 published packages tried unmodified, 2 activate in the terminal; [DSH compatibility](docs/DSH_COMPATIBILITY.md) lists each one.
