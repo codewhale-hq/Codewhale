@@ -14922,6 +14922,28 @@ fn toml_value_at_path<'a>(document: &'a toml::Value, segments: &[&str]) -> Optio
     Some(current)
 }
 
+fn runtime_config_toml_path(key: &str) -> Option<&'static [&'static str]> {
+    match key {
+        "reasoning_effort" => Some(&["reasoning_effort"]),
+        "approval_mode" | "approval_policy" => Some(&["approval_policy"]),
+        "provider" => Some(&["provider"]),
+        "cost_currency" => Some(&["cost_currency"]),
+        "max_history" => Some(&["max_history"]),
+        "allow_shell" => Some(&["allow_shell"]),
+        "mcp_config_path" => Some(&["mcp_config_path"]),
+        "subagents_enabled" => Some(&["subagents", "enabled"]),
+        "subagents_max_depth" => Some(&["subagents", "max_depth"]),
+        "subagents_max_concurrent" => Some(&["subagents", "max_concurrent"]),
+        "verbosity" => Some(&["verbosity"]),
+        "sandbox_mode" => Some(&["sandbox_mode"]),
+        "strict_tool_mode" => Some(&["strict_tool_mode"]),
+        "memory_enabled" => Some(&["memory", "enabled"]),
+        "search_provider" => Some(&["search", "provider"]),
+        "prompt_suggestion" => Some(&["prompt_suggestion"]),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct SettingsSchemaQuery {
     locale: Option<String>,
@@ -14960,6 +14982,16 @@ async fn get_settings_schema(
         state.config_profile.as_deref(),
         &state.workspace,
     );
+    let interactive_allow_shell = config.interactive_allow_shell()
+        && state
+            .runtime_threads
+            .validate_shell_access_policy(
+                &state.workspace,
+                state.config_path.as_deref(),
+                state.config_profile.as_deref(),
+            )
+            .await
+            .is_ok();
     let base_url_row_key = if config
         .active_provider_identity()
         .ok()
@@ -14996,7 +15028,16 @@ async fn get_settings_schema(
     // still serves defaults through `value`. This is an async axum route, so
     // the read rides the blocking pool instead of parking a Tokio worker
     // (#6149).
-    let config_document = match state.config_path.as_deref() {
+    let config_document_path = state
+        .config_path
+        .clone()
+        .or_else(|| config.loaded_config_path.clone())
+        .or_else(|| {
+            codewhale_runtime::config::resolve_load_config_path(None)
+                .ok()
+                .flatten()
+        });
+    let config_document = match config_document_path.as_deref() {
         Some(path) => tokio::fs::read_to_string(path)
             .await
             .ok()
@@ -15127,14 +15168,20 @@ async fn get_settings_schema(
                     },
                     "managed_allow_shell" if !shell_control.editable_root() => Some(format!(
                         "{} · {}",
-                        config.allow_shell(),
+                        interactive_allow_shell,
                         shell_control.label()
                     )),
                     _ => None,
                 };
+                let persisted = runtime_config_toml_path(def.key).map(|segments| {
+                    config_document
+                        .as_ref()
+                        .is_some_and(|document| toml_value_at_path(document, segments).is_some())
+                });
                 (
-                    managed_value.or_else(|| config_schema_value(def.key, &config)),
-                    None,
+                    managed_value
+                        .or_else(|| config_schema_value(def.key, &config, interactive_allow_shell)),
+                    persisted,
                 )
             };
 
@@ -15204,7 +15251,11 @@ async fn get_settings_schema(
 /// Current value of a config.toml-owned schema row, when one resolves
 /// cheaply. Diagnostics that need per-route or credential computation are
 /// omitted rather than approximated.
-fn config_schema_value(key: &str, config: &Config) -> Option<String> {
+fn config_schema_value(
+    key: &str,
+    config: &Config,
+    interactive_allow_shell: bool,
+) -> Option<String> {
     match key {
         "provider" => config
             .active_provider_identity()
@@ -15218,7 +15269,7 @@ fn config_schema_value(key: &str, config: &Config) -> Option<String> {
         "telemetry" => {
             Some(codewhale_engine::telemetry_notice::saved_preference_enabled(config).to_string())
         }
-        "allow_shell" => Some(config.allow_shell().to_string()),
+        "allow_shell" => Some(interactive_allow_shell.to_string()),
         "base_url" => config
             .active_provider_identity()
             .ok()
