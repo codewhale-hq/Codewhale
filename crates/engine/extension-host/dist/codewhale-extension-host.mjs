@@ -19,7 +19,7 @@ var __export = (target, all) => {
 var define_BUILTIN_MODULE_DIGESTS_default;
 var init_define_BUILTIN_MODULE_DIGESTS = __esm({
   "<define:__BUILTIN_MODULE_DIGESTS__>"() {
-    define_BUILTIN_MODULE_DIGESTS_default = { creator: "6ef992669e5a814d820ef30e8cb28101aaa1d6f264bbeec32d6bab27d7556fb5", harness: "7e93989b2ff84394ab841e28577f6661ea2f01f1b30905ea6ce54857ef7f5e34", mcp: "f9735707e49e349ee38f791fa3c6f3379fde43cad5044f381f8e313286ea3d39" };
+    define_BUILTIN_MODULE_DIGESTS_default = { creator: "64a59c18fb8c8da432b3d4f6ba08faf3bb13bde1f910854a8c604a18224d0dbd", harness: "7e93989b2ff84394ab841e28577f6661ea2f01f1b30905ea6ce54857ef7f5e34", mcp: "f9735707e49e349ee38f791fa3c6f3379fde43cad5044f381f8e313286ea3d39" };
   }
 });
 
@@ -961,8 +961,8 @@ var init_lib2 = __esm({
         let inFlight;
         let removeWrapper = () => false;
         const waitForSetup = () => {
-          setupBarrier ??= new Promise((resolve7, reject) => {
-            resolveSetup = resolve7;
+          setupBarrier ??= new Promise((resolve8, reject) => {
+            resolveSetup = resolve8;
             rejectSetup = reject;
           });
           return setupBarrier;
@@ -1152,7 +1152,7 @@ var init_lib2 = __esm({
         });
       }
       async _unload() {
-        while ([...this.provisions].some((impl) => impl.dependents.size)) await new Promise((resolve7) => this._release = resolve7);
+        while ([...this.provisions].some((impl) => impl.dependents.size)) await new Promise((resolve8) => this._release = resolve8);
         this._release = void 0;
         await Promise.all(this._disposables.clear().map(async (dispose) => {
           try {
@@ -1817,9 +1817,9 @@ var init_lib2 = __esm({
           return async () => {
             if (this.store[impl.isolate] === impl) delete this.store[impl.isolate];
             this.ctx.isolate(name, impl.isolate).reflect.notify([name]);
-            await new Promise((resolve7) => {
-              impl.release = resolve7;
-              if (!impl.dependents.size) resolve7();
+            await new Promise((resolve8) => {
+              impl.release = resolve8;
+              if (!impl.dependents.size) resolve8();
             });
             impl.release = void 0;
             this.ctx.fiber.provisions.delete(impl);
@@ -1927,16 +1927,16 @@ var init_lib2 = __esm({
       }
     };
     (function(Inject3) {
-      function resolve7(inject, result = /* @__PURE__ */ Object.create(null)) {
+      function resolve8(inject, result = /* @__PURE__ */ Object.create(null)) {
         if (!inject) return result;
         if (Array.isArray(inject)) for (const name of inject) result[name] = null;
         else if (Reflect.has(inject, symbols.checkProto)) {
-          Object.assign(result, resolve7(Object.getPrototypeOf(inject)));
+          Object.assign(result, resolve8(Object.getPrototypeOf(inject)));
           for (const name of Object.keys(inject)) result[name] = inject[name] ?? null;
         } else for (const name of Object.keys(inject)) result[name] = inject[name] ?? null;
         return result;
       }
-      Inject3.resolve = resolve7;
+      Inject3.resolve = resolve8;
     })(Inject || (Inject = {}));
     RegistryService = class {
       ctx;
@@ -2594,8 +2594,8 @@ var init_lib3 = __esm({
     };
     resolvers = {};
     checkedVolatile = /* @__PURE__ */ Symbol("checked-volatile-schema");
-    Schema.extend = function extend(type2, resolve7) {
-      resolvers[type2] = resolve7;
+    Schema.extend = function extend(type2, resolve8) {
+      resolvers[type2] = resolve8;
     };
     Schema.resolve = function resolve(data2, schema3, options = {}, strict = false) {
       if (!schema3) return [data2];
@@ -16764,7 +16764,7 @@ var init_rpc = __esm({
         const id = this.nextId++;
         const message = { jsonrpc: "2.0", id, method, params };
         validateMessage(message, "host_to_core", this.tier);
-        return new Promise((resolve7, reject) => {
+        return new Promise((resolve8, reject) => {
           const onAbort = () => {
             if (!this.pending.delete(id)) return;
             this.notify("$/cancel", { id });
@@ -16773,7 +16773,7 @@ var init_rpc = __esm({
           this.pending.set(id, {
             resolve: (value) => {
               signal?.removeEventListener("abort", onAbort);
-              resolve7(value);
+              resolve8(value);
             },
             reject: (error) => {
               signal?.removeEventListener("abort", onAbort);
@@ -18386,6 +18386,681 @@ var init_host_services = __esm({
   }
 });
 
+// src/dsh/webserver.ts
+import { EventEmitter } from "node:events";
+import { isAbsolute as isAbsolute2, resolve as resolve3 } from "node:path";
+function normalizePath(raw) {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > 1024 || /[\x00-\x1f\x7f]/.test(raw)) {
+    throw new RpcError(ErrorCode.InvalidParams, "route path must be a non-empty single-line string");
+  }
+  const withSlash = raw.startsWith("/") ? raw : `/${raw}`;
+  if (withSlash.length > 1 && withSlash.endsWith("/")) {
+    return withSlash.slice(0, -1);
+  }
+  return withSlash;
+}
+function normalizeMethods(method, methods) {
+  const list2 = [];
+  if (typeof method === "string" && method.trim() !== "") {
+    list2.push(method.trim().toUpperCase());
+  }
+  if (Array.isArray(methods)) {
+    for (const item of methods) {
+      if (typeof item === "string" && item.trim() !== "") {
+        list2.push(item.trim().toUpperCase());
+      }
+    }
+  }
+  return list2.length > 0 ? new Set(list2) : void 0;
+}
+function addOwnerRoute(owner, route) {
+  const ownerToken = owner.ref.owner_token;
+  let list2 = routesByOwner.get(ownerToken);
+  if (!list2) {
+    list2 = [];
+    routesByOwner.set(ownerToken, list2);
+  }
+  if (list2.length >= MAX_ROUTES_PER_OWNER) {
+    throw new RpcError(ErrorCode.Refused, `owner exceeded ${MAX_ROUTES_PER_OWNER} registered routes`);
+  }
+  const stored = { ...route, id: nextRouteId++, ownerToken };
+  list2.push(stored);
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    const current2 = routesByOwner.get(ownerToken);
+    if (!current2) return;
+    const index = current2.findIndex((entry) => entry.id === stored.id);
+    if (index >= 0) current2.splice(index, 1);
+    if (current2.length === 0) routesByOwner.delete(ownerToken);
+  };
+}
+function isLoopbackHostHeader(raw) {
+  if (!raw) return true;
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed === "") return true;
+  let host2 = trimmed;
+  if (host2.startsWith("[")) {
+    const close = host2.indexOf("]");
+    if (close < 0) return false;
+    host2 = host2.slice(1, close);
+  } else {
+    const colon = host2.indexOf(":");
+    if (colon >= 0) host2 = host2.slice(0, colon);
+  }
+  if (host2 === "localhost" || host2.endsWith(".localhost") || host2 === "::1") return true;
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host2);
+  if (!match) return false;
+  const octets = match.slice(1).map(Number);
+  return octets[0] === 127 && octets.every((n) => n >= 0 && n <= 255);
+}
+function checkRequestRejection(req) {
+  if (!req || !req.headers) return null;
+  const hostHeader = req.headers.host;
+  const host2 = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
+  if (!isLoopbackHostHeader(host2)) {
+    return { status: 403, message: "forbidden: host is not loopback" };
+  }
+  const fetchSiteHeader = req.headers["sec-fetch-site"];
+  const fetchSite = Array.isArray(fetchSiteHeader) ? fetchSiteHeader[0] : fetchSiteHeader;
+  if (typeof fetchSite === "string" && fetchSite.toLowerCase() === "cross-site") {
+    return { status: 403, message: "forbidden: cross-site request rejected" };
+  }
+  return null;
+}
+function createNodeRequest(method, url, headers, body) {
+  const emitter = new EventEmitter();
+  emitter.method = method;
+  emitter.url = url;
+  emitter.headers = { host: "127.0.0.1", ...headers };
+  emitter.httpVersion = "1.1";
+  emitter.socket = { remoteAddress: "127.0.0.1" };
+  emitter.connection = emitter.socket;
+  emitter.readableEnded = false;
+  emitter.destroyed = false;
+  let streamed = false;
+  const emitBody = () => {
+    if (streamed || emitter.destroyed) return;
+    streamed = true;
+    queueMicrotask(() => {
+      if (emitter.destroyed) return;
+      if (body.length > 0) emitter.emit("data", body);
+      emitter.readableEnded = true;
+      emitter.emit("end");
+    });
+  };
+  const origOn = emitter.on.bind(emitter);
+  emitter.on = ((event, listener) => {
+    origOn(event, listener);
+    if (event === "data" || event === "end") emitBody();
+    return emitter;
+  });
+  emitter.destroy = () => {
+    emitter.destroyed = true;
+    return emitter;
+  };
+  emitter[Symbol.asyncIterator] = async function* () {
+    streamed = true;
+    if (body.length > 0 && !emitter.destroyed) {
+      yield body;
+    }
+    emitter.readableEnded = true;
+  };
+  return emitter;
+}
+function createNodeResponse(onFinish) {
+  const emitter = new EventEmitter();
+  const headerMap = /* @__PURE__ */ new Map();
+  const chunks = [];
+  let totalBytes = 0;
+  const setOneHeader = (name, value) => {
+    const key = String(name).trim().toLowerCase();
+    if (!key) return;
+    if (Array.isArray(value)) {
+      headerMap.set(key, value.map((v) => String(v)));
+    } else {
+      headerMap.set(key, [String(value)]);
+    }
+  };
+  const appendChunk = (chunk, encoding) => {
+    const buf = Buffer.isBuffer(chunk) ? chunk : typeof chunk === "string" ? Buffer.from(chunk, encoding ?? "utf8") : Buffer.from(chunk);
+    totalBytes += buf.length;
+    if (totalBytes > MAX_RESPONSE_BODY_BYTES) {
+      throw new RpcError(ErrorCode.ExecutionFailed, `plugin route response exceeded ${MAX_RESPONSE_BODY_BYTES} bytes`);
+    }
+    if (buf.length > 0) chunks.push(buf);
+  };
+  emitter.statusCode = 200;
+  emitter.statusMessage = "OK";
+  emitter.headersSent = false;
+  emitter.writableEnded = false;
+  emitter.finished = false;
+  emitter.setHeader = (name, value) => {
+    setOneHeader(name, value);
+    return emitter;
+  };
+  emitter.getHeader = (name) => {
+    const values = headerMap.get(String(name).toLowerCase());
+    if (!values) return void 0;
+    return values.length === 1 ? values[0] : [...values];
+  };
+  emitter.getHeaders = () => {
+    const out = {};
+    for (const [k, v] of headerMap) out[k] = v.length === 1 ? v[0] : [...v];
+    return out;
+  };
+  emitter.hasHeader = (name) => headerMap.has(String(name).toLowerCase());
+  emitter.removeHeader = (name) => {
+    headerMap.delete(String(name).toLowerCase());
+  };
+  emitter.writeHead = (statusCode, statusMessageOrHeaders, maybeHeaders) => {
+    emitter.statusCode = statusCode;
+    let headersObj;
+    if (typeof statusMessageOrHeaders === "string") {
+      emitter.statusMessage = statusMessageOrHeaders;
+      headersObj = maybeHeaders;
+    } else {
+      headersObj = statusMessageOrHeaders;
+    }
+    if (headersObj && typeof headersObj === "object") {
+      for (const [k, v] of Object.entries(headersObj)) {
+        if (v !== void 0) setOneHeader(k, v);
+      }
+    }
+    emitter.headersSent = true;
+    return emitter;
+  };
+  emitter.flushHeaders = () => {
+    emitter.headersSent = true;
+  };
+  emitter.write = (chunk, encoding, cb) => {
+    if (emitter.writableEnded) return false;
+    emitter.headersSent = true;
+    appendChunk(chunk, encoding);
+    cb?.();
+    return true;
+  };
+  emitter.end = (chunk, encoding, cb) => {
+    if (emitter.writableEnded) return emitter;
+    let callback = cb;
+    if (typeof chunk === "function") {
+      callback = chunk;
+    } else if (chunk !== void 0) {
+      const enc = typeof encoding === "function" ? void 0 : encoding;
+      if (typeof encoding === "function") callback = encoding;
+      appendChunk(chunk, enc);
+    }
+    emitter.headersSent = true;
+    emitter.writableEnded = true;
+    emitter.finished = true;
+    callback?.();
+    emitter.emit("finish");
+    onFinish();
+    return emitter;
+  };
+  return {
+    res: emitter,
+    result: () => {
+      const headers = [];
+      for (const [name, values] of headerMap) {
+        for (const value of values) {
+          headers.push({ name, value });
+        }
+      }
+      return {
+        status: emitter.statusCode,
+        headers,
+        body: Buffer.concat(chunks, totalBytes)
+      };
+    }
+  };
+}
+function matchRoute(ownerToken, method, path2) {
+  const routes = routesByOwner.get(ownerToken);
+  if (!routes || routes.length === 0) return void 0;
+  const upperMethod = method.toUpperCase();
+  const methodMatches = (route) => !route.methods || route.methods.has(upperMethod);
+  for (const route of routes) {
+    if (route.kind === "exact" && route.path === path2 && methodMatches(route)) {
+      return route;
+    }
+  }
+  let bestPrefix;
+  for (const route of routes) {
+    if (route.kind !== "prefix" || !methodMatches(route)) continue;
+    const matches = route.path === "/" || path2 === route.path || path2.startsWith(`${route.path}/`);
+    if (matches && (!bestPrefix || route.path.length > bestPrefix.path.length)) {
+      bestPrefix = route;
+    }
+  }
+  return bestPrefix;
+}
+async function readBoundedResponseBody(response) {
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+      total += value.byteLength;
+      if (total > MAX_RESPONSE_BODY_BYTES) {
+        await reader.cancel().catch(() => void 0);
+        throw new RpcError(ErrorCode.ExecutionFailed, `plugin route response exceeded ${MAX_RESPONSE_BODY_BYTES} bytes`);
+      }
+      chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+    }
+    return Buffer.concat(chunks, total);
+  } finally {
+    reader.releaseLock();
+  }
+}
+async function runFetchRoute(route, method, urlPath, headers, body, signal) {
+  const init = {
+    method,
+    headers,
+    signal,
+    ...method !== "GET" && method !== "HEAD" && body.length > 0 ? { body: new Uint8Array(body) } : {}
+  };
+  const request = new Request(`http://127.0.0.1${urlPath}`, init);
+  const response = await route.fetchHandler(request);
+  const bytes = await readBoundedResponseBody(response);
+  const outHeaders = [];
+  response.headers.forEach((value, name) => {
+    outHeaders.push({ name, value });
+  });
+  return {
+    matched: true,
+    status: response.status,
+    headers: outHeaders,
+    ...bytes.length > 0 ? { body_base64: bytes.toString("base64") } : {}
+  };
+}
+async function runRpcRoute(route, path2, body) {
+  let parsed = {};
+  if (body.length > 0) {
+    try {
+      parsed = JSON.parse(body.toString("utf8"));
+    } catch {
+      const errBody = Buffer.from(JSON.stringify({ error: "invalid JSON RPC payload" }), "utf8");
+      return {
+        matched: true,
+        status: 400,
+        headers: [{ name: "content-type", value: "application/json; charset=utf-8" }],
+        body_base64: errBody.toString("base64")
+      };
+    }
+  }
+  const suffix = path2.length > route.path.length ? path2.slice(route.path.length + 1) : "";
+  const endpoint = suffix || (typeof parsed?.endpoint === "string" ? parsed.endpoint : "");
+  const payload = suffix ? parsed : parsed?.payload ?? {};
+  const result = await route.rpcHandler(endpoint, payload);
+  const outBuf = Buffer.from(JSON.stringify(result === void 0 ? null : result), "utf8");
+  if (outBuf.length > MAX_RESPONSE_BODY_BYTES) {
+    throw new RpcError(ErrorCode.ExecutionFailed, `plugin RPC response exceeded ${MAX_RESPONSE_BODY_BYTES} bytes`);
+  }
+  return {
+    matched: true,
+    status: 200,
+    headers: [{ name: "content-type", value: "application/json; charset=utf-8" }],
+    body_base64: outBuf.toString("base64")
+  };
+}
+async function dispatchPluginRoute(host2, params, signal, runWithOwner = (_owner, fn) => fn()) {
+  const owner = host2.owners.get(params.owner.owner_token);
+  if (!owner || owner.state !== "active" || owner.disposing || owner.ref.plugin_id !== params.owner.plugin_id || owner.ref.generation !== params.owner.generation) {
+    throw new RpcError(ErrorCode.NotAvailable, `plugin owner ${params.owner.plugin_id} is not active`);
+  }
+  const method = params.method.toUpperCase();
+  if (!ALLOWED_METHODS.has(method)) {
+    throw new RpcError(ErrorCode.InvalidParams, `unsupported HTTP method ${params.method}`);
+  }
+  const normalizedPath = normalizePath(params.path);
+  if (params.body_base64 && params.body_base64.length > Math.ceil(MAX_REQUEST_BODY_BYTES / 3) * 4 + 4) {
+    throw new RpcError(ErrorCode.InvalidParams, `request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`);
+  }
+  const body = params.body_base64 ? Buffer.from(params.body_base64, "base64") : Buffer.alloc(0);
+  if (body.length > MAX_REQUEST_BODY_BYTES) {
+    throw new RpcError(ErrorCode.InvalidParams, `request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`);
+  }
+  const route = matchRoute(owner.ref.owner_token, method, normalizedPath);
+  if (!route) {
+    return { matched: false, status: 404, headers: [] };
+  }
+  const headers = {};
+  for (const h of params.headers) {
+    const key = h.name.trim().toLowerCase();
+    if (!key) continue;
+    headers[key] = key in headers ? `${headers[key]}, ${h.value}` : h.value;
+  }
+  const urlPath = params.query ? `${normalizedPath}?${params.query}` : normalizedPath;
+  const deadlineMs = Math.min(Math.max(params.deadline_ms || MAX_ROUTE_DEADLINE_MS, 100), MAX_ROUTE_DEADLINE_MS);
+  const timeoutController = new AbortController();
+  const timer = setTimeout(() => timeoutController.abort(), deadlineMs);
+  timer.unref?.();
+  const combinedSignal = AbortSignal.any([signal, timeoutController.signal]);
+  let onOuterAbort;
+  try {
+    const run = runWithOwner(owner, async () => {
+      if (route.mode === "fetch") {
+        return runFetchRoute(route, method, urlPath, headers, body, combinedSignal);
+      }
+      if (route.mode === "rpc") {
+        return runRpcRoute(route, normalizedPath, body);
+      }
+      let resolveDone;
+      const donePromise = new Promise((resolve8) => {
+        resolveDone = resolve8;
+      });
+      const req = createNodeRequest(method, urlPath, headers, body);
+      const { res, result } = createNodeResponse(resolveDone);
+      const handlerReturn = route.nodeHandler(req, res);
+      await Promise.resolve(handlerReturn);
+      if (!res.writableEnded) {
+        let onInnerAbort;
+        try {
+          await Promise.race([
+            donePromise,
+            new Promise((_, reject) => {
+              onInnerAbort = () => reject(new RpcError(ErrorCode.Cancelled, "plugin route timed out or cancelled"));
+              if (combinedSignal.aborted) onInnerAbort();
+              else combinedSignal.addEventListener("abort", onInnerAbort, { once: true });
+            })
+          ]);
+        } finally {
+          if (onInnerAbort) combinedSignal.removeEventListener("abort", onInnerAbort);
+        }
+      }
+      const out = result();
+      return {
+        matched: true,
+        status: out.status,
+        headers: out.headers,
+        ...out.body.length > 0 ? { body_base64: out.body.toString("base64") } : {}
+      };
+    });
+    const aborted = new Promise((_, reject) => {
+      onOuterAbort = () => reject(new RpcError(ErrorCode.Cancelled, "plugin route timed out or cancelled"));
+      if (combinedSignal.aborted) onOuterAbort();
+      else combinedSignal.addEventListener("abort", onOuterAbort, { once: true });
+    });
+    return await Promise.race([run, aborted]);
+  } finally {
+    if (onOuterAbort) combinedSignal.removeEventListener("abort", onOuterAbort);
+    clearTimeout(timer);
+  }
+}
+function extractSessionId(session2) {
+  if (typeof session2 === "string" && session2.trim() !== "") return session2.trim();
+  if (!session2 || typeof session2 !== "object") return void 0;
+  const obj = session2;
+  if (typeof obj.id === "string" && obj.id.trim() !== "") return obj.id.trim();
+  if (typeof obj.sessionId === "string" && obj.sessionId.trim() !== "") return obj.sessionId.trim();
+  const header = obj.header;
+  if (header && typeof header === "object" && typeof header.id === "string") {
+    const id = header.id.trim();
+    if (id !== "") return id;
+  }
+  return void 0;
+}
+var MAX_REQUEST_BODY_BYTES, MAX_RESPONSE_BODY_BYTES, MAX_ROUTE_DEADLINE_MS, MAX_ROUTES_PER_OWNER, MAX_SESSION_TITLES, ALLOWED_METHODS, nextRouteId, routesByOwner, webServerAdapter, connectionAdapter, sessionTitleAdapter, profileContextAdapter, DSH_WEBSERVER_ADAPTERS;
+var init_webserver = __esm({
+  "src/dsh/webserver.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
+    MAX_RESPONSE_BODY_BYTES = 8 * 1024 * 1024;
+    MAX_ROUTE_DEADLINE_MS = 15e3;
+    MAX_ROUTES_PER_OWNER = 256;
+    MAX_SESSION_TITLES = 1024;
+    ALLOWED_METHODS = /* @__PURE__ */ new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]);
+    nextRouteId = 1;
+    routesByOwner = /* @__PURE__ */ new Map();
+    webServerAdapter = {
+      service: "webServer",
+      define(host2) {
+        class WebServerService extends Service {
+          host = "127.0.0.1";
+          port = 0;
+          basePath = "";
+          constructor(ctx) {
+            super(ctx, "webServer");
+          }
+          getOrigin() {
+            return "http://127.0.0.1";
+          }
+          register(route) {
+            const owner = host2.ownerOf(this.ctx);
+            if (!owner) throw new Error("webServer.register called outside an extension owner");
+            if (!route || typeof route !== "object" || typeof route.handler !== "function") {
+              throw new RpcError(ErrorCode.InvalidParams, "webServer.register requires { path, handler }");
+            }
+            const kind = route.kind === "prefix" ? "prefix" : "exact";
+            const path2 = normalizePath(route.path);
+            const methods = normalizeMethods(route.method, route.methods);
+            return this.ctx.effect(
+              () => addOwnerRoute(owner, { kind, path: path2, methods, mode: "node", nodeHandler: route.handler }),
+              `webServer.register(${kind}:${path2})`
+            );
+          }
+          registerRoute(route) {
+            return this.register(route);
+          }
+          route(path2, handler) {
+            return this.register({ kind: "exact", path: path2, handler });
+          }
+          get(path2, handler) {
+            return this.register({ kind: "exact", path: path2, method: "GET", handler });
+          }
+          post(path2, handler) {
+            return this.register({ kind: "exact", path: path2, method: "POST", handler });
+          }
+          put(path2, handler) {
+            return this.register({ kind: "exact", path: path2, method: "PUT", handler });
+          }
+          patch(path2, handler) {
+            return this.register({ kind: "exact", path: path2, method: "PATCH", handler });
+          }
+          delete(path2, handler) {
+            return this.register({ kind: "exact", path: path2, method: "DELETE", handler });
+          }
+          use(pathOrHandler, maybeHandler) {
+            if (typeof pathOrHandler === "function") {
+              return this.register({ kind: "prefix", path: "/", handler: pathOrHandler });
+            }
+            if (typeof maybeHandler !== "function") {
+              throw new RpcError(ErrorCode.InvalidParams, "webServer.use requires a handler function");
+            }
+            return this.register({ kind: "prefix", path: pathOrHandler, handler: maybeHandler });
+          }
+          registerUpgrade(_spec) {
+            return () => {
+            };
+          }
+          tapIndex(_fn) {
+            return () => {
+            };
+          }
+        }
+        Object.freeze(WebServerService.prototype);
+        return WebServerService;
+      }
+    };
+    connectionAdapter = {
+      service: "connection",
+      define(host2) {
+        class ConnectionService extends Service {
+          isLoopback = true;
+          connected = true;
+          baseUrl = "http://127.0.0.1";
+          constructor(ctx) {
+            super(ctx, "connection");
+          }
+          requestRejection(req) {
+            return checkRequestRejection(req);
+          }
+          get fetch() {
+            const ctx = this.ctx;
+            return {
+              register: (route) => {
+                const owner = host2.ownerOf(ctx);
+                if (!owner) throw new Error("connection.fetch.register called outside an extension owner");
+                if (!route || typeof route !== "object" || typeof route.fetch !== "function") {
+                  throw new RpcError(ErrorCode.InvalidParams, "connection.fetch.register requires { path, fetch }");
+                }
+                const path2 = normalizePath(route.path);
+                const methods = normalizeMethods(void 0, route.methods);
+                return ctx.effect(
+                  () => addOwnerRoute(owner, { kind: "prefix", path: path2, methods, mode: "fetch", fetchHandler: route.fetch }),
+                  `connection.fetch.register(${path2})`
+                );
+              }
+            };
+          }
+          get rpc() {
+            const ctx = this.ctx;
+            return {
+              handle: (channel, handler, _options) => {
+                const owner = host2.ownerOf(ctx);
+                if (!owner) throw new Error("connection.rpc.handle called outside an extension owner");
+                if (typeof handler !== "function") {
+                  throw new RpcError(ErrorCode.InvalidParams, "connection.rpc.handle requires a handler function");
+                }
+                const path2 = normalizePath(channel);
+                return ctx.effect(
+                  () => addOwnerRoute(owner, { kind: "prefix", path: path2, methods: /* @__PURE__ */ new Set(["POST"]), mode: "rpc", rpcHandler: handler }),
+                  `connection.rpc.handle(${path2})`
+                );
+              }
+            };
+          }
+          onReady(cb) {
+            if (typeof cb === "function") queueMicrotask(cb);
+            return () => {
+            };
+          }
+          onNotification(_cb) {
+            return () => {
+            };
+          }
+        }
+        Object.freeze(ConnectionService.prototype);
+        return ConnectionService;
+      }
+    };
+    sessionTitleAdapter = {
+      service: "sessionTitle",
+      define(host2) {
+        const titlesByOwner = /* @__PURE__ */ new Map();
+        const listenersByOwner = /* @__PURE__ */ new Map();
+        const requireOwnerToken = (ctx) => {
+          const owner = host2.ownerOf(ctx);
+          if (!owner || owner.state === "disposed" || owner.disposing) {
+            throw new RpcError(ErrorCode.NotAvailable, "sessionTitle requires an active extension owner");
+          }
+          return owner.ref.owner_token;
+        };
+        class SessionTitleService extends Service {
+          constructor(ctx) {
+            super(ctx, "sessionTitle");
+          }
+          get(session2) {
+            const ownerToken = requireOwnerToken(this.ctx);
+            const id = extractSessionId(session2);
+            return id ? titlesByOwner.get(ownerToken)?.get(id) : void 0;
+          }
+          rename(session2, title) {
+            const ownerToken = requireOwnerToken(this.ctx);
+            const id = extractSessionId(session2);
+            if (!id) throw new RpcError(ErrorCode.InvalidParams, "sessionTitle.rename requires a session or session id");
+            if (typeof title !== "string") throw new RpcError(ErrorCode.InvalidParams, "sessionTitle.rename requires a string title");
+            const cleaned = title.replace(/[\r\n\t]+/g, " ").trim().slice(0, 256);
+            if (!cleaned) throw new RpcError(ErrorCode.InvalidParams, "sessionTitle.rename requires a non-empty title");
+            let titles = titlesByOwner.get(ownerToken);
+            if (!titles) {
+              titles = /* @__PURE__ */ new Map();
+              titlesByOwner.set(ownerToken, titles);
+            }
+            if (!titles.has(id) && titles.size >= MAX_SESSION_TITLES) {
+              const oldest = titles.keys().next().value;
+              if (oldest !== void 0) titles.delete(oldest);
+            }
+            titles.set(id, cleaned);
+            const listeners = listenersByOwner.get(ownerToken);
+            if (listeners) {
+              for (const listener of listeners) {
+                try {
+                  listener(id, cleaned);
+                } catch {
+                }
+              }
+            }
+            return cleaned;
+          }
+          register(listener) {
+            const ownerToken = requireOwnerToken(this.ctx);
+            if (typeof listener !== "function") {
+              throw new RpcError(ErrorCode.InvalidParams, "sessionTitle.register requires a function");
+            }
+            return this.ctx.effect(() => {
+              let listeners = listenersByOwner.get(ownerToken);
+              if (!listeners) {
+                listeners = /* @__PURE__ */ new Set();
+                listenersByOwner.set(ownerToken, listeners);
+              }
+              listeners.add(listener);
+              return () => {
+                const current2 = listenersByOwner.get(ownerToken);
+                if (!current2) return;
+                current2.delete(listener);
+                if (current2.size === 0) listenersByOwner.delete(ownerToken);
+              };
+            }, "sessionTitle.register");
+          }
+        }
+        Object.freeze(SessionTitleService.prototype);
+        return SessionTitleService;
+      }
+    };
+    profileContextAdapter = {
+      service: "profileContext",
+      define(host2) {
+        class ProfileContextService extends Service {
+          name = "codewhale";
+          packageManager = "npm";
+          constructor(ctx) {
+            super(ctx, "profileContext");
+          }
+          get dir() {
+            const owner = host2.ownerOf(this.ctx);
+            if (!owner?.dataDir || !isAbsolute2(owner.dataDir)) {
+              throw new RpcError(ErrorCode.NotAvailable, "profileContext requires an active owner with a scoped dataDir");
+            }
+            return resolve3(owner.dataDir);
+          }
+          get installAnchor() {
+            return this.dir;
+          }
+        }
+        Object.freeze(ProfileContextService.prototype);
+        return ProfileContextService;
+      }
+    };
+    DSH_WEBSERVER_ADAPTERS = [
+      webServerAdapter,
+      connectionAdapter,
+      sessionTitleAdapter,
+      profileContextAdapter
+    ];
+  }
+});
+
 // src/dsh/plugin-manager.ts
 function invalid6(what) {
   return new RpcError(ErrorCode.Internal, `invalid plugins broker ${what}`);
@@ -18601,6 +19276,7 @@ var init_adapters = __esm({
     init_terminal();
     init_attachments();
     init_host_services();
+    init_webserver();
     init_plugin_manager();
     DSH_ADAPTERS = [
       sessionsAdapter,
@@ -18615,7 +19291,8 @@ var init_adapters = __esm({
       deepseekAccountAdapter,
       terminalAdapter,
       attachmentsAdapter,
-      ...DSH_HOST_SERVICE_ADAPTERS
+      ...DSH_HOST_SERVICE_ADAPTERS,
+      ...DSH_WEBSERVER_ADAPTERS
     ];
   }
 });
@@ -18650,7 +19327,11 @@ var init_compatibility = __esm({
           "sessionProjections",
           "workspaceRegistry",
           "typertGateway",
-          "web"
+          "web",
+          "webServer",
+          "connection",
+          "sessionTitle",
+          "profileContext"
         ],
         cordis: [
           "logger",
@@ -18702,7 +19383,11 @@ var init_compatibility = __esm({
         "sessionProjections",
         "workspaceRegistry",
         "typertGateway",
-        "web"
+        "web",
+        "webServer",
+        "connection",
+        "sessionTitle",
+        "profileContext"
       ],
       row_bridges: {
         "@deepseek-ai/dsh-mcp-client": "mcp",
@@ -19072,7 +19757,6 @@ var init_missing_services = __esm({
     REFUSED_SERVICES = new Set(compatibility_default.refused_services);
     PROVIDED_SERVICES = new Set(Object.values(compatibility_default.provided_services).flat());
     UNPROVIDED_REASONS = [
-      [(name) => name === "webServer" || name === "connection", "DSH Web UI services; Codewhale has no plugin web server"],
       [(name) => name.startsWith("@deepseek-ai/dsh-client-"), "DSH client UI services"]
     ];
     quoted = (names) => names.map((name) => `\`${name}\``).join(", ");
@@ -19146,7 +19830,7 @@ var init_core = __esm({
 import childProcess from "node:child_process";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { syncBuiltinESMExports as syncBuiltinESMExports2 } from "node:module";
-import { resolve as resolve3 } from "node:path";
+import { resolve as resolve4 } from "node:path";
 import { PassThrough } from "node:stream";
 import { promisify } from "node:util";
 function queryFor(args) {
@@ -19194,7 +19878,7 @@ function installGitAdapter(inPluginContext) {
       if (typeof options !== "object" || options === null || Array.isArray(options)) throw new TypeError("Invalid Git metadata options");
       const opts = options;
       if (Object.keys(opts).some((key) => !["cwd", "signal", "encoding", "maxBuffer", "timeout", "windowsHide", "env"].includes(key))) throw new TypeError("Unsupported Git metadata option");
-      if (opts.cwd !== void 0 && (typeof opts.cwd !== "string" || resolve3(opts.cwd) !== resolve3(invocation.workspace))) throw new Error("Git review metadata is scoped to the calling workspace");
+      if (opts.cwd !== void 0 && (typeof opts.cwd !== "string" || resolve4(opts.cwd) !== resolve4(invocation.workspace))) throw new Error("Git review metadata is scoped to the calling workspace");
       if (opts.env !== void 0) {
         if (typeof opts.env !== "object" || opts.env === null || Array.isArray(opts.env)) throw new TypeError("Invalid Git metadata environment");
         for (const [key, value2] of Object.entries(opts.env)) {
@@ -19371,7 +20055,7 @@ var init_hooks = __esm({
 // src/shims/storage.ts
 import { constants as constants2 } from "node:fs";
 import { lstat, mkdir, open, readdir, rename as rename2, unlink } from "node:fs/promises";
-import { isAbsolute as isAbsolute2, join as join2 } from "node:path";
+import { isAbsolute as isAbsolute3, join as join2 } from "node:path";
 import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 function checkKey(key) {
@@ -19439,7 +20123,7 @@ async function readRecordOnce(directory, name) {
   }
 }
 function createStorage({ dataDir, isActive, onWarning }) {
-  if (typeof dataDir !== "string" || !isAbsolute2(dataDir)) throw new StorageError("invalid", "plugin storage needs its assigned absolute dataDir");
+  if (typeof dataDir !== "string" || !isAbsolute3(dataDir)) throw new StorageError("invalid", "plugin storage needs its assigned absolute dataDir");
   function active() {
     if (!isActive()) throw new StorageError("not_available", "plugin storage owner is no longer active");
   }
@@ -20717,7 +21401,7 @@ var init_root = __esm({
 // src/dsh/dsh-shims.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
 import { lstat as lstat2, mkdir as mkdir2, rename as rename3, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
-import { dirname as dirname2, isAbsolute as isAbsolute3, join as join3, resolve as resolve4 } from "node:path";
+import { dirname as dirname2, isAbsolute as isAbsolute4, join as join3, resolve as resolve5 } from "node:path";
 function activeDataDir(operation) {
   const owner = ownerStorage.getStore();
   if (!owner || typeof owner.dataDir !== "string" || owner.dataDir.length === 0) {
@@ -20758,7 +21442,7 @@ function confinePathToDataDir(targetPath, operation) {
     throw new TypeError(`${operation} requires a valid file path string`);
   }
   const dataRoot = activeDataDir(operation);
-  const resolved = isAbsolute3(targetPath) ? resolve4(targetPath) : resolve4(dataRoot, targetPath);
+  const resolved = isAbsolute4(targetPath) ? resolve5(targetPath) : resolve5(dataRoot, targetPath);
   const rel = insideKey(dataRoot, resolved);
   if (rel === void 0 || rel === "") {
     throw new Error(`${operation} refused path outside plugin dataDir`);
@@ -20799,11 +21483,11 @@ function resolveDshHome(...segments) {
   const dataRoot = activeDataDir("resolveDshHome");
   if (segments.length === 0) return dataRoot;
   for (const seg of segments) {
-    if (typeof seg !== "string" || seg.includes("\0") || isAbsolute3(seg)) {
+    if (typeof seg !== "string" || seg.includes("\0") || isAbsolute4(seg)) {
       throw new Error("resolveDshHome refused absolute or invalid path segment");
     }
   }
-  const target = resolve4(dataRoot, ...segments);
+  const target = resolve5(dataRoot, ...segments);
   const rel = insideKey(dataRoot, target);
   if (rel === void 0) {
     throw new Error("resolveDshHome refused path escaping plugin dataDir");
@@ -21041,7 +21725,7 @@ var init_dsh_shims = __esm({
 import * as nodeModule2 from "node:module";
 import { createHash as createHash5 } from "node:crypto";
 import { fileURLToPath as fileURLToPath4, pathToFileURL as pathToFileURL6 } from "node:url";
-import { resolve as resolve5, isAbsolute as isAbsolute4, dirname as dirname3 } from "node:path";
+import { resolve as resolve6, isAbsolute as isAbsolute5, dirname as dirname3 } from "node:path";
 import { readFileSync as readFileSync2 } from "node:fs";
 function packageName(specifier) {
   const parts = specifier.split("/");
@@ -21137,10 +21821,10 @@ function checkedBunSpecifier(specifier, closure, caller, require3) {
   }
   if (nodeModule2.isBuiltin(specifier)) return specifier.startsWith("node:") ? specifier : `node:${specifier}`;
   const callerPath = fileURLToPath4(caller);
-  const file = specifier.startsWith("file:") || specifier.startsWith(".") || isAbsolute4(specifier) ? new URL(specifier, caller) : void 0;
+  const file = specifier.startsWith("file:") || specifier.startsWith(".") || isAbsolute5(specifier) ? new URL(specifier, caller) : void 0;
   if (file?.search || file?.hash) throw new Error('Bun does not preserve reviewed module query or fragment identity; select [extension_host] runtime = "node" for this composition');
   let path2;
-  if (file) path2 = require3 && !specifier.startsWith("file:") ? resolve5(dirname3(callerPath), specifier) : resolve5(fileURLToPath4(file));
+  if (file) path2 = require3 && !specifier.startsWith("file:") ? resolve6(dirname3(callerPath), specifier) : resolve6(fileURLToPath4(file));
   else if (require3) path2 = nodeModule2.createRequire(caller).resolve(specifier);
   else path2 = bunResolve(specifier, dirname3(callerPath), caller);
   const inside = keyIn(closure, path2);
@@ -21175,14 +21859,14 @@ function unlinkedInside(closure, key, path2) {
   return unlinkedKeyMatches(closure.canonicalRoot, key, canonical);
 }
 function admitReviewedClosure(baseUrl, files) {
-  const rawRoot = resolve5(fileURLToPath4(baseUrl));
+  const rawRoot = resolve6(fileURLToPath4(baseUrl));
   const canonicalRoot = canonicalPath(rawRoot);
   const id = pathKey(canonicalRoot);
   const accepted = /* @__PURE__ */ Object.create(null);
   const keys = Object.keys(files);
   if (keys.length > 16384) throw new Error("reviewed composition closure exceeds its file limit");
   for (const key of keys) {
-    if (!key || key.split("/").some((part) => !part || part === "." || part === "..") || key.includes("\\") || key.includes(":") || isAbsolute4(key) || !/^[a-f0-9]{64}$/.test(files[key])) throw new Error("invalid reviewed composition closure file");
+    if (!key || key.split("/").some((part) => !part || part === "." || part === "..") || key.includes("\\") || key.includes(":") || isAbsolute5(key) || !/^[a-f0-9]{64}$/.test(files[key])) throw new Error("invalid reviewed composition closure file");
     accepted[key] = files[key];
   }
   const existing = reviewedClosures.get(id);
@@ -21200,18 +21884,18 @@ function admitReviewedClosure(baseUrl, files) {
   };
 }
 async function importReviewedModule(baseUrl, path2) {
-  const rawRoot = resolve5(fileURLToPath4(baseUrl));
+  const rawRoot = resolve6(fileURLToPath4(baseUrl));
   const id = pathKey(canonicalPath(rawRoot));
   const receipt = reviewedClosures.get(id);
   if (!receipt) throw new Error("composition module closure is no longer admitted");
-  const entry = resolve5(rawRoot, path2);
+  const entry = resolve6(rawRoot, path2);
   const admitted = closureAt(pathToFileURL6(entry).href);
   if (!admitted || admitted.root !== id || !(admitted.path in receipt.files)) throw new Error("composition module is absent from reviewed closure");
   return import(pathToFileURL6(entry).href);
 }
 function closureAt(url) {
   if (!url?.startsWith("file:")) return;
-  const path2 = resolve5(fileURLToPath4(url));
+  const path2 = resolve6(fileURLToPath4(url));
   for (const [root, receipt] of reviewedClosures) {
     const inside = keyIn(receipt, path2);
     if (inside !== void 0) return { root, receipt, path: inside };
@@ -21395,7 +22079,7 @@ function raceWithSignal(promise, signal) {
     });
     return Promise.reject(signal.reason);
   }
-  return new Promise((resolve7, reject) => {
+  return new Promise((resolve8, reject) => {
     let settled = false;
     const onAbort = () => {
       if (settled) return;
@@ -21410,7 +22094,7 @@ function raceWithSignal(promise, signal) {
         if (settled) return;
         settled = true;
         signal.removeEventListener("abort", onAbort);
-        resolve7(value);
+        resolve8(value);
       },
       (error) => {
         if (settled) return;
@@ -21834,13 +22518,13 @@ __export(composition_exports, {
 });
 import { createHash as createHash6 } from "node:crypto";
 import { readFile as readFile3 } from "node:fs/promises";
-import { isAbsolute as isAbsolute5, relative as relative2, resolve as resolve6, sep as sep2 } from "node:path";
+import { isAbsolute as isAbsolute6, relative as relative2, resolve as resolve7, sep as sep2 } from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 function digest(bytes) {
   return createHash6("sha256").update(bytes).digest("hex");
 }
 function plainRelative(path2) {
-  return typeof path2 === "string" && path2.length > 0 && path2.length <= 4096 && !isAbsolute5(path2) && !path2.startsWith("/") && !/[\\:\u0000-\u001f\u007f]/u.test(path2) && path2.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+  return typeof path2 === "string" && path2.length > 0 && path2.length <= 4096 && !isAbsolute6(path2) && !path2.startsWith("/") && !/[\\:\u0000-\u001f\u007f]/u.test(path2) && path2.split("/").every((part) => part !== "" && part !== "." && part !== "..");
 }
 function boundData(root) {
   let nodes = 0;
@@ -22155,9 +22839,9 @@ var init_composition = __esm({
       }
       async importReviewed(module) {
         const root = fileURLToPath5(this.base);
-        const path2 = resolve6(root, module.path);
+        const path2 = resolve7(root, module.path);
         const inside = relative2(root, path2);
-        if (inside.startsWith(`..${sep2}`) || inside === ".." || isAbsolute5(inside)) throw new Error("module escapes reviewed bundle");
+        if (inside.startsWith(`..${sep2}`) || inside === ".." || isAbsolute6(inside)) throw new Error("module escapes reviewed bundle");
         if (this.spec.files[module.path] !== module.sha256 || digest(await readFile3(path2)) !== module.sha256) throw new Error("module changed after review");
         return importReviewedModule(this.base, module.path);
       }
@@ -22235,362 +22919,16 @@ init_composition();
 init_src();
 init_src2();
 init_resolve_hooks();
-import { createHash as createHash7 } from "node:crypto";
-import { readFileSync as readFileSync3 } from "node:fs";
-import { createRequire as createRequire4 } from "node:module";
-import { fileURLToPath as fileURLToPath6 } from "node:url";
-
-// src/dsh/webserver.ts
-init_define_BUILTIN_MODULE_DIGESTS();
-import { EventEmitter } from "node:events";
-init_protocol();
-init_rpc();
-var MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
-var MAX_RESPONSE_BODY_BYTES = 8 * 1024 * 1024;
-var MAX_ROUTE_DEADLINE_MS = 15e3;
-var ALLOWED_METHODS = /* @__PURE__ */ new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]);
-var routesByOwner = /* @__PURE__ */ new Map();
-function normalizePath(raw) {
-  if (typeof raw !== "string" || raw.length === 0 || raw.length > 1024 || /[\x00-\x1f\x7f]/.test(raw)) {
-    throw new RpcError(ErrorCode.InvalidParams, "route path must be a non-empty single-line string");
-  }
-  const withSlash = raw.startsWith("/") ? raw : `/${raw}`;
-  if (withSlash.length > 1 && withSlash.endsWith("/")) {
-    return withSlash.slice(0, -1);
-  }
-  return withSlash;
-}
-function createNodeRequest(method, url, headers, body) {
-  const emitter = new EventEmitter();
-  emitter.method = method;
-  emitter.url = url;
-  emitter.headers = { host: "127.0.0.1", ...headers };
-  emitter.httpVersion = "1.1";
-  emitter.socket = { remoteAddress: "127.0.0.1" };
-  emitter.connection = emitter.socket;
-  emitter.readableEnded = false;
-  emitter.destroyed = false;
-  let streamed = false;
-  const emitBody = () => {
-    if (streamed || emitter.destroyed) return;
-    streamed = true;
-    queueMicrotask(() => {
-      if (emitter.destroyed) return;
-      if (body.length > 0) emitter.emit("data", body);
-      emitter.readableEnded = true;
-      emitter.emit("end");
-    });
-  };
-  const origOn = emitter.on.bind(emitter);
-  emitter.on = ((event, listener) => {
-    origOn(event, listener);
-    if (event === "data" || event === "end") emitBody();
-    return emitter;
-  });
-  emitter.destroy = () => {
-    emitter.destroyed = true;
-    return emitter;
-  };
-  emitter[Symbol.asyncIterator] = async function* () {
-    streamed = true;
-    if (body.length > 0 && !emitter.destroyed) {
-      yield body;
-    }
-    emitter.readableEnded = true;
-  };
-  return emitter;
-}
-function createNodeResponse(onFinish) {
-  const emitter = new EventEmitter();
-  const headerMap = /* @__PURE__ */ new Map();
-  const chunks = [];
-  let totalBytes = 0;
-  const setOneHeader = (name, value) => {
-    const key = String(name).trim().toLowerCase();
-    if (!key) return;
-    if (Array.isArray(value)) {
-      headerMap.set(key, value.map((v) => String(v)));
-    } else {
-      headerMap.set(key, [String(value)]);
-    }
-  };
-  const appendChunk = (chunk, encoding) => {
-    const buf = Buffer.isBuffer(chunk) ? chunk : typeof chunk === "string" ? Buffer.from(chunk, encoding ?? "utf8") : Buffer.from(chunk);
-    totalBytes += buf.length;
-    if (totalBytes > MAX_RESPONSE_BODY_BYTES) {
-      throw new RpcError(ErrorCode.ExecutionFailed, `plugin route response exceeded ${MAX_RESPONSE_BODY_BYTES} bytes`);
-    }
-    if (buf.length > 0) chunks.push(buf);
-  };
-  emitter.statusCode = 200;
-  emitter.statusMessage = "OK";
-  emitter.headersSent = false;
-  emitter.writableEnded = false;
-  emitter.finished = false;
-  emitter.setHeader = (name, value) => {
-    setOneHeader(name, value);
-    return emitter;
-  };
-  emitter.getHeader = (name) => {
-    const values = headerMap.get(String(name).toLowerCase());
-    if (!values) return void 0;
-    return values.length === 1 ? values[0] : [...values];
-  };
-  emitter.getHeaders = () => {
-    const out = {};
-    for (const [k, v] of headerMap) out[k] = v.length === 1 ? v[0] : [...v];
-    return out;
-  };
-  emitter.hasHeader = (name) => headerMap.has(String(name).toLowerCase());
-  emitter.removeHeader = (name) => {
-    headerMap.delete(String(name).toLowerCase());
-  };
-  emitter.writeHead = (statusCode, statusMessageOrHeaders, maybeHeaders) => {
-    emitter.statusCode = statusCode;
-    let headersObj;
-    if (typeof statusMessageOrHeaders === "string") {
-      emitter.statusMessage = statusMessageOrHeaders;
-      headersObj = maybeHeaders;
-    } else {
-      headersObj = statusMessageOrHeaders;
-    }
-    if (headersObj && typeof headersObj === "object") {
-      for (const [k, v] of Object.entries(headersObj)) {
-        if (v !== void 0) setOneHeader(k, v);
-      }
-    }
-    emitter.headersSent = true;
-    return emitter;
-  };
-  emitter.flushHeaders = () => {
-    emitter.headersSent = true;
-  };
-  emitter.write = (chunk, encoding, cb) => {
-    if (emitter.writableEnded) return false;
-    emitter.headersSent = true;
-    appendChunk(chunk, encoding);
-    cb?.();
-    return true;
-  };
-  emitter.end = (chunk, encoding, cb) => {
-    if (emitter.writableEnded) return emitter;
-    let callback = cb;
-    if (typeof chunk === "function") {
-      callback = chunk;
-    } else if (chunk !== void 0) {
-      const enc = typeof encoding === "function" ? void 0 : encoding;
-      if (typeof encoding === "function") callback = encoding;
-      appendChunk(chunk, enc);
-    }
-    emitter.headersSent = true;
-    emitter.writableEnded = true;
-    emitter.finished = true;
-    callback?.();
-    emitter.emit("finish");
-    onFinish();
-    return emitter;
-  };
-  return {
-    res: emitter,
-    result: () => {
-      const headers = [];
-      for (const [name, values] of headerMap) {
-        for (const value of values) {
-          headers.push({ name, value });
-        }
-      }
-      return {
-        status: emitter.statusCode,
-        headers,
-        body: Buffer.concat(chunks, totalBytes)
-      };
-    }
-  };
-}
-function matchRoute(ownerToken, method, path2) {
-  const routes = routesByOwner.get(ownerToken);
-  if (!routes || routes.length === 0) return void 0;
-  const upperMethod = method.toUpperCase();
-  const methodMatches = (route) => !route.methods || route.methods.has(upperMethod);
-  for (const route of routes) {
-    if (route.kind === "exact" && route.path === path2 && methodMatches(route)) {
-      return route;
-    }
-  }
-  let bestPrefix;
-  for (const route of routes) {
-    if (route.kind !== "prefix" || !methodMatches(route)) continue;
-    const matches = route.path === "/" || path2 === route.path || path2.startsWith(`${route.path}/`);
-    if (matches && (!bestPrefix || route.path.length > bestPrefix.path.length)) {
-      bestPrefix = route;
-    }
-  }
-  return bestPrefix;
-}
-async function readBoundedResponseBody(response) {
-  if (!response.body) return Buffer.alloc(0);
-  const reader = response.body.getReader();
-  const chunks = [];
-  let total = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value || value.byteLength === 0) continue;
-      total += value.byteLength;
-      if (total > MAX_RESPONSE_BODY_BYTES) {
-        await reader.cancel().catch(() => void 0);
-        throw new RpcError(ErrorCode.ExecutionFailed, `plugin route response exceeded ${MAX_RESPONSE_BODY_BYTES} bytes`);
-      }
-      chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
-    }
-    return Buffer.concat(chunks, total);
-  } finally {
-    reader.releaseLock();
-  }
-}
-async function runFetchRoute(route, method, urlPath, headers, body, signal) {
-  const init = {
-    method,
-    headers,
-    signal,
-    ...method !== "GET" && method !== "HEAD" && body.length > 0 ? { body: new Uint8Array(body) } : {}
-  };
-  const request = new Request(`http://127.0.0.1${urlPath}`, init);
-  const response = await route.fetchHandler(request);
-  const bytes = await readBoundedResponseBody(response);
-  const outHeaders = [];
-  response.headers.forEach((value, name) => {
-    outHeaders.push({ name, value });
-  });
-  return {
-    matched: true,
-    status: response.status,
-    headers: outHeaders,
-    ...bytes.length > 0 ? { body_base64: bytes.toString("base64") } : {}
-  };
-}
-async function runRpcRoute(route, path2, body) {
-  let parsed = {};
-  if (body.length > 0) {
-    try {
-      parsed = JSON.parse(body.toString("utf8"));
-    } catch {
-      const errBody = Buffer.from(JSON.stringify({ error: "invalid JSON RPC payload" }), "utf8");
-      return {
-        matched: true,
-        status: 400,
-        headers: [{ name: "content-type", value: "application/json; charset=utf-8" }],
-        body_base64: errBody.toString("base64")
-      };
-    }
-  }
-  const suffix = path2.length > route.path.length ? path2.slice(route.path.length + 1) : "";
-  const endpoint = suffix || (typeof parsed?.endpoint === "string" ? parsed.endpoint : "");
-  const payload = suffix ? parsed : parsed?.payload ?? {};
-  const result = await route.rpcHandler(endpoint, payload);
-  const outBuf = Buffer.from(JSON.stringify(result === void 0 ? null : result), "utf8");
-  if (outBuf.length > MAX_RESPONSE_BODY_BYTES) {
-    throw new RpcError(ErrorCode.ExecutionFailed, `plugin RPC response exceeded ${MAX_RESPONSE_BODY_BYTES} bytes`);
-  }
-  return {
-    matched: true,
-    status: 200,
-    headers: [{ name: "content-type", value: "application/json; charset=utf-8" }],
-    body_base64: outBuf.toString("base64")
-  };
-}
-async function dispatchPluginRoute(host2, params, signal, runWithOwner = (_owner, fn) => fn()) {
-  const owner = host2.owners.get(params.owner.owner_token);
-  if (!owner || owner.state !== "active" || owner.disposing || owner.ref.plugin_id !== params.owner.plugin_id || owner.ref.generation !== params.owner.generation) {
-    throw new RpcError(ErrorCode.NotAvailable, `plugin owner ${params.owner.plugin_id} is not active`);
-  }
-  const method = params.method.toUpperCase();
-  if (!ALLOWED_METHODS.has(method)) {
-    throw new RpcError(ErrorCode.InvalidParams, `unsupported HTTP method ${params.method}`);
-  }
-  const normalizedPath = normalizePath(params.path);
-  if (params.body_base64 && params.body_base64.length > Math.ceil(MAX_REQUEST_BODY_BYTES / 3) * 4 + 4) {
-    throw new RpcError(ErrorCode.InvalidParams, `request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`);
-  }
-  const body = params.body_base64 ? Buffer.from(params.body_base64, "base64") : Buffer.alloc(0);
-  if (body.length > MAX_REQUEST_BODY_BYTES) {
-    throw new RpcError(ErrorCode.InvalidParams, `request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`);
-  }
-  const route = matchRoute(owner.ref.owner_token, method, normalizedPath);
-  if (!route) {
-    return { matched: false, status: 404, headers: [] };
-  }
-  const headers = {};
-  for (const h of params.headers) {
-    const key = h.name.trim().toLowerCase();
-    if (!key) continue;
-    headers[key] = key in headers ? `${headers[key]}, ${h.value}` : h.value;
-  }
-  const urlPath = params.query ? `${normalizedPath}?${params.query}` : normalizedPath;
-  const deadlineMs = Math.min(Math.max(params.deadline_ms || MAX_ROUTE_DEADLINE_MS, 100), MAX_ROUTE_DEADLINE_MS);
-  const timeoutController = new AbortController();
-  const timer = setTimeout(() => timeoutController.abort(), deadlineMs);
-  timer.unref?.();
-  const combinedSignal = AbortSignal.any([signal, timeoutController.signal]);
-  let onOuterAbort;
-  try {
-    const run = runWithOwner(owner, async () => {
-      if (route.mode === "fetch") {
-        return runFetchRoute(route, method, urlPath, headers, body, combinedSignal);
-      }
-      if (route.mode === "rpc") {
-        return runRpcRoute(route, normalizedPath, body);
-      }
-      let resolveDone;
-      const donePromise = new Promise((resolve6) => {
-        resolveDone = resolve6;
-      });
-      const req = createNodeRequest(method, urlPath, headers, body);
-      const { res, result } = createNodeResponse(resolveDone);
-      const handlerReturn = route.nodeHandler(req, res);
-      await Promise.resolve(handlerReturn);
-      if (!res.writableEnded) {
-        let onInnerAbort;
-        try {
-          await Promise.race([
-            donePromise,
-            new Promise((_, reject) => {
-              onInnerAbort = () => reject(new RpcError(ErrorCode.Cancelled, "plugin route timed out or cancelled"));
-              if (combinedSignal.aborted) onInnerAbort();
-              else combinedSignal.addEventListener("abort", onInnerAbort, { once: true });
-            })
-          ]);
-        } finally {
-          if (onInnerAbort) combinedSignal.removeEventListener("abort", onInnerAbort);
-        }
-      }
-      const out = result();
-      return {
-        matched: true,
-        status: out.status,
-        headers: out.headers,
-        ...out.body.length > 0 ? { body_base64: out.body.toString("base64") } : {}
-      };
-    });
-    const aborted = new Promise((_, reject) => {
-      onOuterAbort = () => reject(new RpcError(ErrorCode.Cancelled, "plugin route timed out or cancelled"));
-      if (combinedSignal.aborted) onOuterAbort();
-      else combinedSignal.addEventListener("abort", onOuterAbort, { once: true });
-    });
-    return await Promise.race([run, aborted]);
-  } finally {
-    if (onOuterAbort) combinedSignal.removeEventListener("abort", onOuterAbort);
-    clearTimeout(timer);
-  }
-}
-
-// src/main.ts
+init_webserver();
 init_protocol();
 init_rpc();
 init_root();
 init_runtime();
 init_tier();
+import { createHash as createHash7 } from "node:crypto";
+import { readFileSync as readFileSync3 } from "node:fs";
+import { createRequire as createRequire4 } from "node:module";
+import { fileURLToPath as fileURLToPath6 } from "node:url";
 
 // src/windows-sandbox-probe.mjs
 init_define_BUILTIN_MODULE_DIGESTS();
@@ -22620,7 +22958,7 @@ async function windowsSandboxProbe(env = process.env) {
   for (const path2 of reads) {
     if (!denied(() => fs.readFileSync(path2))) throw new Error("sandbox allowed an outside credential read");
   }
-  await new Promise((resolve7, reject) => {
+  await new Promise((resolve8, reject) => {
     const socket = net.connect({ host: "127.0.0.1", port });
     const timer = setTimeout(() => {
       socket.destroy();
@@ -22634,7 +22972,7 @@ async function windowsSandboxProbe(env = process.env) {
     socket.once("error", (error) => {
       clearTimeout(timer);
       socket.destroy();
-      if (error.code === "EACCES" || error.code === "EPERM") resolve7();
+      if (error.code === "EACCES" || error.code === "EPERM") resolve8();
       else reject(new Error(`network probe failed without an access denial: ${error.code}`));
     });
   });
@@ -22645,7 +22983,7 @@ async function windowsSandboxProbe(env = process.env) {
     const outputPath = `${inside}.receipt`;
     const fd = fs.openSync(outputPath, "wx+");
     try {
-      await new Promise((resolve7, reject) => {
+      await new Promise((resolve8, reject) => {
         let child, timer, poll, closeTimer, failure, settled = false;
         const finish = (error) => {
           if (settled) return;
@@ -22654,7 +22992,7 @@ async function windowsSandboxProbe(env = process.env) {
           clearInterval(poll);
           clearTimeout(closeTimer);
           if (error) reject(error);
-          else resolve7();
+          else resolve8();
         };
         const fail2 = (error) => {
           if (settled || failure) return;
