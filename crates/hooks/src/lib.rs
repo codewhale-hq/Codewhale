@@ -22,29 +22,6 @@ pub(crate) fn expand_home(path: PathBuf) -> PathBuf {
 /// directories are 0700 and a new file 0600 (existing modes are left alone).
 /// Hook and lifecycle events carry tool payloads, prompts, and paths; under
 /// an ordinary umask the old defaults were readable by every local user.
-pub(crate) async fn open_private_append(path: &Path) -> Result<tokio::fs::File> {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        let mut dirs = tokio::fs::DirBuilder::new();
-        dirs.recursive(true);
-        #[cfg(unix)]
-        dirs.mode(0o700);
-        dirs.create(parent)
-            .await
-            .with_context(|| format!("failed to create sink directory {}", parent.display()))?;
-    }
-    let mut options = tokio::fs::OpenOptions::new();
-    options.create(true).append(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    options
-        .open(path)
-        .await
-        .with_context(|| format!("failed to open sink file {}", path.display()))
-}
-
 pub(crate) fn open_private_append_sync(path: &Path) -> Result<std::fs::File> {
     if let Some(parent) = path
         .parent()
@@ -208,7 +185,7 @@ mod tests {
             std::process::id()
         ));
         let path = root.join("nested").join("events.jsonl");
-        open_private_append(&path).await.expect("open");
+        open_private_append_sync(&path).expect("open");
         let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         let dir_mode = std::fs::metadata(path.parent().unwrap())
             .unwrap()
