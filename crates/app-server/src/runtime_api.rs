@@ -123,6 +123,9 @@ mod context;
 mod diagnostics;
 mod external_agent_options;
 mod external_agents;
+pub use self::external_agents::{
+    ExternalAgentDiscoveryRow, discover_external_agent, discover_external_agents,
+};
 mod git;
 mod jobs;
 pub mod listener;
@@ -3767,6 +3770,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         ))
         .merge(api_routes)
         .merge(account::routes(&state))
+        .fallback(web::web_fallback)
         .layer(cors_layer(&state.cors_origins))
         .with_state(state)
 }
