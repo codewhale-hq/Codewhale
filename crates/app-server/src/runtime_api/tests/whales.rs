@@ -48,15 +48,11 @@ async fn multi_whale_routes_support_crud_fencing_safety_and_non_destructive_recy
     assert_eq!(initial[0]["id"], "default");
     assert_eq!(initial[0]["revision"], "new");
     assert!(
-        initial[0]["soul_path"]
-            .as_str()
-            .unwrap()
+        std::path::Path::new(initial[0]["soul_path"].as_str().unwrap())
             .ends_with("whales/default/SOUL.md")
     );
     assert!(
-        initial[0]["folder_path"]
-            .as_str()
-            .unwrap()
+        std::path::Path::new(initial[0]["folder_path"].as_str().unwrap())
             .ends_with("whales/default")
     );
 

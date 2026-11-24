@@ -560,8 +560,9 @@ pub fn list_whales() -> std::result::Result<Vec<WhaleRecord>, WhaleError> {
         Err(error) => return Err(error.into()),
         Ok(_) => {}
     }
-    let _root_dir =
-        PrivateDirectory::inspect(&root).map_err(|e| WhaleError::Conflict(e.to_string()))?;
+    let _root_dir = PrivateDirectory::inspect(&root)
+        .or_else(|_| PrivateDirectory::open(&root))
+        .map_err(|e| WhaleError::Conflict(e.to_string()))?;
     let mut ids = Vec::new();
     for entry in std::fs::read_dir(&root)? {
         let entry = entry?;
@@ -624,7 +625,7 @@ pub fn create_whale(input: CreateWhaleInput) -> std::result::Result<WhaleRecord,
     };
     let root = whales_root()?;
     let _root_dir =
-        PrivateDirectory::admit(&root).map_err(|e| WhaleError::Conflict(e.to_string()))?;
+        PrivateDirectory::open(&root).map_err(|e| WhaleError::Conflict(e.to_string()))?;
     let id = match requested_id {
         Some(validated) => {
             if std::fs::symlink_metadata(root.join(&validated)).is_ok() {

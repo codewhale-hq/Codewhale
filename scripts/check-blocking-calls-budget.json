@@ -296,7 +296,7 @@
     "std_fs": 3
   },
   "crates/engine/src/whale_soul.rs": {
-    "std_fs": 1
+    "std_fs": 11
   },
   "crates/execpolicy/src/toml_rules.rs": {
     "std_fs": 1
