@@ -17247,7 +17247,8 @@ var init_attachments = __esm({
 });
 
 // src/dsh/host-services.ts
-var agentPresetsAdapter, agentDefaultModelAdapter, sessionProjectionsAdapter, workspaceRegistryAdapter, typertGatewayAdapter, webAdapter, MAX_STORAGE_DOMAINS_PER_OWNER, MAX_STORAGE_TABLES_PER_DOMAIN, MAX_STORAGE_ENTRIES_PER_TABLE, MAX_STORAGE_VALUE_BYTES, sessionPersistenceAdapter, storageDomainAdapter, invariantsAdapter, READONLY_PERMISSION_PRESET_NAMES, READONLY_PERMISSION_PRESETS, permissionPresetsAdapter, DSH_HOST_SERVICE_ADAPTERS;
+import { serialize as v8Serialize } from "node:v8";
+var agentPresetsAdapter, agentDefaultModelAdapter, sessionProjectionsAdapter, workspaceRegistryAdapter, typertGatewayAdapter, webAdapter, MAX_STORAGE_DOMAINS_PER_OWNER, MAX_STORAGE_TABLES_PER_DOMAIN, MAX_STORAGE_ENTRIES_PER_TABLE, MAX_STORAGE_VALUE_BYTES, MAX_INVARIANTS_PER_OWNER, sessionPersistenceAdapter, storageDomainAdapter, invariantsAdapter, READONLY_PERMISSION_PRESET_NAMES, READONLY_PERMISSION_PRESETS, permissionPresetsAdapter, DSH_HOST_SERVICE_ADAPTERS;
 var init_host_services = __esm({
   "src/dsh/host-services.ts"() {
     "use strict";
@@ -17528,6 +17529,7 @@ var init_host_services = __esm({
     MAX_STORAGE_TABLES_PER_DOMAIN = 32;
     MAX_STORAGE_ENTRIES_PER_TABLE = 512;
     MAX_STORAGE_VALUE_BYTES = 64 * 1024;
+    MAX_INVARIANTS_PER_OWNER = 64;
     sessionPersistenceAdapter = {
       service: "sessionPersistence",
       define() {
@@ -17568,7 +17570,9 @@ var init_host_services = __esm({
         function makeDomainHandle(token, domainName, tables) {
           let closed = false;
           const ensureOpen = () => {
-            if (closed) throw new RpcError(ErrorCode.NotAvailable, `storageDomain \`${domainName}\` is closed`);
+            if (closed || ownerDomains.get(token)?.get(domainName) !== tables) {
+              throw new RpcError(ErrorCode.NotAvailable, `storageDomain \`${domainName}\` is closed`);
+            }
           };
           return Object.freeze({
             name: domainName,
@@ -17602,11 +17606,27 @@ var init_host_services = __esm({
                   if (!store.has(rowKey) && store.size >= MAX_STORAGE_ENTRIES_PER_TABLE) {
                     throw new RpcError(ErrorCode.Refused, "storageDomain table entry limit reached");
                   }
-                  const serialized = JSON.stringify(value);
-                  if (serialized !== void 0 && Buffer.byteLength(serialized, "utf8") > MAX_STORAGE_VALUE_BYTES) {
+                  let serialized;
+                  try {
+                    serialized = JSON.stringify(value);
+                  } catch {
+                    throw new RpcError(ErrorCode.InvalidParams, "storageDomain value must be JSON-serializable");
+                  }
+                  if (serialized === void 0) {
+                    throw new RpcError(ErrorCode.InvalidParams, "storageDomain value must be JSON-serializable");
+                  }
+                  if (Buffer.byteLength(serialized, "utf8") > MAX_STORAGE_VALUE_BYTES) {
                     throw new RpcError(ErrorCode.InvalidParams, "storageDomain value exceeds size limit");
                   }
-                  store.set(rowKey, structuredClone(value));
+                  try {
+                    if (v8Serialize(value).byteLength > MAX_STORAGE_VALUE_BYTES) {
+                      throw new RpcError(ErrorCode.InvalidParams, "storageDomain value exceeds size limit");
+                    }
+                  } catch (err) {
+                    if (err instanceof RpcError) throw err;
+                    throw new RpcError(ErrorCode.InvalidParams, "storageDomain value must be JSON-serializable");
+                  }
+                  store.set(rowKey, JSON.parse(serialized));
                 },
                 async delete(rowKey) {
                   ensureOpen();
@@ -17706,7 +17726,7 @@ var init_host_services = __esm({
           constructor(ctx) {
             super(ctx, "invariants");
           }
-          register(name, install) {
+          register(name, _install) {
             const owner = host.ownerOf(this.ctx);
             if (!owner) throw new RpcError(ErrorCode.NotAvailable, "invariants.register requires an active owner");
             if (typeof name !== "string" || name.trim().length === 0 || name.length > 128) {
@@ -17714,13 +17734,20 @@ var init_host_services = __esm({
             }
             const key = name.trim();
             const token = owner.ref.owner_token;
+            const existing = ownerInvariants.get(token);
+            if (existing && !existing.has(key) && existing.size >= MAX_INVARIANTS_PER_OWNER) {
+              throw new RpcError(ErrorCode.Refused, "invariants owner limit reached");
+            }
             return this.ctx.effect(() => {
-              let table = ownerInvariants.get(token);
-              if (!table) {
-                table = /* @__PURE__ */ new Map();
-                ownerInvariants.set(token, table);
+              let names = ownerInvariants.get(token);
+              if (!names) {
+                names = /* @__PURE__ */ new Set();
+                ownerInvariants.set(token, names);
               }
-              table.set(key, install);
+              if (!names.has(key) && names.size >= MAX_INVARIANTS_PER_OWNER) {
+                throw new RpcError(ErrorCode.Refused, "invariants owner limit reached");
+              }
+              names.add(key);
               return () => {
                 const current2 = ownerInvariants.get(token);
                 current2?.delete(key);
@@ -17730,8 +17757,8 @@ var init_host_services = __esm({
           }
           list() {
             const owner = host.ownerOf(this.ctx);
-            const table = owner ? ownerInvariants.get(owner.ref.owner_token) : void 0;
-            return Object.freeze(table ? [...table.keys()] : []);
+            const names = owner ? ownerInvariants.get(owner.ref.owner_token) : void 0;
+            return Object.freeze(names ? [...names] : []);
           }
         }
         Object.freeze(InvariantsService.prototype);

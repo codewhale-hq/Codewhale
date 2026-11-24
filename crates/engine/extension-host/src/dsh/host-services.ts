@@ -1,3 +1,4 @@
+import { serialize as v8Serialize } from 'node:v8'
 import { Service } from '@deepseek-ai/cordis'
 import { ErrorCode } from '../protocol.ts'
 import { RpcError } from '../rpc.ts'
@@ -303,6 +304,7 @@ const MAX_STORAGE_DOMAINS_PER_OWNER = 16
 const MAX_STORAGE_TABLES_PER_DOMAIN = 32
 const MAX_STORAGE_ENTRIES_PER_TABLE = 512
 const MAX_STORAGE_VALUE_BYTES = 64 * 1024
+const MAX_INVARIANTS_PER_OWNER = 64
 
 export const sessionPersistenceAdapter: DshAdapter = {
   service: 'sessionPersistence',
@@ -368,7 +370,9 @@ export const storageDomainAdapter: DshAdapter = {
     function makeDomainHandle(token: string, domainName: string, tables: Map<string, Map<string, unknown>>): ScopedStorageDomainHandle {
       let closed = false
       const ensureOpen = () => {
-        if (closed) throw new RpcError(ErrorCode.NotAvailable, `storageDomain \`${domainName}\` is closed`)
+        if (closed || ownerDomains.get(token)?.get(domainName) !== tables) {
+          throw new RpcError(ErrorCode.NotAvailable, `storageDomain \`${domainName}\` is closed`)
+        }
       }
       return Object.freeze({
         name: domainName,
@@ -402,11 +406,27 @@ export const storageDomainAdapter: DshAdapter = {
               if (!store.has(rowKey) && store.size >= MAX_STORAGE_ENTRIES_PER_TABLE) {
                 throw new RpcError(ErrorCode.Refused, 'storageDomain table entry limit reached')
               }
-              const serialized = JSON.stringify(value)
-              if (serialized !== undefined && Buffer.byteLength(serialized, 'utf8') > MAX_STORAGE_VALUE_BYTES) {
+              let serialized: string | undefined
+              try {
+                serialized = JSON.stringify(value)
+              } catch {
+                throw new RpcError(ErrorCode.InvalidParams, 'storageDomain value must be JSON-serializable')
+              }
+              if (serialized === undefined) {
+                throw new RpcError(ErrorCode.InvalidParams, 'storageDomain value must be JSON-serializable')
+              }
+              if (Buffer.byteLength(serialized, 'utf8') > MAX_STORAGE_VALUE_BYTES) {
                 throw new RpcError(ErrorCode.InvalidParams, 'storageDomain value exceeds size limit')
               }
-              store.set(rowKey, structuredClone(value))
+              try {
+                if (v8Serialize(value).byteLength > MAX_STORAGE_VALUE_BYTES) {
+                  throw new RpcError(ErrorCode.InvalidParams, 'storageDomain value exceeds size limit')
+                }
+              } catch (err) {
+                if (err instanceof RpcError) throw err
+                throw new RpcError(ErrorCode.InvalidParams, 'storageDomain value must be JSON-serializable')
+              }
+              store.set(rowKey, JSON.parse(serialized))
             },
             async delete(rowKey: unknown) {
               ensureOpen()
@@ -508,11 +528,11 @@ export const storageDomainAdapter: DshAdapter = {
 export const invariantsAdapter: DshAdapter = {
   service: 'invariants',
   define(host: AdapterHost) {
-    const ownerInvariants = new Map<string, Map<string, unknown>>()
+    const ownerInvariants = new Map<string, Set<string>>()
     class InvariantsService extends Service {
       constructor(ctx: any) { super(ctx, 'invariants') }
 
-      register(name: unknown, install?: unknown): () => void {
+      register(name: unknown, _install?: unknown): () => void {
         const owner = host.ownerOf(this.ctx)
         if (!owner) throw new RpcError(ErrorCode.NotAvailable, 'invariants.register requires an active owner')
         if (typeof name !== 'string' || name.trim().length === 0 || name.length > 128) {
@@ -520,13 +540,20 @@ export const invariantsAdapter: DshAdapter = {
         }
         const key = name.trim()
         const token = owner.ref.owner_token
+        const existing = ownerInvariants.get(token)
+        if (existing && !existing.has(key) && existing.size >= MAX_INVARIANTS_PER_OWNER) {
+          throw new RpcError(ErrorCode.Refused, 'invariants owner limit reached')
+        }
         return (this.ctx as any).effect(() => {
-          let table = ownerInvariants.get(token)
-          if (!table) {
-            table = new Map()
-            ownerInvariants.set(token, table)
+          let names = ownerInvariants.get(token)
+          if (!names) {
+            names = new Set()
+            ownerInvariants.set(token, names)
           }
-          table.set(key, install)
+          if (!names.has(key) && names.size >= MAX_INVARIANTS_PER_OWNER) {
+            throw new RpcError(ErrorCode.Refused, 'invariants owner limit reached')
+          }
+          names.add(key)
           return () => {
             const current = ownerInvariants.get(token)
             current?.delete(key)
@@ -537,8 +564,8 @@ export const invariantsAdapter: DshAdapter = {
 
       list(): readonly string[] {
         const owner = host.ownerOf(this.ctx)
-        const table = owner ? ownerInvariants.get(owner.ref.owner_token) : undefined
-        return Object.freeze(table ? [...table.keys()] : [])
+        const names = owner ? ownerInvariants.get(owner.ref.owner_token) : undefined
+        return Object.freeze(names ? [...names] : [])
       }
     }
     Object.freeze(InvariantsService.prototype)

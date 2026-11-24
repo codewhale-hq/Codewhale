@@ -279,13 +279,35 @@ export async function apply(ctx) {
   assert.equal(await table.delete('k1'), true)
   assert.equal(await table.get('k1'), undefined)
   await assert.rejects(table.set('big', 'x'.repeat(70 * 1024)), /exceeds size limit/)
+  await assert.rejects(table.set('big-buf', new ArrayBuffer(128 * 1024)), /exceeds size limit/)
+  await assert.rejects(table.set('big-map', new Map([['payload', 'x'.repeat(128 * 1024)]])), /exceeds size limit/)
+  const circular = {}
+  circular.self = circular
+  await assert.rejects(table.set('circular', circular), /JSON-serializable/)
+  await assert.rejects(table.set('bigint', 1n), /JSON-serializable/)
+  await assert.rejects(table.set('undef', undefined), /JSON-serializable/)
+
+  const sibling = ctx.storageDomain.get('cache')
+  assert.ok(sibling)
+  const siblingTable = sibling.table('items')
   await domain.close()
   assert.equal(ctx.storageDomain.get('cache'), undefined)
   await assert.rejects(table.get('k1'), /is closed/)
+  await assert.rejects(siblingTable.set('k2', { v: 1 }), /is closed/)
+  await assert.rejects(siblingTable.get('k1'), /is closed/)
 
   const disposeInv = ctx.invariants.register('demo-inv', () => {})
   assert.deepEqual(ctx.invariants.list(), ['demo-inv'])
   disposeInv()
+  assert.deepEqual(ctx.invariants.list(), [])
+
+  const disposers = []
+  for (let i = 0; i < 64; i += 1) {
+    disposers.push(ctx.invariants.register('inv-' + i, () => {}))
+  }
+  assert.equal(ctx.invariants.list().length, 64)
+  assert.throws(() => ctx.invariants.register('inv-overflow', () => {}), /limit reached/)
+  for (const d of disposers) d()
   assert.deepEqual(ctx.invariants.list(), [])
 
   assert.equal(ctx.permissionPresets.availability, 'readonly')
@@ -300,6 +322,11 @@ export async function apply(ctx) {
   for (const svc of ['sessionPersistence', 'storageDomain', 'invariants', 'permissionPresets']) {
     assert.throws(() => ctx.root.provide(svc, { fake: true }), /may not provide core service/)
   }
+
+  const retainedDomain = await ctx.storageDomain.open({ name: 'retained-across-deactivate' })
+  const retainedTable = retainedDomain.table('items')
+  await retainedTable.set('k1', { ok: true })
+  globalThis.__cwRetainedStorageTable = retainedTable
 }
 `)
   t.after(() => pluginA.cleanup())
@@ -307,4 +334,23 @@ export async function apply(ctx) {
   const act = await activate(host, 'dsh-p1-probe-a', pluginA.entry, { dataDir: pluginA.dataDir })
   assert.equal(act.result.status, 'ok', act.result.diagnostic)
   assert.deepEqual(await host.call('ext/deactivate', { owner: act.ref }), { disposed: true, leaked: [] })
+
+  const pluginB = tempPlugin(`
+import assert from 'node:assert/strict'
+export const name = 'dsh-p1-probe-b'
+export async function apply() {
+  const retained = globalThis.__cwRetainedStorageTable
+  assert.ok(retained)
+  try {
+    await assert.rejects(retained.get('k1'), /is closed/)
+    await assert.rejects(retained.set('after', { ok: false }), /is closed/)
+  } finally {
+    delete globalThis.__cwRetainedStorageTable
+  }
+}
+`)
+  t.after(() => pluginB.cleanup())
+  const actB = await activate(host, 'dsh-p1-probe-b', pluginB.entry, { dataDir: pluginB.dataDir })
+  assert.equal(actB.result.status, 'ok', actB.result.diagnostic)
+  assert.deepEqual(await host.call('ext/deactivate', { owner: actB.ref }), { disposed: true, leaked: [] })
 })

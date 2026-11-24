@@ -3030,8 +3030,9 @@ pub(super) async fn put_plugin_settings(
 #[cfg(test)]
 mod review_tests {
     use super::{
-        allowlisted_plugin_route_request_headers, dsh_bootstrap, dsh_client_closure,
-        dsh_closure_unsupported, is_stripped_plugin_route_response_header, mcp_server_review,
+        DshSeat, PLUGIN_UI_SLOT, allowlisted_plugin_route_request_headers, declared_dsh_keys,
+        dsh_bootstrap, dsh_client_closure, dsh_closure_unsupported,
+        is_stripped_plugin_route_response_header, mcp_server_review,
     };
     use axum::http::{HeaderMap, HeaderName, HeaderValue, header};
 
