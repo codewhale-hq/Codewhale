@@ -16283,6 +16283,7 @@ var init_protocol_generated = __esm({
       { name: "tool/call", direction: "core_to_host", request: true, params: "ToolCallParams", tiers: ["plugin", "builtin"] },
       { name: "command/run", direction: "core_to_host", request: true, params: "CommandRunParams", tiers: ["plugin", "builtin"] },
       { name: "hook/evaluate", direction: "core_to_host", request: true, params: "HookEvaluateParams", tiers: ["plugin", "builtin"] },
+      { name: "plugin_route/dispatch", direction: "core_to_host", request: true, params: "PluginRouteDispatchParams", tiers: ["plugin", "builtin"] },
       { name: "mcp/open", direction: "core_to_host", request: true, params: "McpOpenParams", tiers: ["builtin"] },
       { name: "mcp/request", direction: "core_to_host", request: true, params: "McpRequestParams", tiers: ["builtin"] },
       { name: "mcp/close", direction: "core_to_host", request: true, params: "McpCloseParams", tiers: ["builtin"] },
@@ -16457,6 +16458,16 @@ var init_protocol_generated = __esm({
       OwnerRef: {
         strict: true,
         required: { plugin_id: "string", generation: "uint", owner_token: "string" },
+        optional: {}
+      },
+      PluginRouteDispatchParams: {
+        strict: true,
+        required: { owner: { ref: "OwnerRef" }, method: "string", path: "string", headers: { items: { ref: "PluginRouteHeaderWire" } }, deadline_ms: "uint" },
+        optional: { query: "string", body_base64: "string" }
+      },
+      PluginRouteHeaderWire: {
+        strict: true,
+        required: { name: "string", value: "string" },
         optional: {}
       },
       ProcLaunchParams: {
@@ -22224,15 +22235,333 @@ init_composition();
 init_src();
 init_src2();
 init_resolve_hooks();
+import { createHash as createHash7 } from "node:crypto";
+import { readFileSync as readFileSync3 } from "node:fs";
+import { createRequire as createRequire4 } from "node:module";
+import { fileURLToPath as fileURLToPath6 } from "node:url";
+
+// src/dsh/webserver.ts
+init_define_BUILTIN_MODULE_DIGESTS();
+import { EventEmitter } from "node:events";
+init_protocol();
+init_rpc();
+var MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
+var MAX_RESPONSE_BODY_BYTES = 8 * 1024 * 1024;
+var MAX_ROUTE_DEADLINE_MS = 15e3;
+var ALLOWED_METHODS = /* @__PURE__ */ new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]);
+var routesByOwner = /* @__PURE__ */ new Map();
+function normalizePath(raw) {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > 1024 || /[\x00-\x1f\x7f]/.test(raw)) {
+    throw new RpcError(ErrorCode.InvalidParams, "route path must be a non-empty single-line string");
+  }
+  const withSlash = raw.startsWith("/") ? raw : `/${raw}`;
+  if (withSlash.length > 1 && withSlash.endsWith("/")) {
+    return withSlash.slice(0, -1);
+  }
+  return withSlash;
+}
+function createNodeRequest(method, url, headers, body) {
+  const emitter = new EventEmitter();
+  emitter.method = method;
+  emitter.url = url;
+  emitter.headers = { host: "127.0.0.1", ...headers };
+  emitter.httpVersion = "1.1";
+  emitter.socket = { remoteAddress: "127.0.0.1" };
+  emitter.connection = emitter.socket;
+  emitter.readableEnded = false;
+  emitter.destroyed = false;
+  let streamed = false;
+  const emitBody = () => {
+    if (streamed || emitter.destroyed) return;
+    streamed = true;
+    queueMicrotask(() => {
+      if (emitter.destroyed) return;
+      if (body.length > 0) emitter.emit("data", body);
+      emitter.readableEnded = true;
+      emitter.emit("end");
+    });
+  };
+  const origOn = emitter.on.bind(emitter);
+  emitter.on = ((event, listener) => {
+    origOn(event, listener);
+    if (event === "data" || event === "end") emitBody();
+    return emitter;
+  });
+  emitter.destroy = () => {
+    emitter.destroyed = true;
+    return emitter;
+  };
+  emitter[Symbol.asyncIterator] = async function* () {
+    streamed = true;
+    if (body.length > 0 && !emitter.destroyed) {
+      yield body;
+    }
+    emitter.readableEnded = true;
+  };
+  return emitter;
+}
+function createNodeResponse(onFinish) {
+  const emitter = new EventEmitter();
+  const headerMap = /* @__PURE__ */ new Map();
+  const chunks = [];
+  let totalBytes = 0;
+  const setOneHeader = (name, value) => {
+    const key = String(name).trim().toLowerCase();
+    if (!key) return;
+    if (Array.isArray(value)) {
+      headerMap.set(key, value.map((v) => String(v)));
+    } else {
+      headerMap.set(key, [String(value)]);
+    }
+  };
+  const appendChunk = (chunk, encoding) => {
+    const buf = Buffer.isBuffer(chunk) ? chunk : typeof chunk === "string" ? Buffer.from(chunk, encoding ?? "utf8") : Buffer.from(chunk);
+    totalBytes += buf.length;
+    if (totalBytes > MAX_RESPONSE_BODY_BYTES) {
+      throw new RpcError(ErrorCode.ExecutionFailed, `plugin route response exceeded ${MAX_RESPONSE_BODY_BYTES} bytes`);
+    }
+    if (buf.length > 0) chunks.push(buf);
+  };
+  emitter.statusCode = 200;
+  emitter.statusMessage = "OK";
+  emitter.headersSent = false;
+  emitter.writableEnded = false;
+  emitter.finished = false;
+  emitter.setHeader = (name, value) => {
+    setOneHeader(name, value);
+    return emitter;
+  };
+  emitter.getHeader = (name) => {
+    const values = headerMap.get(String(name).toLowerCase());
+    if (!values) return void 0;
+    return values.length === 1 ? values[0] : [...values];
+  };
+  emitter.getHeaders = () => {
+    const out = {};
+    for (const [k, v] of headerMap) out[k] = v.length === 1 ? v[0] : [...v];
+    return out;
+  };
+  emitter.hasHeader = (name) => headerMap.has(String(name).toLowerCase());
+  emitter.removeHeader = (name) => {
+    headerMap.delete(String(name).toLowerCase());
+  };
+  emitter.writeHead = (statusCode, statusMessageOrHeaders, maybeHeaders) => {
+    emitter.statusCode = statusCode;
+    let headersObj;
+    if (typeof statusMessageOrHeaders === "string") {
+      emitter.statusMessage = statusMessageOrHeaders;
+      headersObj = maybeHeaders;
+    } else {
+      headersObj = statusMessageOrHeaders;
+    }
+    if (headersObj && typeof headersObj === "object") {
+      for (const [k, v] of Object.entries(headersObj)) {
+        if (v !== void 0) setOneHeader(k, v);
+      }
+    }
+    emitter.headersSent = true;
+    return emitter;
+  };
+  emitter.flushHeaders = () => {
+    emitter.headersSent = true;
+  };
+  emitter.write = (chunk, encoding, cb) => {
+    if (emitter.writableEnded) return false;
+    emitter.headersSent = true;
+    appendChunk(chunk, encoding);
+    cb?.();
+    return true;
+  };
+  emitter.end = (chunk, encoding, cb) => {
+    if (emitter.writableEnded) return emitter;
+    let callback = cb;
+    if (typeof chunk === "function") {
+      callback = chunk;
+    } else if (chunk !== void 0) {
+      const enc = typeof encoding === "function" ? void 0 : encoding;
+      if (typeof encoding === "function") callback = encoding;
+      appendChunk(chunk, enc);
+    }
+    emitter.headersSent = true;
+    emitter.writableEnded = true;
+    emitter.finished = true;
+    callback?.();
+    emitter.emit("finish");
+    onFinish();
+    return emitter;
+  };
+  return {
+    res: emitter,
+    result: () => {
+      const headers = [];
+      for (const [name, values] of headerMap) {
+        for (const value of values) {
+          headers.push({ name, value });
+        }
+      }
+      return {
+        status: emitter.statusCode,
+        headers,
+        body: Buffer.concat(chunks, totalBytes)
+      };
+    }
+  };
+}
+function matchRoute(ownerToken, method, path2) {
+  const routes = routesByOwner.get(ownerToken);
+  if (!routes || routes.length === 0) return void 0;
+  const upperMethod = method.toUpperCase();
+  const methodMatches = (route) => !route.methods || route.methods.has(upperMethod);
+  for (const route of routes) {
+    if (route.kind === "exact" && route.path === path2 && methodMatches(route)) {
+      return route;
+    }
+  }
+  let bestPrefix;
+  for (const route of routes) {
+    if (route.kind !== "prefix" || !methodMatches(route)) continue;
+    const matches = route.path === "/" || path2 === route.path || path2.startsWith(`${route.path}/`);
+    if (matches && (!bestPrefix || route.path.length > bestPrefix.path.length)) {
+      bestPrefix = route;
+    }
+  }
+  return bestPrefix;
+}
+async function runFetchRoute(route, method, urlPath, headers, body, signal) {
+  const init = {
+    method,
+    headers,
+    signal,
+    ...method !== "GET" && method !== "HEAD" && body.length > 0 ? { body: new Uint8Array(body) } : {}
+  };
+  const request = new Request(`http://127.0.0.1${urlPath}`, init);
+  const response = await route.fetchHandler(request);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.length > MAX_RESPONSE_BODY_BYTES) {
+    throw new RpcError(ErrorCode.ExecutionFailed, `plugin route response exceeded ${MAX_RESPONSE_BODY_BYTES} bytes`);
+  }
+  const outHeaders = [];
+  response.headers.forEach((value, name) => {
+    outHeaders.push({ name, value });
+  });
+  return {
+    matched: true,
+    status: response.status,
+    headers: outHeaders,
+    ...bytes.length > 0 ? { body_base64: bytes.toString("base64") } : {}
+  };
+}
+async function runRpcRoute(route, path2, body) {
+  let parsed = {};
+  if (body.length > 0) {
+    try {
+      parsed = JSON.parse(body.toString("utf8"));
+    } catch {
+      const errBody = Buffer.from(JSON.stringify({ error: "invalid JSON RPC payload" }), "utf8");
+      return {
+        matched: true,
+        status: 400,
+        headers: [{ name: "content-type", value: "application/json; charset=utf-8" }],
+        body_base64: errBody.toString("base64")
+      };
+    }
+  }
+  const suffix = path2.length > route.path.length ? path2.slice(route.path.length + 1) : "";
+  const endpoint = suffix || (typeof parsed?.endpoint === "string" ? parsed.endpoint : "");
+  const payload = suffix ? parsed : parsed?.payload ?? {};
+  const result = await route.rpcHandler(endpoint, payload);
+  const outBuf = Buffer.from(JSON.stringify(result === void 0 ? null : result), "utf8");
+  if (outBuf.length > MAX_RESPONSE_BODY_BYTES) {
+    throw new RpcError(ErrorCode.ExecutionFailed, `plugin RPC response exceeded ${MAX_RESPONSE_BODY_BYTES} bytes`);
+  }
+  return {
+    matched: true,
+    status: 200,
+    headers: [{ name: "content-type", value: "application/json; charset=utf-8" }],
+    body_base64: outBuf.toString("base64")
+  };
+}
+async function dispatchPluginRoute(host2, params, signal, runWithOwner = (_owner, fn) => fn()) {
+  const owner = host2.owners.get(params.owner.owner_token);
+  if (!owner || owner.state !== "active" || owner.disposing || owner.ref.plugin_id !== params.owner.plugin_id || owner.ref.generation !== params.owner.generation) {
+    throw new RpcError(ErrorCode.NotAvailable, `plugin owner ${params.owner.plugin_id} is not active`);
+  }
+  const method = params.method.toUpperCase();
+  if (!ALLOWED_METHODS.has(method)) {
+    throw new RpcError(ErrorCode.InvalidParams, `unsupported HTTP method ${params.method}`);
+  }
+  const normalizedPath = normalizePath(params.path);
+  const body = params.body_base64 ? Buffer.from(params.body_base64, "base64") : Buffer.alloc(0);
+  if (body.length > MAX_REQUEST_BODY_BYTES) {
+    throw new RpcError(ErrorCode.InvalidParams, `request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`);
+  }
+  const route = matchRoute(owner.ref.owner_token, method, normalizedPath);
+  if (!route) {
+    return { matched: false, status: 404, headers: [] };
+  }
+  const headers = {};
+  for (const h of params.headers) {
+    const key = h.name.trim().toLowerCase();
+    if (!key) continue;
+    headers[key] = key in headers ? `${headers[key]}, ${h.value}` : h.value;
+  }
+  const urlPath = params.query ? `${normalizedPath}?${params.query}` : normalizedPath;
+  const deadlineMs = Math.min(Math.max(params.deadline_ms || MAX_ROUTE_DEADLINE_MS, 100), MAX_ROUTE_DEADLINE_MS);
+  const timeoutController = new AbortController();
+  const timer = setTimeout(() => timeoutController.abort(), deadlineMs);
+  timer.unref?.();
+  const combinedSignal = AbortSignal.any([signal, timeoutController.signal]);
+  try {
+    const run = runWithOwner(owner, async () => {
+      if (route.mode === "fetch") {
+        return runFetchRoute(route, method, urlPath, headers, body, combinedSignal);
+      }
+      if (route.mode === "rpc") {
+        return runRpcRoute(route, normalizedPath, body);
+      }
+      let resolveDone;
+      const donePromise = new Promise((resolve6) => {
+        resolveDone = resolve6;
+      });
+      const req = createNodeRequest(method, urlPath, headers, body);
+      const { res, result } = createNodeResponse(resolveDone);
+      const handlerReturn = route.nodeHandler(req, res);
+      await Promise.resolve(handlerReturn);
+      if (!res.writableEnded) {
+        await Promise.race([
+          donePromise,
+          new Promise((_, reject) => {
+            const onAbort = () => reject(new RpcError(ErrorCode.Cancelled, "plugin route timed out or cancelled"));
+            if (combinedSignal.aborted) onAbort();
+            else combinedSignal.addEventListener("abort", onAbort, { once: true });
+          })
+        ]);
+      }
+      const out = result();
+      return {
+        matched: true,
+        status: out.status,
+        headers: out.headers,
+        ...out.body.length > 0 ? { body_base64: out.body.toString("base64") } : {}
+      };
+    });
+    const aborted = new Promise((_, reject) => {
+      const onAbort = () => reject(new RpcError(ErrorCode.Cancelled, "plugin route timed out or cancelled"));
+      if (combinedSignal.aborted) onAbort();
+      else combinedSignal.addEventListener("abort", onAbort, { once: true });
+    });
+    return await Promise.race([run, aborted]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// src/main.ts
 init_protocol();
 init_rpc();
 init_root();
 init_runtime();
 init_tier();
-import { createHash as createHash7 } from "node:crypto";
-import { readFileSync as readFileSync3 } from "node:fs";
-import { createRequire as createRequire4 } from "node:module";
-import { fileURLToPath as fileURLToPath6 } from "node:url";
 
 // src/windows-sandbox-probe.mjs
 init_define_BUILTIN_MODULE_DIGESTS();
@@ -22498,6 +22827,10 @@ rpc.onRequest("command/run", async (params, cx) => {
 rpc.onRequest("hook/evaluate", async (params, cx) => {
   requireInitialized();
   return host.evaluateHook(params, cx.signal);
+});
+rpc.onRequest("plugin_route/dispatch", async (params, cx) => {
+  requireInitialized();
+  return dispatchPluginRoute(host, params, cx.signal, (owner, fn) => ownerStorage.run(owner, fn));
 });
 rpc.onRequest("harness/run", async (params, cx) => {
   requireInitialized();

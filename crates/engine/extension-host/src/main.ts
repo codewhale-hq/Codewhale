@@ -18,7 +18,8 @@ import * as dshComposition from './dsh/composition.ts'
 import * as dshLoader from './dsh/upstream/loader/src/index.ts'
 import * as dshInclude from './dsh/upstream/include/src/index.ts'
 import { installResolveHooks } from './dsh/resolve-hooks.ts'
-import { ErrorCode, FrameDecoder, encodeFrame, PROTOCOL_VERSION, type Message, type HarnessRunParams, type McpOpenParams, type McpRequestParams, type McpCloseParams } from './protocol.ts'
+import { dispatchPluginRoute } from './dsh/webserver.ts'
+import { ErrorCode, FrameDecoder, encodeFrame, PROTOCOL_VERSION, type Message, type HarnessRunParams, type McpOpenParams, type McpRequestParams, type McpCloseParams, type PluginRouteDispatchParams } from './protocol.ts'
 import { RpcError, RpcPeer } from './rpc.ts'
 import { HostRoot, ownerStorage } from './root.ts'
 import { RUNTIME, applyMemoryLimit, denyNativeCode } from './runtime.ts'
@@ -207,6 +208,11 @@ rpc.onRequest('command/run', async (params: any, cx) => {
 rpc.onRequest('hook/evaluate', async (params: any, cx) => {
   requireInitialized()
   return host.evaluateHook(params, cx.signal)
+})
+
+rpc.onRequest('plugin_route/dispatch', async (params, cx) => {
+  requireInitialized()
+  return dispatchPluginRoute(host, params as PluginRouteDispatchParams, cx.signal, (owner, fn) => ownerStorage.run(owner, fn))
 })
 
 rpc.onRequest('harness/run', async (params, cx) => { requireInitialized(); return host.harnessRun(params as HarnessRunParams, cx.signal) })
