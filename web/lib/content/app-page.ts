@@ -52,15 +52,15 @@ export const APP_COPY = {
 
   shotsHeading: { en: "What the development build looks like", zh: "开发版本长什么样" },
   shotsScope: {
-    en: "These screens come from the desktop development build running the real engine and a real model, qwen3:4b, locally through Ollama. Details will change before a release.",
-    zh: "以下画面来自桌面开发版本，运行的是真实引擎和真实模型：通过 Ollama 在本地运行的 qwen3:4b。发布前细节仍会变化。",
+    en: "These screens come from the desktop development build running the published 0.10.4 engine and a real model, DeepSeek V4.1 Flash. Details will change before a release.",
+    zh: "以下画面来自桌面开发版本，运行的是已发布的 0.10.4 引擎和真实模型 DeepSeek V4.1 Flash。发布前细节仍会变化。",
   },
   shots: [
     {
       file: "review",
       alt: {
-        en: "The desktop app with the session list on the left, a finished task in the middle that ran python3 -m pytest -q with 3 tests passed, and on the right the review panel showing the change to core.py with Mark this diff reviewed and Commit and history.",
-        zh: "桌面应用：左侧是会话列表，中间是一项已完成的任务，它运行了 python3 -m pytest -q，3 个测试通过；右侧审阅面板显示对 core.py 的修改，以及“标记此差异已审阅”和“提交与历史”。",
+        en: "The desktop app with the session list on the left, a finished task in the middle that explains the cause and the fix and reports 3 passed, and on the right the review panel showing the change to core.py with Mark this diff reviewed and Commit and history.",
+        zh: "桌面应用：左侧是会话列表，中间是一项已完成的任务，说明了原因和修复并报告 3 个测试通过；右侧审阅面板显示对 core.py 的修改，以及“标记此差异已审阅”和“提交与历史”。",
       },
       caption: {
         en: "A finished task with its change open in the review panel. You can mark the diff reviewed and commit from the same panel.",
@@ -70,34 +70,34 @@ export const APP_COPY = {
     {
       file: "approval",
       alt: {
-        en: "The desktop app asking Run a command? for python3 -m pytest -q, with the buttons Allow once, Allow for this session and Don't allow, below the applied edit to tally/core.py.",
-        zh: "桌面应用针对 python3 -m pytest -q 询问“Run a command?”，提供 Allow once、Allow for this session 和 Don't allow 三个按钮，上方是已应用到 tally/core.py 的修改。",
+        en: "The desktop app asking to run python3 -m pytest on tests/test_core.py, with Allow and Deny, while a task to fix a failing test in tally/core.py works in Accept Edits.",
+        zh: "桌面应用请求运行针对 tests/test_core.py 的 python3 -m pytest，提供 Allow 和 Deny 按钮；一项修复 tally/core.py 中失败测试的任务正在 Accept Edits 模式下进行。",
       },
       caption: {
-        en: "In Accept Edits the edit went through, and the test command waits for your answer with the exact command in view.",
-        zh: "在 Accept Edits 模式下，修改已直接应用，测试命令则等待你的回答，并展示完整命令。",
+        en: "Accept Edits lets most file edits through without asking; the test command waits for your answer with the exact command in view.",
+        zh: "Accept Edits 模式会直接放行大多数文件修改；测试命令则等待你的回答，并展示完整命令。",
       },
     },
     {
       file: "permissions",
       alt: {
-        en: "The Permissions menu open above the composer, listing Ask, Accept Edits (selected), Plan, Auto-Review and Full Access, and under Allowed for this session a Revoke entry for python3 -m pytest -q.",
-        zh: "输入框上方打开的 Permissions 菜单，列出 Ask、Accept Edits（已选中）、Plan、Auto-Review 和 Full Access，并在“本会话已允许”下列出可撤销的 python3 -m pytest -q。",
+        en: "The Permissions menu open above the composer, listing Ask, Accept Edits (selected), Plan, Auto-Review and Full Access, each with a one-line description.",
+        zh: "输入框上方打开的 Permissions 菜单，列出 Ask、Accept Edits（已选中）、Plan、Auto-Review 和 Full Access，每项都有一行说明。",
       },
       caption: {
-        en: "The Permissions menu sets what the agent may do without asking, and lists what you allowed for this session so you can revoke it.",
-        zh: "Permissions 菜单决定智能体无需询问即可做什么，并列出你在本会话中允许过的操作，方便你撤销。",
+        en: "The Permissions menu sets what the agent may do without asking, with one line on what each mode allows.",
+        zh: "Permissions 菜单决定智能体无需询问即可做什么，每种模式都有一行说明。",
       },
     },
     {
       file: "sessions",
       alt: {
-        en: "The desktop app with three sessions in the tally folder: two marked Running and one finished, and the open session thinking about a request to explain the project.",
-        zh: "桌面应用中 tally 文件夹下的三个会话：两个标记为运行中，一个已完成；打开的会话正在思考一个解释项目的请求。",
+        en: "The desktop app with four sessions in the tally folder, two marked Needs you, and the open session showing its finished three-point explanation of the project.",
+        zh: "桌面应用中 tally 文件夹下的四个会话，其中两个标记为 Needs you；打开的会话显示它已完成的三点项目说明。",
       },
       caption: {
-        en: "Two sessions work in the same folder at once, and the list shows which ones are running.",
-        zh: "两个会话同时在同一个文件夹中工作，列表会显示哪些正在运行。",
+        en: "Several sessions work in the same folder, and the list shows which ones need you.",
+        zh: "多个会话在同一个文件夹中工作，列表会显示哪些需要你处理。",
       },
     },
   ] satisfies AppShot[],

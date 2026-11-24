@@ -1,6 +1,6 @@
 {
  "generated_by": "scripts/contributor-wall.py refresh",
- "github_contributor_list": 229,
+ "github_contributor_list": 230,
  "people": [
   {
    "login": "0gl20shk0sbt36",
@@ -647,16 +647,6 @@
    ]
   },
   {
-   "login": "dajiaohuang",
-   "credited_for": [
-    "changelog credit",
-    "co-author",
-    "commit",
-    "contributor record",
-    "merged pull request"
-   ]
-  },
-  {
    "login": "DarrellThomas",
    "credited_for": [
     "changelog credit",
@@ -709,6 +699,13 @@
   {
    "login": "DI-HUO-MING-YI",
    "credited_for": [
+    "contributor record"
+   ]
+  },
+  {
+   "login": "diegovskytl",
+   "credited_for": [
+    "changelog credit",
     "contributor record"
    ]
   },
@@ -2254,6 +2251,15 @@
    ]
   },
   {
+   "login": "Opgeek-1",
+   "credited_for": [
+    "changelog credit",
+    "commit",
+    "contributor record",
+    "merged pull request"
+   ]
+  },
+  {
    "login": "ousamabenyounes",
    "credited_for": [
     "changelog credit",
@@ -3058,6 +3064,13 @@
    ]
   },
   {
+   "login": "WTFitsmemyself",
+   "credited_for": [
+    "commit",
+    "merged pull request"
+   ]
+  },
+  {
    "login": "wucm667",
    "credited_for": [
     "commit",
@@ -3419,6 +3432,7 @@
   "bluth",
   "chatman-media",
   "codgo",
+  "dajiaohuang",
   "douglarek",
   "kurise",
   "LeHaiDang",
@@ -3426,6 +3440,7 @@
   "liuhq",
   "liushiao",
   "liuyang",
+  "lucaszhu-hue",
   "markchang",
   "ningjingkun",
   "ornn.ban",
