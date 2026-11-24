@@ -3398,15 +3398,15 @@ impl RuntimeThreadStore {
         let mut latest_ts: Option<DateTime<Utc>> = None;
         self.for_each_event(thread_id, |event| {
             latest_ts = Some(match latest_ts {
-                Some(prev) => prev.max(event.created_at),
-                None => event.created_at,
+                Some(prev) => prev.max(event.timestamp),
+                None => event.timestamp,
             });
             if let Some(turn_id) = event.turn_id.as_deref()
                 && !turn_id.trim().is_empty()
             {
                 latest_turn_id = Some(turn_id.to_string());
             }
-            if matches!(event.kind.as_str(), "thread.started" | "thread.updated")
+            if matches!(event.event.as_str(), "thread.started" | "thread.updated")
                 && let Some(raw_thread) = event.payload.get("thread")
                 && let Ok(candidate) = serde_json::from_value::<ThreadRecord>(raw_thread.clone())
                 && candidate.id == thread_id

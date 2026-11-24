@@ -7489,6 +7489,7 @@ impl RuntimeThreadManager {
         let turn_monitors = self.turn_monitors.clone();
         let event_monitors = self.event_monitors.clone();
         let event_reader_wake = self.event_reader_wake.clone();
+        let turn_settled = self.turn_settled.clone();
         let event_pump_stop = self.event_pump_stop.clone();
         let weak_event_pump_owner = Arc::downgrade(&self._event_pump_owner);
         let weak_active = Arc::downgrade(&self.active);
@@ -7550,6 +7551,7 @@ impl RuntimeThreadManager {
                 turn_monitors: turn_monitors.clone(),
                 event_monitors: event_monitors.clone(),
                 event_reader_wake: event_reader_wake.clone(),
+                turn_settled: turn_settled.clone(),
                 event_pump_stop: event_pump_stop.clone(),
                 _event_pump_owner: event_pump_owner,
                 active,

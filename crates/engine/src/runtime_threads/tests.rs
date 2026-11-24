@@ -752,7 +752,6 @@ mod recovery {
         )?;
         let thread = manager
             .create_thread(CreateThreadRequest {
-                title: Some("Recovered session".to_string()),
                 ..CreateThreadRequest::default()
             })
             .await?;
