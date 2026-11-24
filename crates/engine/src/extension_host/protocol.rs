@@ -149,6 +149,7 @@ pub const METHODS: &[MethodSpec] = &[
     row(Direction::CoreToHost, "tool/call", true),
     row(Direction::CoreToHost, "command/run", true),
     row(Direction::CoreToHost, "hook/evaluate", true),
+    row(Direction::CoreToHost, "plugin_route/dispatch", true),
     MethodSpec {
         tiers: &[HostTier::Builtin],
         ..row(Direction::CoreToHost, "mcp/open", true)
@@ -1295,6 +1296,40 @@ pub struct HookEvaluateParams {
     pub deadline_ms: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct PluginRouteHeaderWire {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct PluginRouteDispatchParams {
+    pub owner: OwnerRef,
+    pub method: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    pub headers: Vec<PluginRouteHeaderWire>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_base64: Option<String>,
+    pub deadline_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct PluginRouteDispatchResult {
+    pub matched: bool,
+    pub status: u16,
+    pub headers: Vec<PluginRouteHeaderWire>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_base64: Option<String>,
+}
+
 /// Monotonic proposals. Rust folds them with native hooks and re-prepares
 /// revised input through every policy and approval gate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1321,6 +1356,7 @@ pub enum CoreRequest {
     ToolCall(ToolCallParams),
     CommandRun(CommandRunParams),
     HookEvaluate(HookEvaluateParams),
+    PluginRouteDispatch(PluginRouteDispatchParams),
     HarnessRun(HarnessRunParams),
     McpClose(McpCloseParams),
     McpRequest(McpRequestParams),
@@ -1340,6 +1376,7 @@ impl CoreRequest {
             Self::ToolCall(_) => "tool/call",
             Self::CommandRun(_) => "command/run",
             Self::HookEvaluate(_) => "hook/evaluate",
+            Self::PluginRouteDispatch(_) => "plugin_route/dispatch",
             Self::HarnessRun(_) => "harness/run",
             Self::McpClose(_) => "mcp/close",
             Self::McpRequest(_) => "mcp/request",
@@ -1359,6 +1396,7 @@ impl CoreRequest {
             Self::ToolCall(p) => to_value(p),
             Self::CommandRun(p) => to_value(p),
             Self::HookEvaluate(p) => to_value(p),
+            Self::PluginRouteDispatch(p) => to_value(p),
             Self::HarnessRun(p) => to_value(p),
             Self::McpClose(p) => to_value(p),
             Self::McpRequest(p) => to_value(p),
@@ -1395,6 +1433,7 @@ impl CoreRequest {
             Self::ToolCall(params) => Duration::from_millis(params.deadline_ms),
             Self::CommandRun(params) => Duration::from_millis(params.deadline_ms),
             Self::HookEvaluate(params) => Duration::from_millis(params.deadline_ms),
+            Self::PluginRouteDispatch(params) => Duration::from_millis(params.deadline_ms),
             Self::HarnessRun(params) => Duration::from_millis(params.deadline_ms),
             Self::McpClose(params) => Duration::from_millis(params.deadline_ms),
             Self::McpRequest(params) => Duration::from_millis(params.deadline_ms),
@@ -1529,6 +1568,7 @@ pub fn parse_core_message(value: Value, tier: HostTier) -> Result<CoreMessage, P
         "tool/call" => CoreRequest::ToolCall(params(&method, p)?),
         "command/run" => CoreRequest::CommandRun(params(&method, p)?),
         "hook/evaluate" => CoreRequest::HookEvaluate(params(&method, p)?),
+        "plugin_route/dispatch" => CoreRequest::PluginRouteDispatch(params(&method, p)?),
         "harness/run" => CoreRequest::HarnessRun(params(&method, p)?),
         "mcp/close" => CoreRequest::McpClose(params(&method, p)?),
         "mcp/request" => CoreRequest::McpRequest(params(&method, p)?),
