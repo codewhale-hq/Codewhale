@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`/rlm` now reaches the discoverable `rlm` tool:** `/rlm` no longer tells the model to emit ```` ```repl ```` fences or forbid `rlm` actions, and the canonical `rlm` tool (`open`, `eval`, `configure`, `close`, `session_objects`) is discoverable via `tool_search` while legacy `rlm_*` aliases stay hidden. (CW-8360)
+- **Removed duplicate TUI `login` and `logout` subcommands reachable through `codewhale run`:** `codewhale run logout` no longer clears saved provider API keys and `codewhale run login` is removed; use `codewhale login`, `codewhale logout`, and `codewhale auth ...` instead. (CW-8360)
 
 ## [0.10.4] - 2026-11-23
 
