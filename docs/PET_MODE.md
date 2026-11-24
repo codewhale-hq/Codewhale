@@ -123,7 +123,9 @@ each: each whale follows its own session, so one can show `✓ Done` while the
 other shows `● working`. Nothing is mixed between sessions.
 
 Behind the scenes, all terminals on a machine share one local companion
-(`codewhale pet serve`, started automatically when a view needs it). The
+(`codewhale pet serve`). The default `whale` view draws without it; the
+companion starts automatically for the habitat, sound, the other views, or a
+dot whale that could not start. The
 companion keeps the pet's identity, animation clock, saved recording, optional
 sound, and the appearance view. It follows one session at a time,
 called the source:
