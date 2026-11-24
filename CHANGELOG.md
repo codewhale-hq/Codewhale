@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Session switch adopts a populated Runtime store:** switching to a conversation whose Runtime store already holds a thread record no longer refuses the switch; the check tests the store being left, not the target, and the host keeps its own store until the switch explicitly releases it. Thanks [@Serendo](https://github.com/Serendo). (#6225, #6418, #7451)
 - **Composer vim mode no longer swallows typing after pressing `v`:** removed the unfinished `VimMode::Visual` state that absorbed all keys until `Esc` with no on-screen indicator or operators.
 - **Lone non-ASCII keys now reach normal key routing on untrusted terminals:** single IME/non-ASCII commits in paste-burst detection keep their Enter-suppression window while falling through to the main key match (vim Normal mode, Esc-Esc backtrack reset, and ordinary insertion) instead of bypassing it.
 - **Launch-card resume always opens confirmation from mouse and keyboard:** unified mouse and keyboard launch-action dispatchers into one `apply_launch_action` path and removed the unreachable direct-resume mouse arm.
