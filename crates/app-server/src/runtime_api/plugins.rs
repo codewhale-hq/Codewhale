@@ -2879,7 +2879,11 @@ pub(super) async fn put_catalog_settings(
 
 #[cfg(test)]
 mod review_tests {
-    use super::{dsh_bootstrap, dsh_client_closure, mcp_server_review};
+    use super::{
+        allowlisted_plugin_route_request_headers, dsh_bootstrap, dsh_client_closure,
+        dsh_closure_unsupported, is_stripped_plugin_route_response_header, mcp_server_review,
+    };
+    use axum::http::{HeaderMap, HeaderName, HeaderValue, header};
 
     #[test]
     fn dsh_bootstrap_root_entry_closure_resolves_relative_requires_in_node() {
