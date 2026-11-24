@@ -15161,8 +15161,7 @@ fn merge_project_config_with_approval_baseline(
     if let Some(v) = table.get("max_subagents").and_then(toml::Value::as_integer)
         && v > 0
     {
-        config.max_subagents =
-            Some((v as usize).clamp(1, codewhale_runtime::config::MAX_SUBAGENTS));
+        config.set_max_subagents_override(v as usize);
     }
     if let Some(v) = table.get("allow_shell").and_then(toml::Value::as_bool) {
         if v {
