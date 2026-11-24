@@ -147,6 +147,10 @@ impl WorkflowDriver for ScopedWorkflowDriver {
         self.inner.cancel_all();
     }
 
+    fn cancel_task(&self, task_id: &str) {
+        self.inner.cancel_task(task_id);
+    }
+
     fn budget(&self) -> BudgetSnapshot {
         self.inner.budget()
     }

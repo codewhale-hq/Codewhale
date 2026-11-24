@@ -5087,6 +5087,24 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
         self.force_cancel_all();
     }
 
+    fn cancel_task(&self, task_id: &str) {
+        let running = self
+            .completion_state
+            .lock()
+            .is_ok_and(|state| state.waiters.contains_key(task_id));
+        if !running {
+            return;
+        }
+        cancel_child_agents(
+            self.manager.clone(),
+            self.owner_session_id.clone(),
+            vec![task_id.to_string()],
+            self.owner_runtime.clone(),
+            self.runtime.event_tx.clone(),
+        );
+        self.deliver_completion(task_id.to_string(), TaskCompletion::Cancelled, None);
+    }
+
     fn budget_is_metered(&self) -> bool {
         false
     }
