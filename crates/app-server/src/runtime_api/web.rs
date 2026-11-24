@@ -36,6 +36,7 @@ pub(super) const WEB_SESSION_COOKIE_NAME: &str = "codewhale_web_session";
 const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'";
 const APP_WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; media-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'self'; frame-ancestors 'none'";
 const PLUGIN_HOST_CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; frame-ancestors 'self'";
+const SVG_CONTENT_SECURITY_POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
 
 #[derive(Clone)]
 pub(super) struct RuntimeWebState {
@@ -278,18 +279,15 @@ pub(super) async fn web_page(State(state): State<RuntimeApiState>) -> Response {
     let Some(web) = state.web.as_ref() else {
         return not_found();
     };
-    if let Some(dist_dir) = web.web_dist_dir.as_deref() {
-        return serve_dist_html(dist_dir, "index.html", APP_WEB_CONTENT_SECURITY_POLICY);
+    if let Some(dist_dir) = web.web_dist_dir.clone() {
+        return serve_dist_html_async(dist_dir, "index.html", APP_WEB_CONTENT_SECURITY_POLICY)
+            .await;
     }
     web_page_response()
 }
 
 pub(super) async fn web_fallback(State(state): State<RuntimeApiState>, req: Request) -> Response {
-    let Some(dist_dir) = state
-        .web
-        .as_ref()
-        .and_then(|web| web.web_dist_dir.as_deref())
-    else {
+    let Some(dist_dir) = state.web.as_ref().and_then(|web| web.web_dist_dir.clone()) else {
         return not_found();
     };
     if !matches!(*req.method(), Method::GET | Method::HEAD) {
@@ -300,46 +298,67 @@ pub(super) async fn web_fallback(State(state): State<RuntimeApiState>, req: Requ
         return not_found();
     }
     let rel = raw_path.trim_start_matches('/');
-    if rel.is_empty() {
-        return serve_dist_html(dist_dir, "index.html", APP_WEB_CONTENT_SECURITY_POLICY);
+    if rel.is_empty() || rel.eq_ignore_ascii_case("index.html") {
+        return serve_dist_html_async(dist_dir, "index.html", APP_WEB_CONTENT_SECURITY_POLICY)
+            .await;
     }
-    if rel == "plugin-host.html" {
-        return serve_dist_html(
+    if rel.eq_ignore_ascii_case("plugin-host.html") {
+        return serve_dist_html_async(
             dist_dir,
             "plugin-host.html",
             PLUGIN_HOST_CONTENT_SECURITY_POLICY,
-        );
+        )
+        .await;
     }
     let Some(clean_rel) = sanitize_dist_relative_path(rel) else {
         return not_found();
     };
-    if let Some(bytes) = read_confined_dist_file(dist_dir, &clean_rel) {
-        let Some(content_type) = content_type_for_path(&clean_rel) else {
-            return not_found();
-        };
-        let is_immutable = rel.starts_with("static/");
-        let csp = if content_type.starts_with("text/html") {
-            APP_WEB_CONTENT_SECURITY_POLICY
-        } else {
-            CONTENT_SECURITY_POLICY
-        };
-        let mut response = Response::new(Body::from(bytes));
-        secure_headers_with_policy(
-            &mut response,
-            content_type,
-            csp,
-            if is_immutable {
-                "public, max-age=31536000, immutable"
+    // Refuse any other .html file from the generic static-asset branch so
+    // case-insensitive filesystems or arbitrary HTML files can never bypass
+    // the exact CSP assigned to index.html / plugin-host.html.
+    if clean_rel
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm"))
+    {
+        return not_found();
+    }
+    let is_immutable = rel.starts_with("static/");
+    let is_spa_candidate =
+        clean_rel.extension().is_none() && !is_immutable && !rel.starts_with("assets/");
+    let content_type = content_type_for_path(&clean_rel);
+    if let Some(content_type) = content_type {
+        let root = Arc::clone(&dist_dir);
+        let rel_path = clean_rel.clone();
+        let bytes = tokio::task::spawn_blocking(move || read_confined_dist_file(&root, &rel_path))
+            .await
+            .ok()
+            .flatten();
+        if let Some(bytes) = bytes {
+            let csp = if content_type == "image/svg+xml" {
+                SVG_CONTENT_SECURITY_POLICY
             } else {
-                "no-store"
-            },
-        );
-        return response;
+                CONTENT_SECURITY_POLICY
+            };
+            let mut response = Response::new(Body::from(bytes));
+            secure_headers_with_policy(
+                &mut response,
+                content_type,
+                csp,
+                if is_immutable {
+                    "public, max-age=31536000, immutable"
+                } else {
+                    "no-store"
+                },
+            );
+            return response;
+        }
+        return not_found();
     }
     // Bounded SPA fallback: serve index.html only for extensionless app routes.
-    if clean_rel.extension().is_none() && !rel.starts_with("static/") && !rel.starts_with("assets/")
-    {
-        return serve_dist_html(dist_dir, "index.html", APP_WEB_CONTENT_SECURITY_POLICY);
+    if is_spa_candidate {
+        return serve_dist_html_async(dist_dir, "index.html", APP_WEB_CONTENT_SECURITY_POLICY)
+            .await;
     }
     not_found()
 }
@@ -369,6 +388,8 @@ fn validate_web_dist_dir(dir: &FsPath) -> Option<PathBuf> {
 fn is_reserved_runtime_path(path: &str) -> bool {
     path == "/v1"
         || path.starts_with("/v1/")
+        || path == "/api"
+        || path.starts_with("/api/")
         || path == "/__codewhale"
         || path.starts_with("/__codewhale/")
         || path == "/health"
@@ -429,8 +450,17 @@ fn read_confined_dist_file(root: &FsPath, rel: &FsPath) -> Option<Vec<u8>> {
     Some(buf)
 }
 
-fn serve_dist_html(root: &FsPath, file_name: &str, csp: &'static str) -> Response {
-    let Some(bytes) = read_confined_dist_file(root, FsPath::new(file_name)) else {
+async fn serve_dist_html_async(
+    root: Arc<PathBuf>,
+    file_name: &'static str,
+    csp: &'static str,
+) -> Response {
+    let bytes =
+        tokio::task::spawn_blocking(move || read_confined_dist_file(&root, FsPath::new(file_name)))
+            .await
+            .ok()
+            .flatten();
+    let Some(bytes) = bytes else {
         return not_found();
     };
     let mut response = Response::new(Body::from(bytes));
@@ -441,7 +471,6 @@ fn serve_dist_html(root: &FsPath, file_name: &str, csp: &'static str) -> Respons
 fn content_type_for_path(path: &FsPath) -> Option<&'static str> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {
-        "html" => Some("text/html; charset=utf-8"),
         "js" | "mjs" => Some("text/javascript; charset=utf-8"),
         "css" => Some("text/css; charset=utf-8"),
         "svg" => Some("image/svg+xml"),
@@ -839,11 +868,13 @@ mod tests {
         let cookie = web_session_cookie(&session_token);
         assert!(web_state.matches_request(Some(&cookie), Some(&proof)));
 
-        let root = web_state
-            .web_dist_dir
-            .as_deref()
-            .expect("dist dir attached");
-        let index_resp = serve_dist_html(root, "index.html", APP_WEB_CONTENT_SECURITY_POLICY);
+        let root = web_state.web_dist_dir.clone().expect("dist dir attached");
+        let index_resp = serve_dist_html_async(
+            Arc::clone(&root),
+            "index.html",
+            APP_WEB_CONTENT_SECURITY_POLICY,
+        )
+        .await;
         assert_eq!(index_resp.status(), StatusCode::OK);
         assert_eq!(
             index_resp.headers()[header::CONTENT_TYPE],
@@ -857,11 +888,12 @@ mod tests {
                 .contains("frame-src 'self'")
         );
 
-        let host_resp = serve_dist_html(
-            root,
+        let host_resp = serve_dist_html_async(
+            Arc::clone(&root),
             "plugin-host.html",
             PLUGIN_HOST_CONTENT_SECURITY_POLICY,
-        );
+        )
+        .await;
         assert_eq!(host_resp.status(), StatusCode::OK);
         assert_eq!(host_resp.headers()[header::CACHE_CONTROL], "no-store");
         let host_csp = host_resp.headers()[header::CONTENT_SECURITY_POLICY]
@@ -870,7 +902,17 @@ mod tests {
         assert!(host_csp.contains("connect-src 'none'"));
         assert!(host_csp.contains("frame-ancestors 'self'"));
 
+        assert!("Plugin-Host.html".eq_ignore_ascii_case("plugin-host.html"));
+        assert!(content_type_for_path(FsPath::new("Plugin-Host.html")).is_none());
+        assert!(content_type_for_path(FsPath::new("other.html")).is_none());
+        assert_eq!(
+            content_type_for_path(FsPath::new("favicon.svg")),
+            Some("image/svg+xml")
+        );
+
         assert!(is_reserved_runtime_path("/v1/sessions"));
+        assert!(is_reserved_runtime_path("/api/web/session"));
+        assert!(is_reserved_runtime_path("/api"));
         assert!(is_reserved_runtime_path("/__codewhale/bootstrap/abc"));
         assert!(is_reserved_runtime_path("/health"));
         assert!(!is_reserved_runtime_path("/settings/plugins"));
