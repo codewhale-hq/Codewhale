@@ -683,6 +683,17 @@ exports.apply = function (ctx) {
             .and_then(|v| v.to_str().ok()),
         Some("text/css; charset=utf-8")
     );
+    let css_csp = css
+        .headers()
+        .get("content-security-policy")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let css_referrer = css
+        .headers()
+        .get("referrer-policy")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     assert!(css.text().await?.contains(".badge"));
 
     let svg = client
@@ -722,18 +733,8 @@ exports.apply = function (ctx) {
         .await?;
     assert_eq!(css_via_query.status(), StatusCode::PRECONDITION_REQUIRED);
 
-    let css_csp = css
-        .headers()
-        .get("content-security-policy")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
     assert_eq!(css_csp, "default-src 'none'; sandbox");
-    assert_eq!(
-        css.headers()
-            .get("referrer-policy")
-            .and_then(|v| v.to_str().ok()),
-        Some("no-referrer")
-    );
+    assert_eq!(css_referrer.as_deref(), Some("no-referrer"));
 
     let oversized_route = client
         .post(format!("{base}/{name}/route/api/upload"))
