@@ -3434,6 +3434,18 @@ impl RuntimeThreadStore {
         Ok(Some(record))
     }
 
+    fn check_newer_thread_schema_version(raw: &str) -> Result<()> {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw)
+            && let Some(version) = value.get("schema_version").and_then(Value::as_u64)
+            && version > u64::from(MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION)
+        {
+            bail!(
+                "Thread schema v{version} is newer than supported v{MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION}"
+            );
+        }
+        Ok(())
+    }
+
     pub fn load_thread(&self, thread_id: &str) -> Result<ThreadRecord> {
         let path = self.thread_path(thread_id)?;
         let raw = read_store_file(&path).with_context(|| {
@@ -3447,23 +3459,31 @@ impl RuntimeThreadStore {
         let record: ThreadRecord = match serde_json::from_str(&raw) {
             Ok(record) => record,
             Err(parse_err) => {
-                if let Ok(Some(rebuilt)) = self.rebuild_thread_from_event_log(thread_id) {
-                    tracing::warn!(
-                        target: "runtime",
-                        thread_id,
-                        "rebuilt damaged thread record from event log"
-                    );
-                    let _ = self.save_thread(&rebuilt);
-                    return Ok(rebuilt);
+                Self::check_newer_thread_schema_version(&raw)?;
+                match self.rebuild_thread_from_event_log(thread_id) {
+                    Ok(Some(rebuilt)) => {
+                        tracing::warn!(
+                            target: "runtime",
+                            thread_id,
+                            "rebuilt damaged thread record from event log"
+                        );
+                        let _ = self.save_thread(&rebuilt);
+                        return Ok(rebuilt);
+                    }
+                    Err(err) if err.to_string().contains("is newer than supported") => {
+                        return Err(err);
+                    }
+                    Ok(None) | Err(_) => {
+                        return Err(parse_err).with_context(|| {
+                            RuntimeStoreRecordFailure::new(
+                                RuntimeStoreOperation::Parse,
+                                RuntimeStoreRecordKind::Thread,
+                                thread_id,
+                                &path,
+                            )
+                        });
+                    }
                 }
-                return Err(parse_err).with_context(|| {
-                    RuntimeStoreRecordFailure::new(
-                        RuntimeStoreOperation::Parse,
-                        RuntimeStoreRecordKind::Thread,
-                        thread_id,
-                        &path,
-                    )
-                });
             }
         };
         if record.schema_version > MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION {
@@ -3558,20 +3578,33 @@ impl RuntimeThreadStore {
             if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
             }
-            let thread: ThreadRecord = match read_store_file(&path)
+            let raw = match read_store_file(&path)
                 .with_context(|| format!("Failed to read {}", path.display()))
-                .and_then(|raw| {
-                    serde_json::from_str(&raw)
-                        .with_context(|| format!("Failed to parse {}", path.display()))
-                }) {
+            {
+                Ok(raw) => raw,
+                Err(error) => {
+                    skipped.push(format!("{error:#}"));
+                    continue;
+                }
+            };
+            let thread: ThreadRecord = match serde_json::from_str(&raw)
+                .with_context(|| format!("Failed to parse {}", path.display()))
+            {
                 Ok(thread) => thread,
                 Err(error) => {
-                    let rebuilt =
-                        path.file_stem()
-                            .and_then(|stem| stem.to_str())
-                            .and_then(|thread_id| {
-                                self.rebuild_thread_from_event_log(thread_id).ok().flatten()
-                            });
+                    Self::check_newer_thread_schema_version(&raw)?;
+                    let rebuilt = match path.file_stem().and_then(|stem| stem.to_str()) {
+                        Some(thread_id) => match self.rebuild_thread_from_event_log(thread_id) {
+                            Ok(rebuilt) => rebuilt,
+                            Err(rebuild_err)
+                                if rebuild_err.to_string().contains("is newer than supported") =>
+                            {
+                                return Err(rebuild_err);
+                            }
+                            Err(_) => None,
+                        },
+                        None => None,
+                    };
                     if let Some(thread) = rebuilt {
                         tracing::warn!(
                             target: "runtime",

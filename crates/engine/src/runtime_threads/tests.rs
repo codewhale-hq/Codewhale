@@ -806,6 +806,99 @@ mod recovery {
         assert!(manager.store.load_thread("thr_mismatched").is_err());
         let (_, skipped) = manager.store.list_threads_lenient()?;
         assert_eq!(skipped.len(), 1);
+
+        #[cfg(unix)]
+        {
+            let target = dir.path().join("outside-symlink-target.json");
+            std::fs::write(&target, b"{}")?;
+            let symlink_path = dir
+                .path()
+                .join("runtime")
+                .join("threads")
+                .join("thr_symlink.json");
+            std::os::unix::fs::symlink(&target, &symlink_path)?;
+            let symlink_event = serde_json::json!({
+                "seq": 1,
+                "thread_id": "thr_symlink",
+                "kind": "thread.started",
+                "payload": { "thread": {
+                    "schema_version": 1,
+                    "id": "thr_symlink",
+                    "created_at": thread.created_at,
+                    "updated_at": thread.updated_at,
+                    "model": thread.model,
+                    "workspace": thread.workspace,
+                    "mode": thread.mode,
+                    "allow_shell": thread.allow_shell,
+                    "trust_mode": thread.trust_mode,
+                    "auto_approve": thread.auto_approve,
+                } },
+                "created_at": Utc::now(),
+            });
+            std::fs::write(
+                dir.path()
+                    .join("runtime")
+                    .join("events")
+                    .join("thr_symlink.jsonl"),
+                format!("{symlink_event}\n"),
+            )?;
+            let (listed, skipped) = manager.store.list_threads_lenient()?;
+            assert!(listed.iter().all(|t| t.id != "thr_symlink"));
+            assert_eq!(skipped.len(), 2);
+            assert!(
+                std::fs::symlink_metadata(&symlink_path)?
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(std::fs::read_to_string(&target)?, "{}");
+        }
+
+        let future_path = dir
+            .path()
+            .join("runtime")
+            .join("threads")
+            .join("thr_future.json");
+        let future_raw = format!(
+            "{{\"schema_version\":{},\"id\":\"thr_future\"}}",
+            MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION + 1
+        );
+        std::fs::write(&future_path, &future_raw)?;
+        let future_event = serde_json::json!({
+            "seq": 1,
+            "thread_id": "thr_future",
+            "kind": "thread.started",
+            "payload": { "thread": {
+                "schema_version": 1,
+                "id": "thr_future",
+                "created_at": thread.created_at,
+                "updated_at": thread.updated_at,
+                "model": thread.model,
+                "workspace": thread.workspace,
+                "mode": thread.mode,
+                "allow_shell": thread.allow_shell,
+                "trust_mode": thread.trust_mode,
+                "auto_approve": thread.auto_approve,
+            } },
+            "created_at": Utc::now(),
+        });
+        std::fs::write(
+            dir.path()
+                .join("runtime")
+                .join("events")
+                .join("thr_future.jsonl"),
+            format!("{future_event}\n"),
+        )?;
+        let err = manager.store.load_thread("thr_future").unwrap_err();
+        assert!(
+            err.to_string().contains("is newer than supported"),
+            "{err:#}"
+        );
+        let err = manager.store.list_threads_lenient().unwrap_err();
+        assert!(
+            err.to_string().contains("is newer than supported"),
+            "{err:#}"
+        );
+        assert_eq!(std::fs::read_to_string(&future_path)?, future_raw);
         Ok(())
     }
 
