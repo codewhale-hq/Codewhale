@@ -617,7 +617,7 @@ pub(crate) fn format_skill_body(skill: &Skill) -> String {
     if !companions.is_empty() {
         out.push_str("\n## Companion files\n\n");
         out.push_str(
-            "Sibling files in the skill directory. Open one with `read` (path=...) when the task requires it; a skill stored outside the workspace has to be read through `bash` instead.\n\n",
+            "Companion files in the skill directory. Open one with `read` (path=...) when the task requires it; a skill stored outside the workspace has to be read through `bash` instead.\n\n",
         );
         for path in &companions {
             out.push_str(&format!("- `{}`\n", path.display()));
@@ -630,35 +630,58 @@ pub(crate) fn bundled_creator_skill_body(name: &str) -> Option<String> {
     codewhale_skills::bundled_creator_skill(name).map(|skill| format_skill_body(&skill))
 }
 
-/// List sibling files of `SKILL.md` in the skill's own directory.
-/// Skips the `SKILL.md` itself and any nested directories so the
-/// listing stays focused on at-hand resources. Sorted lexically for
-/// deterministic output (matters for transcript diffing in tests).
+const MAX_COMPANION_DEPTH: usize = 4;
+const MAX_COMPANION_FILES: usize = 128;
+
+fn collect_companion_files_rec(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    depth: usize,
+    out: &mut Vec<std::path::PathBuf>,
+) {
+    if depth > MAX_COMPANION_DEPTH || out.len() >= MAX_COMPANION_FILES {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut children: Vec<std::fs::DirEntry> = rd.flatten().collect();
+    children.sort_by_key(|entry| entry.file_name());
+    for entry in children {
+        if out.len() >= MAX_COMPANION_FILES {
+            break;
+        }
+        let name = entry.file_name();
+        if name.to_str().is_some_and(|s| s.starts_with('.')) {
+            continue;
+        }
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if ft.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if ft.is_file() {
+            if dir == root && name == "SKILL.md" {
+                continue;
+            }
+            out.push(path);
+        } else if ft.is_dir() && depth < MAX_COMPANION_DEPTH {
+            collect_companion_files_rec(root, &path, depth + 1, out);
+        }
+    }
+}
+
 fn collect_companion_files(skill: &Skill) -> Vec<std::path::PathBuf> {
     if matches!(&skill.source, SkillSource::Plugin { .. }) {
-        // Companion files remain hashed, but exposing their mutable on-disk
-        // paths would let content change after review and bypass the snapshot.
         return Vec::new();
     }
     let Some(dir) = skill.path.parent() else {
         return Vec::new();
     };
-    let mut entries: Vec<std::path::PathBuf> = match std::fs::read_dir(dir) {
-        Ok(rd) => rd
-            .flatten()
-            .filter_map(|entry| {
-                let path = entry.path();
-                let is_file = entry.file_type().is_ok_and(|ft| ft.is_file());
-                let is_skill_md = path.file_name().and_then(|s| s.to_str()) == Some("SKILL.md");
-                if is_file && !is_skill_md {
-                    Some(path)
-                } else {
-                    None
-                }
-            })
-            .collect(),
-        Err(_) => Vec::new(),
-    };
+    let mut entries = Vec::new();
+    collect_companion_files_rec(dir, dir, 0, &mut entries);
     entries.sort();
     entries
 }
@@ -704,7 +727,8 @@ mod tests {
     fn collect_companion_files_lists_siblings_excluding_skill_md() {
         let tmp = tempdir().unwrap();
         let skill_dir = tmp.path().join("rich-skill");
-        fs::create_dir_all(&skill_dir).unwrap();
+        fs::create_dir_all(skill_dir.join("references")).unwrap();
+        fs::create_dir_all(skill_dir.join(".hidden")).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),
             "---\nname: rich-skill\ndescription: x\n---\nbody\n",
@@ -712,19 +736,27 @@ mod tests {
         .unwrap();
         fs::write(skill_dir.join("script.py"), "print('hi')").unwrap();
         fs::write(skill_dir.join("data.json"), "{}").unwrap();
-        // Nested directory — skipped by collect_companion_files.
-        fs::create_dir_all(skill_dir.join("subdir")).unwrap();
+        fs::write(skill_dir.join("references/guide.md"), "# guide").unwrap();
+        fs::write(skill_dir.join(".hidden/secret.txt"), "skip").unwrap();
 
         let registry = SkillRegistry::discover(tmp.path());
         let skill = registry.get("rich-skill").unwrap();
         let files = collect_companion_files(skill);
-        let names: Vec<String> = files
+        let rels: Vec<String> = files
             .iter()
-            .filter_map(|p| p.file_name().and_then(|s| s.to_str().map(str::to_string)))
+            .filter_map(|p| {
+                p.strip_prefix(&skill_dir)
+                    .ok()
+                    .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+            })
             .collect();
         assert_eq!(
-            names,
-            vec!["data.json".to_string(), "script.py".to_string()]
+            rels,
+            vec![
+                "data.json".to_string(),
+                "references/guide.md".to_string(),
+                "script.py".to_string(),
+            ]
         );
     }
 

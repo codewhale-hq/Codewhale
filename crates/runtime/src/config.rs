@@ -2433,6 +2433,7 @@ pub struct RuntimeApiConfig {
 
 /// `[skills]` table — discovery, ambient index and installer configuration.
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct SkillsConfig {
     #[serde(default)]
     pub bundled: BundledSkillsConfig,
@@ -2471,6 +2472,7 @@ pub enum BundledSkillsInstall {
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq, Hash, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BundledSkillsConfig {
     pub install: Option<BundledSkillsInstall>,
     pub selected: Option<Vec<String>>,

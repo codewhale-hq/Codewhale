@@ -1309,11 +1309,13 @@ dependencies = [
  "codewhale-app-server-protocol",
  "codewhale-paths",
  "codewhale-release",
+ "codewhale-util",
  "reqwest",
  "serde_json",
  "tempfile",
  "tokio",
  "tracing",
+ "uuid",
  "wiremock",
 ]
 
@@ -6252,9 +6254,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.9.0"
+version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d24a7e92f4bcaa36b97fa93c4fa7ca8f3e669eced949345b3462dba333c7f909"
+checksum = "391f153431ab68664d946513ea0cb3edbca78eaf99c5a983036cacab6220d85b"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6263,6 +6265,7 @@ dependencies = [
  "libc",
  "oauth2",
  "pastey",
+ "percent-encoding",
  "pin-project-lite",
  "reqwest",
  "schemars 1.2.2",
@@ -6274,6 +6277,8 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
+ "unicode-general-category",
+ "unicode-normalization",
  "url",
  "uuid",
 ]

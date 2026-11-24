@@ -2244,7 +2244,7 @@ fn plugin_create_says_why_when_creator_is_unavailable_and_changes_nothing() {
         let expected = crate::tui::conversation_mode::unavailable_message(
             app.ui_locale,
             "Creator mode",
-            &crate::tui::conversation_mode::display_reason(app.ui_locale, forced_reason),
+            &crate::tui::conversation_mode::display_reason(app.ui_locale, Some(forced_reason)),
         );
 
         let result = crate::commands::execute_with_config(

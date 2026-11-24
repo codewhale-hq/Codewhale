@@ -1226,7 +1226,10 @@ pub async fn run_tui(
                 Ok(goal) => {
                     let saved_id = saved.metadata.id.clone();
                     match apply_loaded_session_with_goal(&mut app, config, saved, goal.as_ref()) {
-                        Ok(()) => {
+                        // A store cannot be adopted here: this runs before
+                        // `TaskManager::start`, so the binding the launch path
+                        // uses is read from the same metadata below (#6207).
+                        Ok(_) => {
                             lease.commit();
                             app.status_message = Some(format!(
                                 "Resumed session: {}",
@@ -1495,7 +1498,17 @@ pub async fn run_tui(
     .await;
     automation_cancel.cancel();
     automation_scheduler.abort();
-    if let Err(error) = task_manager.shutdown_and_wait().await {
+    // Settle the store this host actually owns at exit. A session switch may
+    // have adopted another store, and shutting down the launch-time handle
+    // would leave the adopted one undrained — its queued work never settled
+    // and its process-owner lock released only by the process ending.
+    if let Some(current_tasks) = app
+        .runtime_services
+        .task_manager
+        .clone()
+        .or_else(|| Some(task_manager.clone()))
+        && let Err(error) = current_tasks.shutdown_and_wait().await
+    {
         tracing::error!(%error, "Task manager shutdown remains incomplete");
     }
 
@@ -2735,7 +2748,6 @@ pub(crate) async fn run_event_loop(
         let mut respawn_after_provider_rollback: Option<String> = None;
         let mut fallback_after_engine_error: Option<ProviderFallbackRollback> = None;
         {
-            let mut rx = engine_handle.rx_event.write().await;
             let mut progress_redraw_agents: HashSet<String> = HashSet::new();
             let drain_started = Instant::now();
             let mut events_drained = 0usize;
@@ -2745,7 +2757,8 @@ pub(crate) async fn run_event_loop(
                 {
                     break;
                 }
-                let event = match rx.try_recv() {
+                let next = engine_handle.rx_event.write().await.try_recv();
+                let event = match next {
                     Ok(event) => event,
                     Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
                     Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
@@ -3307,9 +3320,13 @@ pub(crate) async fn run_event_loop(
                                 error = %err,
                                 "Work Graph checkpoint did not complete; projections remain unpublished"
                             );
-                            app.status_message = Some(format!(
-                                "To-do list update pending: checkpoint or Work update did not complete ({err})"
-                            ));
+                            app.push_status_toast(
+                                format!(
+                                    "To-do list update pending: checkpoint or Work update did not complete ({err})"
+                                ),
+                                StatusToastLevel::Error,
+                                Some(12_000),
+                            );
                         }
 
                         // Immediately refresh the task panel sidebar when a
@@ -4976,9 +4993,10 @@ pub(crate) async fn run_event_loop(
                                 }),
                             );
                             app.add_message(HistoryCell::System {
-                                content: format!(
-                                    "Sandbox denied {tool_name}: {denial_reason} - auto-elevating to full access"
-                                ),
+                                content: app
+                                    .tr(MessageId::SandboxAutoElevating)
+                                    .replace("{tool_name}", tool_name.as_str())
+                                    .replace("{denial_reason}", denial_reason.as_str()),
                             });
                             // Auto-elevate to full access (no sandbox)
                             let policy = codewhale_sandbox::SandboxPolicy::DangerFullAccess;

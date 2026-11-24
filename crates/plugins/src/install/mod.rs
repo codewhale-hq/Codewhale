@@ -584,6 +584,12 @@ async fn convert_dsh_off_runtime(package: PathBuf, network: NetworkPolicy) -> Re
     .context("DSH conversion task failed")?
 }
 
+struct DshUnchangedCheck {
+    expected_source_checksum: String,
+    target: PathBuf,
+    marker_body: String,
+}
+
 /// Stage, verify and place a converted DSH bundle exactly like a local one.
 /// The marker records the package and the converted bundle's content hash,
 /// so update re-converts and can tell an unchanged package from a changed one.
@@ -595,7 +601,7 @@ async fn install_converted_dsh(
     update: bool,
     name_conflict: &(dyn Fn(&str) -> Option<String> + Send + Sync),
     expected_content_hash: Option<&str>,
-    unchanged_from: Option<(PathBuf, String)>,
+    unchanged_check: Option<DshUnchangedCheck>,
 ) -> Result<Option<PluginInstallOutcome>> {
     let canonical = converted.canonical.clone();
     let dir = user_plugins_dir.to_path_buf();
@@ -603,6 +609,10 @@ async fn install_converted_dsh(
     let staged = off_runtime(move || {
         let staged = stage_local_copy(&converted.bundle, &dir, max_size)?;
         verify_expected_content_hash(&staged, expected.as_deref())?;
+        let unchanged_from = unchanged_check.and_then(|check| {
+            (staged.content_hash == check.expected_source_checksum)
+                .then_some((check.target, check.marker_body))
+        });
         ready_or_unchanged(staged, unchanged_from)
     })
     .await?;
@@ -1084,17 +1094,11 @@ pub async fn update(
                 return Err(err);
             }
         };
-        let content_hash = {
-            let manifest = crate::agent_plugin::resolve_manifest_path(&converted.bundle)
-                .context("converted DSH bundle has no manifest")?;
-            PluginManifest::validate_from_path(&manifest)
-                .map_err(|error| {
-                    anyhow::anyhow!("converted DSH bundle failed validation: {error}")
-                })?
-                .content_hash
-        };
-        let unchanged_from = (content_hash == marker.source_checksum())
-            .then(|| (target.clone(), marker_body.clone()));
+        let unchanged_check = Some(DshUnchangedCheck {
+            expected_source_checksum: marker.source_checksum().to_string(),
+            target: target.clone(),
+            marker_body: marker_body.clone(),
+        });
         let Some(outcome) = install_converted_dsh(
             converted,
             user_plugins_dir,
@@ -1106,7 +1110,7 @@ pub async fn update(
                 })
             },
             None,
-            unchanged_from,
+            unchanged_check,
         )
         .await?
         else {

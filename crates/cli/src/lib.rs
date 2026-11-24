@@ -1042,19 +1042,7 @@ fn start_lane(request: LaneStartRequest) -> Result<()> {
         worktree,
     };
     let backend = resolve_backend(kind);
-    if let Err(error) = backend.start(&reg, &mut record, &spec) {
-        // A start that failed before launch (worktree provisioning, the
-        // first log write) left the lane `pending` forever; reconcile skips
-        // pending lanes. Close it as failed. A lane a backend already made
-        // terminal is left as it is.
-        if let Err(mark) = reg.mark_terminal_if_active(&mut record, LaneStatus::Failed) {
-            return Err(error.context(format!(
-                "lane {} start failed and could not be closed as failed: {mark:#}",
-                record.id
-            )));
-        }
-        return Err(error);
-    }
+    start_lane_with_backend(backend.as_ref(), &reg, &mut record, &spec)?;
     println!("started {}", record.id);
     println!("status:  {}", record.status.as_str());
     println!("runtime: {}", record.runtime.as_str());
@@ -1073,6 +1061,24 @@ fn start_lane(request: LaneStartRequest) -> Result<()> {
             record.status.as_str(),
             record.log_path.display()
         );
+    }
+    Ok(())
+}
+
+fn start_lane_with_backend(
+    backend: &dyn codewhale_lane::RuntimeBackend,
+    reg: &codewhale_lane::LaneRegistry,
+    record: &mut codewhale_lane::LaneRecord,
+    spec: &codewhale_lane::LaneStartSpec,
+) -> Result<()> {
+    if let Err(error) = backend.start(reg, record, spec) {
+        if let Err(mark) = reg.mark_terminal_if_active(record, codewhale_lane::LaneStatus::Failed) {
+            return Err(error.context(format!(
+                "lane {} start failed and could not be closed as failed: {mark:#}",
+                record.id
+            )));
+        }
+        return Err(error);
     }
     Ok(())
 }
@@ -1525,19 +1531,21 @@ fn resolve_against_workspace(path: &Path, workspace: &Path) -> PathBuf {
 const MAX_WORKFLOW_SOURCE_BYTES: u64 = 1024 * 1024;
 
 fn validate_workflow_source_file(path: &Path) -> Result<()> {
-    let mut source = String::new();
+    let mut bytes = Vec::new();
     std::fs::File::open(path)
         .and_then(|file| {
             file.take(MAX_WORKFLOW_SOURCE_BYTES + 1)
-                .read_to_string(&mut source)
+                .read_to_end(&mut bytes)
         })
         .with_context(|| format!("read {}", path.display()))?;
-    if source.len() as u64 > MAX_WORKFLOW_SOURCE_BYTES {
+    if bytes.len() as u64 > MAX_WORKFLOW_SOURCE_BYTES {
         bail!(
             "workflow source {} exceeds {MAX_WORKFLOW_SOURCE_BYTES} bytes",
             path.display()
         );
     }
+    let source =
+        String::from_utf8(bytes).with_context(|| format!("read {} as UTF-8", path.display()))?;
     if source.trim_start().starts_with("export default workflow(")
         || source.trim_start().starts_with("workflow(")
         || source.contains("\nworkflow(")
@@ -8816,6 +8824,64 @@ verbosity = "concise"
     }
 
     #[test]
+    fn start_lane_reports_mark_terminal_error_when_start_and_close_both_fail() {
+        use codewhale_lane::{
+            LaneRecord, LaneRegistry, LaneStartSpec, RuntimeBackend, RuntimeBackendKind,
+            TerminalTransition,
+        };
+
+        struct FailingBackend;
+
+        impl RuntimeBackend for FailingBackend {
+            fn kind(&self) -> RuntimeBackendKind {
+                RuntimeBackendKind::Inline
+            }
+
+            fn start(
+                &self,
+                _registry: &LaneRegistry,
+                _record: &mut LaneRecord,
+                _spec: &LaneStartSpec,
+            ) -> Result<()> {
+                bail!("simulated backend start failure")
+            }
+
+            fn attach_command(&self, _record: &LaneRecord) -> Option<String> {
+                None
+            }
+
+            fn stop(
+                &self,
+                _registry: &LaneRegistry,
+                _record: &mut LaneRecord,
+                _fence: Option<u64>,
+            ) -> Result<TerminalTransition> {
+                Ok(TerminalTransition::AlreadyTerminal)
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let reg = LaneRegistry::open(dir.path()).unwrap();
+        let mut record = reg
+            .create_pending(None, None, None, None, RuntimeBackendKind::Inline, None)
+            .unwrap();
+        // Replace the lock file path with a directory so opening the lane lock fails.
+        std::fs::create_dir(dir.path().join(format!("{}.lock", record.id))).unwrap();
+        let spec = LaneStartSpec {
+            command: vec!["true".into()],
+            cwd: None,
+            environment: Vec::new(),
+            log_proxy: None,
+            worktree: None,
+        };
+        let err = start_lane_with_backend(&FailingBackend, &reg, &mut record, &spec)
+            .expect_err("combined start + mark-terminal failure must error");
+        let text = format!("{err:#}");
+        assert!(text.contains("could not be closed as failed"), "{text}");
+        assert!(text.contains("simulated backend start failure"), "{text}");
+    }
+
+    #[test]
     fn interactive_api_key_prompt_reads_through_the_hidden_reader() {
         let key = read_prompted_api_key(
             "deepseek",
@@ -9988,6 +10054,13 @@ verbosity = "concise"
         std::fs::write(&path, vec![b' '; MAX_WORKFLOW_SOURCE_BYTES as usize + 1]).unwrap();
         let err = validate_workflow_source_file(&path).unwrap_err();
         assert!(err.to_string().contains("exceeds"), "{err}");
+
+        // Multi-byte UTF-8 straddling the cap must still report the size limit.
+        let utf8_path = dir.path().join("big-utf8.workflow.js");
+        let repeated = "中".repeat((MAX_WORKFLOW_SOURCE_BYTES as usize / 3) + 2);
+        std::fs::write(&utf8_path, repeated).unwrap();
+        let utf8_err = validate_workflow_source_file(&utf8_path).unwrap_err();
+        assert!(utf8_err.to_string().contains("exceeds"), "{utf8_err}");
     }
 
     #[test]

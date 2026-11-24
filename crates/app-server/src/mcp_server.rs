@@ -63,7 +63,11 @@ struct McpServerSettings {
 impl McpServerSettings {
     fn load() -> Result<Self> {
         let path = default_config_path();
-        let contents = match &path {
+        Self::load_from_path(path.as_deref())
+    }
+
+    fn load_from_path(path: Option<&std::path::Path>) -> Result<Self> {
+        let contents = match path {
             Some(path) => match std::fs::File::open(path) {
                 Ok(file) => {
                     let cap = codewhale_engine::mcp::MAX_MCP_CONFIG_BYTES as usize;
@@ -1140,5 +1144,20 @@ mod tests {
             assert_eq!(missing["error"]["code"], -32602);
             pipe.finish().await.unwrap();
         }
+    }
+
+    #[test]
+    fn load_from_path_rejects_oversized_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.toml");
+        let defaults = McpServerSettings::load_from_path(Some(&missing)).expect("missing defaults");
+        assert!(defaults.require_approval);
+
+        let oversized = dir.path().join("mcp_server.toml");
+        let cap = codewhale_engine::mcp::MAX_MCP_CONFIG_BYTES as usize;
+        std::fs::write(&oversized, format!("# {}\n", "a".repeat(cap + 16))).unwrap();
+        let err = McpServerSettings::load_from_path(Some(&oversized))
+            .expect_err("oversized config must be rejected");
+        assert!(err.to_string().contains("exceeds the 1 MiB limit"), "{err}");
     }
 }

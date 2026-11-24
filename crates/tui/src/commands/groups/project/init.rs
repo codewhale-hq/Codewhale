@@ -858,7 +858,10 @@ fn init_contextual(contexts: CommandContexts<'_>, _arg: Option<&str>) -> Command
             "Command capability unavailable: presentation",
         );
     };
-    init(&workspace.workspace(), presentation.language_name())
+    let workspace = workspace.workspace().to_path_buf();
+    let language = presentation.language_name().to_string();
+    crate::commands::contract::run_owner_blocking(move || Ok(init(&workspace, &language)))
+        .unwrap_or_else(CommandResult::error)
 }
 
 // ---------------------------------------------------------------------------

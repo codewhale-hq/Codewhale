@@ -143,7 +143,12 @@ impl FleetDetailView {
         scope: FleetScope,
         member_id: Option<&str>,
     ) -> Option<Self> {
-        let (fleet, source) = load_fleet_in_scope(name, scope, &app.workspace).ok()?;
+        let fleet_name = name.to_string();
+        let workspace = app.workspace.clone();
+        let (fleet, source) = crate::commands::contract::run_owner_blocking(move || {
+            load_fleet_in_scope(&fleet_name, scope, &workspace).map_err(|error| error.to_string())
+        })
+        .ok()?;
         let session_provider = if app.auto_model {
             app.last_effective_provider_identity
                 .clone()
@@ -190,9 +195,13 @@ impl FleetDetailView {
         session_model: &str,
     ) -> Self {
         let routes = build_route_rows(config);
-        let saved_source = std::fs::read_to_string(&source)
-            .ok()
-            .filter(|text| FleetFile::parse(text).ok().as_ref() == Some(&fleet));
+        let source_path = source.clone();
+        let saved_source = crate::commands::contract::run_owner_blocking(move || {
+            Ok(std::fs::read_to_string(&source_path).ok())
+        })
+        .ok()
+        .flatten()
+        .filter(|text| FleetFile::parse(text).ok().as_ref() == Some(&fleet));
         let mut view = Self {
             fleet,
             editor_id: uuid::Uuid::new_v4(),
@@ -256,21 +265,22 @@ impl FleetDetailView {
     /// Known limitation: this is check-then-write, not a lock; a write that
     /// lands between the check and the atomic rename is not detected.
     fn source_unchanged(&self) -> bool {
+        let source = self.source.clone();
         self.saved_source.is_some()
-            && std::fs::read_to_string(&self.source).ok() == self.saved_source
+            && crate::commands::contract::run_owner_blocking(move || {
+                Ok(std::fs::read_to_string(&source).ok())
+            })
+            .ok()
+            .flatten()
+                == self.saved_source
     }
 
     /// The pager shown when the source moved underneath the editor.
     fn stale_source_action(&self, title: &str) -> ViewAction {
         ViewAction::Emit(ViewEvent::OpenTextPager {
             title: title.to_string(),
-            content: format!(
-                "Nothing was written.\n\n{} changed on disk after this editor opened it \
-                 (another session or an external edit). Saving now would overwrite \
-                 that newer version.\n\nClose this editor and reopen the team to load \
-                 the current file, then make the change again.",
-                self.source.display()
-            ),
+            content: tr(self.locale, MessageId::FleetSaveStaleSourceBody)
+                .replace("{path}", &self.source.display().to_string()),
         })
     }
 
@@ -670,22 +680,21 @@ impl FleetDetailView {
 
     fn save(&self) -> Option<ViewAction> {
         if !self.source_unchanged() {
-            return Some(self.stale_source_action("Save refused"));
+            return Some(
+                self.stale_source_action(&tr(self.locale, MessageId::FleetSaveRefusedTitle)),
+            );
         }
         match save_fleet(&self.fleet, self.scope, &self.workspace) {
             Ok(path) => Some(ViewAction::EmitAndClose(ViewEvent::FleetStoreChanged {
-                message: format!(
-                    "Saved Team `{}` ({}) — wrote {}",
-                    self.fleet.name,
-                    self.scope.long_label(),
-                    path.display()
-                ),
+                message: tr(self.locale, MessageId::FleetSavedNotice)
+                    .replace("{name}", &self.fleet.name)
+                    .replace("{scope}", self.scope.long_label())
+                    .replace("{path}", &path.display().to_string()),
             })),
             Err(err) => Some(ViewAction::Emit(ViewEvent::OpenTextPager {
-                title: "Save failed".to_string(),
-                content: format!(
-                    "Nothing was written.\n\n{err:#}\n\nFix the issue and save again."
-                ),
+                title: tr(self.locale, MessageId::FleetSaveFailedTitle).into_owned(),
+                content: tr(self.locale, MessageId::FleetSaveFailedBody)
+                    .replace("{error}", &format!("{err:#}")),
             })),
         }
     }

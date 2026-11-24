@@ -2342,40 +2342,38 @@ impl ModalView for FleetSetupView {
 
 impl FleetSetupView {
     fn render_header(&self, area: Rect, buf: &mut Buffer) {
+        let locale = self.snapshot.locale;
         let (title, subtitle): (Cow<'static, str>, Cow<'static, str>) = match self.step {
             Step::Role => (
-                Cow::Borrowed("Choose a team role"),
-                Cow::Borrowed("Each Fleet member plays one role in the delegation."),
+                tr(locale, MessageId::FleetSetupRoleTitle),
+                tr(locale, MessageId::FleetSetupRoleSubtitle),
             ),
             Step::Composition => (
-                Cow::Borrowed("Unratified composition suggestion"),
-                Cow::Borrowed(
-                    "Review the configured-pool assignments; nothing is saved or running.",
-                ),
+                tr(locale, MessageId::FleetSetupCompositionTitle),
+                tr(locale, MessageId::FleetSetupCompositionSubtitle),
             ),
             Step::Model => (
-                Cow::Borrowed("Choose a model"),
-                Cow::Borrowed("Pick this agent's model, or inherit your current route."),
+                tr(locale, MessageId::FleetSetupModelTitle),
+                tr(locale, MessageId::FleetSetupModelSubtitle),
             ),
             Step::Destination => (
-                Cow::Owned(tr(self.snapshot.locale, MessageId::FleetDestStepTitle).into_owned()),
-                Cow::Owned(tr(self.snapshot.locale, MessageId::FleetDestStepSubtitle).into_owned()),
+                tr(locale, MessageId::FleetDestStepTitle),
+                tr(locale, MessageId::FleetDestStepSubtitle),
             ),
             Step::Review if self.assignment.is_some() => (
-                Cow::Owned(format!("Review {} model", self.selected_role())),
-                Cow::Borrowed(
-                    "Save this role's model and thinking; the session model stays unchanged.",
+                Cow::Owned(
+                    tr(locale, MessageId::FleetSetupRoleReviewTitle)
+                        .replace("{role}", &self.selected_role()),
                 ),
+                tr(locale, MessageId::FleetSetupRoleReviewSubtitle),
             ),
             Step::Review if self.model_draft.is_some() => (
-                Cow::Borrowed("Save profile"),
-                Cow::Borrowed(
-                    "Exact TOML shown below; nothing is written until you activate the save control.",
-                ),
+                tr(locale, MessageId::FleetSetupProfileSaveTitle),
+                tr(locale, MessageId::FleetSetupProfileSaveSubtitle),
             ),
             Step::Review => (
-                Cow::Borrowed("Review & save"),
-                Cow::Borrowed("Nothing is written until you activate the save control."),
+                tr(locale, MessageId::FleetSetupReviewTitle),
+                tr(locale, MessageId::FleetSetupReviewSubtitle),
             ),
         };
         let chip_style = Style::default().fg(palette::TEXT_MUTED);

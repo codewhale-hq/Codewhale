@@ -321,12 +321,14 @@ async fn balance_get_json<T: serde::de::DeserializeOwned>(
         .send()
         .await
         .map_err(|error| {
+            let error = error.without_url();
+            tracing::warn!(%error, "provider balance request failed");
             if error.is_timeout() {
-                "request timed out".to_string()
+                format!("request timed out: {error}")
             } else if error.is_connect() {
-                "could not connect to the balance service".to_string()
+                format!("could not connect to the balance service: {error}")
             } else {
-                "request failed".to_string()
+                format!("request failed: {error}")
             }
         })?;
     let status = response.status();
@@ -338,10 +340,10 @@ async fn balance_get_json<T: serde::de::DeserializeOwned>(
         );
         return Err(format!("HTTP {status}"));
     }
-    response
-        .json()
-        .await
-        .map_err(|_| "the response was not readable".to_string())
+    response.json().await.map_err(|error| {
+        tracing::warn!(%error, "provider balance response was not readable");
+        format!("the response was not readable: {error}")
+    })
 }
 
 pub(crate) fn should_fetch_provider_balance(app: &App) -> bool {

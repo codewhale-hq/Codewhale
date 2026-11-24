@@ -202,6 +202,19 @@ pub struct UpdateState {
     pub last_stage_attempt_unix: u64,
     #[serde(default)]
     pub last_stage_version: Option<String>,
+    /// Why the last background stage or start-up apply failed, kept until one
+    /// succeeds so `doctor` and the update notice can show it.
+    #[serde(default)]
+    pub last_failure: Option<String>,
+}
+
+/// Park (or with `None`, clear) the reason the last automatic update failed.
+pub fn record_failure(home: &Path, reason: Option<String>) {
+    let mut state = load_state(home);
+    if state.last_failure != reason {
+        state.last_failure = reason;
+        let _ = store_state(home, &state);
+    }
 }
 
 #[must_use]
@@ -234,11 +247,12 @@ fn load_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
 
 pub fn store_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let dir = path.parent().context("state path has no parent")?;
-    fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(value)?)
-        .with_context(|| format!("failed to write {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("failed to write {}", path.display()))
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("state path has no valid file name")?;
+    let bytes = serde_json::to_vec_pretty(value)?;
+    crate::installs::write_file_atomically(dir, name, &bytes, false)
 }
 
 #[must_use]
@@ -257,6 +271,27 @@ pub fn discard_staged(home: &Path) {
 #[must_use]
 pub fn load_previous(home: &Path) -> Option<PreviousBinary> {
     load_json(&previous_dir(home).join("previous.json"))
+}
+
+/// Why `codewhale update --rollback` would refuse to go from `current` back
+/// to `previous`, or `None` when it would roll back. Workspace state migrated
+/// by v0.10.3 cannot be verified against earlier releases.
+#[must_use]
+pub fn rollback_blocker(previous: &str, current: &str) -> Option<String> {
+    let (Ok(previous_version), Ok(current_version)) = (
+        crate::parse_release_version(previous),
+        crate::parse_release_version(current),
+    ) else {
+        return Some(format!(
+            "cannot compare v{previous} with v{current}, so rollback is disabled"
+        ));
+    };
+    let triple = |v: &semver::Version| (v.major, v.minor, v.patch);
+    (triple(&current_version) >= (0, 10, 3) && triple(&previous_version) <= (0, 10, 3)).then(|| {
+        format!(
+            "rollback to v{previous} is disabled because its compatibility with migrated workspace state cannot be verified"
+        )
+    })
 }
 
 #[must_use]

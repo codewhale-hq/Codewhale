@@ -11,8 +11,12 @@
 //! Detection is path-based where managers use distinct prefixes. Omarchy's
 //! AUR packages live in the ordinary `/usr/bin` prefix, so that case also
 //! consults the local pacman ownership database. No network access is needed.
+//!
+//! This is the one ownership check: `codewhale update`, `doctor`, `uninstall`,
+//! rollback and automatic updates all ask [`InstallMethod::detect`]. Do not add
+//! a second path list beside it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
 
@@ -61,8 +65,17 @@ pub enum InstallMethod {
     /// A WinGet portable package under `Microsoft/WinGet/Packages`.
     WinGet,
     DesktopApp,
-    /// A release binary the user placed on disk themselves. The default, and
-    /// the only case where in-place self-update is correct.
+    /// A system or distribution directory (`/usr/bin`, the Nix and Guix
+    /// stores, Windows system folders, Chocolatey) whose owning package
+    /// manager is not known.
+    System,
+    /// The Windows setup installer: `<root>\bin\codewhale.exe` beside its
+    /// `Uninstall.exe`. `codewhale update` replaces the binary in place; the
+    /// installer removes it.
+    WindowsInstaller,
+    /// A self-updating layout in a folder this account cannot write.
+    ReadOnly,
+    /// A release binary the user placed on disk themselves. The default.
     Binary,
 }
 
@@ -76,6 +89,46 @@ impl InstallMethod {
     /// manager that owns the real file wins.
     #[must_use]
     pub fn detect(exe: &Path) -> Self {
+        let detected = Self::owner(exe);
+        // An override can identify a relocated package, but cannot authorize
+        // replacing a file that a known package manager owns. An unknown
+        // system directory may be named by it, but only as another manager.
+        match std::env::var(INSTALL_METHOD_ENV)
+            .ok()
+            .and_then(|raw| Self::from_token(&raw))
+        {
+            Some(forced)
+                if detected.supports_self_update()
+                    || (detected == Self::System && !forced.supports_self_update()) =>
+            {
+                forced
+            }
+            _ => detected,
+        }
+        .unless_unwritable(exe)
+    }
+
+    /// A copy that would update itself, but whose folder this account cannot
+    /// write, cannot apply an update: say so before offering or staging one.
+    fn unless_unwritable(self, exe: &Path) -> Self {
+        let Some(dir) = exe.parent().filter(|dir| dir.is_dir()) else {
+            return self;
+        };
+        if self.supports_self_update()
+            && tempfile::Builder::new()
+                .prefix(".codewhale-write-probe")
+                .tempfile_in(dir)
+                .is_err()
+        {
+            return Self::ReadOnly;
+        }
+        self
+    }
+
+    /// Who owns `exe` on disk, ignoring [`INSTALL_METHOD_ENV`]: the answer for
+    /// a file that is not the running executable.
+    #[must_use]
+    pub fn owner(exe: &Path) -> Self {
         let mut detected = Self::detect_with_omarchy_probe(exe, omarchy_package_owns);
         if detected.supports_self_update()
             && let Ok(real) = std::fs::canonicalize(exe)
@@ -86,32 +139,25 @@ impl InstallMethod {
                 detected = owner;
             }
         }
-        // An override can identify a relocated package, but cannot authorize
-        // replacing a file that a known package manager owns.
-        if !detected.supports_self_update() {
-            return detected;
-        }
-        if let Some(forced) = std::env::var(INSTALL_METHOD_ENV)
-            .ok()
-            .and_then(|raw| Self::from_token(&raw))
-        {
-            return forced;
-        }
         detected
     }
 
     fn detect_with_omarchy_probe(exe: &Path, owns_package: impl FnOnce(&Path) -> bool) -> Self {
         let path_method = Self::from_path(exe);
-        if path_method != Self::Binary {
-            return path_method;
-        }
-        if crate::installs::cargo_owns_a_command_beside(exe) {
-            return Self::Cargo;
+        match path_method {
+            Self::Binary if windows_installer_uninstaller(exe).is_some() => {
+                return Self::WindowsInstaller;
+            }
+            Self::Binary if crate::installs::cargo_owns_a_command_beside(exe) => {
+                return Self::Cargo;
+            }
+            Self::Binary | Self::System => {}
+            _ => return path_method,
         }
         if owns_package(exe) {
             Self::Omarchy
         } else {
-            Self::Binary
+            path_method
         }
     }
 
@@ -164,6 +210,24 @@ impl InstallMethod {
         {
             return Self::Cargo;
         }
+        let system_prefix = [
+            "/usr/bin",
+            "/usr/sbin",
+            "/bin",
+            "/sbin",
+            "/nix/store",
+            "/gnu/store",
+        ]
+        .iter()
+        .any(|prefix| exe.starts_with(prefix));
+        if system_prefix
+            || has("windows")
+            || has("windowsapps")
+            || has("scoop")
+            || has("chocolatey")
+        {
+            return Self::System;
+        }
         Self::Binary
     }
 
@@ -176,6 +240,7 @@ impl InstallMethod {
             "scoop" => Some(Self::Scoop),
             "winget" => Some(Self::WinGet),
             "desktop" | "app" => Some(Self::DesktopApp),
+            "system" => Some(Self::System),
             "binary" | "release" => Some(Self::Binary),
             _ => None,
         }
@@ -197,7 +262,9 @@ impl InstallMethod {
             Self::Scoop => "scoop update codewhale",
             Self::WinGet => "winget upgrade --id HunterBown.CodeWhale",
             Self::DesktopApp => DESKTOP_APP_UPDATE,
-            Self::Binary => "codewhale update",
+            Self::System => "the package manager that installed it",
+            Self::ReadOnly => "the installer, into a folder you own",
+            Self::WindowsInstaller | Self::Binary => "codewhale update",
         }
     }
 
@@ -215,6 +282,9 @@ impl InstallMethod {
             Self::Scoop => "scoop uninstall codewhale",
             Self::WinGet => "winget uninstall --id HunterBown.CodeWhale",
             Self::DesktopApp => "remove the Codewhale app; this Engine is part of it",
+            Self::System => "remove it with the package manager that installed it",
+            Self::ReadOnly => "remove it as the account that owns its folder",
+            Self::WindowsInstaller => "Settings > Apps > CodeWhale > Uninstall",
             Self::Binary => "codewhale uninstall --yes",
         }
     }
@@ -225,7 +295,7 @@ impl InstallMethod {
     /// overwriting a managed binary is worse than doing nothing.
     #[must_use]
     pub fn supports_self_update(self) -> bool {
-        matches!(self, Self::Binary)
+        matches!(self, Self::Binary | Self::WindowsInstaller)
     }
 
     /// Short human label, for messages that name the owner of the install.
@@ -234,14 +304,35 @@ impl InstallMethod {
         match self {
             Self::Npm => "npm",
             Self::Homebrew => "Homebrew",
-            Self::Cargo => "cargo",
+            Self::Cargo => "Cargo",
             Self::Omarchy => "Omarchy",
             Self::Scoop => "Scoop",
             Self::WinGet => "WinGet",
             Self::DesktopApp => "the Codewhale app",
+            Self::System => "a system package manager",
+            Self::ReadOnly => "a folder this account cannot write",
+            Self::WindowsInstaller => "the Codewhale Windows installer",
             Self::Binary => "release binary",
         }
     }
+}
+
+/// `<root>\Uninstall.exe` when `exe` is `<root>\bin\<name>` from the Windows
+/// setup installer, identified by the files only that installer writes.
+pub(crate) fn windows_installer_uninstaller(exe: &Path) -> Option<PathBuf> {
+    let bin = exe.parent()?;
+    if !bin
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
+    {
+        return None;
+    }
+    let root = bin.parent()?;
+    let uninstaller = root.join("Uninstall.exe");
+    [&uninstaller, &root.join("update-user-path.ps1")]
+        .iter()
+        .all(|path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file()))
+        .then_some(uninstaller)
 }
 
 #[cfg(target_os = "linux")]
@@ -396,6 +487,36 @@ mod tests {
     }
 
     #[test]
+    fn system_directories_are_owned_but_user_release_paths_self_update() {
+        for path in [
+            "/usr/bin/codewhale",
+            "/usr/sbin/codewhale",
+            "/bin/codewhale",
+            "/nix/store/pkg/bin/codewhale",
+            "/gnu/store/pkg/bin/codewhale",
+            "/Users/u/scoop/shims/codewhale.exe",
+            "/Windows/System32/codewhale.exe",
+        ] {
+            assert_eq!(
+                InstallMethod::from_path(Path::new(path)),
+                InstallMethod::System,
+                "{path}"
+            );
+        }
+        for path in [
+            "/usr/local/bin/codewhale",
+            "/home/u/.local/bin/codewhale",
+            "/data/data/com.termux/files/usr/bin/codewhale",
+        ] {
+            assert_eq!(
+                InstallMethod::from_path(Path::new(path)),
+                InstallMethod::Binary,
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
     fn omarchy_probe_only_claims_package_owned_plain_paths() {
         let managed = PathBuf::from("/usr/bin/codewhale");
         assert_eq!(
@@ -404,7 +525,7 @@ mod tests {
         );
         assert_eq!(
             InstallMethod::detect_with_omarchy_probe(&managed, |_| false),
-            InstallMethod::Binary
+            InstallMethod::System
         );
 
         let npm = PathBuf::from("/usr/lib/node_modules/codewhale/bin/codewhale");

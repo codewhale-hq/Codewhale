@@ -24,8 +24,13 @@ contributors="$(printf '%s\n' "${section}" | awk '
   in_contributors { print }
 ')"
 
+upgrade_notes="$(printf '%s\n' "${section}" | awk '
+  /^### Upgrade notes[[:space:]]*$/ { in_upgrade = 1; next }
+  in_upgrade && /^### / { exit }
+  in_upgrade { print }
+' | sed '/./,$!d')"
 notes="$(printf '%s\n' "${section}" | awk '
-  /^### Contributors[[:space:]]*$/ { in_contributors = 1; next }
+  /^### (Contributors|Upgrade notes)[[:space:]]*$/ { in_contributors = 1; next }
   in_contributors && /^### / { in_contributors = 0 }
   !in_contributors { print }
 ')"
@@ -39,6 +44,9 @@ fi
 
 render_body() {
 printf "## What's in %s\n\n" "${tag}"
+if [[ "${upgrade_notes}" == *[![:space:]]* ]]; then
+  printf '%s\n\n%s\n\n' '### Upgrade notes' "${upgrade_notes}"
+fi
 if [[ -n "${summary}" ]]; then
   printf '%s\n' "${summary}"
 else

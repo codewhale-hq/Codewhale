@@ -128,18 +128,13 @@ pub(super) fn resolve_updater(
 }
 
 /// Instructions for an install this command must not update in place.
-pub(super) fn managed_install_message(method: InstallMethod) -> String {
-    if method == InstallMethod::DesktopApp {
-        return codewhale_release::install::DESKTOP_APP_UPDATE_HELP.to_string();
-    }
+pub(super) fn managed_install_message(method: InstallMethod, exe: Option<&Path>) -> String {
     format!(
-        "Codewhale was installed with {label}, which owns this binary.\n\
-         {migration_help}\n\n\
-         To keep this secondary {label} installation, run `{command}` in a shell.\n\
-         /update will not replace a binary owned by {label}; restart Codewhale after changing installs.",
-        label = method.label(),
-        migration_help = codewhale_release::install::GITHUB_MIGRATION_HELP,
-        command = method.update_command(),
+        "{} Restart Codewhale after updating.",
+        codewhale_release::installs::update_answer(
+            method,
+            exe.unwrap_or(Path::new(UPDATER_BIN_STEM))
+        )
     )
 }
 
@@ -178,9 +173,14 @@ fn update(arg: Option<&str>) -> CommandResult {
     };
 
     match resolve_updater(exe.as_deref(), method, &|path: &Path| path.is_file()) {
-        UpdaterPlan::Managed(method) => CommandResult::message(managed_install_message(method)),
+        UpdaterPlan::Managed(method) => {
+            CommandResult::message(managed_install_message(method, exe.as_deref()))
+        }
         UpdaterPlan::NoUpdater { exe } => CommandResult::message(no_updater_message(&exe)),
-        UpdaterPlan::Run(updater) => run_updater(&updater, mode),
+        UpdaterPlan::Run(updater) => {
+            crate::commands::contract::run_owner_blocking(move || Ok(run_updater(&updater, mode)))
+                .unwrap_or_else(CommandResult::error)
+        }
     }
 }
 
@@ -274,15 +274,14 @@ mod tests {
             );
             assert_eq!(plan, UpdaterPlan::Managed(method), "{method:?}");
 
-            let message = managed_install_message(method);
-            assert!(message.contains(codewhale_release::install::GITHUB_MIGRATION_HELP));
-            assert!(message.contains("mktemp -d"));
+            let message =
+                managed_install_message(method, Some(Path::new("/opt/whatever/codewhale")));
             assert!(
                 message.contains(method.update_command()),
                 "{method:?} message must name its own update command: {message}"
             );
             assert!(
-                message.contains("restart Codewhale"),
+                message.contains("Restart Codewhale"),
                 "{method:?} message must tell the user to restart: {message}"
             );
         }

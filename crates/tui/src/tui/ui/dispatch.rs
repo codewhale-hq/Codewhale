@@ -122,6 +122,14 @@ pub(crate) fn echoed_user_turn_cell(app: &App, display: &str) -> Option<usize> {
         })
 }
 
+fn reject_if_queue_full(app: &mut App, message: QueuedMessage) -> Option<QueuedMessage> {
+    if app.queued_messages.len() >= crate::tui::app::MAX_QUEUED_MESSAGES {
+        app.queue_message(message);
+        return None;
+    }
+    Some(message)
+}
+
 pub(crate) fn enqueue_offline_message(app: &mut App, message: QueuedMessage) {
     app.queue_message(message);
     persist_offline_queue_state(app);
@@ -1655,7 +1663,9 @@ pub(crate) async fn attempt_steer_with_queue_fallback(
 /// Unlike a steer, the message is NOT forwarded immediately — it waits for
 /// the current turn to finish, then dispatches as a normal user message.
 pub(crate) async fn queue_follow_up(app: &mut App, message: QueuedMessage) -> Result<()> {
-    let mut message = message;
+    let Some(mut message) = reject_if_queue_full(app, message) else {
+        return Ok(());
+    };
     echo_queued_user_turn(app, &mut message);
     enqueue_offline_message(app, message);
     let toast = queued_follow_up_toast(app);
@@ -1773,7 +1783,9 @@ pub(crate) async fn dispatch_composer_message(
             Ok(())
         }
         SubmitDisposition::Queue => {
-            let mut message = message;
+            let Some(mut message) = reject_if_queue_full(app, message) else {
+                return Ok(());
+            };
             echo_queued_user_turn(app, &mut message);
             enqueue_offline_message(app, message);
             // A second, empty Enter inside the window sends this now.

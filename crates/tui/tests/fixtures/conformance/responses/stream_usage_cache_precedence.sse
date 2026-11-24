@@ -1,0 +1,2 @@
+data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":40,"output_tokens":8,"prompt_cache_hit_tokens":12,"prompt_cache_miss_tokens":20,"prompt_cache_write_tokens":3,"input_tokens_details":{"cached_tokens":30,"cache_write_tokens":7}}}}
+

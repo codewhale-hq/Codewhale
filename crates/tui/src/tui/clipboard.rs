@@ -66,6 +66,10 @@ const MAX_CLIPBOARD_HTML_BYTES: usize = 1024 * 1024;
 const WAYLAND_CLIPBOARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 #[cfg(any(all(test, unix), all(target_os = "linux", not(target_env = "ohos"))))]
 const WL_PASTE_MAX_BYTES: u64 = 16 * 1024 * 1024;
+#[cfg(any(not(test), all(test, unix)))]
+const TMUX_CLIPBOARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+#[cfg(any(not(test), all(test, unix)))]
+const TMUX_STDERR_MAX_BYTES: u64 = 64 * 1024;
 
 /// Convert rich clipboard content without loading its linked resources. Keep
 /// the plain representation as a lossless fallback for empty/oversized HTML.
@@ -374,6 +378,15 @@ pub struct ClipboardHandler {
         )
     ))]
     clipboard_init_attempted: bool,
+    #[cfg(all(
+        not(test),
+        any(
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        )
+    ))]
+    clipboard_init_pending: Option<std::sync::mpsc::Receiver<Option<Clipboard>>>,
     #[cfg(test)]
     written_text: Vec<String>,
     #[cfg(test)]
@@ -425,6 +438,15 @@ impl ClipboardHandler {
                 )
             ))]
             clipboard_init_attempted: false,
+            #[cfg(all(
+                not(test),
+                any(
+                    target_os = "macos",
+                    target_os = "windows",
+                    all(target_os = "linux", not(target_env = "ohos"))
+                )
+            ))]
+            clipboard_init_pending: None,
             #[cfg(test)]
             written_text: Vec::new(),
             #[cfg(test)]
@@ -592,9 +614,12 @@ impl ClipboardHandler {
             return;
         }
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(Clipboard::new().ok());
+        let rx = self.clipboard_init_pending.take().unwrap_or_else(|| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(Clipboard::new().ok());
+            });
+            rx
         });
         // A timeout is not proof that the clipboard is unusable: a capture tool
         // holding the clipboard open can delay the open past the budget, and
@@ -607,11 +632,15 @@ impl ClipboardHandler {
                 self.clipboard_init_attempted = true;
             }
             Ok(None) => self.clipboard_init_attempted = true,
-            Err(_) => {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                self.clipboard_init_pending = Some(rx);
                 tracing::warn!(
                     target: "codewhale_tui::clipboard",
                     "clipboard open timed out; will retry on the next paste"
                 );
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                self.clipboard_init_attempted = true;
             }
         }
     }
@@ -871,10 +900,13 @@ fn write_text_with_stdin_command(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to run {label}: {e}"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(text.as_bytes())
-            .map_err(|e| anyhow::anyhow!("Failed to write to {label}: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take()
+        && let Err(e) = stdin.write_all(text.as_bytes())
+    {
+        drop(stdin);
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(anyhow::anyhow!("Failed to write to {label}: {e}"));
     }
     let _ = std::thread::Builder::new()
         .name("clipboard-wait".to_string())
@@ -894,13 +926,14 @@ fn read_text_with_wlpaste() -> Result<String> {
     read_text_with_wlpaste_using_argv("wl-paste")
 }
 
-#[cfg(any(all(test, unix), all(target_os = "linux", not(target_env = "ohos"))))]
-fn wait_wayland_clipboard_child(
+#[cfg(any(not(test), all(test, unix)))]
+fn wait_bounded_clipboard_child(
     mut child: std::process::Child,
     program: &str,
+    timeout: std::time::Duration,
 ) -> Result<std::process::ExitStatus> {
     use wait_timeout::ChildExt;
-    let waited = child.wait_timeout(WAYLAND_CLIPBOARD_TIMEOUT);
+    let waited = child.wait_timeout(timeout);
     if let Ok(Some(status)) = waited {
         return Ok(status);
     }
@@ -912,11 +945,19 @@ fn wait_wayland_clipboard_child(
         });
     match waited {
         Err(e) => bail!("Failed to wait on {program}: {e}"),
-        _ => bail!(
-            "{program} timed out after {}s",
-            WAYLAND_CLIPBOARD_TIMEOUT.as_secs()
-        ),
+        _ if timeout.subsec_nanos() == 0 => {
+            bail!("{program} timed out after {}s", timeout.as_secs())
+        }
+        _ => bail!("{program} timed out after {}ms", timeout.as_millis()),
     }
+}
+
+#[cfg(any(all(test, unix), all(target_os = "linux", not(target_env = "ohos"))))]
+fn wait_wayland_clipboard_child(
+    child: std::process::Child,
+    program: &str,
+) -> Result<std::process::ExitStatus> {
+    wait_bounded_clipboard_child(child, program, WAYLAND_CLIPBOARD_TIMEOUT)
 }
 
 #[cfg(any(all(test, unix), all(target_os = "linux", not(target_env = "ohos"))))]
@@ -1006,6 +1047,18 @@ fn write_text_with_tmux(text: &str) -> Result<()> {
 /// cannot honor the command.
 #[cfg(any(not(test), all(test, unix)))]
 fn write_text_with_tmux_using_argv(program: &str, prefix_args: &[&str], text: &str) -> Result<()> {
+    write_text_with_tmux_using_argv_with_timeout(program, prefix_args, text, TMUX_CLIPBOARD_TIMEOUT)
+}
+
+#[cfg(any(not(test), all(test, unix)))]
+fn write_text_with_tmux_using_argv_with_timeout(
+    program: &str,
+    prefix_args: &[&str],
+    text: &str,
+    timeout: std::time::Duration,
+) -> Result<()> {
+    use std::io::Read as _;
+
     let mut child = Command::new(program)
         .args(prefix_args)
         .args(["load-buffer", "-w", "-"])
@@ -1015,30 +1068,60 @@ fn write_text_with_tmux_using_argv(program: &str, prefix_args: &[&str], text: &s
         .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to run tmux load-buffer -w: {e}"))?;
 
-    let write_result = child
-        .stdin
-        .take()
-        .context("open tmux clipboard input")
-        .and_then(|mut stdin| {
-            stdin
-                .write_all(text.as_bytes())
-                .context("write tmux clipboard input")
-        });
-    let output = child
-        .wait_with_output()
-        .context("wait for tmux load-buffer -w")?;
-    write_result?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr);
+    let stdin = child.stdin.take();
+    let stderr = child.stderr.take();
+    let payload = text.as_bytes().to_vec();
+    let (write_tx, write_rx) = std::sync::mpsc::sync_channel(1);
+    if let Err(error) = std::thread::Builder::new()
+        .name("tmux-clipboard-input".to_string())
+        .spawn(move || {
+            let written = match stdin {
+                Some(mut stdin) => stdin
+                    .write_all(&payload)
+                    .context("write tmux clipboard input"),
+                None => Err(anyhow::anyhow!("open tmux clipboard input")),
+            };
+            let _ = write_tx.send(written);
+        })
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(anyhow::anyhow!(
+            "spawn tmux clipboard input writer: {error}"
+        ));
+    }
+
+    let (stderr_tx, stderr_rx) = std::sync::mpsc::sync_channel(1);
+    if let Err(error) = std::thread::Builder::new()
+        .name("tmux-clipboard-stderr".to_string())
+        .spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(stderr) = stderr {
+                let _ = stderr.take(TMUX_STDERR_MAX_BYTES).read_to_end(&mut bytes);
+            }
+            let _ = stderr_tx.send(bytes);
+        })
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(anyhow::anyhow!(
+            "spawn tmux clipboard stderr reader: {error}"
+        ));
+    }
+
+    let status = wait_bounded_clipboard_child(child, "tmux load-buffer -w", timeout)?;
+    let stderr = stderr_rx.recv_timeout(timeout).unwrap_or_default();
+    if !status.success() {
+        let detail = String::from_utf8_lossy(&stderr);
         let detail = detail.trim();
         if detail.is_empty() {
-            bail!("tmux load-buffer -w exited with {}", output.status);
+            bail!("tmux load-buffer -w exited with {status}");
         }
-        bail!(
-            "tmux load-buffer -w exited with {}: {detail}",
-            output.status
-        );
+        bail!("tmux load-buffer -w exited with {status}: {detail}");
     }
+    write_rx
+        .recv_timeout(timeout)
+        .map_err(|_| anyhow::anyhow!("tmux load-buffer -w input did not close"))??;
     Ok(())
 }
 
@@ -1746,6 +1829,130 @@ exit 42
 
         assert!(err.to_string().contains("exited with"), "{err}");
         assert!(err.to_string().contains("clipboard denied"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tmux_helper_times_out_stalled_child_and_unblocks_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let hang_script = dir.path().join("tmux-hang");
+        std::fs::write(
+            &hang_script,
+            r#"#!/bin/sh
+cat >/dev/null
+exec sleep 30
+"#,
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&hang_script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&hang_script, perms).unwrap();
+
+        let ok_script = dir.path().join("tmux-ok");
+        std::fs::write(
+            &ok_script,
+            r#"#!/bin/sh
+cat >/dev/null
+exit 0
+"#,
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&ok_script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&ok_script, perms).unwrap();
+
+        let timeout = std::time::Duration::from_millis(150);
+        let run_with_retry = |program: &Path, text: &str| {
+            let mut attempts = 0;
+            loop {
+                let result = write_text_with_tmux_using_argv_with_timeout(
+                    program.to_str().unwrap(),
+                    &[],
+                    text,
+                    timeout,
+                );
+                attempts += 1;
+                let busy = result
+                    .as_ref()
+                    .err()
+                    .is_some_and(|err| err.to_string().contains("Text file busy"));
+                if !busy || attempts >= 100 {
+                    return result;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+
+        let started = std::time::Instant::now();
+        let err =
+            run_with_retry(&hang_script, "stuck").expect_err("stalled tmux child must time out");
+        assert!(err.to_string().contains("timed out"), "{err}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "stalled tmux child took too long: {:?}",
+            started.elapsed()
+        );
+
+        let hang_path = hang_script.clone();
+        let ok_path = ok_script.clone();
+        let writer = TerminalClipboardWriter::spawn_with(move |request| {
+            let (script, call_timeout) = if request.text == "stuck" {
+                (&hang_path, timeout)
+            } else {
+                (&ok_path, std::time::Duration::from_secs(2))
+            };
+            let mut attempts = 0;
+            loop {
+                let result = write_text_with_tmux_using_argv_with_timeout(
+                    script.to_str().unwrap(),
+                    &[],
+                    &request.text,
+                    call_timeout,
+                );
+                attempts += 1;
+                let busy = result
+                    .as_ref()
+                    .err()
+                    .is_some_and(|err| err.to_string().contains("Text file busy"));
+                if !busy || attempts >= 100 {
+                    return result;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        })
+        .expect("spawn clipboard writer");
+
+        writer
+            .enqueue("stuck", true)
+            .expect("enqueue stalled write");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let first_err = loop {
+            if let Some(completion) = writer.poll_completion() {
+                break completion.expect_err("stalled write should fail with timeout");
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "stalled tmux worker never reported timeout completion"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(first_err.contains("timed out"), "{first_err}");
+
+        writer
+            .enqueue("recovered", true)
+            .expect("worker must accept a subsequent write after timeout");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            if let Some(completion) = writer.poll_completion() {
+                completion.expect("subsequent write should succeed after worker recovers");
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "subsequent tmux write never completed"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[cfg(all(unix, not(target_env = "ohos")))]

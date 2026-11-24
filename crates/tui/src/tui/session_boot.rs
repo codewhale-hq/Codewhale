@@ -316,7 +316,7 @@ impl SessionBootSurface {
         if !needs_login.is_empty() {
             line.push_str(&format!(
                 "{ITEM_SEPARATOR}{}: {}",
-                mcp_auth_required_state_label(),
+                mcp_auth_required_state_label(locale),
                 named_list(&needs_login)
             ));
         }
@@ -388,7 +388,7 @@ impl SessionBootSurface {
             );
         }
         if self.phase == SessionBootPhase::Booting {
-            let count = self.servers.len().max(self.unnamed_connecting);
+            let count = self.unnamed_connecting;
             if count > 0 {
                 return activity_notice_from_candidates(
                     SessionBootActivityLevel::Active,
@@ -494,8 +494,12 @@ pub fn mcp_error_requires_login(error: &str) -> bool {
 /// The `◆ auth required` state label every TUI MCP surface prints for a
 /// server whose login is missing, expired, or revoked.
 #[must_use]
-pub fn mcp_auth_required_state_label() -> String {
-    format!("{} auth required", codewhale_tui_kit::glyphs::ATTENTION)
+pub fn mcp_auth_required_state_label(locale: Locale) -> String {
+    format!(
+        "{} {}",
+        codewhale_tui_kit::glyphs::ATTENTION,
+        tr(locale, MessageId::McpAuthRequiredState)
+    )
 }
 
 fn named_chip_line(kind: &str, count: usize, verb: &str, names: &[&str]) -> String {
@@ -814,7 +818,7 @@ mod tests {
             chip.text,
             format!(
                 "MCP{ITEM_SEPARATOR}{}: slack{ITEM_SEPARATOR}failed: beta{ITEM_SEPARATOR}/mcp",
-                mcp_auth_required_state_label()
+                mcp_auth_required_state_label(Locale::En)
             )
         );
         for _ in 0..10 {
@@ -961,5 +965,26 @@ mod tests {
                 .as_deref(),
             Some("MCP · 4 connecting")
         );
+    }
+
+    #[test]
+    fn booting_snapshot_with_non_connecting_servers_reports_no_connecting_chip() {
+        let snap = snapshot(vec![
+            server("alpha", true, true, None),
+            server("beta", false, false, None),
+            server("gamma", true, false, Some("connection refused")),
+        ]);
+        let surface =
+            SessionBootSurface::from_parts(Some(&snap), true, &[], 3, PluginBootSummary::default());
+        assert_eq!(surface.phase, SessionBootPhase::Booting);
+        assert_eq!(surface.activity_notice(80), None);
+    }
+
+    #[test]
+    fn mcp_auth_required_state_label_uses_locale() {
+        let label = mcp_auth_required_state_label(Locale::ZhHans);
+        let expected = tr(Locale::ZhHans, MessageId::McpAuthRequiredState);
+        assert!(label.contains(expected.as_ref()), "{label}");
+        assert!(!label.contains("auth required"), "{label}");
     }
 }

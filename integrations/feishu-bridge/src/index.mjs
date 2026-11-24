@@ -3,7 +3,6 @@ import * as Lark from "@larksuiteoapi/node-sdk";
 import {
   activeTurnBlock,
   commandAction,
-  compactRuntimeError,
   helpText,
   incomingIdentity,
   isAllowed,
@@ -25,13 +24,13 @@ import {
   createRuntimeClient,
   decideApproval as decideRuntimeApproval,
   listOwnedThreads,
-  readJsonSafe,
-  readThreadEvents,
   settleLegacyOwners,
   THREAD_NOT_OWNED_MESSAGE,
   ThreadOwnershipError,
   ThreadStore as CoreThreadStore,
-  splitAtCodePoint
+  splitAtCodePoint,
+  observeTurn,
+  turnOutcomeText
 } from "../../bridge-core/src/lib.mjs";
 
 class ThreadStore extends CoreThreadStore {
@@ -349,94 +348,43 @@ async function reattachActiveTurns(onlyThreadIds = null) {
 }
 
 async function streamTurnEvents(chatId, threadId, turnId, sinceSeq) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), config.turnTimeoutMs);
-  let responseText = (await threadStore.getChat(chatId))?.responseText || "";
-  let latestSeq = sinceSeq;
   let sentProgressAt = Date.now();
-
-  try {
-    const response = await fetch(
-      `${config.runtimeUrl}/v1/threads/${encodeURIComponent(threadId)}/events?since_seq=${sinceSeq}`,
-      {
-        headers: authHeaders(),
-        signal: controller.signal
-      }
-    );
-    if (!response.ok) {
-      const body = await readJsonSafe(response);
-      throw new Error(compactRuntimeError(response.status, body));
-    }
-
-    for await (const record of readThreadEvents(response, threadId)) {
-      if (record.event === "stream.end") return false;
-      latestSeq = Math.max(latestSeq, Number(record.seq || 0));
-
-      if (!turnId || record.turn_id !== turnId) {
-        await threadStore.patchChat(chatId, { lastSeq: latestSeq });
-        continue;
-      }
-
-      if (record.event === "item.delta" && record.payload?.kind === "agent_message") {
-        responseText += record.payload.delta || "";
-        const now = Date.now();
-        if (responseText.length > config.maxReplyChars && now - sentProgressAt > 15000) {
-          const [head, rest] = splitAtCodePoint(responseText, config.maxReplyChars);
-          await sendText(chatId, head);
-          responseText = rest;
-          sentProgressAt = now;
-        }
-      }
-
-      if (record.event === "approval.required") {
-        const approval = record.payload || {};
-        await sendText(
-          chatId,
-          [
-            "Approval required",
-            `tool=${approval.tool_name || "unknown"}`,
-            `approval_id=${approval.approval_id || approval.id}`,
-            approval.description || "",
-            "",
-            `Reply /allow ${approval.approval_id || approval.id}`,
-            `Reply /deny ${approval.approval_id || approval.id}`
-          ]
-            .filter(Boolean)
-            .join("\n")
-        );
-      }
-
-      if (record.event === "turn.completed") {
-        const turn = record.payload?.turn || {};
-        const status = turn.status || "completed";
-        const error = turn.error ? `\n${turn.error}` : "";
-        if (status !== "completed") {
-          await sendText(chatId, `Turn ${status}.${error}`.trim());
-        } else {
-          await sendText(chatId, responseText.trim() || "Turn completed.");
-        }
-        return true;
-      }
-
-      if (record.event === "turn.lifecycle") {
-        const status = record.payload?.turn?.status || record.payload?.status;
-        if (["failed", "canceled", "interrupted"].includes(status)) {
-          await sendText(chatId, `Turn ${status}.`);
-          return true;
-        }
-      }
-
-      await threadStore.patchChat(chatId, { lastSeq: latestSeq, responseText });
-    }
-  } catch (error) {
-    if (error.name === "AbortError") {
-      await sendText(chatId, `Turn observation timed out after ${Math.round(config.turnTimeoutMs / 1000)}s.`);
-      return false;
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
+  return observeTurn({
+    fetchEvents: (seq, signal) => fetch(
+      `${config.runtimeUrl}/v1/threads/${encodeURIComponent(threadId)}/events?since_seq=${seq}`,
+      { headers: authHeaders(), signal }
+    ),
+    threadId,
+    turnId,
+    sinceSeq,
+    responseText: (await threadStore.getChat(chatId))?.responseText || "",
+    timeoutMs: config.turnTimeoutMs,
+    saveCursor: (cursor) => threadStore.patchChat(chatId, cursor),
+    onDelta: async (text) => {
+      const now = Date.now();
+      if (text.length <= config.maxReplyChars || now - sentProgressAt <= 15000) return text;
+      const [head, rest] = splitAtCodePoint(text, config.maxReplyChars);
+      await sendText(chatId, head);
+      sentProgressAt = now;
+      return rest;
+    },
+    onApproval: (approval) => sendText(
+      chatId,
+      [
+        "Approval required",
+        `tool=${approval.tool_name || "unknown"}`,
+        `approval_id=${approval.approval_id || approval.id}`,
+        approval.description || "",
+        "",
+        `Reply /allow ${approval.approval_id || approval.id}`,
+        `Reply /deny ${approval.approval_id || approval.id}`
+      ]
+        .filter(Boolean)
+        .join("\n")
+    ),
+    onTerminal: (outcome) => sendText(chatId, turnOutcomeText(outcome)),
+    onTimeout: () => sendText(chatId, `Turn observation timed out after ${Math.round(config.turnTimeoutMs / 1000)}s.`)
+  });
 }
 
 async function sendStatus(chatId) {

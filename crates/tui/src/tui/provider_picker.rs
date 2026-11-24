@@ -1355,16 +1355,28 @@ impl ProviderDashboardRow {
     /// route means a model name or wire id surfaces the provider that serves it,
     /// keeping this picker consistent with the model picker's cross-field search
     /// (`model_row_matches_query`).
-    fn matches_query(&self, query: &str) -> bool {
+    fn query_match_rank(&self, query: &str) -> Option<u8> {
         let query = query.trim().to_ascii_lowercase();
         if query.is_empty() {
-            return true;
+            return Some(0);
         }
-        self.display_name.to_ascii_lowercase().contains(&query)
-            || self.provider_id.to_ascii_lowercase().contains(&query)
+        let name_fields = [
+            self.provider_id.to_ascii_lowercase(),
+            self.provider.as_str().to_ascii_lowercase(),
+            self.display_name.to_ascii_lowercase(),
+        ];
+        if name_fields.iter().any(|field| field == &query) {
+            return Some(0);
+        }
+        if name_fields.iter().any(|field| field.starts_with(&query)) {
+            return Some(1);
+        }
+        if name_fields.iter().any(|field| field.contains(&query))
             || self.kind.to_ascii_lowercase().contains(&query)
-            || self.base_url.to_ascii_lowercase().contains(&query)
-            || self.provider.as_str().to_ascii_lowercase().contains(&query)
+        {
+            return Some(2);
+        }
+        if self.base_url.to_ascii_lowercase().contains(&query)
             || self
                 .default_route
                 .logical_model
@@ -1375,6 +1387,14 @@ impl ProviderDashboardRow {
                 .wire_model
                 .to_ascii_lowercase()
                 .contains(&query)
+        {
+            return Some(3);
+        }
+        None
+    }
+
+    fn matches_query(&self, query: &str) -> bool {
+        self.query_match_rank(query).is_some()
     }
 }
 
@@ -2545,12 +2565,25 @@ impl ProviderPickerView {
         }
     }
 
-    /// Update the search query and clamp the selection to the first visible row.
+    /// Update the search query and select the best-matching visible row.
     fn update_query(&mut self, next: String) {
         self.query = next;
-        self.selected_idx = (0..self.rows.len())
-            .find(|idx| self.row_visible(*idx))
-            .unwrap_or(0);
+        let query = self.query.trim();
+        self.selected_idx = if query.is_empty() {
+            (0..self.rows.len())
+                .find(|idx| self.row_visible(*idx))
+                .unwrap_or(0)
+        } else {
+            (0..self.rows.len())
+                .filter(|idx| self.row_visible(*idx))
+                .min_by_key(|idx| {
+                    (
+                        self.rows[*idx].query_match_rank(query).unwrap_or(u8::MAX),
+                        *idx,
+                    )
+                })
+                .unwrap_or(0)
+        };
     }
 
     /// Move the selection one visible row forward (`step = 1`) or backward
@@ -4307,7 +4340,7 @@ impl ProviderPickerView {
             ),
         ];
         let mut lines = vec![Line::from(Span::styled(
-            "Gate 1 of 2 · choose access",
+            self.tr(MessageId::ProviderExternalGateOneHeading),
             Style::default()
                 .fg(palette::TEXT_PRIMARY)
                 .add_modifier(Modifier::BOLD),
@@ -4349,7 +4382,8 @@ impl ProviderPickerView {
             Style::default().fg(palette::TEXT_MUTED),
         )));
         lines.push(Line::from(Span::styled(
-            "Enter continues · nothing is read or saved until Gate 2 confirms.",
+            self.tr(MessageId::ProviderExternalChoiceContinue)
+                .replace("{key}", "Enter"),
             Style::default().fg(palette::TEXT_MUTED),
         )));
         Paragraph::new(lines)

@@ -11,8 +11,8 @@ use codewhale_config::persistence::atomic_write;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Fetched, RefreshError, STATE_SUBDIR, Settings, checked_url, fetch_limited, fetch_suppressed,
-    off_runtime, read_bounded_regular,
+    Fetched, RefreshError, STATE_SUBDIR, Settings, checked_url, fetch_envelope, fetch_limited,
+    fetch_suppressed, off_runtime, publish_off_runtime, read_bounded_regular,
 };
 
 pub const ENV_REGISTRY_URL: &str = "CODEWHALE_REGISTRY_URL";
@@ -212,18 +212,15 @@ where
         let (settings, path) = (settings.clone(), path.clone());
         off_runtime(move || Ok(cache_for(&settings, path.as_deref()))).await?
     };
-    let fetched = if let Some(local) = settings.local_path.clone() {
-        off_runtime(move || read_bounded_regular(&local, MAX_REGISTRY_ENVELOPE_BYTES))
-            .await
-            .map(|bytes| Fetched::Body { bytes, etag: None })?
-    } else {
-        if suppress_network {
-            return Err(RefreshError::Suppressed);
-        }
-        let url = checked_url(settings.url.as_deref().unwrap_or_default())?;
-        let etag = cache.etag.clone().filter(|_| !cache.envelope.is_empty());
-        transport(url, etag, MAX_REGISTRY_ENVELOPE_BYTES).await?
-    };
+    let fetched = fetch_envelope(
+        settings.local_path.clone(),
+        MAX_REGISTRY_ENVELOPE_BYTES,
+        suppress_network,
+        || checked_url(settings.url.as_deref().unwrap_or_default()),
+        cache.etag.clone().filter(|_| !cache.envelope.is_empty()),
+        |url, etag| transport(url, etag, MAX_REGISTRY_ENVELOPE_BYTES),
+    )
+    .await?;
     let (bytes, etag) = match fetched {
         Fetched::NotModified => (cache.envelope.as_bytes().to_vec(), cache.etag.clone()),
         Fetched::NotFound => return Ok(None),
@@ -235,12 +232,14 @@ where
     cache.fetched_at = now_unix();
     cache.etag = etag;
     cache.envelope = String::from_utf8(bytes).map_err(|e| RefreshError::Io(e.to_string()))?;
-    if !overlay::publish_registry(ticket, Some(Arc::new(admitted)), |floor| {
-        cache.highest_revision = cache.highest_revision.max(floor);
-        save_cache(path.as_deref(), &cache);
-    }) {
-        return Err(RefreshError::Superseded);
-    }
+    let ticket = ticket.clone();
+    publish_off_runtime(move || {
+        overlay::publish_registry(&ticket, Some(Arc::new(admitted)), |floor| {
+            cache.highest_revision = cache.highest_revision.max(floor);
+            save_cache(path.as_deref(), &cache);
+        })
+    })
+    .await?;
     Ok(Some(revision))
 }
 

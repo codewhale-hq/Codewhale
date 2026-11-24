@@ -1703,10 +1703,10 @@ fn admit_shared_responses_usage(profile: &ResponsesDialectProfile) {
 
 /// Parse usage from a Responses API usage object.
 fn parse_responses_usage(val: &Value) -> Usage {
-    let input = val
+    let reported_input = val
         .get("input_tokens")
         .and_then(|v| v.as_u64())
-        .map_or(0, super::saturating_u32);
+        .map(super::saturating_u32);
     let output = val
         .get("output_tokens")
         .and_then(|v| v.as_u64())
@@ -1728,13 +1728,17 @@ fn parse_responses_usage(val: &Value) -> Usage {
         .map(super::saturating_u32);
     // DeepSeek reports the miss explicitly; otherwise mirror the
     // Chat-Completions parser: derive the miss as input minus the cached hit
-    // when the payload reported cached input tokens. Responses nests
+    // when the payload reported both total and cached input tokens. Responses nests
     // reasoning under `output_tokens_details` (not `completion_tokens_details`).
     let prompt_cache_miss_tokens = val
         .get("prompt_cache_miss_tokens")
         .and_then(|v| v.as_u64())
         .map(super::saturating_u32)
-        .or_else(|| prompt_cache_hit_tokens.map(|hit| input.saturating_sub(hit)));
+        .or_else(|| {
+            reported_input
+                .zip(prompt_cache_hit_tokens)
+                .map(|(input, hit)| input.saturating_sub(hit))
+        });
     // Cache-creation tokens, kept as their own class so pricing can apply the
     // write rate where the provider publishes one. DeepSeek-style payloads
     // nest these under `input_tokens_details`; accept a top-level spelling
@@ -1763,7 +1767,7 @@ fn parse_responses_usage(val: &Value) -> Usage {
     // billable classes and the context budget measures the window with it.
     // Reducing it here to miss-only would double-subtract at those surfaces.
     Usage {
-        input_tokens: input,
+        input_tokens: reported_input.unwrap_or_default(),
         output_tokens: output,
         prompt_cache_hit_tokens,
         prompt_cache_miss_tokens,

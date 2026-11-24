@@ -1617,6 +1617,8 @@ pub(crate) struct SkillCacheScope {
     pub(crate) plugins: std::sync::Arc<codewhale_plugins::PluginRegistry>,
 }
 
+pub(crate) const MAX_QUEUED_MESSAGES: usize = 64;
+
 pub struct App {
     pub mode: AppMode,
     /// Registered hotbar actions available for future slot config/render layers.
@@ -3506,7 +3508,11 @@ impl App {
     pub fn finish_onboarding_without_feature_intro(&mut self) {
         self.onboarding = OnboardingState::None;
         if let Err(err) = crate::tui::onboarding::mark_onboarded() {
-            self.status_message = Some(format!("Failed to mark onboarding: {err}"));
+            tracing::warn!(error = %err, "onboarding marker write failed");
+            let message = self
+                .tr(MessageId::OnboardingMarkFailed)
+                .replace("{error}", &err.to_string());
+            self.push_status_toast(message, StatusToastLevel::Error, None);
         }
         self.needs_redraw = true;
     }
@@ -3538,8 +3544,11 @@ impl App {
             Ok(None) => return,
             Ok(Some(())) => {}
             Err(err) => {
-                self.status_message = Some(format!("Failed to save feature-intro flag: {err}"));
-                // Still show the nudge; the flag write may simply retry next launch.
+                tracing::warn!(error = %err, "feature intro flag write failed");
+                let message = self
+                    .tr(MessageId::FeatureIntroFlagSaveFailed)
+                    .replace("{error}", &err.to_string());
+                self.push_status_toast(message, StatusToastLevel::Error, None);
             }
         }
         self.status_message = Some(self.tr(MessageId::FleetReadyNotice).into_owned());
@@ -7504,6 +7513,14 @@ impl App {
     pub fn queue_message(&mut self, message: QueuedMessage) {
         if message.extension_command.is_some() {
             self.restore_unsent_message(message);
+            return;
+        }
+        if self.queued_messages.len() >= MAX_QUEUED_MESSAGES {
+            self.restore_unsent_message(message);
+            let notice = self
+                .tr(MessageId::QueueFullNotice)
+                .replace("{max}", &MAX_QUEUED_MESSAGES.to_string());
+            self.push_status_toast(notice, StatusToastLevel::Warning, None);
             return;
         }
         self.queued_messages.push_back(message);
