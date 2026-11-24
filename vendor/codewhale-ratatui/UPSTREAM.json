@@ -285,25 +285,9 @@
         "reason": "Terminal panel and nine-item order",
         "sha256": "2fd780b1cb80a04de8b999c5c182a9a7ff86a8c431f9606eb41f5adb3d31970d"
       },
-      "src/components/posture.rs": {
-        "reason": "Update metric and hover styling; turn clock sheds after hints and counts and is never covered by the right notice",
-        "sha256": "5f93ae93ad2cc32103a99d3c23bf01c239d218e75efb8eec5b6a8916c967f3ab"
-      },
-      "src/components/native_chrome.rs": {
-        "reason": "u64 total",
-        "sha256": "f0d43491f7ccfdb1f625db2f6a73bb5cad2dfe99435dbc0704004e68f9f95dea"
-      },
-      "src/components/native_composer.rs": {
-        "reason": "public paint and full available height without a menu; bounded composer wrapping for long non-ASCII drafts",
-        "sha256": "f6d082267037fdac248b37f6a35109aace538d104a6746d707dc5746ce0f75e4"
-      },
       "Cargo.toml": {
         "reason": "Engine package 0.2.1 and local protocol dependency",
         "sha256": "bd990e6110d09e71710df77f94b7a126230fafb003ce7c90bfa5cf0062fa76e7"
-      },
-      "src/components/motion.rs": {
-        "reason": "Engine activity sweep (ACTIVITY_SWEEP_* and activity_sweep_strength) driven by the 5.4.0 motion tokens",
-        "sha256": "0043ca04f13a861a3b332c786c99e8e32692abec9a2d10527de829b9906200c4"
       }
     }
   },
@@ -329,6 +313,20 @@
       "src/components/habitat_poses.rs": "25067903aaaf63a4db80511f896ab190d7a0a4ecbcdcf21ea8ca409ad214a8ca",
       "src/gallery/habitat.rs": "641b949c898d2966a4649e4af2defd06700399257fa3c9828b70eeb44ffa91e9",
       "examples/habitat.rs": "c063f79997fd3fdde9c853fd85b20a1b61b1ec4270ae71231b4e1437c8a8d9b7"
+    }
+  },
+  "design_5_5_update": {
+    "commit": "f2685398d17a2ec76a9cca2015218b5e38f51935",
+    "scope": "Design tokens 5.5.0 (Obsidian/Porcelain): vendored tokens.rs, regenerated roles.rs, theme.rs (including the Porcelain 256-color collapsed-grounds test), and upstreamed posture.rs, native_composer.rs, motion.rs, and native_chrome.rs (retired from retained_engine_adaptations). Named TUI palettes (src/tui_palettes.rs, assets/tui-palettes.json) remain matched to crates/palette. Standalone tests, tools, and README assets are outside this source synchronization.",
+    "local_changes": "None: these seven files match upstream codewhale-hq/codewhale-ratatui main at this commit byte for byte. Only src/components/workbar.rs and Cargo.toml remain in retained_engine_adaptations.",
+    "files": {
+      "vendor/codewhale-design/tokens.rs": "e5682976f18c42de7a981e8b57cf41ea4e1faab232306c7632181cf680eb1169",
+      "src/roles.rs": "cbdadea25c5dc9c565fa3f748c334f05f37876310c21a28d6222141a23c0b6d5",
+      "src/theme.rs": "d68089aca4b21d001229d94c73c6712d2e23b9306c0255f038984aa93bc17396",
+      "src/components/posture.rs": "5f93ae93ad2cc32103a99d3c23bf01c239d218e75efb8eec5b6a8916c967f3ab",
+      "src/components/native_composer.rs": "f6d082267037fdac248b37f6a35109aace538d104a6746d707dc5746ce0f75e4",
+      "src/components/motion.rs": "0043ca04f13a861a3b332c786c99e8e32692abec9a2d10527de829b9906200c4",
+      "src/components/native_chrome.rs": "f0d43491f7ccfdb1f625db2f6a73bb5cad2dfe99435dbc0704004e68f9f95dea"
     }
   }
 }
