@@ -216,3 +216,86 @@ fn partial_restore_keeps_other_claims_and_only_undoes_its_own_replacement() {
         assert_eq!(fs::read_to_string(&receipt).unwrap(), original_claims);
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn prune_expired_preserves_manifest_when_record_metadata_fails() {
+    use codewhale_release::installs::{RECOVERY_DIR, prune_expired};
+
+    let home = tempfile::tempdir().unwrap();
+    let folder = home.path().join(RECOVERY_DIR).join("20200101-000000");
+    fs::create_dir_all(&folder).unwrap();
+    // A regular file where a parent dir is expected triggers ENOTDIR even under root.
+    let blocker = folder.join("blocker");
+    fs::write(&blocker, b"data").unwrap();
+    let unreadable = blocker.join("child");
+    let manifest = folder.join(RECOVERY_MANIFEST);
+    let line = format!(
+        "{}\t{}\t-\t4\n",
+        home.path().join("orig").display(),
+        unreadable.display()
+    );
+    fs::write(&manifest, line).unwrap();
+
+    let pruned = prune_expired(home.path());
+    assert!(pruned.is_empty(), "unreadable record must block pruning");
+    assert!(
+        manifest.exists(),
+        "recovery manifest must survive a metadata read error"
+    );
+    assert!(blocker.exists());
+}
+
+#[test]
+fn prune_expired_removes_folder_when_stored_file_is_already_absent() {
+    use codewhale_release::installs::{RECOVERY_DIR, prune_expired};
+
+    let home = tempfile::tempdir().unwrap();
+    let folder = home.path().join(RECOVERY_DIR).join("20200101-000000");
+    fs::create_dir_all(&folder).unwrap();
+    let missing = folder.join("gone");
+    let manifest = folder.join(RECOVERY_MANIFEST);
+    let line = format!(
+        "{}\t{}\t-\t4\n",
+        home.path().join("orig").display(),
+        missing.display()
+    );
+    fs::write(&manifest, line).unwrap();
+
+    let pruned = prune_expired(home.path());
+    assert_eq!(pruned.len(), 1);
+    assert!(!folder.exists());
+}
+
+#[test]
+fn write_file_atomically_replaces_without_leaving_temp_files() {
+    use codewhale_release::installs::write_file_atomically;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_file_atomically(dir.path(), "payload", b"first", false).unwrap();
+    assert_eq!(fs::read(dir.path().join("payload")).unwrap(), b"first");
+
+    write_file_atomically(dir.path(), "payload", b"second", true).unwrap();
+    assert_eq!(fs::read(dir.path().join("payload")).unwrap(), b"second");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(dir.path().join("payload"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o755);
+    }
+
+    // Attempting to overwrite a directory must fail and clean up its temp file.
+    fs::create_dir(dir.path().join("dir-target")).unwrap();
+    assert!(write_file_atomically(dir.path(), "dir-target", b"x", false).is_err());
+
+    let leftovers: Vec<_> = fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
+        .collect();
+    assert!(leftovers.is_empty(), "leftover temp files: {leftovers:?}");
+}

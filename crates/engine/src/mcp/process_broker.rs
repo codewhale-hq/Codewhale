@@ -472,17 +472,18 @@ async fn terminate_child(
     let _ = child.start_kill();
 
     match tokio::time::timeout(STDIO_SHUTDOWN_GRACE, child.wait()).await {
-        Ok(Ok(_)) => {}
+        Ok(Ok(_)) => {
+            if let Some(tree) = tree {
+                let _ = tree.kill();
+            }
+        }
         Ok(Err(_)) | Err(_) => {
-            // SIGTERM is advisory. Revocation and explicit shutdown must not
-            // leave the reviewed child alive indefinitely.
+            if let Some(tree) = tree {
+                let _ = tree.kill();
+            }
             let _ = child.start_kill();
             let _ = child.wait().await;
         }
-    }
-    // Descendants that outlived the grace (or ignored SIGTERM) go now.
-    if let Some(tree) = tree {
-        let _ = tree.kill();
     }
 }
 

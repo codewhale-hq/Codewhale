@@ -1826,6 +1826,38 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn bounded_git_timeout_kills_descendants_holding_pipes() {
+        let root = tempfile::tempdir().unwrap();
+        let pid_file = root.path().join("git-descendant.pid");
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "sleep 30 & echo $! > \"$1\"; wait",
+                "git-timeout-test",
+            ])
+            .arg(&pid_file);
+        let started = std::time::Instant::now();
+        let error = run_bounded_git_with_timeout(
+            &mut command,
+            "sleep",
+            std::time::Duration::from_millis(250),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        let pid = codewhale_runtime::process_tree::read_pid_file(
+            &pid_file,
+            std::time::Duration::from_secs(1),
+        );
+        assert!(codewhale_runtime::process_tree::wait_for_pid_exit(
+            pid,
+            std::time::Duration::from_secs(2)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn version_probe_refuses_oversized_banner() {
         let mut command = version_probe_command("/bin/sh");
         command.args(["-c", "head -c 20000 /dev/zero"]);

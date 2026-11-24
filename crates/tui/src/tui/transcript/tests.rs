@@ -2804,3 +2804,31 @@ fn cached_transcript_matches_a_cold_render_after_every_mutation() {
         }
     }
 }
+
+#[test]
+fn truncate_spans_to_width_preserves_zwj_grapheme_clusters() {
+    let input = "ab 👨‍👩‍👧‍👦 cd";
+    let full_width = codewhale_tui_kit::ui_text::text_display_width(input);
+    for max_width in 4..=full_width {
+        let out = truncate_spans_to_width(vec![Span::raw(input)], max_width);
+        let text: String = out.iter().map(|span| span.content.as_ref()).collect();
+        assert!(
+            codewhale_tui_kit::ui_text::text_display_width(&text) <= max_width,
+            "width {max_width} exceeded: {text:?}"
+        );
+        assert!(
+            text.contains("👨‍👩‍👧‍👦") || (!text.contains('👨') && !text.contains('\u{200d}')),
+            "ZWJ cluster split at width {max_width}: {text:?}"
+        );
+    }
+
+    let keycap = "ab 1\u{20e3} cd";
+    let keycap_width = codewhale_tui_kit::ui_text::text_display_width(keycap);
+    let truncated = truncate_spans_to_width(vec![Span::raw(keycap)], keycap_width - 1);
+    let text: String = truncated.iter().map(|span| span.content.as_ref()).collect();
+    assert!(
+        codewhale_tui_kit::ui_text::text_display_width(&text) < keycap_width,
+        "keycap span overflowed: {text:?}"
+    );
+    assert!(text.ends_with("..."), "expected ellipsis: {text:?}");
+}

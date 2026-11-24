@@ -769,6 +769,17 @@ fn write_private_file(path: &Path, body: &[u8]) -> Result<(), SecretsError> {
 }
 
 fn atomic_write_private_file(path: &Path, body: &[u8]) -> Result<(), SecretsError> {
+    #[cfg(unix)]
+    {
+        atomic_write_private_file_with_dir_sync(path, body, fs::File::sync_all)
+    }
+    #[cfg(not(unix))]
+    {
+        persist_private_temp_file(path, body).map(|_| ())
+    }
+}
+
+fn persist_private_temp_file(path: &Path, body: &[u8]) -> Result<PathBuf, SecretsError> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
@@ -788,8 +799,24 @@ fn atomic_write_private_file(path: &Path, body: &[u8]) -> Result<(), SecretsErro
     #[cfg(unix)]
     file_lock::require_private_mode(tmp.as_file(), path, file_lock::StoreFile::Content)?;
     tmp.persist(path).map_err(|e| SecretsError::Io(e.error))?;
-    #[cfg(unix)]
-    let _ = fs::File::open(dir).and_then(|dir| dir.sync_all());
+    Ok(dir.to_path_buf())
+}
+
+#[cfg(unix)]
+fn atomic_write_private_file_with_dir_sync(
+    path: &Path,
+    body: &[u8],
+    sync_dir: impl FnOnce(&fs::File) -> std::io::Result<()>,
+) -> Result<(), SecretsError> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let dir = persist_private_temp_file(path, body)?;
+    // Best-effort directory sync so a committed replacement is not reported as a failed write.
+    let _ = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&dir)
+        .and_then(|dir_file| sync_dir(&dir_file));
     Ok(())
 }
 
@@ -1375,6 +1402,30 @@ mod tests {
         assert!(store.set("big", &huge).is_err());
         assert_eq!(store.get("key").unwrap().as_deref(), Some("value"));
         store.delete("key").unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_private_file_syncs_parent_directory_after_persist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("secrets.json");
+        let mut synced = false;
+        atomic_write_private_file_with_dir_sync(&path, b"{\"entries\":{}}", |dir_file| {
+            // Persisted file must already be visible when directory sync runs.
+            assert_eq!(fs::read(&path).unwrap(), b"{\"entries\":{}}");
+            assert!(dir_file.metadata().unwrap().is_dir());
+            synced = true;
+            dir_file.sync_all()
+        })
+        .unwrap();
+        assert!(synced, "directory sync must be invoked after persist");
+
+        // A failing directory sync must not report a committed replacement as failed.
+        atomic_write_private_file_with_dir_sync(&path, b"{\"entries\":{\"k\":\"v\"}}", |_| {
+            Err(std::io::Error::other("simulated dir sync error"))
+        })
+        .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"{\"entries\":{\"k\":\"v\"}}");
     }
 
     #[test]

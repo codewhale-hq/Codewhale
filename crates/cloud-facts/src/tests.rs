@@ -830,3 +830,85 @@ fn cache_restart_recovers_authenticated_floor_before_source_switch() {
         String::from_utf8_lossy(&child.stderr)
     );
 }
+
+#[test]
+fn concurrent_refreshes_do_not_hold_lock_across_transport_await() {
+    let _lock = lock();
+    overlay::clear();
+    let dir = tempfile::tempdir().unwrap();
+    let s = settings(&dir, Some("https://fixture.invalid/{channel}".into()));
+    configure_with_keys(&s, test_keys());
+    rt().block_on(async {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+
+        let first = refresh_using(&s, true, test_keys(), None, false, |_, _| async move {
+            entered_tx.send(()).expect("first entered transport");
+            release_rx.await.expect("first released");
+            Err(RefreshError::Network("slow first refresh".into()))
+        });
+        let second = async {
+            entered_rx.await.expect("wait for first in transport");
+            let outcome = refresh_using(&s, true, test_keys(), None, false, |_, _| async {
+                Ok(Fetched::Body {
+                    bytes: FIXTURE_V7.as_bytes().to_vec(),
+                    etag: Some("v7".into()),
+                })
+            })
+            .await;
+            release_tx.send(()).expect("release first refresh");
+            outcome
+        };
+
+        let (first_result, second_result) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(first, second)
+        })
+        .await
+        .expect("second refresh must not block on first refresh's transport await");
+
+        assert_eq!(
+            second_result,
+            Ok(RefreshOutcome::Updated { facts_version: 7 })
+        );
+        assert!(matches!(first_result, Err(RefreshError::Network(_))));
+        assert_eq!(
+            overlay::overlay().map(|facts| facts.facts_version),
+            Some(7),
+            "slower failing refresh must not overwrite newer verified facts"
+        );
+        assert!(matches!(
+            status().state,
+            CloudFactsState::Verified {
+                facts_version: 7,
+                ..
+            }
+        ));
+    });
+}
+
+#[test]
+fn publish_off_runtime_does_not_block_current_thread_worker() {
+    rt().block_on(async {
+        let worker_id = std::thread::current().id();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
+
+        let publish = publish_off_runtime(move || {
+            assert_ne!(std::thread::current().id(), worker_id);
+            entered_tx.send(()).expect("signal entered");
+            release_rx.recv().expect("wait for worker");
+            true
+        });
+        let worker = async {
+            entered_rx.await.expect("blocking task entered");
+            release_tx.send(()).expect("unblock blocking task");
+        };
+
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(publish, worker)
+        })
+        .await
+        .expect("off-runtime publication must not stall current_thread worker");
+        assert_eq!(result, Ok(()));
+    });
+}

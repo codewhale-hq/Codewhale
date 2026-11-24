@@ -1,13 +1,13 @@
-[38;5;103m▏    [38;5;74m1. [3m[38;5;109medited [48;5;17mls.py[48;5;234m (+4 −0)[0m[48;5;234m                                                                       [38;5;239m│
-[38;5;103m▏    [38;5;74m2. [3m[38;5;109mran [48;5;17mpython3 -m unittest -v test_ls.py 2>&1[48;5;234m · approved by you[0m[48;5;234m                               [38;5;239m│
-[38;5;103m▏    [39m                                                                                              [38;5;239m│
-[38;5;103m▏    [3m[38;5;109mNot recorded:[0m[48;5;234m                                                                                 [38;5;239m│
-[38;5;103m▏    [38;5;74m- [3m[38;5;109mExit codes: calls that saved no structured result (terminal sessions) show pass or fail,[0m[48;5;234m    [38;5;239m│
-[38;5;103m▏    [39m  [3m[38;5;109mnot the exit code.[0m[48;5;234m                                                                          [38;5;239m│
-[38;5;103m▏    [38;5;74m- [3m[38;5;109mFiles changed outside file tools come from the workspace snapshots taken before and after[0m[48;5;234m   [38;5;239m│
-[38;5;103m▏    [39m  [3m[38;5;109meach turn, so they include anything that wrote to the workspace during the turn, not only[0m[48;5;234m   [38;5;80m┃
-[38;5;103m▏    [39m  [3m[38;5;109mCodewhale. They leave out what snapshots do not track: ignored and skipped paths[0m[48;5;234m            [38;5;80m┃
-[38;5;103m▏    [39m  [3m[38;5;109m(.gitignore entries, .env, node_modules, target, and the like) and anything outside the[0m[48;5;234m     [38;5;80m┃
-[38;5;103m▏    [39m  [3m[38;5;109mworkspace.[0m[48;5;234m                                                                                  [38;5;80m┃
-[38;5;103m▏    [38;5;74m- [3m[38;5;109mPlugin changes are not itemized for a terminal session yet[0m[48;5;234m                                  [38;5;80m┃
-[38;5;103m▏    [38;5;74m- [3m[38;5;109mTimestamps: a terminal session saves calls in order, not when each one ran.[0m[48;5;234m                 [38;5;80m┃
+[38;2;138;153;179m[48;2;7;26;47m▏    [39m   [3m[38;2;147;160;184m· approved by you[0m[48;2;7;26;47m                                                                          [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;7;25;45m▏    [39m                                                                                              [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;7;24;43m▏    [3m[38;2;147;160;184mNot recorded:[0m[48;2;7;24;43m                                                                                 [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;6;23;41m▏    [38;2;106;166;220m- [3m[38;2;147;160;184mExit codes: calls that saved no structured result (terminal sessions) show pass or fail,[0m[48;2;6;23;41m    [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;6;22;38m▏    [39m  [3m[38;2;147;160;184mnot the exit code.[0m[48;2;6;22;38m                                                                          [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;6;21;36m▏    [38;2;106;166;220m- [3m[38;2;147;160;184mFiles changed outside file tools come from the workspace snapshots taken before and after[0m[48;2;6;21;36m   [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;6;20;34m▏    [39m  [3m[38;2;147;160;184meach turn, so they include anything that wrote to the workspace during the turn, not only[0m[48;2;6;20;34m   [38;2;42;63;114m│
+[38;2;138;153;179m[48;2;6;19;32m▏    [39m  [3m[38;2;147;160;184mCodewhale. They leave out what snapshots do not track: ignored and skipped paths[0m[48;2;6;19;32m            [38;2;42;63;114m│
+[38;2;138;153;179m▏    [39m  [3m[38;2;147;160;184m(.gitignore entries, .env, node_modules, target, and the like) and anything outside the[0m[48;2;6;19;32m     [38;2;79;209;197m┃
+[38;2;138;153;179m▏    [39m  [3m[38;2;147;160;184mworkspace.[0m[48;2;6;19;32m                                                                                  [38;2;79;209;197m┃
+[38;2;138;153;179m▏    [38;2;106;166;220m- [3m[38;2;147;160;184mLine counts: some file changes have no saved diff, so their +/- counts are not recorded.[0m[48;2;6;19;32m    [38;2;79;209;197m┃
+[38;2;138;153;179m▏    [38;2;106;166;220m- [3m[38;2;147;160;184mPlugin changes are not itemized for a terminal session yet[0m[48;2;6;19;32m                                  [38;2;79;209;197m┃
+[38;2;138;153;179m▏    [38;2;106;166;220m- [3m[38;2;147;160;184mTimestamps: a terminal session saves calls in order, not when each one ran.[0m[48;2;6;19;32m                 [38;2;79;209;197m┃

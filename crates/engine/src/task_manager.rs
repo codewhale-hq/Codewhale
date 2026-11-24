@@ -2317,6 +2317,25 @@ impl TaskManager {
             .map(|runtime| runtime.session_store_binding())
     }
 
+    /// In-memory approvals, user-input prompts, and dynamic tool calls still
+    /// waiting on an answer. A host that releases its store with any of these
+    /// open strands the waiters; see
+    /// [`RuntimeThreadManager::has_unsettled_requests`].
+    pub fn has_unsettled_requests(&self) -> bool {
+        self.runtime_threads
+            .as_ref()
+            .is_some_and(|runtime| runtime.has_unsettled_requests())
+    }
+
+    /// Whether the store this host holds can be released for a session switch.
+    /// `None` when no Runtime is attached (nothing to release).
+    pub async fn current_store_is_disposable(&self) -> Option<anyhow::Result<bool>> {
+        match self.runtime_threads.as_ref() {
+            Some(runtime) => Some(runtime.current_store_is_disposable().await),
+            None => None,
+        }
+    }
+
     pub async fn set_default_workspace(&self, workspace: PathBuf) {
         let mut default_workspace = self.default_workspace.lock().await;
         *default_workspace = workspace;

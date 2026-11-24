@@ -40,9 +40,9 @@ test('canonical Native composition adopts existing contributions and withdraws t
 function counterComposition(t, id) {
   const root = temporary(t)
   mkdirSync(join(root, 'source'))
-  const source = `export const inject = ['prompt']; export function apply(ctx, config) { ctx.prompt.registerSection({id:${JSON.stringify(id)},text:String(config.count)}) }`
+  const source = "export const inject = ['prompt']; export function apply(ctx, config) { ctx.prompt.registerSection({id:String(config.id),text:String(config.count)}) }"
   writeFileSync(join(root, 'source', 'row.mjs'), source)
-  const layer = `- insert:\n  - id: count\n    name: ./row.mjs\n    config:\n      count: !!js '(globalThis.__CW_COMPOSITION_COUNT = (globalThis.__CW_COMPOSITION_COUNT ?? 0) + 1)'\n`
+  const layer = `- insert:\n  - id: count\n    name: ./row.mjs\n    config:\n      id: ${JSON.stringify(id)}\n      count: !!js '(globalThis.__CW_COMPOSITION_COUNT = (globalThis.__CW_COMPOSITION_COUNT ?? 0) + 1)'\n`
   const spec = { version: 1, layers: [{ path: 'base.yml', sha256: hash(layer), source: layer }], modules: [{ name: './row.mjs', path: 'row.mjs', sha256: hash(source) }], files: { 'row.mjs': hash(source) } }
   writeFileSync(join(root, 'composition.json'), JSON.stringify(spec))
   const entry = join(root, 'index.mjs')
@@ -79,12 +79,12 @@ test('trusted offline reviewer preserves expressions and never imports row modul
   assert.equal(existsSync(join(root, 'row.mjs')), false, 'review did not need any row module to exist')
 })
 
-function moduleClosureComposition(t, rowSource, files, extraRows = {}) {
+function moduleClosureComposition(t, rowSource, files, extraRows = {}, rowConfigs = {}) {
   const root=temporary(t)
   mkdirSync(join(root,'source'))
   const rows={'row.mjs':rowSource,...extraRows}
   for (const [name,source] of Object.entries({...rows,...files})) writeFileSync(join(root,'source',name),source)
-  const layer=JSON.stringify([{insert:Object.keys(rows).map((name,index)=>({id:`row-${index}`,name:`./${name}`,config:{}}))}])
+  const layer=JSON.stringify([{insert:Object.keys(rows).map((name,index)=>({id:`row-${index}`,name:`./${name}`,config:rowConfigs[name]??{}}))}])
   const closure=Object.fromEntries(Object.entries({...rows,...files}).map(([name,source])=>[name,hash(source)]))
   const spec={version:1,layers:[{path:'base.json',sha256:hash(layer),source:layer}],modules:Object.entries(rows).map(([name,source])=>({name:`./${name}`,path:name,sha256:hash(source)})),files:closure}
   writeFileSync(join(root,'composition.json'),JSON.stringify(spec))
@@ -202,8 +202,8 @@ test('unreviewed computed imports refuse before module side effects', async t =>
 
 test('separate reviewed rows retain the same transitive module instance', async t => {
   const host=await startHost();t.after(()=>host.stop())
-  const row=id=>`import {next} from './helper.mjs';export const inject=['prompt'];export function apply(ctx){ctx.prompt.registerSection({id:${JSON.stringify(id)},text:String(next())})}`
-  const composition=moduleClosureComposition(t,row('first'),{'helper.mjs':'let count=0;export function next(){return ++count}'},{'second.mjs':row('second')})
+  const sharedRow="import {next} from './helper.mjs';export const inject=['prompt'];export function apply(ctx,config){ctx.prompt.registerSection({id:String(config.id),text:String(next())})}"
+  const composition=moduleClosureComposition(t,sharedRow,{'helper.mjs':'let count=0;export function next(){return ++count}'},{'second.mjs':sharedRow},{'row.mjs':{id:'first'},'second.mjs':{id:'second'}})
   const mounted=await activate(host,'closure-shared-instance',composition.entry)
   assert.equal(mounted.result.status,'ok',mounted.result.diagnostic)
   const registrations=host.registry.filter(row=>row.op==='register' && row.kind==='prompt_section')
