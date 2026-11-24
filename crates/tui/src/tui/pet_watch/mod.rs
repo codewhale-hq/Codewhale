@@ -192,7 +192,7 @@ impl PetWatch {
             // A live view follows the session switch: restart it for the new
             // session and forward the event that switched, so the reducer
             // sees the turn that opened it. Without a live view, the next
-            // render starts one; turn tracking below still records the turn.
+            // tick that needs one starts it; turn tracking below still records the turn.
             let had_worker = self.worker.is_some();
             self.reset(session.map(str::to_owned));
             if had_worker {
@@ -405,11 +405,25 @@ pub fn command(app: &mut App, control: Control) -> bool {
     ) {
         app.pet_watch.revive();
     }
-    app.pet_watch.ensure(app.current_session_id.clone());
+    let local = matches!(
+        control,
+        Control::Scroll(_) | Control::FocusAgents | Control::ScrollEnd(_) | Control::Mouse(_)
+    );
+    if !local {
+        app.pet_watch.ensure(app.current_session_id.clone());
+    }
     let agents = full::agents(app);
     apply(&mut app.pet_watch, control, &agents);
     app.needs_redraw = true;
-    app.pet_watch.worker.is_some()
+    local || app.pet_watch.worker.is_some()
+}
+fn wants_companion(app: &App) -> bool {
+    let state = &app.pet_watch;
+    state.worker.is_some()
+        || state.sound_requested
+        || state.avatars.current() != "whale"
+        || state.dots.as_ref().is_some_and(|dots| dots.failed())
+        || app.view_stack.contains_kind(ModalKind::PetHabitat)
 }
 pub fn cycle_view(app: &mut App, forward: bool) {
     app.pet_watch.avatars.cycle(forward);
@@ -467,7 +481,6 @@ pub fn set_enabled(app: &mut App, enabled: bool) {
         app.file_tree = None;
         app.file_tree_visible = false;
         app.pet_watch.revive();
-        app.pet_watch.ensure(app.current_session_id.clone());
     } else {
         let session = app.pet_watch.session.clone();
         app.pet_watch.reset(session);
@@ -545,11 +558,12 @@ pub fn tick(app: &mut App, now: Instant) {
     for control in controls {
         command(app, control);
     }
+    let companion = visible && wants_companion(app);
     let state = &mut app.pet_watch;
     if state.session != app.current_session_id {
         state.reset(app.current_session_id.clone());
     }
-    if visible {
+    if companion {
         state.ensure(app.current_session_id.clone());
     }
     if let Some(update) = state
@@ -1070,6 +1084,28 @@ mod tests {
             is_open(&app),
             "the canonical whale and Engine response remain available while telemetry reconnects"
         );
+    }
+
+    #[test]
+    fn the_default_whale_view_starts_no_shared_companion() {
+        let mut app = crate::tui::test_support::test_app_with_options(
+            crate::tui::test_support::test_tui_options("."),
+        );
+        app.onboarding = crate::tui::app::OnboardingState::None;
+        app.redaction_gate = false;
+        app.pet_watch.session = app.current_session_id.clone();
+        app.pet_watch.detach_for_test();
+        set_enabled(&mut app, true);
+        assert!(is_open(&app));
+        assert_eq!(app.pet_watch.avatars.current(), "whale");
+        assert!(!wants_companion(&app));
+        assert!(command(&mut app, Control::FocusAgents));
+        assert!(!wants_companion(&app));
+        app.pet_watch.set_sound(true);
+        assert!(wants_companion(&app));
+        app.pet_watch.set_sound(false);
+        open_habitat(&mut app);
+        assert!(wants_companion(&app));
     }
 
     #[test]

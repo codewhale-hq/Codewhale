@@ -549,6 +549,7 @@ fn run_world(
     let initial_time: f64 = context.with(|ctx| ctx.eval("JSON.parse(pet.snapshot()).timeMs"))?;
     let mut last = origin;
     let mut last_view = origin;
+    let mut requested = true;
     let mut interface_language = "en".to_string();
     let mut was_active = true;
     let mut idle_since: Option<Instant> = None;
@@ -657,7 +658,8 @@ fn run_world(
             } else {
                 last + Duration::from_secs_f64(count as f64 / 30.0)
             };
-            if viewed {
+            if viewed && requested {
+                requested = false;
                 let appearance_json = serde_json::to_string(&saved.appearance)?;
                 let text: String = context.with(|ctx| -> rquickjs::Result<String> {
                     ctx.globals()
@@ -787,7 +789,7 @@ fn run_world(
         };
         last_view = Instant::now();
         match work {
-            Work::View => {}
+            Work::View => requested = true,
             Work::Export(reply) => {
                 let result = context
                     .with(|ctx| super::persistence::export_recording(&ctx, true))
@@ -1227,5 +1229,75 @@ mod tests {
             assert_ne!(interrupted.authoritative_presence, OwnerPresence::Done);
             assert_eq!(interrupted.done_effect_id, None);
         });
+    }
+
+    #[test]
+    fn the_world_presents_only_frames_a_viewer_asked_for() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::at(root.path()).unwrap();
+        let lock_path =
+            WorkspaceFile::open_resolved_root(root.path(), Path::new("owner.lock"), true).unwrap();
+        let original = lock_path.open_update(true, false).unwrap();
+        let saved = Saved {
+            version: 1,
+            identity: uuid::Uuid::new_v4().to_string(),
+            token: "a".repeat(64),
+            port: 0,
+            source: "unattached".into(),
+            source_revision: 0,
+            cursor: 0,
+            clients: BTreeMap::new(),
+            recording: Value::Null,
+            appearance: Appearance::default(),
+        };
+        let (tx, rx) = mpsc::sync_channel(128);
+        let frames = Arc::new(Mutex::new(VecDeque::new()));
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let output = frames.clone();
+        let world = std::thread::spawn(move || {
+            run_world(
+                saved, store, rx, output, "epoch", &lock_path, &original, ready_tx,
+            )
+        });
+        ready_rx
+            .recv_timeout(Duration::from_secs(60))
+            .unwrap()
+            .unwrap();
+        let newest = || {
+            frames
+                .lock()
+                .unwrap()
+                .back()
+                .and_then(|frame| frame["tick"].as_u64())
+        };
+        let settled = |since: Option<u64>| {
+            let began = Instant::now();
+            while newest() == since {
+                assert!(began.elapsed() < Duration::from_secs(30), "no frame");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            newest()
+        };
+        let first = settled(None);
+        let client = uuid::Uuid::new_v4().to_string();
+        for _ in 0..20 {
+            let (reply, _answer) = tokio::sync::oneshot::channel();
+            tx.send(Work::Audio(
+                AudioLease {
+                    client: client.clone(),
+                    enabled: false,
+                },
+                reply,
+            ))
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        assert_eq!(newest(), first, "unrequested work built frames");
+        tx.send(Work::View).unwrap();
+        let viewed = settled(first);
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(newest(), viewed, "one request built more than one frame");
+        drop(tx);
+        world.join().unwrap().unwrap();
     }
 }
