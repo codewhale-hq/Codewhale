@@ -2567,12 +2567,7 @@ async fn child_engine_inherits_parent_tools_overrides_and_excludes_disabled_tool
         )
         .await;
     assert!(
-        baseline
-            .surface
-            .registry
-            .names()
-            .iter()
-            .any(|name| *name == "diagnostics"),
+        baseline.surface.registry.names().contains(&"diagnostics"),
         "control: worker child includes diagnostics without overrides"
     );
 
@@ -2618,12 +2613,7 @@ async fn child_engine_inherits_parent_tools_overrides_and_excludes_disabled_tool
             .await;
         for disabled in ["diagnostics", "tasks"] {
             assert!(
-                !restricted
-                    .surface
-                    .registry
-                    .names()
-                    .iter()
-                    .any(|name| *name == disabled),
+                !restricted.surface.registry.names().contains(&disabled),
                 "child registry must exclude disabled tool {disabled}"
             );
             assert!(

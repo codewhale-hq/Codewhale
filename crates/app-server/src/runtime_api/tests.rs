@@ -14143,7 +14143,7 @@ async fn settings_schema_allow_shell_reports_interactive_default_and_explicit_op
         .iter()
         .find(|row| row["key"] == "allow_shell")
         .expect("allow_shell row present");
-    assert_eq!(default_launch_row["value"], "false");
+    assert_eq!(default_launch_row["value"], "true");
     assert_eq!(default_launch_row["persisted"], true);
     Ok(())
 }

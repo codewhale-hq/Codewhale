@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Cross-process item index cache and owner-only indexing:** cached the item index across processes and skipped non-owner records during indexing. Thanks [@gaord](https://github.com/gaord). (#7446, #7522)
 - **Simplified Chinese Auto-Review documentation:** added `docs/zh_hans/AUTO_REVIEW.md`. Thanks [@Goldloli](https://github.com/Goldloli). (#7521)
-- **Bundled Onomeo and AtmoRouter providers:** added Onomeo (`ONOMEO_API_KEY`, thanks [@Owaid0723666](https://github.com/Owaid0723666), #7525) and AtmoRouter (`ATMOROUTER_API_KEY`, thanks [@BeckleyTenriajeng](https://github.com/BeckleyTenriajeng), #7506) as bundled OpenAI-compatible provider descriptors.
+- **Bundled Onomeo, AtmoRouter, and TrustedRouter providers:** added Onomeo (`ONOMEO_API_KEY`, thanks [@Owaid0723666](https://github.com/Owaid0723666), #7525), AtmoRouter (`ATMOROUTER_API_KEY`, thanks [@BeckleyTenriajeng](https://github.com/BeckleyTenriajeng), #7506), and TrustedRouter (`TRUSTEDROUTER_API_KEY`, thanks [@jperla](https://github.com/jperla), #7350) as bundled OpenAI-compatible provider descriptors.
 - **One paste path in the terminal and off-thread clipboard reads:** simplified Ctrl+V handling to a single press/release edge rule and moved clipboard file reads off the UI thread. (#7516)
 - **`/model` splits use-now from saving the default:** pressing `Enter` switches the current session's model immediately while `Shift+D` saves it as the default route. (#7517)
 - **Standalone `/pet` dot whale:** every terminal draws the dot whale directly from its own session activity without depending on the companion source session. (#7514)

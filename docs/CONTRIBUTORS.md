@@ -44,6 +44,7 @@ changelog or release notes, and this contributor record.
 
 **Contributions**
 
+- **[jperla](https://github.com/jperla)** — added TrustedRouter as a bundled OpenAI-compatible provider descriptor row ([#7350](https://github.com/codewhale-hq/Codewhale/pull/7350)).
 - **[BeckleyTenriajeng](https://github.com/BeckleyTenriajeng)** — added AtmoRouter as a bundled OpenAI-compatible provider descriptor row ([#7506](https://github.com/codewhale-hq/Codewhale/pull/7506)).
 - **[Owaid0723666](https://github.com/Owaid0723666)** — added Onomeo as a bundled provider descriptor row ([#7525](https://github.com/codewhale-hq/Codewhale/pull/7525)).
 - **[Goldloli](https://github.com/Goldloli)** — added the Simplified Chinese translation of `AUTO_REVIEW.md` ([#7521](https://github.com/codewhale-hq/Codewhale/pull/7521)).
