@@ -29079,3 +29079,45 @@ fn bench_item_index_against_a_real_store() {
     };
     println!("[bench] index={elapsed:?} items={items} turns={turns}");
 }
+
+#[test]
+fn sanitize_agent_mail_text_bounds_oversized_tokens_and_redacts_case_insensitively() {
+    let huge_ascii = "A".repeat(256 * 1024);
+    let capped = sanitize_agent_mail_text(&huge_ascii, 2048);
+    assert_eq!(capped.len(), 2048);
+    assert!(capped.bytes().all(|b| b == b'A'));
+
+    let huge_multibyte = "中".repeat(1024);
+    let capped_utf8 = sanitize_agent_mail_text(&huge_multibyte, 10);
+    assert_eq!(capped_utf8, "中中中");
+
+    assert!(agent_mail_token_is_credential("SK-123456"));
+    assert!(agent_mail_token_is_credential("(GitHub_Pat_abc)"));
+    assert!(agent_mail_token_is_credential("MY-API-KEY=secret"));
+    assert!(agent_mail_token_is_credential("Db-Passwd:hunter2"));
+    assert!(agent_mail_token_is_credential("auth_Token=xyz"));
+    assert!(!agent_mail_token_is_credential("hello=world"));
+    assert!(!agent_mail_token_is_credential("密钥=123"));
+
+    let redacted = sanitize_agent_mail_text(
+        "Use BEARER topsecret and Proxy-Authorization: nextval at https://example.com /etc/hosts",
+        2048,
+    );
+    assert_eq!(
+        redacted,
+        "Use [redacted-credential] [redacted-credential] and [redacted-credential] [redacted-credential] at [redacted-url] [redacted-path]"
+    );
+
+    assert!(agent_mail_looks_like_raw_transcript(
+        "prefix <TURN_META> body"
+    ));
+    assert!(agent_mail_looks_like_raw_transcript(
+        "{\"Role\": \"Assistant\"}"
+    ));
+    assert!(agent_mail_looks_like_raw_transcript(
+        "summary\n   TOOL_RESULT: ok"
+    ));
+    assert!(!agent_mail_looks_like_raw_transcript(
+        "Finished the bounded handoff cleanly."
+    ));
+}
