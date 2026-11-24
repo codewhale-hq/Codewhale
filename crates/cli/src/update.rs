@@ -239,7 +239,7 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
          Restart the application to use the new version.\n\
          What's new: {notes}\n\
          {undo}",
-        undo = undo_hint(kept_previous),
+        undo = undo_hint(kept_previous, latest_tag),
         source = download.source.describe(),
         notes = autoupdate::changelog_url(latest_tag),
         targets = plan
@@ -640,7 +640,7 @@ pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
     eprintln!(
         "Updated to v{version} · What's new: {} · {}",
         autoupdate::changelog_url(&version),
-        undo_hint(kept_previous)
+        undo_hint(kept_previous, &version)
     );
     #[cfg(unix)]
     {
@@ -706,7 +706,7 @@ pub fn run_rollback() -> Result<()> {
     println!(
         "Rolled back to v{}. v{current} will not be installed automatically again; the next newer release will. {}",
         previous.version,
-        undo_hint(kept_previous)
+        undo_hint(kept_previous, &previous.version)
     );
     Ok(())
 }
@@ -744,22 +744,25 @@ fn capitalized(text: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The undo hint after replacing the running executable, only when a kept
-/// previous version exists and `--rollback` would accept it.
-fn undo_hint(kept_previous: bool) -> String {
-    let Some(previous) = kept_previous
+/// The undo hint after replacing the running executable with `installed`,
+/// only when a kept previous version exists and `--rollback` would accept it.
+fn undo_hint(kept_previous: bool, installed: &str) -> String {
+    let previous = kept_previous
         .then(codewhale_config::codewhale_home)
         .and_then(Result::ok)
-        .and_then(|home| autoupdate::load_previous(&home))
-    else {
+        .and_then(|home| autoupdate::load_previous(&home));
+    undo_hint_for(previous.as_ref().map(|p| p.version.as_str()), installed)
+}
+
+/// `--rollback` runs from the installed binary, so the blocker is judged
+/// against `installed`, not the version printing the hint.
+fn undo_hint_for(previous: Option<&str>, installed: &str) -> String {
+    let Some(previous) = previous else {
         return "No rollback: the previous version was not kept.".to_string();
     };
-    match autoupdate::rollback_blocker(&previous.version, env!("CARGO_PKG_VERSION")) {
+    match autoupdate::rollback_blocker(previous, installed) {
         Some(blocker) => format!("No rollback: {blocker}."),
-        None => format!(
-            "Undo: codewhale update --rollback (back to v{})",
-            previous.version
-        ),
+        None => format!("Undo: codewhale update --rollback (back to v{previous})"),
     }
 }
 
@@ -2732,6 +2735,21 @@ mod tests {
     /// Release-source environment variables are process-wide, so the tests that
     /// exercise override precedence take this lock and restore what they found.
     static UPDATE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn undo_hint_is_judged_against_the_installed_version() {
+        // 0.10.3 -> 0.10.4: the installed v0.10.4 refuses to roll back to v0.10.3.
+        let hint = undo_hint_for(Some("0.10.3"), "v0.10.4");
+        assert!(hint.starts_with("No rollback:"), "{hint}");
+        // An updater older than v0.10.3 must not offer an undo the new binary refuses.
+        assert!(undo_hint_for(Some("0.10.2"), "0.10.4").starts_with("No rollback:"));
+        assert_eq!(
+            undo_hint_for(Some("0.10.4"), "0.10.5"),
+            "Undo: codewhale update --rollback (back to v0.10.4)"
+        );
+        assert!(undo_hint_for(None, "0.10.5").starts_with("No rollback:"));
+    }
+
     const UPDATE_ENV_VARS: &[&str] = &[
         codewhale_release::RELEASE_BASE_URL_ENV,
         codewhale_release::LEGACY_RELEASE_BASE_URL_ENV,
