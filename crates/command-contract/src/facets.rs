@@ -75,16 +75,12 @@ pub trait CommandModePolicyContext {
     /// Apply a mode selection the way `/mode` does, reporting which of the
     /// three outcomes occurred (changed, same-but-persisted, refused).
     fn select_mode(&mut self, mode: CommandMode) -> CommandModeSelection;
-    /// Apply the legacy YOLO alias (invisible Act + full access).
-    fn select_yolo_compat(&mut self) -> CommandModeSelection;
     /// The receipt shown when the same mode was persisted as the default.
     fn mode_startup_default_receipt(&self, mode: CommandMode) -> String;
     /// The refusal text when a locked policy blocks the change.
     fn setting_locked_mode_message(&self) -> String;
     /// Localized display name for a mode (e.g. `Work`, `Plan`).
     fn mode_label(&self, mode: CommandMode) -> String;
-    /// Localized label for the legacy YOLO alias (`Full Access (Work)`).
-    fn yolo_compat_label(&self) -> String;
 }
 
 /// Outcome of a `/mode` selection (mirrors the host `SettingSelection`).

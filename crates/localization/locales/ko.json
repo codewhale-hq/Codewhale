@@ -847,7 +847,7 @@
   "KbCycleThinking": "현재 프로바이더의 추론 강도 순환 전환 (Ctrl+T)",
   "KbCyclePermissions": "액세스 전환: 확인 → 편집 수락 → 계획 → 자동 검토 → 전체 액세스 (Shift+Tab)",
   "KbJumpPlanAgentYolo": "핫바 슬롯 실행",
-  "KbAltJumpPlanAgentYolo": "계획 / 실행 모드로 이동하거나 전체 권한 요청 (레거시 별칭)",
+  "KbAltJumpPlanAgentYolo": "계획 / 실행 모드로 이동",
   "KbFocusSidebar": "Tasks / Agents / Context / Pinned 작업 바 패널에 포커스",
   "KbSessionPicker": "세션 선택 화면 열기",
   "KbUpdateInstall": "최신 Codewhale 업데이트를 확인하고 설치 (`/update install`)",

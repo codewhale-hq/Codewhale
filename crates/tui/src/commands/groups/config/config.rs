@@ -555,7 +555,7 @@ pub fn settings(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigComma
     }
 }
 
-/// `/mode [work|plan|1|2]` (aliases `/jihua`, `/zidong`). A retired Operate
+/// `/mode [work|plan|1|2]` (alias `/jihua`). A retired Operate
 /// spelling selects Work and says so.
 ///
 /// The command owns the alias handling, parse and message composition; the
@@ -569,20 +569,9 @@ pub fn mode(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandRe
         return missing("mode_policy");
     };
     if CommandMode::is_legacy_bypass_alias(arg) {
-        // The legacy alias is a one-way permission shorthand: its receipt names
-        // Full Access (Work), not the hidden mode it folds to.
-        return match facet.select_yolo_compat() {
-            CommandModeSelection::Changed => ConfigCommandResult::with_message_and_action(
-                format!("Switched to {}.", facet.yolo_compat_label()),
-                ConfigAction::ModeChanged(CommandMode::Agent),
-            ),
-            CommandModeSelection::PersistedSame => {
-                ConfigCommandResult::message(facet.mode_startup_default_receipt(CommandMode::Agent))
-            }
-            CommandModeSelection::Refused => {
-                ConfigCommandResult::message(facet.setting_locked_mode_message())
-            }
-        };
+        return ConfigCommandResult::message(
+            "Full Access is a permission posture, not a mode. Press Shift+Tab to choose Full Access (or use /auto for Auto-Review).",
+        );
     }
     let retired = if CommandMode::is_retired_operate_alias(arg) {
         " Operate mode was retired; /fleet runs parallel agents."

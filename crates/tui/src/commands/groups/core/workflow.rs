@@ -472,7 +472,7 @@ const WORKFLOWS_USAGE: &str = "/workflows — open the live run dashboard (no mo
 /// Host-only alias for the existing permission posture — no new runtime (#5439).
 pub(in crate::commands) const AUTO_COMMAND_INFO: CommandInfo = CommandInfo {
     name: "auto",
-    aliases: &[],
+    aliases: &["zidong"],
     usage: "/auto",
     description_id: MessageId::CmdAutoDescription,
 };
