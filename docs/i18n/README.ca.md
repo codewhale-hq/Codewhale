@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:5da2c4c9d5f9 -->
+<!-- source: README.md sha256:7e0e7ebc680b -->
 <div align="center">
 
 <picture>
@@ -82,13 +82,13 @@ A Ask, Accept Edits i Auto-Review, les ordres s’executen dins d’un sandbox d
 
 Les claus API afegides amb `/provider` es queden a la teva màquina, i els models locals no requereixen clau. `/cost` i el peu de pàgina segueixen la despesa de la sessió quan el preu és conegut (un preu desconegut es mostra com a desconegut, mai com a gratuït).
 
-La telemetria agregada està activada per defecte (versió, SO, durada/resultat de la sessió, IDs de proveïdors integrats, recomptes de funcions/errors; ID d’instal·lació aleatori rotat cada 90 dies; mai codi, prompts, converses, noms de models, rutes ni credencials). Desactiva-la amb:
+La telemetria agregada està activada per defecte (versió, SO, durada/resultat de la sessió, IDs de proveïdors integrats, IDs de models del catàleg públic integrat (els models personalitzats, privats o locals es compten com `other`), totals de testimonis, recomptes de crides/errors d'eines integrades i comptadors de funcions/errors; ID d'instal·lació aleatori que rota cada 90 dies; mai codi, prompts, converses, noms de models personalitzats/privats, noms de fitxers/repos/branques, credencials ni adreces IP). Desactiva-la amb:
 
 ```bash
 codewhale config set telemetry false
 ```
 
-Defineix `CODEWHALE_NO_UPDATE_CHECK=1` per ometre la comprovació inicial de versions a GitHub. Detalls: [ordre d’autorització](../AUTHORIZATION_ORDER.md), [sandboxing](../SANDBOX.md) i [telemetria](../TELEMETRY.md).
+En iniciar-se, Codewhale també comprova nous llançaments a GitHub (`CODEWHALE_NO_UPDATE_CHECK=1` per ometre) i actualitza el catàleg públic `models.dev` cada 24 hores (`CODEWHALE_DISABLE_MODELS_DEV_FETCH=1` o `[catalog] auto_refresh = false` per ometre; desactivat automàticament en CI i amb `DO_NOT_TRACK`). Detalls: [ordre d'autorització](../AUTHORIZATION_ORDER.md), [sandboxing](../SANDBOX.md) i [telemetria](../TELEMETRY.md).
 
 ## Documentació
 

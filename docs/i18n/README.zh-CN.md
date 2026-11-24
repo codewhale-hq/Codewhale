@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:5da2c4c9d5f9 -->
+<!-- source: README.md sha256:7e0e7ebc680b -->
 <div align="center">
 
 <picture>
@@ -84,13 +84,13 @@ Fix the failing tests and explain what changed.
 
 通过 `/provider` 添加的 API 密钥仅保存在本机，本地模型无需密钥。`/cost` 和页脚会在已知价格时统计会话费用（未知价格会明确显示为未知，绝不显示为免费）。
 
-聚合遥测默认开启（仅包含版本、操作系统、会话时长与结果、内置提供商 ID、功能与错误计数，使用每 90 天轮换的随机安装 ID；绝不上传代码、提示词、对话内容、模型名称、路径或凭据）。运行以下命令可关闭：
+聚合遥测默认开启（版本、操作系统、会话时长与结果、内置提供商 ID、内置公开目录中的模型 ID（自定义、私有或本地模型记为 `other`）、汇总 token 数量、内置工具调用与错误计数、功能与错误计数；每 90 天轮换的随机安装 ID；绝不上传代码、提示词、对话内容、自定义/私有模型名称、文件/仓库/分支名称、凭据或 IP 地址）。运行以下命令可关闭：
 
 ```bash
 codewhale config set telemetry false
 ```
 
-设置 `CODEWHALE_NO_UPDATE_CHECK=1` 可跳过启动时的 GitHub 新版本检查。详情参见 [授权顺序](../AUTHORIZATION_ORDER.md)、[沙盒机制](../SANDBOX.md) 与 [遥测说明](../TELEMETRY.md)。
+启动时 Codewhale 还会检查 GitHub 是否有新版本（设置 `CODEWHALE_NO_UPDATE_CHECK=1` 可跳过），并每 24 小时刷新一次公开的 `models.dev` 模型目录（设置 `CODEWHALE_DISABLE_MODELS_DEV_FETCH=1` 或 `[catalog] auto_refresh = false` 可跳过；在 CI 环境和 `DO_NOT_TRACK` 下自动禁用）。详情参见 [授权顺序](../AUTHORIZATION_ORDER.md)、[沙盒机制](../SANDBOX.md) 与 [遥测说明](../TELEMETRY.md)。
 
 ## 文档
 

@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:5da2c4c9d5f9 -->
+<!-- source: README.md sha256:7e0e7ebc680b -->
 <div align="center">
 
 <picture>
@@ -82,13 +82,13 @@ Em Ask, Accept Edits e Auto-Review, os comandos rodam em um sandbox do sistema o
 
 Chaves de API adicionadas com `/provider` ficam na sua máquina, e modelos locais não exigem chave. `/cost` e o rodapé acompanham o gasto da sessão quando o preço é conhecido (um preço desconhecido aparece como desconhecido, nunca como gratuito).
 
-A telemetria agregada vem ativada por padrão (versão, SO, duração/resultado da sessão, IDs de provedores integrados, contagens de recursos/erros; ID de instalação aleatório rotacionado a cada 90 dias; nunca código, prompts, conversas, nomes de modelos, caminhos ou credenciais). Desative com:
+A telemetria agregada é ativada por padrão (versão, SO, duração e resultado da sessão, IDs de provedores integrados, IDs de modelos do catálogo público integrado (modelos personalizados, privados ou locais viram `other`), totais de tokens, contagens de chamadas/erros de ferramentas integradas e contadores de recursos/erros; ID de instalação aleatório rotacionado a cada 90 dias; nunca código, prompts, conversas, nomes de modelos personalizados/privados, nomes de arquivos/repos/branches, credenciais ou endereços IP). Desative com:
 
 ```bash
 codewhale config set telemetry false
 ```
 
-Defina `CODEWHALE_NO_UPDATE_CHECK=1` para pular a verificação inicial de lançamentos no GitHub. Detalhes: [ordem de autorização](../AUTHORIZATION_ORDER.md), [sandboxing](../SANDBOX.md) e [telemetria](../TELEMETRY.md).
+Na inicialização, o Codewhale também verifica novas versões no GitHub (`CODEWHALE_NO_UPDATE_CHECK=1` para pular) e atualiza o catálogo público `models.dev` a cada 24 horas (`CODEWHALE_DISABLE_MODELS_DEV_FETCH=1` ou `[catalog] auto_refresh = false` para pular; desativado automaticamente em CI e sob `DO_NOT_TRACK`). Detalhes: [ordem de autorização](../AUTHORIZATION_ORDER.md), [sandboxing](../SANDBOX.md) e [telemetria](../TELEMETRY.md).
 
 ## Documentação
 

@@ -137,16 +137,21 @@ no key. `/cost` and the footer track session spend when pricing is known (an
 unknown price is shown as unknown, never as free).
 
 Aggregate telemetry is enabled by default (version, OS, session length/outcome,
-built-in provider IDs, feature/error counts; rotating 90-day random install
-ID; never code, prompts, conversations, model names, paths, or credentials).
-Disable it with:
+built-in provider IDs, bundled public-catalog model IDs (custom, private, or
+local models map to `other`), aggregate token totals, built-in tool call/error
+counts, and feature/error counters; rotating 90-day random install ID; never
+code, prompts, conversations, custom/private model names, file/repo/branch
+names, credentials, or IP addresses). Disable it with:
 
 ```bash
 codewhale config set telemetry false
 ```
 
-Set `CODEWHALE_NO_UPDATE_CHECK=1` to skip the startup GitHub release check.
-Details: [authorization order](docs/AUTHORIZATION_ORDER.md),
+At startup Codewhale also checks GitHub for a new release
+(`CODEWHALE_NO_UPDATE_CHECK=1` to skip) and refreshes the public `models.dev`
+model catalog every 24 hours (`CODEWHALE_DISABLE_MODELS_DEV_FETCH=1` or
+`[catalog] auto_refresh = false` to skip; suppressed automatically in CI and
+under `DO_NOT_TRACK`). Details: [authorization order](docs/AUTHORIZATION_ORDER.md),
 [sandboxing](docs/SANDBOX.md), and [telemetry](docs/TELEMETRY.md).
 
 ## Documentation

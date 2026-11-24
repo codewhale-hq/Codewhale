@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:5da2c4c9d5f9 -->
+<!-- source: README.md sha256:7e0e7ebc680b -->
 <div align="center">
 
 <picture>
@@ -82,13 +82,13 @@ Ask, Accept Edits ve Auto-Review modlarında komutlar mümkün olan yerlerde bir
 
 `/provider` ile eklenen API anahtarları makinenizde kalır ve yerel modeller anahtar gerektirmez. `/cost` ve alt bilgi, fiyatlandırma bilindiğinde oturum harcamasını izler (bilinmeyen fiyat ücretsiz değil, bilinmeyen olarak gösterilir).
 
-Toplu telemetri varsayılan olarak etkindir (sürüm, işletim sistemi, oturum süresi/sonucu, yerleşik sağlayıcı kimlikleri, özellik/hata sayıları; 90 günde bir değişen rastgele kurulum kimliği; asla kod, istem, konuşma, model adı, dosya yolu veya kimlik bilgisi içermez). Kapatmak için:
+Toplu telemetri varsayılan olarak açıktır (sürüm, işletim sistemi, oturum süresi/sonucu, yerleşik sağlayıcı kimlikleri, yerleşik genel katalog model kimlikleri (özel, gizli veya yerel modeller `other` olarak kaydedilir), toplam belirteç sayıları, yerleşik araç çağrı/hata sayıları ve özellik/hata sayaçları; 90 günde bir değişen rastgele kurulum kimliği; asla kod, istem, sohbet, özel/gizli model adları, dosya/depo/dal adları, kimlik bilgileri veya IP adresleri gönderilmez). Kapatmak için:
 
 ```bash
 codewhale config set telemetry false
 ```
 
-Başlangıçtaki GitHub sürüm kontrolünü atlamak için `CODEWHALE_NO_UPDATE_CHECK=1` ayarlayın. Ayrıntılar: [yetkilendirme sırası](../AUTHORIZATION_ORDER.md), [korumalı alan](../SANDBOX.md) ve [telemetri](../TELEMETRY.md).
+Codewhale başlangıçta GitHub'da yeni sürüm olup olmadığını da denetler (atlamak için `CODEWHALE_NO_UPDATE_CHECK=1`) ve genel `models.dev` model kataloğunu her 24 saatte bir yeniler (atlamak için `CODEWHALE_DISABLE_MODELS_DEV_FETCH=1` veya `[catalog] auto_refresh = false`; CI ortamlarında ve `DO_NOT_TRACK` etkinken otomatik olarak kapatılır). Ayrıntılar: [yetkilendirme sırası](../AUTHORIZATION_ORDER.md), [sandbox](../SANDBOX.md) ve [telemetri](../TELEMETRY.md).
 
 ## Belgeler
 

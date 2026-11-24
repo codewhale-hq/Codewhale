@@ -847,7 +847,7 @@ codewhale config migrate --prefer table       # resolve a conflict: keep the tab
 - `CODEWHALE_NOTES_PATH`
 - `CODEWHALE_MEMORY`(`1|on|true|yes|y|enabled` 开启用户记忆)
 - `CODEWHALE_MEMORY_PATH`
-- `CODEWHALE_TELEMETRY` / `DEEPSEEK_TELEMETRY`(旧别名)——匿名使用计数在当前 0.9.12 源码中默认开启，并附有点名 Codewhale 和 PostHog 的告知，以及简便且持久的退出方式。此前已明确拒绝的选择继续保持关闭。接受 `0|1|true|false|yes|no|on|off|enabled|disabled`。显式 "off" 是**底线**：它胜过 `--telemetry true` 和配置里的 `telemetry = true`，而此列表无法读取的值也解析为 off，因为杀开关(kill switch)里的拼写错误绝不能解析为 "on"。见 [`TELEMETRY.md`](TELEMETRY.md)。
+- `CODEWHALE_TELEMETRY` / `DEEPSEEK_TELEMETRY`(旧别名)——匿名使用计数在当前源码中默认开启，并附有说明 Codewhale 为唯一第一方收集方的告知，以及简便且持久的退出方式。此前已明确拒绝的选择继续保持关闭。接受 `0|1|true|false|yes|no|on|off|enabled|disabled`。显式 "off" 是**底线**：它胜过 `--telemetry true` 和配置里的 `telemetry = true`，而此列表无法读取的值也解析为 off，因为杀开关(kill switch)里的拼写错误绝不能解析为 "on"。见 [`TELEMETRY.md`](TELEMETRY.md)。
 - `CODEWHALE_TELEMETRY_ENDPOINT` / `DEEPSEEK_TELEMETRY_ENDPOINT`(旧别名)——`https://`,或仅对 loopback 的普通 `http://`。覆盖配置文件。未设置时选择随附默认 `https://telemetry.codewhale.net/v1/telemetry`;设置为**空字符串**会把批次路由到本地 dry-run 文件，不联系任何人。无论哪种方式，它只决定会话发送到哪里——不能覆盖选择退出。
 - `CODEWHALE_ALLOW_SHELL`(`1`/`true` 启用)
 - `CODEWHALE_APPROVAL_POLICY`(`on-request|untrusted|never`)
@@ -1255,7 +1255,7 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 
 - `verbosity`(字符串，可选)：`normal` 或 `concise`。`normal` 保持默认的对话式提示。`concise` 追加一块提示纪律，用于直接、少废话的输出；CLI 非交互命令(`exec` 和 `eval`)默认 `concise`，除非 config/环境/CLI 覆盖它。用 `CODEWHALE_VERBOSITY` 或旧别名 `DEEPSEEK_VERBOSITY` 按进程覆盖。
 
-- `telemetry`（bool，可选）：匿名使用计数，**在当前 0.9.12 源码中默认 `true`**。第 `5` 版告知列明 Codewhale 和 PostHog，并说明退出策略；不会替默认用户虚构一次同意。此前已明确退出的选择继续保持关闭。这里的显式 `false` 是持久的*退出*：它会删除随机的安装 id、清空缓冲的和 dry-run 的事件，并留下一个只要该设置为 false 就会被重新声明的 tombstone。它是底线：`--telemetry true` 和 `CODEWHALE_TELEMETRY=1` 都会输给它。用 `/settings` 或 `codewhale config set telemetry true`，可以经由现有的隐私转换流程为新会话显式重新开启计数。`CODEWHALE_TELEMETRY`（旧别名 `DEEPSEEK_TELEMETRY`）和 `--telemetry false` 提供作用于单次运行的关闭开关，停止采集和发送，但不擦除所有者的状态。仓库本地的 `.codewhale/config.toml` 不能设置这个偏好。`codewhale config telemetry` 显示告知，`codewhale config get telemetry` 报告偏好和隐私状态。完整 schema 和退出行为：[`TELEMETRY.md`](TELEMETRY.md)。
+- `telemetry`（bool，可选）：匿名使用计数，**默认 `true`**。第 `6` 版告知说明 Codewhale 为唯一第一方收集方，并说明退出策略；不会替默认用户虚构一次同意。此前已明确退出的选择继续保持关闭。这里的显式 `false` 是持久的*退出*：它会删除随机的安装 id、清空缓冲的和 dry-run 的事件，并留下一个只要该设置为 false 就会被重新声明的 tombstone。它是底线：`--telemetry true` 和 `CODEWHALE_TELEMETRY=1` 都会输给它。用 `/settings` 或 `codewhale config set telemetry true`，可以经由现有的隐私转换流程为新会话显式重新开启计数。`CODEWHALE_TELEMETRY`（旧别名 `DEEPSEEK_TELEMETRY`）和 `--telemetry false` 提供作用于单次运行的关闭开关，停止采集和发送，但不擦除所有者的状态。仓库本地的 `.codewhale/config.toml` 不能设置这个偏好。`codewhale config telemetry` 显示告知，`codewhale config get telemetry` 报告偏好和隐私状态。完整 schema 和退出行为：[`TELEMETRY.md`](TELEMETRY.md)。
 
 - `telemetry_endpoint`(字符串，可选)：批次 POST 到哪。保持未设置会选择随附默认 **`https://telemetry.codewhale.net/v1/telemetry`**——[`TELEMETRY.md`](TELEMETRY.md) 中描述的第一方接入服务，其源码在 `telemetry-ingest/`。这个键只决定*被允许的会话*发送到哪里；它不能覆盖选择退出。把它设为**空字符串**是保持启用且不联系任何人的方式：每个批次随后写入 `$CODEWHALE_HOME/telemetry/dryrun.jsonl`，完全不构造 HTTP 客户端，所以你可以读到原本会发送的确切内容。任何其他值直接替换默认值。要求 `https://`;普通 `http://` 只对 loopback 主机接受，并且没有环境变量可以覆盖该拒绝。被拒绝的端点会让遥测在本次运行关闭，而不是回退到明文或默认值。用 `CODEWHALE_TELEMETRY_ENDPOINT`(旧别名 `DEEPSEEK_TELEMETRY_ENDPOINT`)按进程覆盖，其中空值意味着同样的"不联系任何人"。仓库本地的 `.codewhale/config.toml` 不能设置它。
 

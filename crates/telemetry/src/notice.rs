@@ -34,11 +34,11 @@ every 90 days. Change your mind any time:
 
 Full schema, field by field:  docs/TELEMETRY.md
 
-Usage reporting is on by default. Codewhale and PostHog process these
+Usage reporting is on by default. Codewhale processes these first-party
 counts when delivery is configured. No IP is collected.";
 
 /// Concise disclosure for every armed runtime surface, including headless CLI.
-pub const STARTUP_DISCLOSURE: &str = "Usage reporting is on by default: Codewhale and PostHog process aggregate version/platform, session, feature, error, model/token and built-in tool counts when delivery is configured. No content or IP. Turn off: codewhale config set telemetry false. Details: codewhale config telemetry";
+pub const STARTUP_DISCLOSURE: &str = "Usage reporting is on by default: Codewhale processes aggregate version/platform, session, feature, error, model/token and built-in tool counts when delivery is configured. No content or IP. Turn off: codewhale config set telemetry false. Details: codewhale config telemetry";
 
 /// Present the policy once per revision without recording human acceptance.
 /// Failure to save the display marker only causes a later repeat disclosure.
