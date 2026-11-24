@@ -12569,7 +12569,7 @@ fn env_bool_overrides_accept_yes_and_on() {
         let _net = EnvVarGuard::set("CODEWHALE_SANDBOX_NETWORK_ACCESS", truthy);
         let _bwrap = EnvVarGuard::set("CODEWHALE_PREFER_BWRAP", truthy);
         let mut config = Config::default();
-        apply_env_overrides_unlocked(&mut config, ConfigEnvironmentPolicy::Full);
+        apply_env_overrides_unlocked(&mut config, ConfigEnvironmentPolicy::Runtime);
         assert_eq!(config.allow_shell, Some(true), "allow_shell={truthy}");
         assert_eq!(config.yolo, Some(true), "yolo={truthy}");
         assert_eq!(config.sandbox_network_access, Some(true), "net={truthy}");
@@ -12579,7 +12579,7 @@ fn env_bool_overrides_accept_yes_and_on() {
     for falsy in ["no", "off", "0", "false", ""] {
         let _shell = EnvVarGuard::set("CODEWHALE_ALLOW_SHELL", falsy);
         let mut config = Config::default();
-        apply_env_overrides_unlocked(&mut config, ConfigEnvironmentPolicy::Full);
+        apply_env_overrides_unlocked(&mut config, ConfigEnvironmentPolicy::Runtime);
         assert_eq!(config.allow_shell, Some(false), "allow_shell={falsy}");
     }
 }
@@ -12593,7 +12593,7 @@ fn unknown_provider_env_does_not_skip_later_env_overrides() {
     let _max_subagents = EnvVarGuard::set("CODEWHALE_MAX_SUBAGENTS", "5");
 
     let mut config = Config::default();
-    apply_env_overrides_unlocked(&mut config, ConfigEnvironmentPolicy::Full);
+    apply_env_overrides_unlocked(&mut config, ConfigEnvironmentPolicy::Runtime);
 
     assert_eq!(config.provider.as_deref(), Some("nonexistent-provider-id"));
     assert_eq!(config.allow_shell, Some(true));
@@ -12616,7 +12616,7 @@ fn max_subagents_env_and_overlay_override_file_subagents_max_concurrent() {
         ..Config::default()
     };
     assert_eq!(config.max_subagents(), 12);
-    apply_env_overrides_unlocked(&mut config, ConfigEnvironmentPolicy::Full);
+    apply_env_overrides_unlocked(&mut config, ConfigEnvironmentPolicy::Runtime);
     assert_eq!(config.max_subagents(), 4);
 
     let mut project_target = Config {
