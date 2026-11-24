@@ -3813,7 +3813,7 @@ fn dsh_npm_deps_scans_bundled_js_asset_above_two_mib_within_eight_mib_cap() {
     });
     let pkg = write_dsh_base_package(
         &tmp.path().join("large-asset"),
-        manifest.clone(),
+        manifest,
         "- insert:\n    - id: demo-large\n      name: '@demo/large-asset'\n",
     );
     fs::create_dir_all(pkg.join("lib")).unwrap();
@@ -3824,7 +3824,8 @@ fn dsh_npm_deps_scans_bundled_js_asset_above_two_mib_within_eight_mib_cap() {
     fs::write(pkg.join("lib/index.js"), big).unwrap();
 
     let policy = codewhale_net::network_policy::NetworkPolicy::default();
-    let stage = npm_deps::maybe_stage_with_dependencies(&pkg, &manifest, &[], &policy)
+    let no_dependencies = dsh::Value::Map(Vec::new());
+    let stage = npm_deps::maybe_stage_with_dependencies(&pkg, &no_dependencies, &[], &policy)
         .expect("2.4 MiB bundled JS asset should scan cleanly within 8 MiB limit");
     assert!(stage.is_none());
 }
