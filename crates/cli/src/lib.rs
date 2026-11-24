@@ -4242,6 +4242,19 @@ fn auth_get_line_with_runtime(
     }
 
     let config_key = provider_config_api_key(store, provider);
+    let bound_env_key = store
+        .config
+        .providers
+        .for_provider(provider)
+        .api_key_env
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .and_then(|name| std::env::var(name).ok())
+        .filter(|value| !value.trim().is_empty());
+    if config_key.is_none() && bound_env_key.is_some() {
+        return format!("{slot}: set (source: env)");
+    }
     let keyring_key = config_key
         .is_none()
         .then(|| provider_keyring_api_key(secrets, provider))
