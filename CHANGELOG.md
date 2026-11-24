@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Environment overrides and `approval_policy` consistency:** `CODEWHALE_ALLOW_SHELL` (along with `CODEWHALE_YOLO`, `CODEWHALE_SANDBOX_NETWORK_ACCESS`, and `CODEWHALE_PREFER_BWRAP`) now accepts `yes` and `on` in addition to `1` and `true`; an unknown `CODEWHALE_PROVIDER` now warns and skips only provider-scoped overrides instead of dropping every subsequent environment override; `CODEWHALE_MAX_SUBAGENTS` and project/overlay `max_subagents` now take precedence over a file's `[subagents] max_concurrent`; and `approval_policy` now accepts `ask` and `auto-review` in `codewhale config set`, `config.toml` validation, and project-config tightening.
+### Added
+
+- **Expanded DeepSeek Harness 0.2.2 host compatibility:** switched on the brokered `attachments` service, added pure-API exports (`ReasoningEffortId`, `KNOWN_SESSION_EVENT_TYPES`, `deriveEventMessage`, and streaming/message helpers) and plugin-scoped module shims (`@deepseek-ai/dsh-credentials`, `@deepseek-ai/dsh-settings` with read-only host `locale`, `@deepseek-ai/dsh-home-paths` and `@deepseek-ai/dsh-atomic-write` confined to the plugin `dataDir`, `@deepseek-ai/dsh-skill`, and `@deepseek-ai/dsh-typert-protocol`), and added `ctx.tools.guard` (deny-only), `subagents.getProvider('fork')`, command `invocation.agent.session`, `agentPresets`, `agentDefaultModel`, `sessionProjections`, `workspaceRegistry`, `typertGateway`, policy-guarded `web`, and read-only `tools/result` projection.
+
+### Fixed
+
+- **DSH importer scan cap and named group closures:** raised the npm dependency scanner's per-file limit to 8 MiB (matching `PLUGIN_UI_MAX_BYTES`) so bundled client JS assets in packages like `dsh-pet`, `dsh-univer-office`, and `dsh-genui` pass import review, and included named `group: true` modules such as `dsh-mnemon/bundle` in the reviewed module closure. (CW-8289)
 
 ## [0.10.4] - 2026-11-23
 
