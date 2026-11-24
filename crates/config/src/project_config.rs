@@ -10,15 +10,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Values config.toml's root `approval_policy` accepts, compared trimmed and
-/// case-insensitively. settings.toml's `approval_policy` is a different
-/// vocabulary (`use-tui-default`, `ask`, `accept-edits`, `auto-review`,
-/// `full-access`).
+/// case-insensitively. settings.toml's `approval_policy` also allows
+/// `use-tui-default` and `full-access`.
 pub const CONFIG_TOML_APPROVAL_POLICIES: &[&str] = &[
     "on-request",
     "untrusted",
     "never",
     "auto",
+    "auto-review",
     "suggest",
+    "ask",
     "accept-edits",
 ];
 
@@ -54,7 +55,7 @@ pub fn check_config_toml_choice(key: &str, value: &str) -> Result<()> {
         return Ok(());
     }
     let settings_note = if key == "approval_policy" {
-        " (`use-tui-default`, `ask`, `auto-review` and `full-access` are settings.toml \
+        " (`use-tui-default` and `full-access` are settings.toml \
          values for the /settings editor; config.toml does not read them.)"
     } else {
         ""
@@ -99,9 +100,9 @@ pub fn project_sandbox_mode_is_allowed(current: Option<&str>, project: &str) -> 
 
 pub(crate) fn approval_policy_rank(value: &str) -> Option<u8> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "auto" => Some(0),
+        "auto" | "auto-review" | "auto_review" => Some(0),
         "accept-edits" | "accept_edits" | "acceptedits" | "edits" => Some(1),
-        "suggest" | "suggested" | "on-request" | "untrusted" => Some(2),
+        "suggest" | "suggested" | "on-request" | "untrusted" | "ask" => Some(2),
         "never" | "deny" | "denied" => Some(3),
         _ => None,
     }
