@@ -9794,6 +9794,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         },
         provider: override_cfg.provider.or(base.provider),
         telemetry: override_cfg.telemetry.or(base.telemetry),
+        catalog: override_cfg.catalog.or(base.catalog),
         http_headers: override_cfg.http_headers.or(base.http_headers),
         default_text_model: override_cfg
             .default_text_model

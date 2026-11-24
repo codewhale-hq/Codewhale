@@ -14189,6 +14189,65 @@ async fn settings_schema_serves_every_declared_row_with_runtime_state() -> Resul
 }
 
 #[tokio::test]
+async fn settings_schema_telemetry_config_toggle_persists_and_validates() -> Result<()> {
+    let _lock = lock_test_env();
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    fs::create_dir_all(&home)?;
+    let config_file = home.join("config.toml");
+    fs::write(
+        &config_file,
+        "provider = \"deepseek\"\napi_key = \"runtime-api-test-key\"\nbase_url = \"http://127.0.0.1:1/v1\"\n",
+    )?;
+    let _home = EnvVarGuard::set("CODEWHALE_HOME", &home);
+    let _config = EnvVarGuard::set("CODEWHALE_CONFIG_PATH", &config_file);
+    let Some((addr, _runtime_threads, handle)) =
+        spawn_test_server_with_config_path(config_file.clone()).await?
+    else {
+        return Ok(());
+    };
+    let client = codewhale_release::tls::reqwest_client();
+
+    let off = client
+        .post(format!("http://{addr}/v1/config"))
+        .json(&json!({"key": "telemetry", "value": "false", "persist": true}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+    assert_eq!(off["key"], "telemetry");
+    assert_eq!(off["value"], "false");
+    assert_eq!(off["persisted"], true);
+    assert_eq!(off["requires_reload"], false);
+    assert!(fs::read_to_string(&config_file)?.contains("telemetry = false"));
+
+    let on = client
+        .post(format!("http://{addr}/v1/config"))
+        .json(&json!({"key": "telemetry", "value": "true", "persist": true}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+    assert_eq!(on["key"], "telemetry");
+    assert_eq!(on["value"], "true");
+    assert_eq!(on["persisted"], true);
+    assert_eq!(on["requires_reload"], true);
+    assert!(fs::read_to_string(&config_file)?.contains("telemetry = true"));
+
+    let invalid = client
+        .post(format!("http://{addr}/v1/config"))
+        .json(&json!({"key": "telemetry", "value": "maybe", "persist": true}))
+        .send()
+        .await?;
+    assert_eq!(invalid.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn settings_schema_write_fallthrough_persists_declared_settings_keys() -> Result<()> {
     let _lock = lock_test_env();
     let root = tempfile::tempdir()?;

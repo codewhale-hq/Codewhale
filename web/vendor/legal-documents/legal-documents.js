@@ -10,6 +10,7 @@
 export const LEGAL_DOCUMENTS = Object.freeze({
   terms: Object.freeze({ version: "2026-10-04", status: "effective", effectiveAt: "2026-10-04" }),
   privacy: Object.freeze({ version: "2026-10-04", status: "effective", effectiveAt: "2026-10-04" }),
+  membership: Object.freeze({ version: "2026-11-18", status: "draft", effectiveAt: null }),
 });
 
 /** Render the pinned document's status; a revision date never makes a draft effective. */

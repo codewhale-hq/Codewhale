@@ -1,7 +1,7 @@
 // Shared verbatim legal content. Presentation differs by client; policy does not.
 // Bracketed capitals such as [LIKE THIS] are placeholders for the founder to
 // fill and approve. A document carrying one never takes effect:
-// apps/web/tests/legal-paid-terms.test.ts refuses it once its metadata does.
+// apps/web-next/tests/public-documents.test.ts refuses it once its metadata does.
 // Founder facts, 2026-10-04: the seller is Shannon Labs, Inc., a Delaware
 // corporation based in San Francisco; the paid terms take California law and
 // San Francisco County courts. "Shannon Labs" alone names only the brand.
@@ -29,6 +29,7 @@ export function PrivacyContent() {
       <p><strong>Cloudflare</strong> hosts the Codewhale web app and API, routes and secures requests, stores account authentication and session state, and stores anonymous usage totals in Cloudflare Analytics Engine when Usage data is enabled.</p>
       <p><strong>Supabase</strong> provides sign-in and the database that holds your account and product records.</p>
       <p><strong>Resend</strong> delivers email we send you.</p>
+      <p><strong>beehiiv</strong> holds the email address of anyone who confirms the Codewhale updates signup, and sends and hosts the newsletter. We send it that address and a tag for the list you joined. It records delivery, opens and clicks for the newsletter, and keeps the address, marked unsubscribed, after you unsubscribe. If we suppress an address that never confirmed, we still tell it to unsubscribe that address. It never receives your account or product data.</p>
       <p>Services you connect yourself, such as GitHub or your own model provider, handle information under their own terms.</p>
     </section>
     <section id="payments"><h2>Payments</h2><p>When you buy a pack, you pay on a checkout page hosted by Stripe. Your card details go to Stripe and never reach Codewhale’s servers. To open checkout we give Stripe your account identifier and, when we have it, your email address; Stripe collects the billing details it needs to take the payment and calculate tax. We keep a record of each purchase: Stripe’s identifiers for you and for the payment, what you bought, the amounts charged (price, Platform fee and tax), the payment’s status, and any refund or dispute. We use these records to grant and account for your balance, answer your questions, prevent fraud, and meet tax and accounting duties, and we keep them as long as those duties require, including after account deletion. Stripe also uses payment information under its own privacy policy, including to prevent fraud.</p></section>
@@ -70,5 +71,26 @@ export function TermsContent() {
     </section>
     <section id="governing-law"><h2>Governing law</h2><p>These terms are governed by the laws of the State of California, United States, without regard to its conflict-of-laws rules. Claims are brought in the state or federal courts located in San Francisco County, California, unless the law where you live gives you the right to bring them elsewhere. Nothing in these terms takes away rights you have under consumer protection laws that cannot be waived by contract.</p></section>
     <section><h2>Changes</h2><p>When we change these terms, we update the date above. The version in effect when you buy a pack governs that purchase, and purchases made before these terms took effect keep the terms they were sold under. A change never shortens the expiry or reduces the balance of a pack you have already bought.</p></section>
+  </>;
+}
+
+export function MembershipTermsDraftContent() {
+  return <>
+    <p>These membership terms add to the <a href="/legal/terms">Terms of Service</a> and apply when you buy a Codewhale membership. Where they differ, these terms govern the membership. Shannon Labs, Inc. is the seller and Stripe processes the payment.</p>
+    <section id="plans"><h2>Plans</h2>
+      <p><strong>Codewhale</strong>, $10 a month: 100 hours of Small-computer time each period, 1 cloud VM running at once, and computer sizes up to Default.</p>
+      <p><strong>Codewhale Plus</strong>, $25 a month: 250 hours of Small-computer time each period, up to 10 cloud VMs running at once, and computer sizes up to Large.</p>
+      <p><strong>Codewhale Max</strong>, $50 a month: 1,000 hours of Small-computer time each period, up to 20 cloud VMs running at once, and computer sizes up to XLarge once XLarge is offered. Until then, Codewhale Max includes sizes up to Large.</p>
+      <p>A plan counts only Codewhale cloud VMs. Environments are unlimited, and your own computers are never counted or charged. You can have one membership per account.</p>
+    </section>
+    <section id="hours"><h2>Hours</h2><p>Hours are used while a cloud VM is awake. They are measured at the Small size, with Default using them 2× as fast and Large 4× as fast, at the rate shown before it starts. Each period&apos;s hours start when the period starts and do not carry over to the next one. Codewhale may use up to 10% of a period&apos;s hours for automatic work on your behalf, such as preparing a computer before you need it, and never takes a period below 20% of its hours that way. When a period&apos;s hours run out, your cloud VMs pause until the next period or until you upgrade. Nothing is bought for you and there are no overage charges.</p></section>
+    <section id="eligibility"><h2>Who can buy</h2><p>During the first paid cohort, memberships are offered only to invited accounts with a billing address in the United States. If a membership is bought by an account outside the cohort, or with a billing address outside the United States, we cancel it, refund its payment in full and email you, and the plan does not start.</p></section>
+    <section id="price"><h2>Price, currency and tax</h2><p>Prices are in US dollars and do not include tax. Checkout calculates any sales tax from the billing address you give, shows it before you pay and adds it to the total. Each renewal is charged at the same price plus the tax that applies on that date.</p></section>
+    <section id="renewal"><h2>Renewal</h2><p>A membership renews automatically every month, on the day of the month you first bought it, and charges the plan price plus tax to the payment method on file until you cancel. Checkout states this before you pay, and we send a receipt for every charge. If a renewal payment fails, we retry it and tell you. If it is still unpaid after the retries, the membership ends.</p></section>
+    <section id="cancel"><h2>Canceling</h2><p>You can cancel at any time in Manage membership. Canceling stops the next renewal: the membership stays on until the end of the period you have paid for and then ends, and nothing more is charged. You can resume it in Manage membership before that period ends. After a membership ends we keep your cloud computers&apos; saved disks for 30 days and may then delete them.</p></section>
+    <section id="changes"><h2>Changing plans</h2><p>An upgrade starts at once. We charge the prorated difference between the two plans for the rest of the current period straight away, and the new plan&apos;s hours, cloud VMs and sizes apply immediately. A downgrade takes effect at your next renewal: you keep your current plan until then and are charged the lower price from that renewal on. You can cancel a scheduled downgrade before it takes effect.</p></section>
+    <section id="duplicates"><h2>Duplicate payments</h2><p>If you pay for a second membership by mistake, we keep the membership that was confirmed first, cancel the other one, refund its payment in full and email you. You never need to ask. If the second payment was for a different plan, the email tells you how to switch to it.</p></section>
+    <section id="refunds"><h2>Refunds</h2><p>If you ask within 7 days of a charge and have used little cloud compute in that period, we issue a pro-rata refund for the unused part of the period on request. Duplicate payments and payments refused under Who can buy are always refunded in full, including tax. Refunds go back to the original payment method and take 5 to 10 business days to arrive. Nothing here limits a refund the law requires. To ask for a refund, email <a href="mailto:help@codewhale.net">help@codewhale.net</a> from the address on your account.</p></section>
+    <section id="term-changes"><h2>Changes to these terms</h2><p>We tell you at least 30 days before a change to your plan&apos;s price or what it includes, and the change applies from a renewal after that notice. You can cancel before it applies. The version of these terms in effect when a period starts governs that period.</p></section>
   </>;
 }
