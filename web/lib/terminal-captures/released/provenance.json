@@ -1,19 +1,19 @@
 {
   "capture": "released",
   "binary": {
-    "release_tag": null,
-    "asset": null,
-    "version_line": "codewhale 0.10.3 (b6011be36d7f)",
-    "release_checksum_line": null,
-    "build": "local macOS release build of Engine main b6011be36d7f, not a published release"
+    "release_tag": "v0.10.4",
+    "asset": "codewhale-macos-arm64",
+    "version_line": "codewhale 0.10.4 (48669ad108fa)",
+    "release_checksum_line": "1c4e654b4574f82504cb233e96501e7b4aaec0a82dfff07490f7472cb14e8891  codewhale-macos-arm64",
+    "build": "published macOS arm64 release binary of v0.10.4 (48669ad108fa)"
   },
   "model": {
-    "provider": "DeepSeek (first-party API)",
-    "model": "deepseek-flash",
+    "provider": "Ollama (local)",
+    "model": "qwen3:4b",
     "scripted": false,
-    "note": "Every frame is real output from a live model call; no cell is edited."
+    "note": "Every frame is real output from a live local model call; no cell is edited."
   },
-  "recorded": "2026-11-20, one session per width in a real PTY under tmux 256-colour, throwaway HOME and git repository, TERM=xterm-256color, default approval mode (accept edits), telemetry off. The API key was pasted into the in-product credential wizard; it is masked on screen and not part of any published frame.",
+  "recorded": "2026-11-24, one session per width in a real PTY under tmux 24-bit truecolor, throwaway HOME and git repository, TERM=tmux-256color COLORTERM=truecolor, default approval mode (accept edits), telemetry off.",
   "grab": "tmux capture-pane -p -e, colour kept; the .ansi files are the capture as written. One live session per width; the tmux window is resized between heights for the tall receipt and cost views. 00-launch is three fresh first launches, one per width. Crops are whole-row slices of their raw frame.",
   "frames": [
     {
@@ -34,7 +34,7 @@
       "file": "cols100/01-model-picker.ansi",
       "columns": 100,
       "rows": 30,
-      "shows": "Model picker searched for deepseek-flash: deepseek-flash from several providers, DeepSeek selected",
+      "shows": "Model picker searched for qwen3:4b: qwen3:4b from several providers, Ollama selected",
       "caption_sentence": "Pick a model from any provider; one model is often offered by several.",
       "shows_test_run": false,
       "shows_ask_posture": false,
@@ -47,8 +47,8 @@
       "file": "cols100/02-task-prompt.ansi",
       "columns": 100,
       "rows": 30,
-      "shows": "Task frame 1: the prompt has been sent to deepseek-flash",
-      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "shows": "Task frame 1: the prompt has been sent to qwen3:4b",
+      "caption_sentence": "Codewhale on qwen3:4b edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": false,
       "shows_ask_posture": true,
       "shows_model_name": true,
@@ -61,7 +61,7 @@
       "columns": 100,
       "rows": 30,
       "shows": "Task frame 2: the reads and the applied edit to ls.py, reviewed with Page Up while the command waits",
-      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "caption_sentence": "Codewhale on qwen3:4b edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": false,
       "shows_ask_posture": true,
       "shows_model_name": true,
@@ -74,7 +74,7 @@
       "columns": 100,
       "rows": 30,
       "shows": "Task frame 3: the approval card before the test command runs",
-      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "caption_sentence": "Codewhale on qwen3:4b edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": false,
       "shows_ask_posture": true,
       "shows_model_name": true,
@@ -87,7 +87,7 @@
       "columns": 100,
       "rows": 30,
       "shows": "Task frame 4: the test output, the model's final answer and the footer",
-      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "caption_sentence": "Codewhale on qwen3:4b edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": true,
       "shows_ask_posture": true,
       "shows_model_name": true,
@@ -120,7 +120,10 @@
       "model_connected": true,
       "in_task_session": true,
       "crop_of": "cols100/06-receipt",
-      "crop_rows": {"first": 12, "last": 24}
+      "crop_rows": {
+        "first": 12,
+        "last": 24
+      }
     },
     {
       "id": "cols100/07-cost",
@@ -148,7 +151,10 @@
       "model_connected": true,
       "in_task_session": true,
       "crop_of": "cols100/07-cost",
-      "crop_rows": {"first": 10, "last": 24}
+      "crop_rows": {
+        "first": 10,
+        "last": 24
+      }
     },
     {
       "id": "cols56/00-launch",
@@ -168,7 +174,7 @@
       "file": "cols56/01-model-picker.ansi",
       "columns": 56,
       "rows": 30,
-      "shows": "Model picker searched for deepseek-flash: deepseek-flash from several providers, DeepSeek selected",
+      "shows": "Model picker searched for qwen3:4b: qwen3:4b from several providers, Ollama selected",
       "caption_sentence": "Pick a model from any provider; one model is often offered by several.",
       "shows_test_run": false,
       "shows_ask_posture": false,
@@ -181,8 +187,8 @@
       "file": "cols56/02-task-prompt.ansi",
       "columns": 56,
       "rows": 30,
-      "shows": "Task frame 1: the prompt has been sent to deepseek-flash",
-      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "shows": "Task frame 1: the prompt has been sent to qwen3:4b",
+      "caption_sentence": "Codewhale on qwen3:4b edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": false,
       "shows_ask_posture": true,
       "shows_model_name": true,
@@ -195,7 +201,7 @@
       "columns": 56,
       "rows": 30,
       "shows": "Task frame 2: the reads and the applied edit to ls.py, reviewed with Page Up while the command waits",
-      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "caption_sentence": "Codewhale on qwen3:4b edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": false,
       "shows_ask_posture": true,
       "shows_model_name": true,
@@ -208,7 +214,7 @@
       "columns": 56,
       "rows": 30,
       "shows": "Task frame 3: the approval card before the test command runs",
-      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "caption_sentence": "Codewhale on qwen3:4b edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": false,
       "shows_ask_posture": true,
       "shows_model_name": true,
@@ -221,8 +227,8 @@
       "columns": 56,
       "rows": 30,
       "shows": "Task frame 4: the test output, the model's final answer and the footer",
-      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
-      "shows_test_run": false,
+      "caption_sentence": "Codewhale on qwen3:4b edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "shows_test_run": true,
       "shows_ask_posture": true,
       "shows_model_name": true,
       "model_connected": true,
@@ -267,7 +273,10 @@
       "model_connected": true,
       "in_task_session": true,
       "crop_of": "cols56/06b-receipt-tall",
-      "crop_rows": {"first": 8, "last": 38}
+      "crop_rows": {
+        "first": 8,
+        "last": 38
+      }
     },
     {
       "id": "cols56/07-cost",
@@ -295,7 +304,10 @@
       "model_connected": true,
       "in_task_session": true,
       "crop_of": "cols56/07-cost",
-      "crop_rows": {"first": 2, "last": 24}
+      "crop_rows": {
+        "first": 2,
+        "last": 24
+      }
     },
     {
       "id": "cols48/00-launch",
@@ -315,7 +327,7 @@
       "file": "cols48/01-model-picker.ansi",
       "columns": 48,
       "rows": 30,
-      "shows": "Model picker searched for deepseek-flash: deepseek-flash from several providers, DeepSeek selected",
+      "shows": "Model picker searched for qwen3:4b: qwen3:4b from several providers, Ollama selected",
       "caption_sentence": "Pick a model from any provider; one model is often offered by several.",
       "shows_test_run": false,
       "shows_ask_posture": false,
@@ -328,8 +340,8 @@
       "file": "cols48/02-task-prompt.ansi",
       "columns": 48,
       "rows": 30,
-      "shows": "Task frame 1: the prompt has been sent to deepseek-flash",
-      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "shows": "Task frame 1: the prompt has been sent to qwen3:4b",
+      "caption_sentence": "Codewhale on qwen3:4b edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": false,
       "shows_ask_posture": true,
       "shows_model_name": true,
@@ -342,7 +354,7 @@
       "columns": 48,
       "rows": 30,
       "shows": "Task frame 2: the reads and the applied edit to ls.py, reviewed with Page Up while the command waits",
-      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "caption_sentence": "Codewhale on qwen3:4b edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": false,
       "shows_ask_posture": true,
       "shows_model_name": true,
@@ -355,7 +367,7 @@
       "columns": 48,
       "rows": 30,
       "shows": "Task frame 3: the approval card before the test command runs",
-      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "caption_sentence": "Codewhale on qwen3:4b edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": false,
       "shows_ask_posture": true,
       "shows_model_name": true,
@@ -368,8 +380,8 @@
       "columns": 48,
       "rows": 30,
       "shows": "Task frame 4: the test output, the model's final answer and the footer",
-      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
-      "shows_test_run": true,
+      "caption_sentence": "Codewhale on qwen3:4b edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "shows_test_run": false,
       "shows_ask_posture": true,
       "shows_model_name": true,
       "model_connected": true,
@@ -414,7 +426,10 @@
       "model_connected": true,
       "in_task_session": true,
       "crop_of": "cols48/06b-receipt-tall",
-      "crop_rows": {"first": 2, "last": 34}
+      "crop_rows": {
+        "first": 2,
+        "last": 34
+      }
     },
     {
       "id": "cols48/07-cost",
@@ -455,7 +470,10 @@
       "model_connected": true,
       "in_task_session": true,
       "crop_of": "cols48/07b-cost-tall",
-      "crop_rows": {"first": 30, "last": 54}
+      "crop_rows": {
+        "first": 30,
+        "last": 54
+      }
     }
   ]
 }
