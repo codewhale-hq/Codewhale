@@ -7,7 +7,7 @@
  *      import { DSH_WEBSERVER_ADAPTERS } from './webserver.ts'
  *      // spread `...DSH_WEBSERVER_ADAPTERS` into `DSH_ADAPTERS`
  * 2. In both `compatibility.json` copies (`crates/engine/extension-host/src/dsh/compatibility.json`
- *    and `crates/plugins/src/dsh_compatibility.json`):
+ *    and `crates/plugins/assets/dsh-compatibility.json`):
  *      add `"webServer"`, `"connection"`, `"sessionTitle"`, `"profileContext"` to
  *      BOTH `provided_services.dsh` AND `refused_services`.
  */

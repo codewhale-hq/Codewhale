@@ -24,7 +24,11 @@
       "sessionProjections",
       "workspaceRegistry",
       "typertGateway",
-      "web"
+      "web",
+      "webServer",
+      "connection",
+      "sessionTitle",
+      "profileContext"
     ],
     "cordis": [
       "logger",
@@ -76,7 +80,11 @@
     "sessionProjections",
     "workspaceRegistry",
     "typertGateway",
-    "web"
+    "web",
+    "webServer",
+    "connection",
+    "sessionTitle",
+    "profileContext"
   ],
   "row_bridges": {
     "@deepseek-ai/dsh-mcp-client": "mcp",

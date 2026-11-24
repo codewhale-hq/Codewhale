@@ -826,8 +826,8 @@ var init_lib2 = __esm({
         let inFlight;
         let removeWrapper = () => false;
         const waitForSetup = () => {
-          setupBarrier ??= new Promise((resolve8, reject) => {
-            resolveSetup = resolve8;
+          setupBarrier ??= new Promise((resolve9, reject) => {
+            resolveSetup = resolve9;
             rejectSetup = reject;
           });
           return setupBarrier;
@@ -1017,7 +1017,7 @@ var init_lib2 = __esm({
         });
       }
       async _unload() {
-        while ([...this.provisions].some((impl) => impl.dependents.size)) await new Promise((resolve8) => this._release = resolve8);
+        while ([...this.provisions].some((impl) => impl.dependents.size)) await new Promise((resolve9) => this._release = resolve9);
         this._release = void 0;
         await Promise.all(this._disposables.clear().map(async (dispose) => {
           try {
@@ -1682,9 +1682,9 @@ var init_lib2 = __esm({
           return async () => {
             if (this.store[impl.isolate] === impl) delete this.store[impl.isolate];
             this.ctx.isolate(name, impl.isolate).reflect.notify([name]);
-            await new Promise((resolve8) => {
-              impl.release = resolve8;
-              if (!impl.dependents.size) resolve8();
+            await new Promise((resolve9) => {
+              impl.release = resolve9;
+              if (!impl.dependents.size) resolve9();
             });
             impl.release = void 0;
             this.ctx.fiber.provisions.delete(impl);
@@ -1792,16 +1792,16 @@ var init_lib2 = __esm({
       }
     };
     (function(Inject3) {
-      function resolve8(inject, result = /* @__PURE__ */ Object.create(null)) {
+      function resolve9(inject, result = /* @__PURE__ */ Object.create(null)) {
         if (!inject) return result;
         if (Array.isArray(inject)) for (const name of inject) result[name] = null;
         else if (Reflect.has(inject, symbols.checkProto)) {
-          Object.assign(result, resolve8(Object.getPrototypeOf(inject)));
+          Object.assign(result, resolve9(Object.getPrototypeOf(inject)));
           for (const name of Object.keys(inject)) result[name] = inject[name] ?? null;
         } else for (const name of Object.keys(inject)) result[name] = inject[name] ?? null;
         return result;
       }
-      Inject3.resolve = resolve8;
+      Inject3.resolve = resolve9;
     })(Inject || (Inject = {}));
     RegistryService = class {
       ctx;
@@ -14014,7 +14014,11 @@ var init_compatibility = __esm({
           "sessionProjections",
           "workspaceRegistry",
           "typertGateway",
-          "web"
+          "web",
+          "webServer",
+          "connection",
+          "sessionTitle",
+          "profileContext"
         ],
         cordis: [
           "logger",
@@ -14066,7 +14070,11 @@ var init_compatibility = __esm({
         "sessionProjections",
         "workspaceRegistry",
         "typertGateway",
-        "web"
+        "web",
+        "webServer",
+        "connection",
+        "sessionTitle",
+        "profileContext"
       ],
       row_bridges: {
         "@deepseek-ai/dsh-mcp-client": "mcp",
@@ -14539,7 +14547,6 @@ var init_missing_services = __esm({
     REFUSED_SERVICES = new Set(compatibility_default.refused_services);
     PROVIDED_SERVICES = new Set(Object.values(compatibility_default.provided_services).flat());
     UNPROVIDED_REASONS = [
-      [(name) => name === "webServer" || name === "connection", "DSH Web UI services; Codewhale has no plugin web server"],
       [(name) => name.startsWith("@deepseek-ai/dsh-client-"), "DSH client UI services"]
     ];
     quoted = (names) => names.map((name) => `\`${name}\``).join(", ");
@@ -14890,8 +14897,8 @@ var init_lib4 = __esm({
     };
     resolvers = {};
     checkedVolatile = /* @__PURE__ */ Symbol("checked-volatile-schema");
-    Schema2.extend = function extend2(type2, resolve8) {
-      resolvers[type2] = resolve8;
+    Schema2.extend = function extend2(type2, resolve9) {
+      resolvers[type2] = resolve9;
     };
     Schema2.resolve = function resolve4(data2, schema3, options = {}, strict = false) {
       if (!schema3) return [data2];
@@ -15257,7 +15264,7 @@ function raceWithSignal(promise, signal) {
     });
     return Promise.reject(signal.reason);
   }
-  return new Promise((resolve8, reject) => {
+  return new Promise((resolve9, reject) => {
     let settled = false;
     const onAbort = () => {
       if (settled) return;
@@ -15272,7 +15279,7 @@ function raceWithSignal(promise, signal) {
         if (settled) return;
         settled = true;
         signal.removeEventListener("abort", onAbort);
-        resolve8(value);
+        resolve9(value);
       },
       (error) => {
         if (settled) return;
@@ -17497,6 +17504,353 @@ var init_host_services = __esm({
   }
 });
 
+// src/dsh/webserver.ts
+import { isAbsolute as isAbsolute5, resolve as resolve6 } from "node:path";
+function normalizePath(raw) {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > 1024 || /[\x00-\x1f\x7f]/.test(raw)) {
+    throw new RpcError(ErrorCode.InvalidParams, "route path must be a non-empty single-line string");
+  }
+  const withSlash = raw.startsWith("/") ? raw : `/${raw}`;
+  if (withSlash.length > 1 && withSlash.endsWith("/")) {
+    return withSlash.slice(0, -1);
+  }
+  return withSlash;
+}
+function normalizeMethods(method, methods) {
+  const list2 = [];
+  if (typeof method === "string" && method.trim() !== "") {
+    list2.push(method.trim().toUpperCase());
+  }
+  if (Array.isArray(methods)) {
+    for (const item of methods) {
+      if (typeof item === "string" && item.trim() !== "") {
+        list2.push(item.trim().toUpperCase());
+      }
+    }
+  }
+  return list2.length > 0 ? new Set(list2) : void 0;
+}
+function addOwnerRoute(owner, route) {
+  const ownerToken = owner.ref.owner_token;
+  let list2 = routesByOwner.get(ownerToken);
+  if (!list2) {
+    list2 = [];
+    routesByOwner.set(ownerToken, list2);
+  }
+  if (list2.length >= MAX_ROUTES_PER_OWNER) {
+    throw new RpcError(ErrorCode.Refused, `owner exceeded ${MAX_ROUTES_PER_OWNER} registered routes`);
+  }
+  const stored = { ...route, id: nextRouteId++, ownerToken };
+  list2.push(stored);
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    const current2 = routesByOwner.get(ownerToken);
+    if (!current2) return;
+    const index = current2.findIndex((entry) => entry.id === stored.id);
+    if (index >= 0) current2.splice(index, 1);
+    if (current2.length === 0) routesByOwner.delete(ownerToken);
+  };
+}
+function isLoopbackHostHeader(raw) {
+  if (!raw) return true;
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed === "") return true;
+  let host = trimmed;
+  if (host.startsWith("[")) {
+    const close = host.indexOf("]");
+    if (close < 0) return false;
+    host = host.slice(1, close);
+  } else {
+    const colon = host.indexOf(":");
+    if (colon >= 0) host = host.slice(0, colon);
+  }
+  if (host === "localhost" || host.endsWith(".localhost") || host === "::1") return true;
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!match) return false;
+  const octets = match.slice(1).map(Number);
+  return octets[0] === 127 && octets.every((n) => n >= 0 && n <= 255);
+}
+function checkRequestRejection(req) {
+  if (!req || !req.headers) return null;
+  const hostHeader = req.headers.host;
+  const host = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
+  if (!isLoopbackHostHeader(host)) {
+    return { status: 403, message: "forbidden: host is not loopback" };
+  }
+  const fetchSiteHeader = req.headers["sec-fetch-site"];
+  const fetchSite = Array.isArray(fetchSiteHeader) ? fetchSiteHeader[0] : fetchSiteHeader;
+  if (typeof fetchSite === "string" && fetchSite.toLowerCase() === "cross-site") {
+    return { status: 403, message: "forbidden: cross-site request rejected" };
+  }
+  return null;
+}
+function extractSessionId(session2) {
+  if (typeof session2 === "string" && session2.trim() !== "") return session2.trim();
+  if (!session2 || typeof session2 !== "object") return void 0;
+  const obj = session2;
+  if (typeof obj.id === "string" && obj.id.trim() !== "") return obj.id.trim();
+  if (typeof obj.sessionId === "string" && obj.sessionId.trim() !== "") return obj.sessionId.trim();
+  const header = obj.header;
+  if (header && typeof header === "object" && typeof header.id === "string") {
+    const id = header.id.trim();
+    if (id !== "") return id;
+  }
+  return void 0;
+}
+var MAX_REQUEST_BODY_BYTES, MAX_RESPONSE_BODY_BYTES, MAX_ROUTES_PER_OWNER, MAX_SESSION_TITLES, nextRouteId, routesByOwner, webServerAdapter, connectionAdapter, sessionTitleAdapter, profileContextAdapter, DSH_WEBSERVER_ADAPTERS;
+var init_webserver = __esm({
+  "src/dsh/webserver.ts"() {
+    "use strict";
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
+    MAX_RESPONSE_BODY_BYTES = 8 * 1024 * 1024;
+    MAX_ROUTES_PER_OWNER = 256;
+    MAX_SESSION_TITLES = 1024;
+    nextRouteId = 1;
+    routesByOwner = /* @__PURE__ */ new Map();
+    webServerAdapter = {
+      service: "webServer",
+      define(host) {
+        class WebServerService extends Service {
+          host = "127.0.0.1";
+          port = 0;
+          basePath = "";
+          constructor(ctx) {
+            super(ctx, "webServer");
+          }
+          getOrigin() {
+            return "http://127.0.0.1";
+          }
+          register(route) {
+            const owner = host.ownerOf(this.ctx);
+            if (!owner) throw new Error("webServer.register called outside an extension owner");
+            if (!route || typeof route !== "object" || typeof route.handler !== "function") {
+              throw new RpcError(ErrorCode.InvalidParams, "webServer.register requires { path, handler }");
+            }
+            const kind = route.kind === "prefix" ? "prefix" : "exact";
+            const path2 = normalizePath(route.path);
+            const methods = normalizeMethods(route.method, route.methods);
+            return this.ctx.effect(
+              () => addOwnerRoute(owner, { kind, path: path2, methods, mode: "node", nodeHandler: route.handler }),
+              `webServer.register(${kind}:${path2})`
+            );
+          }
+          registerRoute(route) {
+            return this.register(route);
+          }
+          route(path2, handler) {
+            return this.register({ kind: "exact", path: path2, handler });
+          }
+          get(path2, handler) {
+            return this.register({ kind: "exact", path: path2, method: "GET", handler });
+          }
+          post(path2, handler) {
+            return this.register({ kind: "exact", path: path2, method: "POST", handler });
+          }
+          put(path2, handler) {
+            return this.register({ kind: "exact", path: path2, method: "PUT", handler });
+          }
+          patch(path2, handler) {
+            return this.register({ kind: "exact", path: path2, method: "PATCH", handler });
+          }
+          delete(path2, handler) {
+            return this.register({ kind: "exact", path: path2, method: "DELETE", handler });
+          }
+          use(pathOrHandler, maybeHandler) {
+            if (typeof pathOrHandler === "function") {
+              return this.register({ kind: "prefix", path: "/", handler: pathOrHandler });
+            }
+            if (typeof maybeHandler !== "function") {
+              throw new RpcError(ErrorCode.InvalidParams, "webServer.use requires a handler function");
+            }
+            return this.register({ kind: "prefix", path: pathOrHandler, handler: maybeHandler });
+          }
+          registerUpgrade(_spec) {
+            return () => {
+            };
+          }
+          tapIndex(_fn) {
+            return () => {
+            };
+          }
+        }
+        Object.freeze(WebServerService.prototype);
+        return WebServerService;
+      }
+    };
+    connectionAdapter = {
+      service: "connection",
+      define(host) {
+        class ConnectionService extends Service {
+          isLoopback = true;
+          connected = true;
+          baseUrl = "http://127.0.0.1";
+          constructor(ctx) {
+            super(ctx, "connection");
+          }
+          requestRejection(req) {
+            return checkRequestRejection(req);
+          }
+          get fetch() {
+            const ctx = this.ctx;
+            return {
+              register: (route) => {
+                const owner = host.ownerOf(ctx);
+                if (!owner) throw new Error("connection.fetch.register called outside an extension owner");
+                if (!route || typeof route !== "object" || typeof route.fetch !== "function") {
+                  throw new RpcError(ErrorCode.InvalidParams, "connection.fetch.register requires { path, fetch }");
+                }
+                const path2 = normalizePath(route.path);
+                const methods = normalizeMethods(void 0, route.methods);
+                return ctx.effect(
+                  () => addOwnerRoute(owner, { kind: "prefix", path: path2, methods, mode: "fetch", fetchHandler: route.fetch }),
+                  `connection.fetch.register(${path2})`
+                );
+              }
+            };
+          }
+          get rpc() {
+            const ctx = this.ctx;
+            return {
+              handle: (channel, handler, _options) => {
+                const owner = host.ownerOf(ctx);
+                if (!owner) throw new Error("connection.rpc.handle called outside an extension owner");
+                if (typeof handler !== "function") {
+                  throw new RpcError(ErrorCode.InvalidParams, "connection.rpc.handle requires a handler function");
+                }
+                const path2 = normalizePath(channel);
+                return ctx.effect(
+                  () => addOwnerRoute(owner, { kind: "prefix", path: path2, methods: /* @__PURE__ */ new Set(["POST"]), mode: "rpc", rpcHandler: handler }),
+                  `connection.rpc.handle(${path2})`
+                );
+              }
+            };
+          }
+          onReady(cb) {
+            if (typeof cb === "function") queueMicrotask(cb);
+            return () => {
+            };
+          }
+          onNotification(_cb) {
+            return () => {
+            };
+          }
+        }
+        Object.freeze(ConnectionService.prototype);
+        return ConnectionService;
+      }
+    };
+    sessionTitleAdapter = {
+      service: "sessionTitle",
+      define(host) {
+        const titlesByOwner = /* @__PURE__ */ new Map();
+        const listenersByOwner = /* @__PURE__ */ new Map();
+        const requireOwnerToken = (ctx) => {
+          const owner = host.ownerOf(ctx);
+          if (!owner || owner.state === "disposed" || owner.disposing) {
+            throw new RpcError(ErrorCode.NotAvailable, "sessionTitle requires an active extension owner");
+          }
+          return owner.ref.owner_token;
+        };
+        class SessionTitleService extends Service {
+          constructor(ctx) {
+            super(ctx, "sessionTitle");
+          }
+          get(session2) {
+            const ownerToken = requireOwnerToken(this.ctx);
+            const id = extractSessionId(session2);
+            return id ? titlesByOwner.get(ownerToken)?.get(id) : void 0;
+          }
+          rename(session2, title) {
+            const ownerToken = requireOwnerToken(this.ctx);
+            const id = extractSessionId(session2);
+            if (!id) throw new RpcError(ErrorCode.InvalidParams, "sessionTitle.rename requires a session or session id");
+            if (typeof title !== "string") throw new RpcError(ErrorCode.InvalidParams, "sessionTitle.rename requires a string title");
+            const cleaned = title.replace(/[\r\n\t]+/g, " ").trim().slice(0, 256);
+            if (!cleaned) throw new RpcError(ErrorCode.InvalidParams, "sessionTitle.rename requires a non-empty title");
+            let titles = titlesByOwner.get(ownerToken);
+            if (!titles) {
+              titles = /* @__PURE__ */ new Map();
+              titlesByOwner.set(ownerToken, titles);
+            }
+            if (!titles.has(id) && titles.size >= MAX_SESSION_TITLES) {
+              const oldest = titles.keys().next().value;
+              if (oldest !== void 0) titles.delete(oldest);
+            }
+            titles.set(id, cleaned);
+            const listeners = listenersByOwner.get(ownerToken);
+            if (listeners) {
+              for (const listener of listeners) {
+                try {
+                  listener(id, cleaned);
+                } catch {
+                }
+              }
+            }
+            return cleaned;
+          }
+          register(listener) {
+            const ownerToken = requireOwnerToken(this.ctx);
+            if (typeof listener !== "function") {
+              throw new RpcError(ErrorCode.InvalidParams, "sessionTitle.register requires a function");
+            }
+            return this.ctx.effect(() => {
+              let listeners = listenersByOwner.get(ownerToken);
+              if (!listeners) {
+                listeners = /* @__PURE__ */ new Set();
+                listenersByOwner.set(ownerToken, listeners);
+              }
+              listeners.add(listener);
+              return () => {
+                const current2 = listenersByOwner.get(ownerToken);
+                if (!current2) return;
+                current2.delete(listener);
+                if (current2.size === 0) listenersByOwner.delete(ownerToken);
+              };
+            }, "sessionTitle.register");
+          }
+        }
+        Object.freeze(SessionTitleService.prototype);
+        return SessionTitleService;
+      }
+    };
+    profileContextAdapter = {
+      service: "profileContext",
+      define(host) {
+        class ProfileContextService extends Service {
+          name = "codewhale";
+          packageManager = "npm";
+          constructor(ctx) {
+            super(ctx, "profileContext");
+          }
+          get dir() {
+            const owner = host.ownerOf(this.ctx);
+            if (!owner?.dataDir || !isAbsolute5(owner.dataDir)) {
+              throw new RpcError(ErrorCode.NotAvailable, "profileContext requires an active owner with a scoped dataDir");
+            }
+            return resolve6(owner.dataDir);
+          }
+          get installAnchor() {
+            return this.dir;
+          }
+        }
+        Object.freeze(ProfileContextService.prototype);
+        return ProfileContextService;
+      }
+    };
+    DSH_WEBSERVER_ADAPTERS = [
+      webServerAdapter,
+      connectionAdapter,
+      sessionTitleAdapter,
+      profileContextAdapter
+    ];
+  }
+});
+
 // src/dsh/plugin-manager.ts
 var init_plugin_manager = __esm({
   "src/dsh/plugin-manager.ts"() {
@@ -17522,6 +17876,7 @@ var init_adapters = __esm({
     init_terminal();
     init_attachments();
     init_host_services();
+    init_webserver();
     init_plugin_manager();
     DSH_ADAPTERS = [
       sessionsAdapter,
@@ -17536,7 +17891,8 @@ var init_adapters = __esm({
       deepseekAccountAdapter,
       terminalAdapter,
       attachmentsAdapter,
-      ...DSH_HOST_SERVICE_ADAPTERS
+      ...DSH_HOST_SERVICE_ADAPTERS,
+      ...DSH_WEBSERVER_ADAPTERS
     ];
   }
 });
@@ -17743,13 +18099,13 @@ var init_preset = __esm({
 });
 
 // src/dsh/upstream/agent-presets/specifier.ts
-import { isAbsolute as isAbsolute5 } from "node:path";
+import { isAbsolute as isAbsolute6 } from "node:path";
 import { pathToFileURL as pathToFileURL3 } from "node:url";
 function classifyRowSpecifier(name) {
   if (name.startsWith("cordis:")) return { kind: "builtin", specifier: name };
   if (name.startsWith(".")) return { kind: "preset", specifier: name };
   if (name.startsWith("file:")) return { kind: "file", specifier: name };
-  if (isAbsolute5(name)) return { kind: "file", specifier: pathToFileURL3(name).href };
+  if (isAbsolute6(name)) return { kind: "file", specifier: pathToFileURL3(name).href };
   return { kind: "package", specifier: name };
 }
 var init_specifier = __esm({
@@ -17760,7 +18116,7 @@ var init_specifier = __esm({
 
 // src/dsh/upstream/agent-presets/discovery.ts
 import { isBuiltin as isBuiltin2 } from "node:module";
-import { join as join4, resolve as resolve6 } from "node:path";
+import { join as join4, resolve as resolve7 } from "node:path";
 import { fileURLToPath as fileURLToPath4, pathToFileURL as pathToFileURL4 } from "node:url";
 function entryListProblem(rows, at2 = "") {
   if (!Array.isArray(rows)) {
@@ -17844,7 +18200,7 @@ async function isFile(path2, io) {
   }
 }
 async function scanRoot(root, harnessBase, resolves, io) {
-  const dir = resolve6(root.path);
+  const dir = resolve7(root.path);
   let children;
   try {
     children = await io.readdir(dir, { withFileTypes: true });
@@ -17969,7 +18325,7 @@ var init_composition_inventory = __esm({
 
 // src/dsh/agent-presets.ts
 import { createHash as createHash3, randomBytes as randomBytes2 } from "node:crypto";
-import { resolve as resolve7, relative as relative3, dirname as dirname5, sep as sep3 } from "node:path";
+import { resolve as resolve8, relative as relative3, dirname as dirname5, sep as sep3 } from "node:path";
 import { fileURLToPath as fileURLToPath5, pathToFileURL as pathToFileURL5 } from "node:url";
 function plain3(path2) {
   return typeof path2 === "string" && path2.length > 0 && path2.length <= 4096 && !/[\\:\u0000-\u001f\u007f]/u.test(path2) && !path2.startsWith("/") && path2.split("/").every((p) => p !== "" && p !== "." && p !== "..");
@@ -18020,7 +18376,7 @@ async function reviewAgentPresets(input) {
   const { composition } = input;
   const files = composition.files;
   if (!files || Object.keys(files).length > 16384 || !Array.isArray(input.directories) || input.directories.length > 16384) fail("invalid source inventory");
-  const base = resolve7("codewhale-reviewed-agent-presets");
+  const base = resolve8("codewhale-reviewed-agent-presets");
   const baseUrl = pathToFileURL5(`${base}${sep3}`).href;
   function key(path2) {
     const inside = relative3(base, path2).split(sep3).join("/");
@@ -18098,17 +18454,17 @@ async function reviewAgentPresets(input) {
     const folder = dirname5(candidates[0][0]).split(sep3).join("/");
     const root = folder === "." ? "presets" : `${folder}/presets`;
     if (!directories.has(root)) fail("shipped preset root was not admitted");
-    roots.push({ path: resolve7(base, root), trust: "system" });
+    roots.push({ path: resolve8(base, root), trust: "system" });
   }
   if (config.roots !== void 0 && !Array.isArray(config.roots)) fail("roots must be a literal list");
   for (const root of config.roots ?? []) {
     if (!root || Object.keys(root).some((k) => !["path", "trust"].includes(k)) || !plain3(root.path) || !["system", "user"].includes(root.trust)) fail("configured roots must stay inside the admitted package");
     if (!directories.has(root.path)) fail("configured preset root was not admitted");
-    roots.push({ path: resolve7(base, root.path), trust: root.trust });
+    roots.push({ path: resolve8(base, root.path), trust: root.trust });
   }
   if (config.includeUserRoot !== false) {
     if (!directories.has(".agent-presets")) fail("user root requires an admitted .agent-presets tree; ambient home discovery is refused");
-    roots.push({ path: resolve7(base, ".agent-presets"), trust: "user" });
+    roots.push({ path: resolve8(base, ".agent-presets"), trust: "user" });
   }
   if (roots.length > 64) fail("too many roots");
   const declared = new Map(composition.modules.map((m) => [m.name, m]));
