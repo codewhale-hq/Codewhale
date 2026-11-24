@@ -636,6 +636,20 @@ impl SealedWorkspace {
     pub fn user_skills_dir(&self) -> PathBuf {
         self.home.join(".deepseek").join("skills")
     }
+    pub fn trust_workspace(&self) -> Result<()> {
+        let key = toml::Value::String(self.workspace.to_string_lossy().into_owned()).to_string();
+        let entry = format!("\n[projects.{key}]\ntrust_level = \"trusted\"\n");
+        for relative in [".codewhale/config.toml", ".deepseek/config.toml"] {
+            let path = self.home.join(relative);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut config = std::fs::read_to_string(&path).unwrap_or_default();
+            config.push_str(&entry);
+            std::fs::write(&path, config)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -91,9 +91,6 @@ async fn tui_next_manual_turn_completes_after_exhausted_partial_sse_drop() {
         start_flaky_server(1, HEALTHY_RESPONSE_DELAY).await;
     let outbox = workspace.home().join("turn-receipts.jsonl");
     std::fs::write(workspace.home().join(".codewhale/.onboarded"), "").expect("onboarding receipt");
-    let trust = workspace.workspace().join(".deepseek");
-    std::fs::create_dir_all(&trust).expect("trust directory");
-    std::fs::write(trust.join("trusted"), "").expect("workspace trust");
     let config = format!(
         r#"provider = "loopback"
 prompt_suggestion = false
@@ -116,6 +113,7 @@ path = {outbox}
     );
     std::fs::write(workspace.home().join(".codewhale/config.toml"), config)
         .expect("loopback TUI configuration");
+    workspace.trust_workspace().expect("workspace trust");
     let mut tui = Harness::builder(Harness::codewhale_binary())
         .cwd(workspace.workspace())
         .clear_env()

@@ -2357,8 +2357,8 @@ fn rlm_family_removes_legacy_aliases() {
         .map(|tool| tool.name)
         .collect();
     assert!(
-        api_names.iter().all(|n| n != "rlm"),
-        "the compatibility RLM surface must not be advertised to new model turns"
+        api_names.iter().any(|n| n == "rlm"),
+        "canonical rlm tool must be discoverable by new model turns"
     );
     for retired in [
         "rlm_session_objects",

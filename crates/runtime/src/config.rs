@@ -7688,15 +7688,7 @@ pub fn workspace_trust_config_candidate_paths() -> Vec<PathBuf> {
 }
 
 pub fn needs_trust(workspace: &Path) -> bool {
-    if is_workspace_trusted(workspace) {
-        return false;
-    }
-
-    let markers = [
-        workspace.join(".deepseek").join("trusted"),
-        workspace.join(".deepseek").join("trust.json"),
-    ];
-    !markers.iter().any(|path| path.exists())
+    !is_workspace_trusted(workspace)
 }
 
 #[must_use]

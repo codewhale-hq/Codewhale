@@ -13,9 +13,7 @@ fn work_bar_opens_from_launch_with_legacy_and_enhanced_keys() {
     for (rows, cols) in [(12, 40), (16, 60), (24, 80), (32, 100), (40, 140)] {
         let workspace = make_sealed_workspace().expect("sealed workspace");
         std::fs::write(workspace.home().join(".codewhale/.onboarded"), "").unwrap();
-        let trust = workspace.workspace().join(".deepseek");
-        std::fs::create_dir_all(&trust).unwrap();
-        std::fs::write(trust.join("trusted"), "").unwrap();
+        workspace.trust_workspace().unwrap();
         let mut tui = Harness::builder(Harness::codewhale_binary())
             .cwd(workspace.workspace())
             .clear_env()

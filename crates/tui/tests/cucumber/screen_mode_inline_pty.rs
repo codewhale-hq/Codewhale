@@ -39,9 +39,7 @@ fn offline_queue_late_unbracketed_submit_keeps_composer_and_commands_responsive(
             let workspace = make_sealed_workspace().expect("sealed workspace");
             std::fs::write(workspace.home().join(".codewhale/.onboarded"), "")
                 .expect("onboarded marker");
-            let trust_dir = workspace.workspace().join(".deepseek");
-            std::fs::create_dir_all(&trust_dir).expect("workspace trust dir");
-            std::fs::write(trust_dir.join("trusted"), "").expect("workspace trust marker");
+            workspace.trust_workspace().expect("trust workspace");
             let mut tui = Harness::builder(Harness::codewhale_binary())
                 .cwd(workspace.workspace())
                 .clear_env()
@@ -113,9 +111,6 @@ fn offline_queue_late_unbracketed_submit_keeps_composer_and_commands_responsive(
 fn inline_start_never_takes_the_alternate_screen_and_screen_commands_switch_it() {
     let workspace = make_sealed_workspace().expect("sealed workspace");
     std::fs::write(workspace.home().join(".codewhale/.onboarded"), "").expect("onboarded marker");
-    let trust_dir = workspace.workspace().join(".deepseek");
-    std::fs::create_dir_all(&trust_dir).expect("workspace trust dir");
-    std::fs::write(trust_dir.join("trusted"), "").expect("workspace trust marker");
 
     // The existing knob is the startup switch: `never` now means inline.
     for relative in [".codewhale/config.toml", ".deepseek/config.toml"] {
@@ -124,6 +119,7 @@ fn inline_start_never_takes_the_alternate_screen_and_screen_commands_switch_it()
         config.push_str("\n[tui]\nalternate_screen = \"never\"\n");
         std::fs::write(&path, config).expect("seed inline screen mode");
     }
+    workspace.trust_workspace().expect("trust workspace");
 
     let mut tui = Harness::builder(Harness::codewhale_binary())
         .cwd(workspace.workspace())

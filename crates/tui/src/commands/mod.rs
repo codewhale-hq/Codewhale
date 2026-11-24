@@ -898,8 +898,11 @@ mod tests {
         let Some(AppAction::SendMessage(message)) = result.action else {
             panic!("expected SendMessage action");
         };
-        assert!(message.contains("session-persistent working context"));
-        assert!(message.contains("Do not use legacy `rlm` tool actions"));
+        assert!(message.contains("`rlm` tool"));
+        assert!(message.contains("`open` with `file_path` or `content`"));
+        assert!(message.contains("`eval`"));
+        assert!(message.contains("`close`"));
+        assert!(!message.contains("`repl` block"));
     }
 
     /// `/kernel` was briefly introduced by an in-flight change and rejected:
@@ -2160,7 +2163,7 @@ mod tests {
             panic!("expected /rlm to send a model instruction");
         };
         assert!(message.contains(r#"this text: "inspect   this   corpus""#));
-        assert!(message.contains("session-persistent working context"));
+        assert!(message.contains("`rlm` tool"));
     }
 
     #[test]

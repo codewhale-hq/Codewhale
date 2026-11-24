@@ -273,9 +273,7 @@ fn prepare(workspace: &SealedWorkspace, provider: &PacedProvider, settings: Opti
     if let Some(settings) = settings {
         std::fs::write(state.join("settings.toml"), settings).unwrap();
     }
-    let trust = workspace.workspace().join(".deepseek");
-    std::fs::create_dir_all(&trust).unwrap();
-    std::fs::write(trust.join("trusted"), "").unwrap();
+    workspace.trust_workspace().unwrap();
 }
 
 fn launch(
