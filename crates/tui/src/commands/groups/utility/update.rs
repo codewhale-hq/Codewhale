@@ -297,7 +297,7 @@ mod tests {
 
         let message = no_updater_message(exe);
         assert!(message.contains("codewhale update"), "{message}");
-        assert!(message.contains("Restart Codewhale"), "{message}");
+        assert!(message.contains("restart Codewhale"), "{message}");
         assert!(message.contains("codewhale-tui"), "{message}");
     }
 
