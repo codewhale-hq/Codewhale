@@ -95,6 +95,7 @@ impl Engine {
         config.advisor_config = crate::tools::subagent::AdvisorConfig::disabled();
         config.goal_objective = None;
         config.goal_status = GoalStatus::Paused;
+        config.tools = api_config.tools.clone();
         config.exec_policy_engine = api_config.exec_policy_engine.clone();
         let (mut engine, handle) = Self::new_admitted(
             config,

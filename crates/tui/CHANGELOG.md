@@ -90,6 +90,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added Onomeo as a bundled provider descriptor row. Thanks [@Owaid0723666](https://github.com/Owaid0723666). (#7525)
 - Added Simplified Chinese translation of `AUTO_REVIEW.md` (`docs/zh_hans/AUTO_REVIEW.md`). Thanks [@Goldloli](https://github.com/Goldloli). (#7521)
 - Improved runtime item-index caching and turn-reference lookup performance. Thanks [@gaord](https://github.com/gaord). (#7446, #7522)
+- **Runtime API token is cleared from the server environment after startup:** `codewhale serve` reads its runtime token once at startup and removes it from the process environment so child processes do not inherit it.
+- **Sub-agents inherit `[tools]` configuration and `[tools.overrides]`:** child agents now apply the parent configuration's tool overrides and plugin tool directory instead of falling back to defaults.
 
 ### Fixed
 
