@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Hardened shell execution-policy deny matching across seven bypass classes: `ssh -o ProxyCommand`/`LocalCommand` (including under `-N`), `screen -X`/`-Q` (including with `-r`/`-R`/`-d`), `kubectl exec`/`run`/`debug`, `docker`/`podman` `container`/`compose` groups (`run`/`exec`/`create`, `buildx bake --call`, `--health-cmd`), `parallel --compress-program`/`--decompress-program` and `bwrap --args`, shell `-c` aliases (`oil`, `ysh`, `pdksh`, `loksh`, `rksh`, `ion`, `ngs`) plus `gawk -i`/`-l` and `pwsh -`/piped stdin, and quoted dynamic words in `find`/`docker`/non-inert `--` tails plus separated `nix -c` shell-string payloads. (#7397)
+
 ## [0.10.4] - 2026-11-23
 
 Codewhale v0.10.4 is a hotfix release. Ctrl+V no longer pastes text twice in Windows Terminal, which also doubled API keys pasted into `/provider`; the fix was checked on a real Windows Terminal. `codewhale update` no longer refuses a release binary because an unrelated `cargo install` left a Cargo record beside it. The refusal happens inside the installed 0.10.3, so an install it affects cannot update itself to 0.10.4: rerun the installer once (`curl -fsSL https://codewhale.net/install.sh | sh` on macOS and Linux, or `install.bat` from the 0.10.4 Windows archive), and later updates work. `/provider` now works for projects on a second Windows drive such as D:, Computer Use installs from the Marketplace, and every terminal draws the dot whale in `/pet`. `url` is updated to 2.5.9 for RUSTSEC-2026-0592. DeepSeek Harness compatibility is limited: of 32 published packages tried unmodified, 2 activate in the terminal; [DSH compatibility](docs/DSH_COMPATIBILITY.md) lists each one.
