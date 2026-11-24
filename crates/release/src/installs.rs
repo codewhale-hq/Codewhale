@@ -1318,29 +1318,15 @@ fn rewrite_manifest(dir: &Path, records: &[RecoveryRecord]) -> Result<()> {
             )
         })
         .collect();
-    let tmp = dir.join(format!("{RECOVERY_MANIFEST}.tmp"));
-    write_synced(&tmp, text.as_bytes()).context("failed to write the recovery manifest")?;
-    fs::rename(&tmp, dir.join(RECOVERY_MANIFEST))
-        .context("failed to replace the recovery manifest")?;
-    sync_dir(dir).context("failed to flush the recovery manifest")
+    write_file_atomically(dir, RECOVERY_MANIFEST, text.as_bytes(), false)
+        .context("failed to replace the recovery manifest")
 }
 
-fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
-}
-
-fn sync_dir(dir: &Path) -> std::io::Result<()> {
+fn sync_dir(dir: &Path) {
     #[cfg(unix)]
-    fs::File::open(dir)?.sync_all()?;
+    let _ = fs::File::open(dir).and_then(|file| file.sync_all());
     #[cfg(not(unix))]
     let _ = dir;
-    Ok(())
 }
 
 pub fn prune_expired(home: &Path) -> Vec<(String, u64)> {
@@ -1441,18 +1427,30 @@ pub fn adopt_receipt(directory: &Path, entries: &[(String, String)]) -> Result<b
 
 pub fn write_file_atomically(dir: &Path, name: &str, bytes: &[u8], executable: bool) -> Result<()> {
     fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
-    let tmp = dir.join(format!(".{name}.tmp-{}", std::process::id()));
-    write_synced(&tmp, bytes).with_context(|| format!("failed to write {}", tmp.display()))?;
+    let mut tmp = tempfile::Builder::new()
+        .prefix(&format!(".{name}.tmp-"))
+        .tempfile_in(dir)
+        .with_context(|| format!("failed to create temp file in {}", dir.display()))?;
+    tmp.write_all(bytes)
+        .with_context(|| format!("failed to write {}", tmp.path().display()))?;
     #[cfg(unix)]
     if executable {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755))?;
+        tmp.as_file()
+            .set_permissions(fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("failed to mark {} executable", tmp.path().display()))?;
     }
     #[cfg(not(unix))]
     let _ = executable;
-    fs::rename(&tmp, dir.join(name))
-        .with_context(|| format!("failed to write {}", dir.join(name).display()))?;
-    sync_dir(dir).with_context(|| format!("failed to flush {}", dir.display()))
+    tmp.as_file()
+        .sync_all()
+        .with_context(|| format!("failed to sync {}", tmp.path().display()))?;
+    let target = dir.join(name);
+    tmp.persist(&target)
+        .map_err(|error| error.error)
+        .with_context(|| format!("failed to write {}", target.display()))?;
+    sync_dir(dir);
+    Ok(())
 }
 
 #[cfg(unix)]
