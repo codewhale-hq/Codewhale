@@ -1535,7 +1535,7 @@ pub async fn run_tui(
     if let Some(millis) = codewhale_runtime::startup_trace::cold_start_ms() {
         codewhale_telemetry::set_cold_start_ms(millis);
     }
-    let result = run_event_loop(
+    let result = Box::pin(run_event_loop(
         &mut terminal,
         &mut app,
         config,
@@ -1545,7 +1545,7 @@ pub async fn run_tui(
         translation_client,
         pending_telemetry_notice,
         dispatch_completion_rx,
-    )
+    ))
     .await;
     automation_cancel.cancel();
     automation_scheduler.abort();
