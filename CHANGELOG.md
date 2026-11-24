@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Windows desktop-shell exclusion (`ShellExperienceHost.exe`):** matched `ShellExperienceHost.exe` case-insensitively in the Windows desktop-shell filter. Thanks [@deosiree](https://github.com/deosiree). (#7513, Refs #7474)
 - **Background shell ambient scene & idle CPU:** fixed ambient scene polling when background shells are active. (#7518, Refs #6728)
 - **Contributor fixes & CI stability:** landed community fix from [@WTFitsmemyself](https://github.com/WTFitsmemyself) (#7496) and tuned Windows CI linker/test ceilings (#7512).
+- Updated vendored `codewhale-ratatui` to `codewhale-design` 5.5.0 (Obsidian/Porcelain tokens) from upstream `f268539`, retiring the four now-upstreamed Engine adaptations (`posture.rs`, `native_composer.rs`, `motion.rs`, `native_chrome.rs`) from `UPSTREAM.json`.
 
 ## [0.10.4] - 2026-11-23
 
