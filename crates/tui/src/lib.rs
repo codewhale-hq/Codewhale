@@ -3127,16 +3127,28 @@ async fn run_async_main_dispatch(
                     .map(str::trim)
                     .filter(|id| !id.is_empty())
                 {
+                    if args.resume.is_some() || args.session_id.is_some() || args.continue_session {
+                        bail!(
+                            "--agent cannot be combined with --resume, --session-id, or --continue."
+                        );
+                    }
                     let auto_mode = args.auto
                         || cli.yolo
                         || config.yolo.unwrap_or(false)
                         || cli.permission_mode
                             == Some(codewhale_engine::runtime_options::PermissionMode::FullAccess);
+                    let (posture, mode) = tui::external_agent::resolve_external_agent_posture(
+                        cli.permission_mode,
+                        auto_mode,
+                        &config,
+                    );
                     return run_exec_external_agent(
                         &config,
                         agent_id,
                         &prompt,
                         workspace,
+                        posture,
+                        mode,
                         auto_mode,
                         args.json,
                         args.output_format,
@@ -15644,7 +15656,7 @@ async fn run_interactive_prepared(
         .map(str::trim)
         .filter(|id| !id.is_empty())
     {
-        if resume_session_id.is_some() {
+        if resume_session_id.is_some() || cli.continue_session || cli.resume.is_some() {
             exit_refused(
                 "codewhale",
                 "--agent cannot be combined with --resume or --continue.",
@@ -15655,8 +15667,8 @@ async fn run_interactive_prepared(
             Ok(row) => row,
             Err(error) => exit_refused("codewhale", &error.to_string()),
         };
-        let posture = if yolo { "full-access" } else { "ask" };
-        let mode = if yolo { "yolo" } else { "agent" };
+        let (posture, mode) =
+            tui::external_agent::resolve_external_agent_posture(cli.permission_mode, yolo, config);
         match tui::external_agent::create_external_agent_session(
             config,
             workspace.clone(),
@@ -15714,14 +15726,14 @@ async fn run_exec_external_agent(
     agent_id: &str,
     prompt: &str,
     workspace: PathBuf,
+    posture: &str,
+    mode: &str,
     auto_mode: bool,
     json_output: bool,
     output_format: ExecOutputFormat,
     plugin_registry: std::sync::Arc<codewhale_plugins::PluginRegistry>,
 ) -> Result<()> {
     let discovered = tui::external_agent::validate_external_agent_for_cli(agent_id).await?;
-    let posture = if auto_mode { "full-access" } else { "ask" };
-    let mode = if auto_mode { "yolo" } else { "agent" };
     let mut session = tui::external_agent::create_external_agent_session(
         config,
         workspace,
@@ -15802,27 +15814,31 @@ async fn run_exec_external_agent(
                             .await;
                     }
                 }
-                "turn.completed" => break,
-                "turn.failed" => {
-                    failure = Some(
-                        record
-                            .payload
-                            .get("error")
-                            .and_then(|v| v.as_str())
-                            .or_else(|| {
+                "turn.completed" => {
+                    let status = record
+                        .payload
+                        .pointer("/turn/status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("completed");
+                    match status {
+                        "failed" => {
+                            failure = Some(
                                 record
                                     .payload
-                                    .get("turn")
-                                    .and_then(|t| t.get("error"))
+                                    .pointer("/turn/error")
                                     .and_then(|v| v.as_str())
-                            })
-                            .unwrap_or("External agent turn failed")
-                            .to_string(),
-                    );
-                    break;
-                }
-                "turn.interrupted" => {
-                    failure = Some("External agent turn interrupted".to_string());
+                                    .or_else(|| {
+                                        record.payload.get("error").and_then(|v| v.as_str())
+                                    })
+                                    .unwrap_or("External agent turn failed")
+                                    .to_string(),
+                            );
+                        }
+                        "interrupted" => {
+                            failure = Some("External agent turn interrupted".to_string());
+                        }
+                        _ => {}
+                    }
                     break;
                 }
                 _ => {}

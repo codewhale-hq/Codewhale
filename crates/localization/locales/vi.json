@@ -2864,5 +2864,10 @@
   "ModelPickerExternalAgentBlockedNotice": "{agent} chưa sẵn sàng: {reason}",
   "ExternalAgentSessionStarted": "Đã bắt đầu phiên với {agent} (ACP). Codewhale giữ luồng, bản ghi và phê duyệt.",
   "ExternalAgentSessionSwitchedBack": "Đã chuyển lại sang Codewhale ({model}).",
-  "ExternalAgentSwitchBusy": "Chờ lượt hiện tại hoàn tất trước khi chuyển tác nhân."
+  "ExternalAgentSwitchBusy": "Chờ lượt hiện tại hoàn tất trước khi chuyển tác nhân.",
+  "ModelPickerExternalAgentNotReady": "chưa sẵn sàng",
+  "ExternalAgentThinkingStatus": "{agent} đang suy nghĩ...",
+  "ExternalAgentToolCallFallback": "Lệnh gọi công cụ của tác nhân ngoài",
+  "ExternalAgentTurnFailedFallback": "Lượt của tác nhân ngoài thất bại",
+  "ExternalAgentTurnInterruptedStatus": "Lượt của {agent} đã bị gián đoạn"
 }

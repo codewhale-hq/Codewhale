@@ -2864,5 +2864,10 @@
   "ModelPickerExternalAgentBlockedNotice": "{agent} no está listo: {reason}",
   "ExternalAgentSessionStarted": "Sesión iniciada con {agent} (ACP). Codewhale conserva el hilo, la transcripción y las aprobaciones.",
   "ExternalAgentSessionSwitchedBack": "Se volvió a Codewhale ({model}).",
-  "ExternalAgentSwitchBusy": "Espera a que termine el turno actual antes de cambiar de agente."
+  "ExternalAgentSwitchBusy": "Espera a que termine el turno actual antes de cambiar de agente.",
+  "ModelPickerExternalAgentNotReady": "no está listo",
+  "ExternalAgentThinkingStatus": "{agent} pensando...",
+  "ExternalAgentToolCallFallback": "Llamada de herramienta del agente externo",
+  "ExternalAgentTurnFailedFallback": "Error en el turno del agente externo",
+  "ExternalAgentTurnInterruptedStatus": "Turno de {agent} interrumpido"
 }

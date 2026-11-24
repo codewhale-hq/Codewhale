@@ -2864,5 +2864,10 @@
   "ModelPickerExternalAgentBlockedNotice": "{agent} no està preparat: {reason}",
   "ExternalAgentSessionStarted": "Sessió iniciada amb {agent} (ACP). Codewhale conserva el fil, la transcripció i les aprovacions.",
   "ExternalAgentSessionSwitchedBack": "S'ha tornat a Codewhale ({model}).",
-  "ExternalAgentSwitchBusy": "Espera que acabi el torn actual abans de canviar d'agent."
+  "ExternalAgentSwitchBusy": "Espera que acabi el torn actual abans de canviar d'agent.",
+  "ModelPickerExternalAgentNotReady": "no està preparat",
+  "ExternalAgentThinkingStatus": "{agent} pensant...",
+  "ExternalAgentToolCallFallback": "Crida d'eina de l'agent extern",
+  "ExternalAgentTurnFailedFallback": "Ha fallat el torn de l'agent extern",
+  "ExternalAgentTurnInterruptedStatus": "Torn de {agent} interromput"
 }

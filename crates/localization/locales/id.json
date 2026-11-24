@@ -2864,5 +2864,10 @@
   "ModelPickerExternalAgentBlockedNotice": "{agent} belum siap: {reason}",
   "ExternalAgentSessionStarted": "Sesi dimulai dengan {agent} (ACP). Codewhale menyimpan utas, transkrip, dan persetujuan.",
   "ExternalAgentSessionSwitchedBack": "Kembali ke Codewhale ({model}).",
-  "ExternalAgentSwitchBusy": "Tunggu giliran saat ini selesai sebelum mengganti agen."
+  "ExternalAgentSwitchBusy": "Tunggu giliran saat ini selesai sebelum mengganti agen.",
+  "ModelPickerExternalAgentNotReady": "belum siap",
+  "ExternalAgentThinkingStatus": "{agent} sedang berpikir...",
+  "ExternalAgentToolCallFallback": "Panggilan alat agen eksternal",
+  "ExternalAgentTurnFailedFallback": "Giliran agen eksternal gagal",
+  "ExternalAgentTurnInterruptedStatus": "Giliran {agent} dihentikan"
 }

@@ -2864,5 +2864,10 @@
   "ModelPickerExternalAgentBlockedNotice": "{agent} не готов: {reason}",
   "ExternalAgentSessionStarted": "Сессия начата с {agent} (ACP). Codewhale сохраняет тред, историю и подтверждения.",
   "ExternalAgentSessionSwitchedBack": "Возврат к Codewhale ({model}).",
-  "ExternalAgentSwitchBusy": "Дождитесь завершения текущего хода перед сменой агента."
+  "ExternalAgentSwitchBusy": "Дождитесь завершения текущего хода перед сменой агента.",
+  "ModelPickerExternalAgentNotReady": "не готов",
+  "ExternalAgentThinkingStatus": "{agent} думает...",
+  "ExternalAgentToolCallFallback": "Вызов инструмента внешнего агента",
+  "ExternalAgentTurnFailedFallback": "Ход внешнего агента завершился с ошибкой",
+  "ExternalAgentTurnInterruptedStatus": "Ход {agent} прерван"
 }

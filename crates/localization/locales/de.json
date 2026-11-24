@@ -2864,5 +2864,10 @@
   "ModelPickerExternalAgentBlockedNotice": "{agent} ist nicht bereit: {reason}",
   "ExternalAgentSessionStarted": "Sitzung mit {agent} (ACP) gestartet. Codewhale behält Thread, Verlauf und Freigaben.",
   "ExternalAgentSessionSwitchedBack": "Zurück zu Codewhale ({model}) gewechselt.",
-  "ExternalAgentSwitchBusy": "Warte, bis der aktuelle Zug abgeschlossen ist, bevor du den Agenten wechselst."
+  "ExternalAgentSwitchBusy": "Warte, bis der aktuelle Zug abgeschlossen ist, bevor du den Agenten wechselst.",
+  "ModelPickerExternalAgentNotReady": "nicht bereit",
+  "ExternalAgentThinkingStatus": "{agent} denkt nach...",
+  "ExternalAgentToolCallFallback": "Werkzeugaufruf des externen Agenten",
+  "ExternalAgentTurnFailedFallback": "Zug des externen Agenten fehlgeschlagen",
+  "ExternalAgentTurnInterruptedStatus": "{agent}-Zug unterbrochen"
 }
