@@ -3632,6 +3632,7 @@ impl Expander {
             return;
         }
         let Some(words) = shlex::split(joined) else {
+            self.dynamic = true;
             return;
         };
         let rest = |at: usize| words[at..].join(" ");
@@ -6158,10 +6159,11 @@ fn ssh_option_payloads(args: &[String], dynamic: &[bool]) -> Vec<(String, bool)>
                 "proxycommand" => payloads.push((value.to_string(), option_dynamic)),
                 "localcommand" => local.push((value.to_string(), option_dynamic)),
                 "permitlocalcommand" => {
-                    permit_local |= value
-                        .split([' ', '\t'])
-                        .next()
-                        .is_some_and(|yes| yes.eq_ignore_ascii_case("yes"))
+                    permit_local |= option_dynamic
+                        || value
+                            .split([' ', '\t'])
+                            .next()
+                            .is_some_and(|yes| yes.eq_ignore_ascii_case("yes"));
                 }
                 _ if option_dynamic => {
                     payloads.push((String::new(), true));
