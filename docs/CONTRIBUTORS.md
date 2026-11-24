@@ -40,6 +40,24 @@ changelog or release notes, and this contributor record.
 ## Contributors by time
 
 <details open>
+<summary><strong>Unreleased — landed after v0.10.4</strong></summary>
+
+**Contributions**
+
+- **[WTFitsmemyself](https://github.com/WTFitsmemyself)** — first contribution: `find … -delete` now counts as a destructive action in the execution policy, the same as `find … -exec rm` ([#7496](https://github.com/codewhale-hq/Codewhale/pull/7496)).
+- **[NieZhuZhu](https://github.com/NieZhuZhu)** — fixed verified audit findings in configuration ([#7481](https://github.com/codewhale-hq/Codewhale/pull/7481)), termination and debug commands ([#7483](https://github.com/codewhale-hq/Codewhale/pull/7483)), the extension host ([#7484](https://github.com/codewhale-hq/Codewhale/pull/7484)) and the model client ([#7490](https://github.com/codewhale-hq/Codewhale/pull/7490)).
+- **[luochen211](https://github.com/luochen211)** — removed unused paths listed in issue 7270 ([#7491](https://github.com/codewhale-hq/Codewhale/pull/7491)).
+- **[Serendo](https://github.com/Serendo)** — routed every TaskManager consumer in the terminal UI through the App's single slot ([#7507](https://github.com/codewhale-hq/Codewhale/pull/7507)).
+- **[deosiree](https://github.com/deosiree)** — the Windows desktop shell (`ShellExperienceHost.exe`) is excluded from window control again, with a Windows regression test ([#7513](https://github.com/codewhale-hq/Codewhale/pull/7513)).
+- **[gaord](https://github.com/gaord)** — item indexing reads only each record's owner field instead of the whole record ([#7522](https://github.com/codewhale-hq/Codewhale/pull/7522)).
+- **[Goldloli](https://github.com/Goldloli)** — first contribution: translated the Auto-Review guide into Simplified Chinese ([#7521](https://github.com/codewhale-hq/Codewhale/pull/7521)).
+- **[axobase001](https://github.com/axobase001)** — added the opt-in verified candidate evaluator for experimental search workflows ([#7294](https://github.com/codewhale-hq/Codewhale/pull/7294)).
+- **[SamhandsomeLee](https://github.com/SamhandsomeLee)** — kept unknown Responses cache-miss counts instead of reading them as zero ([#7527](https://github.com/codewhale-hq/Codewhale/pull/7527)) and covered Responses usage normalization with fixtures ([#7528](https://github.com/codewhale-hq/Codewhale/pull/7528)).
+- **[Owaid0723666](https://github.com/Owaid0723666)** — first contribution: added onomeo as a bundled provider descriptor with its docs and pricing coverage ([#7525](https://github.com/codewhale-hq/Codewhale/pull/7525)).
+
+</details>
+
+<details>
 <summary><strong>v0.10.4 — Windows paste, self-update and plugin install fixes</strong></summary>
 
 **Contributions**
