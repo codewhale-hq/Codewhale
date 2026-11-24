@@ -640,17 +640,42 @@ impl RuntimeEventJournal {
         }
         if let Err(error) = self.write_active_index(lease.as_ref()) {
             *self.classic_lease.lock() = previous.clone();
-            if let Err(rollback) = self.write_active_index(previous.as_ref()) {
-                tracing::error!(
-                    %rollback,
-                    %error,
-                    "active-index rollback failed; durable lease state may be inconsistent"
-                );
-                return Err(format!(
-                    "{error} Active-index rollback also failed: {rollback}"
-                ));
+            let journal_rollback = self.persist(pending);
+            let index_rollback = self.write_active_index(previous.as_ref());
+            match (journal_rollback, index_rollback) {
+                (Ok(()), Ok(())) => return Err(error),
+                (Err(journal_err), Ok(())) => {
+                    tracing::error!(
+                        %journal_err,
+                        %error,
+                        "journal rollback failed; durable lease state may be inconsistent"
+                    );
+                    return Err(format!(
+                        "{error} Journal rollback also failed: {journal_err}"
+                    ));
+                }
+                (Ok(()), Err(index_err)) => {
+                    tracing::error!(
+                        %index_err,
+                        %error,
+                        "active-index rollback failed; durable lease state may be inconsistent"
+                    );
+                    return Err(format!(
+                        "{error} Active-index rollback also failed: {index_err}"
+                    ));
+                }
+                (Err(journal_err), Err(index_err)) => {
+                    tracing::error!(
+                        %journal_err,
+                        %index_err,
+                        %error,
+                        "journal and active-index rollback failed; durable lease state may be inconsistent"
+                    );
+                    return Err(format!(
+                        "{error} Journal rollback ({journal_err}) and active-index rollback ({index_err}) also failed"
+                    ));
+                }
             }
-            return Err(error);
         }
         Ok(())
     }
@@ -8887,6 +8912,51 @@ mod tests {
             controller.status_detail
         );
         assert!(controller.has_durable_classic_lease());
+    }
+
+    #[test]
+    fn classic_lease_active_index_failure_rolls_back_persisted_journal() {
+        let (mut controller, _worker_rx, _event_tx, journal_root) = wired_controller();
+        controller.status = Status::Connected;
+        controller
+            .activate_prompt("run_fixture", "turn_fixture")
+            .unwrap();
+        let active_index_path = controller
+            .journal
+            .as_ref()
+            .unwrap()
+            .active_index_path
+            .clone();
+        inject_journal_persist_failures(&active_index_path, 1);
+
+        let err = controller.finish_classic_lease().unwrap_err();
+        assert_eq!(err, JOURNAL_SETUP_ERROR);
+        assert_eq!(controller.status, Status::Failed);
+        assert!(controller.has_durable_classic_lease());
+        drop(controller);
+
+        let reopened = RuntimeEventJournal::open(
+            journal_root.path(),
+            "target_wired_fixture",
+            "session_wired_fixture",
+        )
+        .unwrap();
+        assert_eq!(
+            reopened
+                .classic_lease()
+                .as_ref()
+                .map(|lease| lease.run_id.as_str()),
+            Some("run_fixture"),
+            "on-disk journal must be rolled back to previous lease when active_index write fails"
+        );
+        assert_eq!(
+            reopened
+                .read_active_index()
+                .unwrap()
+                .as_ref()
+                .map(|lease| lease.run_id.as_str()),
+            Some("run_fixture")
+        );
     }
 
     #[test]
