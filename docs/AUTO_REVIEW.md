@@ -1,5 +1,7 @@
 # Auto-Review
 
+> 阅读简体中文版：[zh_hans/AUTO_REVIEW.md](zh_hans/AUTO_REVIEW.md)。
+
 Auto-Review is the permission setting where Codewhale reviews each tool call
 itself instead of asking you. Safe calls run, dangerous calls are blocked with
 a reason, and uncertain calls go to a second model that judges that one call.
