@@ -14956,6 +14956,16 @@ async fn get_settings_schema(
         state.config_profile.as_deref(),
         &state.workspace,
     );
+    let interactive_allow_shell = config.interactive_allow_shell()
+        && state
+            .runtime_threads
+            .validate_shell_access_policy(
+                &state.workspace,
+                state.config_path.as_deref(),
+                state.config_profile.as_deref(),
+            )
+            .await
+            .is_ok();
     let base_url_row_key = if config
         .active_provider_identity()
         .ok()
@@ -15123,14 +15133,23 @@ async fn get_settings_schema(
                     },
                     "managed_allow_shell" if !shell_control.editable_root() => Some(format!(
                         "{} · {}",
-                        config.allow_shell(),
+                        interactive_allow_shell,
                         shell_control.label()
                     )),
                     _ => None,
                 };
+                let persisted =
+                    if RUNTIME_CONFIG_KEYS.contains(&def.key) {
+                        Some(config_document.as_ref().is_some_and(|document| {
+                            toml_value_at_path(document, &[def.key]).is_some()
+                        }))
+                    } else {
+                        None
+                    };
                 (
-                    managed_value.or_else(|| config_schema_value(def.key, &config)),
-                    None,
+                    managed_value
+                        .or_else(|| config_schema_value(def.key, &config, interactive_allow_shell)),
+                    persisted,
                 )
             };
 
@@ -15200,7 +15219,11 @@ async fn get_settings_schema(
 /// Current value of a config.toml-owned schema row, when one resolves
 /// cheaply. Diagnostics that need per-route or credential computation are
 /// omitted rather than approximated.
-fn config_schema_value(key: &str, config: &Config) -> Option<String> {
+fn config_schema_value(
+    key: &str,
+    config: &Config,
+    interactive_allow_shell: bool,
+) -> Option<String> {
     match key {
         "provider" => config
             .active_provider_identity()
@@ -15214,7 +15237,7 @@ fn config_schema_value(key: &str, config: &Config) -> Option<String> {
         "telemetry" => {
             Some(codewhale_engine::telemetry_notice::saved_preference_enabled(config).to_string())
         }
-        "allow_shell" => Some(config.allow_shell().to_string()),
+        "allow_shell" => Some(interactive_allow_shell.to_string()),
         "base_url" => config
             .active_provider_identity()
             .ok()

@@ -13972,6 +13972,53 @@ async fn get_settings_schema(client: &reqwest::Client, addr: &SocketAddr) -> ser
 }
 
 #[tokio::test]
+async fn settings_schema_allow_shell_reports_interactive_default_and_explicit_opt_out() -> Result<()>
+{
+    let _lock = lock_test_env();
+    let root = tempfile::tempdir()?;
+    let fresh_config = root.path().join("fresh-config.toml");
+    let _config = EnvVarGuard::set("CODEWHALE_CONFIG_PATH", &fresh_config);
+    let Some((addr, _runtime_threads, handle)) =
+        spawn_test_server_with_config_path(fresh_config.clone()).await?
+    else {
+        return Ok(());
+    };
+    let client = codewhale_release::tls::reqwest_client();
+    let fresh_body = get_settings_schema(&client, &addr).await;
+    handle.abort();
+
+    let fresh_row = fresh_body["settings"]
+        .as_array()
+        .expect("settings array")
+        .iter()
+        .find(|row| row["key"] == "allow_shell")
+        .expect("allow_shell row present");
+    assert_eq!(fresh_row["value"], "true");
+    assert_eq!(fresh_row["persisted"], false);
+
+    let explicit_config = root.path().join("explicit-config.toml");
+    fs::write(&explicit_config, "allow_shell = false\n")?;
+    let _config2 = EnvVarGuard::set("CODEWHALE_CONFIG_PATH", &explicit_config);
+    let Some((addr2, _runtime_threads2, handle2)) =
+        spawn_test_server_with_config_path(explicit_config.clone()).await?
+    else {
+        return Ok(());
+    };
+    let explicit_body = get_settings_schema(&client, &addr2).await;
+    handle2.abort();
+
+    let explicit_row = explicit_body["settings"]
+        .as_array()
+        .expect("settings array")
+        .iter()
+        .find(|row| row["key"] == "allow_shell")
+        .expect("allow_shell row present");
+    assert_eq!(explicit_row["value"], "false");
+    assert_eq!(explicit_row["persisted"], true);
+    Ok(())
+}
+
+#[tokio::test]
 async fn settings_schema_serves_every_declared_row_with_runtime_state() -> Result<()> {
     let _lock = lock_test_env();
     let root = tempfile::tempdir()?;
@@ -14051,6 +14098,8 @@ async fn settings_schema_serves_every_declared_row_with_runtime_state() -> Resul
     assert_eq!(row("notifications.condition")["value"], "always");
     assert_eq!(row("notifications.condition")["persisted"], true);
     assert_eq!(row("telemetry")["value"], "false");
+    assert_eq!(row("allow_shell")["value"], "true");
+    assert_eq!(row("allow_shell")["persisted"], false);
 
     // Row kinds and editability agree with the TUI's own semantics:
     // model/provider open pickers (actions), approval_mode is the
