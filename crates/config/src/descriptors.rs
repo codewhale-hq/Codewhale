@@ -463,6 +463,16 @@ mod tests {
     }
 
     #[test]
+    fn onomeo_is_a_descriptor_row() {
+        let row = provider_descriptor("onomeo").expect("onomeo");
+        assert_eq!(row.id, "onomeo");
+        assert_eq!(row.wire, DescriptorWire::OpenaiCompatible);
+        assert_eq!(row.base_url, "https://onomeo.com/v1");
+        assert_eq!(row.api_key_env, "ONOMEO_API_KEY");
+        assert_eq!(row.default_model, "deepseek-v4.1-flash");
+    }
+
+    #[test]
     fn descriptors_do_not_embed_model_rosters() {
         let raw = DESCRIPTORS_JSON;
         assert!(
@@ -554,7 +564,7 @@ mod tests {
         // reusing its name; compatible-host lookup remains separately scoped.
         assert!(provider_descriptor("openai").is_none());
         assert!(provider_descriptor("deepseek").is_none());
-        assert_eq!(bundled_provider_descriptors().len(), 18);
+        assert_eq!(bundled_provider_descriptors().len(), 19);
         let wafer = provider_descriptor("wafer").expect("wafer");
         assert_eq!(wafer.base_url, "https://pass.wafer.ai/v1");
         assert_eq!(wafer.default_model, "GLM-5.3");
