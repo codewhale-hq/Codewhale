@@ -1285,7 +1285,7 @@ pub fn upsert_keepalive(
             model_provider: None,
             model_provider_id: None,
             mode: Some("operate".to_string()),
-            allow_shell: Some(true),
+            allow_shell: Some(false),
             trust_mode: Some(false),
             auto_approve: Some(false),
             delivery_mode: None,
@@ -1311,7 +1311,7 @@ pub fn upsert_keepalive(
         record.model_provider = Some(identity.provider.as_str().to_string());
         record.model_provider_id = identity.persisted_id().map(str::to_string);
         record.mode = Some("operate".to_string());
-        record.allow_shell = Some(true);
+        record.allow_shell = Some(false);
         record.trust_mode = Some(false);
         record.auto_approve = Some(false);
         record.delivery_mode = None;
