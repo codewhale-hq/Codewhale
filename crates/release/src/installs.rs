@@ -553,6 +553,23 @@ fn cargo_root_beside(path: &Path) -> Option<PathBuf> {
         .then(|| root.to_path_buf())
 }
 
+pub(crate) fn cargo_owns_a_command_beside(path: &Path) -> bool {
+    let Some(root) = cargo_root_beside(path) else {
+        return false;
+    };
+    [".crates.toml", ".crates2.json"].iter().any(|file| {
+        let record = root.join(file);
+        if fs::symlink_metadata(&record).is_err() {
+            return false;
+        }
+        read_small(&record, 4 * 1024 * 1024).map_or(true, |text| {
+            RECEIPT_COMMANDS
+                .iter()
+                .any(|name| text.contains(&format!("\"{name}\"")))
+        })
+    })
+}
+
 fn cargo_lists(path: &Path, name: &str) -> bool {
     let Some(root) = cargo_root_beside(path) else {
         return false;

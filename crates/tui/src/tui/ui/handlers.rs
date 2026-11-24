@@ -273,30 +273,6 @@ pub(crate) fn handle_bracketed_paste(app: &mut App, text: &str) {
     }
 }
 
-/// Voice input toggle via Option+V (⌥V) — matches Muse Spark UX:
-/// "Recording (⌥V to finish)" with a transient voice indicator, no slash
-/// command needed. Handles both Alt+V and the macOS ⌥V glyph.
-pub(crate) fn handle_voice_key(app: &mut App, key: &event::KeyEvent) -> bool {
-    let is_alt_v = matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V'))
-        && key.modifiers.contains(KeyModifiers::ALT)
-        && !key.modifiers.contains(KeyModifiers::CONTROL)
-        && !key.modifiers.contains(KeyModifiers::SUPER);
-    // Some terminals emit the literal "√" (Option+V on macOS) instead of Alt+V.
-    let is_glyph = matches!(key.code, KeyCode::Char('√') | KeyCode::Char('∫'));
-    if !is_alt_v && !is_glyph {
-        return false;
-    }
-    // Toggle voice capture — same path as /voice but via hotkey.
-    let result = crate::commands::voice::voice(app);
-    // Surface a Spark-style transient hint; the capture itself is async.
-    if app.voice_enabled {
-        app.status_message = Some("● Recording  (⌥V to finish)".to_string());
-    }
-    // Suppress the default char insertion for this combo.
-    let _ = result;
-    true
-}
-
 /// The event-loop seam for Ctrl+T. Keeping the `KeyEvent` predicate and App
 /// mutation together makes the real terminal route directly testable rather
 /// than testing `cycle_effort` in isolation.

@@ -15,7 +15,8 @@ import { load as loadYaml } from 'js-yaml'
 import {reviewedMcpModule} from './mcp.ts'
 import {reviewedSkillModule} from './skill-filesystem.ts'
 import {reviewedHookModule} from './shell-hooks.ts'
-import {admitReviewedClosure,importReviewedModule} from './resolve-hooks.ts'
+import {admitReviewedClosure,explainImportError,importReviewedModule} from './resolve-hooks.ts'
+import { describeMissingServices } from './missing-services.ts'
 import { PERSONA, reviewedPersonaModule } from './persona.ts'
 import { AGENT_PRESETS, defineReviewedAgentPresets, issuePresetReceipt, revokePresetReceipt, type PresetCatalog, type PreparedPreset } from './agent-presets.ts'
 import { reviewedCotTranslationModule } from './cot-translation.ts'
@@ -230,7 +231,27 @@ class ReviewedTree extends EntryTree {
   /** A reviewed composition is input; teardown and self-disposal never rewrite it. */
   commit(): void {}
 
+  private readonly importFailures = new Map<string, unknown>()
+
+  importFailure(name: string): { error: unknown } | undefined {
+    return this.importFailures.has(name) ? { error: this.importFailures.get(name) } : undefined
+  }
+
   override import(name: string): unknown {
+    this.importFailures.delete(name)
+    const record = (error: unknown): never => {
+      this.importFailures.set(name, error)
+      throw error
+    }
+    try {
+      const imported = this.importRow(name)
+      return imported instanceof Promise ? imported.catch(record) : imported
+    } catch (error) {
+      return record(error)
+    }
+  }
+
+  private importRow(name: string): unknown {
     if (name === PERSONA) return reviewedPersonaModule
     if (name === AGENT_PRESETS) return defineReviewedAgentPresets(mountReviewedComposition)
     if (name === 'cordis:group' || name === '@deepseek-ai/cordis-plugin-group') return ReviewedGroup
@@ -290,6 +311,14 @@ function validateInventory(group: import('./upstream/loader/src/config/group.ts'
   }
 }
 
+function describeCause(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+}
+
+function fiberStateName(state: number): string {
+  return Object.entries(FiberState).find(([, value]) => value === state)?.[0] ?? String(state)
+}
+
 /** Trusted carrier, following upstream PresetTree's explicit loader inject.
  * The Native wrapper never gains a second loader or a global service grant. */
 class ReviewedCarrier {
@@ -329,10 +358,17 @@ class ReviewedCarrier {
     validateInventory(this.tree.root)
     for (const entry of this.tree.entries()) {
       if (entry.disabled) continue
-      if (!entry.fiber || entry.fiber.uid === null) throw new Error(`composition row ${JSON.stringify(entry.options.id ?? entry.options.name)} failed activation`)
+      const row = `composition row ${JSON.stringify(entry.options.id ?? entry.options.name)}`
+      if (!entry.fiber || entry.fiber.uid === null) {
+        const failure = this.tree.importFailure(entry.options.name)
+        throw new Error(failure !== undefined
+          ? `${row} failed activation: ${describeCause(explainImportError(failure.error))}`
+          : `${row} failed activation (${entry.fiber ? `fiber ${fiberStateName(entry.fiber.state)}` : 'no fiber'}); see the logged error above`, failure !== undefined ? { cause: failure.error } : undefined)
+      }
       await entry.fiber.await()
       const missing = Object.keys(entry.fiber.inject).filter(name => entry.fiber!.ctx.get(name) === undefined)
-      if (missing.length || entry.fiber.state !== FiberState.ACTIVE) throw new Error(`composition row ${JSON.stringify(entry.options.id ?? entry.options.name)} is not active`)
+      if (missing.length) throw new Error(`${row} requires ${describeMissingServices(missing)}`)
+      if (entry.fiber.state !== FiberState.ACTIVE) throw new Error(`${row} is not active (fiber ${fiberStateName(entry.fiber.state)})`)
     }
     const leaked = leakedServices(this.ctx, this.ctx.fiber)
     if (leaked.length) throw new Error(`composition published shared-root services: ${leaked.join(', ')}`)

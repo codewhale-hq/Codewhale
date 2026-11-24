@@ -1721,6 +1721,7 @@ pub struct App {
     /// When the clipboard paste last ran, so a terminal that reports both the
     /// press and the release of Ctrl+V pastes once instead of twice.
     pub last_clipboard_paste: Option<Instant>,
+    pub paste_shortcut_press_seen: bool,
     /// Whether the once-per-turn provider-wait incident (#3095) has already
     /// been logged for the current turn.
     pub provider_wait_incident_logged: bool,
@@ -1999,6 +2000,7 @@ pub struct App {
     /// grace of gentle motion the aquarium settles to a genuinely still
     /// scene instead of repainting an idle screen forever.
     pub ambient_idle_since: Option<Instant>,
+    pub ambient_life_held_ms: Option<u128>,
     /// Start of the underwater shell's one-shot successful-turn exhale.
     /// Kept separate from the ambient ocean clock so completion can settle
     /// once without restarting or repainting the transcript field.
@@ -7321,10 +7323,17 @@ impl App {
     pub fn ambient_idle_settled(&mut self, busy: bool, now: Instant) -> bool {
         if busy {
             self.ambient_idle_since = None;
+            self.ambient_life_held_ms = None;
             return false;
         }
         let since = *self.ambient_idle_since.get_or_insert(now);
-        now.duration_since(since) >= Duration::from_millis(Self::AMBIENT_IDLE_SETTLE_MS)
+        let settled =
+            now.duration_since(since) >= Duration::from_millis(Self::AMBIENT_IDLE_SETTLE_MS);
+        if settled {
+            self.ambient_life_held_ms
+                .get_or_insert(self.ambient_clock_ms);
+        }
+        settled
     }
 
     /// Resolve one motion policy for every surface that can request or paint

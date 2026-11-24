@@ -64,6 +64,7 @@ pub struct ChatWidget {
     /// Ink for the selected underwater scene's idle fish/bubbles.
     ambient_inks: Option<(Color, Color)>,
     ocean_elapsed_ms: u128,
+    life_elapsed_ms: u128,
     #[cfg(test)]
     ocean_animated: bool,
     /// Fixed-point (0..=1000) life presence; see `ocean::life_presence`.
@@ -183,6 +184,7 @@ impl ChatWidget {
         } else {
             0.0
         };
+        let life_elapsed_ms = app.ambient_life_held_ms.unwrap_or(ocean_elapsed_ms);
         let ocean_column = ocean_ramp.map(|ramp| {
             let context_percent = crate::tui::phase_strip::context_percent_from_app(app);
             crate::tui::ocean::OceanColumn::new(
@@ -236,6 +238,7 @@ impl ChatWidget {
                 ocean_activity,
                 ambient_inks,
                 ocean_elapsed_ms,
+                life_elapsed_ms,
                 #[cfg(test)]
                 ocean_animated,
                 #[cfg(test)]
@@ -761,6 +764,7 @@ impl ChatWidget {
             ocean_activity,
             ambient_inks,
             ocean_elapsed_ms,
+            life_elapsed_ms,
             #[cfg(test)]
             ocean_animated,
             #[cfg(test)]
@@ -1185,7 +1189,7 @@ impl ChatWidget {
                 &theme,
                 inks.0,
                 &self.lines,
-                self.ocean_elapsed_ms,
+                self.life_elapsed_ms,
                 self.ocean_presence_f32(),
                 whale,
                 self.ocean_activity,
@@ -8889,6 +8893,78 @@ mod tests {
         assert!(ChatWidget::new_with_ocean_elapsed(&mut app, area, 0).ocean_animated);
         let rendered = assert_life_keeps_clear_of_text(&mut app, area);
         assert!(rendered.contains("release check 17"), "{rendered}");
+    }
+
+    #[test]
+    fn ocean_life_moves_while_a_turn_runs_and_holds_still_when_idle() {
+        fn life_cells(app: &mut App, area: Rect, elapsed: u128) -> Vec<(u16, u16, String)> {
+            let alive = ChatWidget::new_with_ocean_elapsed(app, area, elapsed);
+            let mut still = ChatWidget::new_with_ocean_elapsed(app, area, elapsed);
+            still.ambient_life = false;
+            let mut alive_buf = Buffer::empty(area);
+            alive.render(area, &mut alive_buf);
+            let mut still_buf = Buffer::empty(area);
+            still.render(area, &mut still_buf);
+            let mut cells = Vec::new();
+            for y in area.top()..area.bottom() {
+                for x in area.left()..area.right() {
+                    if alive_buf[(x, y)] != still_buf[(x, y)] {
+                        cells.push((x, y, alive_buf[(x, y)].symbol().to_string()));
+                    }
+                }
+            }
+            cells
+        }
+
+        let mut app = create_test_app();
+        app.theme_id = codewhale_palette::ThemeId::Underwater;
+        app.ui_theme = palette::UNDERWATER_UI_THEME;
+        app.viewport.ocean_caps = Some(test_native_ocean_caps());
+        app.low_motion = false;
+        app.fancy_animations = true;
+        app.add_message(HistoryCell::Assistant {
+            content: "release receipt".to_string(),
+            streaming: false,
+        });
+        let area = Rect::new(0, 0, 80, 24);
+        let start = Instant::now();
+
+        app.is_loading = true;
+        app.runtime_turn_status = Some("in_progress".to_string());
+        app.turn_started_at = Some(start);
+        app.ambient_clock_ms = 9_000;
+        assert!(!app.ambient_idle_settled(true, start));
+        let early = life_cells(&mut app, area, 4_000);
+        let late = life_cells(&mut app, area, 9_000);
+        assert!(!early.is_empty() && !late.is_empty());
+        assert_ne!(early, late, "a running turn must move the ocean");
+        assert!(crate::tui::ui::underwater_life_motion_requested(
+            &app, false, false
+        ));
+
+        app.is_loading = false;
+        app.runtime_turn_status = Some("completed".to_string());
+        app.turn_started_at = None;
+        assert!(!app.ambient_idle_settled(false, start));
+        let settle = std::time::Duration::from_millis(App::AMBIENT_IDLE_SETTLE_MS + 1);
+        assert!(app.ambient_idle_settled(false, start + settle));
+        assert!(!crate::tui::ui::underwater_life_motion_requested(
+            &app, false, true
+        ));
+        let held = life_cells(&mut app, area, 9_000);
+        let after_keystrokes = life_cells(&mut app, area, 13_000);
+        assert!(!held.is_empty(), "a settled ocean keeps its creatures");
+        assert_eq!(
+            held, after_keystrokes,
+            "an idle redraw must not step the ocean"
+        );
+
+        app.low_motion = true;
+        assert!(!app.ambient_idle_settled(true, start + settle));
+        assert!(!crate::tui::ui::underwater_life_motion_requested(
+            &app, false, false
+        ));
+        assert!(life_cells(&mut app, area, 4_000).is_empty());
     }
 
     #[test]

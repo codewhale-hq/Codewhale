@@ -5712,6 +5712,32 @@ fn clipboard_text_paste_matches_bracketed_paste_state() {
 }
 
 #[test]
+fn release_only_paste_edge_leaves_text_to_the_terminal_and_still_attaches_an_image() {
+    let mut app = App::new(test_options(false), &Config::default());
+    app.clipboard = ClipboardHandler::with_content_for_test(ClipboardContent::Text(
+        "already pasted".to_string(),
+    ));
+    app.insert_paste_text("already pasted");
+
+    assert!(!app.attach_clipboard_image());
+    assert_eq!(app.input, "already pasted");
+
+    let mut app = App::new(test_options(false), &Config::default());
+    app.clipboard = ClipboardHandler::with_content_for_test(ClipboardContent::Image(
+        crate::tui::clipboard::PastedImage {
+            path: std::path::PathBuf::from("/tmp/pasted.png"),
+            width: 8,
+            height: 4,
+            byte_len: 2048,
+        },
+    ));
+
+    assert!(app.attach_clipboard_image());
+    assert!(app.input.contains("pasted.png"), "{}", app.input);
+    assert!(!app.attach_clipboard_image());
+}
+
+#[test]
 fn ssh_direct_clipboard_paste_points_to_terminal_owned_bracketed_paste() {
     let mut app = App::new(test_options(false), &Config::default());
     app.input = "keep this draft".to_string();

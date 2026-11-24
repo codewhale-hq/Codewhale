@@ -100,6 +100,14 @@ old="$(grep -E '^version = "' Cargo.toml | head -n1 | sed -E 's/^version = "([^"
 if ! grep -q "^## \[${new}\]" CHANGELOG.md; then
   echo "warning: CHANGELOG.md has no '## [${new}]' entry yet — add it before tagging" >&2
 fi
+unstamped=""
+if [[ -f docs/features.toml ]]; then
+  unstamped="$(awk '/^id = "/ { id = $3 } /^since = "unreleased"/ { gsub(/"/, "", id); print "  " id }' docs/features.toml)"
+fi
+if [[ -n "${unstamped}" ]]; then
+  echo "warning: docs/features.toml rows still since = \"unreleased\"; stamp each one this release ships with since = \"${new}\" (docs/RELEASE_CHECKLIST.md section 1):" >&2
+  echo "${unstamped}" >&2
+fi
 
 if [[ "${old}" != "${new}" ]]; then
   echo "Bumping ${old} -> ${new}"

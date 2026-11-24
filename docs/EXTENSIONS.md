@@ -628,8 +628,9 @@ A host service is something the core does for an extension beyond running a
 core tool: workspace files and commands, the model provider, network requests,
 settings, the plugin catalog, terminal sessions and remote pairing. Each is
 served by the core, never by the host process, and each is off until a review
-grants it. This version of Codewhale offers none of them yet: the mechanism is
-in place, and each service is switched on separately.
+grants it. This version of Codewhale offers every service except attachments.
+The core serves one only during a live tool call by a plugin whose review
+granted it, so no service is available while a plugin activates.
 
 **Asking.** Name the services in the manifest. A name outside this list fails
 validation.

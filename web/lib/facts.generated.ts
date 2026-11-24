@@ -42,10 +42,10 @@ export interface RepoFacts {
 }
 
 export const FACTS: RepoFacts = {
-  "generatedAt": "2026-11-22T12:12:22.500Z",
+  "generatedAt": "2026-11-23T22:53:38.774Z",
   "sourceRevision": null,
   "sourceCommittedAt": null,
-  "version": "0.10.3",
+  "version": "0.10.4",
   "crates": [
     "account-cli",
     "agent-contract",
@@ -1194,194 +1194,194 @@ export const FACTS: RepoFacts = {
   "defaultModel": "deepseek-flash",
   "nodeEngines": ">=22",
   "toolCount": 83,
-  "contributorCount": 439,
+  "contributorCount": 444,
   "license": "MIT",
   "latestPublishedRelease": {
-    "tag": "v0.10.3",
-    "version": "0.10.3",
-    "publishedAt": "2026-11-22T12:11:33Z",
-    "url": "https://github.com/codewhale-hq/CodeWhale/releases/tag/v0.10.3",
-    "readAt": "2026-11-22T12:12:22.453Z",
+    "tag": "v0.10.4",
+    "version": "0.10.4",
+    "publishedAt": "2026-11-23T22:52:50Z",
+    "url": "https://github.com/codewhale-hq/CodeWhale/releases/tag/v0.10.4",
+    "readAt": "2026-11-23T22:53:38.710Z",
     "assets": [
       {
         "name": "codew-android-arm64",
-        "size": 127680840,
-        "sha256": "d7536af2d4e364830b5b10af661b41dc30d035fa18cf920a9f8fb357de5f174f"
+        "size": 127792072,
+        "sha256": "5680d2ee5e9089a2c797b554a712a8336f83cde2ec687fe49a0953cf0cf8cbbc"
       },
       {
         "name": "codew-linux-arm64",
-        "size": 122664672,
-        "sha256": "f2f13829cd40690963a59eb207de6ca984b42d6b80be40c270aa75dd94c879b8"
+        "size": 122730208,
+        "sha256": "4e809350514e7eb161e121227eca4a3ef6c753d4685d697b66d0819a2a3844a2"
       },
       {
         "name": "codew-linux-x64",
-        "size": 150767488,
-        "sha256": "d14edefc7edd9976fcb76fb187344287de25f8090ad2af49cfde2e7f36343e6b"
+        "size": 150906752,
+        "sha256": "81d82a15cec265ea72f76515f991ced07aa3fbe377aa3dfb53b70fe4ea30ce60"
       },
       {
         "name": "codew-macos-arm64",
-        "size": 123983664,
-        "sha256": "b137c9617d5b4a18a403757e65eafcec580e6ab5b57c502b252f1f8046c90bea"
+        "size": 124132480,
+        "sha256": "1c4e654b4574f82504cb233e96501e7b4aaec0a82dfff07490f7472cb14e8891"
       },
       {
         "name": "codew-macos-x64",
-        "size": 140037264,
-        "sha256": "2622a7b1a5268ff11c7c445209e037da7fb95ca1f2c04a94a0a4fb0a63859260"
+        "size": 140099112,
+        "sha256": "6a56fc354d2dd3a853a8eb768ccbac086b591796e33b673522ffa94c6434aa36"
       },
       {
         "name": "codew-ohos-arm64",
-        "size": 126727936,
-        "sha256": "4ba80107a409cc698dcfaada6674da9a965c9e9427d8d2166b7092e8764b2853"
+        "size": 126859008,
+        "sha256": "6333de60e623f585b806cdbe6a66dba3f21e34d9611e2d2e0d3778bfa2d4a38f"
       },
       {
         "name": "codew-windows-arm64.exe",
-        "size": 152362496,
-        "sha256": "971c44131afeb68d9db5b20ae3234a4ad210d924e421d777ae5f1f1dea0198e0"
+        "size": 152539136,
+        "sha256": "4a82733f814bceb09ce4297e35b9df14a6a13cf5b0ea4f8d834d9771dab83c6c"
       },
       {
         "name": "codew-windows-x64.exe",
-        "size": 191641600,
-        "sha256": "6fb1a5a3a236aa0a4dadbf76c08ba59824aa978acd11ea89f5bb726631451d3d"
+        "size": 191854592,
+        "sha256": "9b779506b8600ed8fe05c661e2769bcce5166fa6a59179c07dcdb34fad053a93"
       },
       {
         "name": "codewhale-android-arm64",
-        "size": 127680840,
-        "sha256": "d7536af2d4e364830b5b10af661b41dc30d035fa18cf920a9f8fb357de5f174f"
+        "size": 127792072,
+        "sha256": "5680d2ee5e9089a2c797b554a712a8336f83cde2ec687fe49a0953cf0cf8cbbc"
       },
       {
         "name": "codewhale-android-arm64.tar.gz",
-        "size": 118500349,
-        "sha256": "4a617c3ae36d298287507d5ed8c6e4b22b1e2d0bfa035f57c325afbf7ee3e62d"
+        "size": 118622757,
+        "sha256": "d865deb8eb3af611e2ff0a7d582968431096d0e03699d4c06f3f116c9d57b6d9"
       },
       {
         "name": "codewhale-artifacts-sha256.txt",
         "size": 3350,
-        "sha256": "9118fb7d3eb8184c07eafcef93570d276eb1f5c0c79d58eb8f2ba23d9f9e6bd6"
+        "sha256": "909395610c067b7c2a6f523fbb0b1081c69a2d82fa9a934840e594675d4c63fd"
       },
       {
         "name": "codewhale-bundles-sha256.txt",
         "size": 957,
-        "sha256": "106635ac355b6bddbf126c060cdda383b5a13eac4f261e6beb5f8f7f0b9fd11d"
+        "sha256": "d54e11bda9f668dc9226fe571ba3608a3c24f62680da355b4f14ed8faf98b5e3"
       },
       {
         "name": "codewhale-linux-arm64",
-        "size": 122664672,
-        "sha256": "f2f13829cd40690963a59eb207de6ca984b42d6b80be40c270aa75dd94c879b8"
+        "size": 122730208,
+        "sha256": "4e809350514e7eb161e121227eca4a3ef6c753d4685d697b66d0819a2a3844a2"
       },
       {
         "name": "codewhale-linux-arm64.tar.gz",
-        "size": 117945593,
-        "sha256": "430e5c935d166e65911e603fbdaf4cc59295f3ff36a91b8ede9c1df8ffa6dbec"
+        "size": 118049624,
+        "sha256": "a711c0d430d44917d668ba980d107eee3f33faf26777c54ff8552b1e79769eec"
       },
       {
         "name": "codewhale-linux-x64",
-        "size": 150767488,
-        "sha256": "d14edefc7edd9976fcb76fb187344287de25f8090ad2af49cfde2e7f36343e6b"
+        "size": 150906752,
+        "sha256": "81d82a15cec265ea72f76515f991ced07aa3fbe377aa3dfb53b70fe4ea30ce60"
       },
       {
         "name": "codewhale-linux-x64.tar.gz",
-        "size": 128430968,
-        "sha256": "0c9f276bd3d43736061d01a43b1778e89984bfa9605d0949402aa1a8bff70221"
+        "size": 128546253,
+        "sha256": "9b2703e274b54fbe8962c4824c40dc1bf8b06e8056eaef3a6147ae190da8ab37"
       },
       {
         "name": "codewhale-macos-arm64",
-        "size": 123983664,
-        "sha256": "b137c9617d5b4a18a403757e65eafcec580e6ab5b57c502b252f1f8046c90bea"
+        "size": 124132480,
+        "sha256": "1c4e654b4574f82504cb233e96501e7b4aaec0a82dfff07490f7472cb14e8891"
       },
       {
         "name": "codewhale-macos-arm64.tar.gz",
-        "size": 116024177,
-        "sha256": "06c23e6d63655b7ff8d29805ca2f18ad6bd60483742e549192db17787fa54bf1"
+        "size": 116179132,
+        "sha256": "ce094d282e4efe94b8e74063b280e8f1f4a7f5d404d05934e4eeec4713b36c3d"
       },
       {
         "name": "codewhale-macos-x64",
-        "size": 140037264,
-        "sha256": "2622a7b1a5268ff11c7c445209e037da7fb95ca1f2c04a94a0a4fb0a63859260"
+        "size": 140099112,
+        "sha256": "6a56fc354d2dd3a853a8eb768ccbac086b591796e33b673522ffa94c6434aa36"
       },
       {
         "name": "codewhale-macos-x64.tar.gz",
-        "size": 124674277,
-        "sha256": "efa3295785e74146d11ef822ea87cc473693f32b0b717fe63c9638f4959ecb82"
+        "size": 124720584,
+        "sha256": "4790741e575b429d3201a7e4d2d568a297c0ce99a4a607c9dae4b4d8260d0948"
       },
       {
         "name": "codewhale-ohos-arm64",
-        "size": 126727936,
-        "sha256": "4ba80107a409cc698dcfaada6674da9a965c9e9427d8d2166b7092e8764b2853"
+        "size": 126859008,
+        "sha256": "6333de60e623f585b806cdbe6a66dba3f21e34d9611e2d2e0d3778bfa2d4a38f"
       },
       {
         "name": "codewhale-ohos-arm64.tar.gz",
-        "size": 117470222,
-        "sha256": "417695d819e1339438996d68274deb88848bb9467b458d9464f7995f7fa01d8f"
+        "size": 117588194,
+        "sha256": "e2a3af80f5c40d872a8ce3f5d1982339641e1048f5272c7d12b4c9d857744dc3"
       },
       {
         "name": "codewhale-tui-android-arm64",
-        "size": 127680840,
-        "sha256": "d7536af2d4e364830b5b10af661b41dc30d035fa18cf920a9f8fb357de5f174f"
+        "size": 127792072,
+        "sha256": "5680d2ee5e9089a2c797b554a712a8336f83cde2ec687fe49a0953cf0cf8cbbc"
       },
       {
         "name": "codewhale-tui-linux-arm64",
-        "size": 122664672,
-        "sha256": "f2f13829cd40690963a59eb207de6ca984b42d6b80be40c270aa75dd94c879b8"
+        "size": 122730208,
+        "sha256": "4e809350514e7eb161e121227eca4a3ef6c753d4685d697b66d0819a2a3844a2"
       },
       {
         "name": "codewhale-tui-linux-x64",
-        "size": 150767488,
-        "sha256": "d14edefc7edd9976fcb76fb187344287de25f8090ad2af49cfde2e7f36343e6b"
+        "size": 150906752,
+        "sha256": "81d82a15cec265ea72f76515f991ced07aa3fbe377aa3dfb53b70fe4ea30ce60"
       },
       {
         "name": "codewhale-tui-macos-arm64",
-        "size": 123983664,
-        "sha256": "b137c9617d5b4a18a403757e65eafcec580e6ab5b57c502b252f1f8046c90bea"
+        "size": 124132480,
+        "sha256": "1c4e654b4574f82504cb233e96501e7b4aaec0a82dfff07490f7472cb14e8891"
       },
       {
         "name": "codewhale-tui-macos-x64",
-        "size": 140037264,
-        "sha256": "2622a7b1a5268ff11c7c445209e037da7fb95ca1f2c04a94a0a4fb0a63859260"
+        "size": 140099112,
+        "sha256": "6a56fc354d2dd3a853a8eb768ccbac086b591796e33b673522ffa94c6434aa36"
       },
       {
         "name": "codewhale-tui-ohos-arm64",
-        "size": 126727936,
-        "sha256": "4ba80107a409cc698dcfaada6674da9a965c9e9427d8d2166b7092e8764b2853"
+        "size": 126859008,
+        "sha256": "6333de60e623f585b806cdbe6a66dba3f21e34d9611e2d2e0d3778bfa2d4a38f"
       },
       {
         "name": "codewhale-tui-windows-arm64.exe",
-        "size": 152362496,
-        "sha256": "971c44131afeb68d9db5b20ae3234a4ad210d924e421d777ae5f1f1dea0198e0"
+        "size": 152539136,
+        "sha256": "4a82733f814bceb09ce4297e35b9df14a6a13cf5b0ea4f8d834d9771dab83c6c"
       },
       {
         "name": "codewhale-tui-windows-x64.exe",
-        "size": 191641600,
-        "sha256": "6fb1a5a3a236aa0a4dadbf76c08ba59824aa978acd11ea89f5bb726631451d3d"
+        "size": 191854592,
+        "sha256": "9b779506b8600ed8fe05c661e2769bcce5166fa6a59179c07dcdb34fad053a93"
       },
       {
         "name": "codewhale-windows-arm64-portable.zip",
-        "size": 126431032,
-        "sha256": "2fc17556513d99356a4c9c43ed8b831dbd3a64de4eb8950582d78fce601cad3a"
+        "size": 126581768,
+        "sha256": "cc13525932697b5f780f643251eb7caef7d0a3b07d7050794ac72db6c99dbba7"
       },
       {
         "name": "codewhale-windows-arm64.exe",
-        "size": 152362496,
-        "sha256": "971c44131afeb68d9db5b20ae3234a4ad210d924e421d777ae5f1f1dea0198e0"
+        "size": 152539136,
+        "sha256": "4a82733f814bceb09ce4297e35b9df14a6a13cf5b0ea4f8d834d9771dab83c6c"
       },
       {
         "name": "codewhale-windows-arm64.zip",
-        "size": 126435565,
-        "sha256": "a07a3fa60943a66148b541fb24e14d065dd49efd50480b6d8a65672546ae490d"
+        "size": 126586301,
+        "sha256": "985dfb423416d708a2fc94e537089fb18c672079d7c0b7dc3ba2f9c9ce0b3674"
       },
       {
         "name": "codewhale-windows-x64-portable.zip",
-        "size": 135866034,
-        "sha256": "452f2d0ef24dc5ff1f6b3ca65a87e72e8c2c2b6ffa0ca8f4ee790d72f379882e"
+        "size": 136019136,
+        "sha256": "1852dbe1a08f016b668d03a58c6b558497adeb9987ecd585a0eac2b4df9f22c5"
       },
       {
         "name": "codewhale-windows-x64.exe",
-        "size": 191641600,
-        "sha256": "6fb1a5a3a236aa0a4dadbf76c08ba59824aa978acd11ea89f5bb726631451d3d"
+        "size": 191854592,
+        "sha256": "9b779506b8600ed8fe05c661e2769bcce5166fa6a59179c07dcdb34fad053a93"
       },
       {
         "name": "codewhale-windows-x64.zip",
-        "size": 135870559,
-        "sha256": "b11f3a144dd7c422114a5aaa99ab58493500f690f7e1c6a0ee199da850e4ef76"
+        "size": 136023661,
+        "sha256": "ed7489fbeea18492c5e96b1da2ccf59f0a826d0825b27e45f736ef9f4d97f788"
       },
       {
         "name": "codewhale.bat",
@@ -1390,8 +1390,8 @@ export const FACTS: RepoFacts = {
       },
       {
         "name": "CodeWhaleSetup.exe",
-        "size": 67473195,
-        "sha256": "5c9ca323d98c630a3ace7a1fc010ae6b5a6e0bb488ffec59b9870f9c74712c69"
+        "size": 67548564,
+        "sha256": "f6d0e6a257f8b1fbd8b972f0152c96ad78070d86897a44cd22b01d9386d77b0c"
       }
     ]
   }

@@ -154,7 +154,24 @@ if [[ -n "$(find "$preflight_dir" -prune \( -perm -020 -o -perm -002 \) -print)"
     exit 1
 fi
 for cargo_receipt in "$(dirname "$BIN_DIR")/.crates.toml" "$(dirname "$BIN_DIR")/.crates2.json"; do
-    [[ ! -e "$cargo_receipt" && ! -L "$cargo_receipt" ]] || { echo "ERROR: Cargo install metadata beside this directory; choose a fresh PREFIX" >&2; exit 1; }
+    [[ -e "$cargo_receipt" || -L "$cargo_receipt" ]] || continue
+    cargo_owned=0
+    if [[ -L "$cargo_receipt" || ! -f "$cargo_receipt" || ! -r "$cargo_receipt" ]]; then
+        cargo_owned=1
+    else
+        cargo_size="$(wc -c < "$cargo_receipt" 2>/dev/null | tr -d ' ')" || cargo_size=""
+        case "$cargo_size" in
+            ''|*[!0-9]*) cargo_owned=1 ;;
+            *) (( cargo_size <= 4194304 )) || cargo_owned=1 ;;
+        esac
+        cargo_grep=0
+        grep -F -q -e '"codewhale"' -e '"codew"' "$cargo_receipt" 2>/dev/null || cargo_grep=$?
+        [[ "$cargo_grep" -eq 1 ]] || cargo_owned=1
+    fi
+    if [[ "$cargo_owned" -eq 1 ]]; then
+        echo "ERROR: Cargo installed Codewhale beside this directory, or its record $cargo_receipt cannot be read; manage it with cargo install or cargo uninstall, or choose a fresh PREFIX" >&2
+        exit 1
+    fi
 done
 
 (umask 077; mkdir -p "$BIN_DIR")

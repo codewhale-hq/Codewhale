@@ -116,10 +116,9 @@ crate_version() {
   echo "${own:-${version}}"
 }
 
-crates_user_agent="CodeWhale release check (https://github.com/codewhale-hq/CodeWhale)"
 for crate in "${release_crates[@]}"; do
   crate_release_version="$(crate_version "${crate}")"
-  if curl -fsSL -A "${crates_user_agent}" "https://crates.io/api/v1/crates/${crate}/${crate_release_version}" >/dev/null 2>&1; then
+  if crate_index_has "${crate}" "${crate_release_version}"; then
     echo "crates.io ${crate}@${crate_release_version} is published."
   else
     echo "crates.io ${crate}@${crate_release_version} is not published." >&2

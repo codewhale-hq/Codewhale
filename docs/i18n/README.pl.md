@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:7162aa6f1feb -->
+<!-- source: README.md sha256:8f9ce64ce19c -->
 <div align="center">
 
 <picture>
@@ -96,11 +96,9 @@ Aplikacja terminalowa, `exec`, `web` i Runtime API korzystają z jednego silnika
 
 ## Jak dba o bezpieczeństwo
 
-Dwa przełączniki określają, ile Codewhale może zrobić sam. Gdy pole wpisywania jest puste, `Tab` zmienia tryb: **Plan** czyta i szuka, ale niczego nie zmienia, **Work** edytuje pliki i uruchamia polecenia, a **Operate** ma te same uprawnienia co Work i działa, dopóki cel nie zostanie zweryfikowany albo nie będzie potrzebować ciebie. `Shift+Tab` zmienia uprawnienie. **Ask**, domyślne, stosuje zmiany plików w twoim repozytorium bez pytania i pyta przed poleceniami powłoki, które nie tylko czytają. **Auto-Review** pozwala regułom i modelowi recenzującemu zatwierdzać rutynowe wywołania i odrzuca te wysokiego ryzyka; przełącz na Ask, aby zatwierdzić je samodzielnie. **Full Access** nigdy nie pyta i wyłącza piaskownicę Codewhale, choć reguły repozytorium i zarządzane zasady nadal obowiązują. Szczegóły są w [przewodniku dla v0.10.2](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md).
+Jedno pokrętło określa, ile Codewhale może zrobić sam. `Shift+Tab` przestawia je po kolei: **Ask → Accept Edits → Plan → Auto-Review → Full Access**. **Accept Edits**, domyślne, stosuje zmiany plików wewnątrz repozytorium git bez pytania i pyta przed poleceniami. **Ask** pyta przed każdą zmianą pliku i każdym poleceniem. **Plan** czyta i szuka, ale niczego nie zmienia. **Auto-Review** pozwala regułom i modelowi recenzującemu zatwierdzać rutynowe wywołania i odrzuca te wysokiego ryzyka; przełącz na Ask, aby zatwierdzić je samodzielnie. **Full Access** nigdy nie pyta i wyłącza piaskownicę Codewhale, choć reguły repozytorium i zarządzane zasady nadal obowiązują. `Tab` służy tylko do uzupełniania i nigdy nie zmienia trybu, a Operate wycofano. Szczegóły są w [przewodniku po trybach](../MODES.md).
 
-Nadchodzi w 0.10.3: `Shift+Tab` stanie się jednym pokrętłem przez Ask, Accept Edits, Plan, Auto-Review i Full Access, `Tab` przestanie zmieniać tryb, a Operate zostanie wycofany. Ask będzie pytać także przed każdą zmianą pliku, a nowe ustawienie domyślne, Accept Edits, będzie stosować zmiany wewnątrz repozytorium git i nadal pytać przed poleceniami. Opisuje to [aktualny przewodnik](../MODES.md).
-
-W Ask i Auto-Review polecenia działają w piaskownicy systemu operacyjnego, jeśli system ją ma: Seatbelt w macOS i bubblewrap w systemie Linux, gdy jest zainstalowany. Windows nie ma jeszcze piaskownicy systemowej, a Full Access wyłącza piaskownicę. W piaskownicy polecenia powłoki i sesje terminala nie mogą czytać magazynów poświadczeń, takich jak `~/.ssh`, `~/.aws` i pliki `.env`. `/preview-request` pokazuje następne żądanie z ukrytymi danymi, nie wysyłając go.
+W Ask, Accept Edits i Auto-Review polecenia działają w piaskownicy systemu operacyjnego, jeśli system ją ma: Seatbelt w macOS i bubblewrap w systemie Linux, gdy jest zainstalowany. Windows nie ma jeszcze piaskownicy systemowej, a Full Access wyłącza piaskownicę. W piaskownicy polecenia powłoki i sesje terminala nie mogą czytać magazynów poświadczeń, takich jak `~/.ssh`, `~/.aws` i pliki `.env`. `/preview-request` pokazuje następne żądanie z ukrytymi danymi, nie wysyłając go.
 
 Nie potrzebujesz konta, a klucze dodane przez `/provider` zostają na twoim komputerze. Z własnym kluczem API płacisz dostawcy bezpośrednio, a modele lokalne nie potrzebują klucza. Stopka i `/cost` pokazują koszt sesji, gdy cena jest znana; nieznana cena jest pokazywana jako nieznana, nigdy jako darmowa.
 

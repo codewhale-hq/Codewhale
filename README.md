@@ -139,40 +139,20 @@ The terminal app, `exec`, `web` and the Runtime API share one engine
 [VS Code extension](https://marketplace.visualstudio.com/items?itemName=HengQuWorld.brotherwhale-vscode)
 connects to it from the sidebar ([source](https://github.com/HengQuWorld/CodeWhale-VSCode)).
 
-<p align="center">
-  <a href="https://www.orcarouter.ai/redeem/1a6250545fdc4e0aaccb0a4470159e67" rel="sponsored">
-    <img src="web/public/codewhale-x-orcarouter.webp" alt="Codewhale × OrcaRouter: +30% DeepSeek V4.1 Flash usage" width="560">
-  </a>
-</p>
-
-<a href="https://www.orcarouter.ai/redeem/1a6250545fdc4e0aaccb0a4470159e67" rel="sponsored">Codewhale × OrcaRouter</a>
-gives 30% extra DeepSeek V4.1 Flash credit on each OrcaRouter top-up until
-November 21, 2026. This link is part of a referral campaign; Codewhale may
-earn a referral reward on top-ups made through it.
-
 ## How it stays safe
 
-Two switches say how much Codewhale may do on its own. `Tab`, when the input
-is empty, changes the mode: **Plan** reads and searches but changes nothing,
-**Work** edits files and runs commands, and **Operate** has the same access as
-Work and keeps going until the goal is verified or it needs you. `Shift+Tab`
-changes the permission. **Ask**, the default, applies file edits in your
-repository without asking and asks before shell commands that are not
-read-only.
-**Auto-Review** lets rules and a reviewer model approve routine calls and
-refuses high-risk ones; switch to Ask to approve those yourself. **Full
-Access** never asks and turns off Codewhale's sandbox, although repository
-rules and managed policy still apply. The
-[v0.10.2 guide](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md)
-has the details.
+One dial says how much Codewhale may do on its own. `Shift+Tab` steps it:
+**Ask → Accept Edits → Plan → Auto-Review → Full Access**. **Accept Edits**,
+the default, applies file edits inside the git repository without asking and
+asks before commands. **Ask** asks before every file edit and every command.
+**Plan** reads and searches but changes nothing. **Auto-Review** lets rules
+and a reviewer model approve routine calls and refuses high-risk ones; switch
+to Ask to approve those yourself. **Full Access** never asks and turns off
+Codewhale's sandbox, although repository rules and managed policy still apply.
+`Tab` only completes and never changes the mode, and Operate is retired. The
+[modes guide](docs/MODES.md) has the details.
 
-Coming in 0.10.3: `Shift+Tab` becomes one dial through Ask, Accept Edits,
-Plan, Auto-Review and Full Access, `Tab` no longer changes the mode, and
-Operate is retired. Ask will ask before every file edit too, and the new
-default, Accept Edits, will apply edits inside the git repository and still ask
-before commands. The [current guide](docs/MODES.md) describes it.
-
-In Ask and Auto-Review, commands run in an OS sandbox where the system has
+In Ask, Accept Edits and Auto-Review, commands run in an OS sandbox where the system has
 one: Seatbelt on macOS, and bubblewrap on Linux when it is installed. Windows
 has no OS sandbox yet, and Full Access turns the sandbox off. Inside the
 sandbox, shell commands and terminal sessions cannot read credential stores
