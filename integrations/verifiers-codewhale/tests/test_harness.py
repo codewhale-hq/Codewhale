@@ -308,6 +308,9 @@ class HarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("sha256sum", command)
         self.assertIn("flock", command)
         self.assertIn("util-linux", command)
+        for staged in ('"$install_dir/bin/$target.tmp.$$"', '"$install_dir/bin/.sha256.tmp"', '"$install_dir/bin/.version.tmp"'):
+            self.assertLess(command.index(f"sync {staged}"), command.index(f"mv -f {staged}"))
+        self.assertIn('sync "$install_dir/bin"\n', command)
 
 
 if __name__ == "__main__":

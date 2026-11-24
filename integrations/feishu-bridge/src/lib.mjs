@@ -173,8 +173,8 @@ export function validateBridgeConfig(env, options = {}) {
   }
 
   const maxReplyChars = Number(env.FEISHU_MAX_REPLY_CHARS || 3500);
-  if (!Number.isFinite(maxReplyChars) || maxReplyChars < 100) {
-    add(errors, "invalid_max_reply_chars", "FEISHU_MAX_REPLY_CHARS must be at least 100");
+  if (!Number.isFinite(maxReplyChars) || maxReplyChars < 100 || maxReplyChars > FEISHU_MAX_TEXT_CHARS) {
+    add(errors, "invalid_max_reply_chars", `FEISHU_MAX_REPLY_CHARS must be between 100 and ${FEISHU_MAX_TEXT_CHARS}`);
   }
   const turnTimeoutMs = Number(env.DEEPSEEK_TURN_TIMEOUT_MS || 900000);
   if (!Number.isFinite(turnTimeoutMs) || turnTimeoutMs < 1000) {
@@ -222,9 +222,11 @@ export function formatValidationReport(result) {
   return lines.join("\n");
 }
 
+export const FEISHU_MAX_TEXT_CHARS = 30000;
+
 export function helpText() {
   return [
-    "DeepSeek phone bridge commands:",
+    "Codewhale phone bridge commands:",
     "/help - show this help",
     "/status - runtime and workspace status",
     "/threads - recent runtime threads",
@@ -236,6 +238,6 @@ export function helpText() {
     "/allow <approval_id> [remember] - approve a pending tool call",
     "/deny <approval_id> - deny a pending tool call",
     "",
-    "Anything else is sent as a DeepSeek prompt."
+    "Anything else is sent as a Codewhale prompt."
   ].join("\n");
 }

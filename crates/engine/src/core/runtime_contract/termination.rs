@@ -76,15 +76,6 @@ pub fn classify_turn_termination(
     match status {
         TurnOutcomeStatus::Completed => RunTerminationReason::Resolved,
         TurnOutcomeStatus::Interrupted => RunTerminationReason::Canceled,
-        // A provider-declared incomplete response is the terminal cause even
-        // if an earlier tool in the same run needed approval. Historical
-        // approval evidence must not relabel model truncation.
-        TurnOutcomeStatus::Failed
-            if matches!(error_category, Some(ErrorCategory::InvalidInput)) =>
-        {
-            RunTerminationReason::ModelError
-        }
-        TurnOutcomeStatus::Failed if approval_required => RunTerminationReason::ApprovalRequired,
         TurnOutcomeStatus::Failed => match error_category {
             Some(ErrorCategory::Budget) => RunTerminationReason::BudgetExhausted,
             Some(ErrorCategory::Timeout) => RunTerminationReason::Timeout,
@@ -100,6 +91,7 @@ pub fn classify_turn_termination(
             Some(ErrorCategory::State | ErrorCategory::Internal) => {
                 RunTerminationReason::InfrastructureError
             }
+            None if approval_required => RunTerminationReason::ApprovalRequired,
             None if tool_error_seen => RunTerminationReason::ToolError,
             None => RunTerminationReason::Unresolved,
         },
@@ -174,6 +166,42 @@ mod tests {
             ),
             RunTerminationReason::ModelError,
             "historical approval evidence must not hide terminal truncation"
+        );
+    }
+
+    #[test]
+    fn typed_error_categories_precede_approval_required_fallback() {
+        use crate::core::events::TurnOutcomeStatus;
+        use codewhale_error_taxonomy::ErrorCategory;
+
+        for (category, expected) in [
+            (ErrorCategory::Budget, RunTerminationReason::BudgetExhausted),
+            (ErrorCategory::Timeout, RunTerminationReason::Timeout),
+            (ErrorCategory::Network, RunTerminationReason::ModelError),
+            (ErrorCategory::Tool, RunTerminationReason::ToolError),
+            (
+                ErrorCategory::State,
+                RunTerminationReason::InfrastructureError,
+            ),
+            (
+                ErrorCategory::Internal,
+                RunTerminationReason::InfrastructureError,
+            ),
+        ] {
+            assert_eq!(
+                classify_turn_termination(TurnOutcomeStatus::Failed, Some(category), false, true),
+                expected,
+                "typed category {category:?} must win over historical approval_required"
+            );
+        }
+
+        assert_eq!(
+            classify_turn_termination(TurnOutcomeStatus::Failed, None, false, true),
+            RunTerminationReason::ApprovalRequired
+        );
+        assert_eq!(
+            classify_turn_termination(TurnOutcomeStatus::Failed, None, true, true),
+            RunTerminationReason::ApprovalRequired
         );
     }
 }

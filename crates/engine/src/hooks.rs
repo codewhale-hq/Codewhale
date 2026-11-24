@@ -29,13 +29,12 @@ pub use config::{PROJECT_HOOKS_TEMPLATE, workspace_allows_project_hooks};
 pub use executor::HookCaller;
 pub use executor::{
     HOOK_CONTEXT_AGGREGATE_MAX_CHARS, HOOK_EXECUTION_RECEIPT_MAX_BYTES, HOOK_LABEL_MAX_CHARS,
-    generic_unavailable_detail, parse_tool_call_before_stdout, sanitize_hook_denial_reason,
-    sanitize_hook_label, sanitize_hook_line, sanitize_hook_text,
+    HOOK_TEXT_FIELD_MAX_CHARS, HOOK_UPDATED_INPUT_MAX_BYTES, generic_unavailable_detail,
+    parse_tool_call_before_stdout, sanitize_hook_denial_reason, sanitize_hook_label,
+    sanitize_hook_line, sanitize_hook_text,
 };
 #[cfg(any(test, feature = "test-support"))]
-pub use executor::{
-    HOOK_MESSAGE_SUBMIT_PAYLOAD_MAX_BYTES, HOOK_TEXT_FIELD_MAX_CHARS, message_submit_payload,
-};
+pub use executor::{HOOK_MESSAGE_SUBMIT_PAYLOAD_MAX_BYTES, message_submit_payload};
 pub use executor::{
     HookContext, HookExecutor, HookResult, MessageSubmitOutcome, ToolCallDecision,
     TurnEndPayloadInput, TurnEndTotals, turn_end_payload,
