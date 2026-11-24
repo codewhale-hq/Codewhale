@@ -874,3 +874,52 @@ fn checkpoint_commits_only_worker_paths_at_any_inventory_size() {
         );
     }
 }
+
+#[test]
+fn git_baseline_failure_marks_claimed_changes_verification_incomplete() {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    let tmp = tempdir().unwrap();
+    let mut output = tempfile::tempfile().unwrap();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_env_filter(tracing_subscriber::EnvFilter::new("warn"))
+        .with_writer(std::sync::Mutex::new(output.try_clone().unwrap()))
+        .finish();
+    let (mut manager, id) =
+        tracing::subscriber::with_default(subscriber, || worker(tmp.path(), true, &[], &["src"]));
+    output.seek(SeekFrom::Start(0)).unwrap();
+    let mut logs = String::new();
+    output.read_to_string(&mut logs).unwrap();
+    assert!(
+        logs.contains("WARN")
+            && logs.contains("subagent git delivery baseline unavailable")
+            && logs.contains("git rev-parse --show-toplevel"),
+        "{logs}"
+    );
+
+    let verification = complete(&mut manager, &id, "CHANGES: src/lib.rs");
+    assert_eq!(verification.status, "verification_incomplete");
+    assert!(
+        verification.summary.contains("src/lib.rs")
+            && verification
+                .summary
+                .contains("git rev-parse --show-toplevel"),
+        "{}",
+        verification.summary
+    );
+
+    let (mut manager_with_deliverable, id_with_deliverable) =
+        worker(tmp.path(), true, &["report.md"], &["."]);
+    fs::write(tmp.path().join("report.md"), "findings").unwrap();
+    let verification_with_deliverable = complete(
+        &mut manager_with_deliverable,
+        &id_with_deliverable,
+        "CHANGES: src/lib.rs",
+    );
+    assert_eq!(
+        verification_with_deliverable.status,
+        "verification_incomplete"
+    );
+}
