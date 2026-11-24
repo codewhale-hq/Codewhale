@@ -1948,6 +1948,11 @@ impl ToolSpec for McpToolAdapter {
         input: Value,
         context: &ToolContext,
     ) -> Result<RichToolResult, ToolError> {
+        crate::profile_constitution::admit_desktop_browser_call(
+            &self.name,
+            context.account_fence.as_deref(),
+        )
+        .await?;
         let mut pool = self.pool.lock().await;
         if let Some(plugins) = context.plugin_registry.as_ref() {
             pool.bind_caller_plugins(Arc::clone(plugins))
@@ -1955,11 +1960,6 @@ impl ToolSpec for McpToolAdapter {
         }
         pool.validate_native_caller(context.plugin_registry.as_deref())
             .map_err(|error| ToolError::not_available(error.to_string()))?;
-        crate::profile_constitution::admit_desktop_browser_call(
-            &self.name,
-            context.account_fence.as_deref(),
-        )
-        .await?;
         if context.child_host.is_some()
             && let Some(grant) = &self.delegated_read
         {

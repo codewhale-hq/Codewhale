@@ -966,4 +966,25 @@ mod tests {
             Some("MCP · 4 connecting")
         );
     }
+
+    #[test]
+    fn booting_snapshot_with_non_connecting_servers_reports_no_connecting_chip() {
+        let snap = snapshot(vec![
+            server("alpha", true, true, None),
+            server("beta", false, false, None),
+            server("gamma", true, false, Some("connection refused")),
+        ]);
+        let surface =
+            SessionBootSurface::from_parts(Some(&snap), true, &[], 3, PluginBootSummary::default());
+        assert_eq!(surface.phase, SessionBootPhase::Booting);
+        assert_eq!(surface.activity_notice(80), None);
+    }
+
+    #[test]
+    fn mcp_auth_required_state_label_uses_locale() {
+        let label = mcp_auth_required_state_label(Locale::ZhHans);
+        let expected = tr(Locale::ZhHans, MessageId::McpAuthRequiredState);
+        assert!(label.contains(expected.as_ref()), "{label}");
+        assert!(!label.contains("auth required"), "{label}");
+    }
 }

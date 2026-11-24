@@ -1351,7 +1351,7 @@ assert.match(
   "only the nightly may build an undated main; every other candidate keeps the dated-release gate",
 );
 for (const job of ["Change detection", "Lint", "Shared-process tests"]) {
-  assert.match(ci, new RegExp(`^    name: ${job.replace(/[()]/g, "\\$&")}\\n`, "m"), `ci.yml must still name the "${job}" job`);
+  assert.ok(ci.split("\n").includes(`    name: ${job}`), `ci.yml must still name the "${job}" job`);
   assert.ok(fullCiReceipt.includes(`"${job}"`), `require-full-ci-receipt.sh must check "${job}"`);
 }
 assert.match(ci, /^    name: Scoped test \(/m, "ci.yml must still name the Scoped test job");

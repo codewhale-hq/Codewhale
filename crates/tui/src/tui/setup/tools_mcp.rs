@@ -120,15 +120,51 @@ impl Default for SetupToolsMcpFacts {
     }
 }
 
+pub(super) struct ToolsMcpProbeInput {
+    pub(super) workspace: PathBuf,
+    mcp_config_path: PathBuf,
+    mcp_snapshot: Option<McpManagerSnapshot>,
+    pub(super) plugin_registry: std::sync::Arc<codewhale_plugins::PluginRegistry>,
+    skills_dir: PathBuf,
+    discovered_skills: usize,
+    hotbar: InventoryRow,
+    pub(super) config: Config,
+    pub(super) codewhale_home: PathBuf,
+}
+
+impl ToolsMcpProbeInput {
+    /// Snapshot in-memory `App`/`Config` fields with no filesystem IO so the
+    /// directory scans can run on Tokio's blocking pool.
+    pub(super) fn from_app_config(app: &App, config: &Config, codewhale_home: PathBuf) -> Self {
+        Self {
+            workspace: app.workspace.clone(),
+            mcp_config_path: app.mcp_config_path.clone(),
+            mcp_snapshot: app.mcp_snapshot.clone(),
+            plugin_registry: std::sync::Arc::clone(&app.plugin_registry),
+            skills_dir: app.skills_dir.clone(),
+            discovered_skills: app.cached_skills.len(),
+            hotbar: hotbar_source_inventory(app),
+            config: config.clone(),
+            codewhale_home,
+        }
+    }
+}
+
 impl SetupToolsMcpFacts {
+    #[cfg(test)]
     pub(super) fn from_app_config(app: &App, config: &Config, codewhale_home: &Path) -> Self {
-        let project_mcp_path = codewhale_engine::mcp::workspace_mcp_config_path(&app.workspace);
-        let mcp = mcp_inventory(app, &project_mcp_path);
-        let skills = skills_inventory(app);
-        let tools_dir = codewhale_home.join("tools");
+        let input = ToolsMcpProbeInput::from_app_config(app, config, codewhale_home.to_path_buf());
+        Self::from_probe_input(&input)
+    }
+
+    pub(super) fn from_probe_input(input: &ToolsMcpProbeInput) -> Self {
+        let project_mcp_path = codewhale_engine::mcp::workspace_mcp_config_path(&input.workspace);
+        let mcp = mcp_inventory(input, &project_mcp_path);
+        let skills = skills_inventory(&input.skills_dir, input.discovered_skills);
+        let tools_dir = input.codewhale_home.join("tools");
         let tools = tools_dir_inventory(&tools_dir);
-        let plugins = plugins_inventory(app, config, codewhale_home);
-        let hotbar = hotbar_source_inventory(app);
+        let plugins = plugins_inventory(input);
+        let hotbar = &input.hotbar;
 
         let overall = mcp
             .status
@@ -141,16 +177,16 @@ impl SetupToolsMcpFacts {
             || matches!(tools.status, InventoryStatus::NeedsConfig)
             || matches!(plugins.status, InventoryStatus::NeedsConfig);
 
-        let mcp_path_display = display_path(&app.mcp_config_path);
-        let skills_path_display = display_path(&app.skills_dir);
-        let plugins_path_display = display_path(&plugins_dir_for(app, config, codewhale_home));
+        let mcp_path_display = display_path(&input.mcp_config_path);
+        let skills_path_display = display_path(&input.skills_dir);
+        let plugins_path_display = display_path(&plugins_dir_for(&input.codewhale_home));
 
         let servers_result = format!("{} — {}", mcp.status_label(), mcp.detail);
         let skills_result = format!("{} — {}", skills.status.as_str(), skills.detail);
         let tools_result = format!("{} — {}", tools.status.as_str(), tools.detail);
         let plugins_result = format!("{} — {}", plugins.status.as_str(), plugins.detail);
         let hotbar_result = format!("{} — {}", hotbar.status.as_str(), hotbar.detail);
-        let dsh_result = dsh_integration_result(config, &app.workspace);
+        let dsh_result = dsh_integration_result(&input.config, &input.workspace);
 
         let result = format!(
             "mcp={}, skills={}, tools={}, plugins={}, hotbar_sources={}, overall={}, mode=read_only_safe_probe",
@@ -217,22 +253,22 @@ pub(super) fn on_ramp_text(locale: Locale, facts: &SetupToolsMcpFacts) -> String
         .replace("{plugins_path}", &facts.plugins_path_display)
 }
 
-fn mcp_inventory(app: &App, project_mcp_path: &Path) -> McpInventoryRow {
-    if let Some(snapshot) = app.mcp_snapshot.as_ref() {
-        return mcp_snapshot_inventory(snapshot, &app.mcp_config_path, project_mcp_path);
+fn mcp_inventory(input: &ToolsMcpProbeInput, project_mcp_path: &Path) -> McpInventoryRow {
+    if let Some(snapshot) = input.mcp_snapshot.as_ref() {
+        return mcp_snapshot_inventory(snapshot, &input.mcp_config_path, project_mcp_path);
     }
 
     match codewhale_engine::mcp::load_config_with_workspace_and_plugins(
-        &app.mcp_config_path,
-        &app.workspace,
-        app.plugin_registry.as_ref(),
+        &input.mcp_config_path,
+        &input.workspace,
+        input.plugin_registry.as_ref(),
     ) {
-        Ok(cfg) => mcp_config_inventory(&app.mcp_config_path, project_mcp_path, &cfg),
+        Ok(cfg) => mcp_config_inventory(&input.mcp_config_path, project_mcp_path, &cfg),
         Err(_) => McpInventoryRow {
             status: InventoryStatus::NeedsConfig,
             detail: format!(
                 "config unreadable at {} (and project {}); open /mcp or run `codewhale doctor` — secrets not shown",
-                display_path(&app.mcp_config_path),
+                display_path(&input.mcp_config_path),
                 display_path(project_mcp_path)
             ),
             scope: McpInventoryScope::Configuration,
@@ -450,11 +486,10 @@ fn classify_config_server(server: &McpServerConfig) -> InventoryStatus {
     InventoryStatus::Healthy
 }
 
-fn skills_inventory(app: &App) -> InventoryRow {
-    let path = display_path(&app.skills_dir);
-    let discovered = app.cached_skills.len();
-    let dir_exists = app.skills_dir.exists();
-    let dir_is_dir = app.skills_dir.is_dir();
+fn skills_inventory(skills_dir: &Path, discovered: usize) -> InventoryRow {
+    let path = display_path(skills_dir);
+    let dir_exists = skills_dir.exists();
+    let dir_is_dir = skills_dir.is_dir();
 
     if !dir_exists {
         return InventoryRow {
@@ -472,7 +507,7 @@ fn skills_inventory(app: &App) -> InventoryRow {
     }
 
     // Count on-disk SKILL.md entries without executing anything.
-    let on_disk = count_skill_dirs(&app.skills_dir);
+    let on_disk = count_skill_dirs(skills_dir);
     if discovered == 0 && on_disk == 0 {
         return InventoryRow {
             status: InventoryStatus::Off,
@@ -522,14 +557,14 @@ fn tools_dir_inventory(tools_dir: &Path) -> InventoryRow {
     }
 }
 
-fn plugins_inventory(app: &App, config: &Config, codewhale_home: &Path) -> InventoryRow {
-    let plugins_dir = plugins_dir_for(app, config, codewhale_home);
+fn plugins_inventory(input: &ToolsMcpProbeInput) -> InventoryRow {
+    let plugins_dir = plugins_dir_for(&input.codewhale_home);
     let path = display_path(&plugins_dir);
 
     // Manifest-based plugins (plugin.toml) are owned by this App's immutable,
     // workspace-scoped registry snapshot. Never consult process-global state:
     // concurrent sessions may be rooted in different workspaces.
-    let list = app.plugin_registry.list();
+    let list = input.plugin_registry.list();
     let manifest_total = list.len();
     let manifest_active = list.iter().filter(|plugin| plugin.active()).count();
     let active_commands = list
@@ -560,7 +595,8 @@ fn plugins_inventory(app: &App, config: &Config, codewhale_home: &Path) -> Inven
 
     // Script plugins under [tools].plugin_dir (distinct from slash commands;
     // Hotbar Plugin source remains deferred/exploratory).
-    let script_dir = config
+    let script_dir = input
+        .config
         .tools
         .as_ref()
         .and_then(|tools| tools.plugin_dir.as_ref())
@@ -604,7 +640,7 @@ fn plugins_inventory(app: &App, config: &Config, codewhale_home: &Path) -> Inven
     }
 }
 
-fn plugins_dir_for(_app: &App, _config: &Config, codewhale_home: &Path) -> PathBuf {
+fn plugins_dir_for(codewhale_home: &Path) -> PathBuf {
     codewhale_home.join("plugins")
 }
 
@@ -1105,5 +1141,45 @@ mod tests {
         assert!(!facts.result.contains("sk-result-secret"));
         assert!(facts.result.contains("mcp="));
         assert!(facts.result.contains("mode=read_only_safe_probe"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn tools_mcp_probe_runs_on_blocking_pool_off_runtime_thread() {
+        let tmp = TempDir::new().expect("tempdir");
+        let home = tmp.path().join("home");
+        let tools_dir = home.join("tools");
+        std::fs::create_dir_all(&tools_dir).expect("tools dir");
+        std::fs::write(tools_dir.join("helper.sh"), "#!/bin/sh\necho ok\n").expect("tool file");
+
+        let skills_dir = tmp.path().join("skills");
+        std::fs::create_dir_all(skills_dir.join("alpha")).expect("skill dir");
+        std::fs::write(
+            skills_dir.join("alpha").join("SKILL.md"),
+            "---\nname: alpha\n---\nbody\n",
+        )
+        .expect("skill file");
+
+        let app = test_app(tmp.path(), None, tmp.path().join("mcp.json"), skills_dir);
+        let config = Config::default();
+        let sync_facts = SetupToolsMcpFacts::from_app_config(&app, &config, &home);
+
+        let runtime_thread = std::thread::current().id();
+        let input = ToolsMcpProbeInput::from_app_config(&app, &config, home);
+        let (probe_thread, async_facts) = tokio::task::spawn_blocking(move || {
+            (
+                std::thread::current().id(),
+                SetupToolsMcpFacts::from_probe_input(&input),
+            )
+        })
+        .await
+        .expect("blocking probe task");
+
+        assert_ne!(
+            probe_thread, runtime_thread,
+            "directory scans must execute on the blocking pool, not the Tokio worker thread"
+        );
+        assert_eq!(async_facts, sync_facts);
+        assert!(async_facts.tools_result.contains("1 entries"));
+        assert!(async_facts.skills_result.contains("1 on disk"));
     }
 }

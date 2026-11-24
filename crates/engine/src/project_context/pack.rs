@@ -477,4 +477,23 @@ mod tests {
         );
         assert_eq!(normalize_pack_relative_path("../secret.txt"), None);
     }
+
+    #[test]
+    fn project_context_pack_bounds_oversized_multibyte_readme() {
+        let tmp = tempdir().expect("tempdir");
+        // Exceed the 16 KiB + 4 KiB bounded read window with 3-byte UTF-8 chars
+        // so the window splits a character, then append invalid UTF-8 beyond the
+        // window to prove the reader stops before the tail.
+        let mut readme_bytes = "中".repeat(7_000).into_bytes();
+        readme_bytes.extend_from_slice(&[0xff, 0xfe, 0xff, 0xfe]);
+        fs::write(tmp.path().join("README.md"), &readme_bytes).expect("write oversized readme");
+
+        let pack = build_project_context_pack(tmp.path()).expect("pack");
+        let readme = pack
+            .readme
+            .expect("bounded read should ignore bytes past cap");
+        assert_eq!(readme.path, "README.md");
+        assert_eq!(readme.excerpt.chars().count(), PACK_README_MAX_CHARS);
+        assert!(readme.excerpt.chars().all(|ch| ch == '中'));
+    }
 }

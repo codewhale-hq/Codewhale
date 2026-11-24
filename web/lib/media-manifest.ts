@@ -31,18 +31,18 @@ import type { LocalizedText } from "./content/vocabulary";
 /**
  * The README terminal image: the Result frame of the released-capture set
  * (lib/terminal-captures/released, cols100/05-task-result), a real session on
- * deepseek-flash, as the terminal window drew it. The site renders the
- * same frames as live text; the README cannot run the site's renderer.
+ * local Ollama qwen3:4b, as the truecolor terminal window drew it. The site
+ * renders the same frames as live text; the README cannot run the site's renderer.
  */
 export const TERMINAL_SCREENSHOT = {
   frame: "cols100/05-task-result",
   src: "/codewhale-tui-latest.png",
-  width: 1856,
-  height: 1174,
-  version: "0.10.3",
-  model: "deepseek-flash",
-  sourceCommit: "b6011be36d7fe6efa209c8691d99c30d1cfa1c5a",
-  sha256: "78db4db2802d0be7188ac2f94eed2537390dff7c39ab31d986921b338f6f783b",
+  width: 1828,
+  height: 1216,
+  version: "0.10.4",
+  model: "qwen3:4b",
+  sourceCommit: "48669ad108fafba60fc6c2666c4c5f6593e53acf",
+  sha256: "175c301c195fda053ba272b432b8f5980250f21d9d80a71a62b0f38c78fa6ad1",
 } as const;
 
 /** Published-asset budgets; see the module contract for what tests inspect. */

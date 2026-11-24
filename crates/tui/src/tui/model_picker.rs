@@ -1043,7 +1043,10 @@ impl ModelPickerView {
         // The ordinary setup wizard switches the session after auth. A
         // Fleet edit must keep that session route intact.
         if self.purpose != ModelPickerPurpose::Session {
-            return ViewAction::Emit(ViewEvent::StatusMessage { message });
+            return ViewAction::Emit(ViewEvent::StatusToast {
+                message,
+                level: crate::tui::app::StatusToastLevel::Error,
+            });
         }
         // Prefer opening provider setup so the user can remediate in one step.
         if let Some(identity) = row
@@ -1057,7 +1060,10 @@ impl ModelPickerView {
                 reason: message,
             });
         }
-        ViewAction::Emit(ViewEvent::StatusMessage { message })
+        ViewAction::Emit(ViewEvent::StatusToast {
+            message,
+            level: crate::tui::app::StatusToastLevel::Error,
+        })
     }
 
     /// Exact route identity of the highlighted row, when it names one.
@@ -5556,7 +5562,10 @@ mod tests {
         *picker.projection.get_mut() = None;
         assert!(matches!(
             picker.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-            ViewAction::Emit(ViewEvent::StatusMessage { .. })
+            ViewAction::Emit(ViewEvent::StatusToast {
+                level: crate::tui::app::StatusToastLevel::Error,
+                ..
+            })
         ));
     }
 
@@ -5571,9 +5580,13 @@ mod tests {
         };
         picker.model_rows[0].selectable = false;
         *picker.projection.get_mut() = None;
-        assert!(
-            matches!(picker.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), ViewAction::Emit(ViewEvent::StatusMessage { message }) if message.contains("/provider"))
-        );
+        assert!(matches!(
+            picker.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            ViewAction::Emit(ViewEvent::StatusToast {
+                message,
+                level: crate::tui::app::StatusToastLevel::Error,
+            }) if message.contains("/provider")
+        ));
     }
 
     #[test]
@@ -6741,9 +6754,11 @@ model = "deepseek/deepseek-v4-flash"
         picker.model_rows = vec![row];
         assert!(matches!(
             picker.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-            ViewAction::Emit(ViewEvent::StatusMessage { message })
-                if message.contains("other_code/model")
-                    && message.contains("Open /provider and select other_code")
+            ViewAction::Emit(ViewEvent::StatusToast {
+                message,
+                level: crate::tui::app::StatusToastLevel::Error,
+            }) if message.contains("other_code/model")
+                && message.contains("Open /provider and select other_code")
         ));
 
         // Built-in providers retain their existing guided-auth handoff.

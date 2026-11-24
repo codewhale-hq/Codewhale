@@ -1324,7 +1324,7 @@ fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<S
     }
     let current_width: usize = spans
         .iter()
-        .map(|span| unicode_width::UnicodeWidthStr::width(span.content.as_ref()))
+        .map(|span| codewhale_tui_kit::ui_text::text_display_width(span.content.as_ref()))
         .sum();
     if current_width <= max_width {
         return spans;

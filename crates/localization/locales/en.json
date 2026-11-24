@@ -2856,5 +2856,14 @@
   "OnboardingMarkFailed": "Could not save onboarding progress: {error}",
   "FeatureIntroFlagSaveFailed": "Could not save the feature tip setting: {error}",
   "QueueFullNotice": "The follow-up queue is full ({max} messages); your message is back in the composer.",
-  "ConfigLookupFailed": "Could not read `{key}`: config failed to load ({error})"
+  "ConfigLookupFailed": "Could not read `{key}`: config failed to load ({error})",
+  "CtxMenuNoSelectionToOpen": "No selection to open",
+  "CtxMenuSelectionCleared": "Selection cleared",
+  "CtxMenuNoSelectionToClear": "No selection to clear",
+  "CtxMenuNoDetailsForLine": "No details available for that line",
+  "CtxMenuExtensionUnlisted": "That extension is no longer listed",
+  "CtxMenuCellHidden": "Cell hidden",
+  "CtxMenuCellShown": "Cell shown",
+  "CtxMenuHiddenCellsRestored": "{count} hidden cell(s) restored",
+  "CtxMenuNoSelectionToCopy": "No selection to copy"
 }

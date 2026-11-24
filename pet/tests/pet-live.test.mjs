@@ -15,6 +15,9 @@ test('live tails require advancement after attachment, replacement, invalid inpu
   assert.equal(live.readTail(line(50)), undefined, 'Existing bytes establish a baseline');
   assert.equal(live.readTail(line(50)), undefined);
   assert.deepEqual(live.readTail(line(51)), packet(51));
+  assert.equal(live.readTail(line(5)), undefined, 'Non-zero stale regression is ignored without lowering baseline');
+  assert.equal(live.readTail(line(6)), undefined, 'Subsequent stale packet below high-water mark stays ignored');
+  assert.deepEqual(live.readTail(line(52)), packet(52), 'Advancement past high-water mark still succeeds');
   assert.equal(live.readTail(line(0)), undefined, 'An in-place producer restart is a new baseline');
   assert.deepEqual(live.readTail(line(1)), packet(1));
   assert.equal(live.readTail(line(2).trimEnd()), undefined, 'Wait for a complete append');
