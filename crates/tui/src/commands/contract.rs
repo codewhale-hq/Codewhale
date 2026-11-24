@@ -3288,7 +3288,6 @@ fn discover_visible(
 fn portable_skill_entry(
     skill: &codewhale_skills::Skill,
     locale: codewhale_localization::Locale,
-    skills_config: &codewhale_runtime::config::SkillsConfig,
 ) -> SkillEntry {
     let source = match &skill.source {
         codewhale_skills::SkillSource::Native => SkillSourceKind::Native,
@@ -3439,7 +3438,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
             let entries = registry
                 .list()
                 .iter()
-                .map(|skill| portable_skill_entry(skill, locale, &skills_config))
+                .map(|skill| portable_skill_entry(skill, locale))
                 .collect::<Vec<_>>();
             Ok((
                 bundled_status,
