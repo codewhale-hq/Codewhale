@@ -252,8 +252,11 @@ if [[ "${compare_line}" =~ compare/(v[0-9]+\.[0-9]+\.[0-9]+)\.\.\.${current_tag}
   previous_tag="${BASH_REMATCH[1]}"
 fi
 if [[ -n "${previous_tag}" ]]; then
+  if [[ "$(git rev-parse --is-shallow-repository 2>/dev/null || echo false)" == "true" ]]; then
+    git fetch --quiet --unshallow origin || true
+  fi
   if ! git rev-parse -q --verify "refs/tags/${previous_tag}" >/dev/null; then
-    git fetch --quiet --depth=1 origin "refs/tags/${previous_tag}:refs/tags/${previous_tag}" || true
+    git fetch --quiet origin "refs/tags/${previous_tag}:refs/tags/${previous_tag}" || true
   fi
   if git rev-parse -q --verify "refs/tags/${previous_tag}" >/dev/null; then
     if ! ./scripts/release/check-feature-release-notes.sh "${previous_tag}" HEAD; then

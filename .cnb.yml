@@ -29,6 +29,8 @@
     set -eu
     export CARGO_BUILD_JOBS=1
     export CARGO_PROFILE_TEST_DEBUG=0
+    git fetch --unshallow || true
+    git fetch --tags --force || true
     ./scripts/release/check-versions.sh
     ./scripts/release/check-ohos-deps.sh
     cargo fmt --all -- --check
@@ -176,6 +178,8 @@ $:
             apt-get install -y git musl-tools nodejs pkg-config
             rustup target add x86_64-unknown-linux-musl
 
+            git fetch --unshallow || true
+            git fetch --tags --force || true
             ./scripts/release/check-versions.sh --require-dated-release
             ./scripts/release/check-ohos-deps.sh
             checkout_sha="$(git rev-parse 'HEAD^{commit}')"
