@@ -129,12 +129,48 @@ pub fn render_bundle(inputs: &BundleInputs) -> Vec<RenderedFile> {
 /// Render the bundle to `out_dir`, creating it if needed. Returns the absolute
 /// paths written, in render order.
 pub fn write_bundle(inputs: &BundleInputs, out_dir: &Path) -> Result<Vec<PathBuf>> {
-    std::fs::create_dir_all(out_dir)
+    use std::io::Write as _;
+
+    let mut dir_builder = std::fs::DirBuilder::new();
+    dir_builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        dir_builder.mode(0o700);
+    }
+    dir_builder
+        .create(out_dir)
         .with_context(|| format!("creating bundle dir {}", out_dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(out_dir, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("restricting permissions on {}", out_dir.display()))?;
+    }
+
     let mut written = Vec::new();
     for file in render_bundle(inputs) {
         let path = out_dir.join(&file.relative_path);
-        std::fs::write(&path, file.contents)
+        let is_secret_env = file.relative_path.ends_with(".env");
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        if is_secret_env {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut handle = options
+            .open(&path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        #[cfg(unix)]
+        if is_secret_env {
+            use std::os::unix::fs::PermissionsExt as _;
+            handle
+                .set_permissions(std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("restricting permissions on {}", path.display()))?;
+        }
+        handle
+            .write_all(file.contents.as_bytes())
             .with_context(|| format!("writing {}", path.display()))?;
         written.push(path);
     }
@@ -282,7 +318,7 @@ WorkingDirectory={workspace}\n\
 # Legacy /etc/deepseek is loaded first for old installs; /etc/codewhale wins.\n\
 EnvironmentFile=-/etc/deepseek/runtime.env\n\
 EnvironmentFile=-/etc/codewhale/runtime.env\n\
-ExecStart=/bin/sh -lc 'exec /home/codewhale/.cargo/bin/codewhale serve --http --host 127.0.0.1 --port \"${{CODEWHALE_RUNTIME_PORT:-${{DEEPSEEK_RUNTIME_PORT:-{port}}}}}\" --workers \"${{CODEWHALE_RUNTIME_WORKERS:-${{DEEPSEEK_RUNTIME_WORKERS:-{workers}}}}}\" --auth-token \"${{CODEWHALE_RUNTIME_TOKEN:-${{DEEPSEEK_RUNTIME_TOKEN}}}}\"'\n\
+ExecStart=/bin/sh -lc 'exec /home/codewhale/.cargo/bin/codewhale serve --http --host 127.0.0.1 --port \"${{CODEWHALE_RUNTIME_PORT:-${{DEEPSEEK_RUNTIME_PORT:-{port}}}}}\" --workers \"${{CODEWHALE_RUNTIME_WORKERS:-${{DEEPSEEK_RUNTIME_WORKERS:-{workers}}}}}\"'\n\
 Restart=on-failure\n\
 RestartSec=5\n\
 NoNewPrivileges=true\n\
@@ -372,11 +408,14 @@ fn render_runbook(i: &BundleInputs) -> String {
             .join(" and "),
         i.bridge.slug
     ));
+    out.push_str(
+        "- A random `CODEWHALE_RUNTIME_TOKEN` was generated and written to both `runtime.env`\n",
+    );
     out.push_str(&format!(
-        "- A random `CODEWHALE_RUNTIME_TOKEN` was generated (`{}`). It is identical in\n",
-        i.runtime_token
+        "  and `{}.env` (mode `0600`). Do not copy it into docs or command-line arguments;\n",
+        i.bridge.slug
     ));
-    out.push_str("  both files; rotate it any time, keeping both files in sync.\n");
+    out.push_str("  rotate it any time, keeping both env files in sync.\n");
     out.push_str(&format!(
         "- Reference env template (every supported key, with comments): `{}`.\n\n",
         i.bridge.env_template
@@ -598,6 +637,10 @@ mod tests {
         assert!(runbook.contains("not yet implemented"));
         assert!(runbook.contains("doctl"));
         assert!(runbook.to_lowercase().contains("first pairing"));
+        assert!(
+            !runbook.contains(&inputs.runtime_token),
+            "RUNBOOK.md must never embed the raw runtime token"
+        );
     }
 
     #[test]
@@ -633,6 +676,10 @@ mod tests {
                         .unwrap()
                         .contents;
                     assert!(!runbook.is_empty());
+                    assert!(
+                        !runbook.contains(&inputs.runtime_token),
+                        "RUNBOOK.md must not contain the raw runtime token"
+                    );
                 }
             }
         }
@@ -648,7 +695,9 @@ mod tests {
             .unwrap()
             .contents;
         assert!(unit.contains("/etc/codewhale/runtime.env"));
-        assert!(unit.contains("CODEWHALE_RUNTIME_TOKEN"));
+        assert!(!unit.contains("--auth-token"));
+        assert!(!unit.contains("CODEWHALE_RUNTIME_TOKEN"));
+        assert!(!unit.contains(&inputs.runtime_token));
         // Legacy path still loaded first.
         assert!(unit.contains("/etc/deepseek/runtime.env"));
 
@@ -658,5 +707,32 @@ mod tests {
             .unwrap()
             .contents;
         assert!(bridge_unit.contains("/etc/codewhale/feishu-bridge.env"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_bundle_sets_restrictive_permissions_and_keeps_token_out_of_runbook() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let out_dir = tmp.path().join("bundle");
+        let inputs = sample_inputs(&LIGHTHOUSE, &TELEGRAM, "deepseek");
+        write_bundle(&inputs, &out_dir).unwrap();
+
+        let dir_mode = std::fs::metadata(&out_dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        for env_name in ["runtime.env", "telegram.env"] {
+            let mode = std::fs::metadata(out_dir.join(env_name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "{env_name} must be 0600");
+        }
+        let runbook = std::fs::read_to_string(out_dir.join("RUNBOOK.md")).unwrap();
+        assert!(!runbook.contains(&inputs.runtime_token));
+        let unit = std::fs::read_to_string(out_dir.join("codewhale-runtime.service")).unwrap();
+        assert!(!unit.contains("--auth-token"));
+        assert!(!unit.contains(&inputs.runtime_token));
     }
 }

@@ -82,6 +82,33 @@ pub(crate) fn open_private_lock_file_sync(outbox_path: &Path) -> Result<std::fs:
         .with_context(|| format!("failed to open lock file {}", lock_path.display()))
 }
 
+fn is_loopback_host(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(host)
+        .trim_end_matches('.');
+    bare.eq_ignore_ascii_case("localhost")
+        || bare
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+fn validate_webhook_url(url: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(url).context("webhook URL is not a valid URL")?;
+    match parsed.scheme() {
+        "https" => Ok(()),
+        "http" if is_loopback_host(&parsed) => Ok(()),
+        "http" => anyhow::bail!(
+            "refusing cleartext http:// webhook URL for non-loopback host; use https://"
+        ),
+        scheme => anyhow::bail!("unsupported webhook URL scheme '{scheme}'; use https://"),
+    }
+}
+
 /// Header carrying the stable per-event idempotency key across webhook retries.
 pub const WEBHOOK_IDEMPOTENCY_KEY_HEADER: &str = "Idempotency-Key";
 
@@ -104,12 +131,15 @@ impl WebhookHookSink {
             url,
             bearer_token,
             client: codewhale_release::platform_http_client_builder()
+                .redirect(reqwest::redirect::Policy::none())
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
                 .unwrap_or_else(|_| {
-                    codewhale_release::platform_http_client_builder()
+                    codewhale_release::tls::reqwest_client_builder()
+                        .redirect(reqwest::redirect::Policy::none())
+                        .timeout(std::time::Duration::from_secs(10))
                         .build()
-                        .unwrap_or_else(|_| codewhale_release::tls::reqwest_client())
+                        .expect("non-redirecting webhook HTTP client")
                 }),
         }
     }
@@ -123,6 +153,7 @@ impl WebhookHookSink {
         payload: serde_json::Value,
         idempotency_key: &str,
     ) -> Result<()> {
+        validate_webhook_url(&self.url)?;
         let mut retries = 0usize;
         loop {
             let mut request = self
@@ -202,5 +233,30 @@ mod tests {
         let sink =
             WebhookHookSink::new_with_token("https://example.invalid/webhook".to_string(), None);
         let _ = sink;
+    }
+
+    #[test]
+    fn validate_webhook_url_enforces_https_except_loopback() {
+        assert!(validate_webhook_url("https://collector.example.com/hook").is_ok());
+        assert!(validate_webhook_url("http://127.0.0.1:8080/hook").is_ok());
+        assert!(validate_webhook_url("http://[::1]:8080/hook").is_ok());
+        assert!(validate_webhook_url("http://localhost:8080/hook").is_ok());
+        assert!(validate_webhook_url("http://collector.internal:8080/hook").is_err());
+        assert!(validate_webhook_url("http://192.168.1.10:8080/hook").is_err());
+        assert!(validate_webhook_url("ftp://collector.example.com/hook").is_err());
+        assert!(validate_webhook_url("not-a-url").is_err());
+    }
+
+    #[tokio::test]
+    async fn webhook_rejects_cleartext_non_loopback_http_with_bearer_token() {
+        let sink = WebhookHookSink::new_with_token(
+            "http://collector.internal:8080/hook".to_string(),
+            Some("secret-token".to_string()),
+        );
+        let err = sink
+            .post_payload(serde_json::json!({"event": "test"}), "test-idem-key")
+            .await
+            .expect_err("cleartext non-loopback http webhook must be rejected");
+        assert!(err.to_string().contains("https://"), "{err}");
     }
 }

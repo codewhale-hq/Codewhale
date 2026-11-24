@@ -382,33 +382,36 @@ fn detect_js_frameworks(deps: &[&str]) -> Vec<String> {
     found
 }
 
-/// Strip userinfo (username:password or username) from a URL to avoid leaking
-/// embedded credentials into the LLM prompt.
+/// Strip embedded credentials, query strings, and fragments from a git remote
+/// URL to avoid leaking secrets into the LLM prompt or session transcript.
 fn strip_url_credentials(url: &str) -> String {
-    // Handle SSH-style URLs: git@host:org/repo.git — no embedded password.
-    if url.contains('@') && !url.contains("://") {
-        return url.to_string();
-    }
-    // HTTP(S) remotes: strip only authority userinfo. `@` in a path, query,
-    // or fragment is repository data, not credentials. SSH remotes such as
-    // `git@host:org/repo.git` and `ssh://git@host/org/repo.git` keep their
-    // user component because it is protocol syntax, not an embedded token.
-    if let Some(scheme_end) = url.find("://") {
-        let scheme_name = url[..scheme_end].to_ascii_lowercase();
-        if scheme_name != "http" && scheme_name != "https" {
-            return url.to_string();
+    let without_query_or_fragment = url.split(['?', '#']).next().unwrap_or(url);
+    // Handle SCP-style SSH remotes: git@host:org/repo.git.
+    if without_query_or_fragment.contains('@') && !without_query_or_fragment.contains("://") {
+        if let Some((user_part, host_and_path)) = without_query_or_fragment.split_once('@')
+            && user_part.contains(':')
+        {
+            return host_and_path.to_string();
         }
-        let scheme = &url[..scheme_end + 3];
-        let after_scheme = &url[scheme_end + 3..];
-        let authority_end = after_scheme
-            .find(['/', '?', '#'])
-            .unwrap_or(after_scheme.len());
-        let (authority, suffix) = after_scheme.split_at(authority_end);
+        return without_query_or_fragment.to_string();
+    }
+    if let Some(scheme_end) = without_query_or_fragment.find("://") {
+        let scheme_name = without_query_or_fragment[..scheme_end].to_ascii_lowercase();
+        let scheme = &without_query_or_fragment[..scheme_end + 3];
+        let after_scheme = &without_query_or_fragment[scheme_end + 3..];
+        let authority_end = after_scheme.find('/').unwrap_or(after_scheme.len());
+        let (authority, path) = after_scheme.split_at(authority_end);
         if let Some(at_pos) = authority.rfind('@') {
-            return format!("{scheme}{}{suffix}", &authority[at_pos + 1..]);
+            let userinfo = &authority[..at_pos];
+            let host = &authority[at_pos + 1..];
+            if scheme_name == "ssh" && !userinfo.contains(':') {
+                return format!("{scheme}{authority}{path}");
+            }
+            return format!("{scheme}{host}{path}");
         }
+        return format!("{scheme}{authority}{path}");
     }
-    url.to_string()
+    without_query_or_fragment.to_string()
 }
 
 /// Find the enclosing git repository root. Works for nested workspaces and
@@ -1094,7 +1097,7 @@ mod tests {
         );
         assert_eq!(
             strip_url_credentials("https://github.com/org/repo.git?ref=user@example.com"),
-            "https://github.com/org/repo.git?ref=user@example.com"
+            "https://github.com/org/repo.git"
         );
         assert_eq!(
             strip_url_credentials("git@github.com:org/repo.git"),
@@ -1103,6 +1106,32 @@ mod tests {
         assert_eq!(
             strip_url_credentials("ssh://git@github.com/org/repo.git"),
             "ssh://git@github.com/org/repo.git"
+        );
+    }
+
+    #[test]
+    fn strip_url_credentials_strips_query_tokens_fragments_and_ssh_passwords() {
+        assert_eq!(
+            strip_url_credentials(
+                "https://user:pass@github.com/org/repo.git?access_token=tok_12345#frag"
+            ),
+            "https://github.com/org/repo.git"
+        );
+        assert_eq!(
+            strip_url_credentials("https://github.com/org/repo.git?access_token=tok_12345"),
+            "https://github.com/org/repo.git"
+        );
+        assert_eq!(
+            strip_url_credentials("ssh://user:pass@host/org/repo.git?token=x#section"),
+            "ssh://host/org/repo.git"
+        );
+        assert_eq!(
+            strip_url_credentials("ssh://git@host/org/repo.git?token=x"),
+            "ssh://git@host/org/repo.git"
+        );
+        assert_eq!(
+            strip_url_credentials("https://alice:pass%zz@github.com/org/repo.git?token=secret"),
+            "https://github.com/org/repo.git"
         );
     }
 

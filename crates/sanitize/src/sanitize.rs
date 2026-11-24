@@ -229,10 +229,11 @@ fn strip_ansi_impl(s: &str, out: &mut impl FnMut(&str), keep_sgr: bool) {
 /// Mask credentials in a URL so it can appear in output or a report.
 ///
 /// Userinfo is replaced with `***` and query values under sensitive keys are
-/// masked. A URL that does not parse is returned unchanged.
+/// masked. Malformed URL-shaped strings fall back to a deterministic scrubber
+/// so invalid percent-encoding or syntax cannot bypass redaction.
 pub fn redact_url_for_display(url: &str) -> String {
     let Ok(mut parsed) = url::Url::parse(url) else {
-        return url.to_string();
+        return redact_malformed_url_for_display(url);
     };
     if !parsed.username().is_empty() || parsed.password().is_some() {
         let _ = parsed.set_username("***");
@@ -259,6 +260,76 @@ pub fn redact_url_for_display(url: &str) -> String {
     }
     drop(query);
     parsed.to_string()
+}
+
+fn redact_malformed_url_for_display(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let scheme = &url[..scheme_end + 3];
+    let after_scheme = &url[scheme_end + 3..];
+    let authority_end = after_scheme
+        .find(['/', '?', '#'])
+        .unwrap_or(after_scheme.len());
+    let (authority, suffix) = after_scheme.split_at(authority_end);
+    let masked_authority = match authority.rfind('@') {
+        Some(at_pos) => format!("***:***@{}", &authority[at_pos + 1..]),
+        None => authority.to_string(),
+    };
+    let (before_fragment, fragment) = match suffix.find('#') {
+        Some(pos) => (&suffix[..pos], Some(&suffix[pos..])),
+        None => (suffix, None),
+    };
+    let (path, query) = match before_fragment.find('?') {
+        Some(pos) => (&before_fragment[..pos], Some(&before_fragment[pos + 1..])),
+        None => (before_fragment, None),
+    };
+    let mut out = String::with_capacity(url.len());
+    out.push_str(scheme);
+    out.push_str(&masked_authority);
+    out.push_str(path);
+    if let Some(raw_query) = query {
+        out.push('?');
+        for (idx, pair) in raw_query.split('&').enumerate() {
+            if idx > 0 {
+                out.push('&');
+            }
+            if let Some((key, _)) = pair.split_once('=')
+                && is_sensitive_url_query_key(key)
+            {
+                out.push_str(key);
+                out.push_str("=***");
+            } else {
+                out.push_str(pair);
+            }
+        }
+    }
+    if let Some(frag) = fragment {
+        out.push_str(frag);
+    }
+    out
+}
+
+fn malformed_url_has_credentials(url: &str) -> bool {
+    let Some(scheme_end) = url.find("://") else {
+        return false;
+    };
+    let after_scheme = &url[scheme_end + 3..];
+    let authority_end = after_scheme
+        .find(['/', '?', '#'])
+        .unwrap_or(after_scheme.len());
+    let (authority, suffix) = after_scheme.split_at(authority_end);
+    if authority.contains('@') {
+        return true;
+    }
+    let before_fragment = suffix.split('#').next().unwrap_or("");
+    let Some((_, raw_query)) = before_fragment.split_once('?') else {
+        return false;
+    };
+    raw_query.split('&').any(|pair| {
+        pair.split_once('=')
+            .is_some_and(|(key, _)| is_sensitive_url_query_key(key))
+    })
 }
 
 fn is_sensitive_url_query_key(key: &str) -> bool {
@@ -388,13 +459,16 @@ pub fn contains_secret(input: &str) -> bool {
         || redact_secrets(&visible) != visible
         || url_regex().find_iter(&visible).any(|matched| {
             let raw = matched.as_str().trim_end_matches(['.', ',', ';', '!']);
-            url::Url::parse(raw).is_ok_and(|url| {
-                !url.username().is_empty()
-                    || url.password().is_some()
-                    || url
-                        .query_pairs()
-                        .any(|(key, _)| is_sensitive_url_query_key(&key))
-            })
+            match url::Url::parse(raw) {
+                Ok(url) => {
+                    !url.username().is_empty()
+                        || url.password().is_some()
+                        || url
+                            .query_pairs()
+                            .any(|(key, _)| is_sensitive_url_query_key(&key))
+                }
+                Err(_) => malformed_url_has_credentials(raw),
+            }
         })
 }
 
@@ -570,6 +644,22 @@ mod tests {
             ),
             "https://***:***@example.com/path?token=***&ok=1"
         );
+    }
+
+    #[test]
+    fn url_redaction_masks_malformed_url_userinfo_and_query_values() {
+        let malformed = "https://alice:pass%zz@example.com:notaport/x?token=very-secret&ok=1#frag";
+        assert!(url::Url::parse(malformed).is_err());
+        assert_eq!(
+            redact_url_for_display(malformed),
+            "https://***:***@example.com:notaport/x?token=***&ok=1#frag"
+        );
+        let sanitized = sanitize_text(&format!("see {malformed}"));
+        assert!(!sanitized.contains("alice"), "{sanitized}");
+        assert!(!sanitized.contains("pass%zz"), "{sanitized}");
+        assert!(!sanitized.contains("very-secret"), "{sanitized}");
+        assert!(sanitized.contains("ok=1"), "{sanitized}");
+        assert!(contains_secret(malformed));
     }
 
     #[test]
