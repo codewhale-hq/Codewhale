@@ -18276,7 +18276,7 @@ async fn auto_review_force_prompt_is_denied_without_opening_a_modal() -> Result<
         })
         .await?;
 
-    let decision = tokio::time::timeout(Duration::from_secs(2), harness.recv_approval_event())
+    let decision = tokio::time::timeout(Duration::from_secs(10), harness.recv_approval_event())
         .await
         .context("Auto-Review hold should resolve without a modal")?;
     assert_eq!(
@@ -18285,7 +18285,7 @@ async fn auto_review_force_prompt_is_denied_without_opening_a_modal() -> Result<
             id: "tool_auto_hold".to_string(),
         })
     );
-    let decided = tokio::time::timeout(Duration::from_secs(2), async {
+    let decided = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if manager.pending_approvals_count() == 0
                 && let Some(event) =

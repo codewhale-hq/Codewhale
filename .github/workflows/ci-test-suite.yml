@@ -68,6 +68,7 @@ jobs:
       CARGO_BUILD_JOBS: ${{ inputs.build_jobs }}
       CARGO_PROFILE_DEV_DEBUG: ${{ inputs.debug }}
       CARGO_PROFILE_TEST_DEBUG: ${{ inputs.debug }}
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
     steps:
       - name: Isolate homes, temp and target on the self-hosted Mac
         if: runner.environment == 'self-hosted'
