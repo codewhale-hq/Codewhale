@@ -1982,13 +1982,13 @@ pub(crate) async fn handle_view_events(
                         let identity = config
                             .builtin_provider_identity(ProviderKind::Codewhale)
                             .map_err(anyhow::Error::msg)?;
-                        let switched = switch_provider(
+                        let switched = Box::pin(switch_provider(
                             app,
                             engine_handle,
                             config,
                             identity,
                             Some(model.clone()),
-                        )
+                        ))
                         .await;
                         if switched {
                             if app.onboarding == OnboardingState::Provider {
@@ -2026,7 +2026,7 @@ pub(crate) async fn handle_view_events(
                                 app.ui_locale,
                             ))
                     }
-                    Some(false) => open_provider_picker(app, config, engine_handle).await,
+                    Some(false) => Box::pin(open_provider_picker(app, config, engine_handle)).await,
                     None if app.onboarding == OnboardingState::Provider => {
                         back_from_provider_onboarding(app)
                     }
@@ -2084,7 +2084,13 @@ pub(crate) async fn handle_view_events(
                 app.push_status_toast(message, level, Some(8_000));
                 if needs_model {
                     begin_first_connection_setup(app);
-                    open_model_connection_setup(app, config, engine_handle, false).await;
+                    Box::pin(open_model_connection_setup(
+                        app,
+                        config,
+                        engine_handle,
+                        false,
+                    ))
+                    .await;
                 }
                 app.needs_redraw = true;
             }
@@ -2182,17 +2188,24 @@ pub(crate) async fn handle_view_events(
                 if is_plan_handoff_request(app, &tool_id) =>
             {
                 let choice = crate::tui::plan_handoff::choice(app.ui_locale, &response);
-                apply_plan_handoff(app, config, engine_handle, &tool_id, choice).await?;
+                Box::pin(apply_plan_handoff(
+                    app,
+                    config,
+                    engine_handle,
+                    &tool_id,
+                    choice,
+                ))
+                .await?;
             }
             // Esc follows the same owned-seed cleanup as Keep planning.
             ViewEvent::UserInputCancelled { tool_id } if is_plan_handoff_request(app, &tool_id) => {
-                apply_plan_handoff(
+                Box::pin(apply_plan_handoff(
                     app,
                     config,
                     engine_handle,
                     &tool_id,
                     crate::tui::plan_handoff::PlanHandoffChoice::KeepPlanning,
-                )
+                ))
                 .await?;
             }
             ViewEvent::UserInputSubmitted { tool_id, response } => {
@@ -3125,7 +3138,7 @@ pub(crate) async fn handle_view_events(
                         .replace("{model}", &model);
                     app.add_message(HistoryCell::System { content: notice });
                 }
-                apply_model_picker_choice(
+                Box::pin(apply_model_picker_choice(
                     app,
                     engine_handle,
                     config,
@@ -3135,7 +3148,7 @@ pub(crate) async fn handle_view_events(
                     previous_model,
                     previous_effort,
                     save_as_startup_default,
-                )
+                ))
                 .await;
                 refresh_parked_fleet_roster(app, config);
             }
@@ -3262,7 +3275,7 @@ pub(crate) async fn handle_view_events(
                 app.needs_redraw = true;
             }
             ViewEvent::TopbarRoutePickerRequested => {
-                open_provider_picker(app, config, engine_handle).await;
+                Box::pin(open_provider_picker(app, config, engine_handle)).await;
             }
             ViewEvent::TopbarModelPickerRequested => {
                 if app.view_stack.top_kind() != Some(ModalKind::ModelPicker) {
@@ -3293,8 +3306,14 @@ pub(crate) async fn handle_view_events(
             ViewEvent::ProviderPickerApplied { identity } => {
                 let provider = identity.provider;
                 let model_override = provider_picker_model_override(app, config, &identity);
-                let switched =
-                    switch_provider(app, engine_handle, config, identity, model_override).await;
+                let switched = Box::pin(switch_provider(
+                    app,
+                    engine_handle,
+                    config,
+                    identity,
+                    model_override,
+                ))
+                .await;
                 if switched && app.onboarding == OnboardingState::Provider {
                     complete_provider_picker_onboarding(app, provider);
                 }
@@ -3420,9 +3439,14 @@ pub(crate) async fn handle_view_events(
                             .replace("{provider}", provider.as_str());
                         app.push_status_toast(toast, StatusToastLevel::Success, Some(8_000));
                         let model_override = provider_picker_model_override(app, config, &identity);
-                        let switched =
-                            switch_provider(app, engine_handle, config, identity, model_override)
-                                .await;
+                        let switched = Box::pin(switch_provider(
+                            app,
+                            engine_handle,
+                            config,
+                            identity,
+                            model_override,
+                        ))
+                        .await;
                         // #4763: reusing an external CLI grant completes provider
                         // onboarding exactly like a submitted key or an applied
                         // route. Without this the picker closes on success and
@@ -3530,8 +3554,14 @@ pub(crate) async fn handle_view_events(
                 let undo = std::mem::take(&mut app.undo_selection);
                 if let Some(depth) = app.backtrack.confirm() {
                     if undo {
-                        if let Err(error) =
-                            apply_range_undo(terminal, app, engine_handle, config, depth).await
+                        if let Err(error) = Box::pin(apply_range_undo(
+                            terminal,
+                            app,
+                            engine_handle,
+                            config,
+                            depth,
+                        ))
+                        .await
                         {
                             let message = format!("Undo failed: {error:#}");
                             app.add_message(HistoryCell::System {
