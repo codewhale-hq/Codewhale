@@ -1597,7 +1597,14 @@ var compatibility_default = {
       "settings",
       "pluginManager",
       "deepseekAccount",
-      "terminal"
+      "terminal",
+      "attachments",
+      "agentPresets",
+      "agentDefaultModel",
+      "sessionProjections",
+      "workspaceRegistry",
+      "typertGateway",
+      "web"
     ],
     cordis: [
       "logger",
@@ -1642,7 +1649,13 @@ var compatibility_default = {
     "settings",
     "pluginManager",
     "deepseekAccount",
-    "terminal"
+    "terminal",
+    "attachments",
+    "agentDefaultModel",
+    "sessionProjections",
+    "workspaceRegistry",
+    "typertGateway",
+    "web"
   ],
   row_bridges: {
     "@deepseek-ai/dsh-mcp-client": "mcp",
@@ -1674,8 +1687,17 @@ var compatibility_default = {
     "@deepseek-ai/dsh-commands/brand": "dsh-commands-brand",
     "@deepseek-ai/dsh-llm": "dsh-llm-values",
     "@deepseek-ai/dsh-session": "dsh-session-values",
+    "@deepseek-ai/dsh-session/surface": "dsh-session-surface",
     "@deepseek-ai/dsh-system-prompt": "dsh-system-prompt-values",
-    "@deepseek-ai/dsh-user-questions": "dsh-user-questions-values"
+    "@deepseek-ai/dsh-user-questions": "dsh-user-questions-values",
+    "@deepseek-ai/dsh-credentials": "dsh-credentials",
+    "@deepseek-ai/dsh-settings": "dsh-settings",
+    "@deepseek-ai/dsh-home-paths": "dsh-home-paths",
+    "@deepseek-ai/dsh-atomic-write": "dsh-atomic-write",
+    "@deepseek-ai/dsh-skill": "dsh-skill",
+    "@deepseek-ai/dsh-typert-protocol": "dsh-typert-protocol",
+    "@deepseek-ai/dsh-workspace": "dsh-workspace",
+    "@deepseek-ai/dsh-subagent": "dsh-subagent"
   },
   definition_api: {
     package: "@deepseek-ai/dsh-tools",
@@ -1721,14 +1743,31 @@ var compatibility_default = {
   command_followup: "one-text-message-submit-on-success",
   pure_api: {
     file: "src/dsh/dsh-message-compat.js",
-    source_sha256: "aac208e72eac3601b02c5a4ce95bfeb82f1bb3ba0d1e906d786d1e25609e9857",
+    source_sha256: "018236676c31a588543e69d09821c53bc1138d14f4520b92ceba0e122cc8de78",
     exports: {
       "@deepseek-ai/dsh-llm": [
         "createUserMessage",
+        "createAssistantMessage",
+        "createSystemMessage",
+        "createToolResultMessage",
+        "freezeMessage",
+        "contentHasImage",
+        "ReasoningEffortId",
+        "MessageId",
+        "ToolCallId",
+        "isAgentLoopRequest",
+        "resolveRetryPolicy",
+        "boundContextSummary",
+        "BlockAssembler",
+        "LlmAdapter",
+        "LlmError",
         "HarnessError"
       ],
       "@deepseek-ai/dsh-session": [
-        "SessionId"
+        "SessionId",
+        "SESSION_FORMAT_VERSION",
+        "KNOWN_SESSION_EVENT_TYPES",
+        "deriveEventMessage"
       ],
       "@deepseek-ai/dsh-system-prompt": [
         "PERSONA_PREFIX_SECTION"
@@ -2251,6 +2290,11 @@ var inspect_catalog_default = {
             name: "get",
             signature: "get(name: string, agent: Agent): { name: string } | undefined",
             summary: "Whether the calling agent has a tool by this name. Answers only inside a live tool call, for that call's own agent."
+          },
+          {
+            name: "guard",
+            signature: "guard(fn: (exec: ToolExec) => string | { kind: 'deny', reason: string } | undefined): () => void",
+            summary: "Register a deny-only tool guard through the tools/pre-execute admission path. Can deny or abstain, never auto-approve."
           }
         ]
       },
@@ -2555,6 +2599,159 @@ var inspect_catalog_default = {
         ]
       },
       {
+        key: "attachments",
+        group: "dsh",
+        summary: "Conversation image validation, storage, and bounded read/resize through the Engine.",
+        availability: "review-grant",
+        availabilityText: "Served by the Engine only when the plugin's review granted it.",
+        methods: [
+          {
+            name: "validateImage",
+            signature: "validateImage(input: ImageBytesInput, signal?: AbortSignal): Promise<ValidateImageResult>",
+            summary: "Validate an image payload against Codewhale image limits."
+          },
+          {
+            name: "saveImage",
+            signature: "saveImage(input: ImageBytesInput, signal?: AbortSignal): Promise<StoredImageAttachmentRef>",
+            summary: "Store a validated conversation image attachment for the active tool result."
+          },
+          {
+            name: "readImage",
+            signature: "readImage(ref: ImageAttachmentRef, signal?: AbortSignal): Promise<ReadImageResult>",
+            summary: "Read a stored conversation image by attachment reference."
+          },
+          {
+            name: "readImageRequest",
+            signature: "readImageRequest(ref: ImageAttachmentRef, target?: ReadImageRequestTarget, signal?: AbortSignal): Promise<ReadImageRequestResult>",
+            summary: "Read a resized/fitted variant of a stored conversation image."
+          }
+        ]
+      },
+      {
+        key: "agentPresets",
+        group: "dsh",
+        summary: "Reviewed read-only agent preset catalog scoped to the owning plugin.",
+        availability: "always",
+        availabilityText: "Available to every plugin that injects it.",
+        methods: [
+          {
+            name: "list",
+            signature: "list(): Promise<AgentPreset[]>",
+            summary: "List reviewed presets visible to this owner."
+          },
+          {
+            name: "get",
+            signature: "get(id: string): Promise<AgentPreset | undefined>",
+            summary: "Look up one reviewed preset by id."
+          },
+          {
+            name: "register",
+            signature: "register(preset: AgentPreset): () => void",
+            summary: "Register an owner-scoped preset metadata entry."
+          }
+        ]
+      },
+      {
+        key: "agentDefaultModel",
+        group: "dsh",
+        summary: "Read-only view of the active invocation default model selection.",
+        availability: "tool-invocation",
+        availabilityText: "Answers only inside a live tool call of the plugin.",
+        methods: [
+          {
+            name: "currentSelection",
+            signature: "currentSelection(): { provider: string, model: string } | undefined",
+            summary: "Return the read-only default provider/model for the live invocation."
+          }
+        ]
+      },
+      {
+        key: "sessionProjections",
+        group: "dsh",
+        summary: "Read-only projection of active session messages and events.",
+        availability: "tool-invocation",
+        availabilityText: "Answers only inside a live tool call of the plugin.",
+        methods: [
+          {
+            name: "get",
+            signature: "get(sessionId?: string): SessionProjection | undefined",
+            summary: "Return the read-only projection for the active session."
+          },
+          {
+            name: "list",
+            signature: "list(): SessionProjection[]",
+            summary: "List read-only session projections visible to the live invocation."
+          }
+        ]
+      },
+      {
+        key: "workspaceRegistry",
+        group: "dsh",
+        summary: "Read-only workspace metadata for the active invocation.",
+        availability: "tool-invocation",
+        availabilityText: "Answers only inside a live tool call of the plugin.",
+        methods: [
+          {
+            name: "list",
+            signature: "list(): WorkspaceMeta[]",
+            summary: "List read-only workspace metadata visible to the live invocation."
+          },
+          {
+            name: "get",
+            signature: "get(id: string): WorkspaceMeta | undefined",
+            summary: "Look up read-only workspace metadata by id or path."
+          },
+          {
+            name: "resolveByPath",
+            signature: "resolveByPath(path: string): WorkspaceMeta | undefined",
+            summary: "Resolve read-only workspace metadata by filesystem path."
+          }
+        ]
+      },
+      {
+        key: "typertGateway",
+        group: "dsh",
+        summary: "Owner-scoped Typert service descriptor registry.",
+        availability: "always",
+        availabilityText: "Available to every plugin that injects it.",
+        methods: [
+          {
+            name: "register",
+            signature: "register(name: string, service: unknown, descriptors?: unknown[]): () => void",
+            summary: "Register an owner-scoped Typert service and its descriptors."
+          },
+          {
+            name: "list",
+            signature: "list(): string[]",
+            summary: "List Typert service names registered by this owner."
+          },
+          {
+            name: "get",
+            signature: "get(name: string): { service: unknown, descriptors: unknown[] } | undefined",
+            summary: "Look up a registered Typert service by name."
+          }
+        ]
+      },
+      {
+        key: "web",
+        group: "dsh",
+        summary: "Network-policy-guarded web fetch and owner-scoped search provider registration.",
+        availability: "review-grant",
+        availabilityText: "Served by the Engine only when the plugin's review granted it.",
+        methods: [
+          {
+            name: "fetch",
+            signature: "fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>",
+            summary: "Perform a policy-checked outbound HTTP request through the Engine network broker."
+          },
+          {
+            name: "registerSearchProvider",
+            signature: "registerSearchProvider(provider: SearchProvider): () => void",
+            summary: "Register an owner-scoped web search provider."
+          }
+        ]
+      },
+      {
         key: "logger",
         group: "cordis",
         summary: "Cordis logging. Every line becomes a host log notification attributed to the plugin.",
@@ -2773,7 +2970,13 @@ var inspect_catalog_default = {
       "settings",
       "pluginManager",
       "deepseekAccount",
-      "terminal"
+      "terminal",
+      "attachments",
+      "agentDefaultModel",
+      "sessionProjections",
+      "workspaceRegistry",
+      "typertGateway",
+      "web"
     ],
     events: [
       {
@@ -2790,6 +2993,14 @@ var inspect_catalog_default = {
         mode: "read-only observers in registration order, after the tool finishes",
         signature: "ctx.on('tools/post-execute', async (exec: { name: string, callId: string, arguments: { is_error: boolean, duration_ms: number }, signal: AbortSignal, workspace: string, mode: string, model: string }, next: () => Promise<Abstention>) => void)",
         summary: "Observes a finished tool call for a reviewed native plugin. The view carries only whether the call failed and how long it took, never its output, session or agent. The return value is ignored and an error is logged, so an observer cannot change or fail the call. The listener batch has a five second deadline.",
+        options: "prepend and global are refused."
+      },
+      {
+        name: "tools/result",
+        status: "supported",
+        mode: "read-only observers in registration order, after the tool finishes",
+        signature: "ctx.on('tools/result', async (exec: { name: string, callId: string, arguments: { is_error: boolean, duration_ms: number }, signal: AbortSignal, workspace: string, mode: string, model: string }, next: () => Promise<Abstention>) => void)",
+        summary: "Alias for read-only tool outcome observation backed by tools/post-execute. Cannot mutate or veto execution.",
         options: "prepend and global are refused."
       },
       {
@@ -2817,6 +3028,11 @@ var inspect_catalog_default = {
       },
       {
         name: "subagent/end",
+        status: "refused",
+        summary: "Not projected by this host: no core projection exists, so a listener would never fire."
+      },
+      {
+        name: "approval/request",
         status: "refused",
         summary: "Not projected by this host: no core projection exists, so a listener would never fire."
       }

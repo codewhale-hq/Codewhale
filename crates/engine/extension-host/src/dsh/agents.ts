@@ -7,7 +7,12 @@ import type { AdapterHost, DshAdapter } from './adapters.ts'
 const SPAWN_PROVIDER = Object.freeze({
   name: 'spawn',
   inheritsParentContext: false,
-  capabilities: Object.freeze({ persona: true, toolFilter: true, agentOptions: true }),
+  capabilities: Object.freeze({ persona: true, toolFilter: true, agentOptions: true, depthLimit: true }),
+})
+const FORK_PROVIDER = Object.freeze({
+  name: 'fork',
+  inheritsParentContext: true,
+  capabilities: Object.freeze({ persona: true, toolFilter: true, agentOptions: true, depthLimit: true }),
 })
 const PERSONA_ORDER = 0
 
@@ -26,11 +31,16 @@ function plain(value: unknown, allowed: string[], what: string): Record<string, 
 function defineSubagents(host: AdapterHost): new (ctx: any) => Service {
   class SubagentsShim extends Service {
     constructor(ctx: any) { super(ctx, 'subagents') }
-    getProvider(name: unknown) { return name === 'spawn' ? SPAWN_PROVIDER : undefined }
+    getProvider(name: unknown) {
+      if (name === 'spawn') return SPAWN_PROVIDER
+      if (name === 'fork') return FORK_PROVIDER
+      return undefined
+    }
+    listProviders() { return Object.freeze(['spawn', 'fork']) }
     async startActivation(request: any) {
       const owner = host.ownerOf(this.ctx)
       const input = plain(request, ['provider', 'label', 'childId', 'request', 'signal', 'delivery'], 'activation')
-      if (input.provider !== 'spawn') throw new RpcError(ErrorCode.NotAvailable, 'only the spawn provider is available')
+      if (input.provider !== 'spawn' && input.provider !== 'fork') throw new RpcError(ErrorCode.NotAvailable, 'only the spawn and fork providers are available')
       const spawn = plain(input.request, ['parent', 'prompt', 'agentOptions'], 'spawn request')
       const options = spawn.agentOptions === undefined ? {} : plain(spawn.agentOptions, ['model'], 'agentOptions')
       if (options.model !== undefined && typeof options.model !== 'string') throw new RpcError(ErrorCode.InvalidParams, 'agentOptions.model must be a string')
@@ -84,6 +94,11 @@ function defineSubagents(host: AdapterHost): new (ctx: any) => Service {
               const value = plain(filter, ['deny'], 'tool filter')
               if (!Array.isArray(value.deny) || value.deny.some(name => typeof name !== 'string' || name === '')) throw new RpcError(ErrorCode.InvalidParams, 'deny must be a list of tool names')
               for (const name of value.deny as string[]) denied.add(name)
+              return () => undefined
+            },
+            guard(guardFn: unknown) {
+              sealed()
+              if (typeof guardFn !== 'function') throw new RpcError(ErrorCode.InvalidParams, 'tools.guard requires a guard function')
               return () => undefined
             },
           }),

@@ -2802,6 +2802,12 @@ fn collect_active_skill_dirs(
 fn walk_entry_modules(rows: &[Value], require_names: bool, names: &mut Vec<String>) -> Result<()> {
     for row in rows {
         if is_group_row(row) {
+            if let Some(name) = row.get("name").and_then(Value::str)
+                && !matches!(name, "cordis:group" | "@deepseek-ai/cordis-plugin-group")
+                && !names.iter().any(|old| old == name)
+            {
+                names.push(name.into());
+            }
             if let Some(Value::Seq(children)) = row.get("config") {
                 walk_entry_modules(children, require_names, names)?;
             }

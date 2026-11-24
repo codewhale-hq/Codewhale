@@ -19,7 +19,7 @@ var __export = (target, all) => {
 var define_BUILTIN_MODULE_DIGESTS_default;
 var init_define_BUILTIN_MODULE_DIGESTS = __esm({
   "<define:__BUILTIN_MODULE_DIGESTS__>"() {
-    define_BUILTIN_MODULE_DIGESTS_default = { creator: "dacda4ed3211feffbd92c2a569edac113037a2384202d1b577904b1dc4c5c2df", harness: "7e93989b2ff84394ab841e28577f6661ea2f01f1b30905ea6ce54857ef7f5e34", mcp: "f9735707e49e349ee38f791fa3c6f3379fde43cad5044f381f8e313286ea3d39" };
+    define_BUILTIN_MODULE_DIGESTS_default = { creator: "53ab3a0b4ecad7b50440052b7df2975afcaf2a04caee665b98bc8f5e655a152d", harness: "7e93989b2ff84394ab841e28577f6661ea2f01f1b30905ea6ce54857ef7f5e34", mcp: "f9735707e49e349ee38f791fa3c6f3379fde43cad5044f381f8e313286ea3d39" };
   }
 });
 
@@ -961,8 +961,8 @@ var init_lib2 = __esm({
         let inFlight;
         let removeWrapper = () => false;
         const waitForSetup = () => {
-          setupBarrier ??= new Promise((resolve6, reject) => {
-            resolveSetup = resolve6;
+          setupBarrier ??= new Promise((resolve7, reject) => {
+            resolveSetup = resolve7;
             rejectSetup = reject;
           });
           return setupBarrier;
@@ -1152,7 +1152,7 @@ var init_lib2 = __esm({
         });
       }
       async _unload() {
-        while ([...this.provisions].some((impl) => impl.dependents.size)) await new Promise((resolve6) => this._release = resolve6);
+        while ([...this.provisions].some((impl) => impl.dependents.size)) await new Promise((resolve7) => this._release = resolve7);
         this._release = void 0;
         await Promise.all(this._disposables.clear().map(async (dispose) => {
           try {
@@ -1817,9 +1817,9 @@ var init_lib2 = __esm({
           return async () => {
             if (this.store[impl.isolate] === impl) delete this.store[impl.isolate];
             this.ctx.isolate(name, impl.isolate).reflect.notify([name]);
-            await new Promise((resolve6) => {
-              impl.release = resolve6;
-              if (!impl.dependents.size) resolve6();
+            await new Promise((resolve7) => {
+              impl.release = resolve7;
+              if (!impl.dependents.size) resolve7();
             });
             impl.release = void 0;
             this.ctx.fiber.provisions.delete(impl);
@@ -1927,16 +1927,16 @@ var init_lib2 = __esm({
       }
     };
     (function(Inject3) {
-      function resolve6(inject, result = /* @__PURE__ */ Object.create(null)) {
+      function resolve7(inject, result = /* @__PURE__ */ Object.create(null)) {
         if (!inject) return result;
         if (Array.isArray(inject)) for (const name of inject) result[name] = null;
         else if (Reflect.has(inject, symbols.checkProto)) {
-          Object.assign(result, resolve6(Object.getPrototypeOf(inject)));
+          Object.assign(result, resolve7(Object.getPrototypeOf(inject)));
           for (const name of Object.keys(inject)) result[name] = inject[name] ?? null;
         } else for (const name of Object.keys(inject)) result[name] = inject[name] ?? null;
         return result;
       }
-      Inject3.resolve = resolve6;
+      Inject3.resolve = resolve7;
     })(Inject || (Inject = {}));
     RegistryService = class {
       ctx;
@@ -2594,8 +2594,8 @@ var init_lib3 = __esm({
     };
     resolvers = {};
     checkedVolatile = /* @__PURE__ */ Symbol("checked-volatile-schema");
-    Schema.extend = function extend(type2, resolve6) {
-      resolvers[type2] = resolve6;
+    Schema.extend = function extend(type2, resolve7) {
+      resolvers[type2] = resolve7;
     };
     Schema.resolve = function resolve(data2, schema3, options = {}, strict = false) {
       if (!schema3) return [data2];
@@ -4618,15 +4618,146 @@ function createUserMessage(input) {
     role: "user"
   });
 }
+function createAssistantMessage(input) {
+  return createMessage({
+    ...input,
+    role: "assistant"
+  });
+}
+function createSystemMessage(input) {
+  return createMessage({
+    ...input,
+    role: "system"
+  });
+}
+function createToolResultMessage(input) {
+  return createMessage({
+    ...input,
+    role: "tool"
+  });
+}
+function freezeMessage(message) {
+  return deepFreeze(structuredClone(message));
+}
+function contentHasImage(content) {
+  if (!Array.isArray(content)) return false;
+  return content.some((block) => block !== null && typeof block === "object" && (block.type === "image" || block.type === "image_ref"));
+}
+function ReasoningEffortId(id) {
+  return brandString(id);
+}
+function MessageId(id) {
+  return brandString(id);
+}
+function ToolCallId(id) {
+  return brandString(id);
+}
+function isAgentLoopRequest(request) {
+  return Boolean(request && typeof request === "object" && Array.isArray(request.messages));
+}
+function resolveRetryPolicy(policy) {
+  const base = policy && typeof policy === "object" ? policy : {};
+  return Object.freeze({
+    maxRetries: typeof base.maxRetries === "number" && Number.isInteger(base.maxRetries) && base.maxRetries >= 0 ? base.maxRetries : 3,
+    initialDelayMs: typeof base.initialDelayMs === "number" && base.initialDelayMs >= 0 ? base.initialDelayMs : 500,
+    maxDelayMs: typeof base.maxDelayMs === "number" && base.maxDelayMs >= 0 ? base.maxDelayMs : 15e3
+  });
+}
+function boundContextSummary(summary, maxChars = 4e3) {
+  if (typeof summary !== "string") return "";
+  if (summary.length <= maxChars) return summary;
+  return `${summary.slice(0, Math.max(0, maxChars - 1))}…`;
+}
 function SessionId(id) {
   return brandString(id);
 }
-var PERSONA_PREFIX_SECTION, HarnessError2, UserQuestionError;
+function deriveEventMessage(event) {
+  if (!event || typeof event !== "object") return void 0;
+  if (event.message && typeof event.message === "object") {
+    return event.message;
+  }
+  if (event.payload && typeof event.payload === "object" && event.payload.message && typeof event.payload.message === "object") {
+    return event.payload.message;
+  }
+  const type2 = event.type;
+  if (type2 === "message/user" || type2 === "message/assistant" || type2 === "message/system" || type2 === "message/tool") {
+    const role2 = type2.slice("message/".length);
+    const content = Array.isArray(event.content) ? event.content : Array.isArray(event.payload?.content) ? event.payload.content : typeof event.text === "string" ? [{ type: "text", text: event.text }] : [];
+    return deepFreeze(structuredClone({
+      id: typeof event.id === "string" ? event.id : brandString(randomUUID()),
+      role: role2,
+      content
+    }));
+  }
+  return void 0;
+}
+var BlockAssembler, LlmAdapter, SESSION_FORMAT_VERSION, KNOWN_SESSION_EVENT_TYPES, PERSONA_PREFIX_SECTION, HarnessError2, LlmError, UserQuestionError;
 var init_dsh_message_compat = __esm({
   "src/dsh/dsh-message-compat.js"() {
     "use strict";
     init_define_BUILTIN_MODULE_DIGESTS();
     init_lib4();
+    BlockAssembler = class {
+      constructor() {
+        this._blocks = [];
+      }
+      push(delta) {
+        if (!delta || typeof delta !== "object") return;
+        if (delta.type === "text_delta" && typeof delta.text === "string") {
+          const last = this._blocks[this._blocks.length - 1];
+          if (last && last.type === "text") {
+            last.text += delta.text;
+          } else {
+            this._blocks.push({ type: "text", text: delta.text });
+          }
+          return;
+        }
+        if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
+          const last = this._blocks[this._blocks.length - 1];
+          if (last && last.type === "thinking") {
+            last.thinking += delta.thinking;
+          } else {
+            this._blocks.push({ type: "thinking", thinking: delta.thinking });
+          }
+          return;
+        }
+        if (delta.type === "text" || delta.type === "thinking" || delta.type === "tool_use" || delta.type === "image") {
+          this._blocks.push(structuredClone(delta));
+        }
+      }
+      snapshot() {
+        return structuredClone(this._blocks);
+      }
+      finish() {
+        return deepFreeze(structuredClone(this._blocks));
+      }
+      reset() {
+        this._blocks = [];
+      }
+    };
+    LlmAdapter = class {
+      constructor(name = "adapter") {
+        this.name = name;
+      }
+    };
+    SESSION_FORMAT_VERSION = 1;
+    KNOWN_SESSION_EVENT_TYPES = /* @__PURE__ */ new Set([
+      "session/start",
+      "session/end",
+      "session/metadata",
+      "turn/start",
+      "turn/end",
+      "message/user",
+      "message/assistant",
+      "message/system",
+      "message/tool",
+      "tool/call",
+      "tool/result",
+      "compaction",
+      "error",
+      "subagent/start",
+      "subagent/end"
+    ]);
     PERSONA_PREFIX_SECTION = "deployment:persona-prefix";
     HarnessError2 = class extends Error {
       code;
@@ -4636,6 +4767,12 @@ var init_dsh_message_compat = __esm({
         this.name = new.target.name;
       }
     };
+    LlmError = class extends HarnessError2 {
+      constructor(message, code, options) {
+        super(message, code, options);
+        this.name = "LlmError";
+      }
+    };
     UserQuestionError = class extends HarnessError2 {
       constructor(message, code, options) {
         super(message, code, options);
@@ -4643,6 +4780,7 @@ var init_dsh_message_compat = __esm({
       }
     };
     Object.defineProperty(HarnessError2, "name", { value: "HarnessError" });
+    Object.defineProperty(LlmError, "name", { value: "LlmError" });
     Object.defineProperty(UserQuestionError, "name", { value: "UserQuestionError" });
   }
 });
@@ -15770,795 +15908,8 @@ var init_bun_closure = __esm({
   }
 });
 
-// src/dsh/compatibility.json
-var compatibility_default;
-var init_compatibility = __esm({
-  "src/dsh/compatibility.json"() {
-    compatibility_default = {
-      version: 3,
-      target_dsh_version: "0.2.2-rc.1",
-      provided_services: {
-        dsh: [
-          "tools",
-          "commands",
-          "storage",
-          "skills",
-          "sessions",
-          "userQuestions",
-          "subagents",
-          "agents",
-          "systemPrompt",
-          "llm",
-          "credentials",
-          "settings",
-          "pluginManager",
-          "deepseekAccount",
-          "terminal"
-        ],
-        cordis: [
-          "logger",
-          "events",
-          "reflect",
-          "registry"
-        ],
-        codewhale: [
-          "prompt",
-          "avatars",
-          "mcp",
-          "shellHooks",
-          "remote",
-          "workspace"
-        ]
-      },
-      refused_services: [
-        "shellHooks",
-        "loader",
-        "approval",
-        "agents",
-        "subagents",
-        "sessions",
-        "llm",
-        "sandboxPolicy",
-        "credentials",
-        "fs",
-        "subprocess",
-        "systemPrompt",
-        "runtimeLoop",
-        "tools",
-        "commands",
-        "prompt",
-        "storage",
-        "skills",
-        "avatars",
-        "mcp",
-        "logger",
-        "userQuestions",
-        "remote",
-        "workspace",
-        "settings",
-        "pluginManager",
-        "deepseekAccount",
-        "terminal"
-      ],
-      row_bridges: {
-        "@deepseek-ai/dsh-mcp-client": "mcp",
-        "@deepseek-ai/dsh-skill-filesystem": "skills",
-        "@deepseek-ai/dsh-hooks-claude-code": "hooks-claude-code",
-        "@deepseek-ai/dsh-hooks-codex": "hooks-codex",
-        "@deepseek-ai/dsh-persona": "persona",
-        "@deepseek-ai/dsh-storage": "host-spine",
-        "@deepseek-ai/dsh-storage-json": "host-spine",
-        "@deepseek-ai/dsh-storage-domain": "host-spine",
-        "@deepseek-ai/dsh-workspace": "host-spine",
-        "@deepseek-ai/dsh-code-runtime-worker-thread": "host-spine",
-        "@deepseek-ai/dsh-tool-subagent/model-selection-settings": "host-spine",
-        "@deepseek-ai/dsh-agent-preset-registry": "host-spine",
-        "@deepseek-ai/dsh-cordis-host-runner": "host-spine",
-        "@deepseek-ai/dsh-host-webserver": "host-spine"
-      },
-      module_singletons: {
-        "@codewhale/dsh-composition": "dsh-composition",
-        "@deepseek-ai/cordis-plugin-loader": "dsh-loader",
-        "@deepseek-ai/cordis-plugin-include": "dsh-include",
-        "@deepseek-ai/cordis-plugin-group": "dsh-group",
-        "@deepseek-ai/cordis": "cordis",
-        "@deepseek-ai/schemastery": "schemastery",
-        "@deepseek-ai/cosmokit": "cosmokit",
-        cosmokit: "cosmokit",
-        "@deepseek-ai/dsh-tools": "dsh-tools",
-        "@deepseek-ai/dsh-util-values": "dsh-util-values",
-        "@deepseek-ai/dsh-commands/brand": "dsh-commands-brand",
-        "@deepseek-ai/dsh-llm": "dsh-llm-values",
-        "@deepseek-ai/dsh-session": "dsh-session-values",
-        "@deepseek-ai/dsh-system-prompt": "dsh-system-prompt-values",
-        "@deepseek-ai/dsh-user-questions": "dsh-user-questions-values"
-      },
-      definition_api: {
-        package: "@deepseek-ai/dsh-tools",
-        version: "0.2.2-rc.1",
-        license: "MIT",
-        tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-tools/-/dsh-tools-0.2.2-rc.1.tgz",
-        integrity: "sha512-svB49dLPCHkKHgGwik3dTvEH0sL1vKwIzlQgqjE4qzEqFbSEROW8fByk3g2y2lxDv8TqgEUa0Vp2qFrVbm2lfw==",
-        license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-        tarball_sha256: "bb94ee037bd7d3efe2d0654c6a1fa7084b268b895fa0ca6ceeb7e65d4fd6da72",
-        sources: [
-          {
-            file: "lib/shared-DTdn5dXO.js",
-            sha256: "d02f0d8f36878313b0dae3a1bba5b77f7db4cffc77a0b72772048a36bacf2cf0",
-            lines: [
-              [
-                22,
-                548
-              ]
-            ]
-          },
-          {
-            file: "lib/index.js",
-            sha256: "1889cbf718d64518dd83245d4dba1e1f080b2c5326259c3ed5b1be7a7666a2bd",
-            lines: [
-              [
-                7,
-                377
-              ]
-            ]
-          },
-          {
-            file: "lib/shared-DTdn5dXO.js",
-            sha256: "d02f0d8f36878313b0dae3a1bba5b77f7db4cffc77a0b72772048a36bacf2cf0",
-            lines: [
-              [
-                566,
-                596
-              ]
-            ]
-          }
-        ]
-      },
-      command_followup: "one-text-message-submit-on-success",
-      pure_api: {
-        file: "src/dsh/dsh-message-compat.js",
-        source_sha256: "aac208e72eac3601b02c5a4ce95bfeb82f1bb3ba0d1e906d786d1e25609e9857",
-        exports: {
-          "@deepseek-ai/dsh-llm": [
-            "createUserMessage",
-            "HarnessError"
-          ],
-          "@deepseek-ai/dsh-session": [
-            "SessionId"
-          ],
-          "@deepseek-ai/dsh-system-prompt": [
-            "PERSONA_PREFIX_SECTION"
-          ],
-          "@deepseek-ai/dsh-user-questions": [
-            "UserQuestionError"
-          ]
-        },
-        packages: [
-          {
-            package: "@deepseek-ai/dsh-brand",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-brand/-/dsh-brand-0.2.2-rc.1.tgz",
-            integrity: "sha512-ShGNEmNuEQA+bfkspWC2kGrdbrM4dFNhqlrNHIWsHO+PgVH1KoTKTLSraT1pt0A8YYk/moKE0gL2gY9dNBU+rw==",
-            tarball_sha256: "d953cb5e8dcd69be0b0347ce9a3b36421eefa751820cbe909f4a185348ad5530",
-            source_file: "lib/index.js",
-            source_sha256: "14feb59256b891982b2017d73ed03ee65e2a7365f48e4902a856acb0e52d5eb0",
-            excerpts: [
-              {
-                name: "brandString",
-                lines: [
-                  20,
-                  22
-                ],
-                sha256: "2f0b62ba6507db54836a99e24d1d219e598b6140e575d2cf5c63d86a18e5e8ac"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          },
-          {
-            package: "@deepseek-ai/dsh-util-crypto",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-crypto/-/dsh-util-crypto-0.2.2-rc.1.tgz",
-            integrity: "sha512-I9Nhh3/64HPzjdR/mUt0J534FYHgodMUe0coXtA91+kxGcJQcSHOYouewv4hf0NWw0BuLh5zihTdtldZtobOWA==",
-            tarball_sha256: "c9ef0dfed280c83202f1d7bd5d32b1139a92a2fc375da62962ef709c3d1e4a6a",
-            source_file: "lib/index.js",
-            source_sha256: "640b26c8e5a1156c6c8e8749a22f805c9c0e34444778eb4ee9529be3e88ec862",
-            excerpts: [
-              {
-                name: "randomUUID",
-                lines: [
-                  27,
-                  33
-                ],
-                sha256: "e6c3b47d5cf366a149204c36d1697e658f61c48bfd96e66ec1c96deec3a8f4e2"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          },
-          {
-            package: "@deepseek-ai/dsh-llm",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-llm/-/dsh-llm-0.2.2-rc.1.tgz",
-            integrity: "sha512-XeEvH+6bpkjx0E2P1B5ZE+WWa+VHp4DimQaJDKNUZEFouqHMuN1B61TIz6IzUquRxa/6X4yJy+qXQ9WwAeMw5w==",
-            tarball_sha256: "cbf45039d3ef63e26987de514928a847a8c2d0b049df8fb24c11684e203b05d4",
-            source_file: "lib/index.js",
-            source_sha256: "8e541fc98a11897706a122fde1db42f8b2a41b3b354ba3fcb932e9a16929ac6a",
-            excerpts: [
-              {
-                name: "createMessage",
-                lines: [
-                  37,
-                  42
-                ],
-                sha256: "74baa44c9dea1821d97bd4fe592b21baf31f60eaf06962a269fcf2ec88e352ae"
-              },
-              {
-                name: "createUserMessage",
-                lines: [
-                  59,
-                  64
-                ],
-                sha256: "2c4929c2c18e511aa0fefe216eb50e703191057bb15ba1412ddcfdcc8bfc020f"
-              },
-              {
-                name: "HarnessError declaration",
-                lines: [
-                  126,
-                  126
-                ],
-                sha256: "d260a23e0a20850d3b623cbeed54626b47d43fa74e000c5d529dc0a341ab63ee"
-              },
-              {
-                name: "HarnessError body",
-                lines: [
-                  128,
-                  134
-                ],
-                sha256: "30ee24ef29e412b1ab2f0ca89ab600bb0260022d1479d43ca2ad21173b774ccf"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          },
-          {
-            package: "@deepseek-ai/dsh-session",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-session/-/dsh-session-0.2.2-rc.1.tgz",
-            integrity: "sha512-e0zx9HFNn8EyqrymGQS85SjKOyr61//ChTgIVDlCBSZvBB723fuXyi9LiHIIuPTlkgmWJl3gm5J51ebEXew7PQ==",
-            tarball_sha256: "b8b1b4a7b9c8efbdbe4c134ed3b18cddf11842b62ad7675c21c05b3afef1cfb5",
-            source_file: "lib/index.js",
-            source_sha256: "6fad466aa1f7aa64bfa038681ead5721f66c88e9891e25d357d2b8edbccd5494",
-            excerpts: [
-              {
-                name: "SessionId",
-                lines: [
-                  13,
-                  15
-                ],
-                sha256: "68a5778f0586d4e1c219ce6ae3cec3120a57446bbb91f371b4ba208533f48996"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          },
-          {
-            package: "@deepseek-ai/dsh-system-prompt",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-system-prompt/-/dsh-system-prompt-0.2.2-rc.1.tgz",
-            integrity: "sha512-1p9imdrenPnJTkLb6Coq+ELBDjngblM/YGP1Pa/xf1oisjLHcCoK2n9kkOUTIfgvoFtqWfxZJNZeKef71ZmlrA==",
-            tarball_sha256: "5ecb3f2ff2f0c037287c22c1ef917f1ce5cdd4c8055d51da6646ed5a39fe02a9",
-            source_file: "lib/index.js",
-            source_sha256: "18b692b03bbb717589085f63b126cbcf22963763c5a0565bb3a7a5d254e8e4a7",
-            excerpts: [
-              {
-                name: "PERSONA_PREFIX_SECTION",
-                lines: [
-                  61,
-                  61
-                ],
-                sha256: "11338254c278626eea6887b9cb5dc94d16f2ab4dae4bd7e555ea608c4b15648f"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          },
-          {
-            package: "@deepseek-ai/dsh-util-values",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-values/-/dsh-util-values-0.2.2-rc.1.tgz",
-            integrity: "sha512-UN4B/Fa9zAunYN3UuXDQ3QknxF/lMKNwTu2WxXKKEC+Ejz745po7I/JmsVFVa7+socfuwwTmVrfSsddRVU+lew==",
-            tarball_sha256: "e5de9a3c2600c70d72dba702cd0dfc8097264b7b6a7f393f4cfa799c81ecf759",
-            source_file: "lib/index.js",
-            source_sha256: "8b4ffdf40126d48bd22017b4671f7e90612d01833fc865f7a0b60d3de4183e8b",
-            excerpts: [
-              {
-                name: "deepFreeze",
-                lines: [
-                  809,
-                  845
-                ],
-                sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: false
-          },
-          {
-            package: "@deepseek-ai/dsh-user-questions",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-user-questions/-/dsh-user-questions-0.2.2-rc.1.tgz",
-            integrity: "sha512-COY40boWZ7XEszSvMGZ4CY5ze5ujCdA+Trtqx5C6ioqWzH9e8YbkY7AxyCOadxVO++5zAsqvsAfq65cZUPIMGA==",
-            tarball_sha256: "e7c1c38234fea9c0634ec95272bd1005c48ce890d2b935c8442b4ae7fee1b51e",
-            source_file: "lib/index.js",
-            source_sha256: "69fee77aa57cc43de583d53a4877394c4cf3b5d58b8d7579fd8095c0a015bfbd",
-            excerpts: [
-              {
-                name: "UserQuestionError",
-                lines: [
-                  430,
-                  435
-                ],
-                sha256: "5d49a4ecdf40039b26824f3575a79820b48ed011f90641870f44fe5a41bf5ced"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          }
-        ],
-        reuse: {
-          package: "@deepseek-ai/dsh-util-values",
-          version: "0.2.2-rc.1",
-          file: "lib/index.js",
-          symbol: "deepFreeze",
-          lines: [
-            809,
-            845
-          ],
-          sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
-        },
-        constructor_names: [
-          "HarnessError",
-          "UserQuestionError"
-        ]
-      },
-      tool_caller_projection: "readonly-id-session-header-cwd",
-      session_methods: {
-        flush: "invocation-bound-acknowledged-checkpoint-with-host-redaction-policy"
-      },
-      user_question_methods: {
-        ask: "invocation-bound-root-agent-typed-answers-no-wait"
-      },
-      subagent_methods: {
-        getProvider: "spawn-only-independent-context",
-        startActivation: "invocation-bound-caller-or-parent-delivery-text-prompt-model-persona-deny",
-        result: "text-output-typed-stop-reason",
-        dispose: "exact-activation"
-      },
-      agents_methods: {},
-      system_prompt_methods: {
-        section: "child-persona-slot-in-agent-created-only"
-      },
-      tool_definition_fields: {
-        deferLoading: "boolean-presentation-noop-engine-controls-loading"
-      }
-    };
-  }
-});
-
-// src/dsh/resolve-hooks.ts
-import * as nodeModule2 from "node:module";
-import { createHash as createHash2 } from "node:crypto";
-import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL3 } from "node:url";
-import { resolve as resolve3, isAbsolute as isAbsolute2, dirname as dirname2 } from "node:path";
-import { readFileSync as readFileSync2 } from "node:fs";
-function packageName(specifier) {
-  const parts = specifier.split("/");
-  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
-}
-function classifySpecifier(specifier) {
-  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.includes(":")) return null;
-  if (Object.hasOwn(SINGLETONS, specifier)) return SINGLETONS[specifier];
-  const name = packageName(specifier);
-  if (Object.hasOwn(SINGLETONS, name)) {
-    if (specifier !== name) throw new UnsupportedPeerError(specifier);
-    return SINGLETONS[name];
-  }
-  if (name.startsWith("@deepseek-ai/dsh-") || name.startsWith("@deepseek-ai/cordis-")) {
-    throw new UnsupportedPeerError(name);
-  }
-  return null;
-}
-function virtualSource(key, namespace) {
-  const lines = [`const ns = globalThis[Symbol.for(${JSON.stringify(REGISTRY_KEY.description)})][${JSON.stringify(key)}];`];
-  for (const name of Object.keys(namespace)) {
-    if (name === "default") continue;
-    if (!/^[A-Za-z_$][\w$]*$/.test(name)) continue;
-    lines.push(`export const ${name} = ns[${JSON.stringify(name)}];`);
-  }
-  if ("default" in namespace) lines.push("export default ns.default;");
-  return lines.join("\n");
-}
-function explainImportError(error) {
-  const match = error instanceof Error ? /Cannot find package '([^']+)'/.exec(error.message) : null;
-  if (!match) return error;
-  try {
-    classifySpecifier(match[1]);
-  } catch (unsupported) {
-    return unsupported;
-  }
-  return error;
-}
-function installBunResolver(modules) {
-  const bun = globalThis.Bun;
-  Object.defineProperty(globalThis, REVIEWED_IMPORT, { value: async (specifier, caller, options) => {
-    if (typeof specifier === "symbol") throw new TypeError("composition import specifier cannot be a symbol");
-    const name = String(specifier);
-    const closure = closureAt(caller);
-    if (!closure) throw new Error("composition module closure is no longer admitted");
-    const target = checkedBunSpecifier(name, closure.receipt, caller, false);
-    const singleton = classifySpecifier(target);
-    if (singleton !== null) return modules[singleton];
-    return import(target, options);
-  }, writable: false, configurable: false });
-  bun.plugin({
-    name: "codewhale-host-modules",
-    setup(build) {
-      for (const [specifier, key] of Object.entries(SINGLETONS)) {
-        if (key in modules) build.module(specifier, () => ({ exports: modules[key], loader: "object" }));
-      }
-      build.onResolve({ filter: /^[^./]/ }, (args) => {
-        const key = classifySpecifier(args.path);
-        if (key !== null && !(key in modules)) throw new UnsupportedPeerError(args.path);
-        return void 0;
-      });
-      build.onLoad({ filter: new RegExp(`${PEER_PATH.source}|\\.(?:mjs|js|cjs|mts|cts|ts|tsx|jsx|json)$`) }, (args) => {
-        const match = PEER_PATH.exec(args.path);
-        if (match) throw new UnsupportedPeerError(match[1].replaceAll("\\", "/"));
-        const closure = closureAt(pathToFileURL3(args.path).href);
-        if (!closure) {
-          const extension = args.path.split(".").at(-1);
-          if (extension === "json") return { contents: `export default JSON.parse(${JSON.stringify(readFileSync2(args.path, "utf8"))});`, loader: "js" };
-          const loader2 = extension === "tsx" ? "tsx" : extension === "ts" || extension === "mts" || extension === "cts" ? "ts" : extension === "jsx" || extension === "js" ? "jsx" : "js";
-          return { contents: readFileSync2(args.path, "utf8"), loader: loader2 };
-        }
-        if (!(closure.path in closure.receipt.files) || !unlinkedInside(closure.receipt, closure.path, args.path)) throw new Error("module was absent from reviewed composition closure or contains a symbolic link");
-        const bytes = readFileSync2(args.path);
-        if (bytes.length > 256 * 1024 * 1024 || createHash2("sha256").update(bytes).digest("hex") !== closure.receipt.files[closure.path]) throw new Error("composition module bytes changed after review");
-        if (closure.path.endsWith(".json")) return { contents: `export default JSON.parse(${JSON.stringify(bytes.toString("utf8"))});`, loader: "js" };
-        let source;
-        try {
-          source = prepareBunSource(bytes.toString("utf8"), args.path, (specifier, require3) => checkedBunSpecifier(specifier, closure.receipt, pathToFileURL3(args.path).href, require3));
-        } catch (error) {
-          if (error instanceof SyntaxError) throw new Error("reviewed composition module has unsupported JavaScript syntax");
-          throw error;
-        }
-        return { contents: source, loader: "js" };
-      });
-    }
-  });
-}
-function checkedBunSpecifier(specifier, closure, caller, require3) {
-  const key = classifySpecifier(specifier);
-  if (key !== null) {
-    if (!(key in globalThis[REGISTRY_KEY])) throw new UnsupportedPeerError(specifier);
-    return specifier;
-  }
-  if (nodeModule2.isBuiltin(specifier)) return specifier.startsWith("node:") ? specifier : `node:${specifier}`;
-  const callerPath = fileURLToPath2(caller);
-  const file = specifier.startsWith("file:") || specifier.startsWith(".") || isAbsolute2(specifier) ? new URL(specifier, caller) : void 0;
-  if (file?.search || file?.hash) throw new Error('Bun does not preserve reviewed module query or fragment identity; select [extension_host] runtime = "node" for this composition');
-  let path2;
-  if (file) path2 = require3 && !specifier.startsWith("file:") ? resolve3(dirname2(callerPath), specifier) : resolve3(fileURLToPath2(file));
-  else if (require3) path2 = nodeModule2.createRequire(caller).resolve(specifier);
-  else path2 = bunResolve(specifier, dirname2(callerPath), caller);
-  const inside = keyIn(closure, path2);
-  if (inside === void 0 || !(inside in closure.files) || !unlinkedInside(closure, inside, path2)) throw new Error("composition import escapes the reviewed file closure");
-  return require3 ? path2 : file ? file.href : pathToFileURL3(path2).href;
-}
-function bunResolve(specifier, from2, caller) {
-  const bun = globalThis.Bun;
-  if (typeof bun?.resolveSync === "function") {
-    try {
-      return bun.resolveSync(specifier, from2);
-    } catch {
-    }
-  }
-  return nodeModule2.createRequire(caller).resolve(specifier);
-}
-function keyIn(closure, path2) {
-  const canonical = insideKey(closure.canonicalRoot, path2);
-  if (canonical !== void 0) return canonical;
-  for (const root of closure.rawRoots) {
-    const raw = insideKey(root, path2);
-    if (raw !== void 0) return raw;
-  }
-}
-function unlinkedInside(closure, key, path2) {
-  let canonical;
-  try {
-    canonical = canonicalPath(path2);
-  } catch {
-    return false;
-  }
-  return unlinkedKeyMatches(closure.canonicalRoot, key, canonical);
-}
-function admitReviewedClosure(baseUrl, files) {
-  const rawRoot = resolve3(fileURLToPath2(baseUrl));
-  const canonicalRoot = canonicalPath(rawRoot);
-  const id = pathKey(canonicalRoot);
-  const accepted = /* @__PURE__ */ Object.create(null);
-  const keys = Object.keys(files);
-  if (keys.length > 16384) throw new Error("reviewed composition closure exceeds its file limit");
-  for (const key of keys) {
-    if (!key || key.split("/").some((part) => !part || part === "." || part === "..") || key.includes("\\") || key.includes(":") || isAbsolute2(key) || !/^[a-f0-9]{64}$/.test(files[key])) throw new Error("invalid reviewed composition closure file");
-    accepted[key] = files[key];
-  }
-  const existing = reviewedClosures.get(id);
-  if (existing) {
-    if (Object.keys(existing.files).length !== keys.length || keys.some((key) => existing.files[key] !== accepted[key])) throw new Error("the same composition root carries different file receipts");
-    existing.refs++;
-    existing.rawRoots.add(rawRoot);
-  } else reviewedClosures.set(id, { files: Object.freeze(accepted), refs: 1, canonicalRoot, rawRoots: /* @__PURE__ */ new Set([rawRoot]) });
-  let disposed = false;
-  return () => {
-    if (disposed) return;
-    disposed = true;
-    const current2 = reviewedClosures.get(id);
-    if (current2 && --current2.refs === 0) reviewedClosures.delete(id);
-  };
-}
-async function importReviewedModule(baseUrl, path2) {
-  const rawRoot = resolve3(fileURLToPath2(baseUrl));
-  const id = pathKey(canonicalPath(rawRoot));
-  const receipt = reviewedClosures.get(id);
-  if (!receipt) throw new Error("composition module closure is no longer admitted");
-  const entry = resolve3(rawRoot, path2);
-  const admitted = closureAt(pathToFileURL3(entry).href);
-  if (!admitted || admitted.root !== id || !(admitted.path in receipt.files)) throw new Error("composition module is absent from reviewed closure");
-  return import(pathToFileURL3(entry).href);
-}
-function closureAt(url) {
-  if (!url?.startsWith("file:")) return;
-  const path2 = resolve3(fileURLToPath2(url));
-  for (const [root, receipt] of reviewedClosures) {
-    const inside = keyIn(receipt, path2);
-    if (inside !== void 0) return { root, receipt, path: inside };
-  }
-}
-function installResolveHooks(modules) {
-  if (installed) return;
-  installed = true;
-  globalThis[REGISTRY_KEY] = modules;
-  if (RUNTIME.name === "bun") {
-    installBunResolver(modules);
-    return;
-  }
-  nodeModule2.registerHooks({
-    resolve(specifier, context, nextResolve) {
-      const key = classifySpecifier(specifier);
-      if (key !== null) {
-        if (!(key in modules)) throw new UnsupportedPeerError(specifier);
-        return { url: `${SCHEME}${key}`, format: "module", shortCircuit: true };
-      }
-      const caller = closureAt(context.parentURL);
-      const bare = !nodeModule2.isBuiltin(specifier) && !specifier.startsWith(".") && !specifier.startsWith("/") && !specifier.startsWith("file:");
-      const result = nextResolve(specifier, context);
-      if (caller) {
-        if (result.url.startsWith("file:")) {
-          const target = closureAt(result.url);
-          if (!target || target.root !== caller.root || !(target.path in caller.receipt.files) || !unlinkedInside(caller.receipt, target.path, fileURLToPath2(result.url))) throw new Error("composition import escapes the reviewed file closure");
-        } else if (bare) {
-          throw new Error("composition import escapes the reviewed file closure");
-        }
-      }
-      return result;
-    },
-    load(url, context, nextLoad) {
-      if (url.startsWith(SCHEME)) {
-        const key = url.slice(SCHEME.length);
-        return { format: "module", source: virtualSource(key, modules[key]), shortCircuit: true };
-      }
-      const result = nextLoad(url, context);
-      const closure = closureAt(url);
-      if (closure) {
-        if (!(closure.path in closure.receipt.files) || result.source === void 0 || result.source === null) throw new Error("module was absent from reviewed composition closure");
-        if (!unlinkedInside(closure.receipt, closure.path, fileURLToPath2(url))) throw new Error("module was absent from reviewed composition closure or contains a symbolic link");
-        const source = typeof result.source === "string" ? Buffer.from(result.source) : Buffer.from(result.source);
-        if (source.length > 256 * 1024 * 1024 || createHash2("sha256").update(source).digest("hex") !== closure.receipt.files[closure.path]) throw new Error("composition module bytes changed after review");
-      }
-      return result;
-    }
-  });
-}
-var SCHEME, REGISTRY_KEY, SINGLETONS, UnsupportedPeerError, PEER_PATH, reviewedClosures, installed;
-var init_resolve_hooks = __esm({
-  "src/dsh/resolve-hooks.ts"() {
-    "use strict";
-    init_define_BUILTIN_MODULE_DIGESTS();
-    init_canonical_path();
-    init_runtime();
-    init_bun_closure();
-    init_compatibility();
-    SCHEME = "codewhale-host:";
-    REGISTRY_KEY = /* @__PURE__ */ Symbol.for("codewhale.extension-host.modules");
-    SINGLETONS = compatibility_default.module_singletons;
-    UnsupportedPeerError = class extends Error {
-      constructor(specifier) {
-        super(`requires \`${specifier}\`, which the Codewhale extension host does not provide`);
-        this.specifier = specifier;
-        this.name = "UnsupportedPeerError";
-      }
-      specifier;
-    };
-    PEER_PATH = /[\\/]node_modules[\\/]((?:@deepseek-ai[\\/](?:dsh-[^\\/]+|cordis(?:-[^\\/]+)?|schemastery|cosmokit))|cosmokit)[\\/]/;
-    reviewedClosures = /* @__PURE__ */ new Map();
-    installed = false;
-  }
-});
-
-// src/dsh/missing-services.ts
-function describeMissingServices(names, { scoped: classifyScoped = true } = {}) {
-  const absent = names.filter((name) => !classifyScoped || !PROVIDED_SERVICES.has(name));
-  const scoped = names.filter((name) => classifyScoped && PROVIDED_SERVICES.has(name));
-  const parts = [];
-  if (absent.length > 0) {
-    const owned = absent.filter((name) => REFUSED_SERVICES.has(name));
-    const reasons = [...new Set(absent.flatMap((name) => UNPROVIDED_REASONS.filter(([matches]) => matches(name)).map(([, reason]) => reason)))];
-    parts.push(`${quoted(absent)}, not provided by the Codewhale extension host in this phase` + (reasons.length > 0 ? ` (${reasons.join("; ")})` : "") + (owned.length > 0 ? `; ${quoted(owned)} belong${owned.length === 1 ? "s" : ""} to the Codewhale core and no reviewed bridge exposes ${owned.length === 1 ? "it" : "them"} yet` : ""));
-  }
-  if (scoped.length > 0) parts.push(`${quoted(scoped)}, provided by the host but unavailable in this scope`);
-  return parts.join("; ");
-}
-var REFUSED_SERVICES, PROVIDED_SERVICES, UNPROVIDED_REASONS, quoted;
-var init_missing_services = __esm({
-  "src/dsh/missing-services.ts"() {
-    "use strict";
-    init_define_BUILTIN_MODULE_DIGESTS();
-    init_compatibility();
-    REFUSED_SERVICES = new Set(compatibility_default.refused_services);
-    PROVIDED_SERVICES = new Set(Object.values(compatibility_default.provided_services).flat());
-    UNPROVIDED_REASONS = [
-      [(name) => name === "webServer" || name === "connection", "DSH Web UI services; Codewhale has no plugin web server"],
-      [(name) => name === "agentPresets", "the DSH 0.2.2 agent-preset registry is not adopted"],
-      [(name) => name.startsWith("@deepseek-ai/dsh-client-"), "DSH client UI services"]
-    ];
-    quoted = (names) => names.map((name) => `\`${name}\``).join(", ");
-  }
-});
-
-// src/shims/prompt.ts
-function normalizePromptSection(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError("prompt section must be an object with id and text");
-  }
-  if (Object.keys(value).some((key) => key !== "id" && key !== "text" && key !== "interpolate")) {
-    throw new TypeError("prompt section supports only id and text, plus optional model-cwd interpolation");
-  }
-  const { id, text: text3, interpolate: interpolate2 } = value;
-  if (typeof id !== "string" || !SECTION_ID.test(id)) {
-    throw new TypeError("prompt section id must be lower case, start with a letter, and use a-z, 0-9, _ or - (at most 64 characters)");
-  }
-  if (typeof text3 !== "string" || text3.trim().length === 0) {
-    throw new TypeError(`prompt section "${id}" needs non-empty text`);
-  }
-  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text3)) {
-    throw new TypeError(`prompt section "${id}" text contains control characters`);
-  }
-  if (Buffer.byteLength(text3, "utf8") > MAX_PROMPT_SECTION_BYTES) {
-    throw new RangeError(`prompt section "${id}" exceeds ${MAX_PROMPT_SECTION_BYTES} UTF-8 bytes`);
-  }
-  if (interpolate2 !== void 0 && interpolate2 !== "model-cwd") throw new TypeError("prompt interpolation supports only model-cwd");
-  if (interpolate2 !== void 0) validatePromptTemplate(text3);
-  return Object.freeze({ id, text: text3, ...interpolate2 === void 0 ? {} : { interpolate: interpolate2 } });
-}
-function validatePromptTemplate(text3) {
-  for (let open2 = text3.indexOf("{{"); open2 >= 0; ) {
-    const group = /^\{\{([^{}]*)\}\}/u.exec(text3.slice(open2));
-    if (!group) {
-      if (text3.indexOf("}}", open2 + 2) >= 0) throw new TypeError("malformed prompt variable reference");
-      open2 = text3.indexOf("{{", open2 + 2);
-      continue;
-    }
-    if (!/^[a-z][a-z0-9_]*$/u.test(group[1])) throw new TypeError("malformed prompt variable reference");
-    if (group[1] !== "model" && group[1] !== "cwd") throw new TypeError(`unknown Core prompt variable "{{${group[1]}}}"; supported variables: model, cwd`);
-    open2 = text3.indexOf("{{", open2 + group[0].length);
-  }
-}
-function definePromptService(host2) {
-  class PromptShim extends Service {
-    constructor(ctx) {
-      super(ctx, "prompt");
-    }
-    registerSection(definition) {
-      const ctx = this.ctx;
-      const owner = host2.ownerOf(ctx);
-      if (!owner) throw new Error("prompt.registerSection called outside an extension owner");
-      const section = normalizePromptSection(definition);
-      return ctx.effect(() => host2.promptSections.register(owner, section), `prompt.registerSection(${JSON.stringify(section.id)})`);
-    }
-  }
-  Object.freeze(PromptShim.prototype);
-  return PromptShim;
-}
-var MAX_PROMPT_SECTION_BYTES, MAX_PROMPT_OWNER_BYTES, MAX_PROMPT_HOST_BYTES, MAX_PROMPT_SECTIONS_PER_OWNER, MAX_PROMPT_SECTIONS_PER_HOST, SECTION_ID, PromptSections;
-var init_prompt = __esm({
-  "src/shims/prompt.ts"() {
-    "use strict";
-    init_define_BUILTIN_MODULE_DIGESTS();
-    init_lib2();
-    init_owned();
-    MAX_PROMPT_SECTION_BYTES = 4 * 1024;
-    MAX_PROMPT_OWNER_BYTES = 32 * 1024;
-    MAX_PROMPT_HOST_BYTES = 128 * 1024;
-    MAX_PROMPT_SECTIONS_PER_OWNER = 128;
-    MAX_PROMPT_SECTIONS_PER_HOST = 1024;
-    SECTION_ID = /^[a-z][a-z0-9_-]{0,63}$/u;
-    PromptSections = class {
-      registrations;
-      templates;
-      owners = /* @__PURE__ */ new Map();
-      bytes = 0;
-      count = 0;
-      constructor(rpc2, ownedBy, warn) {
-        this.registrations = new OwnedRegistrations(rpc2, "prompt_section", ownedBy, warn);
-        this.templates = new OwnedRegistrations(rpc2, "prompt_template", ownedBy, warn);
-      }
-      register(owner, definition) {
-        if (owner.state !== "activating" && owner.state !== "active") throw new Error("prompt owner is not live");
-        const section = normalizePromptSection(definition);
-        const sections = this.owners.get(owner) ?? /* @__PURE__ */ new Map();
-        if (sections.has(section.id)) throw new Error(`prompt section "${section.id}" is already registered; dispose it before registering it again`);
-        const bytes = Buffer.byteLength(section.text, "utf8");
-        const ownerBytes = [...sections.values()].reduce((sum, item) => sum + item.bytes, 0);
-        if (ownerBytes + bytes > MAX_PROMPT_OWNER_BYTES || this.bytes + bytes > MAX_PROMPT_HOST_BYTES) {
-          throw new RangeError("prompt section owner or host UTF-8 byte limit reached");
-        }
-        if (sections.size >= MAX_PROMPT_SECTIONS_PER_OWNER || this.count >= MAX_PROMPT_SECTIONS_PER_HOST) {
-          throw new RangeError("prompt section owner or host registration limit reached");
-        }
-        const entry = { owner, name: section.id, definition: section, disposed: false };
-        const undo = (section.interpolate === void 0 ? this.registrations : this.templates).add(entry, { name: section.id, description: section.text });
-        const record4 = { entry, bytes, dispose: () => {
-          if (sections.get(section.id) !== record4) return;
-          sections.delete(section.id);
-          this.bytes -= bytes;
-          this.count -= 1;
-          if (sections.size === 0) this.owners.delete(owner);
-          undo();
-        } };
-        sections.set(section.id, record4);
-        this.owners.set(owner, sections);
-        this.bytes += bytes;
-        this.count += 1;
-        return record4.dispose;
-      }
-      /** Release reservations even after a plugin fails or times out during teardown. */
-      forget(owner) {
-        for (const record4 of [...this.owners.get(owner)?.values() ?? []]) record4.dispose();
-        this.registrations.forget(owner);
-        this.templates.forget(owner);
-      }
-    };
-  }
-});
-
 // src/protocol.generated.ts
-var PROTOCOL_VERSION, MAGIC_ASCII, HEADER_LEN, MAX_FRAME, MAX_INFLIGHT, ErrorCode, METHODS, SHAPES;
+var PROTOCOL_VERSION, MAGIC_ASCII, HEADER_LEN, MAX_FRAME, MAX_INFLIGHT, IMAGE_LIMITS, ErrorCode, METHODS, SHAPES;
 var init_protocol_generated = __esm({
   "src/protocol.generated.ts"() {
     "use strict";
@@ -16568,6 +15919,14 @@ var init_protocol_generated = __esm({
     HEADER_LEN = 8;
     MAX_FRAME = 33554432;
     MAX_INFLIGHT = 256;
+    IMAGE_LIMITS = {
+      maxImageBytes: 5242880,
+      maxImagesPerMessage: 1,
+      maxMessageImageBytes: 5242880,
+      maxImagePixels: 33554432,
+      maxImageDimension: 8192,
+      mediaTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"]
+    };
     ErrorCode = {
       ParseError: -32700,
       InvalidRequest: -32600,
@@ -17059,7 +16418,7 @@ var init_rpc = __esm({
         const id = this.nextId++;
         const message = { jsonrpc: "2.0", id, method, params };
         validateMessage(message, "host_to_core", this.tier);
-        return new Promise((resolve6, reject) => {
+        return new Promise((resolve7, reject) => {
           const onAbort = () => {
             if (!this.pending.delete(id)) return;
             this.notify("$/cancel", { id });
@@ -17068,7 +16427,7 @@ var init_rpc = __esm({
           this.pending.set(id, {
             resolve: (value) => {
               signal?.removeEventListener("abort", onAbort);
-              resolve6(value);
+              resolve7(value);
             },
             reject: (error) => {
               signal?.removeEventListener("abort", onAbort);
@@ -17223,12 +16582,17 @@ function defineSubagents(host2) {
       super(ctx, "subagents");
     }
     getProvider(name) {
-      return name === "spawn" ? SPAWN_PROVIDER : void 0;
+      if (name === "spawn") return SPAWN_PROVIDER;
+      if (name === "fork") return FORK_PROVIDER;
+      return void 0;
+    }
+    listProviders() {
+      return Object.freeze(["spawn", "fork"]);
     }
     async startActivation(request) {
       const owner = host2.ownerOf(this.ctx);
       const input = plain(request, ["provider", "label", "childId", "request", "signal", "delivery"], "activation");
-      if (input.provider !== "spawn") throw new RpcError(ErrorCode.NotAvailable, "only the spawn provider is available");
+      if (input.provider !== "spawn" && input.provider !== "fork") throw new RpcError(ErrorCode.NotAvailable, "only the spawn and fork providers are available");
       const spawn = plain(input.request, ["parent", "prompt", "agentOptions"], "spawn request");
       const options = spawn.agentOptions === void 0 ? {} : plain(spawn.agentOptions, ["model"], "agentOptions");
       if (options.model !== void 0 && typeof options.model !== "string") throw new RpcError(ErrorCode.InvalidParams, "agentOptions.model must be a string");
@@ -17284,6 +16648,11 @@ function defineSubagents(host2) {
               const value = plain(filter, ["deny"], "tool filter");
               if (!Array.isArray(value.deny) || value.deny.some((name) => typeof name !== "string" || name === "")) throw new RpcError(ErrorCode.InvalidParams, "deny must be a list of tool names");
               for (const name of value.deny) denied2.add(name);
+              return () => void 0;
+            },
+            guard(guardFn) {
+              sealed();
+              if (typeof guardFn !== "function") throw new RpcError(ErrorCode.InvalidParams, "tools.guard requires a guard function");
               return () => void 0;
             }
           })
@@ -17345,7 +16714,7 @@ function defineAgents() {
   Object.freeze(AgentsShim.prototype);
   return AgentsShim;
 }
-var SPAWN_PROVIDER, PERSONA_ORDER, DSH_AGENT_ADAPTERS;
+var SPAWN_PROVIDER, FORK_PROVIDER, PERSONA_ORDER, DSH_AGENT_ADAPTERS;
 var init_agents = __esm({
   "src/dsh/agents.ts"() {
     "use strict";
@@ -17357,7 +16726,12 @@ var init_agents = __esm({
     SPAWN_PROVIDER = Object.freeze({
       name: "spawn",
       inheritsParentContext: false,
-      capabilities: Object.freeze({ persona: true, toolFilter: true, agentOptions: true })
+      capabilities: Object.freeze({ persona: true, toolFilter: true, agentOptions: true, depthLimit: true })
+    });
+    FORK_PROVIDER = Object.freeze({
+      name: "fork",
+      inheritsParentContext: true,
+      capabilities: Object.freeze({ persona: true, toolFilter: true, agentOptions: true, depthLimit: true })
     });
     PERSONA_ORDER = 0;
     DSH_AGENT_ADAPTERS = Object.freeze([
@@ -17786,6 +17160,29 @@ function descriptor(value) {
   }
   return { ns: row.ns, writable: row.writable, roots: row.roots.map(String), value: row.value, revision: row.revision, applied: typeof row.applied === "boolean" ? row.applied : null, applies: "reload" };
 }
+function hostLocalePreference() {
+  const fromIntl = (() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().locale;
+    } catch {
+      return void 0;
+    }
+  })();
+  const raw = fromIntl || process.env.LC_ALL || process.env.LC_MESSAGES || process.env.LANG || "en";
+  const cleaned = String(raw).split(".")[0].replaceAll("_", "-").trim();
+  return cleaned.length > 0 ? cleaned : "en";
+}
+function localeDescriptor() {
+  return Object.freeze({
+    ns: "locale",
+    writable: false,
+    roots: Object.freeze([]),
+    value: Object.freeze({ preference: hostLocalePreference() }),
+    revision: "host-locale",
+    applied: true,
+    applies: "reload"
+  });
+}
 var SettingsConflictError, settingsAdapter;
 var init_settings = __esm({
   "src/dsh/settings.ts"() {
@@ -17814,9 +17211,19 @@ var init_settings = __esm({
           constructor(ctx) {
             super(ctx, "settings");
           }
+          get locale() {
+            return Object.freeze({ preference: hostLocalePreference() });
+          }
           describe() {
-            host2.brokerTicket(this.ctx, "settings");
-            return host2.broker(this.ctx, "settings", "describe", {}).then((row) => [descriptor(row)]);
+            try {
+              host2.brokerTicket(this.ctx, "settings");
+            } catch {
+              return [localeDescriptor()];
+            }
+            return host2.broker(this.ctx, "settings", "describe", {}).then((row) => {
+              const desc = descriptor(row);
+              return desc.ns === "locale" ? [desc] : [desc, localeDescriptor()];
+            });
           }
           async update(ns, patch, expectedRevision) {
             return this.write(ns, "update", { patch: plain2(patch, "a settings patch") }, expectedRevision);
@@ -18054,12 +17461,586 @@ var init_terminal = __esm({
   }
 });
 
+// src/dsh/attachments.ts
+function invalid5(message) {
+  throw new RpcError(ErrorCode.InvalidParams, message);
+}
+function isPlainRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) && !ArrayBuffer.isView(value);
+}
+function checkAllowedKeys(value, allowed, label2) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) invalid5(`${label2} contains unsupported field \`${key}\``);
+  }
+}
+function validateSignal(signal) {
+  if (signal === void 0) return void 0;
+  if (!(signal instanceof AbortSignal)) {
+    invalid5("signal must be an AbortSignal");
+  }
+  return signal;
+}
+function checkAborted(signal) {
+  if (signal?.aborted === true) {
+    throw new AttachmentError("CANCELLED", "the attachment operation was aborted");
+  }
+}
+function validateName(name) {
+  if (name === void 0) return void 0;
+  if (typeof name !== "string" || name.length === 0 || name.length > MAX_NAME_LEN || name.startsWith(".") || name.includes("/") || name.includes("\\") || name.includes("..") || name.includes(":") || /[\x00-\x1f\x7f]/.test(name)) {
+    invalid5("attachment name must be a non-empty basename with no path separators or control characters");
+  }
+  return name;
+}
+function serializeImageBytesInput(input) {
+  if (!isPlainRecord(input)) invalid5("image input must be an object");
+  checkAllowedKeys(input, IMAGE_INPUT_KEYS, "image input");
+  const { data: data2, mediaType } = input;
+  if (!(data2 instanceof Uint8Array)) invalid5("image data must be a Uint8Array");
+  if (typeof mediaType !== "string" || mediaType.length === 0) invalid5("mediaType must be a non-empty string");
+  if (!ALLOWED_MEDIA_TYPES.has(mediaType)) {
+    throw new AttachmentError("UNSUPPORTED_IMAGE_TYPE", `unsupported image media type: ${mediaType}`);
+  }
+  const byteLength = data2.byteLength;
+  if (byteLength === 0) {
+    throw new AttachmentError("INVALID_IMAGE", "image payload is empty");
+  }
+  if (byteLength > ATTACHMENT_IMAGE_LIMITS.maxImageBytes) {
+    throw new AttachmentError("IMAGE_TOO_LARGE", `image exceeds the ${ATTACHMENT_IMAGE_LIMITS.maxImageBytes} byte limit`);
+  }
+  const name = validateName(input.name);
+  const data_base64 = Buffer.from(data2.buffer, data2.byteOffset, byteLength).toString("base64");
+  return name === void 0 ? { data_base64, media_type: mediaType } : { data_base64, media_type: mediaType, name };
+}
+function positiveU32(value, label2) {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0 || value > 4294967295) {
+    invalid5(`${label2} must be a positive integer`);
+  }
+  return value;
+}
+function positiveSafeInt(value, label2) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    invalid5(`${label2} must be a positive integer`);
+  }
+  return value;
+}
+function serializeRef(ref2) {
+  if (!isPlainRecord(ref2)) invalid5("attachment reference must be an object");
+  checkAllowedKeys(ref2, REF_KEYS, "attachment reference");
+  if (typeof ref2.attachmentId !== "string" || !ATTACHMENT_ID.test(ref2.attachmentId)) {
+    throw new AttachmentError("INVALID_ATTACHMENT_REF", "invalid attachment id");
+  }
+  const wire = { attachment_id: ref2.attachmentId };
+  if (ref2.mediaType !== void 0) {
+    if (typeof ref2.mediaType !== "string" || ref2.mediaType.length === 0) invalid5("attachment mediaType must be a string");
+    wire.media_type = ref2.mediaType;
+  }
+  if (ref2.bytes !== void 0) wire.bytes = positiveSafeInt(ref2.bytes, "attachment bytes");
+  if (ref2.width !== void 0) wire.width = positiveU32(ref2.width, "attachment width");
+  if (ref2.height !== void 0) wire.height = positiveU32(ref2.height, "attachment height");
+  return wire;
+}
+function serializeRequestTarget(target) {
+  if (target === void 0) return {};
+  if (!isPlainRecord(target)) invalid5("readImageRequest target must be an object");
+  checkAllowedKeys(target, REQUEST_TARGET_KEYS, "readImageRequest target");
+  const wire = {};
+  if (target.width !== void 0) {
+    const width = positiveU32(target.width, "width");
+    if (width > ATTACHMENT_IMAGE_LIMITS.maxImageDimension) {
+      throw new AttachmentError("IMAGE_DIMENSION_TOO_LARGE", `requested width exceeds the ${ATTACHMENT_IMAGE_LIMITS.maxImageDimension}px limit`);
+    }
+    wire.width = width;
+  }
+  if (target.height !== void 0) {
+    const height = positiveU32(target.height, "height");
+    if (height > ATTACHMENT_IMAGE_LIMITS.maxImageDimension) {
+      throw new AttachmentError("IMAGE_DIMENSION_TOO_LARGE", `requested height exceeds the ${ATTACHMENT_IMAGE_LIMITS.maxImageDimension}px limit`);
+    }
+    wire.height = height;
+  }
+  if (target.maxBytes !== void 0) {
+    const maxBytes = positiveSafeInt(target.maxBytes, "maxBytes");
+    if (maxBytes > ATTACHMENT_IMAGE_LIMITS.maxImageBytes) {
+      throw new AttachmentError("IMAGE_TOO_LARGE", `requested maxBytes exceeds the ${ATTACHMENT_IMAGE_LIMITS.maxImageBytes} byte limit`);
+    }
+    wire.max_bytes = maxBytes;
+  }
+  return wire;
+}
+function parseRefWire(value, what) {
+  if (!isPlainRecord(value) || typeof value.attachment_id !== "string" || !ATTACHMENT_ID.test(value.attachment_id) || typeof value.media_type !== "string" || !ALLOWED_MEDIA_TYPES.has(value.media_type) || typeof value.bytes !== "number" || !Number.isSafeInteger(value.bytes) || value.bytes <= 0 || typeof value.width !== "number" || !Number.isInteger(value.width) || value.width <= 0 || typeof value.height !== "number" || !Number.isInteger(value.height) || value.height <= 0) {
+    throw new RpcError(ErrorCode.Internal, `invalid ${what}`);
+  }
+  return {
+    attachmentId: value.attachment_id,
+    mediaType: value.media_type,
+    bytes: value.bytes,
+    width: value.width,
+    height: value.height
+  };
+}
+function mapBrokerError(error) {
+  if (error instanceof Error && error.name === "AbortError") {
+    return new AttachmentError("CANCELLED", error.message || "the attachment operation was aborted");
+  }
+  if (error !== null && typeof error === "object") {
+    const code = error.code;
+    const message = error.message;
+    if (code === ErrorCode.Cancelled) {
+      return new AttachmentError("CANCELLED", typeof message === "string" && message.length > 0 ? message : "the attachments broker call was cancelled");
+    }
+    if (code === ErrorCode.Refused && typeof message === "string") {
+      const match = /^\[([A-Z0-9_]+)\]\s*(.+)$/s.exec(message);
+      if (match !== null) {
+        return new AttachmentError(match[1], match[2]);
+      }
+    }
+  }
+  return error;
+}
+async function callBroker(host2, ctx, method, input, signal) {
+  const checkedSignal = validateSignal(signal);
+  checkAborted(checkedSignal);
+  const settled = host2.broker(ctx, "attachments", method, input, checkedSignal).catch((error) => {
+    throw mapBrokerError(error);
+  });
+  settled.catch(() => void 0);
+  if (checkedSignal === void 0) {
+    return await settled;
+  }
+  let onAbort;
+  try {
+    const aborted = new Promise((_, reject) => {
+      onAbort = () => reject(new AttachmentError("CANCELLED", "the attachment operation was aborted"));
+      checkedSignal.addEventListener("abort", onAbort, { once: true });
+    });
+    const result = await Promise.race([settled, aborted]);
+    checkAborted(checkedSignal);
+    return result;
+  } finally {
+    if (onAbort !== void 0) checkedSignal.removeEventListener("abort", onAbort);
+  }
+}
+function notAvailable(method) {
+  throw new RpcError(
+    ErrorCode.NotAvailable,
+    `attachments.${method} is not available: Codewhale brokers conversation images only and exposes no generic file store`
+  );
+}
+var ATTACHMENT_ID, IMAGE_INPUT_KEYS, REF_KEYS, REQUEST_TARGET_KEYS, MAX_NAME_LEN, FROZEN_MEDIA_TYPES, ALLOWED_MEDIA_TYPES, ATTACHMENT_IMAGE_LIMITS, AttachmentError, attachmentsAdapter;
+var init_attachments = __esm({
+  "src/dsh/attachments.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_lib2();
+    init_protocol();
+    init_protocol_generated();
+    init_rpc();
+    ATTACHMENT_ID = /^sha256:[0-9a-f]{64}$/;
+    IMAGE_INPUT_KEYS = /* @__PURE__ */ new Set(["data", "mediaType", "name"]);
+    REF_KEYS = /* @__PURE__ */ new Set(["attachmentId", "mediaType", "bytes", "width", "height"]);
+    REQUEST_TARGET_KEYS = /* @__PURE__ */ new Set(["width", "height", "maxBytes"]);
+    MAX_NAME_LEN = 128;
+    FROZEN_MEDIA_TYPES = Object.freeze([...IMAGE_LIMITS.mediaTypes]);
+    ALLOWED_MEDIA_TYPES = new Set(FROZEN_MEDIA_TYPES);
+    ATTACHMENT_IMAGE_LIMITS = Object.freeze({
+      maxImageBytes: IMAGE_LIMITS.maxImageBytes,
+      maxImagesPerMessage: IMAGE_LIMITS.maxImagesPerMessage,
+      maxMessageImageBytes: IMAGE_LIMITS.maxMessageImageBytes,
+      maxImagePixels: IMAGE_LIMITS.maxImagePixels,
+      maxImageDimension: IMAGE_LIMITS.maxImageDimension,
+      mediaTypes: FROZEN_MEDIA_TYPES
+    });
+    AttachmentError = class extends Error {
+      code;
+      constructor(code, message) {
+        super(message);
+        this.name = "AttachmentError";
+        this.code = code;
+      }
+    };
+    attachmentsAdapter = {
+      service: "attachments",
+      define(host2) {
+        class AttachmentsService extends Service {
+          constructor(ctx) {
+            super(ctx, "attachments");
+          }
+          get imageLimits() {
+            return ATTACHMENT_IMAGE_LIMITS;
+          }
+          imageHostPath(_ref, signal) {
+            const checkedSignal = validateSignal(signal);
+            checkAborted(checkedSignal);
+            return void 0;
+          }
+          async validateImage(input, signal) {
+            const wire = serializeImageBytesInput(input);
+            const res = await callBroker(host2, this.ctx, "validate", wire, signal);
+            if (!isPlainRecord(res) || res.ok !== true || typeof res.media_type !== "string" || !ALLOWED_MEDIA_TYPES.has(res.media_type) || typeof res.bytes !== "number" || !Number.isSafeInteger(res.bytes) || res.bytes <= 0 || typeof res.width !== "number" || !Number.isInteger(res.width) || res.width <= 0 || typeof res.height !== "number" || !Number.isInteger(res.height) || res.height <= 0) {
+              throw new RpcError(ErrorCode.Internal, "invalid attachments.validate broker response");
+            }
+            return {
+              ok: true,
+              mediaType: res.media_type,
+              bytes: res.bytes,
+              width: res.width,
+              height: res.height
+            };
+          }
+          async saveImage(input, signal) {
+            const wire = serializeImageBytesInput(input);
+            const res = await callBroker(host2, this.ctx, "save", wire, signal);
+            if (!isPlainRecord(res)) throw new RpcError(ErrorCode.Internal, "invalid attachments.save broker response");
+            return parseRefWire(res.attachment, "attachments.save attachment reference");
+          }
+          async readImage(ref2, signal) {
+            const attachment = serializeRef(ref2);
+            const res = await callBroker(host2, this.ctx, "read", { attachment }, signal);
+            if (!isPlainRecord(res) || typeof res.data_base64 !== "string") {
+              throw new RpcError(ErrorCode.Internal, "invalid attachments.read broker response");
+            }
+            return {
+              data: Buffer.from(res.data_base64, "base64"),
+              ref: parseRefWire(res.attachment, "attachments.read attachment reference")
+            };
+          }
+          async readImageRequest(ref2, target, signal) {
+            const attachment = serializeRef(ref2);
+            const sizing = serializeRequestTarget(target);
+            const res = await callBroker(host2, this.ctx, "read_request", { attachment, ...sizing }, signal);
+            if (!isPlainRecord(res) || typeof res.variant_id !== "string" || !ATTACHMENT_ID.test(res.variant_id) || typeof res.data_base64 !== "string" || typeof res.media_type !== "string" || !ALLOWED_MEDIA_TYPES.has(res.media_type)) {
+              throw new RpcError(ErrorCode.Internal, "invalid attachments.read_request broker response");
+            }
+            return {
+              variantId: res.variant_id,
+              data: Buffer.from(res.data_base64, "base64"),
+              mediaType: res.media_type
+            };
+          }
+          saveFile() {
+            return notAvailable("saveFile");
+          }
+          admitEncodedFile() {
+            return notAvailable("admitEncodedFile");
+          }
+          saveFileStream() {
+            return notAvailable("saveFileStream");
+          }
+          readFileStream() {
+            return notAvailable("readFileStream");
+          }
+          readFile() {
+            return notAvailable("readFile");
+          }
+          fileHostPath() {
+            return notAvailable("fileHostPath");
+          }
+        }
+        Object.freeze(AttachmentsService.prototype);
+        return AttachmentsService;
+      }
+    };
+  }
+});
+
+// src/dsh/host-services.ts
+var agentPresetsAdapter, agentDefaultModelAdapter, sessionProjectionsAdapter, workspaceRegistryAdapter, typertGatewayAdapter, webAdapter, DSH_HOST_SERVICE_ADAPTERS;
+var init_host_services = __esm({
+  "src/dsh/host-services.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    init_network();
+    agentPresetsAdapter = {
+      service: "agentPresets",
+      define(host2) {
+        const ownerPresets = /* @__PURE__ */ new Map();
+        class AgentPresetsService extends Service {
+          constructor(ctx) {
+            super(ctx, "agentPresets");
+          }
+          get defaultId() {
+            return void 0;
+          }
+          get authorable() {
+            return false;
+          }
+          composedPreset() {
+            return void 0;
+          }
+          async list() {
+            const owner = host2.ownerOf(this.ctx);
+            const table = owner ? ownerPresets.get(owner.ref.owner_token) : void 0;
+            return table ? [...table.values()].map((row) => structuredClone(row)) : [];
+          }
+          async get(id) {
+            if (typeof id !== "string" || id.length === 0) return void 0;
+            const rows = await this.list();
+            return rows.find((row) => row.id === id);
+          }
+          async resolve(id) {
+            const found = await this.get(id ?? this.defaultId);
+            if (!found) throw new RpcError(ErrorCode.NotAvailable, "preset not found");
+            return found;
+          }
+          async remoteExportList() {
+            const presets = await this.list();
+            return { presets, authorable: false, defaultId: void 0, modeSelectionEnabled: false };
+          }
+          async compositionInventory() {
+            return [];
+          }
+          register(preset) {
+            const owner = host2.ownerOf(this.ctx);
+            if (!owner) throw new RpcError(ErrorCode.NotAvailable, "agentPresets.register requires an active owner");
+            if (!preset || typeof preset !== "object" || Array.isArray(preset)) {
+              throw new RpcError(ErrorCode.InvalidParams, "preset must be an object");
+            }
+            const record4 = preset;
+            const id = typeof record4.id === "string" && record4.id.trim().length > 0 ? record4.id.trim() : void 0;
+            if (!id) throw new RpcError(ErrorCode.InvalidParams, "preset.id must be a non-empty string");
+            const token = owner.ref.owner_token;
+            return this.ctx.effect(() => {
+              let table = ownerPresets.get(token);
+              if (!table) {
+                table = /* @__PURE__ */ new Map();
+                ownerPresets.set(token, table);
+              }
+              table.set(id, structuredClone(record4));
+              return () => {
+                const current2 = ownerPresets.get(token);
+                current2?.delete(id);
+                if (current2 && current2.size === 0) ownerPresets.delete(token);
+              };
+            }, `agentPresets.register(${JSON.stringify(id)})`);
+          }
+          mount() {
+            throw new RpcError(ErrorCode.NotAvailable, "select or mount presets through Core agent preset selection");
+          }
+          select() {
+            throw new RpcError(ErrorCode.NotAvailable, "select through Core AgentProfile/native preset selection before a turn");
+          }
+        }
+        Object.freeze(AgentPresetsService.prototype);
+        return AgentPresetsService;
+      }
+    };
+    agentDefaultModelAdapter = {
+      service: "agentDefaultModel",
+      define(host2) {
+        class AgentDefaultModelService extends Service {
+          constructor(ctx) {
+            super(ctx, "agentDefaultModel");
+          }
+          currentSelection() {
+            const invocation = host2.liveInvocation(this.ctx);
+            if (!invocation) return void 0;
+            return Object.freeze({ provider: "default", model: "default" });
+          }
+        }
+        Object.freeze(AgentDefaultModelService.prototype);
+        return AgentDefaultModelService;
+      }
+    };
+    sessionProjectionsAdapter = {
+      service: "sessionProjections",
+      define(host2) {
+        class SessionProjectionsService extends Service {
+          constructor(ctx) {
+            super(ctx, "sessionProjections");
+          }
+          get(sessionId) {
+            const invocation = host2.liveInvocation(this.ctx);
+            const activeId = invocation?.agent?.session?.id ?? invocation?.agent?.id;
+            if (!activeId) return void 0;
+            if (sessionId !== void 0 && sessionId !== activeId) return void 0;
+            return Object.freeze({
+              sessionId: activeId,
+              messages: Object.freeze([]),
+              events: Object.freeze([])
+            });
+          }
+          list() {
+            const current2 = this.get();
+            return current2 ? Object.freeze([current2]) : Object.freeze([]);
+          }
+          messages(sessionId) {
+            return this.get(sessionId)?.messages ?? Object.freeze([]);
+          }
+          events(sessionId) {
+            return this.get(sessionId)?.events ?? Object.freeze([]);
+          }
+        }
+        Object.freeze(SessionProjectionsService.prototype);
+        return SessionProjectionsService;
+      }
+    };
+    workspaceRegistryAdapter = {
+      service: "workspaceRegistry",
+      define(host2) {
+        function currentWorkspace(ctx) {
+          const invocation = host2.liveInvocation(ctx);
+          const cwd = invocation?.session?.header?.cwd;
+          if (!cwd) return void 0;
+          return Object.freeze({
+            id: cwd,
+            path: cwd,
+            status: async () => "available"
+          });
+        }
+        class WorkspaceRegistryService extends Service {
+          constructor(ctx) {
+            super(ctx, "workspaceRegistry");
+          }
+          get state() {
+            return Object.freeze({ archivedSessionIds: Object.freeze([]) });
+          }
+          list() {
+            const ws = currentWorkspace(this.ctx);
+            return ws ? Object.freeze([ws]) : Object.freeze([]);
+          }
+          get(id) {
+            const ws = currentWorkspace(this.ctx);
+            if (!ws || typeof id !== "string") return void 0;
+            return ws.id === id || ws.path === id ? ws : void 0;
+          }
+          resolveByPath(path2) {
+            const ws = currentWorkspace(this.ctx);
+            if (!ws || typeof path2 !== "string") return void 0;
+            return ws.path === path2 ? ws : void 0;
+          }
+          create() {
+            throw new RpcError(ErrorCode.Refused, "workspaceRegistry is read-only in Codewhale");
+          }
+          delete() {
+            throw new RpcError(ErrorCode.Refused, "workspaceRegistry is read-only in Codewhale");
+          }
+          enqueueOperation() {
+            throw new RpcError(ErrorCode.Refused, "workspaceRegistry mutations are refused in Codewhale");
+          }
+        }
+        Object.freeze(WorkspaceRegistryService.prototype);
+        return WorkspaceRegistryService;
+      }
+    };
+    typertGatewayAdapter = {
+      service: "typertGateway",
+      define(host2) {
+        const ownerServices = /* @__PURE__ */ new Map();
+        class TypertGatewayService extends Service {
+          constructor(ctx) {
+            super(ctx, "typertGateway");
+          }
+          register(name, service, descriptors = []) {
+            const owner = host2.ownerOf(this.ctx);
+            if (!owner) throw new RpcError(ErrorCode.NotAvailable, "typertGateway.register requires an active owner");
+            if (typeof name !== "string" || name.trim().length === 0 || name.length > 128) {
+              throw new RpcError(ErrorCode.InvalidParams, "typertGateway service name must be a non-empty string");
+            }
+            const key = name.trim();
+            const token = owner.ref.owner_token;
+            const frozenDescriptors = Object.freeze(Array.isArray(descriptors) ? [...descriptors] : []);
+            return this.ctx.effect(() => {
+              let table = ownerServices.get(token);
+              if (!table) {
+                table = /* @__PURE__ */ new Map();
+                ownerServices.set(token, table);
+              }
+              table.set(key, { service, descriptors: frozenDescriptors });
+              return () => {
+                const current2 = ownerServices.get(token);
+                current2?.delete(key);
+                if (current2 && current2.size === 0) ownerServices.delete(token);
+              };
+            }, `typertGateway.register(${JSON.stringify(key)})`);
+          }
+          list() {
+            const owner = host2.ownerOf(this.ctx);
+            const table = owner ? ownerServices.get(owner.ref.owner_token) : void 0;
+            return Object.freeze(table ? [...table.keys()] : []);
+          }
+          get(name) {
+            if (typeof name !== "string") return void 0;
+            const owner = host2.ownerOf(this.ctx);
+            const table = owner ? ownerServices.get(owner.ref.owner_token) : void 0;
+            return table?.get(name);
+          }
+        }
+        Object.freeze(TypertGatewayService.prototype);
+        return TypertGatewayService;
+      }
+    };
+    webAdapter = {
+      service: "web",
+      define(host2) {
+        const ownerProviders = /* @__PURE__ */ new Map();
+        class WebService extends Service {
+          constructor(ctx) {
+            super(ctx, "web");
+          }
+          fetch(input, init) {
+            return brokeredFetch(host2, this.ctx, input, init);
+          }
+          registerSearchProvider(provider) {
+            const owner = host2.ownerOf(this.ctx);
+            if (!owner) throw new RpcError(ErrorCode.NotAvailable, "web.registerSearchProvider requires an active owner");
+            if (!provider || typeof provider !== "object" || Array.isArray(provider)) {
+              throw new RpcError(ErrorCode.InvalidParams, "search provider must be an object");
+            }
+            const row = provider;
+            const id = typeof row.id === "string" && row.id.trim().length > 0 ? row.id.trim() : typeof row.name === "string" && row.name.trim().length > 0 ? row.name.trim() : void 0;
+            if (!id) throw new RpcError(ErrorCode.InvalidParams, "search provider requires a non-empty id or name");
+            const token = owner.ref.owner_token;
+            const entry = Object.freeze({
+              id,
+              name: typeof row.name === "string" && row.name.trim().length > 0 ? row.name.trim() : id,
+              ...typeof row.search === "function" ? { search: row.search } : {}
+            });
+            return this.ctx.effect(() => {
+              let table = ownerProviders.get(token);
+              if (!table) {
+                table = /* @__PURE__ */ new Map();
+                ownerProviders.set(token, table);
+              }
+              table.set(id, entry);
+              return () => {
+                const current2 = ownerProviders.get(token);
+                current2?.delete(id);
+                if (current2 && current2.size === 0) ownerProviders.delete(token);
+              };
+            }, `web.registerSearchProvider(${JSON.stringify(id)})`);
+          }
+          listSearchProviders() {
+            const owner = host2.ownerOf(this.ctx);
+            const table = owner ? ownerProviders.get(owner.ref.owner_token) : void 0;
+            return Object.freeze(table ? [...table.values()] : []);
+          }
+        }
+        Object.freeze(WebService.prototype);
+        return WebService;
+      }
+    };
+    DSH_HOST_SERVICE_ADAPTERS = Object.freeze([
+      agentPresetsAdapter,
+      agentDefaultModelAdapter,
+      sessionProjectionsAdapter,
+      workspaceRegistryAdapter,
+      typertGatewayAdapter,
+      webAdapter
+    ]);
+  }
+});
+
 // src/dsh/plugin-manager.ts
-function invalid5(what) {
+function invalid6(what) {
   return new RpcError(ErrorCode.Internal, `invalid plugins broker ${what}`);
 }
 function record3(value, what) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) throw invalid5(what);
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw invalid6(what);
   return value;
 }
 function named2(value, what) {
@@ -18077,7 +18058,7 @@ function booleanFlag(value, what) {
 function changeResult(value, what) {
   const row = record3(value, what);
   if (typeof row.changed !== "boolean" || typeof row.application !== "string" || !APPLICATIONS.has(row.application)) {
-    throw invalid5(what);
+    throw invalid6(what);
   }
   return row;
 }
@@ -18109,20 +18090,20 @@ var init_plugin_manager = __esm({
           async listBundles() {
             requireCreator(host2, this.ctx, "pluginManager");
             const answer = record3(await host2.broker(this.ctx, "plugins", "list", {}), "list");
-            if (!Array.isArray(answer.entries)) throw invalid5("list");
+            if (!Array.isArray(answer.entries)) throw invalid6("list");
             return answer.entries;
           }
           async listPlugins(signal) {
             requireCreator(host2, this.ctx, "pluginManager");
             const answer = record3(await host2.broker(this.ctx, "plugins", "status", {}, signal), "status");
-            if (!Array.isArray(answer.entries)) throw invalid5("status");
+            if (!Array.isArray(answer.entries)) throw invalid6("status");
             return answer.entries;
           }
           async listTools(signal) {
             requireCreator(host2, this.ctx, "pluginManager");
             const answer = record3(await host2.broker(this.ctx, "plugins", "tools", {}, signal), "tools");
             const list2 = answer.names ?? answer.tools;
-            if (!Array.isArray(list2)) throw invalid5("tools");
+            if (!Array.isArray(list2)) throw invalid6("tools");
             return list2.map((item) => String(item));
           }
           async setPluginEnabled(target, enabled) {
@@ -18267,6 +18248,8 @@ var init_adapters = __esm({
     init_settings();
     init_catalog();
     init_terminal();
+    init_attachments();
+    init_host_services();
     init_plugin_manager();
     DSH_ADAPTERS = [
       sessionsAdapter,
@@ -18279,8 +18262,468 @@ var init_adapters = __esm({
       settingsAdapter,
       pluginManagerAdapter,
       deepseekAccountAdapter,
-      terminalAdapter
+      terminalAdapter,
+      attachmentsAdapter,
+      ...DSH_HOST_SERVICE_ADAPTERS
     ];
+  }
+});
+
+// src/dsh/compatibility.json
+var compatibility_default;
+var init_compatibility = __esm({
+  "src/dsh/compatibility.json"() {
+    compatibility_default = {
+      version: 3,
+      target_dsh_version: "0.2.2-rc.1",
+      provided_services: {
+        dsh: [
+          "tools",
+          "commands",
+          "storage",
+          "skills",
+          "sessions",
+          "userQuestions",
+          "subagents",
+          "agents",
+          "systemPrompt",
+          "llm",
+          "credentials",
+          "settings",
+          "pluginManager",
+          "deepseekAccount",
+          "terminal",
+          "attachments",
+          "agentPresets",
+          "agentDefaultModel",
+          "sessionProjections",
+          "workspaceRegistry",
+          "typertGateway",
+          "web"
+        ],
+        cordis: [
+          "logger",
+          "events",
+          "reflect",
+          "registry"
+        ],
+        codewhale: [
+          "prompt",
+          "avatars",
+          "mcp",
+          "shellHooks",
+          "remote",
+          "workspace"
+        ]
+      },
+      refused_services: [
+        "shellHooks",
+        "loader",
+        "approval",
+        "agents",
+        "subagents",
+        "sessions",
+        "llm",
+        "sandboxPolicy",
+        "credentials",
+        "fs",
+        "subprocess",
+        "systemPrompt",
+        "runtimeLoop",
+        "tools",
+        "commands",
+        "prompt",
+        "storage",
+        "skills",
+        "avatars",
+        "mcp",
+        "logger",
+        "userQuestions",
+        "remote",
+        "workspace",
+        "settings",
+        "pluginManager",
+        "deepseekAccount",
+        "terminal",
+        "attachments",
+        "agentDefaultModel",
+        "sessionProjections",
+        "workspaceRegistry",
+        "typertGateway",
+        "web"
+      ],
+      row_bridges: {
+        "@deepseek-ai/dsh-mcp-client": "mcp",
+        "@deepseek-ai/dsh-skill-filesystem": "skills",
+        "@deepseek-ai/dsh-hooks-claude-code": "hooks-claude-code",
+        "@deepseek-ai/dsh-hooks-codex": "hooks-codex",
+        "@deepseek-ai/dsh-persona": "persona",
+        "@deepseek-ai/dsh-storage": "host-spine",
+        "@deepseek-ai/dsh-storage-json": "host-spine",
+        "@deepseek-ai/dsh-storage-domain": "host-spine",
+        "@deepseek-ai/dsh-workspace": "host-spine",
+        "@deepseek-ai/dsh-code-runtime-worker-thread": "host-spine",
+        "@deepseek-ai/dsh-tool-subagent/model-selection-settings": "host-spine",
+        "@deepseek-ai/dsh-agent-preset-registry": "host-spine",
+        "@deepseek-ai/dsh-cordis-host-runner": "host-spine",
+        "@deepseek-ai/dsh-host-webserver": "host-spine"
+      },
+      module_singletons: {
+        "@codewhale/dsh-composition": "dsh-composition",
+        "@deepseek-ai/cordis-plugin-loader": "dsh-loader",
+        "@deepseek-ai/cordis-plugin-include": "dsh-include",
+        "@deepseek-ai/cordis-plugin-group": "dsh-group",
+        "@deepseek-ai/cordis": "cordis",
+        "@deepseek-ai/schemastery": "schemastery",
+        "@deepseek-ai/cosmokit": "cosmokit",
+        cosmokit: "cosmokit",
+        "@deepseek-ai/dsh-tools": "dsh-tools",
+        "@deepseek-ai/dsh-util-values": "dsh-util-values",
+        "@deepseek-ai/dsh-commands/brand": "dsh-commands-brand",
+        "@deepseek-ai/dsh-llm": "dsh-llm-values",
+        "@deepseek-ai/dsh-session": "dsh-session-values",
+        "@deepseek-ai/dsh-session/surface": "dsh-session-surface",
+        "@deepseek-ai/dsh-system-prompt": "dsh-system-prompt-values",
+        "@deepseek-ai/dsh-user-questions": "dsh-user-questions-values",
+        "@deepseek-ai/dsh-credentials": "dsh-credentials",
+        "@deepseek-ai/dsh-settings": "dsh-settings",
+        "@deepseek-ai/dsh-home-paths": "dsh-home-paths",
+        "@deepseek-ai/dsh-atomic-write": "dsh-atomic-write",
+        "@deepseek-ai/dsh-skill": "dsh-skill",
+        "@deepseek-ai/dsh-typert-protocol": "dsh-typert-protocol",
+        "@deepseek-ai/dsh-workspace": "dsh-workspace",
+        "@deepseek-ai/dsh-subagent": "dsh-subagent"
+      },
+      definition_api: {
+        package: "@deepseek-ai/dsh-tools",
+        version: "0.2.2-rc.1",
+        license: "MIT",
+        tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-tools/-/dsh-tools-0.2.2-rc.1.tgz",
+        integrity: "sha512-svB49dLPCHkKHgGwik3dTvEH0sL1vKwIzlQgqjE4qzEqFbSEROW8fByk3g2y2lxDv8TqgEUa0Vp2qFrVbm2lfw==",
+        license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+        tarball_sha256: "bb94ee037bd7d3efe2d0654c6a1fa7084b268b895fa0ca6ceeb7e65d4fd6da72",
+        sources: [
+          {
+            file: "lib/shared-DTdn5dXO.js",
+            sha256: "d02f0d8f36878313b0dae3a1bba5b77f7db4cffc77a0b72772048a36bacf2cf0",
+            lines: [
+              [
+                22,
+                548
+              ]
+            ]
+          },
+          {
+            file: "lib/index.js",
+            sha256: "1889cbf718d64518dd83245d4dba1e1f080b2c5326259c3ed5b1be7a7666a2bd",
+            lines: [
+              [
+                7,
+                377
+              ]
+            ]
+          },
+          {
+            file: "lib/shared-DTdn5dXO.js",
+            sha256: "d02f0d8f36878313b0dae3a1bba5b77f7db4cffc77a0b72772048a36bacf2cf0",
+            lines: [
+              [
+                566,
+                596
+              ]
+            ]
+          }
+        ]
+      },
+      command_followup: "one-text-message-submit-on-success",
+      pure_api: {
+        file: "src/dsh/dsh-message-compat.js",
+        source_sha256: "018236676c31a588543e69d09821c53bc1138d14f4520b92ceba0e122cc8de78",
+        exports: {
+          "@deepseek-ai/dsh-llm": [
+            "createUserMessage",
+            "createAssistantMessage",
+            "createSystemMessage",
+            "createToolResultMessage",
+            "freezeMessage",
+            "contentHasImage",
+            "ReasoningEffortId",
+            "MessageId",
+            "ToolCallId",
+            "isAgentLoopRequest",
+            "resolveRetryPolicy",
+            "boundContextSummary",
+            "BlockAssembler",
+            "LlmAdapter",
+            "LlmError",
+            "HarnessError"
+          ],
+          "@deepseek-ai/dsh-session": [
+            "SessionId",
+            "SESSION_FORMAT_VERSION",
+            "KNOWN_SESSION_EVENT_TYPES",
+            "deriveEventMessage"
+          ],
+          "@deepseek-ai/dsh-system-prompt": [
+            "PERSONA_PREFIX_SECTION"
+          ],
+          "@deepseek-ai/dsh-user-questions": [
+            "UserQuestionError"
+          ]
+        },
+        packages: [
+          {
+            package: "@deepseek-ai/dsh-brand",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-brand/-/dsh-brand-0.2.2-rc.1.tgz",
+            integrity: "sha512-ShGNEmNuEQA+bfkspWC2kGrdbrM4dFNhqlrNHIWsHO+PgVH1KoTKTLSraT1pt0A8YYk/moKE0gL2gY9dNBU+rw==",
+            tarball_sha256: "d953cb5e8dcd69be0b0347ce9a3b36421eefa751820cbe909f4a185348ad5530",
+            source_file: "lib/index.js",
+            source_sha256: "14feb59256b891982b2017d73ed03ee65e2a7365f48e4902a856acb0e52d5eb0",
+            excerpts: [
+              {
+                name: "brandString",
+                lines: [
+                  20,
+                  22
+                ],
+                sha256: "2f0b62ba6507db54836a99e24d1d219e598b6140e575d2cf5c63d86a18e5e8ac"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-util-crypto",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-crypto/-/dsh-util-crypto-0.2.2-rc.1.tgz",
+            integrity: "sha512-I9Nhh3/64HPzjdR/mUt0J534FYHgodMUe0coXtA91+kxGcJQcSHOYouewv4hf0NWw0BuLh5zihTdtldZtobOWA==",
+            tarball_sha256: "c9ef0dfed280c83202f1d7bd5d32b1139a92a2fc375da62962ef709c3d1e4a6a",
+            source_file: "lib/index.js",
+            source_sha256: "640b26c8e5a1156c6c8e8749a22f805c9c0e34444778eb4ee9529be3e88ec862",
+            excerpts: [
+              {
+                name: "randomUUID",
+                lines: [
+                  27,
+                  33
+                ],
+                sha256: "e6c3b47d5cf366a149204c36d1697e658f61c48bfd96e66ec1c96deec3a8f4e2"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-llm",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-llm/-/dsh-llm-0.2.2-rc.1.tgz",
+            integrity: "sha512-XeEvH+6bpkjx0E2P1B5ZE+WWa+VHp4DimQaJDKNUZEFouqHMuN1B61TIz6IzUquRxa/6X4yJy+qXQ9WwAeMw5w==",
+            tarball_sha256: "cbf45039d3ef63e26987de514928a847a8c2d0b049df8fb24c11684e203b05d4",
+            source_file: "lib/index.js",
+            source_sha256: "8e541fc98a11897706a122fde1db42f8b2a41b3b354ba3fcb932e9a16929ac6a",
+            excerpts: [
+              {
+                name: "createMessage",
+                lines: [
+                  37,
+                  42
+                ],
+                sha256: "74baa44c9dea1821d97bd4fe592b21baf31f60eaf06962a269fcf2ec88e352ae"
+              },
+              {
+                name: "createUserMessage",
+                lines: [
+                  59,
+                  64
+                ],
+                sha256: "2c4929c2c18e511aa0fefe216eb50e703191057bb15ba1412ddcfdcc8bfc020f"
+              },
+              {
+                name: "HarnessError declaration",
+                lines: [
+                  126,
+                  126
+                ],
+                sha256: "d260a23e0a20850d3b623cbeed54626b47d43fa74e000c5d529dc0a341ab63ee"
+              },
+              {
+                name: "HarnessError body",
+                lines: [
+                  128,
+                  134
+                ],
+                sha256: "30ee24ef29e412b1ab2f0ca89ab600bb0260022d1479d43ca2ad21173b774ccf"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-session",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-session/-/dsh-session-0.2.2-rc.1.tgz",
+            integrity: "sha512-e0zx9HFNn8EyqrymGQS85SjKOyr61//ChTgIVDlCBSZvBB723fuXyi9LiHIIuPTlkgmWJl3gm5J51ebEXew7PQ==",
+            tarball_sha256: "b8b1b4a7b9c8efbdbe4c134ed3b18cddf11842b62ad7675c21c05b3afef1cfb5",
+            source_file: "lib/index.js",
+            source_sha256: "6fad466aa1f7aa64bfa038681ead5721f66c88e9891e25d357d2b8edbccd5494",
+            excerpts: [
+              {
+                name: "SessionId",
+                lines: [
+                  13,
+                  15
+                ],
+                sha256: "68a5778f0586d4e1c219ce6ae3cec3120a57446bbb91f371b4ba208533f48996"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-system-prompt",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-system-prompt/-/dsh-system-prompt-0.2.2-rc.1.tgz",
+            integrity: "sha512-1p9imdrenPnJTkLb6Coq+ELBDjngblM/YGP1Pa/xf1oisjLHcCoK2n9kkOUTIfgvoFtqWfxZJNZeKef71ZmlrA==",
+            tarball_sha256: "5ecb3f2ff2f0c037287c22c1ef917f1ce5cdd4c8055d51da6646ed5a39fe02a9",
+            source_file: "lib/index.js",
+            source_sha256: "18b692b03bbb717589085f63b126cbcf22963763c5a0565bb3a7a5d254e8e4a7",
+            excerpts: [
+              {
+                name: "PERSONA_PREFIX_SECTION",
+                lines: [
+                  61,
+                  61
+                ],
+                sha256: "11338254c278626eea6887b9cb5dc94d16f2ab4dae4bd7e555ea608c4b15648f"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-util-values",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-values/-/dsh-util-values-0.2.2-rc.1.tgz",
+            integrity: "sha512-UN4B/Fa9zAunYN3UuXDQ3QknxF/lMKNwTu2WxXKKEC+Ejz745po7I/JmsVFVa7+socfuwwTmVrfSsddRVU+lew==",
+            tarball_sha256: "e5de9a3c2600c70d72dba702cd0dfc8097264b7b6a7f393f4cfa799c81ecf759",
+            source_file: "lib/index.js",
+            source_sha256: "8b4ffdf40126d48bd22017b4671f7e90612d01833fc865f7a0b60d3de4183e8b",
+            excerpts: [
+              {
+                name: "deepFreeze",
+                lines: [
+                  809,
+                  845
+                ],
+                sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: false
+          },
+          {
+            package: "@deepseek-ai/dsh-user-questions",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-user-questions/-/dsh-user-questions-0.2.2-rc.1.tgz",
+            integrity: "sha512-COY40boWZ7XEszSvMGZ4CY5ze5ujCdA+Trtqx5C6ioqWzH9e8YbkY7AxyCOadxVO++5zAsqvsAfq65cZUPIMGA==",
+            tarball_sha256: "e7c1c38234fea9c0634ec95272bd1005c48ce890d2b935c8442b4ae7fee1b51e",
+            source_file: "lib/index.js",
+            source_sha256: "69fee77aa57cc43de583d53a4877394c4cf3b5d58b8d7579fd8095c0a015bfbd",
+            excerpts: [
+              {
+                name: "UserQuestionError",
+                lines: [
+                  430,
+                  435
+                ],
+                sha256: "5d49a4ecdf40039b26824f3575a79820b48ed011f90641870f44fe5a41bf5ced"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          }
+        ],
+        reuse: {
+          package: "@deepseek-ai/dsh-util-values",
+          version: "0.2.2-rc.1",
+          file: "lib/index.js",
+          symbol: "deepFreeze",
+          lines: [
+            809,
+            845
+          ],
+          sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
+        },
+        constructor_names: [
+          "HarnessError",
+          "UserQuestionError"
+        ]
+      },
+      tool_caller_projection: "readonly-id-session-header-cwd",
+      session_methods: {
+        flush: "invocation-bound-acknowledged-checkpoint-with-host-redaction-policy"
+      },
+      user_question_methods: {
+        ask: "invocation-bound-root-agent-typed-answers-no-wait"
+      },
+      subagent_methods: {
+        getProvider: "spawn-only-independent-context",
+        startActivation: "invocation-bound-caller-or-parent-delivery-text-prompt-model-persona-deny",
+        result: "text-output-typed-stop-reason",
+        dispose: "exact-activation"
+      },
+      agents_methods: {},
+      system_prompt_methods: {
+        section: "child-persona-slot-in-agent-created-only"
+      },
+      tool_definition_fields: {
+        deferLoading: "boolean-presentation-noop-engine-controls-loading"
+      }
+    };
+  }
+});
+
+// src/dsh/missing-services.ts
+function describeMissingServices(names, { scoped: classifyScoped = true } = {}) {
+  const absent = names.filter((name) => !classifyScoped || !PROVIDED_SERVICES.has(name));
+  const scoped = names.filter((name) => classifyScoped && PROVIDED_SERVICES.has(name));
+  const parts = [];
+  if (absent.length > 0) {
+    const owned = absent.filter((name) => REFUSED_SERVICES.has(name));
+    const reasons = [...new Set(absent.flatMap((name) => UNPROVIDED_REASONS.filter(([matches]) => matches(name)).map(([, reason]) => reason)))];
+    parts.push(`${quoted(absent)}, not provided by the Codewhale extension host in this phase` + (reasons.length > 0 ? ` (${reasons.join("; ")})` : "") + (owned.length > 0 ? `; ${quoted(owned)} belong${owned.length === 1 ? "s" : ""} to the Codewhale core and no reviewed bridge exposes ${owned.length === 1 ? "it" : "them"} yet` : ""));
+  }
+  if (scoped.length > 0) parts.push(`${quoted(scoped)}, provided by the host but unavailable in this scope`);
+  return parts.join("; ");
+}
+var REFUSED_SERVICES, PROVIDED_SERVICES, UNPROVIDED_REASONS, quoted;
+var init_missing_services = __esm({
+  "src/dsh/missing-services.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_compatibility();
+    REFUSED_SERVICES = new Set(compatibility_default.refused_services);
+    PROVIDED_SERVICES = new Set(Object.values(compatibility_default.provided_services).flat());
+    UNPROVIDED_REASONS = [
+      [(name) => name === "webServer" || name === "connection", "DSH Web UI services; Codewhale has no plugin web server"],
+      [(name) => name.startsWith("@deepseek-ai/dsh-client-"), "DSH client UI services"]
+    ];
+    quoted = (names) => names.map((name) => `\`${name}\``).join(", ");
   }
 });
 
@@ -18351,7 +18794,7 @@ var init_core = __esm({
 import childProcess from "node:child_process";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { syncBuiltinESMExports as syncBuiltinESMExports2 } from "node:module";
-import { resolve as resolve4 } from "node:path";
+import { resolve as resolve3 } from "node:path";
 import { PassThrough } from "node:stream";
 import { promisify } from "node:util";
 function queryFor(args) {
@@ -18372,8 +18815,8 @@ function queryFor(args) {
   throw new Error("Only read-only Git review metadata is available through the Engine");
 }
 function installGitAdapter(inPluginContext) {
-  if (installed2) return;
-  installed2 = true;
+  if (installed) return;
+  installed = true;
   const original = childProcess.execFile;
   const adapter = function(...raw) {
     if (raw[0] !== "git" || !gitInvocations.getStore() && !inPluginContext()) return Reflect.apply(original, childProcess, raw);
@@ -18399,7 +18842,7 @@ function installGitAdapter(inPluginContext) {
       if (typeof options !== "object" || options === null || Array.isArray(options)) throw new TypeError("Invalid Git metadata options");
       const opts = options;
       if (Object.keys(opts).some((key) => !["cwd", "signal", "encoding", "maxBuffer", "timeout", "windowsHide", "env"].includes(key))) throw new TypeError("Unsupported Git metadata option");
-      if (opts.cwd !== void 0 && (typeof opts.cwd !== "string" || resolve4(opts.cwd) !== resolve4(invocation.workspace))) throw new Error("Git review metadata is scoped to the calling workspace");
+      if (opts.cwd !== void 0 && (typeof opts.cwd !== "string" || resolve3(opts.cwd) !== resolve3(invocation.workspace))) throw new Error("Git review metadata is scoped to the calling workspace");
       if (opts.env !== void 0) {
         if (typeof opts.env !== "object" || opts.env === null || Array.isArray(opts.env)) throw new TypeError("Invalid Git metadata environment");
         for (const [key, value2] of Object.entries(opts.env)) {
@@ -18480,13 +18923,13 @@ function installGitAdapter(inPluginContext) {
   childProcess.execFile = adapter;
   syncBuiltinESMExports2();
 }
-var gitInvocations, installed2;
+var gitInvocations, installed;
 var init_git = __esm({
   "src/shims/git.ts"() {
     "use strict";
     init_define_BUILTIN_MODULE_DIGESTS();
     gitInvocations = new AsyncLocalStorage();
-    installed2 = false;
+    installed = false;
   }
 });
 
@@ -18573,11 +19016,127 @@ var init_hooks = __esm({
   }
 });
 
+// src/shims/prompt.ts
+function normalizePromptSection(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("prompt section must be an object with id and text");
+  }
+  if (Object.keys(value).some((key) => key !== "id" && key !== "text" && key !== "interpolate")) {
+    throw new TypeError("prompt section supports only id and text, plus optional model-cwd interpolation");
+  }
+  const { id, text: text3, interpolate: interpolate2 } = value;
+  if (typeof id !== "string" || !SECTION_ID.test(id)) {
+    throw new TypeError("prompt section id must be lower case, start with a letter, and use a-z, 0-9, _ or - (at most 64 characters)");
+  }
+  if (typeof text3 !== "string" || text3.trim().length === 0) {
+    throw new TypeError(`prompt section "${id}" needs non-empty text`);
+  }
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text3)) {
+    throw new TypeError(`prompt section "${id}" text contains control characters`);
+  }
+  if (Buffer.byteLength(text3, "utf8") > MAX_PROMPT_SECTION_BYTES) {
+    throw new RangeError(`prompt section "${id}" exceeds ${MAX_PROMPT_SECTION_BYTES} UTF-8 bytes`);
+  }
+  if (interpolate2 !== void 0 && interpolate2 !== "model-cwd") throw new TypeError("prompt interpolation supports only model-cwd");
+  if (interpolate2 !== void 0) validatePromptTemplate(text3);
+  return Object.freeze({ id, text: text3, ...interpolate2 === void 0 ? {} : { interpolate: interpolate2 } });
+}
+function validatePromptTemplate(text3) {
+  for (let open2 = text3.indexOf("{{"); open2 >= 0; ) {
+    const group = /^\{\{([^{}]*)\}\}/u.exec(text3.slice(open2));
+    if (!group) {
+      if (text3.indexOf("}}", open2 + 2) >= 0) throw new TypeError("malformed prompt variable reference");
+      open2 = text3.indexOf("{{", open2 + 2);
+      continue;
+    }
+    if (!/^[a-z][a-z0-9_]*$/u.test(group[1])) throw new TypeError("malformed prompt variable reference");
+    if (group[1] !== "model" && group[1] !== "cwd") throw new TypeError(`unknown Core prompt variable "{{${group[1]}}}"; supported variables: model, cwd`);
+    open2 = text3.indexOf("{{", open2 + group[0].length);
+  }
+}
+function definePromptService(host2) {
+  class PromptShim extends Service {
+    constructor(ctx) {
+      super(ctx, "prompt");
+    }
+    registerSection(definition) {
+      const ctx = this.ctx;
+      const owner = host2.ownerOf(ctx);
+      if (!owner) throw new Error("prompt.registerSection called outside an extension owner");
+      const section = normalizePromptSection(definition);
+      return ctx.effect(() => host2.promptSections.register(owner, section), `prompt.registerSection(${JSON.stringify(section.id)})`);
+    }
+  }
+  Object.freeze(PromptShim.prototype);
+  return PromptShim;
+}
+var MAX_PROMPT_SECTION_BYTES, MAX_PROMPT_OWNER_BYTES, MAX_PROMPT_HOST_BYTES, MAX_PROMPT_SECTIONS_PER_OWNER, MAX_PROMPT_SECTIONS_PER_HOST, SECTION_ID, PromptSections;
+var init_prompt = __esm({
+  "src/shims/prompt.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_lib2();
+    init_owned();
+    MAX_PROMPT_SECTION_BYTES = 4 * 1024;
+    MAX_PROMPT_OWNER_BYTES = 32 * 1024;
+    MAX_PROMPT_HOST_BYTES = 128 * 1024;
+    MAX_PROMPT_SECTIONS_PER_OWNER = 128;
+    MAX_PROMPT_SECTIONS_PER_HOST = 1024;
+    SECTION_ID = /^[a-z][a-z0-9_-]{0,63}$/u;
+    PromptSections = class {
+      registrations;
+      templates;
+      owners = /* @__PURE__ */ new Map();
+      bytes = 0;
+      count = 0;
+      constructor(rpc2, ownedBy, warn) {
+        this.registrations = new OwnedRegistrations(rpc2, "prompt_section", ownedBy, warn);
+        this.templates = new OwnedRegistrations(rpc2, "prompt_template", ownedBy, warn);
+      }
+      register(owner, definition) {
+        if (owner.state !== "activating" && owner.state !== "active") throw new Error("prompt owner is not live");
+        const section = normalizePromptSection(definition);
+        const sections = this.owners.get(owner) ?? /* @__PURE__ */ new Map();
+        if (sections.has(section.id)) throw new Error(`prompt section "${section.id}" is already registered; dispose it before registering it again`);
+        const bytes = Buffer.byteLength(section.text, "utf8");
+        const ownerBytes = [...sections.values()].reduce((sum, item) => sum + item.bytes, 0);
+        if (ownerBytes + bytes > MAX_PROMPT_OWNER_BYTES || this.bytes + bytes > MAX_PROMPT_HOST_BYTES) {
+          throw new RangeError("prompt section owner or host UTF-8 byte limit reached");
+        }
+        if (sections.size >= MAX_PROMPT_SECTIONS_PER_OWNER || this.count >= MAX_PROMPT_SECTIONS_PER_HOST) {
+          throw new RangeError("prompt section owner or host registration limit reached");
+        }
+        const entry = { owner, name: section.id, definition: section, disposed: false };
+        const undo = (section.interpolate === void 0 ? this.registrations : this.templates).add(entry, { name: section.id, description: section.text });
+        const record4 = { entry, bytes, dispose: () => {
+          if (sections.get(section.id) !== record4) return;
+          sections.delete(section.id);
+          this.bytes -= bytes;
+          this.count -= 1;
+          if (sections.size === 0) this.owners.delete(owner);
+          undo();
+        } };
+        sections.set(section.id, record4);
+        this.owners.set(owner, sections);
+        this.bytes += bytes;
+        this.count += 1;
+        return record4.dispose;
+      }
+      /** Release reservations even after a plugin fails or times out during teardown. */
+      forget(owner) {
+        for (const record4 of [...this.owners.get(owner)?.values() ?? []]) record4.dispose();
+        this.registrations.forget(owner);
+        this.templates.forget(owner);
+      }
+    };
+  }
+});
+
 // src/shims/storage.ts
 import { constants as constants2 } from "node:fs";
 import { lstat, mkdir, open, readdir, rename as rename2, unlink } from "node:fs/promises";
-import { isAbsolute as isAbsolute3, join as join2 } from "node:path";
-import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
+import { isAbsolute as isAbsolute2, join as join2 } from "node:path";
+import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 function checkKey(key) {
   if (typeof key !== "string" || !key.length || key.includes("\0") || Buffer.byteLength(key) > STORAGE_LIMITS.keyBytes) {
@@ -18591,7 +19150,7 @@ function snapshot2(value) {
   return JSON.parse(encoded);
 }
 function recordName(key) {
-  return `${createHash3("sha256").update(key).digest("hex")}.json`;
+  return `${createHash2("sha256").update(key).digest("hex")}.json`;
 }
 function fsCode(error) {
   return error?.code;
@@ -18644,7 +19203,7 @@ async function readRecordOnce(directory, name) {
   }
 }
 function createStorage({ dataDir, isActive, onWarning }) {
-  if (typeof dataDir !== "string" || !isAbsolute3(dataDir)) throw new StorageError("invalid", "plugin storage needs its assigned absolute dataDir");
+  if (typeof dataDir !== "string" || !isAbsolute2(dataDir)) throw new StorageError("invalid", "plugin storage needs its assigned absolute dataDir");
   function active() {
     if (!isActive()) throw new StorageError("not_available", "plugin storage owner is no longer active");
   }
@@ -18954,6 +19513,13 @@ function makeInvocation(command, args, commandId, signal, context = {}) {
   };
   const agent = context.sessionId?.trim() ? Object.freeze({
     id: context.agentId ?? context.sessionId,
+    session: Object.freeze({
+      id: context.sessionId,
+      header: Object.freeze({
+        id: context.sessionId,
+        ...context.workspace === void 0 ? {} : { cwd: context.workspace }
+      })
+    }),
     followup(message) {
       if (!open2 || signal.aborted) reject("is unavailable after command settlement or cancellation");
       if (failure) throw failure;
@@ -19052,10 +19618,10 @@ var init_commands = __esm({
 });
 
 // src/root.ts
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import { readFile as readFile2 } from "node:fs/promises";
 import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
-import { pathToFileURL as pathToFileURL4 } from "node:url";
+import { pathToFileURL as pathToFileURL3 } from "node:url";
 function describeError2(error) {
   if (error instanceof Error) return `${error.name}: ${error.message}`;
   return String(error);
@@ -19257,19 +19823,21 @@ var init_root = __esm({
           "agent/pre-step",
           "agent/turn-stopping",
           "subagent/start",
-          "subagent/end"
+          "subagent/end",
+          "approval/request"
         ]);
         root.on("internal/listener", function(name, callback, options) {
           if (this[OWNER] && unsupportedDshLifecycle.has(name)) throw new Error(`DSH lifecycle ${name} is not projected by this host checkpoint`);
           if (name === "agent/created" && options?.global) throw new Error("agent/created listeners are owner-scoped; global is unsupported");
-          if (name !== "tools/pre-execute" && name !== "tools/post-execute") return;
+          if (name !== "tools/pre-execute" && name !== "tools/post-execute" && name !== "tools/result") return;
           const owner = this[OWNER];
           if (!owner) throw new Error(`${name} listener registered outside an extension owner`);
           if (options?.prepend || options?.global) throw new Error(`${name} listeners use core registration order; prepend/global are unsupported`);
-          const description = name === "tools/pre-execute" ? "Programmable tool admission listener" : "Read-only tool outcome observer";
+          const hookEvent = name === "tools/result" ? "tools/post-execute" : name;
+          const description = hookEvent === "tools/pre-execute" ? "Programmable tool admission listener" : "Read-only tool outcome observer";
           return this.effect(() => host2.hookRegistrations.add(
-            { owner, name, callback, disposed: false },
-            { name, description }
+            { owner, name: hookEvent, callback, disposed: false },
+            { name: hookEvent, description }
           ), `ctx.on("${name}")`);
         });
         const shimClasses = /* @__PURE__ */ new Map();
@@ -19304,6 +19872,30 @@ var init_root = __esm({
             const invocation = host2.toolInvocations.getStore();
             if (typeof name !== "string" || !invocation || !invocation.active || invocation.agent === void 0 || agent !== invocation.agent) return void 0;
             return invocation.callerTools.includes(name) ? Object.freeze({ name }) : void 0;
+          }
+          /** DSH `ctx.tools.guard(fn)`: deny-only guard registered on tools/pre-execute; never auto-approves. */
+          guard(guardFn) {
+            const ctx = this.ctx;
+            const owner = ctx[OWNER];
+            if (!owner) throw new Error("tools.guard called outside an extension owner");
+            if (typeof guardFn !== "function") throw new TypeError("tools.guard requires a guard function");
+            const wrapped = async (exec) => {
+              const verdict = await guardFn(exec);
+              if (typeof verdict === "string" && verdict.trim().length > 0) {
+                return { kind: "deny", reason: verdict.trim() };
+              }
+              if (verdict && typeof verdict === "object" && verdict.kind === "deny") {
+                const reason = verdict.reason;
+                if (typeof reason === "string" && reason.trim().length > 0) {
+                  return { kind: "deny", reason: reason.trim() };
+                }
+              }
+              return { kind: "abstain" };
+            };
+            return ctx.effect(() => host2.hookRegistrations.add(
+              { owner, name: "tools/pre-execute", callback: wrapped, disposed: false },
+              { name: "tools/pre-execute", description: "Read-only deny-only tool guard" }
+            ), "tools.guard()");
           }
           /** DSH `ctx.tools.register(defineTool(...))`: returns an idempotent disposer. */
           register(definition, options) {
@@ -19631,11 +20223,11 @@ var init_root = __esm({
         owner.entries.add(params.entry.path);
         try {
           const bytes = await readFile2(params.entry.path);
-          const digest2 = createHash4("sha256").update(bytes).digest("hex");
+          const digest2 = createHash3("sha256").update(bytes).digest("hex");
           if (digest2 !== params.entry.sha256) {
             throw new Error(`entry ${params.entry.path} changed after review (sha256 ${digest2.slice(0, 12)}…)`);
           }
-          const module = await ownerStorage.run(owner, () => import(pathToFileURL4(params.entry.path).href)).catch((error) => {
+          const module = await ownerStorage.run(owner, () => import(pathToFileURL3(params.entry.path).href)).catch((error) => {
             throw explainImportError(error);
           });
           if (this.tier === "builtin" && owner.ref.plugin_id === "host:harness") {
@@ -19881,6 +20473,600 @@ var init_root = __esm({
   }
 });
 
+// src/dsh/dsh-shims.ts
+import { randomBytes } from "node:crypto";
+import { mkdir as mkdir2, rename as rename3, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
+import { dirname as dirname2, isAbsolute as isAbsolute3, join as join3, resolve as resolve4 } from "node:path";
+function activeDataDir(operation) {
+  const owner = ownerStorage.getStore();
+  if (!owner || typeof owner.dataDir !== "string" || owner.dataDir.length === 0) {
+    throw new Error(`${operation} requires an active plugin owner with a scoped dataDir`);
+  }
+  return canonicalPath(owner.dataDir);
+}
+function confinePathToDataDir(targetPath, operation) {
+  if (typeof targetPath !== "string" || targetPath.length === 0 || /[\x00-\x1f\x7f]/.test(targetPath)) {
+    throw new TypeError(`${operation} requires a valid file path string`);
+  }
+  const dataRoot = activeDataDir(operation);
+  const resolved = isAbsolute3(targetPath) ? resolve4(targetPath) : resolve4(dataRoot, targetPath);
+  const rel = insideKey(dataRoot, resolved);
+  if (rel === void 0) {
+    throw new Error(`${operation} refused path outside plugin dataDir`);
+  }
+  let ancestor = dirname2(resolved);
+  while (ancestor.length >= dataRoot.length) {
+    if (ancestor === dataRoot) break;
+    try {
+      const canonicalAncestor = canonicalPath(ancestor);
+      const ancestorKey = insideKey(dataRoot, ancestor);
+      if (ancestorKey === void 0 || ancestorKey === "") {
+        if (canonicalAncestor !== dataRoot) {
+          throw new Error(`${operation} refused symlink escaping plugin dataDir`);
+        }
+        break;
+      }
+      if (!unlinkedKeyMatches(dataRoot, ancestorKey, canonicalAncestor)) {
+        throw new Error(`${operation} refused symlink escaping plugin dataDir`);
+      }
+      break;
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        const next = dirname2(ancestor);
+        if (next === ancestor) break;
+        ancestor = next;
+        continue;
+      }
+      throw error;
+    }
+  }
+  return resolved;
+}
+function credentialRef2(value) {
+  if (typeof value !== "string") {
+    throw new TypeError("credentialRef requires a non-empty string");
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_CREDENTIAL_REF_LEN || /[\x00-\x1f\x7f]/.test(trimmed)) {
+    throw new TypeError("credentialRef requires a bounded printable string");
+  }
+  return trimmed;
+}
+async function resolveCredential(ctx, ref2) {
+  if (!ctx?.credentials || typeof ctx.credentials.resolve !== "function") return void 0;
+  return ctx.credentials.resolve(credentialRef2(ref2));
+}
+async function describeCredential(ctx, ref2) {
+  if (!ctx?.credentials || typeof ctx.credentials.describe !== "function") return void 0;
+  return ctx.credentials.describe(credentialRef2(ref2));
+}
+function settingsNamespace(name) {
+  if (typeof name !== "string" || name.trim().length === 0 || name.length > 128) {
+    throw new TypeError("settingsNamespace requires a non-empty string");
+  }
+  return name.trim();
+}
+function installSettingsSection(ctx, ns, _section) {
+  settingsNamespace(ns);
+  void ctx?.settings;
+  return () => void 0;
+}
+function resolveDshHome(...segments) {
+  const dataRoot = activeDataDir("resolveDshHome");
+  if (segments.length === 0) return dataRoot;
+  for (const seg of segments) {
+    if (typeof seg !== "string" || seg.includes("\0") || isAbsolute3(seg)) {
+      throw new Error("resolveDshHome refused absolute or invalid path segment");
+    }
+  }
+  const target = resolve4(dataRoot, ...segments);
+  const rel = insideKey(dataRoot, target);
+  if (rel === void 0) {
+    throw new Error("resolveDshHome refused path escaping plugin dataDir");
+  }
+  return target;
+}
+async function withFileLock(targetPath, fn) {
+  const confined = confinePathToDataDir(targetPath, "withFileLock");
+  const prev = fileLocks.get(confined) ?? Promise.resolve();
+  let release;
+  const current2 = new Promise((res) => {
+    release = res;
+  });
+  const chain = prev.then(() => current2);
+  fileLocks.set(confined, chain);
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (fileLocks.get(confined) === chain) {
+      fileLocks.delete(confined);
+    }
+  }
+}
+async function writeFileAtomic(targetPath, data2, options) {
+  const confined = confinePathToDataDir(targetPath, "writeFileAtomic");
+  const bytes = typeof data2 === "string" ? Buffer.from(data2, options?.encoding ?? "utf8") : Buffer.from(data2.buffer, data2.byteOffset, data2.byteLength);
+  if (bytes.byteLength > MAX_ATOMIC_WRITE_BYTES) {
+    throw new RangeError(`writeFileAtomic exceeds the ${MAX_ATOMIC_WRITE_BYTES} byte limit`);
+  }
+  const parent = dirname2(confined);
+  await mkdir2(parent, { recursive: true });
+  const tmpPath = join3(parent, `.cw-atomic-${process.pid}-${randomBytes(8).toString("hex")}.tmp`);
+  try {
+    await writeFile2(tmpPath, bytes, options?.mode !== void 0 ? { mode: options.mode } : void 0);
+    await rename3(tmpPath, confined);
+  } catch (error) {
+    await rm2(tmpPath, { force: true }).catch(() => void 0);
+    throw error;
+  }
+}
+function isModelInvocable(skill) {
+  if (!skill || typeof skill !== "object") return false;
+  const s = skill;
+  if (s.disableModelInvocation === true || s.modelInvocable === false) return false;
+  return true;
+}
+function isUserInvocable(skill) {
+  if (!skill || typeof skill !== "object") return false;
+  const s = skill;
+  if (s.userInvocable === false) return false;
+  return true;
+}
+function parseSkillFrontmatter(markdown) {
+  if (typeof markdown !== "string") return { frontmatter: {}, body: "" };
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(markdown);
+  if (!match) return { frontmatter: {}, body: markdown };
+  const frontmatter = {};
+  for (const line of match[1].split(/\r?\n/)) {
+    const idx = line.indexOf(":");
+    if (idx <= 0) continue;
+    const key = line.slice(0, idx).trim();
+    const val = line.slice(idx + 1).trim().replace(/^["']|["']$/g, "");
+    if (key) frontmatter[key] = val;
+  }
+  return { frontmatter, body: match[2] };
+}
+function renderSkillContent(skill, args) {
+  const raw = typeof skill === "string" ? skill : skill && typeof skill === "object" && typeof skill.content === "string" ? skill.content : "";
+  const { body } = parseSkillFrontmatter(raw);
+  if (typeof args !== "string" || args.length === 0) return body;
+  return body.replaceAll("$ARGUMENTS", args);
+}
+function WorkspaceId(id) {
+  return id;
+}
+function isSurfaceEligibleType(type2) {
+  return typeof type2 === "string" && (type2 === "message/user" || type2 === "message/assistant" || type2 === "tool/call" || type2 === "tool/result");
+}
+function foldSurface(events) {
+  if (!Array.isArray(events)) return [];
+  return events.filter((event) => event && typeof event === "object" && isSurfaceEligibleType(event.type));
+}
+function foldSubagentDescriptor(events) {
+  const out = { status: "idle", count: 0 };
+  if (!Array.isArray(events)) return out;
+  for (const ev of events) {
+    if (!ev || typeof ev !== "object") continue;
+    if (ev.type === "subagent/start") {
+      out.status = "running";
+      out.count = out.count + 1;
+    } else if (ev.type === "subagent/end") {
+      out.status = "completed";
+    }
+  }
+  return out;
+}
+function snapshotSubagentDescriptor(descriptor2) {
+  if (!descriptor2 || typeof descriptor2 !== "object") return { status: "idle" };
+  return structuredClone(descriptor2);
+}
+function assembleContextFor(messages = []) {
+  return Array.isArray(messages) ? [...messages] : [];
+}
+function installModelSelection(_ctx, _options) {
+  return () => void 0;
+}
+var MAX_CREDENTIAL_REF_LEN, MAX_ATOMIC_WRITE_BYTES, dshCredentialsModule, dshSettingsModule, dshHomePathsModule, fileLocks, dshAtomicWriteModule, BUNDLED_SKILL_RANK, dshSkillModule, Remote, TypertRemoteService, dshTypertProtocolModule, dshWorkspaceModule, dshSessionSurfaceModule, SubagentError, dshSubagentModule, dshAgentModule;
+var init_dsh_shims = __esm({
+  "src/dsh/dsh-shims.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_lib2();
+    init_root();
+    init_canonical_path();
+    init_settings();
+    init_dsh_message_compat();
+    MAX_CREDENTIAL_REF_LEN = 256;
+    MAX_ATOMIC_WRITE_BYTES = 16 * 1024 * 1024;
+    dshCredentialsModule = Object.freeze({
+      credentialRef: credentialRef2,
+      resolveCredential,
+      describeCredential
+    });
+    dshSettingsModule = Object.freeze({
+      SettingsConflictError,
+      settingsNamespace,
+      installSettingsSection,
+      default: Object.freeze({
+        SettingsConflictError,
+        settingsNamespace,
+        installSettingsSection
+      })
+    });
+    dshHomePathsModule = Object.freeze({
+      resolveDshHome,
+      resolveDshPath: resolveDshHome
+    });
+    fileLocks = /* @__PURE__ */ new Map();
+    dshAtomicWriteModule = Object.freeze({
+      writeFileAtomic,
+      withFileLock
+    });
+    BUNDLED_SKILL_RANK = 100;
+    dshSkillModule = Object.freeze({
+      BUNDLED_SKILL_RANK,
+      isModelInvocable,
+      isUserInvocable,
+      parseSkillFrontmatter,
+      renderSkillContent
+    });
+    Remote = Object.freeze({
+      strictCodec(typeSymbol, schema3) {
+        return Object.freeze({
+          mode: "strict",
+          typeSymbol,
+          create: () => schema3,
+          schema: schema3
+        });
+      },
+      jsonParameter(name, typeSymbol, schema3, acceptsUndefined = false) {
+        return Object.freeze({
+          name,
+          wire: name,
+          source: "json",
+          codec: Remote.strictCodec(typeSymbol, schema3),
+          ...acceptsUndefined ? { acceptsUndefined: true } : {}
+        });
+      },
+      descriptor(def) {
+        return Object.freeze({ ...def });
+      }
+    });
+    TypertRemoteService = class extends Service {
+      descriptors;
+      constructor(ctx, name, descriptors = []) {
+        super(ctx, name);
+        this.descriptors = Object.freeze([...descriptors]);
+      }
+      getDescriptors() {
+        return this.descriptors;
+      }
+    };
+    dshTypertProtocolModule = Object.freeze({
+      Remote,
+      TypertRemoteService
+    });
+    dshWorkspaceModule = Object.freeze({
+      WorkspaceId
+    });
+    dshSessionSurfaceModule = Object.freeze({
+      foldSurface,
+      isSurfaceEligibleType
+    });
+    SubagentError = class extends HarnessError2 {
+      constructor(message, code = "SUBAGENT_ERROR", options) {
+        super(message, code, options);
+        this.name = "SubagentError";
+      }
+    };
+    dshSubagentModule = Object.freeze({
+      SubagentError,
+      foldSubagentDescriptor,
+      snapshotSubagentDescriptor
+    });
+    dshAgentModule = Object.freeze({
+      assembleContextFor,
+      installModelSelection
+    });
+  }
+});
+
+// src/dsh/resolve-hooks.ts
+import * as nodeModule2 from "node:module";
+import { createHash as createHash4 } from "node:crypto";
+import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL4 } from "node:url";
+import { resolve as resolve5, isAbsolute as isAbsolute4, dirname as dirname3 } from "node:path";
+import { readFileSync as readFileSync2 } from "node:fs";
+function packageName(specifier) {
+  const parts = specifier.split("/");
+  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+}
+function classifySpecifier(specifier) {
+  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.includes(":")) return null;
+  if (Object.hasOwn(SINGLETONS, specifier)) return SINGLETONS[specifier];
+  const name = packageName(specifier);
+  if (Object.hasOwn(SINGLETONS, name)) {
+    if (specifier !== name) throw new UnsupportedPeerError(specifier);
+    return SINGLETONS[name];
+  }
+  if (name.startsWith("@deepseek-ai/dsh-") || name.startsWith("@deepseek-ai/cordis-")) {
+    throw new UnsupportedPeerError(name);
+  }
+  return null;
+}
+function virtualSource(key, namespace) {
+  const lines = [`const ns = globalThis[Symbol.for(${JSON.stringify(REGISTRY_KEY.description)})][${JSON.stringify(key)}];`];
+  for (const name of Object.keys(namespace)) {
+    if (name === "default") continue;
+    if (!/^[A-Za-z_$][\w$]*$/.test(name)) continue;
+    lines.push(`export const ${name} = ns[${JSON.stringify(name)}];`);
+  }
+  if ("default" in namespace) lines.push("export default ns.default;");
+  return lines.join("\n");
+}
+function explainImportError(error) {
+  const match = error instanceof Error ? /Cannot find package '([^']+)'/.exec(error.message) : null;
+  if (!match) return error;
+  try {
+    classifySpecifier(match[1]);
+  } catch (unsupported) {
+    return unsupported;
+  }
+  return error;
+}
+function installBunResolver(modules) {
+  const bun = globalThis.Bun;
+  Object.defineProperty(globalThis, REVIEWED_IMPORT, { value: async (specifier, caller, options) => {
+    if (typeof specifier === "symbol") throw new TypeError("composition import specifier cannot be a symbol");
+    const name = String(specifier);
+    const closure = closureAt(caller);
+    if (!closure) throw new Error("composition module closure is no longer admitted");
+    const target = checkedBunSpecifier(name, closure.receipt, caller, false);
+    const singleton = classifySpecifier(target);
+    if (singleton !== null) return modules[singleton];
+    return import(target, options);
+  }, writable: false, configurable: false });
+  bun.plugin({
+    name: "codewhale-host-modules",
+    setup(build) {
+      for (const [specifier, key] of Object.entries(SINGLETONS)) {
+        if (key in modules) build.module(specifier, () => ({ exports: modules[key], loader: "object" }));
+      }
+      build.onResolve({ filter: /^[^./]/ }, (args) => {
+        const key = classifySpecifier(args.path);
+        if (key !== null && !(key in modules)) throw new UnsupportedPeerError(args.path);
+        return void 0;
+      });
+      build.onLoad({ filter: new RegExp(`${PEER_PATH.source}|\\.(?:mjs|js|cjs|mts|cts|ts|tsx|jsx|json)$`) }, (args) => {
+        const match = PEER_PATH.exec(args.path);
+        if (match) throw new UnsupportedPeerError(match[1].replaceAll("\\", "/"));
+        const closure = closureAt(pathToFileURL4(args.path).href);
+        if (!closure) {
+          const extension = args.path.split(".").at(-1);
+          if (extension === "json") return { contents: `export default JSON.parse(${JSON.stringify(readFileSync2(args.path, "utf8"))});`, loader: "js" };
+          const loader2 = extension === "tsx" ? "tsx" : extension === "ts" || extension === "mts" || extension === "cts" ? "ts" : extension === "jsx" || extension === "js" ? "jsx" : "js";
+          return { contents: readFileSync2(args.path, "utf8"), loader: loader2 };
+        }
+        if (!(closure.path in closure.receipt.files) || !unlinkedInside(closure.receipt, closure.path, args.path)) throw new Error("module was absent from reviewed composition closure or contains a symbolic link");
+        const bytes = readFileSync2(args.path);
+        if (bytes.length > 256 * 1024 * 1024 || createHash4("sha256").update(bytes).digest("hex") !== closure.receipt.files[closure.path]) throw new Error("composition module bytes changed after review");
+        if (closure.path.endsWith(".json")) return { contents: `export default JSON.parse(${JSON.stringify(bytes.toString("utf8"))});`, loader: "js" };
+        let source;
+        try {
+          source = prepareBunSource(bytes.toString("utf8"), args.path, (specifier, require3) => checkedBunSpecifier(specifier, closure.receipt, pathToFileURL4(args.path).href, require3));
+        } catch (error) {
+          if (error instanceof SyntaxError) throw new Error("reviewed composition module has unsupported JavaScript syntax");
+          throw error;
+        }
+        return { contents: source, loader: "js" };
+      });
+    }
+  });
+}
+function checkedBunSpecifier(specifier, closure, caller, require3) {
+  const key = classifySpecifier(specifier);
+  if (key !== null) {
+    if (!(key in globalThis[REGISTRY_KEY])) throw new UnsupportedPeerError(specifier);
+    return specifier;
+  }
+  if (nodeModule2.isBuiltin(specifier)) return specifier.startsWith("node:") ? specifier : `node:${specifier}`;
+  const callerPath = fileURLToPath2(caller);
+  const file = specifier.startsWith("file:") || specifier.startsWith(".") || isAbsolute4(specifier) ? new URL(specifier, caller) : void 0;
+  if (file?.search || file?.hash) throw new Error('Bun does not preserve reviewed module query or fragment identity; select [extension_host] runtime = "node" for this composition');
+  let path2;
+  if (file) path2 = require3 && !specifier.startsWith("file:") ? resolve5(dirname3(callerPath), specifier) : resolve5(fileURLToPath2(file));
+  else if (require3) path2 = nodeModule2.createRequire(caller).resolve(specifier);
+  else path2 = bunResolve(specifier, dirname3(callerPath), caller);
+  const inside = keyIn(closure, path2);
+  if (inside === void 0 || !(inside in closure.files) || !unlinkedInside(closure, inside, path2)) throw new Error("composition import escapes the reviewed file closure");
+  return require3 ? path2 : file ? file.href : pathToFileURL4(path2).href;
+}
+function bunResolve(specifier, from2, caller) {
+  const bun = globalThis.Bun;
+  if (typeof bun?.resolveSync === "function") {
+    try {
+      return bun.resolveSync(specifier, from2);
+    } catch {
+    }
+  }
+  return nodeModule2.createRequire(caller).resolve(specifier);
+}
+function keyIn(closure, path2) {
+  const canonical = insideKey(closure.canonicalRoot, path2);
+  if (canonical !== void 0) return canonical;
+  for (const root of closure.rawRoots) {
+    const raw = insideKey(root, path2);
+    if (raw !== void 0) return raw;
+  }
+}
+function unlinkedInside(closure, key, path2) {
+  let canonical;
+  try {
+    canonical = canonicalPath(path2);
+  } catch {
+    return false;
+  }
+  return unlinkedKeyMatches(closure.canonicalRoot, key, canonical);
+}
+function admitReviewedClosure(baseUrl, files) {
+  const rawRoot = resolve5(fileURLToPath2(baseUrl));
+  const canonicalRoot = canonicalPath(rawRoot);
+  const id = pathKey(canonicalRoot);
+  const accepted = /* @__PURE__ */ Object.create(null);
+  const keys = Object.keys(files);
+  if (keys.length > 16384) throw new Error("reviewed composition closure exceeds its file limit");
+  for (const key of keys) {
+    if (!key || key.split("/").some((part) => !part || part === "." || part === "..") || key.includes("\\") || key.includes(":") || isAbsolute4(key) || !/^[a-f0-9]{64}$/.test(files[key])) throw new Error("invalid reviewed composition closure file");
+    accepted[key] = files[key];
+  }
+  const existing = reviewedClosures.get(id);
+  if (existing) {
+    if (Object.keys(existing.files).length !== keys.length || keys.some((key) => existing.files[key] !== accepted[key])) throw new Error("the same composition root carries different file receipts");
+    existing.refs++;
+    existing.rawRoots.add(rawRoot);
+  } else reviewedClosures.set(id, { files: Object.freeze(accepted), refs: 1, canonicalRoot, rawRoots: /* @__PURE__ */ new Set([rawRoot]) });
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    const current2 = reviewedClosures.get(id);
+    if (current2 && --current2.refs === 0) reviewedClosures.delete(id);
+  };
+}
+async function importReviewedModule(baseUrl, path2) {
+  const rawRoot = resolve5(fileURLToPath2(baseUrl));
+  const id = pathKey(canonicalPath(rawRoot));
+  const receipt = reviewedClosures.get(id);
+  if (!receipt) throw new Error("composition module closure is no longer admitted");
+  const entry = resolve5(rawRoot, path2);
+  const admitted = closureAt(pathToFileURL4(entry).href);
+  if (!admitted || admitted.root !== id || !(admitted.path in receipt.files)) throw new Error("composition module is absent from reviewed closure");
+  return import(pathToFileURL4(entry).href);
+}
+function closureAt(url) {
+  if (!url?.startsWith("file:")) return;
+  const path2 = resolve5(fileURLToPath2(url));
+  for (const [root, receipt] of reviewedClosures) {
+    const inside = keyIn(receipt, path2);
+    if (inside !== void 0) return { root, receipt, path: inside };
+  }
+}
+function withDefaultDshModules(modules) {
+  const llmDefaults = {
+    createUserMessage,
+    createAssistantMessage,
+    createSystemMessage,
+    createToolResultMessage,
+    freezeMessage,
+    contentHasImage,
+    ReasoningEffortId,
+    MessageId,
+    ToolCallId,
+    isAgentLoopRequest,
+    resolveRetryPolicy,
+    boundContextSummary,
+    BlockAssembler,
+    LlmAdapter,
+    LlmError,
+    HarnessError: HarnessError2
+  };
+  const sessionDefaults = {
+    SessionId,
+    SESSION_FORMAT_VERSION,
+    KNOWN_SESSION_EVENT_TYPES,
+    deriveEventMessage
+  };
+  return {
+    "dsh-credentials": dshCredentialsModule,
+    "dsh-settings": dshSettingsModule,
+    "dsh-home-paths": dshHomePathsModule,
+    "dsh-atomic-write": dshAtomicWriteModule,
+    "dsh-skill": dshSkillModule,
+    "dsh-typert-protocol": dshTypertProtocolModule,
+    "dsh-workspace": dshWorkspaceModule,
+    "dsh-session-surface": dshSessionSurfaceModule,
+    "dsh-subagent": dshSubagentModule,
+    ...modules,
+    "dsh-llm-values": { ...llmDefaults, ...modules["dsh-llm-values"] ?? {} },
+    "dsh-session-values": { ...sessionDefaults, ...modules["dsh-session-values"] ?? {} }
+  };
+}
+function installResolveHooks(modules) {
+  if (installed2) return;
+  installed2 = true;
+  const merged = withDefaultDshModules(modules);
+  globalThis[REGISTRY_KEY] = merged;
+  if (RUNTIME.name === "bun") {
+    installBunResolver(merged);
+    return;
+  }
+  nodeModule2.registerHooks({
+    resolve(specifier, context, nextResolve) {
+      const key = classifySpecifier(specifier);
+      if (key !== null) {
+        if (!(key in merged)) throw new UnsupportedPeerError(specifier);
+        return { url: `${SCHEME}${key}`, format: "module", shortCircuit: true };
+      }
+      const caller = closureAt(context.parentURL);
+      const bare = !nodeModule2.isBuiltin(specifier) && !specifier.startsWith(".") && !specifier.startsWith("/") && !specifier.startsWith("file:");
+      const result = nextResolve(specifier, context);
+      if (caller) {
+        if (result.url.startsWith("file:")) {
+          const target = closureAt(result.url);
+          if (!target || target.root !== caller.root || !(target.path in caller.receipt.files) || !unlinkedInside(caller.receipt, target.path, fileURLToPath2(result.url))) throw new Error("composition import escapes the reviewed file closure");
+        } else if (bare) {
+          throw new Error("composition import escapes the reviewed file closure");
+        }
+      }
+      return result;
+    },
+    load(url, context, nextLoad) {
+      if (url.startsWith(SCHEME)) {
+        const key = url.slice(SCHEME.length);
+        return { format: "module", source: virtualSource(key, merged[key]), shortCircuit: true };
+      }
+      const result = nextLoad(url, context);
+      const closure = closureAt(url);
+      if (closure) {
+        if (!(closure.path in closure.receipt.files) || result.source === void 0 || result.source === null) throw new Error("module was absent from reviewed composition closure");
+        if (!unlinkedInside(closure.receipt, closure.path, fileURLToPath2(url))) throw new Error("module was absent from reviewed composition closure or contains a symbolic link");
+        const source = typeof result.source === "string" ? Buffer.from(result.source) : Buffer.from(result.source);
+        if (source.length > 256 * 1024 * 1024 || createHash4("sha256").update(source).digest("hex") !== closure.receipt.files[closure.path]) throw new Error("composition module bytes changed after review");
+      }
+      return result;
+    }
+  });
+}
+var SCHEME, REGISTRY_KEY, SINGLETONS, UnsupportedPeerError, PEER_PATH, reviewedClosures, installed2;
+var init_resolve_hooks = __esm({
+  "src/dsh/resolve-hooks.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_canonical_path();
+    init_runtime();
+    init_bun_closure();
+    init_dsh_message_compat();
+    init_dsh_shims();
+    init_compatibility();
+    SCHEME = "codewhale-host:";
+    REGISTRY_KEY = /* @__PURE__ */ Symbol.for("codewhale.extension-host.modules");
+    SINGLETONS = compatibility_default.module_singletons;
+    UnsupportedPeerError = class extends Error {
+      constructor(specifier) {
+        super(`requires \`${specifier}\`, which the Codewhale extension host does not provide`);
+        this.specifier = specifier;
+        this.name = "UnsupportedPeerError";
+      }
+      specifier;
+    };
+    PEER_PATH = /[\\/]node_modules[\\/]((?:@deepseek-ai[\\/](?:dsh-[^\\/]+|cordis(?:-[^\\/]+)?|schemastery|cosmokit))|cosmokit)[\\/]/;
+    reviewedClosures = /* @__PURE__ */ new Map();
+    installed2 = false;
+  }
+});
+
 // src/dsh/persona.ts
 function normalizePersonaConfig(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("persona config must be plain data");
@@ -19988,14 +21174,14 @@ var init_composition_inventory = __esm({
 });
 
 // src/dsh/agent-presets.ts
-import { createHash as createHash5, randomBytes } from "node:crypto";
+import { createHash as createHash5, randomBytes as randomBytes2 } from "node:crypto";
 import { fileURLToPath as fileURLToPath4, pathToFileURL as pathToFileURL6 } from "node:url";
 function fail(message) {
   throw new Error(`agent-presets: ${message}`);
 }
 function issuePresetReceipt(snapshot3) {
   const payload = JSON.stringify(snapshot3);
-  const receipt = createHash5("sha256").update(randomBytes(32)).update(payload).digest("hex");
+  const receipt = createHash5("sha256").update(randomBytes2(32)).update(payload).digest("hex");
   activePresetReceipts.set(receipt, payload);
   return receipt;
 }
@@ -20161,7 +21347,7 @@ function raceWithSignal(promise, signal) {
     });
     return Promise.reject(signal.reason);
   }
-  return new Promise((resolve6, reject) => {
+  return new Promise((resolve7, reject) => {
     let settled = false;
     const onAbort = () => {
       if (settled) return;
@@ -20176,7 +21362,7 @@ function raceWithSignal(promise, signal) {
         if (settled) return;
         settled = true;
         signal.removeEventListener("abort", onAbort);
-        resolve6(value);
+        resolve7(value);
       },
       (error) => {
         if (settled) return;
@@ -20600,13 +21786,13 @@ __export(composition_exports, {
 });
 import { createHash as createHash6 } from "node:crypto";
 import { readFile as readFile3 } from "node:fs/promises";
-import { isAbsolute as isAbsolute4, relative as relative2, resolve as resolve5, sep as sep2 } from "node:path";
+import { isAbsolute as isAbsolute5, relative as relative2, resolve as resolve6, sep as sep2 } from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 function digest(bytes) {
   return createHash6("sha256").update(bytes).digest("hex");
 }
 function plainRelative(path2) {
-  return typeof path2 === "string" && path2.length > 0 && path2.length <= 4096 && !isAbsolute4(path2) && !path2.startsWith("/") && !/[\\:\u0000-\u001f\u007f]/u.test(path2) && path2.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+  return typeof path2 === "string" && path2.length > 0 && path2.length <= 4096 && !isAbsolute5(path2) && !path2.startsWith("/") && !/[\\:\u0000-\u001f\u007f]/u.test(path2) && path2.split("/").every((part) => part !== "" && part !== "." && part !== "..");
 }
 function boundData(root) {
   let nodes = 0;
@@ -20921,9 +22107,9 @@ var init_composition = __esm({
       }
       async importReviewed(module) {
         const root = fileURLToPath5(this.base);
-        const path2 = resolve5(root, module.path);
+        const path2 = resolve6(root, module.path);
         const inside = relative2(root, path2);
-        if (inside.startsWith(`..${sep2}`) || inside === ".." || isAbsolute4(inside)) throw new Error("module escapes reviewed bundle");
+        if (inside.startsWith(`..${sep2}`) || inside === ".." || isAbsolute5(inside)) throw new Error("module escapes reviewed bundle");
         if (this.spec.files[module.path] !== module.sha256 || digest(await readFile3(path2)) !== module.sha256) throw new Error("module changed after review");
         return importReviewedModule(this.base, module.path);
       }
@@ -21039,7 +22225,7 @@ async function windowsSandboxProbe(env = process.env) {
   for (const path2 of reads) {
     if (!denied(() => fs.readFileSync(path2))) throw new Error("sandbox allowed an outside credential read");
   }
-  await new Promise((resolve6, reject) => {
+  await new Promise((resolve7, reject) => {
     const socket = net.connect({ host: "127.0.0.1", port });
     const timer = setTimeout(() => {
       socket.destroy();
@@ -21053,7 +22239,7 @@ async function windowsSandboxProbe(env = process.env) {
     socket.once("error", (error) => {
       clearTimeout(timer);
       socket.destroy();
-      if (error.code === "EACCES" || error.code === "EPERM") resolve6();
+      if (error.code === "EACCES" || error.code === "EPERM") resolve7();
       else reject(new Error(`network probe failed without an access denial: ${error.code}`));
     });
   });
@@ -21064,7 +22250,7 @@ async function windowsSandboxProbe(env = process.env) {
     const outputPath = `${inside}.receipt`;
     const fd = fs.openSync(outputPath, "wx+");
     try {
-      await new Promise((resolve6, reject) => {
+      await new Promise((resolve7, reject) => {
         let child, timer, poll, closeTimer, failure, settled = false;
         const finish = (error) => {
           if (settled) return;
@@ -21073,7 +22259,7 @@ async function windowsSandboxProbe(env = process.env) {
           clearInterval(poll);
           clearTimeout(closeTimer);
           if (error) reject(error);
-          else resolve6();
+          else resolve7();
         };
         const fail2 = (error) => {
           if (settled || failure) return;
