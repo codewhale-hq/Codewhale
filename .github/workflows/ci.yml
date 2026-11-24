@@ -1132,7 +1132,7 @@ jobs:
       os: windows-latest
       shards: 4
       shard_list: '[1,2,3,4]'
-      build_jobs: '2'
+      build_jobs: '4'
       debug: '0'
 
   portable-boundaries:
