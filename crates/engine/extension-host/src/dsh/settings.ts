@@ -90,7 +90,13 @@ export const settingsAdapter: DshAdapter = {
         try {
           host.brokerTicket(this.ctx, 'settings')
         } catch {
-          return [localeDescriptor()]
+          const forms = [localeDescriptor()]
+          Object.defineProperty(forms, 'then', {
+            value(onFulfilled?: (v: SettingsDescriptor[]) => unknown, onRejected?: (e: unknown) => unknown) {
+              return Promise.resolve([localeDescriptor()]).then(onFulfilled, onRejected)
+            },
+          })
+          return forms
         }
         return host.broker(this.ctx, 'settings', 'describe', {}).then((row) => {
           const desc = descriptor(row)

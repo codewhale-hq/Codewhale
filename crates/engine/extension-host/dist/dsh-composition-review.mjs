@@ -13463,6 +13463,692 @@ var init_dsh_message_compat = __esm({
   }
 });
 
+// src/shims/prompt.ts
+function normalizePromptSection(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("prompt section must be an object with id and text");
+  }
+  if (Object.keys(value).some((key) => key !== "id" && key !== "text" && key !== "interpolate")) {
+    throw new TypeError("prompt section supports only id and text, plus optional model-cwd interpolation");
+  }
+  const { id, text: text4, interpolate: interpolate2 } = value;
+  if (typeof id !== "string" || !SECTION_ID.test(id)) {
+    throw new TypeError("prompt section id must be lower case, start with a letter, and use a-z, 0-9, _ or - (at most 64 characters)");
+  }
+  if (typeof text4 !== "string" || text4.trim().length === 0) {
+    throw new TypeError(`prompt section "${id}" needs non-empty text`);
+  }
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text4)) {
+    throw new TypeError(`prompt section "${id}" text contains control characters`);
+  }
+  if (Buffer.byteLength(text4, "utf8") > MAX_PROMPT_SECTION_BYTES) {
+    throw new RangeError(`prompt section "${id}" exceeds ${MAX_PROMPT_SECTION_BYTES} UTF-8 bytes`);
+  }
+  if (interpolate2 !== void 0 && interpolate2 !== "model-cwd") throw new TypeError("prompt interpolation supports only model-cwd");
+  if (interpolate2 !== void 0) validatePromptTemplate(text4);
+  return Object.freeze({ id, text: text4, ...interpolate2 === void 0 ? {} : { interpolate: interpolate2 } });
+}
+function validatePromptTemplate(text4) {
+  for (let open = text4.indexOf("{{"); open >= 0; ) {
+    const group = /^\{\{([^{}]*)\}\}/u.exec(text4.slice(open));
+    if (!group) {
+      if (text4.indexOf("}}", open + 2) >= 0) throw new TypeError("malformed prompt variable reference");
+      open = text4.indexOf("{{", open + 2);
+      continue;
+    }
+    if (!/^[a-z][a-z0-9_]*$/u.test(group[1])) throw new TypeError("malformed prompt variable reference");
+    if (group[1] !== "model" && group[1] !== "cwd") throw new TypeError(`unknown Core prompt variable "{{${group[1]}}}"; supported variables: model, cwd`);
+    open = text4.indexOf("{{", open + group[0].length);
+  }
+}
+var MAX_PROMPT_SECTION_BYTES, MAX_PROMPT_OWNER_BYTES, MAX_PROMPT_HOST_BYTES, SECTION_ID;
+var init_prompt = __esm({
+  "src/shims/prompt.ts"() {
+    "use strict";
+    init_owned();
+    MAX_PROMPT_SECTION_BYTES = 4 * 1024;
+    MAX_PROMPT_OWNER_BYTES = 32 * 1024;
+    MAX_PROMPT_HOST_BYTES = 128 * 1024;
+    SECTION_ID = /^[a-z][a-z0-9_-]{0,63}$/u;
+  }
+});
+
+// src/dsh/persona.ts
+function normalizePersonaConfig(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("persona config must be plain data");
+  const config = value;
+  if (Object.keys(config).some((key) => !["prefix", "suffix", "complete", "includeRuntimeContext"].includes(key))) throw new TypeError("persona config has an unsupported field");
+  if (config.complete !== void 0 && config.complete !== false) throw new TypeError("persona replacement belongs to the Core prompt and cannot be imported");
+  if (config.includeRuntimeContext !== void 0 && config.includeRuntimeContext !== true) throw new TypeError("persona runtime-context suppression belongs to the Core prompt and cannot be imported");
+  if (typeof config.prefix !== "string" || config.suffix !== void 0 && typeof config.suffix !== "string") throw new TypeError("persona prefix and suffix must be text");
+  const result = { prefix: config.prefix, suffix: config.suffix ?? "" };
+  for (const [position, text4] of Object.entries(result)) {
+    if (Buffer.byteLength(text4, "utf8") > MAX_PROMPT_SECTION_BYTES) throw new RangeError("persona text exceeds 4096 UTF-8 bytes");
+    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text4)) throw new TypeError("persona text contains control characters");
+    validatePromptTemplate(text4);
+    if (text4.trim().length > 0) normalizePromptSection({ id: `persona-${position}`, text: text4, interpolate: "model-cwd" });
+  }
+  return Object.freeze(result);
+}
+var PERSONA, reviewedPersonaModule;
+var init_persona = __esm({
+  "src/dsh/persona.ts"() {
+    "use strict";
+    init_prompt();
+    init_root();
+    PERSONA = "@deepseek-ai/dsh-persona";
+    reviewedPersonaModule = Object.freeze({
+      name: "persona",
+      inject: ["prompt"],
+      apply(ctx, value) {
+        if (!ownerStorage.getStore()?.scope) throw new Error("persona requires an exact Core-selected entry scope");
+        const config = normalizePersonaConfig(value);
+        for (const [position, text4] of Object.entries(config)) {
+          if (text4.trim().length > 0) ctx.prompt.registerSection({ id: `persona-${position}`, text: text4, interpolate: "model-cwd" });
+        }
+      }
+    });
+  }
+});
+
+// src/dsh/upstream/agent-presets/metadata.ts
+import { join as join2 } from "node:path";
+function text(value) {
+  if (typeof value !== "string") return void 0;
+  const trimmed = value.trim();
+  return trimmed === "" ? void 0 : trimmed;
+}
+async function readPresetMetadata(directory, readFile3) {
+  let raw;
+  try {
+    raw = await readFile3(join2(directory, METADATA_FILE), "utf8");
+  } catch {
+    return {};
+  }
+  let parsed;
+  try {
+    parsed = yaml.load(raw);
+  } catch {
+    return {};
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+  const record3 = parsed;
+  const name = text(record3.name);
+  const description = text(record3.description);
+  const order = typeof record3.order === "number" && Number.isFinite(record3.order) ? record3.order : void 0;
+  return {
+    ...name === void 0 ? {} : { name },
+    ...description === void 0 ? {} : { description },
+    ...order === void 0 ? {} : { order }
+  };
+}
+var METADATA_FILE;
+var init_metadata = __esm({
+  "src/dsh/upstream/agent-presets/metadata.ts"() {
+    "use strict";
+    init_js_yaml();
+    METADATA_FILE = "preset.yml";
+  }
+});
+
+// src/dsh/upstream/agent-presets/preset.ts
+var PRESET_ID;
+var init_preset = __esm({
+  "src/dsh/upstream/agent-presets/preset.ts"() {
+    "use strict";
+    PRESET_ID = /^[a-z0-9][a-z0-9-]*$/;
+  }
+});
+
+// src/dsh/upstream/agent-presets/specifier.ts
+import { isAbsolute as isAbsolute2 } from "node:path";
+import { pathToFileURL as pathToFileURL2 } from "node:url";
+function classifyRowSpecifier(name) {
+  if (name.startsWith("cordis:")) return { kind: "builtin", specifier: name };
+  if (name.startsWith(".")) return { kind: "preset", specifier: name };
+  if (name.startsWith("file:")) return { kind: "file", specifier: name };
+  if (isAbsolute2(name)) return { kind: "file", specifier: pathToFileURL2(name).href };
+  return { kind: "package", specifier: name };
+}
+var init_specifier = __esm({
+  "src/dsh/upstream/agent-presets/specifier.ts"() {
+    "use strict";
+  }
+});
+
+// src/dsh/upstream/agent-presets/discovery.ts
+import { isBuiltin as isBuiltin2 } from "node:module";
+import { join as join3, resolve as resolve2 } from "node:path";
+import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL3 } from "node:url";
+function entryListProblem(rows, at2 = "") {
+  if (!Array.isArray(rows)) {
+    return at2 === "" ? "the composition must be a top-level list of plugin rows" : `group ${at2} must hold a list of plugin rows`;
+  }
+  for (const [index, row] of rows.entries()) {
+    const label2 = at2 === "" ? `row ${String(index + 1)}` : `${at2} row ${String(index + 1)}`;
+    if (typeof row !== "object" || row === null || Array.isArray(row)) {
+      return `${label2} is not a plugin row (expected a map with a "name")`;
+    }
+    const { name, group, config } = row;
+    if (typeof name !== "string" || name === "") {
+      return `${label2} names no plugin (a "name" string is required)`;
+    }
+    if (group === true) {
+      const nested = entryListProblem(config, label2);
+      if (nested !== void 0) return nested;
+    }
+  }
+  return void 0;
+}
+async function rowResolves(row, presetBase, harnessBase, resolves, io) {
+  if (row.kind === "builtin") return true;
+  if (row.kind === "package") return isBuiltin2(row.specifier) || resolves(row.specifier, harnessBase);
+  const url = row.kind === "file" ? new URL(row.specifier) : new URL(row.specifier, presetBase);
+  return await isFile(fileURLToPath2(url), io);
+}
+async function unresolvableRows(rows, presetBase, harnessBase, resolves, io, at2 = "") {
+  const found = [];
+  for (const [index, entry] of rows.entries()) {
+    const row = entry;
+    if (Boolean(row.disabled)) continue;
+    const positional = at2 === "" ? `row ${String(index + 1)}` : `${at2} row ${String(index + 1)}`;
+    if (row.group === true) {
+      found.push(...await unresolvableRows(row.config, presetBase, harnessBase, resolves, io, positional));
+      continue;
+    }
+    if (await rowResolves(classifyRowSpecifier(row.name), presetBase, harnessBase, resolves, io)) continue;
+    const label2 = typeof row.id === "string" && row.id !== "" ? `row "${row.id}"` : positional;
+    found.push({ label: label2, name: row.name });
+  }
+  return found;
+}
+async function compositionProblem(path2, harnessBase, resolves, io) {
+  let content;
+  try {
+    content = await io.readFile(path2, "utf8");
+  } catch {
+    return `the composition file ${COMPOSITION_FILE} cannot be read`;
+  }
+  let rows;
+  try {
+    rows = load(content, { schema: entryListSchema });
+  } catch (error) {
+    const full = error instanceof Error ? error.message : String(error);
+    return `the composition is not valid YAML: ${full.replace(/\n[\s\S]*$/, "")}`;
+  }
+  const shape = entryListProblem(rows);
+  if (shape !== void 0) return shape;
+  const presetBase = new URL(".", pathToFileURL3(path2)).href;
+  let unresolvable;
+  try {
+    unresolvable = await unresolvableRows(rows, presetBase, harnessBase, resolves, io);
+  } catch (error) {
+    const full = error instanceof Error ? error.message : String(error);
+    return `the composition's plugins cannot be checked: ${full.replace(/\n[\s\S]*$/, "")}`;
+  }
+  const [first] = unresolvable;
+  if (first === void 0) return void 0;
+  if (unresolvable.length === 1) {
+    return `${first.label} names a plugin that cannot be resolved: ${first.name}`;
+  }
+  return `${String(unresolvable.length)} rows name plugins that cannot be resolved:
+` + unresolvable.map((row) => `- ${row.label}: ${row.name}`).join("\n");
+}
+async function isFile(path2, io) {
+  try {
+    return (await io.stat(path2)).isFile();
+  } catch {
+    return false;
+  }
+}
+async function scanRoot(root, harnessBase, resolves, io) {
+  const dir = resolve2(root.path);
+  let children;
+  try {
+    children = await io.readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw new Error(`agent-presets: cannot read preset root ${dir}: ${String(error)}`, { cause: error });
+  }
+  const found = [];
+  for (const child of children) {
+    if (!child.isDirectory() || !PRESET_ID.test(child.name)) continue;
+    const directory = join3(dir, child.name);
+    const path2 = join3(directory, COMPOSITION_FILE);
+    const broken = await isFile(path2, io) ? await compositionProblem(path2, harnessBase, resolves, io) : `the composition file ${COMPOSITION_FILE} is missing — the directory still occupies the id; delete it or restore the file`;
+    const metadata = await readPresetMetadata(directory, io.readFile);
+    found.push({
+      id: child.name,
+      trust: root.trust,
+      path: path2,
+      ...metadata,
+      ...broken === void 0 ? {} : { broken }
+    });
+  }
+  return found.sort((left, right) => {
+    const leftOrder = left.order ?? Number.POSITIVE_INFINITY;
+    const rightOrder = right.order ?? Number.POSITIVE_INFINITY;
+    const byOrder = leftOrder === rightOrder ? 0 : leftOrder - rightOrder;
+    return byOrder === 0 ? left.id.localeCompare(right.id) : byOrder;
+  });
+}
+async function discoverPresets(roots, harnessBase, resolves, io) {
+  const byId = /* @__PURE__ */ new Map();
+  for (const root of roots) {
+    for (const preset of await scanRoot(root, harnessBase, resolves, io)) {
+      if (byId.has(preset.id)) continue;
+      byId.set(preset.id, preset);
+    }
+  }
+  return [...byId.values()];
+}
+var COMPOSITION_FILE, SHIPPED_PRESET_ROOT;
+var init_discovery = __esm({
+  "src/dsh/upstream/agent-presets/discovery.ts"() {
+    "use strict";
+    init_js_yaml();
+    init_src2();
+    init_metadata();
+    init_preset();
+    init_specifier();
+    COMPOSITION_FILE = "agent.cordis.yml";
+    SHIPPED_PRESET_ROOT = fileURLToPath2(new URL("../presets/", import.meta.url));
+  }
+});
+
+// src/dsh/upstream/agent-presets/composition-inventory.ts
+function disabledContribution(value, evaluateExpression) {
+  if (isJsExpr(value)) {
+    try {
+      return Boolean(evaluateExpression(value.__jsExpr));
+    } catch {
+      return "conditional";
+    }
+  }
+  return Boolean(value);
+}
+function combineDisabled(outer, own) {
+  if (outer === true || own === true) return true;
+  if (outer === "conditional" || own === "conditional") return "conditional";
+  return false;
+}
+function flattenRows(rows, outerDisabled, evaluateExpression, found) {
+  for (const value of rows) {
+    const row = value;
+    const disabled = combineDisabled(outerDisabled, disabledContribution(row.disabled, evaluateExpression));
+    if (row.group === true) {
+      flattenRows(row.config, disabled, evaluateExpression, found);
+      continue;
+    }
+    found.push({
+      entryId: typeof row.id === "string" && row.id !== "" ? row.id : null,
+      moduleName: row.name,
+      enabled: disabled === true ? false : disabled === "conditional" ? "conditional" : true,
+      ...isJsExpr(row.disabled) ? { condition: row.disabled.__jsExpr } : {}
+    });
+  }
+}
+async function fileComposition(path2, evaluateExpression, readFile3) {
+  let rows;
+  try {
+    rows = load(await readFile3(path2, "utf8"), { schema: entryListSchema });
+  } catch (error) {
+    return { broken: error instanceof Error ? error.message : String(error) };
+  }
+  const problem = entryListProblem(rows);
+  if (problem !== void 0) return { broken: problem };
+  const found = [];
+  flattenRows(rows, false, evaluateExpression, found);
+  return { rows: found };
+}
+function mountedCompositionRows(tree) {
+  const found = [];
+  for (const entry of tree.entries()) {
+    if (entry.options.group) continue;
+    found.push({
+      entryId: entry.id,
+      moduleName: entry.options.name,
+      enabled: !entry.disabled,
+      ...isJsExpr(entry.options.disabled) ? { condition: entry.options.disabled.__jsExpr } : {},
+      ...entry.fiber === void 0 ? {} : { fiberState: entry.fiber.state }
+    });
+  }
+  return found;
+}
+var init_composition_inventory = __esm({
+  "src/dsh/upstream/agent-presets/composition-inventory.ts"() {
+    "use strict";
+    init_js_yaml();
+    init_src();
+    init_src2();
+    init_discovery();
+  }
+});
+
+// src/dsh/agent-presets.ts
+import { createHash as createHash2, randomBytes } from "node:crypto";
+import { resolve as resolve3, relative as relative2, dirname as dirname3, sep as sep2 } from "node:path";
+import { fileURLToPath as fileURLToPath3, pathToFileURL as pathToFileURL4 } from "node:url";
+function plain(path2) {
+  return typeof path2 === "string" && path2.length > 0 && path2.length <= 4096 && !/[\\:\u0000-\u001f\u007f]/u.test(path2) && !path2.startsWith("/") && path2.split("/").every((p) => p !== "" && p !== "." && p !== "..");
+}
+function fail(message) {
+  throw new Error(`agent-presets: ${message}`);
+}
+function containedPackageModule(name, documents, files) {
+  if (!name || /[\\:\u0000-\u0020\u007f]/u.test(name)) return;
+  const parts = name.split("/");
+  const n = name.startsWith("@") ? 2 : 1;
+  if (parts.length < n || parts.some((p) => !p || p === "." || p === "..")) return;
+  const pkg = parts.slice(0, n).join("/");
+  const packageRoot = `node_modules/${pkg}`;
+  const source = documents.get(`${packageRoot}/package.json`);
+  if (source === void 0) return;
+  let data2;
+  try {
+    data2 = JSON.parse(source);
+  } catch {
+    return;
+  }
+  if (data2.name !== pkg || data2.type !== "module") return;
+  const subpath = parts.length === n ? "." : `./${parts.slice(n).join("/")}`;
+  const refused = /* @__PURE__ */ Symbol("unsupported package target");
+  function target(value) {
+    if (typeof value === "string") return value;
+    if (!value || Array.isArray(value) || typeof value !== "object") return refused;
+    for (const [condition, child] of Object.entries(value)) {
+      if (["node", "import", "default"].includes(condition)) {
+        const picked = target(child);
+        if (picked !== void 0) return picked;
+      }
+    }
+  }
+  let entry;
+  if (data2.exports !== void 0) {
+    const value = data2.exports;
+    entry = value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).some((k) => k.startsWith(".")) ? target(value[subpath]) : subpath === "." ? target(value) : void 0;
+  } else if (subpath === ".") entry = typeof data2.main === "string" ? data2.main : "./index.js";
+  else entry = subpath;
+  if (typeof entry !== "string" || !entry.startsWith("./") || !plain(entry.slice(2))) return;
+  const path2 = `${packageRoot}/${entry.slice(2)}`;
+  if (!/\.(mjs|js|mts)$/.test(path2) || !SHA.test(files[path2] ?? "")) return;
+  return { name, path: path2, sha256: files[path2] };
+}
+async function reviewAgentPresets(input) {
+  const { composition } = input;
+  const files = composition.files;
+  if (!files || Object.keys(files).length > 16384 || !Array.isArray(input.directories) || input.directories.length > 16384) fail("invalid source inventory");
+  const base = resolve3("codewhale-reviewed-agent-presets");
+  const baseUrl = pathToFileURL4(`${base}${sep2}`).href;
+  function key(path2) {
+    const inside = relative2(base, path2).split(sep2).join("/");
+    if (!plain(inside)) fail("path escapes the admitted source root");
+    return inside;
+  }
+  const documents = /* @__PURE__ */ new Map();
+  let bytes = 0;
+  for (const doc of input.documents) {
+    if (!plain(doc.path) || !SHA.test(doc.sha256) || files[doc.path] !== doc.sha256 || hash(doc.source) !== doc.sha256 || documents.has(doc.path)) fail("document changed or is outside the source receipt");
+    bytes += Buffer.byteLength(doc.source);
+    if (Buffer.byteLength(doc.source) > 1024 * 1024 || bytes > 4 * 1024 * 1024) fail("documents exceed their bound");
+    documents.set(doc.path, doc.source);
+  }
+  const directories = new Set(input.directories);
+  for (const path2 of directories) if (!plain(path2)) fail("invalid source directory");
+  for (const path2 of Object.keys(files)) if (!plain(path2) || !SHA.test(files[path2])) fail("invalid source file receipt");
+  const invalid6 = /* @__PURE__ */ new Set();
+  const parsed = /* @__PURE__ */ new Map();
+  const io = {
+    async readFile(path2) {
+      const relative4 = key(path2);
+      if (invalid6.has(relative4)) throw new Error("composition exceeds its data/shape bound");
+      const text4 = documents.get(relative4);
+      if (text4 === void 0) throw new Error("document not admitted");
+      return text4;
+    },
+    async stat(path2) {
+      return { isFile: () => Object.hasOwn(files, key(path2)) };
+    },
+    async readdir(path2) {
+      const prefix = `${key(path2)}/`;
+      if (!directories.has(prefix.slice(0, -1))) {
+        const e = new Error("missing root");
+        Object.assign(e, { code: "ENOENT" });
+        throw e;
+      }
+      return [...directories].filter((p) => p.startsWith(prefix) && !p.slice(prefix.length).includes("/")).map((p) => ({ name: p.slice(prefix.length), isDirectory: () => true }));
+    }
+  };
+  const { reviewComposition: reviewComposition2, parsePresetComposition: parsePresetComposition2, compositionRowProblem: compositionRowProblem2, hasReviewedRowBridge: hasReviewedRowBridge2 } = await Promise.resolve().then(() => (init_composition(), composition_exports));
+  for (const [path2, source] of documents) {
+    if (!path2.endsWith("/agent.cordis.yml")) continue;
+    try {
+      parsed.set(path2, parsePresetComposition2(source));
+    } catch {
+      invalid6.add(path2);
+    }
+  }
+  const top = reviewComposition2(composition);
+  const rosterRows = [];
+  function visit(rows2) {
+    for (const row of rows2) {
+      if (row.group === true || row.name === "cordis:group" || row.name === "@deepseek-ai/cordis-plugin-group") visit(row.config ?? []);
+      else if (row.name === AGENT_PRESETS) rosterRows.push(row);
+    }
+  }
+  visit(top.entries);
+  if (rosterRows.length !== 1) fail("exactly one raw roster row is required");
+  const config = rosterRows[0].config ?? {};
+  if (!config || Array.isArray(config) || typeof config !== "object" || Object.keys(config).some((k) => !["default", "roots", "includeShippedRoot", "includeUserRoot"].includes(k))) fail("roster configuration must be literal upstream fields");
+  for (const k of ["includeShippedRoot", "includeUserRoot"]) if (config[k] !== void 0 && typeof config[k] !== "boolean") fail("root gates must be literal booleans");
+  if (config.default !== void 0 && (typeof config.default !== "string" || !PRESET_ID.test(config.default) || config.default.length > 64)) fail("invalid default id");
+  const roots = [];
+  if (config.includeShippedRoot !== false) {
+    const candidates = [...documents.entries()].filter(([p, text4]) => {
+      if (p !== "package.json" && !p.endsWith("/package.json")) return false;
+      try {
+        return JSON.parse(text4).name === AGENT_PRESETS;
+      } catch {
+        return false;
+      }
+    });
+    if (candidates.length !== 1) fail("shipped root requires exactly one admitted agent-presets package");
+    const folder = dirname3(candidates[0][0]).split(sep2).join("/");
+    const root = folder === "." ? "presets" : `${folder}/presets`;
+    if (!directories.has(root)) fail("shipped preset root was not admitted");
+    roots.push({ path: resolve3(base, root), trust: "system" });
+  }
+  if (config.roots !== void 0 && !Array.isArray(config.roots)) fail("roots must be a literal list");
+  for (const root of config.roots ?? []) {
+    if (!root || Object.keys(root).some((k) => !["path", "trust"].includes(k)) || !plain(root.path) || !["system", "user"].includes(root.trust)) fail("configured roots must stay inside the admitted package");
+    if (!directories.has(root.path)) fail("configured preset root was not admitted");
+    roots.push({ path: resolve3(base, root.path), trust: root.trust });
+  }
+  if (config.includeUserRoot !== false) {
+    if (!directories.has(".agent-presets")) fail("user root requires an admitted .agent-presets tree; ambient home discovery is refused");
+    roots.push({ path: resolve3(base, ".agent-presets"), trust: "user" });
+  }
+  if (roots.length > 64) fail("too many roots");
+  const declared = new Map(composition.modules.map((m) => [m.name, m]));
+  if (declared.size !== composition.modules.length) fail("duplicate module name receipt");
+  const found = await discoverPresets(roots, baseUrl, (name) => hasReviewedRowBridge2(name) || declared.has(name) || containedPackageModule(name, documents, files) !== void 0, io);
+  if (found.length > MAX_PRESETS) fail("too many presets");
+  const prepared = [];
+  const rows = [];
+  const inventory = /* @__PURE__ */ Object.create(null);
+  for (const preset of found) {
+    let resolveRows2 = function(children) {
+      for (const row of children) {
+        if (Boolean(row.disabled) && !isJsExpr(row.disabled)) continue;
+        if (row.group === true || row.name === "cordis:group" || row.name === "@deepseek-ai/cordis-plugin-group") {
+          resolveRows2(row.config ?? []);
+          continue;
+        }
+        const specifier = classifyRowSpecifier(row.name);
+        if (row.name === PERSONA) normalizePersonaConfig(row.config);
+        if (specifier.kind === "builtin" || hasReviewedRowBridge2(row.name)) continue;
+        if (row.name === AGENT_PRESETS) fail("nested roster cannot create a second selection authority");
+        const problem = compositionRowProblem2(row.name);
+        if (problem) fail(problem);
+        let receipt;
+        if (specifier.kind === "package") receipt = declared.get(row.name) ?? containedPackageModule(row.name, documents, files);
+        else {
+          const url = specifier.kind === "file" ? new URL(specifier.specifier) : new URL(specifier.specifier, pathToFileURL4(preset.path).href);
+          const path3 = key(fileURLToPath3(url));
+          if (files[path3] !== void 0) receipt = { name: row.name, path: path3, sha256: files[path3] };
+        }
+        if (!receipt || files[receipt.path] !== receipt.sha256) {
+          if (isJsExpr(row.disabled)) continue;
+          fail("row module has no exact admitted receipt");
+        }
+        modules.set(row.name, receipt);
+      }
+    };
+    var resolveRows = resolveRows2;
+    if (preset.id.length > 64 || (preset.name?.length ?? 0) > 1024 || (preset.description?.length ?? 0) > 4096) fail("preset metadata exceeds its bound");
+    const metadata = {
+      id: preset.id,
+      trust: preset.trust,
+      is_default: preset.id === config.default,
+      ...preset.name === void 0 ? {} : { name: preset.name },
+      ...preset.description === void 0 ? {} : { description: preset.description },
+      ...preset.order === void 0 ? {} : { order: preset.order },
+      ...preset.broken === void 0 ? {} : { broken: preset.broken }
+    };
+    rows.push(metadata);
+    const path2 = key(preset.path);
+    inventory[preset.id] = { path: path2, ...preset.broken !== void 0 ? { broken: preset.broken } : await fileComposition(preset.path, () => {
+      throw new Error("conditional until mounted");
+    }, io.readFile) };
+    if (preset.broken !== void 0) continue;
+    const source = await io.readFile(preset.path, "utf8");
+    const entries = parsed.get(key(preset.path));
+    const modules = /* @__PURE__ */ new Map();
+    try {
+      resolveRows2(entries);
+    } catch (error) {
+      metadata.broken = error instanceof Error ? error.message : "preset preparation refused";
+      continue;
+    }
+    const layer = JSON.stringify([{ insert: entries }]);
+    const spec = { version: 1, layers: [{ path: key(preset.path), sha256: hash(layer), source: layer }], modules: [...modules.values()], files };
+    reviewComposition2(spec);
+    prepared.push({ metadata, composition: spec, source });
+  }
+  if (config.default !== void 0 && !prepared.some((p) => p.metadata.id === config.default)) fail("default preset is missing or broken");
+  if (!prepared.length) fail("no admitted usable preset");
+  if (Buffer.byteLength(JSON.stringify(inventory)) > 4 * 1024 * 1024) fail("composition inventory exceeds its bound");
+  return { catalog: { version: 1, ...config.default === void 0 ? {} : { default: config.default }, mode_selection_enabled: true, presets: rows, inventory }, presets: prepared };
+}
+function issuePresetReceipt(snapshot2) {
+  const payload = JSON.stringify(snapshot2);
+  const receipt = createHash2("sha256").update(randomBytes(32)).update(payload).digest("hex");
+  activePresetReceipts.set(receipt, payload);
+  return receipt;
+}
+function revokePresetReceipt(receipt) {
+  activePresetReceipts.delete(receipt);
+}
+function defineReviewedAgentPresets(mount) {
+  class ReviewedAgentPresets extends Service {
+    static inject = ["loader"];
+    snapshot;
+    selfCtx;
+    constructor(ctx, config) {
+      super(ctx, "agentPresets");
+      this.selfCtx = ctx;
+      if (config?.codewhale_reviewed !== void 0 || config?.codewhale_receipt !== void 0) {
+        const snapshot2 = config.codewhale_reviewed;
+        const receipt = typeof config.codewhale_receipt === "string" ? config.codewhale_receipt : "";
+        const expected = receipt ? activePresetReceipts.get(receipt) : void 0;
+        activePresetReceipts.delete(receipt);
+        if (!snapshot2 || !expected || expected !== JSON.stringify(snapshot2) || snapshot2.catalog?.version !== 1 || !snapshot2.catalog.presets.some((p) => p.id === snapshot2.selected?.metadata.id && !p.broken)) fail("raw roster needs an installer-minted preset receipt");
+        this.snapshot = structuredClone(snapshot2);
+      }
+    }
+    mounting;
+    mounted;
+    mountSelected() {
+      const snapshot2 = this.snapshot;
+      if (!snapshot2) return Promise.resolve(void 0);
+      return this.mounting ??= mount(this.selfCtx, snapshot2.base_url, snapshot2.selected.composition).then((result) => this.mounted = result);
+    }
+    async list() {
+      const snapshot2 = this.snapshot;
+      if (!snapshot2) return [];
+      return snapshot2.catalog.presets.map((row) => ({ ...structuredClone(row), path: fileURLToPath3(new URL(snapshot2.catalog.inventory[row.id].path, snapshot2.base_url)) }));
+    }
+    async remoteExportList() {
+      const snapshot2 = this.snapshot;
+      if (!snapshot2) return { presets: [], authorable: false, defaultId: void 0, modeSelectionEnabled: false };
+      return { presets: snapshot2.catalog.presets.map(({ is_default, entry, ...row }) => ({ ...structuredClone(row), isDefault: is_default })), authorable: false, defaultId: this.defaultId, modeSelectionEnabled: snapshot2.catalog.mode_selection_enabled };
+    }
+    get defaultId() {
+      return this.snapshot?.catalog.default;
+    }
+    get authorable() {
+      return false;
+    }
+    async resolve(id = this.defaultId) {
+      const row = (await this.list()).find((p) => p.id === id);
+      if (!row) fail("preset not found");
+      return row;
+    }
+    composedPreset() {
+      return this.snapshot?.selected.metadata.id;
+    }
+    async compositionInventory() {
+      const snapshot2 = this.snapshot;
+      if (!snapshot2) return [];
+      return snapshot2.catalog.presets.map((row) => {
+        const identity = { id: row.id, trust: row.trust, ...row.name === void 0 ? {} : { name: row.name }, isDefault: row.id === this.defaultId };
+        if (row.id === this.composedPreset() && this.mounted) return { ...identity, rows: mountedCompositionRows(this.mounted.tree) };
+        const read = snapshot2.catalog.inventory[row.id];
+        if (row.broken || "broken" in read) return { ...identity, broken: row.broken ?? ("broken" in read ? read.broken : void 0), rows: [] };
+        return { ...identity, rows: structuredClone(read.rows) };
+      });
+    }
+    async readDocument(id) {
+      const snapshot2 = this.snapshot;
+      if (!snapshot2 || id !== this.composedPreset()) fail("read another preset through Core file authority");
+      return { agentPreset: id, trust: snapshot2.selected.metadata.trust, content: snapshot2.selected.source };
+    }
+    select() {
+      fail("select through Core AgentProfile/native preset selection before a turn");
+    }
+    recompose() {
+      fail("Core owns the captured agent selection and blank-session check");
+    }
+    copy() {
+      fail("copy through Core file/install/review/reload authority");
+    }
+    remove() {
+      fail("delete through Core file/install/review/reload authority");
+    }
+  }
+  Object.defineProperty(ReviewedAgentPresets.prototype, REVIEWED_AGENT_PRESETS_BRAND, { value: true });
+  return ReviewedAgentPresets;
+}
+var AGENT_PRESETS, MAX_PRESETS, hash, SHA, activePresetReceipts, REVIEWED_AGENT_PRESETS_BRAND;
+var init_agent_presets = __esm({
+  "src/dsh/agent-presets.ts"() {
+    "use strict";
+    init_persona();
+    init_lib2();
+    init_discovery();
+    init_preset();
+    init_specifier();
+    init_composition_inventory();
+    init_src();
+    AGENT_PRESETS = "@deepseek-ai/dsh-agent-presets";
+    MAX_PRESETS = 64;
+    hash = (bytes) => createHash2("sha256").update(bytes).digest("hex");
+    SHA = /^[a-f0-9]{64}$/;
+    activePresetReceipts = /* @__PURE__ */ new Map();
+    REVIEWED_AGENT_PRESETS_BRAND = /* @__PURE__ */ Symbol("codewhale.reviewedAgentPresets");
+  }
+});
+
 // src/protocol.generated.ts
 var MAGIC_ASCII, IMAGE_LIMITS, ErrorCode;
 var init_protocol_generated = __esm({
@@ -13590,7 +14276,7 @@ var init_session_prompt = __esm({
 });
 
 // src/dsh/agents.ts
-function plain(value, allowed, what) {
+function plain2(value, allowed, what) {
   if (value === null || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new RpcError(ErrorCode.InvalidParams, `expected a plain ${what} object`);
   const result = /* @__PURE__ */ Object.create(null);
   for (const key of Reflect.ownKeys(value)) {
@@ -13615,10 +14301,10 @@ function defineSubagents(host) {
     }
     async startActivation(request) {
       const owner = host.ownerOf(this.ctx);
-      const input = plain(request, ["provider", "label", "childId", "request", "signal", "delivery"], "activation");
+      const input = plain2(request, ["provider", "label", "childId", "request", "signal", "delivery"], "activation");
       if (input.provider !== "spawn" && input.provider !== "fork") throw new RpcError(ErrorCode.NotAvailable, "only the spawn and fork providers are available");
-      const spawn = plain(input.request, ["parent", "prompt", "agentOptions"], "spawn request");
-      const options = spawn.agentOptions === void 0 ? {} : plain(spawn.agentOptions, ["model"], "agentOptions");
+      const spawn = plain2(input.request, ["parent", "prompt", "agentOptions"], "spawn request");
+      const options = spawn.agentOptions === void 0 ? {} : plain2(spawn.agentOptions, ["model"], "agentOptions");
       if (options.model !== void 0 && typeof options.model !== "string") throw new RpcError(ErrorCode.InvalidParams, "agentOptions.model must be a string");
       const delivery = input.delivery === void 0 ? "parent" : input.delivery;
       if (delivery !== "caller" && delivery !== "parent") throw new RpcError(ErrorCode.InvalidParams, "delivery must be caller or parent");
@@ -13626,7 +14312,7 @@ function defineSubagents(host) {
       if (typeof childId !== "string" || !/^[A-Za-z0-9_.:-]{1,128}$/.test(childId)) throw new RpcError(ErrorCode.InvalidParams, "childId must be 1-128 letters, digits, or _.:-");
       if (!Array.isArray(spawn.prompt) || spawn.prompt.length === 0) throw new RpcError(ErrorCode.InvalidParams, "prompt must be a non-empty content array");
       const prompt = spawn.prompt.map((block) => {
-        const item = plain(block, ["type", "text"], "prompt block");
+        const item = plain2(block, ["type", "text"], "prompt block");
         if (item.type !== "text" || typeof item.text !== "string") throw new RpcError(ErrorCode.NotAvailable, "only text prompt blocks are supported");
         return item.text;
       }).join("");
@@ -13656,7 +14342,7 @@ function defineSubagents(host) {
             },
             section(section) {
               sealed();
-              const value = plain(section, ["name", "order", "text"], "system prompt section");
+              const value = plain2(section, ["name", "order", "text"], "system prompt section");
               if (value.name !== PERSONA_PREFIX_SECTION || value.order !== PERSONA_ORDER || typeof value.text !== "string") {
                 throw new RpcError(ErrorCode.NotAvailable, "only the child deployment persona section is supported");
               }
@@ -13669,15 +14355,14 @@ function defineSubagents(host) {
           tools: Object.freeze({
             restrict(filter) {
               sealed();
-              const value = plain(filter, ["deny"], "tool filter");
+              const value = plain2(filter, ["deny"], "tool filter");
               if (!Array.isArray(value.deny) || value.deny.some((name) => typeof name !== "string" || name === "")) throw new RpcError(ErrorCode.InvalidParams, "deny must be a list of tool names");
               for (const name of value.deny) denied.add(name);
               return () => void 0;
             },
-            guard(guardFn) {
+            guard() {
               sealed();
-              if (typeof guardFn !== "function") throw new RpcError(ErrorCode.InvalidParams, "tools.guard requires a guard function");
-              return () => void 0;
+              throw new RpcError(ErrorCode.NotAvailable, "child tools.guard is not supported; use child.ctx.tools.restrict({ deny }) or root ctx.tools.guard");
             }
           })
         })
@@ -14163,7 +14848,7 @@ var init_network = __esm({
 });
 
 // src/dsh/settings.ts
-function plain2(value, what) {
+function plain3(value, what) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new RpcError(ErrorCode.InvalidParams, `${what} is a plain object`);
   return value;
 }
@@ -14236,7 +14921,13 @@ var init_settings = __esm({
             try {
               host.brokerTicket(this.ctx, "settings");
             } catch {
-              return [localeDescriptor()];
+              const forms = [localeDescriptor()];
+              Object.defineProperty(forms, "then", {
+                value(onFulfilled, onRejected) {
+                  return Promise.resolve([localeDescriptor()]).then(onFulfilled, onRejected);
+                }
+              });
+              return forms;
             }
             return host.broker(this.ctx, "settings", "describe", {}).then((row) => {
               const desc = descriptor(row);
@@ -14244,10 +14935,10 @@ var init_settings = __esm({
             });
           }
           async update(ns, patch, expectedRevision) {
-            return this.write(ns, "update", { patch: plain2(patch, "a settings patch") }, expectedRevision);
+            return this.write(ns, "update", { patch: plain3(patch, "a settings patch") }, expectedRevision);
           }
           async replace(ns, section, expectedRevision) {
-            return this.write(ns, "replace", { value: plain2(section, "a settings section") }, expectedRevision);
+            return this.write(ns, "replace", { value: plain3(section, "a settings section") }, expectedRevision);
           }
           async mutate(ns, ops, expectedRevision) {
             if (!Array.isArray(ops)) throw new RpcError(ErrorCode.InvalidParams, "settings edits are an array of path operations");
@@ -14279,7 +14970,7 @@ function record2(value, what) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw invalid3(what);
   return value;
 }
-function text(value, what) {
+function text2(value, what) {
   if (typeof value !== "string" || value.length === 0) throw invalid3(what);
   return value;
 }
@@ -14294,7 +14985,7 @@ async function accountBalance(host, ctx) {
   const toppedUp = answer.topped_up;
   const granted = answer.granted;
   if (status !== "known" || typeof toppedUp !== "string" || typeof granted !== "string") throw invalid3("balance");
-  return { status, currency: text(answer.currency, "balance"), total: text(answer.total, "balance"), topped_up: toppedUp, granted };
+  return { status, currency: text2(answer.currency, "balance"), total: text2(answer.total, "balance"), topped_up: toppedUp, granted };
 }
 async function planInstall(host, ctx, spec, registry) {
   const exact = typeof spec === "string" ? spec.lastIndexOf("@") : -1;
@@ -14307,12 +14998,12 @@ async function planInstall(host, ctx, spec, registry) {
   if (status !== "review_required" && status !== "already_present" || planned !== void 0 && typeof planned !== "string") throw invalid3("install plan");
   return {
     status,
-    package: text(plan.package, "install plan"),
-    version: text(plan.version, "install plan"),
-    plugin: text(plan.plugin, "install plan"),
+    package: text2(plan.package, "install plan"),
+    version: text2(plan.version, "install plan"),
+    plugin: text2(plan.plugin, "install plan"),
     ...planned === void 0 ? {} : { spec: planned },
-    command: text(plan.command, "install plan"),
-    message: text(plan.message, "install plan")
+    command: text2(plan.command, "install plan"),
+    message: text2(plan.message, "install plan")
   };
 }
 function notChanged(stage, target, code, diagnostic) {
@@ -14413,7 +15104,7 @@ function session(value) {
   if (typeof value !== "string" || !SESSION.test(value)) invalid4("a terminal name is 1 to 64 letters, digits, `_`, `-` or `.`");
   return value;
 }
-function text2(value, what) {
+function text3(value, what) {
   if (typeof value !== "string" || value.length === 0) invalid4(`${what} is a non-empty string`);
   return value;
 }
@@ -14445,7 +15136,7 @@ var init_terminal = __esm({
           }
           run(command, options) {
             return host.broker(this.ctx, "terminal", "run", compact2({
-              command: text2(command, "a command"),
+              command: text3(command, "a command"),
               session: options?.session === void 0 ? void 0 : session(options.session),
               timeout_secs: bounded2(options?.timeoutSecs, "timeoutSecs", 1, 600)
             }));
@@ -14453,7 +15144,7 @@ var init_terminal = __esm({
           send(name, input, options) {
             return host.broker(this.ctx, "terminal", "send", compact2({
               session: session(name),
-              text: text2(input, "terminal input"),
+              text: text3(input, "terminal input"),
               wait_ms: bounded2(options?.waitMs, "waitMs", 0, 6e4)
             }));
           }
@@ -15170,6 +15861,7 @@ var init_compatibility = __esm({
         "deepseekAccount",
         "terminal",
         "attachments",
+        "agentPresets",
         "agentDefaultModel",
         "sessionProjections",
         "workspaceRegistry",
@@ -15593,56 +16285,6 @@ var init_hooks = __esm({
   }
 });
 
-// src/shims/prompt.ts
-function normalizePromptSection(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError("prompt section must be an object with id and text");
-  }
-  if (Object.keys(value).some((key) => key !== "id" && key !== "text" && key !== "interpolate")) {
-    throw new TypeError("prompt section supports only id and text, plus optional model-cwd interpolation");
-  }
-  const { id, text: text4, interpolate: interpolate2 } = value;
-  if (typeof id !== "string" || !SECTION_ID.test(id)) {
-    throw new TypeError("prompt section id must be lower case, start with a letter, and use a-z, 0-9, _ or - (at most 64 characters)");
-  }
-  if (typeof text4 !== "string" || text4.trim().length === 0) {
-    throw new TypeError(`prompt section "${id}" needs non-empty text`);
-  }
-  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text4)) {
-    throw new TypeError(`prompt section "${id}" text contains control characters`);
-  }
-  if (Buffer.byteLength(text4, "utf8") > MAX_PROMPT_SECTION_BYTES) {
-    throw new RangeError(`prompt section "${id}" exceeds ${MAX_PROMPT_SECTION_BYTES} UTF-8 bytes`);
-  }
-  if (interpolate2 !== void 0 && interpolate2 !== "model-cwd") throw new TypeError("prompt interpolation supports only model-cwd");
-  if (interpolate2 !== void 0) validatePromptTemplate(text4);
-  return Object.freeze({ id, text: text4, ...interpolate2 === void 0 ? {} : { interpolate: interpolate2 } });
-}
-function validatePromptTemplate(text4) {
-  for (let open = text4.indexOf("{{"); open >= 0; ) {
-    const group = /^\{\{([^{}]*)\}\}/u.exec(text4.slice(open));
-    if (!group) {
-      if (text4.indexOf("}}", open + 2) >= 0) throw new TypeError("malformed prompt variable reference");
-      open = text4.indexOf("{{", open + 2);
-      continue;
-    }
-    if (!/^[a-z][a-z0-9_]*$/u.test(group[1])) throw new TypeError("malformed prompt variable reference");
-    if (group[1] !== "model" && group[1] !== "cwd") throw new TypeError(`unknown Core prompt variable "{{${group[1]}}}"; supported variables: model, cwd`);
-    open = text4.indexOf("{{", open + group[0].length);
-  }
-}
-var MAX_PROMPT_SECTION_BYTES, MAX_PROMPT_OWNER_BYTES, MAX_PROMPT_HOST_BYTES, SECTION_ID;
-var init_prompt = __esm({
-  "src/shims/prompt.ts"() {
-    "use strict";
-    init_owned();
-    MAX_PROMPT_SECTION_BYTES = 4 * 1024;
-    MAX_PROMPT_OWNER_BYTES = 32 * 1024;
-    MAX_PROMPT_HOST_BYTES = 128 * 1024;
-    SECTION_ID = /^[a-z][a-z0-9_-]{0,63}$/u;
-  }
-});
-
 // src/shims/storage.ts
 var STORAGE_LIMITS, MAX_RECORD_BYTES;
 var init_storage = __esm({
@@ -15687,6 +16329,7 @@ var init_root = __esm({
   "src/root.ts"() {
     "use strict";
     init_composition();
+    init_agent_presets();
     init_adapters();
     init_protocol();
     init_rpc();
@@ -15714,9 +16357,9 @@ var init_root = __esm({
 });
 
 // src/dsh/dsh-shims.ts
-import { randomBytes } from "node:crypto";
-import { mkdir, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
-import { dirname as dirname2, isAbsolute as isAbsolute2, join as join2, resolve as resolve2 } from "node:path";
+import { randomBytes as randomBytes2 } from "node:crypto";
+import { lstat, mkdir, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
+import { dirname as dirname4, isAbsolute as isAbsolute3, join as join4, resolve as resolve4 } from "node:path";
 function activeDataDir(operation) {
   const owner = ownerStorage.getStore();
   if (!owner || typeof owner.dataDir !== "string" || owner.dataDir.length === 0) {
@@ -15724,42 +16367,45 @@ function activeDataDir(operation) {
   }
   return canonicalPath(owner.dataDir);
 }
-function confinePathToDataDir(targetPath, operation) {
-  if (typeof targetPath !== "string" || targetPath.length === 0 || /[\x00-\x1f\x7f]/.test(targetPath)) {
-    throw new TypeError(`${operation} requires a valid file path string`);
-  }
-  const dataRoot = activeDataDir(operation);
-  const resolved = isAbsolute2(targetPath) ? resolve2(targetPath) : resolve2(dataRoot, targetPath);
-  const rel = insideKey(dataRoot, resolved);
-  if (rel === void 0) {
-    throw new Error(`${operation} refused path outside plugin dataDir`);
-  }
-  let ancestor = dirname2(resolved);
-  while (ancestor.length >= dataRoot.length) {
-    if (ancestor === dataRoot) break;
+function assertNoEscapingAncestor(dataRoot, target, operation) {
+  let current2 = target;
+  while (current2.length >= dataRoot.length) {
+    if (current2 === dataRoot) break;
     try {
-      const canonicalAncestor = canonicalPath(ancestor);
-      const ancestorKey = insideKey(dataRoot, ancestor);
-      if (ancestorKey === void 0 || ancestorKey === "") {
-        if (canonicalAncestor !== dataRoot) {
+      const canonical = canonicalPath(current2);
+      const key = insideKey(dataRoot, current2);
+      if (key === void 0 || key === "") {
+        if (canonical !== dataRoot) {
           throw new Error(`${operation} refused symlink escaping plugin dataDir`);
         }
         break;
       }
-      if (!unlinkedKeyMatches(dataRoot, ancestorKey, canonicalAncestor)) {
+      if (!unlinkedKeyMatches(dataRoot, key, canonical)) {
         throw new Error(`${operation} refused symlink escaping plugin dataDir`);
       }
       break;
     } catch (error) {
       if (error?.code === "ENOENT") {
-        const next = dirname2(ancestor);
-        if (next === ancestor) break;
-        ancestor = next;
+        const next = dirname4(current2);
+        if (next === current2) break;
+        current2 = next;
         continue;
       }
       throw error;
     }
   }
+}
+function confinePathToDataDir(targetPath, operation) {
+  if (typeof targetPath !== "string" || targetPath.length === 0 || /[\x00-\x1f\x7f]/.test(targetPath)) {
+    throw new TypeError(`${operation} requires a valid file path string`);
+  }
+  const dataRoot = activeDataDir(operation);
+  const resolved = isAbsolute3(targetPath) ? resolve4(targetPath) : resolve4(dataRoot, targetPath);
+  const rel = insideKey(dataRoot, resolved);
+  if (rel === void 0 || rel === "") {
+    throw new Error(`${operation} refused path outside plugin dataDir`);
+  }
+  assertNoEscapingAncestor(dataRoot, dirname4(resolved), operation);
   return resolved;
 }
 function credentialRef2(value) {
@@ -15795,14 +16441,17 @@ function resolveDshHome(...segments) {
   const dataRoot = activeDataDir("resolveDshHome");
   if (segments.length === 0) return dataRoot;
   for (const seg of segments) {
-    if (typeof seg !== "string" || seg.includes("\0") || isAbsolute2(seg)) {
+    if (typeof seg !== "string" || seg.includes("\0") || isAbsolute3(seg)) {
       throw new Error("resolveDshHome refused absolute or invalid path segment");
     }
   }
-  const target = resolve2(dataRoot, ...segments);
+  const target = resolve4(dataRoot, ...segments);
   const rel = insideKey(dataRoot, target);
   if (rel === void 0) {
     throw new Error("resolveDshHome refused path escaping plugin dataDir");
+  }
+  if (rel !== "") {
+    assertNoEscapingAncestor(dataRoot, target, "resolveDshHome");
   }
   return target;
 }
@@ -15826,16 +16475,33 @@ async function withFileLock(targetPath, fn) {
   }
 }
 async function writeFileAtomic(targetPath, data2, options) {
+  const dataRoot = activeDataDir("writeFileAtomic");
   const confined = confinePathToDataDir(targetPath, "writeFileAtomic");
   const bytes = typeof data2 === "string" ? Buffer.from(data2, options?.encoding ?? "utf8") : Buffer.from(data2.buffer, data2.byteOffset, data2.byteLength);
   if (bytes.byteLength > MAX_ATOMIC_WRITE_BYTES) {
     throw new RangeError(`writeFileAtomic exceeds the ${MAX_ATOMIC_WRITE_BYTES} byte limit`);
   }
-  const parent = dirname2(confined);
-  await mkdir(parent, { recursive: true });
-  const tmpPath = join2(parent, `.cw-atomic-${process.pid}-${randomBytes(8).toString("hex")}.tmp`);
   try {
-    await writeFile2(tmpPath, bytes, options?.mode !== void 0 ? { mode: options.mode } : void 0);
+    const existing = await lstat(confined);
+    if (existing.isSymbolicLink()) {
+      throw new Error("writeFileAtomic refused symlink target");
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  const parent = dirname4(confined);
+  await mkdir(parent, { recursive: true });
+  const canonicalParent = canonicalPath(parent);
+  const parentKey = insideKey(dataRoot, parent);
+  if (parentKey === void 0 || (parentKey === "" ? canonicalParent !== dataRoot : !unlinkedKeyMatches(dataRoot, parentKey, canonicalParent))) {
+    throw new Error("writeFileAtomic refused symlink escaping plugin dataDir");
+  }
+  const tmpPath = join4(canonicalParent, `.cw-atomic-${process.pid}-${randomBytes2(8).toString("hex")}.tmp`);
+  try {
+    await writeFile2(tmpPath, bytes, {
+      flag: "wx",
+      ...options?.mode !== void 0 ? { mode: options.mode } : {}
+    });
     await rename2(tmpPath, confined);
   } catch (error) {
     await rm2(tmpPath, { force: true }).catch(() => void 0);
@@ -16013,8 +16679,8 @@ var init_dsh_shims = __esm({
 });
 
 // src/dsh/resolve-hooks.ts
-import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL2 } from "node:url";
-import { resolve as resolve3, isAbsolute as isAbsolute3, dirname as dirname3 } from "node:path";
+import { fileURLToPath as fileURLToPath4, pathToFileURL as pathToFileURL5 } from "node:url";
+import { resolve as resolve5, isAbsolute as isAbsolute4, dirname as dirname5 } from "node:path";
 function packageName(specifier) {
   const parts = specifier.split("/");
   return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
@@ -16051,14 +16717,14 @@ function keyIn(closure, path2) {
   }
 }
 function admitReviewedClosure(baseUrl, files) {
-  const rawRoot = resolve3(fileURLToPath2(baseUrl));
+  const rawRoot = resolve5(fileURLToPath4(baseUrl));
   const canonicalRoot = canonicalPath(rawRoot);
   const id = pathKey(canonicalRoot);
   const accepted = /* @__PURE__ */ Object.create(null);
   const keys = Object.keys(files);
   if (keys.length > 16384) throw new Error("reviewed composition closure exceeds its file limit");
   for (const key of keys) {
-    if (!key || key.split("/").some((part) => !part || part === "." || part === "..") || key.includes("\\") || key.includes(":") || isAbsolute3(key) || !/^[a-f0-9]{64}$/.test(files[key])) throw new Error("invalid reviewed composition closure file");
+    if (!key || key.split("/").some((part) => !part || part === "." || part === "..") || key.includes("\\") || key.includes(":") || isAbsolute4(key) || !/^[a-f0-9]{64}$/.test(files[key])) throw new Error("invalid reviewed composition closure file");
     accepted[key] = files[key];
   }
   const existing = reviewedClosures.get(id);
@@ -16076,18 +16742,18 @@ function admitReviewedClosure(baseUrl, files) {
   };
 }
 async function importReviewedModule(baseUrl, path2) {
-  const rawRoot = resolve3(fileURLToPath2(baseUrl));
+  const rawRoot = resolve5(fileURLToPath4(baseUrl));
   const id = pathKey(canonicalPath(rawRoot));
   const receipt = reviewedClosures.get(id);
   if (!receipt) throw new Error("composition module closure is no longer admitted");
-  const entry = resolve3(rawRoot, path2);
-  const admitted = closureAt(pathToFileURL2(entry).href);
+  const entry = resolve5(rawRoot, path2);
+  const admitted = closureAt(pathToFileURL5(entry).href);
   if (!admitted || admitted.root !== id || !(admitted.path in receipt.files)) throw new Error("composition module is absent from reviewed closure");
-  return import(pathToFileURL2(entry).href);
+  return import(pathToFileURL5(entry).href);
 }
 function closureAt(url) {
   if (!url?.startsWith("file:")) return;
-  const path2 = resolve3(fileURLToPath2(url));
+  const path2 = resolve5(fileURLToPath4(url));
   for (const [root, receipt] of reviewedClosures) {
     const inside = keyIn(receipt, path2);
     if (inside !== void 0) return { root, receipt, path: inside };
@@ -16113,639 +16779,6 @@ var init_resolve_hooks = __esm({
       specifier;
     };
     reviewedClosures = /* @__PURE__ */ new Map();
-  }
-});
-
-// src/dsh/persona.ts
-function normalizePersonaConfig(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("persona config must be plain data");
-  const config = value;
-  if (Object.keys(config).some((key) => !["prefix", "suffix", "complete", "includeRuntimeContext"].includes(key))) throw new TypeError("persona config has an unsupported field");
-  if (config.complete !== void 0 && config.complete !== false) throw new TypeError("persona replacement belongs to the Core prompt and cannot be imported");
-  if (config.includeRuntimeContext !== void 0 && config.includeRuntimeContext !== true) throw new TypeError("persona runtime-context suppression belongs to the Core prompt and cannot be imported");
-  if (typeof config.prefix !== "string" || config.suffix !== void 0 && typeof config.suffix !== "string") throw new TypeError("persona prefix and suffix must be text");
-  const result = { prefix: config.prefix, suffix: config.suffix ?? "" };
-  for (const [position, text4] of Object.entries(result)) {
-    if (Buffer.byteLength(text4, "utf8") > MAX_PROMPT_SECTION_BYTES) throw new RangeError("persona text exceeds 4096 UTF-8 bytes");
-    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text4)) throw new TypeError("persona text contains control characters");
-    validatePromptTemplate(text4);
-    if (text4.trim().length > 0) normalizePromptSection({ id: `persona-${position}`, text: text4, interpolate: "model-cwd" });
-  }
-  return Object.freeze(result);
-}
-var PERSONA, reviewedPersonaModule;
-var init_persona = __esm({
-  "src/dsh/persona.ts"() {
-    "use strict";
-    init_prompt();
-    init_root();
-    PERSONA = "@deepseek-ai/dsh-persona";
-    reviewedPersonaModule = Object.freeze({
-      name: "persona",
-      inject: ["prompt"],
-      apply(ctx, value) {
-        if (!ownerStorage.getStore()?.scope) throw new Error("persona requires an exact Core-selected entry scope");
-        const config = normalizePersonaConfig(value);
-        for (const [position, text4] of Object.entries(config)) {
-          if (text4.trim().length > 0) ctx.prompt.registerSection({ id: `persona-${position}`, text: text4, interpolate: "model-cwd" });
-        }
-      }
-    });
-  }
-});
-
-// src/dsh/upstream/agent-presets/metadata.ts
-import { join as join3 } from "node:path";
-function text3(value) {
-  if (typeof value !== "string") return void 0;
-  const trimmed = value.trim();
-  return trimmed === "" ? void 0 : trimmed;
-}
-async function readPresetMetadata(directory, readFile3) {
-  let raw;
-  try {
-    raw = await readFile3(join3(directory, METADATA_FILE), "utf8");
-  } catch {
-    return {};
-  }
-  let parsed;
-  try {
-    parsed = yaml.load(raw);
-  } catch {
-    return {};
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
-  const record3 = parsed;
-  const name = text3(record3.name);
-  const description = text3(record3.description);
-  const order = typeof record3.order === "number" && Number.isFinite(record3.order) ? record3.order : void 0;
-  return {
-    ...name === void 0 ? {} : { name },
-    ...description === void 0 ? {} : { description },
-    ...order === void 0 ? {} : { order }
-  };
-}
-var METADATA_FILE;
-var init_metadata = __esm({
-  "src/dsh/upstream/agent-presets/metadata.ts"() {
-    "use strict";
-    init_js_yaml();
-    METADATA_FILE = "preset.yml";
-  }
-});
-
-// src/dsh/upstream/agent-presets/preset.ts
-var PRESET_ID;
-var init_preset = __esm({
-  "src/dsh/upstream/agent-presets/preset.ts"() {
-    "use strict";
-    PRESET_ID = /^[a-z0-9][a-z0-9-]*$/;
-  }
-});
-
-// src/dsh/upstream/agent-presets/specifier.ts
-import { isAbsolute as isAbsolute4 } from "node:path";
-import { pathToFileURL as pathToFileURL3 } from "node:url";
-function classifyRowSpecifier(name) {
-  if (name.startsWith("cordis:")) return { kind: "builtin", specifier: name };
-  if (name.startsWith(".")) return { kind: "preset", specifier: name };
-  if (name.startsWith("file:")) return { kind: "file", specifier: name };
-  if (isAbsolute4(name)) return { kind: "file", specifier: pathToFileURL3(name).href };
-  return { kind: "package", specifier: name };
-}
-var init_specifier = __esm({
-  "src/dsh/upstream/agent-presets/specifier.ts"() {
-    "use strict";
-  }
-});
-
-// src/dsh/upstream/agent-presets/discovery.ts
-import { isBuiltin as isBuiltin2 } from "node:module";
-import { join as join4, resolve as resolve4 } from "node:path";
-import { fileURLToPath as fileURLToPath3, pathToFileURL as pathToFileURL4 } from "node:url";
-function entryListProblem(rows, at2 = "") {
-  if (!Array.isArray(rows)) {
-    return at2 === "" ? "the composition must be a top-level list of plugin rows" : `group ${at2} must hold a list of plugin rows`;
-  }
-  for (const [index, row] of rows.entries()) {
-    const label2 = at2 === "" ? `row ${String(index + 1)}` : `${at2} row ${String(index + 1)}`;
-    if (typeof row !== "object" || row === null || Array.isArray(row)) {
-      return `${label2} is not a plugin row (expected a map with a "name")`;
-    }
-    const { name, group, config } = row;
-    if (typeof name !== "string" || name === "") {
-      return `${label2} names no plugin (a "name" string is required)`;
-    }
-    if (group === true) {
-      const nested = entryListProblem(config, label2);
-      if (nested !== void 0) return nested;
-    }
-  }
-  return void 0;
-}
-async function rowResolves(row, presetBase, harnessBase, resolves, io) {
-  if (row.kind === "builtin") return true;
-  if (row.kind === "package") return isBuiltin2(row.specifier) || resolves(row.specifier, harnessBase);
-  const url = row.kind === "file" ? new URL(row.specifier) : new URL(row.specifier, presetBase);
-  return await isFile(fileURLToPath3(url), io);
-}
-async function unresolvableRows(rows, presetBase, harnessBase, resolves, io, at2 = "") {
-  const found = [];
-  for (const [index, entry] of rows.entries()) {
-    const row = entry;
-    if (Boolean(row.disabled)) continue;
-    const positional = at2 === "" ? `row ${String(index + 1)}` : `${at2} row ${String(index + 1)}`;
-    if (row.group === true) {
-      found.push(...await unresolvableRows(row.config, presetBase, harnessBase, resolves, io, positional));
-      continue;
-    }
-    if (await rowResolves(classifyRowSpecifier(row.name), presetBase, harnessBase, resolves, io)) continue;
-    const label2 = typeof row.id === "string" && row.id !== "" ? `row "${row.id}"` : positional;
-    found.push({ label: label2, name: row.name });
-  }
-  return found;
-}
-async function compositionProblem(path2, harnessBase, resolves, io) {
-  let content;
-  try {
-    content = await io.readFile(path2, "utf8");
-  } catch {
-    return `the composition file ${COMPOSITION_FILE} cannot be read`;
-  }
-  let rows;
-  try {
-    rows = load(content, { schema: entryListSchema });
-  } catch (error) {
-    const full = error instanceof Error ? error.message : String(error);
-    return `the composition is not valid YAML: ${full.replace(/\n[\s\S]*$/, "")}`;
-  }
-  const shape = entryListProblem(rows);
-  if (shape !== void 0) return shape;
-  const presetBase = new URL(".", pathToFileURL4(path2)).href;
-  let unresolvable;
-  try {
-    unresolvable = await unresolvableRows(rows, presetBase, harnessBase, resolves, io);
-  } catch (error) {
-    const full = error instanceof Error ? error.message : String(error);
-    return `the composition's plugins cannot be checked: ${full.replace(/\n[\s\S]*$/, "")}`;
-  }
-  const [first] = unresolvable;
-  if (first === void 0) return void 0;
-  if (unresolvable.length === 1) {
-    return `${first.label} names a plugin that cannot be resolved: ${first.name}`;
-  }
-  return `${String(unresolvable.length)} rows name plugins that cannot be resolved:
-` + unresolvable.map((row) => `- ${row.label}: ${row.name}`).join("\n");
-}
-async function isFile(path2, io) {
-  try {
-    return (await io.stat(path2)).isFile();
-  } catch {
-    return false;
-  }
-}
-async function scanRoot(root, harnessBase, resolves, io) {
-  const dir = resolve4(root.path);
-  let children;
-  try {
-    children = await io.readdir(dir, { withFileTypes: true });
-  } catch (error) {
-    if (error.code === "ENOENT") return [];
-    throw new Error(`agent-presets: cannot read preset root ${dir}: ${String(error)}`, { cause: error });
-  }
-  const found = [];
-  for (const child of children) {
-    if (!child.isDirectory() || !PRESET_ID.test(child.name)) continue;
-    const directory = join4(dir, child.name);
-    const path2 = join4(directory, COMPOSITION_FILE);
-    const broken = await isFile(path2, io) ? await compositionProblem(path2, harnessBase, resolves, io) : `the composition file ${COMPOSITION_FILE} is missing — the directory still occupies the id; delete it or restore the file`;
-    const metadata = await readPresetMetadata(directory, io.readFile);
-    found.push({
-      id: child.name,
-      trust: root.trust,
-      path: path2,
-      ...metadata,
-      ...broken === void 0 ? {} : { broken }
-    });
-  }
-  return found.sort((left, right) => {
-    const leftOrder = left.order ?? Number.POSITIVE_INFINITY;
-    const rightOrder = right.order ?? Number.POSITIVE_INFINITY;
-    const byOrder = leftOrder === rightOrder ? 0 : leftOrder - rightOrder;
-    return byOrder === 0 ? left.id.localeCompare(right.id) : byOrder;
-  });
-}
-async function discoverPresets(roots, harnessBase, resolves, io) {
-  const byId = /* @__PURE__ */ new Map();
-  for (const root of roots) {
-    for (const preset of await scanRoot(root, harnessBase, resolves, io)) {
-      if (byId.has(preset.id)) continue;
-      byId.set(preset.id, preset);
-    }
-  }
-  return [...byId.values()];
-}
-var COMPOSITION_FILE, SHIPPED_PRESET_ROOT;
-var init_discovery = __esm({
-  "src/dsh/upstream/agent-presets/discovery.ts"() {
-    "use strict";
-    init_js_yaml();
-    init_src2();
-    init_metadata();
-    init_preset();
-    init_specifier();
-    COMPOSITION_FILE = "agent.cordis.yml";
-    SHIPPED_PRESET_ROOT = fileURLToPath3(new URL("../presets/", import.meta.url));
-  }
-});
-
-// src/dsh/upstream/agent-presets/composition-inventory.ts
-function disabledContribution(value, evaluateExpression) {
-  if (isJsExpr(value)) {
-    try {
-      return Boolean(evaluateExpression(value.__jsExpr));
-    } catch {
-      return "conditional";
-    }
-  }
-  return Boolean(value);
-}
-function combineDisabled(outer, own) {
-  if (outer === true || own === true) return true;
-  if (outer === "conditional" || own === "conditional") return "conditional";
-  return false;
-}
-function flattenRows(rows, outerDisabled, evaluateExpression, found) {
-  for (const value of rows) {
-    const row = value;
-    const disabled = combineDisabled(outerDisabled, disabledContribution(row.disabled, evaluateExpression));
-    if (row.group === true) {
-      flattenRows(row.config, disabled, evaluateExpression, found);
-      continue;
-    }
-    found.push({
-      entryId: typeof row.id === "string" && row.id !== "" ? row.id : null,
-      moduleName: row.name,
-      enabled: disabled === true ? false : disabled === "conditional" ? "conditional" : true,
-      ...isJsExpr(row.disabled) ? { condition: row.disabled.__jsExpr } : {}
-    });
-  }
-}
-async function fileComposition(path2, evaluateExpression, readFile3) {
-  let rows;
-  try {
-    rows = load(await readFile3(path2, "utf8"), { schema: entryListSchema });
-  } catch (error) {
-    return { broken: error instanceof Error ? error.message : String(error) };
-  }
-  const problem = entryListProblem(rows);
-  if (problem !== void 0) return { broken: problem };
-  const found = [];
-  flattenRows(rows, false, evaluateExpression, found);
-  return { rows: found };
-}
-function mountedCompositionRows(tree) {
-  const found = [];
-  for (const entry of tree.entries()) {
-    if (entry.options.group) continue;
-    found.push({
-      entryId: entry.id,
-      moduleName: entry.options.name,
-      enabled: !entry.disabled,
-      ...isJsExpr(entry.options.disabled) ? { condition: entry.options.disabled.__jsExpr } : {},
-      ...entry.fiber === void 0 ? {} : { fiberState: entry.fiber.state }
-    });
-  }
-  return found;
-}
-var init_composition_inventory = __esm({
-  "src/dsh/upstream/agent-presets/composition-inventory.ts"() {
-    "use strict";
-    init_js_yaml();
-    init_src();
-    init_src2();
-    init_discovery();
-  }
-});
-
-// src/dsh/agent-presets.ts
-import { createHash as createHash2, randomBytes as randomBytes2 } from "node:crypto";
-import { resolve as resolve5, relative as relative2, dirname as dirname5, sep as sep2 } from "node:path";
-import { fileURLToPath as fileURLToPath4, pathToFileURL as pathToFileURL5 } from "node:url";
-function plain3(path2) {
-  return typeof path2 === "string" && path2.length > 0 && path2.length <= 4096 && !/[\\:\u0000-\u001f\u007f]/u.test(path2) && !path2.startsWith("/") && path2.split("/").every((p) => p !== "" && p !== "." && p !== "..");
-}
-function fail(message) {
-  throw new Error(`agent-presets: ${message}`);
-}
-function containedPackageModule(name, documents, files) {
-  if (!name || /[\\:\u0000-\u0020\u007f]/u.test(name)) return;
-  const parts = name.split("/");
-  const n = name.startsWith("@") ? 2 : 1;
-  if (parts.length < n || parts.some((p) => !p || p === "." || p === "..")) return;
-  const pkg = parts.slice(0, n).join("/");
-  const packageRoot = `node_modules/${pkg}`;
-  const source = documents.get(`${packageRoot}/package.json`);
-  if (source === void 0) return;
-  let data2;
-  try {
-    data2 = JSON.parse(source);
-  } catch {
-    return;
-  }
-  if (data2.name !== pkg || data2.type !== "module") return;
-  const subpath = parts.length === n ? "." : `./${parts.slice(n).join("/")}`;
-  const refused = /* @__PURE__ */ Symbol("unsupported package target");
-  function target(value) {
-    if (typeof value === "string") return value;
-    if (!value || Array.isArray(value) || typeof value !== "object") return refused;
-    for (const [condition, child] of Object.entries(value)) {
-      if (["node", "import", "default"].includes(condition)) {
-        const picked = target(child);
-        if (picked !== void 0) return picked;
-      }
-    }
-  }
-  let entry;
-  if (data2.exports !== void 0) {
-    const value = data2.exports;
-    entry = value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).some((k) => k.startsWith(".")) ? target(value[subpath]) : subpath === "." ? target(value) : void 0;
-  } else if (subpath === ".") entry = typeof data2.main === "string" ? data2.main : "./index.js";
-  else entry = subpath;
-  if (typeof entry !== "string" || !entry.startsWith("./") || !plain3(entry.slice(2))) return;
-  const path2 = `${packageRoot}/${entry.slice(2)}`;
-  if (!/\.(mjs|js|mts)$/.test(path2) || !SHA.test(files[path2] ?? "")) return;
-  return { name, path: path2, sha256: files[path2] };
-}
-async function reviewAgentPresets(input) {
-  const { composition } = input;
-  const files = composition.files;
-  if (!files || Object.keys(files).length > 16384 || !Array.isArray(input.directories) || input.directories.length > 16384) fail("invalid source inventory");
-  const base = resolve5("codewhale-reviewed-agent-presets");
-  const baseUrl = pathToFileURL5(`${base}${sep2}`).href;
-  function key(path2) {
-    const inside = relative2(base, path2).split(sep2).join("/");
-    if (!plain3(inside)) fail("path escapes the admitted source root");
-    return inside;
-  }
-  const documents = /* @__PURE__ */ new Map();
-  let bytes = 0;
-  for (const doc of input.documents) {
-    if (!plain3(doc.path) || !SHA.test(doc.sha256) || files[doc.path] !== doc.sha256 || hash(doc.source) !== doc.sha256 || documents.has(doc.path)) fail("document changed or is outside the source receipt");
-    bytes += Buffer.byteLength(doc.source);
-    if (Buffer.byteLength(doc.source) > 1024 * 1024 || bytes > 4 * 1024 * 1024) fail("documents exceed their bound");
-    documents.set(doc.path, doc.source);
-  }
-  const directories = new Set(input.directories);
-  for (const path2 of directories) if (!plain3(path2)) fail("invalid source directory");
-  for (const path2 of Object.keys(files)) if (!plain3(path2) || !SHA.test(files[path2])) fail("invalid source file receipt");
-  const invalid6 = /* @__PURE__ */ new Set();
-  const parsed = /* @__PURE__ */ new Map();
-  const io = {
-    async readFile(path2) {
-      const relative4 = key(path2);
-      if (invalid6.has(relative4)) throw new Error("composition exceeds its data/shape bound");
-      const text4 = documents.get(relative4);
-      if (text4 === void 0) throw new Error("document not admitted");
-      return text4;
-    },
-    async stat(path2) {
-      return { isFile: () => Object.hasOwn(files, key(path2)) };
-    },
-    async readdir(path2) {
-      const prefix = `${key(path2)}/`;
-      if (!directories.has(prefix.slice(0, -1))) {
-        const e = new Error("missing root");
-        Object.assign(e, { code: "ENOENT" });
-        throw e;
-      }
-      return [...directories].filter((p) => p.startsWith(prefix) && !p.slice(prefix.length).includes("/")).map((p) => ({ name: p.slice(prefix.length), isDirectory: () => true }));
-    }
-  };
-  const { reviewComposition: reviewComposition2, parsePresetComposition: parsePresetComposition2, compositionRowProblem: compositionRowProblem2, hasReviewedRowBridge: hasReviewedRowBridge2 } = await Promise.resolve().then(() => (init_composition(), composition_exports));
-  for (const [path2, source] of documents) {
-    if (!path2.endsWith("/agent.cordis.yml")) continue;
-    try {
-      parsed.set(path2, parsePresetComposition2(source));
-    } catch {
-      invalid6.add(path2);
-    }
-  }
-  const top = reviewComposition2(composition);
-  const rosterRows = [];
-  function visit(rows2) {
-    for (const row of rows2) {
-      if (row.group === true || row.name === "cordis:group" || row.name === "@deepseek-ai/cordis-plugin-group") visit(row.config ?? []);
-      else if (row.name === AGENT_PRESETS) rosterRows.push(row);
-    }
-  }
-  visit(top.entries);
-  if (rosterRows.length !== 1) fail("exactly one raw roster row is required");
-  const config = rosterRows[0].config ?? {};
-  if (!config || Array.isArray(config) || typeof config !== "object" || Object.keys(config).some((k) => !["default", "roots", "includeShippedRoot", "includeUserRoot"].includes(k))) fail("roster configuration must be literal upstream fields");
-  for (const k of ["includeShippedRoot", "includeUserRoot"]) if (config[k] !== void 0 && typeof config[k] !== "boolean") fail("root gates must be literal booleans");
-  if (config.default !== void 0 && (typeof config.default !== "string" || !PRESET_ID.test(config.default) || config.default.length > 64)) fail("invalid default id");
-  const roots = [];
-  if (config.includeShippedRoot !== false) {
-    const candidates = [...documents.entries()].filter(([p, text4]) => {
-      if (p !== "package.json" && !p.endsWith("/package.json")) return false;
-      try {
-        return JSON.parse(text4).name === AGENT_PRESETS;
-      } catch {
-        return false;
-      }
-    });
-    if (candidates.length !== 1) fail("shipped root requires exactly one admitted agent-presets package");
-    const folder = dirname5(candidates[0][0]).split(sep2).join("/");
-    const root = folder === "." ? "presets" : `${folder}/presets`;
-    if (!directories.has(root)) fail("shipped preset root was not admitted");
-    roots.push({ path: resolve5(base, root), trust: "system" });
-  }
-  if (config.roots !== void 0 && !Array.isArray(config.roots)) fail("roots must be a literal list");
-  for (const root of config.roots ?? []) {
-    if (!root || Object.keys(root).some((k) => !["path", "trust"].includes(k)) || !plain3(root.path) || !["system", "user"].includes(root.trust)) fail("configured roots must stay inside the admitted package");
-    if (!directories.has(root.path)) fail("configured preset root was not admitted");
-    roots.push({ path: resolve5(base, root.path), trust: root.trust });
-  }
-  if (config.includeUserRoot !== false) {
-    if (!directories.has(".agent-presets")) fail("user root requires an admitted .agent-presets tree; ambient home discovery is refused");
-    roots.push({ path: resolve5(base, ".agent-presets"), trust: "user" });
-  }
-  if (roots.length > 64) fail("too many roots");
-  const declared = new Map(composition.modules.map((m) => [m.name, m]));
-  if (declared.size !== composition.modules.length) fail("duplicate module name receipt");
-  const found = await discoverPresets(roots, baseUrl, (name) => hasReviewedRowBridge2(name) || declared.has(name) || containedPackageModule(name, documents, files) !== void 0, io);
-  if (found.length > MAX_PRESETS) fail("too many presets");
-  const prepared = [];
-  const rows = [];
-  const inventory = /* @__PURE__ */ Object.create(null);
-  for (const preset of found) {
-    let resolveRows2 = function(children) {
-      for (const row of children) {
-        if (Boolean(row.disabled) && !isJsExpr(row.disabled)) continue;
-        if (row.group === true || row.name === "cordis:group" || row.name === "@deepseek-ai/cordis-plugin-group") {
-          resolveRows2(row.config ?? []);
-          continue;
-        }
-        const specifier = classifyRowSpecifier(row.name);
-        if (row.name === PERSONA) normalizePersonaConfig(row.config);
-        if (specifier.kind === "builtin" || hasReviewedRowBridge2(row.name)) continue;
-        if (row.name === AGENT_PRESETS) fail("nested roster cannot create a second selection authority");
-        const problem = compositionRowProblem2(row.name);
-        if (problem) fail(problem);
-        let receipt;
-        if (specifier.kind === "package") receipt = declared.get(row.name) ?? containedPackageModule(row.name, documents, files);
-        else {
-          const url = specifier.kind === "file" ? new URL(specifier.specifier) : new URL(specifier.specifier, pathToFileURL5(preset.path).href);
-          const path3 = key(fileURLToPath4(url));
-          if (files[path3] !== void 0) receipt = { name: row.name, path: path3, sha256: files[path3] };
-        }
-        if (!receipt || files[receipt.path] !== receipt.sha256) {
-          if (isJsExpr(row.disabled)) continue;
-          fail("row module has no exact admitted receipt");
-        }
-        modules.set(row.name, receipt);
-      }
-    };
-    var resolveRows = resolveRows2;
-    if (preset.id.length > 64 || (preset.name?.length ?? 0) > 1024 || (preset.description?.length ?? 0) > 4096) fail("preset metadata exceeds its bound");
-    const metadata = {
-      id: preset.id,
-      trust: preset.trust,
-      is_default: preset.id === config.default,
-      ...preset.name === void 0 ? {} : { name: preset.name },
-      ...preset.description === void 0 ? {} : { description: preset.description },
-      ...preset.order === void 0 ? {} : { order: preset.order },
-      ...preset.broken === void 0 ? {} : { broken: preset.broken }
-    };
-    rows.push(metadata);
-    const path2 = key(preset.path);
-    inventory[preset.id] = { path: path2, ...preset.broken !== void 0 ? { broken: preset.broken } : await fileComposition(preset.path, () => {
-      throw new Error("conditional until mounted");
-    }, io.readFile) };
-    if (preset.broken !== void 0) continue;
-    const source = await io.readFile(preset.path, "utf8");
-    const entries = parsed.get(key(preset.path));
-    const modules = /* @__PURE__ */ new Map();
-    try {
-      resolveRows2(entries);
-    } catch (error) {
-      metadata.broken = error instanceof Error ? error.message : "preset preparation refused";
-      continue;
-    }
-    const layer = JSON.stringify([{ insert: entries }]);
-    const spec = { version: 1, layers: [{ path: key(preset.path), sha256: hash(layer), source: layer }], modules: [...modules.values()], files };
-    reviewComposition2(spec);
-    prepared.push({ metadata, composition: spec, source });
-  }
-  if (config.default !== void 0 && !prepared.some((p) => p.metadata.id === config.default)) fail("default preset is missing or broken");
-  if (!prepared.length) fail("no admitted usable preset");
-  if (Buffer.byteLength(JSON.stringify(inventory)) > 4 * 1024 * 1024) fail("composition inventory exceeds its bound");
-  return { catalog: { version: 1, ...config.default === void 0 ? {} : { default: config.default }, mode_selection_enabled: true, presets: rows, inventory }, presets: prepared };
-}
-function issuePresetReceipt(snapshot2) {
-  const payload = JSON.stringify(snapshot2);
-  const receipt = createHash2("sha256").update(randomBytes2(32)).update(payload).digest("hex");
-  activePresetReceipts.set(receipt, payload);
-  return receipt;
-}
-function revokePresetReceipt(receipt) {
-  activePresetReceipts.delete(receipt);
-}
-function defineReviewedAgentPresets(mount) {
-  return class ReviewedAgentPresets extends Service {
-    static inject = ["loader"];
-    snapshot;
-    selfCtx;
-    constructor(ctx, config) {
-      super(ctx, "agentPresets");
-      this.selfCtx = ctx;
-      if (config?.codewhale_reviewed !== void 0 || config?.codewhale_receipt !== void 0) {
-        const snapshot2 = config.codewhale_reviewed;
-        const receipt = typeof config.codewhale_receipt === "string" ? config.codewhale_receipt : "";
-        const expected = receipt ? activePresetReceipts.get(receipt) : void 0;
-        activePresetReceipts.delete(receipt);
-        if (!snapshot2 || !expected || expected !== JSON.stringify(snapshot2) || snapshot2.catalog?.version !== 1 || !snapshot2.catalog.presets.some((p) => p.id === snapshot2.selected?.metadata.id && !p.broken)) fail("raw roster needs an installer-minted preset receipt");
-        this.snapshot = structuredClone(snapshot2);
-      }
-    }
-    mounting;
-    mounted;
-    mountSelected() {
-      const snapshot2 = this.snapshot;
-      if (!snapshot2) return Promise.resolve(void 0);
-      return this.mounting ??= mount(this.selfCtx, snapshot2.base_url, snapshot2.selected.composition).then((result) => this.mounted = result);
-    }
-    async list() {
-      const snapshot2 = this.snapshot;
-      if (!snapshot2) return [];
-      return snapshot2.catalog.presets.map((row) => ({ ...structuredClone(row), path: fileURLToPath4(new URL(snapshot2.catalog.inventory[row.id].path, snapshot2.base_url)) }));
-    }
-    async remoteExportList() {
-      const snapshot2 = this.snapshot;
-      if (!snapshot2) return { presets: [], authorable: false, defaultId: void 0, modeSelectionEnabled: false };
-      return { presets: snapshot2.catalog.presets.map(({ is_default, entry, ...row }) => ({ ...structuredClone(row), isDefault: is_default })), authorable: false, defaultId: this.defaultId, modeSelectionEnabled: snapshot2.catalog.mode_selection_enabled };
-    }
-    get defaultId() {
-      return this.snapshot?.catalog.default;
-    }
-    get authorable() {
-      return false;
-    }
-    async resolve(id = this.defaultId) {
-      const row = (await this.list()).find((p) => p.id === id);
-      if (!row) fail("preset not found");
-      return row;
-    }
-    composedPreset() {
-      return this.snapshot?.selected.metadata.id;
-    }
-    async compositionInventory() {
-      const snapshot2 = this.snapshot;
-      if (!snapshot2) return [];
-      return snapshot2.catalog.presets.map((row) => {
-        const identity = { id: row.id, trust: row.trust, ...row.name === void 0 ? {} : { name: row.name }, isDefault: row.id === this.defaultId };
-        if (row.id === this.composedPreset() && this.mounted) return { ...identity, rows: mountedCompositionRows(this.mounted.tree) };
-        const read = snapshot2.catalog.inventory[row.id];
-        if (row.broken || "broken" in read) return { ...identity, broken: row.broken ?? ("broken" in read ? read.broken : void 0), rows: [] };
-        return { ...identity, rows: structuredClone(read.rows) };
-      });
-    }
-    async readDocument(id) {
-      const snapshot2 = this.snapshot;
-      if (!snapshot2 || id !== this.composedPreset()) fail("read another preset through Core file authority");
-      return { agentPreset: id, trust: snapshot2.selected.metadata.trust, content: snapshot2.selected.source };
-    }
-    select() {
-      fail("select through Core AgentProfile/native preset selection before a turn");
-    }
-    recompose() {
-      fail("Core owns the captured agent selection and blank-session check");
-    }
-    copy() {
-      fail("copy through Core file/install/review/reload authority");
-    }
-    remove() {
-      fail("delete through Core file/install/review/reload authority");
-    }
-  };
-}
-var AGENT_PRESETS, MAX_PRESETS, hash, SHA, activePresetReceipts;
-var init_agent_presets = __esm({
-  "src/dsh/agent-presets.ts"() {
-    "use strict";
-    init_persona();
-    init_lib2();
-    init_discovery();
-    init_preset();
-    init_specifier();
-    init_composition_inventory();
-    init_src();
-    AGENT_PRESETS = "@deepseek-ai/dsh-agent-presets";
-    MAX_PRESETS = 64;
-    hash = (bytes) => createHash2("sha256").update(bytes).digest("hex");
-    SHA = /^[a-f0-9]{64}$/;
-    activePresetReceipts = /* @__PURE__ */ new Map();
   }
 });
 

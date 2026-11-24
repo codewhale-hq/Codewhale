@@ -246,8 +246,10 @@ export function revokePresetReceipt(receipt: string): void {
   activePresetReceipts.delete(receipt)
 }
 
+export const REVIEWED_AGENT_PRESETS_BRAND = Symbol('codewhale.reviewedAgentPresets')
+
 export function defineReviewedAgentPresets(mount: (ctx: any, base: string, spec: ReviewedComposition) => Promise<CompositionMount>) {
-  return class ReviewedAgentPresets extends Service {
+  class ReviewedAgentPresets extends Service {
     static inject = ['loader']
     private readonly snapshot?: PresetMountConfig
     private readonly selfCtx: any
@@ -309,4 +311,6 @@ export function defineReviewedAgentPresets(mount: (ctx: any, base: string, spec:
     copy() { fail('copy through Core file/install/review/reload authority') }
     remove() { fail('delete through Core file/install/review/reload authority') }
   }
+  Object.defineProperty(ReviewedAgentPresets.prototype, REVIEWED_AGENT_PRESETS_BRAND, { value: true })
+  return ReviewedAgentPresets
 }
