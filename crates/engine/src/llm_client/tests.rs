@@ -120,6 +120,76 @@ fn retryability_distinguishes_transient_failures_from_durable_failures() {
 }
 
 #[test]
+fn quota_window_display_prints_reset_time_as_plain_text() {
+    let windowed = LlmError::QuotaWindow {
+        message: "Free usage limit reached".into(),
+        retry_after: Some(Duration::from_secs(70168)),
+        transmission: RequestTransmission::Rejected,
+    }
+    .to_string();
+    assert!(windowed.contains("resets in 19h29m"), "{windowed}");
+    assert!(windowed.contains("automatic retry stopped"), "{windowed}");
+
+    let open_ended = LlmError::QuotaWindow {
+        message: "Free usage limit reached".into(),
+        retry_after: None,
+        transmission: RequestTransmission::Rejected,
+    }
+    .to_string();
+    assert!(!open_ended.contains("reset"), "{open_ended}");
+    assert!(
+        open_ended.contains("automatic retry stopped"),
+        "{open_ended}"
+    );
+
+    for text in [&windowed, &open_ended] {
+        assert!(!text.contains("Some("), "{text}");
+        assert!(!text.contains("None"), "{text}");
+    }
+
+    let hinted = LlmError::QuotaWindow {
+        message: "OpenCode Go free usage limit reached".into(),
+        retry_after: Some(Duration::from_secs(70168)),
+        transmission: RequestTransmission::Rejected,
+    }
+    .to_string();
+    assert_eq!(
+        hinted
+            .matches("codewhale auth set --provider opencode-go")
+            .count(),
+        1,
+        "{hinted}"
+    );
+
+    let rate_limited = LlmError::RateLimited {
+        message: "OpenCode Go free usage limit reached".into(),
+        retry_after: None,
+    }
+    .to_string();
+    assert_eq!(
+        rate_limited
+            .matches("codewhale auth set --provider opencode-go")
+            .count(),
+        1,
+        "{rate_limited}"
+    );
+
+    let already_hinted = LlmError::QuotaWindow {
+        message: hinted.clone(),
+        retry_after: Some(Duration::from_secs(70168)),
+        transmission: RequestTransmission::Rejected,
+    }
+    .to_string();
+    assert_eq!(
+        already_hinted
+            .matches("codewhale auth set --provider opencode-go")
+            .count(),
+        1,
+        "{already_hinted}"
+    );
+}
+
+#[test]
 fn http_response_boundary_classifies_status_contract() {
     for status in [408, 409, 499, 500, 502, 503, 504] {
         let error = LlmError::from_http_response(

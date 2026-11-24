@@ -17,7 +17,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::protocol::{DshService, RegisterKind, RegisterParams};
-use super::tier::HostTier;
+use super::tier::{HostCohort, HostTier, PluginCohort};
 use codewhale_config::PluginAuthority;
 use codewhale_config::{EntryRef, OwnerRef};
 
@@ -51,6 +51,8 @@ const RESERVED_NAMES: &[&str] = &[
     "js_execution",
     "request_user_input",
     "multi_tool_use.parallel",
+    "dsh_broker_act",
+    "dsh_broker_reach",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,18 +67,10 @@ pub enum OwnerState {
 #[derive(Debug, Clone)]
 pub struct OwnerEntry {
     pub owner: OwnerRef,
-    /// The host process this owner lives in. Fixed at [`OwnerRegistry::begin_owner`],
-    /// which refuses an id the tier cannot hold.
-    pub tier: HostTier,
+    pub cohort: HostCohort,
     pub plugin_name: String,
-    /// The reviewed plugin authority (plugin tier). A built-in module has none:
-    /// what it is bound to is the source digest the Rust table pins, which is
-    /// its `content_hash`.
     pub authority: Option<PluginAuthority>,
     pub content_hash: String,
-    /// Digest of the plugin config this activation was given (empty until
-    /// [`OwnerRegistry::set_config_hash`]). A change of config is a different
-    /// activation: reconcile revokes the owner and activates a new generation.
     pub config_hash: String,
     pub host_services: Vec<DshService>,
     pub state: OwnerState,
@@ -84,12 +78,20 @@ pub struct OwnerEntry {
 }
 
 impl OwnerEntry {
-    fn live(&self) -> bool {
+    pub fn tier(&self) -> HostTier {
+        self.cohort.tier()
+    }
+
+    pub fn live(&self) -> bool {
         matches!(self.state, OwnerState::Activating | OwnerState::Active)
     }
 
-    fn loaded_in_plugin_host(&self) -> bool {
-        self.tier == HostTier::Plugin && self.live()
+    pub fn loaded_in_cohort(&self, cohort: &HostCohort) -> bool {
+        self.cohort == *cohort && self.live()
+    }
+
+    pub fn loaded_in_plugin_host(&self) -> bool {
+        self.cohort.tier() == HostTier::Plugin && self.live()
     }
 }
 
@@ -174,48 +176,56 @@ pub struct ToolRegistration {
     pub handle: u64,
     pub owner: OwnerRef,
     pub scope: Option<EntryRef>,
-    /// The tier of `owner`'s host.
-    pub tier: HostTier,
+    pub cohort: HostCohort,
     pub plugin_name: String,
-    /// The reviewed bundle content hash of the owner that registered it: the
-    /// receipt its approval grants are bound to.
     pub content_hash: String,
     pub name: String,
     pub description: String,
     pub input_schema: Value,
-    /// `input_schema`, compiled: every call is checked against it.
     pub input_validator: InputValidator,
 }
 
-/// An admitted slash command. Owned exactly like a tool: one owner
-/// generation, a never-reused handle, removed with its owner.
+impl ToolRegistration {
+    pub fn tier(&self) -> HostTier {
+        self.cohort.tier()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommandRegistration {
     pub handle: u64,
     pub owner: OwnerRef,
     pub scope: Option<EntryRef>,
-    /// The tier of `owner`'s host.
-    pub tier: HostTier,
+    pub cohort: HostCohort,
     pub plugin_name: String,
-    /// The reviewed bundle content hash of the registering owner.
     pub content_hash: String,
-    /// The slash-command name, without the slash (lower case).
     pub name: String,
     pub declared_name: String,
     pub description: String,
     pub argument_hint: Option<String>,
 }
 
-/// A programmable admission listener, owned and revoked like a tool.
+impl CommandRegistration {
+    pub fn tier(&self) -> HostTier {
+        self.cohort.tier()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HookRegistration {
     pub handle: u64,
     pub owner: OwnerRef,
     pub scope: Option<EntryRef>,
-    pub tier: HostTier,
+    pub cohort: HostCohort,
     pub plugin_name: String,
     pub content_hash: String,
     pub event: String,
+}
+
+impl HookRegistration {
+    pub fn tier(&self) -> HostTier {
+        self.cohort.tier()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -223,12 +233,18 @@ pub struct PromptSectionRegistration {
     pub handle: u64,
     pub owner: OwnerRef,
     pub scope: Option<EntryRef>,
-    pub tier: HostTier,
+    pub cohort: HostCohort,
     pub plugin_name: String,
     pub content_hash: String,
     pub id: String,
     pub text: String,
     pub interpolate: bool,
+}
+
+impl PromptSectionRegistration {
+    pub fn tier(&self) -> HostTier {
+        self.cohort.tier()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -272,7 +288,7 @@ pub struct OwnerRegistry {
     /// process build different native surfaces, and a name that is native
     /// anywhere is refused everywhere.
     native_names: HashSet<String>,
-    plugin_host_departed: bool,
+    departed_cohorts: HashSet<HostCohort>,
     withheld_reported: String,
 }
 
@@ -405,12 +421,14 @@ impl OwnerRegistry {
     /// built-in module to none (its pinned digest is `content_hash`).
     pub fn begin_owner(
         &mut self,
-        tier: HostTier,
+        cohort: impl Into<HostCohort>,
         plugin_id: &str,
         plugin_name: &str,
         authority: Option<PluginAuthority>,
         content_hash: &str,
     ) -> Result<OwnerRef, String> {
+        let cohort = cohort.into();
+        let tier = cohort.tier();
         tier.check_owner_id(plugin_id)?;
         match (tier, authority.is_some()) {
             (HostTier::Plugin, false) => {
@@ -436,7 +454,7 @@ impl OwnerRegistry {
             plugin_id.to_string(),
             OwnerEntry {
                 owner: owner.clone(),
-                tier,
+                cohort,
                 plugin_name: plugin_name.to_string(),
                 authority,
                 content_hash: content_hash.to_string(),
@@ -461,7 +479,7 @@ impl OwnerRegistry {
     pub fn set_host_services(&mut self, owner: &OwnerRef, services: Vec<DshService>) {
         if let Some(entry) = self.owners.get_mut(&owner.plugin_id)
             && entry.owner == *owner
-            && entry.tier == HostTier::Plugin
+            && entry.cohort.tier() == HostTier::Plugin
             && entry.authority.is_some()
         {
             entry.host_services = services;
@@ -470,73 +488,106 @@ impl OwnerRegistry {
 
     #[must_use]
     pub fn host_service_granted(&self, owner: &OwnerRef, service: DshService) -> bool {
-        self.current(owner)
-            .is_some_and(|entry| entry.tier == HostTier::Plugin && entry.authority.is_some())
-            && !self.plugin_host_departed
-            && self
-                .owners
-                .values()
-                .filter(|entry| entry.loaded_in_plugin_host())
-                .all(|entry| entry.host_services.contains(&service))
+        let Some(entry) = self.current(owner) else {
+            return false;
+        };
+        if entry.cohort.tier() != HostTier::Plugin || entry.authority.is_none() {
+            return false;
+        }
+        if self.departed_cohorts.contains(&entry.cohort) {
+            return false;
+        }
+        self.owners
+            .values()
+            .filter(|other| other.loaded_in_cohort(&entry.cohort))
+            .all(|other| other.host_services.contains(&service))
     }
 
     #[must_use]
-    pub fn plugin_host_authorities(&self) -> Vec<PluginAuthority> {
+    pub fn cohort_authorities(&self, cohort: &HostCohort) -> Vec<PluginAuthority> {
         self.owners
             .values()
-            .filter(|entry| entry.loaded_in_plugin_host())
+            .filter(|entry| entry.loaded_in_cohort(cohort))
             .filter_map(|entry| entry.authority.clone())
             .collect()
     }
 
     #[must_use]
-    pub fn host_services_await_restart(&self) -> bool {
-        self.plugin_host_departed
+    pub fn plugin_host_authorities(&self) -> Vec<PluginAuthority> {
+        self.cohort_authorities(&HostCohort::reviewed())
+    }
+
+    #[must_use]
+    pub fn cohort_departed(&self, cohort: &HostCohort) -> bool {
+        self.departed_cohorts.contains(cohort)
+    }
+
+    #[must_use]
+    pub fn host_services_await_restart(&self, cohort: impl Into<HostCohort>) -> bool {
+        let cohort = cohort.into();
+        self.departed_cohorts.contains(&cohort)
             && self
                 .owners
                 .values()
-                .any(|entry| entry.loaded_in_plugin_host() && !entry.host_services.is_empty())
+                .any(|entry| entry.loaded_in_cohort(&cohort) && !entry.host_services.is_empty())
     }
 
-    pub fn host_process_started(&mut self, tier: HostTier) {
-        if tier == HostTier::Plugin {
-            self.plugin_host_departed = false;
-        }
+    pub fn host_process_started(&mut self, cohort: impl Into<HostCohort>) {
+        self.departed_cohorts.remove(&cohort.into());
     }
 
     pub fn take_withheld_report(&mut self) -> Option<String> {
-        let loaded: Vec<&OwnerEntry> = self
+        let mut reports = Vec::new();
+        let mut cohorts: Vec<HostCohort> = self
             .owners
             .values()
-            .filter(|entry| entry.loaded_in_plugin_host())
-            .collect();
-        let mut held: Vec<DshService> = DshService::ALL
+            .map(|entry| entry.cohort.clone())
+            .collect::<HashSet<_>>()
             .into_iter()
-            .filter(|service| {
-                loaded
-                    .iter()
-                    .any(|entry| entry.host_services.contains(service))
-            })
             .collect();
-        let report = if held.is_empty() {
-            String::new()
-        } else if self.plugin_host_departed {
-            "host services are off until the plugin host restarts: a plugin that was turned off, changed or failed is still loaded in it".to_string()
-        } else {
-            held.retain(|service| {
-                loaded
-                    .iter()
-                    .any(|entry| !entry.host_services.contains(service))
-            });
-            held.iter()
-                .map(|service| {
+        cohorts.sort_by_key(|c| c.to_string());
+        for cohort in &cohorts {
+            let loaded: Vec<&OwnerEntry> = self
+                .owners
+                .values()
+                .filter(|entry| entry.loaded_in_cohort(cohort))
+                .collect();
+            if loaded.is_empty() {
+                continue;
+            }
+            let mut held: Vec<DshService> = DshService::ALL
+                .into_iter()
+                .filter(|service| {
+                    loaded
+                        .iter()
+                        .any(|entry| entry.host_services.contains(service))
+                })
+                .collect();
+            if held.is_empty() {
+                continue;
+            }
+            if self.departed_cohorts.contains(cohort) {
+                let label = match cohort {
+                    HostCohort::Plugin(PluginCohort::Agent { .. }) => {
+                        format!("agent cohort `{}` host services are off until its host restarts: a plugin that was turned off, changed or failed is still loaded in it", cohort)
+                    }
+                    _ => "host services are off until the plugin host restarts: a plugin that was turned off, changed or failed is still loaded in it".to_string(),
+                };
+                reports.push(label);
+            } else {
+                held.retain(|service| {
+                    loaded
+                        .iter()
+                        .any(|entry| !entry.host_services.contains(service))
+                });
+                for service in held {
                     let mut without: Vec<&str> = loaded
                         .iter()
-                        .filter(|entry| !entry.host_services.contains(service))
+                        .filter(|entry| !entry.host_services.contains(&service))
                         .map(|entry| entry.plugin_name.as_str())
                         .collect();
                     without.sort_unstable();
-                    format!(
+                    reports.push(format!(
                         "host service `{}` is off: the {} of {} {} not include it",
                         service.name(),
                         if without.len() == 1 {
@@ -550,11 +601,11 @@ impl OwnerRegistry {
                             .collect::<Vec<_>>()
                             .join(", "),
                         if without.len() == 1 { "does" } else { "do" },
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("; ")
-        };
+                    ));
+                }
+            }
+        }
+        let report = reports.join("; ");
         if report == self.withheld_reported {
             return None;
         }
@@ -565,6 +616,11 @@ impl OwnerRegistry {
     #[must_use]
     pub fn owner(&self, plugin_id: &str) -> Option<&OwnerEntry> {
         self.owners.get(plugin_id)
+    }
+
+    #[must_use]
+    pub fn cohort_of_plugin_id(&self, plugin_id: &str) -> Option<HostCohort> {
+        self.owners.get(plugin_id).map(|entry| entry.cohort.clone())
     }
 
     pub fn owners(&self) -> impl Iterator<Item = &OwnerEntry> {
@@ -600,11 +656,45 @@ impl OwnerRegistry {
         if matches {
             self.remove_registrations_of(&owner.plugin_id);
             if let Some(entry) = self.owners.get_mut(&owner.plugin_id) {
-                self.plugin_host_departed |= entry.loaded_in_plugin_host();
+                if entry.live() {
+                    self.departed_cohorts.insert(entry.cohort.clone());
+                }
                 entry.state = state;
             }
         }
         matches
+    }
+
+    pub fn record_activation_failure(
+        &mut self,
+        cohort: HostCohort,
+        plugin_id: &str,
+        plugin_name: &str,
+        authority: Option<PluginAuthority>,
+        content_hash: &str,
+        reason: String,
+    ) {
+        self.remove_registrations_of(plugin_id);
+        self.next_generation += 1;
+        let owner = OwnerRef {
+            plugin_id: plugin_id.to_string(),
+            generation: self.next_generation,
+            owner_token: mint_token(),
+        };
+        self.owners.insert(
+            plugin_id.to_string(),
+            OwnerEntry {
+                owner,
+                cohort,
+                plugin_name: plugin_name.to_string(),
+                authority,
+                content_hash: content_hash.to_string(),
+                config_hash: String::new(),
+                host_services: Vec::new(),
+                state: OwnerState::Failed(reason),
+                scopes: HashMap::new(),
+            },
+        );
     }
 
     /// Only core invokes this after the existing Native inventory/receipt check.
@@ -614,7 +704,7 @@ impl OwnerRegistry {
             .get_mut(&owner.plugin_id)
             .filter(|entry| entry.owner == *owner)
             .ok_or("scope owner was withdrawn")?;
-        if entry.tier != HostTier::Plugin || entry.authority.is_none() {
+        if entry.cohort.tier() != HostTier::Plugin || entry.authority.is_none() {
             return Err("scope requires reviewed Native authority".into());
         }
         if entry.scopes.contains_key(&scope) {
@@ -649,7 +739,7 @@ impl OwnerRegistry {
         active: bool,
     ) -> Result<(), String> {
         let entry = self.current(owner).ok_or("scope owner was withdrawn")?;
-        if scope.is_none() && entry.tier == HostTier::Plugin && !entry.scopes.is_empty() {
+        if scope.is_none() && entry.cohort.tier() == HostTier::Plugin && !entry.scopes.is_empty() {
             return Err("Native contribution must name its core-admitted entry scope".into());
         }
         if let Some(scope) = scope {
@@ -781,7 +871,7 @@ impl OwnerRegistry {
             .clone()
             .ok_or("MCP definition requires an entry scope")?;
         let owner = self.current(&params.owner).ok_or("MCP owner is stale")?;
-        if owner.tier != HostTier::Plugin {
+        if owner.cohort.tier() != HostTier::Plugin {
             return Err("MCP definition owner must be Native".into());
         }
         let content_hash = owner.content_hash.clone();
@@ -859,7 +949,7 @@ impl OwnerRegistry {
             pack.validate_png(page)?;
         }
         let entry = self.current(&params.owner).ok_or("stale avatar owner")?;
-        if entry.tier != HostTier::Plugin || entry.authority.is_none() {
+        if entry.cohort.tier() != HostTier::Plugin || entry.authority.is_none() {
             return Err("avatar pack owner has no reviewed bundle".into());
         }
         let content_hash = entry.content_hash.clone();
@@ -928,7 +1018,7 @@ impl OwnerRegistry {
         let entry = self
             .current(&params.owner)
             .ok_or_else(|| "stale or unknown skill owner".to_string())?;
-        if entry.tier != HostTier::Plugin {
+        if entry.cohort.tier() != HostTier::Plugin {
             return Err("skill root owner has no reviewed bundle".to_string());
         }
         let content_hash = entry.content_hash.clone();
@@ -1110,7 +1200,7 @@ impl OwnerRegistry {
             handle: self.next_handle + 1,
             owner: params.owner.clone(),
             scope: params.scope.clone(),
-            tier: entry.tier,
+            cohort: entry.cohort.clone(),
             plugin_name: entry.plugin_name.clone(),
             content_hash: entry.content_hash.clone(),
             id: id.clone(),
@@ -1128,7 +1218,7 @@ impl OwnerRegistry {
         let entry = self
             .current(&params.owner)
             .ok_or("shell hook owner is stale")?;
-        if entry.tier != HostTier::Plugin {
+        if entry.cohort.tier() != HostTier::Plugin {
             return Err("shell hooks require reviewed Native code".into());
         }
         if params.spec.description.len() > 64 * 1024 || params.spec.name.len() > 256 {
@@ -1234,8 +1324,14 @@ impl OwnerRegistry {
     fn register_hook(&mut self, params: &RegisterParams) -> Result<u64, String> {
         self.check_scope(&params.owner, params.scope.as_ref(), false)?;
         params.check_spec()?;
-        if params.spec.name != "tools/pre-execute" {
-            return Err("only `tools/pre-execute` admission listeners are supported".to_string());
+        if !matches!(
+            params.spec.name.as_str(),
+            "tools/pre-execute" | "tools/post-execute"
+        ) {
+            return Err(
+                "only `tools/pre-execute` and `tools/post-execute` listeners are supported"
+                    .to_string(),
+            );
         }
         let entry = self
             .current(&params.owner)
@@ -1254,7 +1350,7 @@ impl OwnerRegistry {
             handle: self.next_handle + 1,
             owner: params.owner.clone(),
             scope: params.scope.clone(),
-            tier: entry.tier,
+            cohort: entry.cohort.clone(),
             plugin_name: entry.plugin_name.clone(),
             content_hash: entry.content_hash.clone(),
             event: params.spec.name.clone(),
@@ -1276,7 +1372,8 @@ impl OwnerRegistry {
             .ok_or_else(|| "stale or unknown owner".to_string())?;
         let plugin_name = entry.plugin_name.clone();
         let content_hash = entry.content_hash.clone();
-        let tier = entry.tier;
+        let cohort = entry.cohort.clone();
+        let tier = cohort.tier();
         let spec = &params.spec;
         let name = spec.name.as_str();
         const COMMAND_HINT: &str = "a command name is lower case, starts with a letter, and uses only a-z, 0-9, `_` and `-` (at most 64 characters)";
@@ -1390,7 +1487,7 @@ impl OwnerRegistry {
                 handle,
                 owner: params.owner.clone(),
                 scope: params.scope.clone(),
-                tier,
+                cohort,
                 plugin_name,
                 content_hash,
                 name: published_name.to_string(),
@@ -1419,7 +1516,7 @@ impl OwnerRegistry {
             .ok_or_else(|| "stale or unknown owner".to_string())?;
         let plugin_name = entry.plugin_name.clone();
         let content_hash = entry.content_hash.clone();
-        let tier = entry.tier;
+        let cohort = entry.cohort.clone();
         let spec = &params.spec;
         let name = spec.name.as_str();
         if !valid_tool_name(name) {
@@ -1442,7 +1539,12 @@ impl OwnerRegistry {
                 "tool name `{name}` uses a reserved prefix; {NAME_HINT}"
             ));
         }
-        if self.native_names.contains(&plain_key) {
+        if self.native_names.contains(&plain_key)
+            || (params.owner.plugin_id != "host:creator"
+                && crate::conversation_modes::CREATOR_TOOL_NAMES
+                    .iter()
+                    .any(|reserved| reserved.eq_ignore_ascii_case(name)))
+        {
             return Err(format!(
                 "tool name `{name}` collides with a built-in tool; extensions never shadow core tools; {NAME_HINT}"
             ));
@@ -1520,7 +1622,7 @@ impl OwnerRegistry {
                 handle,
                 owner: params.owner.clone(),
                 scope: params.scope.clone(),
-                tier,
+                cohort,
                 plugin_name,
                 content_hash,
                 name: name.to_string(),
@@ -1714,7 +1816,9 @@ impl OwnerRegistry {
         self.remove_registrations_of(plugin_id);
         let entry = self.owners.get_mut(plugin_id)?;
         let was_live = entry.live();
-        self.plugin_host_departed |= entry.loaded_in_plugin_host();
+        if was_live {
+            self.departed_cohorts.insert(entry.cohort.clone());
+        }
         entry.state = OwnerState::Revoked;
         was_live.then(|| entry.owner.clone())
     }
@@ -1722,8 +1826,10 @@ impl OwnerRegistry {
     /// Forget an owner entirely (after revocation, when its plugin is gone).
     pub fn forget_owner(&mut self, plugin_id: &str) {
         self.remove_registrations_of(plugin_id);
-        if let Some(entry) = self.owners.remove(plugin_id) {
-            self.plugin_host_departed |= entry.loaded_in_plugin_host();
+        if let Some(entry) = self.owners.remove(plugin_id)
+            && entry.live()
+        {
+            self.departed_cohorts.insert(entry.cohort.clone());
         }
     }
 
@@ -1739,49 +1845,81 @@ impl OwnerRegistry {
             .retain(|_, entry| matches!(entry.state, OwnerState::Activating | OwnerState::Active));
     }
 
-    /// Drop every registration owned by `tier`'s host: the host that held
-    /// them is gone, and the other tier's host is not.
-    fn clear_tier_registrations(&mut self, tier: HostTier) {
-        if tier == HostTier::Plugin && !self.mcp_servers.is_empty() {
-            for r in self.mcp_servers.values() {
-                r.cancel.cancel();
+    pub fn forget_inactive_for_cohort(&mut self, cohort: &HostCohort) {
+        for owner in self.owners.values_mut() {
+            if &owner.cohort == cohort {
+                owner.scopes.retain(|_, state| {
+                    matches!(state, OwnerState::Activating | OwnerState::Active)
+                });
             }
-            self.mcp_servers.clear();
+        }
+        self.owners.retain(|_, entry| {
+            &entry.cohort != cohort
+                || matches!(entry.state, OwnerState::Activating | OwnerState::Active)
+        });
+    }
+
+    fn clear_cohort_registrations(&mut self, cohort: &HostCohort) {
+        let count = self.mcp_servers.len();
+        self.mcp_servers.retain(|_, r| {
+            if self
+                .owners
+                .get(&r.owner.plugin_id)
+                .is_some_and(|o| o.cohort == *cohort)
+            {
+                r.cancel.cancel();
+                false
+            } else {
+                true
+            }
+        });
+        if count != self.mcp_servers.len() {
             super::native_mcp::changed()
         }
 
-        if tier == HostTier::Plugin {
-            self.skill_roots.clear();
-            self.avatar_packs.clear();
-        }
+        self.skill_roots.retain(|_, root| {
+            !self
+                .owners
+                .get(&root.owner.plugin_id)
+                .is_some_and(|o| o.cohort == *cohort)
+        });
+        self.avatar_packs.retain(|_, r| {
+            !self
+                .owners
+                .get(&r.owner.plugin_id)
+                .is_some_and(|o| o.cohort == *cohort)
+        });
         self.prompt_sections
-            .retain(|_, section| section.tier != tier);
-        if tier == HostTier::Plugin {
-            self.shell_hooks.clear();
-        }
-        self.hooks.retain(|_, hook| hook.tier != tier);
-        self.tools.retain(|_, tool| tool.tier != tier);
+            .retain(|_, section| section.cohort != *cohort);
+        self.shell_hooks.retain(|_, h| {
+            !self
+                .owners
+                .get(&h.owner.plugin_id)
+                .is_some_and(|o| o.cohort == *cohort)
+        });
+        self.hooks.retain(|_, hook| hook.cohort != *cohort);
+        self.tools.retain(|_, tool| tool.cohort != *cohort);
         let tools = &self.tools;
         self.by_name.retain(|_, handle| tools.contains_key(handle));
-        self.commands.retain(|_, command| command.tier != tier);
+        self.commands.retain(|_, command| command.cohort != *cohort);
         let commands = &self.commands;
         self.commands_by_name
             .retain(|_, handle| commands.contains_key(handle));
         super::command::bump_epoch();
     }
 
-    /// `tier`'s host exited: its crash drops its live registrations, preserves
-    /// its failed/faulted receipts, and blames its sole activating owner.
-    /// Other owners of that tier are replayable only after reconciliation
-    /// verifies their current persisted authority again. The other tier's
-    /// owners are not touched: they live in another process.
-    pub fn host_exited(&mut self, tier: HostTier, reason: &str) {
-        self.clear_tier_registrations(tier);
-        self.host_process_started(tier);
+    pub fn host_exited(&mut self, cohort: impl Into<HostCohort>, reason: &str) -> bool {
+        let cohort = cohort.into();
+        let had_live_owners = self
+            .owners
+            .values()
+            .any(|entry| entry.cohort == cohort && entry.live());
+        self.clear_cohort_registrations(&cohort);
+        self.host_process_started(&cohort);
         let activating: Vec<_> = self
             .owners
             .values()
-            .filter(|entry| entry.tier == tier && entry.state == OwnerState::Activating)
+            .filter(|entry| entry.cohort == cohort && entry.state == OwnerState::Activating)
             .map(|entry| entry.owner.plugin_id.clone())
             .collect();
         if let [plugin] = activating.as_slice() {
@@ -1789,20 +1927,38 @@ impl OwnerRegistry {
                 OwnerState::Failed(format!("host crashed during activation: {reason}"));
         }
         self.owners.retain(|_, entry| {
-            entry.tier != tier
+            entry.cohort != cohort
                 || matches!(entry.state, OwnerState::Failed(_) | OwnerState::Faulted(_))
         });
+        had_live_owners
+    }
+
+    pub fn revoke_cohort(&mut self, cohort: &HostCohort, reason: &str) {
+        self.clear_cohort_registrations(cohort);
+        for entry in self.owners.values_mut() {
+            if &entry.cohort == cohort
+                && matches!(entry.state, OwnerState::Activating | OwnerState::Active)
+            {
+                if entry.cohort.tier() == HostTier::Plugin {
+                    self.departed_cohorts.insert(entry.cohort.clone());
+                }
+                entry.state = OwnerState::Failed(reason.to_string());
+            }
+        }
     }
 
     /// Planned test shutdown drops `tier`'s tools and fails its remaining live owners.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn revoke_all(&mut self, tier: HostTier, reason: &str) {
-        self.clear_tier_registrations(tier);
+    pub fn revoke_all(&mut self, cohort: impl Into<HostCohort>, reason: &str) {
+        let cohort = cohort.into();
+        self.clear_cohort_registrations(&cohort);
         for entry in self.owners.values_mut() {
-            if entry.tier == tier
+            if entry.cohort == cohort
                 && matches!(entry.state, OwnerState::Activating | OwnerState::Active)
             {
-                self.plugin_host_departed |= entry.tier == HostTier::Plugin;
+                if entry.cohort.tier() == HostTier::Plugin {
+                    self.departed_cohorts.insert(entry.cohort.clone());
+                }
                 entry.state = OwnerState::Failed(reason.to_string());
             }
         }
@@ -1921,17 +2077,18 @@ impl OwnerRegistry {
             .is_some_and(|entry| entry.owner == *owner && entry.state == OwnerState::Active)
     }
 
-    /// Active owners other than `plugin_id` sharing its host process (the
-    /// other owners of its tier).
     #[must_use]
     pub fn other_active_owners(&self, plugin_id: &str) -> usize {
-        let tier = HostTier::of_owner_id(plugin_id);
+        let Some(entry) = self.owners.get(plugin_id) else {
+            return 0;
+        };
+        let cohort = &entry.cohort;
         self.owners
             .values()
-            .filter(|entry| {
-                entry.tier == tier
-                    && entry.owner.plugin_id != plugin_id
-                    && entry.state == OwnerState::Active
+            .filter(|other| {
+                other.cohort == *cohort
+                    && other.owner.plugin_id != plugin_id
+                    && other.state == OwnerState::Active
             })
             .count()
     }
@@ -1947,7 +2104,12 @@ impl OwnerRegistry {
     /// The tier of the exact current owner.
     #[must_use]
     pub fn tier_of(&self, owner: &OwnerRef) -> Option<HostTier> {
-        self.current(owner).map(|entry| entry.tier)
+        self.current(owner).map(|entry| entry.cohort.tier())
+    }
+
+    #[must_use]
+    pub fn cohort_of(&self, owner: &OwnerRef) -> Option<HostCohort> {
+        self.current(owner).map(|entry| entry.cohort.clone())
     }
 }
 
@@ -1961,7 +2123,7 @@ mod shell_hook_tests {
     fn new_owner(registry: &mut OwnerRegistry, id: &str) -> OwnerRef {
         registry
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 id,
                 id,
                 Some(super::super::test_support::fake_authority(id)),
@@ -1990,7 +2152,7 @@ mod shell_hook_tests {
             .clone()
             .unwrap();
         assert_eq!(native.handle, handle);
-        registry.host_exited(HostTier::Builtin, "builtin test exit");
+        registry.host_exited(HostCohort::Builtin, "builtin test exit");
         assert!(registry.check_shell_hook(&native).is_ok());
         registry.revoke_scope(&owner, &scope);
         assert!(registry.check_shell_hook(&native).is_err());
@@ -1999,7 +2161,7 @@ mod shell_hook_tests {
         let admitted = registry.register(&spec(&other, None)).unwrap();
         registry.mark_active(&other);
         assert_eq!(registry.live_shell_hooks()[0].handle, admitted);
-        registry.host_exited(HostTier::Plugin, "test crash");
+        registry.host_exited(HostCohort::reviewed(), "test crash");
         assert!(registry.shell_hooks.is_empty());
     }
     #[test]

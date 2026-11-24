@@ -126,7 +126,6 @@ const FEISHU_BODY: &str = include_str!("../assets/skills/feishu/SKILL.md");
 const MCP_DISCOVERY_BODY: &str = include_str!("../assets/skills/mcp-discovery/SKILL.md");
 
 // Legacy v4 body retained for migration fixtures; installed copies stay on disk.
-#[cfg(test)]
 const V4_BEST_PRACTICES_BODY: &str = include_str!("../assets/skills/v4-best-practices/SKILL.md");
 
 // Generation-10 `mcp-discovery` body, retained solely so an unmodified copy of
@@ -587,7 +586,7 @@ pub fn bundled_skill_generation() -> &'static str {
     BUNDLED_SKILL_VERSION
 }
 
-fn feishu_body() -> &'static str {
+pub(super) fn feishu_body() -> &'static str {
     FEISHU_BODY
 }
 
@@ -603,6 +602,71 @@ fn contributor_onboarding_body() -> &'static str {
 /// recognizable and is left in place, never deleted by name.
 fn feedback_body() -> &'static str {
     FEEDBACK_BODY
+}
+
+const RETIRED_BUNDLED_SKILL_NAMES: &[&str] = &[
+    "contributor-onboarding",
+    "feedback",
+    "feishu",
+    "health",
+    "social-media",
+    "v4-best-practices",
+];
+
+pub(super) fn retired_bundled_skill_name(name: &str) -> Option<&'static str> {
+    let name = normalize_skill_name_for_lookup(name);
+    RETIRED_BUNDLED_SKILL_NAMES
+        .iter()
+        .copied()
+        .find(|retired| *retired == name)
+}
+
+fn retired_bundled_body_matches(retired: &str, body: &str) -> bool {
+    let exact = match retired {
+        "feedback" => Some(FEEDBACK_BODY),
+        "contributor-onboarding" => Some(CONTRIBUTOR_ONBOARDING_BODY),
+        "feishu" => Some(FEISHU_BODY),
+        "v4-best-practices" => Some(V4_BEST_PRACTICES_BODY),
+        _ => None,
+    };
+    exact == Some(body) || is_superseded_shipped_body(retired, body)
+}
+
+fn retired_bundled_copy_matches_shipped(owned: &Path, copy: &Path, retired: &str) -> bool {
+    let Ok(body) = codewhale_util::fs_confined::read_to_string(owned, copy) else {
+        return false;
+    };
+    if !retired_bundled_body_matches(retired, &body) {
+        return false;
+    }
+    let Ok((parsed, _)) = skill_parse::parse_verified_content(copy, &body) else {
+        return false;
+    };
+    retired_bundled_skill_name(&parsed.name) == Some(retired)
+}
+
+fn retired_listed(names: &Option<Vec<String>>, retired: &str) -> bool {
+    names
+        .iter()
+        .flatten()
+        .any(|entry| retired_bundled_skill_name(entry) == Some(retired))
+}
+
+#[must_use]
+pub fn retired_bundled_copy_disabled(
+    policy: &BundledSkillsConfig,
+    path: &Path,
+    name: &str,
+    owned: &Path,
+) -> bool {
+    retired_bundled_skill_name(name).is_some_and(|retired| {
+        let expected = owned.join(retired).join("SKILL.md");
+        retired_listed(&policy.disabled, retired)
+            && fs::symlink_metadata(owned.join(retired).join(".installed-from")).is_err()
+            && super::roots::paths_refer_to_same_dir(path, &expected)
+            && codewhale_util::fs_confined::read_to_string(owned, &expected)
+                .is_ok_and(|body| retired_bundled_body_matches(retired, &body))
+    })
 }
 
 /// Whether a skill name matches one of the bundled first-party skills.
@@ -710,27 +774,42 @@ fn install_companion_files(skills_dir: &Path, name: &str) -> std::io::Result<()>
     Ok(())
 }
 
-static CREATOR_SKILLS_ENABLED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-pub fn set_creator_skills_enabled(enabled: bool) {
-    CREATOR_SKILLS_ENABLED.store(enabled, std::sync::atomic::Ordering::SeqCst);
-}
-
 #[must_use]
-pub fn creator_skills_enabled() -> bool {
-    CREATOR_SKILLS_ENABLED.load(std::sync::atomic::Ordering::SeqCst)
-}
-
-#[must_use]
-pub(super) fn effective_bundled_policy(policy: &BundledSkillsConfig) -> BundledSkillsConfig {
-    if creator_skills_enabled() {
+pub(super) fn effective_bundled_policy(
+    policy: &BundledSkillsConfig,
+    creator: bool,
+) -> BundledSkillsConfig {
+    if creator {
         return policy.clone();
     }
     let mut effective = policy.clone();
     let disabled = effective.disabled.get_or_insert_with(Vec::new);
     disabled.extend(CREATOR_SKILL_NAMES.iter().map(|name| (*name).to_string()));
     effective
+}
+
+#[must_use]
+pub fn bundled_creator_skill_dirs() -> Vec<PathBuf> {
+    let Some(owned) = codewhale_runtime::config::owned_skills_dir() else {
+        return Vec::new();
+    };
+    CREATOR_SKILL_NAMES
+        .iter()
+        .filter(|name| is_bundled_copy(&owned.join(name).join("SKILL.md"), name, &owned))
+        .filter_map(|name| fs::canonicalize(owned.join(name)).ok())
+        .collect()
+}
+
+#[must_use]
+pub fn bundled_creator_skill(name: &str) -> Option<super::Skill> {
+    if !CREATOR_SKILL_NAMES.contains(&name) {
+        return None;
+    }
+    let owned = codewhale_runtime::config::owned_skills_dir()?;
+    let path = owned.join(name).join("SKILL.md");
+    let body = read_bundled_copy_body(&path, name, &owned)?;
+    let (skill, _) = super::SkillRegistry::parse_verified_content(&path, &body).ok()?;
+    Some(skill)
 }
 
 pub struct BundledSkillLoadContext {
@@ -877,17 +956,20 @@ pub(super) fn bundled_explicit_only(policy: &BundledSkillsConfig, name: &str) ->
     bundled_enabled(policy, name) && listed(&policy.explicit_only, name)
 }
 
-pub fn is_bundled_copy(path: &Path, name: &str, owned: &Path) -> bool {
+fn read_bundled_copy_body(path: &Path, name: &str, owned: &Path) -> Option<String> {
     let expected = owned.join(name).join("SKILL.md");
     if !is_bundled_skill_name(name)
         || !super::roots::paths_refer_to_same_dir(path, &expected)
         || fs::symlink_metadata(owned.join(name).join(".installed-from")).is_ok()
     {
-        return false;
+        return None;
     }
-    codewhale_util::fs_confined::read_to_string(owned, &expected).is_ok_and(|body| {
-        is_exact_bundled_skill(name, &body) || is_superseded_shipped_body(name, &body)
-    })
+    let body = codewhale_util::fs_confined::read_to_string(owned, &expected).ok()?;
+    (is_exact_bundled_skill(name, &body) || is_superseded_shipped_body(name, &body)).then_some(body)
+}
+
+pub fn is_bundled_copy(path: &Path, name: &str, owned: &Path) -> bool {
+    read_bundled_copy_body(path, name, owned).is_some()
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -907,6 +989,7 @@ pub struct BundledSkillsStatus {
     pub explicit_only: Vec<&'static str>,
     pub shadowed: Vec<&'static str>,
     pub unknown: Vec<String>,
+    pub retired: Vec<String>,
     pub ignored: Vec<String>,
     pub skills: Vec<BundledSkillStatus>,
 }
@@ -939,6 +1022,9 @@ impl BundledSkillsStatus {
                 self.unknown.join(", ")
             ));
         }
+        if !self.retired.is_empty() {
+            lines.push(format!("No longer bundled: {}", self.retired.join(", ")));
+        }
         if !self.ignored.is_empty() {
             lines.push(format!(
                 "Ignored explicit_only entries: {}",
@@ -959,7 +1045,7 @@ pub fn bundled_skills_status(
     registry: &super::SkillRegistry,
 ) -> Option<BundledSkillsStatus> {
     let owned = codewhale_runtime::config::owned_skills_dir()?;
-    let policy = &effective_bundled_policy(&config.bundled);
+    let policy = &effective_bundled_policy(&config.bundled, config.creator_skills);
     let marker_generation = codewhale_util::fs_confined::read_to_string(
         &owned,
         &owned.join(".system-installed-version"),
@@ -981,6 +1067,7 @@ pub fn bundled_skills_status(
         explicit_only: vec![],
         shadowed: vec![],
         unknown: vec![],
+        retired: vec![],
         ignored: vec![],
         skills: vec![],
     };
@@ -990,7 +1077,39 @@ pub fn bundled_skills_status(
         ("explicit_only", &policy.explicit_only),
     ] {
         for name in names.iter().flatten() {
-            if canonical_bundled_skill_name(name).is_none() {
+            if let Some(retired) = retired_bundled_skill_name(name) {
+                let copy = owned.join(retired).join("SKILL.md");
+                let installed = fs::metadata(&copy).is_ok_and(|meta| meta.is_file());
+                let has_marker =
+                    fs::symlink_metadata(owned.join(retired).join(".installed-from")).is_ok();
+                let matches_shipped =
+                    installed && retired_bundled_copy_matches_shipped(&owned, &copy, retired);
+                let hidden = retired_listed(&policy.disabled, retired)
+                    && installed
+                    && !has_marker
+                    && matches_shipped;
+                let state = match (field, installed) {
+                    ("disabled", true) if has_marker => format!(
+                        "installed copy at {} has .installed-from and stays active",
+                        copy.display()
+                    ),
+                    ("disabled", true) if !matches_shipped => format!(
+                        "copy at {} was customized or renamed and stays active",
+                        copy.display()
+                    ),
+                    ("disabled", true) => format!("installed copy at {} is hidden", copy.display()),
+                    ("disabled", false) => {
+                        "no copy installed; this entry can be removed".to_string()
+                    }
+                    (_, true) if hidden => "hidden by disabled".to_string(),
+                    (_, true) => format!(
+                        "this entry has no effect; the copy at {} loads as a user skill",
+                        copy.display()
+                    ),
+                    (_, false) => "no copy installed; this entry can be removed".to_string(),
+                };
+                status.retired.push(format!("{field}={retired} ({state})"));
+            } else if canonical_bundled_skill_name(name).is_none() {
                 status
                     .unknown
                     .push(format!("{field}={}", name.escape_debug()));
@@ -1011,7 +1130,12 @@ pub fn bundled_skills_status(
             selected.filter(|entry| !super::roots::paths_refer_to_same_dir(&entry.path, &path));
         let reason = if !bundled_enabled(policy, skill.name) {
             status.disabled.push(skill.name);
-            let reason = if listed(&policy.disabled, skill.name) {
+            let reason = if CREATOR_SKILL_NAMES.contains(&skill.name)
+                && !config.creator_skills
+                && !listed(&config.bundled.disabled, skill.name)
+            {
+                "Creator mode only"
+            } else if listed(&policy.disabled, skill.name) {
                 "disabled by config"
             } else {
                 "not selected by config"

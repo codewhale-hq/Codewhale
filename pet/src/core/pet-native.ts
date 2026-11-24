@@ -3,8 +3,8 @@ import { compilePetTelemetry, decodePetJSONL, PetLiveTape } from './pet-telemetr
 import { ARCH_OF, digest, layout, PetSim } from './pet-sim.js';
 import { renderPetPCM, type PetVoice } from './pet-audio.js';
 import { PetEngineTelemetry, type EngineOwnerProjection } from './pet-engine.js';
-import { blendDotFields, dotFieldKey, projectDotField, textLanguage, type DotField, type DotOptions } from './dot-field.js';
-import { DOT_LABELS, type GlyphLanguage } from './dot-glyphs.js';
+import { blendDotFields, dotFieldKey, projectDotField, type DotField, type DotOptions } from './dot-field.js';
+import { ACTIVITY_LABELS, labelLanguage } from './activity-labels.js';
 
 /** Synchronous native boundary: JSON state and directly transferable PCM.
  * Native hosts share the actual world / score implementation, not a rewrite. */
@@ -13,7 +13,7 @@ export class PetNative {
   private engine = new PetEngineTelemetry();
   private expressionActivity = this.engine.activity(0);
   private expressionTransition?: { at: number; from: DotField };
-  private expressionOptions: Required<DotOptions> = { bodyStyle: 'smooth', textLanguage: 'en' };
+  private expressionOptions: Required<DotOptions> = { bodyStyle: 'smooth' };
   private engineTick = 0;
   private segment?: PetSegment;
   private liveTape = new PetLiveTape();
@@ -41,11 +41,10 @@ export class PetNative {
   /** View-only projection. Display cadence and accessibility preferences never
    * advance the owner, consume randomness, or change its score/checkpoint. */
   presentation(options: DotOptions = {}, interfaceLanguage = 'en'): string {
-    if (!['smooth', 'pixel'].includes(options.bodyStyle ?? 'smooth')
-      || !['auto', 'en', 'zh-Hans', 'zh-Hant', 'ja'].includes(options.textLanguage ?? 'auto'))
+    if (!['smooth', 'pixel'].includes(options.bodyStyle ?? 'smooth'))
       throw new Error('Invalid pet presentation preferences.');
-    const next = { bodyStyle: options.bodyStyle ?? 'smooth', textLanguage: textLanguage(options.textLanguage, interfaceLanguage) };
-    if (next.bodyStyle !== this.expressionOptions.bodyStyle || next.textLanguage !== this.expressionOptions.textLanguage) {
+    const next = { bodyStyle: options.bodyStyle ?? 'smooth' };
+    if (next.bodyStyle !== this.expressionOptions.bodyStyle) {
       const from = this.expression(); this.expressionOptions = next;
       this.expressionTransition = { at: this.world.frame.timeMs, from };
     }
@@ -63,12 +62,12 @@ export class PetNative {
       this.stillProjection = { key, style: still.frame };
     }
     const still = projectDotField(activity, frame.timeMs, true, 0, this.expressionOptions);
-    const language = this.expressionOptions.textLanguage as GlyphLanguage;
+    const language = labelLanguage(interfaceLanguage);
     const label = activity.authoritativePresence === 'needs_you' ? 'waiting'
       : activity.authoritativePresence === 'done' ? 'done' : activity.activityKind;
     return JSON.stringify({ ...frame, digest: digest(sim), state, style: { ...sim.frame, hollow: !observed }, activity,
       ...this.expression(), displayLanguage: language,
-      displayPhrase: observed && label ? DOT_LABELS[language][label] : '',
+      displayPhrase: observed && label ? ACTIVITY_LABELS[language][label] : '',
       still: { ...still, style: { ...this.stillProjection.style, hollow: !observed }, state } });
   }
   /** Losing a producer invalidates outstanding coverage, never the creature. */

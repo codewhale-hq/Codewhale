@@ -6,12 +6,15 @@
 //!
 //! Two different shas live here and they are not interchangeable.
 //! `CODEWHALE_BUILD_VERSION`/`CODEWHALE_BUILD_COMMIT` describe *the build the
-//! environment asked for* (`CODEWHALE_BUILD_SHA`/`DEEPSEEK_BUILD_SHA`/`GITHUB_SHA`); an unstamped
-//! local checkout renders `(dev)`; an unstamped Cargo source package displays
-//! its package version without claiming a release-binary SHA.
+//! environment asked for* (`CODEWHALE_BUILD_SHA`/`DEEPSEEK_BUILD_SHA`/`GITHUB_SHA`,
+//! or `CODEWHALE_LOCAL_BUILD_SHA` from `scripts/dev-cargo.sh` on clean local
+//! release builds); an unstamped local checkout renders `(dev)`; an unstamped
+//! Cargo source package displays its package version without claiming a
+//! release-binary SHA.
 //! `CODEWHALE_RELEASE_BUILD_SHA` describes a *published* binary: it reads only
-//! the explicit release variables (never the ambient `GITHUB_SHA`) and has no
-//! fallback at all, because it leaves the machine.
+//! the explicit release variables (never the ambient `GITHUB_SHA` or
+//! `CODEWHALE_LOCAL_BUILD_SHA`) and has no fallback at all, because it leaves
+//! the machine.
 //!
 //! ## Why the stamp never reads the local checkout (#5245)
 //!
@@ -24,11 +27,11 @@
 //! dogfood-receipt identity `scripts/release/install-dogfood.sh` verifies.
 //! So the contract is: a sha appears in the version string only when the
 //! build environment supplied one (`CODEWHALE_BUILD_SHA` wins over
-//! `GITHUB_SHA`), the build script reruns only when those variables change,
-//! and an unstamped checkout says `(dev)`. Cargo source packages use the plain
-//! package version. CI and release builds are
-//! byte-identical to the old behavior; dogfood builds pass the sha
-//! explicitly (the install script prints the exact command).
+//! `GITHUB_SHA`, which wins over `CODEWHALE_LOCAL_BUILD_SHA`), the build script
+//! reruns only when those variables change, and an unstamped checkout says
+//! `(dev)`. Cargo source packages use the plain package version. CI and
+//! release builds are byte-identical to the old behavior; dogfood builds
+//! pass the sha explicitly or build cleanly via `scripts/dev-cargo.sh`.
 
 use std::path::Path;
 
@@ -85,11 +88,13 @@ pub fn declare_rerun_conditions(_manifest_dir: &Path) {
     println!("cargo:rerun-if-env-changed=CODEWHALE_BUILD_SHA");
     println!("cargo:rerun-if-env-changed=DEEPSEEK_BUILD_SHA");
     println!("cargo:rerun-if-env-changed=GITHUB_SHA");
+    println!("cargo:rerun-if-env-changed=CODEWHALE_LOCAL_BUILD_SHA");
 }
 
 /// Emit `cargo:rustc-env=CODEWHALE_BUILD_VERSION=...` — the package version,
 /// suffixed with the short build SHA when the environment supplied one
-/// (`CODEWHALE_BUILD_SHA`, then `DEEPSEEK_BUILD_SHA`, then `GITHUB_SHA`).
+/// (`CODEWHALE_BUILD_SHA`, then `DEEPSEEK_BUILD_SHA`, then `GITHUB_SHA`, then
+/// `CODEWHALE_LOCAL_BUILD_SHA`).
 /// Unstamped Cargo source packages show the plain package version; unpackaged
 /// checkouts retain `(dev)`. `CODEWHALE_BUILD_COMMIT` is emitted only when stamped.
 ///
@@ -197,6 +202,7 @@ fn build_commit_with(read_env: impl Fn(&str) -> Option<String>) -> Option<String
         .and_then(full_sha)
         .or_else(|| read_env("DEEPSEEK_BUILD_SHA").and_then(full_sha))
         .or_else(|| read_env("GITHUB_SHA").and_then(full_sha))
+        .or_else(|| read_env("CODEWHALE_LOCAL_BUILD_SHA").and_then(full_sha))
 }
 
 fn full_sha(value: String) -> Option<String> {
@@ -356,15 +362,19 @@ mod tests {
             release_build_sha(|name| (name == "DEEPSEEK_BUILD_SHA").then(|| "abc123".to_string())),
             None
         );
-        // `CODEWHALE_BUILD_COMMIT` is a different value with a different rule
-        // and is never a source here.
+        // `CODEWHALE_BUILD_COMMIT` and `CODEWHALE_LOCAL_BUILD_SHA` are display/
+        // receipt stamps with a different rule and are never sources here.
         assert_eq!(
             release_build_sha(|name| (name == "CODEWHALE_BUILD_COMMIT").then(|| ci.to_string())),
             None
         );
+        assert_eq!(
+            release_build_sha(|name| (name == "CODEWHALE_LOCAL_BUILD_SHA").then(|| ci.to_string())),
+            None
+        );
     }
 
-    /// #5245 contract: the version stamp reads ONLY the two environment
+    /// #5245 contract: the version stamp reads ONLY the environment
     /// variables. There is no fallback to the local checkout, so a plain
     /// local build renders `(dev)` and — the actual point — the build script
     /// declares no `.git` rerun paths, meaning `git commit` no longer
@@ -377,7 +387,17 @@ mod tests {
         assert_eq!(super::build_commit_with(|_| None), None);
         let ci = "abcdef0123456789abcdef0123456789abcdef01";
         assert_eq!(
-            super::build_commit_with(|name| (name == "GITHUB_SHA").then(|| ci.to_string())),
+            super::build_commit_with(
+                |name| (name == "CODEWHALE_LOCAL_BUILD_SHA").then(|| "c".repeat(40))
+            ),
+            Some("c".repeat(40))
+        );
+        assert_eq!(
+            super::build_commit_with(|name| match name {
+                "GITHUB_SHA" => Some(ci.to_string()),
+                "CODEWHALE_LOCAL_BUILD_SHA" => Some("c".repeat(40)),
+                _ => None,
+            }),
             Some(ci.to_string())
         );
         assert_eq!(

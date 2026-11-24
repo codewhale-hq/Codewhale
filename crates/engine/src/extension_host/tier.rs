@@ -29,6 +29,11 @@
 //! executing as the current OS user. Sources are embedded and materialized at
 //! `<bundle dir>/builtin/<module>.mjs` with the host's notices.
 
+use std::path::{Path, PathBuf};
+
+pub use codewhale_plugins::host_services::PluginCohort;
+
+use super::protocol::DshService;
 use crate::tools::spec::ApprovalRequirement;
 
 /// Every tier-0 owner id starts with this: `host:<module>`.
@@ -103,6 +108,152 @@ impl HostTier {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HostCohort {
+    Builtin,
+    Plugin(PluginCohort),
+}
+
+impl PartialEq for HostCohort {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Builtin, Self::Builtin) => true,
+            (Self::Plugin(a), Self::Plugin(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for HostCohort {}
+
+impl Ord for HostCohort {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.sort_key().cmp(&other.sort_key())
+    }
+}
+
+impl PartialOrd for HostCohort {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::hash::Hash for HostCohort {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Builtin => 0u8.hash(state),
+            Self::Plugin(p) => {
+                1u8.hash(state);
+                p.hash(state);
+            }
+        }
+    }
+}
+
+impl HostCohort {
+    pub const BUILTIN: Self = Self::Builtin;
+
+    fn sort_key(&self) -> (u8, Option<&PluginCohort>) {
+        match self {
+            Self::Builtin => (0u8, None),
+            Self::Plugin(p) => (1u8, Some(p)),
+        }
+    }
+
+    #[must_use]
+    pub fn reviewed() -> Self {
+        Self::Plugin(PluginCohort::Reviewed)
+    }
+
+    #[must_use]
+    pub fn agent(workspace: impl AsRef<Path>) -> Self {
+        Self::Plugin(PluginCohort::agent(workspace))
+    }
+
+    #[must_use]
+    pub fn from_plugin_cohort(cohort: PluginCohort) -> Self {
+        match cohort {
+            PluginCohort::Reviewed => Self::Plugin(PluginCohort::Reviewed),
+            PluginCohort::Agent { workspace } => Self::agent(workspace),
+        }
+    }
+
+    #[must_use]
+    pub fn tier(&self) -> HostTier {
+        match self {
+            Self::Builtin => HostTier::Builtin,
+            Self::Plugin(_) => HostTier::Plugin,
+        }
+    }
+
+    #[must_use]
+    pub fn is_builtin(&self) -> bool {
+        matches!(self, Self::Builtin)
+    }
+
+    #[must_use]
+    pub fn is_reviewed(&self) -> bool {
+        matches!(self, Self::Plugin(PluginCohort::Reviewed))
+    }
+
+    #[must_use]
+    pub fn host_label(&self) -> &'static str {
+        self.tier().host_label()
+    }
+
+    #[must_use]
+    pub fn plugin_cohort(&self) -> Option<&PluginCohort> {
+        match self {
+            Self::Plugin(cohort) => Some(cohort),
+            Self::Builtin => None,
+        }
+    }
+
+    #[must_use]
+    pub fn agent_workspace(&self) -> Option<&str> {
+        match self {
+            Self::Plugin(PluginCohort::Agent { workspace }) => Some(workspace.as_str()),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn agent_project_path(&self) -> Option<PathBuf> {
+        match self {
+            Self::Plugin(PluginCohort::Agent { workspace }) => Some(
+                codewhale_config::normalize_project_workspace(Path::new(workspace))
+                    .unwrap_or_else(|_| Path::new(workspace).components().collect()),
+            ),
+            _ => None,
+        }
+    }
+}
+
+impl From<PluginCohort> for HostCohort {
+    fn from(cohort: PluginCohort) -> Self {
+        Self::from_plugin_cohort(cohort)
+    }
+}
+
+impl From<&HostCohort> for HostCohort {
+    fn from(cohort: &HostCohort) -> Self {
+        cohort.clone()
+    }
+}
+
+impl std::fmt::Display for HostCohort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Builtin => write!(f, "builtin"),
+            Self::Plugin(PluginCohort::Reviewed) => write!(f, "reviewed"),
+            Self::Plugin(PluginCohort::Agent { workspace }) => {
+                write!(f, "agent:{workspace}")
+            }
+        }
+    }
+}
+
 /// `^[a-z][a-z0-9-]{0,63}$`: a module name is also a file name and a
 /// directory name, so it is as plain as one.
 fn valid_module_id(module: &str) -> bool {
@@ -131,6 +282,7 @@ pub struct BuiltinModule {
     /// activate a file with any other digest.
     pub source_sha256: &'static str,
     pub tools: &'static [Tier0Tool],
+    pub services: &'static [DshService],
 }
 
 impl BuiltinModule {
@@ -144,16 +296,37 @@ impl BuiltinModule {
 /// The built-in modules the core pins. MCP is started only by the explicit
 /// Host SDK backend. The host build records the same digest; the drift
 /// test refuses any row/file mismatch.
-pub const BUILTIN_MODULES: &[BuiltinModule] = &[
+pub static BUILTIN_MODULES: &[BuiltinModule] = &[
     BuiltinModule {
         id: "harness",
-        source_sha256: "ac65aa44a3824dcdb0060db426bf530a088fd593e58b9f4cfdaefbc09a5fa037",
+        source_sha256: "7e93989b2ff84394ab841e28577f6661ea2f01f1b30905ea6ce54857ef7f5e34",
         tools: &[],
+        services: &[],
     },
     BuiltinModule {
         id: "mcp",
         source_sha256: "f9735707e49e349ee38f791fa3c6f3379fde43cad5044f381f8e313286ea3d39",
         tools: &[],
+        services: &[],
+    },
+    BuiltinModule {
+        id: "creator",
+        source_sha256: "dacda4ed3211feffbd92c2a569edac113037a2384202d1b577904b1dc4c5c2df",
+        tools: &[
+            Tier0Tool {
+                name: "cordis_inspect_list",
+                approval: ApprovalRequirement::Auto,
+            },
+            Tier0Tool {
+                name: "cordis_inspect_query",
+                approval: ApprovalRequirement::Auto,
+            },
+            Tier0Tool {
+                name: "plugin_manager",
+                approval: ApprovalRequirement::Required,
+            },
+        ],
+        services: &[DshService::Plugins],
     },
 ];
 
@@ -292,6 +465,7 @@ mod tests {
             id: "demo",
             source_sha256: "0000000000000000000000000000000000000000000000000000000000000000",
             tools: TOOLS,
+            services: &[],
         }];
         assert_eq!(
             tool_approval(&table, "host:demo", "open"),
@@ -324,4 +498,25 @@ mod tests {
             ApprovalRequirement::Required
         );
     }
+
+    #[test]
+    fn only_the_creator_row_names_a_service() {
+        let with_services: Vec<&str> = BUILTIN_MODULES
+            .iter()
+            .filter(|module| !module.services.is_empty())
+            .map(|module| module.id)
+            .collect();
+        assert_eq!(with_services, ["creator"]);
+        assert_eq!(
+            BUILTIN_MODULES
+                .iter()
+                .find(|module| module.id == "creator")
+                .map(|module| module.services),
+            Some(&[DshService::Plugins][..])
+        );
+    }
 }
+
+#[cfg(test)]
+#[path = "creator_tests.rs"]
+mod creator_tests;

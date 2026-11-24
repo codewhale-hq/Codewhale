@@ -11,7 +11,10 @@ import {
   splitCode,
   sortProvidersFirstPartyFirst,
 } from "@/lib/content/models";
+import { DesktopShot } from "@/components/desktop-shot";
 import { Icon } from "@/components/icon";
+import { TerminalCapture } from "@/components/terminal-capture";
+import { RELEASED_CAPTURE_FRAMES } from "@/lib/released-capture.generated";
 import { ModelBadge, ModelsCatalog } from "@/components/models-catalog";
 import { PageHeader, Section } from "@/components/page-header";
 import type { LocalizedText } from "@/lib/content/vocabulary";
@@ -77,6 +80,26 @@ export default async function ModelsPage({ params }: { params: Promise<{ locale:
             </ul>
           </Section>
         ) : null}
+
+        <Section id="models-picker" title={t(MODELS_COPY.pickerTitle)} scope={t(MODELS_COPY.pickerLead)}>
+          <div className="models-picker">
+            <figure className="figure">
+              <div className="home-frame home-only-wide">
+                <TerminalCapture data={RELEASED_CAPTURE_FRAMES["cols100/01-model-picker"]} label={t(MODELS_COPY.pickerTerminalLabel)} regionLabel={t(MODELS_COPY.pickerTerminalCaption)} rows={[6, 16]} />
+              </div>
+              <div className="home-frame home-only-narrow">
+                <TerminalCapture data={RELEASED_CAPTURE_FRAMES["cols48/01-model-picker"]} label={t(MODELS_COPY.pickerTerminalLabel)} regionLabel={t(MODELS_COPY.pickerTerminalCaption)} rows={[7, 17]} />
+              </div>
+              <figcaption className="figure-caption">{t(MODELS_COPY.pickerTerminalCaption)}</figcaption>
+            </figure>
+            <figure className="figure">
+              <div className="figure-frame">
+                <DesktopShot id="models" alt={t(MODELS_COPY.pickerDesktopAlt)} />
+              </div>
+              <figcaption className="figure-caption">{t(MODELS_COPY.pickerDesktopCaption)}</figcaption>
+            </figure>
+          </div>
+        </Section>
 
         <Section
           id="models-setup"

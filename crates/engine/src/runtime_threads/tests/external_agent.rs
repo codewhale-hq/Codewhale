@@ -1126,6 +1126,10 @@ async fn interrupting_a_pending_approval_answers_the_agents_request_as_cancelled
     let root = tempfile::tempdir()?;
     let workspace = root.path().join("work");
     std::fs::create_dir_all(&workspace)?;
+    std::fs::write(
+        workspace.join("fixture-plan.json"),
+        serde_json::to_vec(&json!({ "endTurnOnCancel": true }))?,
+    )?;
     let manager = test_manager(root.path().join("runtime"))?;
     let thread = manager
         .create_thread(fixture_thread_request(&workspace, "ask"))

@@ -967,8 +967,18 @@ pub enum Event {
         /// Reviewer risk tier when a guardian answered (`low`, `medium`,
         /// `high`, `critical`); `None` for deterministic gates and failures.
         risk: Option<String>,
+        reviewer_model: Option<String>,
         /// Bounded, control-stripped rationale safe to render as one line.
         reason: String,
+        rule: Option<String>,
+        receipt_id: Option<String>,
+        call_digest: Option<String>,
+        action_summary: Option<String>,
+    },
+
+    AutoReviewPaused {
+        reason: String,
+        approval_mode: codewhale_execpolicy::ApprovalMode,
     },
 
     /// Fired fire-and-forget after `TurnComplete` when the advisor is enabled
@@ -1013,6 +1023,25 @@ pub enum Event {
         last_miss_reason: String,
         /// `<context_update>` snapshots appended this session.
         context_updates: u64,
+    },
+
+    ConversationTitle {
+        title: String,
+    },
+
+    ContentFilterRefusal {
+        reason: String,
+        refusal: Option<String>,
+    },
+
+    PluginChanged {
+        plugin: String,
+        action: String,
+        content_hash: Option<String>,
+        decided_by: Option<String>,
+        services: Vec<String>,
+        tools_added: Vec<String>,
+        tools_removed: Vec<String>,
     },
 }
 

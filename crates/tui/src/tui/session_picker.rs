@@ -10,16 +10,16 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap},
+    widgets::{Block, Padding, Paragraph, Widget, Wrap},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::tui::views::{
-    ActionHint, action_footer_lines, render_modal_footer, render_panel_scroll_rail,
-    render_underwater_surface,
+use crate::tui::views::rounded::{
+    render_rounded_footer, render_rounded_surface, rounded_titled_block,
 };
+use crate::tui::views::{ActionHint, action_footer_lines, render_panel_scroll_rail};
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 use codewhale_engine::session_manager::{
     MAX_SESSION_TITLE_CHARS, SavedSession, SessionListFilter, SessionManager, SessionMetadata,
@@ -31,18 +31,9 @@ use codewhale_models::Role;
 use codewhale_palette as palette;
 use codewhale_tui_kit::menu_style;
 
-fn section_block(title: &str) -> Block<'static> {
-    Block::default()
-        .title(Line::from(vec![Span::styled(
-            title.to_string(),
-            Style::default()
-                .fg(palette::WHALE_ACTION)
-                .add_modifier(Modifier::BOLD),
-        )]))
-        .borders(Borders::TOP)
-        .border_style(Style::default().fg(palette::BORDER_COLOR))
-        .style(Style::default().bg(palette::WHALE_BG))
-        .padding(Padding::uniform(1))
+fn section_block(title: &str, active: bool, width: u16) -> Block<'static> {
+    rounded_titled_block(title, None, active, palette::COMPOSER_BG, width)
+        .padding(Padding::new(1, 1, 0, 0))
 }
 
 /// Previews kept in memory. Each entry is a whole rendered transcript, so the
@@ -1225,8 +1216,24 @@ impl ModalView for SessionPickerView {
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let surface =
-            render_underwater_surface(area, buf, tr(self.locale, MessageId::SessionsSurfaceTitle));
+        let count_meta = if self.filtered.len() == self.sessions.len() {
+            format!("{} · {}", self.filtered.len(), self.sort_label())
+        } else {
+            format!(
+                "{}/{} · {}",
+                self.filtered.len(),
+                self.sessions.len(),
+                self.sort_label()
+            )
+        };
+        let active = self.search_mode || self.rename_mode || self.confirm_delete;
+        let surface = render_rounded_surface(
+            area,
+            buf,
+            tr(self.locale, MessageId::SessionsSurfaceTitle),
+            Some(count_meta),
+            active,
+        );
         let full_hints = [
             ActionHint::new("Enter", tr(self.locale, MessageId::SessionsActionResume)),
             ActionHint::new("/", tr(self.locale, MessageId::SessionsActionSearch)),
@@ -1238,14 +1245,10 @@ impl ModalView for SessionPickerView {
             ActionHint::new("d", tr(self.locale, MessageId::SessionsActionDelete)),
             ActionHint::new("Esc", tr(self.locale, MessageId::SessionsActionClose)),
         ];
-        // The two bordered panes spend five rows on chrome before either can
-        // show a content row. When the body cannot afford that, this room
-        // keeps only the object it exists for — a selectable session list
-        // with a usable resume action — and trims the action rail to match.
         let full_footer_rows = action_footer_lines(&full_hints, surface.width).len();
-        let compact = usize::from(surface.height).saturating_sub(full_footer_rows) < 12;
+        let compact = usize::from(surface.height).saturating_sub(full_footer_rows + 1) < 12;
         if compact {
-            let content = render_modal_footer(
+            let content = render_rounded_footer(
                 surface,
                 buf,
                 &[
@@ -1304,30 +1307,31 @@ impl ModalView for SessionPickerView {
                 .render(list_content, buf);
             return;
         }
-        let content = render_modal_footer(surface, buf, &full_hints);
-        let narrow = content.width < 95;
-        let chunks = Layout::default()
-            .direction(if narrow {
-                Direction::Vertical
-            } else {
-                Direction::Horizontal
-            })
-            .constraints(if narrow {
-                [Constraint::Percentage(42), Constraint::Percentage(58)]
-            } else {
-                // 36% was too thin for session rows — the list exists to be
-                // scanned, so give it a fairer share on wide terminals
-                // (#6014).
-                [Constraint::Percentage(56), Constraint::Percentage(44)]
-            })
-            .split(content);
+        let content = render_rounded_footer(surface, buf, &full_hints);
+        let narrow = content.width < 90;
         let (history_area, list_area) = if narrow {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+                .split(content);
             (chunks[1], chunks[0])
         } else {
-            (chunks[0], chunks[1])
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(55),
+                    Constraint::Length(1),
+                    Constraint::Percentage(45),
+                ])
+                .split(content);
+            (chunks[0], chunks[2])
         };
 
-        let list_block = section_block(&tr(self.locale, MessageId::SessionsPaneTitle));
+        let list_block = section_block(
+            &tr(self.locale, MessageId::SessionsPaneTitle),
+            true,
+            list_area.width,
+        );
         let list_inner = list_block.inner(list_area);
         let header_rows = 1 + usize::from(self.confirm_delete || self.status.is_some());
         let footer_rows = usize::from(!self.filtered.is_empty());
@@ -1380,7 +1384,11 @@ impl ModalView for SessionPickerView {
             .wrap(Wrap { trim: false })
             .render(list_content, buf);
 
-        let history_block = section_block(&tr(self.locale, MessageId::SessionsHistoryPaneTitle));
+        let history_block = section_block(
+            &tr(self.locale, MessageId::SessionsHistoryPaneTitle),
+            false,
+            history_area.width,
+        );
         let history_inner = history_block.inner(history_area);
         self.update_history_viewport(history_inner.height as usize);
         history_block.render(history_area, buf);
@@ -1397,7 +1405,7 @@ impl ModalView for SessionPickerView {
             self.history_scroll.get(),
             history_content.height as usize,
         );
-        let preview_lines = format_preview(&visible_preview);
+        let preview_lines = format_preview(&visible_preview, history_content.width);
 
         Paragraph::new(preview_lines)
             .wrap(Wrap { trim: false })
@@ -1425,20 +1433,43 @@ fn build_list_lines(
     locale: Locale,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    let header = if search_mode {
-        format!("/{search_input}")
+    if search_mode {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "/",
+                Style::default()
+                    .fg(palette::WHALE_ACTION)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                truncate(search_input, width.saturating_sub(2)),
+                Style::default().fg(palette::TEXT_PRIMARY),
+            ),
+            Span::styled(
+                " ",
+                Style::default()
+                    .fg(palette::COMPOSER_BG)
+                    .bg(palette::WHALE_ACTION),
+            ),
+        ]));
     } else if rename_mode {
-        format!(
+        let header = format!(
             "{}{rename_input}_",
             tr(locale, MessageId::SessionsNewTitlePrompt)
-        )
+        );
+        lines.push(Line::from(Span::styled(
+            truncate(&header, width),
+            Style::default()
+                .fg(palette::WHALE_ACTION)
+                .add_modifier(Modifier::BOLD),
+        )));
     } else {
-        tr(locale, MessageId::SessionsScopeSortHeader).replace("{sort}", sort_label)
-    };
-    lines.push(Line::from(Span::styled(
-        truncate(&header, width),
-        Style::default().fg(palette::TEXT_MUTED),
-    )));
+        let header = tr(locale, MessageId::SessionsScopeSortHeader).replace("{sort}", sort_label);
+        lines.push(Line::from(Span::styled(
+            truncate(&header, width),
+            Style::default().fg(palette::TEXT_MUTED),
+        )));
+    }
 
     if confirm_delete {
         lines.push(Line::from(Span::styled(
@@ -1478,7 +1509,7 @@ fn build_list_lines(
         )));
         lines.push(Line::from(Span::styled(
             tr(locale, MessageId::SessionsEmptyHint),
-            Style::default().fg(palette::TEXT_HINT),
+            Style::default().fg(palette::TEXT_MUTED),
         )));
         return lines;
     }
@@ -1490,30 +1521,41 @@ fn build_list_lines(
         } else {
             "   ".to_string()
         };
-        // The row for the session the user is inside gets a text label, not
-        // colour alone — the same monochrome-safe convention as the
-        // archived/fork labels (#6014).
         let is_current = current_session_id == Some(session.id.as_str());
-        let mut line = format!(
-            "{prefix}{}",
-            format_session_line(session, is_current, locale)
-        );
-        if recovery_sessions.contains(&session.id) {
-            line = format!(
-                "{prefix}{} | {}",
-                tr(locale, MessageId::SubagentsRowStatusInterrupted),
+        let is_interrupted = recovery_sessions.contains(&session.id);
+        if idx == selected {
+            let mut text = format!(
+                "{prefix}{}",
                 format_session_line(session, is_current, locale)
             );
-        }
-        line = truncate(&line, width);
-        let style = if idx == selected {
-            menu_style::selected_row_style()
-        } else if is_current {
-            Style::default().fg(palette::WHALE_ACTION)
+            if is_interrupted {
+                text = format!(
+                    "{prefix}{} · {}",
+                    tr(locale, MessageId::SubagentsRowStatusInterrupted),
+                    format_session_line(session, is_current, locale)
+                );
+            }
+            let clipped = truncate(&text, width);
+            let used = clipped.width();
+            let padded = if used < usize::from(width) {
+                format!("{clipped}{}", " ".repeat(usize::from(width) - used))
+            } else {
+                clipped
+            };
+            lines.push(Line::from(Span::styled(
+                padded,
+                menu_style::selected_row_style(),
+            )));
         } else {
-            Style::default().fg(palette::TEXT_PRIMARY)
-        };
-        lines.push(Line::from(Span::styled(line, style)));
+            lines.push(build_styled_session_row(
+                session,
+                &prefix,
+                is_current,
+                is_interrupted,
+                width,
+                locale,
+            ));
+        }
     }
 
     if sessions.len() > visible_rows {
@@ -1527,11 +1569,189 @@ fn build_list_lines(
                     .replace("{total}", &sessions.len().to_string()),
                 width,
             ),
-            Style::default().fg(palette::TEXT_DIM),
+            Style::default().fg(palette::TEXT_MUTED),
         )));
     }
 
     lines
+}
+
+fn mode_badge_color(mode: &str) -> Color {
+    match mode {
+        "agent" => palette::MODE_AGENT,
+        "plan" => palette::MODE_PLAN,
+        "yolo" => palette::MODE_YOLO,
+        "operate" => palette::MODE_OPERATE,
+        _ => palette::TEXT_MUTED,
+    }
+}
+
+fn session_workspace_label(session: &SessionMetadata) -> Option<&str> {
+    session
+        .workspace
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty() && *name != ".")
+}
+
+fn clip_styled_spans(spans: Vec<Span<'static>>, max_width: usize) -> Line<'static> {
+    if max_width == 0 {
+        return Line::default();
+    }
+    let total: usize = spans.iter().map(|s| s.content.width()).sum();
+    if total <= max_width {
+        return Line::from(spans);
+    }
+    if max_width <= 3 {
+        let style = spans
+            .first()
+            .map(|s| s.style)
+            .unwrap_or_else(|| Style::default().fg(palette::TEXT_MUTED));
+        return Line::from(Span::styled(".".repeat(max_width), style));
+    }
+    let budget = max_width - 3;
+    let mut used = 0usize;
+    let mut out = Vec::new();
+    for span in spans {
+        let span_w = span.content.width();
+        if used + span_w <= budget {
+            used += span_w;
+            out.push(span);
+            continue;
+        }
+        let mut piece = String::new();
+        for ch in span.content.chars() {
+            let cw = ch.width().unwrap_or(0);
+            if used + cw > budget {
+                break;
+            }
+            piece.push(ch);
+            used += cw;
+        }
+        if !piece.is_empty() {
+            out.push(Span::styled(piece, span.style));
+        }
+        break;
+    }
+    out.push(Span::styled(
+        "...".to_string(),
+        Style::default().fg(palette::TEXT_MUTED),
+    ));
+    Line::from(out)
+}
+
+fn build_styled_session_row(
+    session: &SessionMetadata,
+    prefix: &str,
+    is_current: bool,
+    is_interrupted: bool,
+    width: u16,
+    locale: Locale,
+) -> Line<'static> {
+    let sep = if crate::tui::color_compat::ascii_safe_enabled() {
+        " | "
+    } else {
+        " · "
+    };
+    let sep_style = Style::default().fg(palette::BORDER_COLOR);
+    let muted = Style::default().fg(palette::TEXT_MUTED);
+    let short_id = codewhale_engine::session_manager::truncate_id(&session.id);
+    let raw_title = extract_title(&session.title);
+    let title = if raw_title == "Session" {
+        truncate(short_id, 32)
+    } else {
+        truncate(raw_title, 32)
+    };
+    let mode = session
+        .mode
+        .as_deref()
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_else(|| tr(locale, MessageId::SessionsUnknownMode).into_owned());
+    let message_count = format_message_count(session.message_count, locale);
+    let age = format_relative_time(&session.updated_at, locale);
+    let updated =
+        codewhale_engine::session_manager::format_session_updated_at(&session.updated_at, &age);
+
+    let mut spans = Vec::new();
+    if is_interrupted {
+        spans.push(Span::styled(
+            format!(
+                "{prefix}{}",
+                tr(locale, MessageId::SubagentsRowStatusInterrupted)
+            ),
+            Style::default()
+                .fg(palette::STATUS_WARNING)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(sep, sep_style));
+        spans.push(Span::styled(short_id.to_string(), muted));
+    } else {
+        let id_style = if is_current {
+            Style::default().fg(palette::WHALE_ACTION)
+        } else {
+            muted
+        };
+        spans.push(Span::styled(format!("{prefix}{short_id}"), id_style));
+    }
+
+    let title_style = if is_current {
+        Style::default()
+            .fg(palette::WHALE_ACTION)
+            .add_modifier(Modifier::BOLD)
+    } else if session.archived {
+        muted
+    } else {
+        Style::default().fg(palette::TEXT_PRIMARY)
+    };
+    spans.push(Span::styled(sep, sep_style));
+    spans.push(Span::styled(title, title_style));
+
+    spans.push(Span::styled(sep, sep_style));
+    spans.push(Span::styled(message_count, muted));
+
+    if is_current {
+        spans.push(Span::styled(sep, sep_style));
+        spans.push(Span::styled(
+            tr(locale, MessageId::SessionsCurrentCompact).into_owned(),
+            Style::default()
+                .fg(palette::WHALE_ACTION)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if session.parent_session_id.is_some() {
+        spans.push(Span::styled(sep, sep_style));
+        spans.push(Span::styled(
+            tr(locale, MessageId::SessionsForkCompact).into_owned(),
+            Style::default().fg(palette::WHALE_LIVE),
+        ));
+    }
+    if session.archived {
+        spans.push(Span::styled(sep, sep_style));
+        spans.push(Span::styled(
+            tr(locale, MessageId::SessionsArchivedCompact).into_owned(),
+            Style::default().fg(palette::TEXT_DIM),
+        ));
+    }
+
+    spans.push(Span::styled(sep, sep_style));
+    spans.push(Span::styled(
+        mode.clone(),
+        Style::default().fg(mode_badge_color(&mode)),
+    ));
+
+    spans.push(Span::styled(sep, sep_style));
+    spans.push(Span::styled(updated, muted));
+
+    if !session.model.is_empty() && session.model != "unknown" {
+        spans.push(Span::styled(sep, sep_style));
+        spans.push(Span::styled(session.model.clone(), muted));
+    }
+    if let Some(workspace) = session_workspace_label(session) {
+        spans.push(Span::styled(sep, sep_style));
+        spans.push(Span::styled(workspace.to_string(), muted));
+    }
+
+    clip_styled_spans(spans, usize::from(width))
 }
 
 pub(super) fn format_message_count(count: usize, locale: Locale) -> String {
@@ -1543,6 +1763,11 @@ pub(super) fn format_message_count(count: usize, locale: Locale) -> String {
 }
 
 fn format_session_line(session: &SessionMetadata, is_current: bool, locale: Locale) -> String {
+    let sep = if crate::tui::color_compat::ascii_safe_enabled() {
+        " | "
+    } else {
+        " · "
+    };
     let age = format_relative_time(&session.updated_at, locale);
     let updated =
         codewhale_engine::session_manager::format_session_updated_at(&session.updated_at, &age);
@@ -1561,35 +1786,31 @@ fn format_session_line(session: &SessionMetadata, is_current: bool, locale: Loca
         .map(str::to_ascii_lowercase)
         .unwrap_or_else(|| tr(locale, MessageId::SessionsUnknownMode).into_owned());
     let message_count = format_message_count(session.message_count, locale);
-    let fork_label = if session.parent_session_id.is_some() {
-        format!(" | {}", tr(locale, MessageId::SessionsForkCompact))
-    } else {
-        String::new()
-    };
-    // Archived rows are labelled in text, not by colour alone, so the state
-    // survives monochrome terminals and screen readers.
-    let fork_label = if session.archived {
-        format!(
-            "{fork_label} | {}",
-            tr(locale, MessageId::SessionsArchivedCompact)
-        )
-    } else {
-        fork_label
-    };
-    let current_label = if is_current {
-        format!(" | {}", tr(locale, MessageId::SessionsCurrentCompact))
-    } else {
-        String::new()
-    };
+    let mut badges = String::new();
+    if is_current {
+        badges.push_str(sep);
+        badges.push_str(&tr(locale, MessageId::SessionsCurrentCompact));
+    }
+    if session.parent_session_id.is_some() {
+        badges.push_str(sep);
+        badges.push_str(&tr(locale, MessageId::SessionsForkCompact));
+    }
+    if session.archived {
+        badges.push_str(sep);
+        badges.push_str(&tr(locale, MessageId::SessionsArchivedCompact));
+    }
+    let mut tail = String::new();
+    if !session.model.is_empty() && session.model != "unknown" {
+        tail.push_str(sep);
+        tail.push_str(&session.model);
+    }
+    if let Some(workspace) = session_workspace_label(session) {
+        tail.push_str(sep);
+        tail.push_str(workspace);
+    }
     format!(
-        "{} | {} | {}{}{} | {} | {}",
+        "{}{sep}{title}{sep}{message_count}{badges}{sep}{mode}{sep}{updated}{tail}",
         codewhale_engine::session_manager::truncate_id(&session.id),
-        title,
-        message_count,
-        current_label,
-        fork_label,
-        mode,
-        updated
     )
 }
 
@@ -1707,10 +1928,23 @@ fn message_text_for_history(message: &codewhale_models::Message, locale: Locale)
                     .replace("{input}", &truncate(&input.to_string(), 180))
             }
             codewhale_models::ContentBlock::ToolSearchToolResult { content, .. }
-            | codewhale_models::ContentBlock::CodeExecutionToolResult { content, .. } => {
+            | codewhale_models::ContentBlock::CodeExecutionToolResult { content, .. }
+            | codewhale_models::ContentBlock::WebSearchToolResult { content, .. }
+            | codewhale_models::ContentBlock::WebFetchToolResult { content, .. } => {
                 tr(locale, MessageId::SessionsToolResult)
                     .replace("{content}", &truncate(&content.to_string(), 220))
             }
+            codewhale_models::ContentBlock::WebSearchCall { kind, .. } => {
+                tr(locale, MessageId::SessionsServerTool)
+                    .replace("{name}", kind.as_deref().unwrap_or("web_search"))
+                    .replace("{input}", "")
+            }
+            codewhale_models::ContentBlock::ServerToolCalls { steps } => {
+                tr(locale, MessageId::SessionsServerTool)
+                    .replace("{name}", "server_tool_calls")
+                    .replace("{input}", &steps.len().to_string())
+            }
+            codewhale_models::ContentBlock::File { file_id } => format!("[file: {file_id}]"),
             codewhale_models::ContentBlock::ImageUrl { .. } => {
                 tr(locale, MessageId::SessionsImage).into_owned()
             }
@@ -1726,13 +1960,56 @@ fn message_text_for_history(message: &codewhale_models::Message, locale: Locale)
     text
 }
 
-fn format_preview(lines: &[String]) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
-    for line in lines {
-        out.push(Line::from(Span::styled(
-            line.clone(),
-            Style::default().fg(palette::TEXT_PRIMARY),
-        )));
+fn format_preview(lines: &[String], width: u16) -> Vec<Line<'static>> {
+    let ascii = crate::tui::color_compat::ascii_safe_enabled();
+    let rule = if ascii { "-" } else { "─" };
+    let mut out = Vec::with_capacity(lines.len());
+    let mut in_header = true;
+    for (idx, line) in lines.iter().enumerate() {
+        if in_header {
+            if line.is_empty() {
+                in_header = false;
+                let rule_width = usize::from(width).min(48);
+                out.push(Line::from(Span::styled(
+                    rule.repeat(rule_width),
+                    Style::default().fg(palette::BORDER_COLOR),
+                )));
+                continue;
+            }
+            if let Some((label, value)) = line.split_once(':') {
+                let value_style = if idx == 0 {
+                    Style::default()
+                        .fg(palette::WHALE_ACTION)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(palette::TEXT_PRIMARY)
+                };
+                out.push(Line::from(vec![
+                    Span::styled(
+                        format!("{label}:"),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ),
+                    Span::styled(value.to_string(), value_style),
+                ]));
+                continue;
+            }
+        }
+        let style = if line == "USER:" || line.starts_with("USER:") {
+            Style::default()
+                .fg(palette::USER_BODY)
+                .add_modifier(Modifier::BOLD)
+        } else if line == "ASSISTANT:" || line.starts_with("ASSISTANT:") {
+            Style::default()
+                .fg(palette::WHALE_ACTION)
+                .add_modifier(Modifier::BOLD)
+        } else if line == "SYSTEM:" || line == "TOOL:" {
+            Style::default()
+                .fg(palette::TEXT_MUTED)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(palette::TEXT_SOFT)
+        };
+        out.push(Line::from(Span::styled(line.clone(), style)));
     }
     out
 }
@@ -1851,6 +2128,7 @@ mod tests {
             model: "deepseek-v4-pro".to_string(),
             model_provider: "deepseek".to_string(),
             model_provider_id: None,
+            exec_route_binding: None,
             workspace: std::path::PathBuf::from("/tmp"),
             mode: Some("agent".to_string()),
             cost: codewhale_engine::session_manager::SessionCostSnapshot::default(),
@@ -2732,7 +3010,11 @@ mod tests {
             assert!(dump.contains('─'), "{label} hairline missing:\n{dump}");
             assert!(
                 !dump.contains('┌') && !dump.contains('┘'),
-                "{label} should use open hairlines, not boxed rooms:\n{dump}"
+                "{label} should use rounded frames, not square boxes:\n{dump}"
+            );
+            assert!(
+                dump.contains('╭') && dump.contains('╯'),
+                "{label} should use rounded corners:\n{dump}"
             );
             assert!(
                 !dump.contains("suffix that must truncate"),
@@ -3066,11 +3348,10 @@ mod tests {
             assert!(text.contains("1-9"), "{w}x{h}: missing 1-9 shortcut hint");
             assert!(text.contains("PgUp/PgDn"), "{w}x{h}: missing paging hint");
 
-            // Composited frame is fully opaque.
             assert!(!text.contains('X'), "{w}x{h}: background bleed-through");
             assert_eq!(
                 buf[(w / 2, h / 2)].bg,
-                palette::WHALE_BG,
+                palette::COMPOSER_BG,
                 "{w}x{h}: modal interior must be opaque"
             );
 

@@ -7,9 +7,6 @@
 //! Appearance, command tours, mode primers, and tips stay in `/setup` and
 //! contextual help so nothing delays first use. The last screen hands the
 //! user the real composer pre-seeded with a first task for this folder.
-//!
-//! Rendering uses the shared Underwater instrument grammar — one title
-//! hairline, one bottom action rail — never a bespoke centered card.
 
 pub mod language;
 pub mod trust_directory;
@@ -20,21 +17,21 @@ use std::path::{Path, PathBuf};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
 
 use crate::tui::app::{App, OnboardingState};
-use crate::tui::views::{ActionHint, render_modal_footer, render_underwater_surface};
+use crate::tui::views::ActionHint;
+use crate::tui::views::rounded::{
+    render_rounded_footer_themed, render_rounded_surface_themed, resolved_surface_bg,
+};
 use codewhale_localization::MessageId;
 use codewhale_palette as palette;
 
 const ONBOARDED_MARKER_FILE: &str = ".onboarded";
 
-/// Cheap workspace markers that identify a code project, so the seeded first
-/// task can speak to what is actually in the folder. One `is_file` probe per
-/// name; no directory walk.
 const CODE_PROJECT_MARKERS: &[&str] = &[
     "Cargo.toml",
     "package.json",
@@ -46,22 +43,41 @@ const CODE_PROJECT_MARKERS: &[&str] = &[
 ];
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
-    let title = surface_title(app);
+    let title = app.tr(MessageId::OnboardStepsTitle).into_owned();
+    let progress = required_progress(app).map(|(current, total)| format!("{current}/{total}"));
     let hints = action_hints(app);
     let buf = f.buffer_mut();
-    let inner = render_underwater_surface(area, buf, title);
-    let content = render_modal_footer(inner, buf, &hints);
-    let lines = screen_lines(app, usize::from(content.width), usize::from(content.height));
+    let inner =
+        render_rounded_surface_themed(area, buf, title, progress, true, Some(&app.ui_theme));
+    let bg = resolved_surface_bg(&app.ui_theme);
+    let border = if app.ui_theme.border != Color::Reset {
+        app.ui_theme.border
+    } else {
+        palette::BORDER_COLOR
+    };
+    let content = render_rounded_footer_themed(inner, buf, &hints, bg, border);
+    let lane = reading_lane(content, app.onboarding);
+    let lines = screen_lines(app, usize::from(lane.width), usize::from(lane.height));
     if lines.is_empty() {
         return;
     }
-    let body = center_vertically(content, lines.len());
+    let body = center_vertically(lane, lines.len());
     f.render_widget(Paragraph::new(lines), body);
 }
 
-/// Vertical rest for the short screens: half the leftover rows above, the
-/// rest below. Content taller than the area stays top-anchored so nothing is
-/// silently pushed out of view.
+fn reading_lane(area: Rect, state: OnboardingState) -> Rect {
+    if state == OnboardingState::Language || area.width <= 76 {
+        return area;
+    }
+    let width = 72u16.min(area.width);
+    let pad = area.width.saturating_sub(width) / 2;
+    Rect {
+        x: area.x.saturating_add(pad),
+        width,
+        ..area
+    }
+}
+
 fn center_vertically(area: Rect, rows: usize) -> Rect {
     let pad = (area
         .height
@@ -74,11 +90,11 @@ fn center_vertically(area: Rect, rows: usize) -> Rect {
     }
 }
 
-fn surface_title(app: &App) -> String {
-    let base = app.tr(MessageId::OnboardStepsTitle).into_owned();
-    match required_progress(app) {
-        Some((current, total)) => format!("{base} · {current}/{total}"),
-        None => base,
+pub(super) fn theme_or(color: Color, fallback: Color) -> Color {
+    if color != Color::Reset {
+        color
+    } else {
+        fallback
     }
 }
 
@@ -138,12 +154,9 @@ fn action_hints(app: &App) -> Vec<ActionHint> {
             ActionHint::new("Esc", app.tr(MessageId::OnboardActionBack).to_string()),
         ],
         OnboardingState::TrustDirectory => vec![
-            ActionHint::new(
-                "1/Y",
-                app.tr(MessageId::OnboardTrustActionTrust).to_string(),
-            ),
-            ActionHint::new("2/U", app.tr(MessageId::OnboardTrustActionSkip).to_string()),
-            ActionHint::new("3/N", app.tr(MessageId::OnboardTrustActionQuit).to_string()),
+            ActionHint::new("1", app.tr(MessageId::OnboardTrustActionTrust).to_string()),
+            ActionHint::new("2", app.tr(MessageId::OnboardTrustActionSkip).to_string()),
+            ActionHint::new("3", app.tr(MessageId::OnboardTrustActionQuit).to_string()),
         ],
         OnboardingState::Ready => vec![
             // Only keys this screen handles: a `/rc` hint here could not be
@@ -171,10 +184,11 @@ fn provider_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     heading(&mut lines, app, MessageId::OnboardProviderTitle, width);
     lines.push(Line::from(""));
     if let Some(notice) = app.onboarding_key_rejected.as_deref() {
+        let error_fg = theme_or(app.ui_theme.error_fg, palette::STATUS_ERROR);
         for segment in wrap_words(notice, width) {
             lines.push(Line::from(Span::styled(
                 segment,
-                Style::default().fg(palette::STATUS_ERROR),
+                Style::default().fg(error_fg),
             )));
         }
         lines.push(Line::from(""));
@@ -183,27 +197,23 @@ fn provider_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
-/// Same rule as the welcome headline: a heading is prose and wraps. Today's
-/// provider title happens to fit at 40 columns in every shipped locale, but it
-/// fit by luck rather than by construction.
 fn heading(out: &mut Vec<Line<'static>>, app: &App, id: MessageId, width: usize) {
+    let accent = theme_or(app.ui_theme.accent_primary, palette::WHALE_ACTION);
     for segment in wrap_words(&app.tr(id), width) {
         out.push(Line::from(Span::styled(
             segment,
-            Style::default()
-                .fg(palette::WHALE_ACTION)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
         )));
     }
 }
 
-/// Append a body sentence word-wrapped to `width` in the muted body lane.
 fn wrap_body(lines: &mut Vec<Line<'static>>, app: &App, id: MessageId, width: usize) {
+    let body_fg = theme_or(app.ui_theme.text_body, palette::TEXT_PRIMARY);
     let text = app.tr(id);
     for segment in wrap_words(&text, width) {
         lines.push(Line::from(Span::styled(
             segment,
-            Style::default().fg(palette::TEXT_PRIMARY),
+            Style::default().fg(body_fg),
         )));
     }
 }

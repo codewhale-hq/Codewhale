@@ -404,6 +404,10 @@ pub enum Op {
         timeout_secs: u64,
     },
 
+    SetAutoReviewReviewerModel {
+        reviewer_model: Option<String>,
+    },
+
     SetSubagentRuntimeConfig {
         enabled: bool,
         max_subagents: u64,
@@ -444,6 +448,8 @@ pub enum Op {
         workspace: PathBuf,
         #[serde(default = "default_mode")]
         mode: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_preset: Option<String>,
     },
 
     /// Rewind an unchanged conversation. `expected` is the complete observed
@@ -529,6 +535,7 @@ pub const OP_KINDS: &[&str] = &[
     "set_compaction",
     "set_permission_ruleset",
     "set_stream_chunk_timeout",
+    "set_auto_review_reviewer_model",
     "set_subagent_runtime_config",
     "set_search_provider",
     "set_fleet_roster",
@@ -576,6 +583,7 @@ impl Op {
             Self::SetCompaction { .. } => "set_compaction",
             Self::SetPermissionRuleset { .. } => "set_permission_ruleset",
             Self::SetStreamChunkTimeout { .. } => "set_stream_chunk_timeout",
+            Self::SetAutoReviewReviewerModel { .. } => "set_auto_review_reviewer_model",
             Self::SetSubagentRuntimeConfig { .. } => "set_subagent_runtime_config",
             Self::SetSearchProvider { .. } => "set_search_provider",
             Self::SetFleetRoster { .. } => "set_fleet_roster",
@@ -762,6 +770,9 @@ mod tests {
                 ruleset: json!({"rules": []}),
             },
             Op::SetStreamChunkTimeout { timeout_secs: 30 },
+            Op::SetAutoReviewReviewerModel {
+                reviewer_model: Some("claude-sonnet-5-5".into()),
+            },
             Op::SetSubagentRuntimeConfig {
                 enabled: true,
                 max_subagents: 4,
@@ -787,6 +798,7 @@ mod tests {
                 model: "m".into(),
                 workspace: PathBuf::from("/ws"),
                 mode: "agent".into(),
+                agent_preset: Some("creator".into()),
             },
             Op::RewindConversation {
                 expected: json!({"session_id": "s", "messages": []}),

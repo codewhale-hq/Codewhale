@@ -4,7 +4,7 @@
 //! consort engine). Same 980-point body from whale-points.tsv, same
 //! mulberry32(0xC0FFEE) jitter, same gait field and spring integration, same
 //! colour/hollow/brightness encoding. If a tape produces the same digest here
-//! as in TypeScript or Swift, every surface drew the same whale.
+//! as in TypeScript, every surface drew the same whale.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(usize)]

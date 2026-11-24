@@ -50,23 +50,38 @@ pub fn execute(contexts: CommandContexts<'_>, _arg: Option<&str>) -> CommandResu
 }
 
 /// Models.dev live-layer freshness: source, row count, and age (#4187).
-fn catalog_summary(view: &ConfigStatusView) -> String {
+fn catalog_summary(view: &ConfigStatusView, locale: &Messages) -> Option<String> {
     let st = &view.catalog;
-    let now = view.observed_at;
-    let mut out = match st.freshness {
-        StatusCatalogFreshness::Bundled => "bundled".to_string(),
-        StatusCatalogFreshness::Live => "models.dev live".to_string(),
-        StatusCatalogFreshness::Stale => "models.dev stale".to_string(),
-        StatusCatalogFreshness::Failed => "models.dev refresh failed".to_string(),
-    };
+    let mut out = tr(
+        locale,
+        match st.freshness {
+            StatusCatalogFreshness::Bundled => return None,
+            StatusCatalogFreshness::Live => MessageId::StatusCatalogLive,
+            StatusCatalogFreshness::Stale => MessageId::StatusCatalogStale,
+            StatusCatalogFreshness::Failed => MessageId::StatusCatalogRefreshFailed,
+        },
+    )
+    .into_owned();
     if st.offering_count > 0 {
-        let _ = write!(out, " · {} offerings", st.offering_count);
+        let _ = write!(
+            out,
+            " · {}",
+            localized(
+                locale,
+                MessageId::StatusCatalogOfferings,
+                &[("{count}", &st.offering_count.to_string())],
+            )
+        );
     }
     if let Some(fetched_at) = st.fetched_at {
         let _ = write!(
             out,
-            " · fetched {}",
-            codewhale_protocol::cloud_facts::age_label(fetched_at, now)
+            " · {}",
+            localized(
+                locale,
+                MessageId::StatusCatalogFetched,
+                &[("{age}", &age_label(fetched_at, view.observed_at, locale))],
+            )
         );
     }
     if let Some(err) = st.last_error.as_deref().filter(|e| !e.is_empty())
@@ -74,14 +89,28 @@ fn catalog_summary(view: &ConfigStatusView) -> String {
     {
         let _ = write!(out, " ({err})");
     }
-    out
+    Some(out)
+}
+
+fn age_label(then: u64, now: u64, locale: &Messages) -> String {
+    let secs = now.saturating_sub(then);
+    let (id, count) = if secs < 60 {
+        return tr(locale, MessageId::SessionsTimeJustNow).into_owned();
+    } else if secs < 3600 {
+        (MessageId::SessionsTimeMinutesAgo, secs / 60)
+    } else if secs < 86_400 {
+        (MessageId::SessionsTimeHoursAgo, secs / 3600)
+    } else {
+        (MessageId::SessionsTimeDaysAgo, secs / 86_400)
+    };
+    localized(locale, id, &[("{count}", &count.to_string())])
 }
 
 /// Cloud facts provenance: channel, version, key, age, origin — or why the
 /// bundled facts are in use. Off by default.
-fn cloud_facts_summary(view: &ConfigStatusView) -> String {
+fn cloud_facts_summary(view: &ConfigStatusView, locale: &Messages) -> String {
     if view.cloud_facts == codewhale_protocol::cloud_facts::CloudFactsState::Off {
-        "off".into()
+        tr(locale, MessageId::StatusCloudFactsOff).into_owned()
     } else {
         view.cloud_facts.label(view.observed_at)
     }
@@ -186,19 +215,19 @@ fn format_status(view: &ConfigStatusView, locale: &Messages) -> String {
         context_window_source_label(context_window_source(view), locale).into_owned();
     // The default bundled source needs no second catalog label. Keeping it
     // compact preserves the 80-column budget as well as the report's row count.
-    if view.catalog.freshness != StatusCatalogFreshness::Bundled {
+    if let Some(catalog) = catalog_summary(view, locale) {
         let _ = write!(
             source_summary,
             " · {}: {}",
             tr(locale, MessageId::StatusLabelCatalog),
-            catalog_summary(view)
+            catalog
         );
     }
     let _ = write!(
         source_summary,
         " · {}: {}",
         tr(locale, MessageId::StatusLabelCloudFacts),
-        cloud_facts_summary(view)
+        cloud_facts_summary(view, locale)
     );
     push_row(
         &mut out,

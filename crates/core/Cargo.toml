@@ -13,10 +13,9 @@ workspace = true
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
-codewhale-config = { path = "../config", version = "0.10.3" }
-codewhale-hooks = { path = "../hooks", version = "0.10.3" }
-codewhale-protocol = { path = "../protocol", version = "0.10.3" }
-codewhale-state = { path = "../state", version = "0.10.3" }
+codewhale-config = { path = "../config", version = "0.10.4" }
+codewhale-protocol = { path = "../protocol", version = "0.10.4" }
+codewhale-state = { path = "../state", version = "0.10.4" }
 regex = "1.11"
 sha2.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
@@ -24,4 +23,3 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 [dev-dependencies]
 tempfile.workspace = true
 uuid.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "time"] }

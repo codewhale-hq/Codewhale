@@ -15,7 +15,10 @@ use std::time::Duration;
 
 use crate::commands;
 use crate::tui::app::{App, ComposerDensity, ViewportState};
-use crate::tui::approval::{ApprovalRequest, ApprovalView, ElevationOption, ElevationRequest};
+use crate::tui::approval::{
+    ApprovalOption, ApprovalRequest, ApprovalView, ElevationOption, ElevationRequest,
+};
+use crate::tui::color_compat::ascii_safe_enabled;
 use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolRun, ToolStatus};
 use crate::tui::underwater::ShellPhase;
 #[cfg(test)]
@@ -25,18 +28,11 @@ use codewhale_engine::core::authority::{RiskLevel, ToolCategory};
 use codewhale_engine::provider_lake::all_catalog_models_for_provider;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
-use codewhale_ratatui::{
-    DecisionBand, DecisionBandAction, DecisionBandSave,
-    decision_wrapped_rows as measure_wrapped_rows,
-};
+use codewhale_ratatui::{decision_wrapped_rows as measure_wrapped_rows, visible_text};
 use codewhale_tui_kit::menu_style;
 use codewhale_tui_kit::scrolling::TranscriptLineMeta;
 use codewhale_tui_kit::ui_text::grapheme_display_width;
-#[cfg(test)]
-use codewhale_tui_kit::ui_text::text_display_width;
 use codewhale_tui_kit::ui_text::truncate_line_to_width;
-#[cfg(test)]
-use ratatui::widgets::BorderType;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -44,8 +40,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap},
 };
-#[cfg(test)]
-use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const SEND_FLASH_DURATION: Duration = Duration::from_millis(500);
@@ -70,70 +64,18 @@ pub struct ChatWidget {
     /// Ink for the selected underwater scene's idle fish/bubbles.
     ambient_inks: Option<(Color, Color)>,
     ocean_elapsed_ms: u128,
+    life_elapsed_ms: u128,
+    #[cfg(test)]
     ocean_animated: bool,
     /// Fixed-point (0..=1000) life presence; see `ocean::life_presence`.
+    #[cfg(test)]
     life_presence_fixed: u16,
-    fish_flee_elapsed_ms: Option<u128>,
+    ambient_presence: f32,
     ambient_life: bool,
     scroll_track: Color,
     scroll_thumb: Color,
     jump_border: Color,
     jump_arrow: Color,
-}
-
-/// A `todo_write` result is a full replacement snapshot, not an incremental
-/// transcript event. Keep only the newest successful snapshot in the visible
-/// transcript while retaining every tool result in history for model context
-/// and persistence.
-fn superseded_todo_write_indices(
-    history: &[HistoryCell],
-    active_entries: &[HistoryCell],
-) -> HashSet<usize> {
-    let mut hidden = HashSet::new();
-    let mut latest = None;
-
-    for (index, cell) in history.iter().chain(active_entries).enumerate() {
-        let HistoryCell::Tool(ToolCell::Generic(tool)) = cell else {
-            continue;
-        };
-        if tool.name != "todo_write" || tool.status != ToolStatus::Success {
-            continue;
-        }
-
-        if let Some(previous) = latest.replace(index) {
-            hidden.insert(previous);
-        }
-    }
-
-    if let Some(index) = latest {
-        let cell = history
-            .get(index)
-            .or_else(|| active_entries.get(index.saturating_sub(history.len())));
-        if cell.is_some_and(todo_write_snapshot_is_empty) {
-            hidden.insert(index);
-        }
-    }
-
-    hidden
-}
-
-fn todo_write_snapshot_is_empty(cell: &HistoryCell) -> bool {
-    let HistoryCell::Tool(ToolCell::Generic(tool)) = cell else {
-        return false;
-    };
-    let Some(output) = tool.output.as_deref() else {
-        return false;
-    };
-    let Some(json_start) = output.find('{') else {
-        return false;
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&output[json_start..]) else {
-        return false;
-    };
-    value
-        .get("items")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(Vec::is_empty)
 }
 
 fn resolve_transcript_viewport_after_layout(
@@ -199,8 +141,11 @@ impl ChatWidget {
         // same motion gate as everything else in the water. Both the column's
         // settle flourish and ambient life's presence read this one clock:
         // the pet needs the settle tail too; the column clips only its light pulse.
+        let browsing_history = !app.viewport.transcript_scroll.is_at_tail();
         let completion_life_clock = (underwater_atmosphere
-            && app.motion_policy().allows_decorative())
+            && app.motion_policy().allows_decorative()
+            && !browsing_history
+            && crate::tui::underwater::ambient_motion_terminal_supported(app))
         .then_some(())
         .and(app.ocean_completion_started_at)
         .map(|started| started.elapsed().as_millis());
@@ -208,16 +153,12 @@ impl ChatWidget {
             .filter(|elapsed| *elapsed < crate::tui::ocean::COMPLETION_SETTLE_MS);
         let render_empty_state = should_render_empty_state(app);
         let phase = ShellPhase::from_app(app);
-        // Keep the selected underwater scene alive while a turn is doing
-        // work, even after the transcript exists. The ordinary Flat shell
-        // remains entirely still and lets the host terminal lead.
-        let underwater_motion_enabled =
-            underwater_atmosphere && crate::tui::underwater::decorative_shell_motion_enabled(app);
-        let browsing_history = !app.viewport.transcript_scroll.is_at_tail();
+        let underwater_motion_enabled = underwater_atmosphere
+            && !browsing_history
+            && crate::tui::underwater::decorative_shell_motion_enabled(app)
+            && crate::tui::underwater::ambient_motion_terminal_supported(app);
         let ocean_animated = underwater_motion_enabled
-            && (render_empty_state
-                || browsing_history
-                || matches!(phase, ShellPhase::Working | ShellPhase::Verifying));
+            && (render_empty_state || matches!(phase, ShellPhase::Working | ShellPhase::Verifying));
         // Life presence eases the animated/static boundary as a pure function
         // of the monotonic clocks (see ocean::life_presence): bursty fast
         // streams ramp in, quiet waits settle out, never a hard snap.
@@ -236,6 +177,14 @@ impl ChatWidget {
             render_empty_state,
         );
         let life_presence_fixed = (life_presence * 1000.0).round().clamp(0.0, 1000.0) as u16;
+        let ambient_motion = crate::tui::underwater::ambient_life_motion_enabled(app)
+            && !matches!(phase, ShellPhase::Waiting | ShellPhase::Approval);
+        let ambient_presence = if ambient_motion {
+            life_presence.max(crate::tui::ocean::AMBIENT_IDLE_PRESENCE)
+        } else {
+            0.0
+        };
+        let life_elapsed_ms = app.ambient_life_held_ms.unwrap_or(ocean_elapsed_ms);
         let ocean_column = ocean_ramp.map(|ramp| {
             let context_percent = crate::tui::phase_strip::context_percent_from_app(app);
             crate::tui::ocean::OceanColumn::new(
@@ -250,12 +199,6 @@ impl ChatWidget {
             )
             .with_paint_caps(app.viewport.ocean_caps)
         });
-        let fish_flee_elapsed_ms = underwater_motion_enabled
-            .then_some(())
-            .and(app.turn_started_at)
-            .map(|started| started.elapsed().as_millis())
-            .filter(|elapsed| *elapsed < 800)
-            .filter(|_| matches!(phase, ShellPhase::Working | ShellPhase::Verifying));
         let scroll_track = app.ui_theme.border;
         let scroll_thumb = app.ui_theme.status_working;
         let jump_border = app.ui_theme.border;
@@ -295,20 +238,13 @@ impl ChatWidget {
                 ocean_activity,
                 ambient_inks,
                 ocean_elapsed_ms,
+                life_elapsed_ms,
+                #[cfg(test)]
                 ocean_animated,
+                #[cfg(test)]
                 life_presence_fixed,
-                fish_flee_elapsed_ms,
-                // Reduced-motion users still get a quiet, static Deepsea scene;
-                // Flat remains a normal host-owned terminal either way.
-                ambient_life: underwater_atmosphere
-                    && !app.attention_hold_active()
-                    && matches!(
-                        phase,
-                        ShellPhase::Idle
-                            | ShellPhase::Typing
-                            | ShellPhase::Working
-                            | ShellPhase::Verifying
-                    ),
+                ambient_presence,
+                ambient_life: ambient_motion,
                 scroll_track,
                 scroll_thumb,
                 jump_border,
@@ -358,6 +294,9 @@ impl ChatWidget {
         let history_len = app.history.len();
         // Cache the group projection, not the whole frame: filtered refs and
         // transcript bookkeeping below still walk the retained history.
+        let open_tail = app.turn_fold_open_tail();
+        let open_turn_user_index = app.active_turn_user_index;
+        let echoed_queued_users = app.echoed_queued_user_count();
         let cache_key_matches = app.tool_run_cache.history_version == app.history_version
             && app.tool_run_cache.history_len == history_len
             && app.tool_run_cache.active_cell_revision == app.active_cell_revision
@@ -366,9 +305,14 @@ impl ChatWidget {
             && app.tool_run_cache.mode == app.tool_collapse_mode
             && app.tool_run_cache.calm_mode == app.calm_mode
             && app.tool_run_cache.locale == app.ui_locale
-            && app.tool_run_cache.expanded_runs == app.expanded_tool_runs;
+            && app.tool_run_cache.expanded_runs == app.expanded_tool_runs
+            && app.tool_run_cache.open_tail == open_tail
+            && app.tool_run_cache.open_turn_user_index == open_turn_user_index
+            && app.tool_run_cache.echoed_queued_users == echoed_queued_users
+            && app.tool_run_cache.turn_durations_revision == app.turn_durations_revision;
         if !cache_key_matches {
-            let superseded_todos = superseded_todo_write_indices(&app.history, active_entries);
+            let superseded_todos =
+                crate::tui::history::superseded_todo_write_indices(&app.history, active_entries);
             let runs = if app.tool_collapse_active() {
                 crate::tui::history::detect_tool_runs_from_slices(
                     &app.history,
@@ -378,6 +322,68 @@ impl ChatWidget {
             } else {
                 Vec::new()
             };
+            let folds = if app.tool_collapse_active() {
+                crate::tui::history::detect_turn_folds(
+                    &app.history,
+                    active_entries,
+                    open_tail,
+                    open_turn_user_index,
+                    echoed_queued_users,
+                    &superseded_todos,
+                    &app.turn_work_durations,
+                )
+            } else {
+                crate::tui::history::TurnFoldProjection::default()
+            };
+            let cell_at = |index: usize| {
+                app.history
+                    .get(index)
+                    .or_else(|| active_entries.get(index.checked_sub(history_len)?))
+            };
+            let mut fold_summaries: Vec<(usize, HistoryCell, u64)> = Vec::new();
+            let mut fold_hidden: HashSet<usize> = HashSet::new();
+            let mut folded_members: HashSet<usize> = HashSet::new();
+            for turn in &folds.turns {
+                if app.expanded_tool_runs.contains(&turn.key) {
+                    continue;
+                }
+                let Some(host) = turn.host() else {
+                    continue;
+                };
+                folded_members.extend(turn.members.iter().copied());
+                fold_hidden.extend(turn.members.iter().copied().skip(1));
+                fold_summaries.push((
+                    host,
+                    turn_fold_summary_cell(turn, app.ui_locale),
+                    members_summary_revision(
+                        0x7E12_F01D_0000_2231 ^ ((turn.key as u64) << 24),
+                        turn.members.iter().copied(),
+                        turn.duration.map_or(0, |duration| duration.as_secs()),
+                        &app.history_revisions,
+                        history_len,
+                        app.active_cell_revision,
+                    ),
+                ));
+            }
+            for &index in &folds.agents {
+                if app.expanded_tool_runs.contains(&index) {
+                    continue;
+                }
+                if let Some(HistoryCell::SubAgent(agent)) = cell_at(index) {
+                    fold_summaries.push((
+                        index,
+                        agent_line_summary_cell(agent),
+                        members_summary_revision(
+                            0xA6E7_11FE_0000_2233,
+                            std::iter::once(index),
+                            0,
+                            &app.history_revisions,
+                            history_len,
+                            app.active_cell_revision,
+                        ),
+                    ));
+                }
+            }
             let cache = &mut app.tool_run_cache;
             #[cfg(test)]
             {
@@ -386,9 +392,14 @@ impl ChatWidget {
             cache.generation = cache.generation.wrapping_add(1);
             cache.summaries.clear();
             cache.hidden_indices.clear();
+            for (host, cell, revision) in fold_summaries {
+                cache.summaries.insert(host, (cell, revision));
+            }
+            cache.hidden_indices.extend(fold_hidden);
             for run in &runs {
                 // A hidden replacement snapshot cannot own a group summary.
                 if app.expanded_tool_runs.contains(&run.start)
+                    || folded_members.contains(&run.start)
                     || (run.start..run.start.saturating_add(run.count))
                         .any(|index| superseded_todos.contains(&index))
                 {
@@ -420,6 +431,10 @@ impl ChatWidget {
             cache.calm_mode = app.calm_mode;
             cache.locale = app.ui_locale;
             cache.expanded_runs.clone_from(&app.expanded_tool_runs);
+            cache.open_tail = open_tail;
+            cache.open_turn_user_index = open_turn_user_index;
+            cache.echoed_queued_users = echoed_queued_users;
+            cache.turn_durations_revision = app.turn_durations_revision;
         }
         // v0.9.1: do not collapse concurrent sub-agent cards into an Enter-
         // expand shelf. Count lives in header chrome; full cards stay visible;
@@ -638,6 +653,42 @@ impl ChatWidget {
             app.last_send_at = None;
         }
 
+        let sweep_entries: &[HistoryCell] = app
+            .active_cell
+            .as_ref()
+            .map_or(&[], |active| active.entries());
+        let activity_sweep_visible = crate::tui::ui::motion::activity_sweep_allowed(app)
+            && app.turn_started_at.is_some_and(|started| {
+                apply_activity_sweep(
+                    &mut lines,
+                    top,
+                    line_meta,
+                    &app.collapsed_cell_map,
+                    &app.history,
+                    sweep_entries,
+                    started.elapsed(),
+                    app.theme_id,
+                    &app.ui_theme,
+                    app.viewport.detected_background,
+                )
+            });
+        let settle_flash_visible = crate::tui::ui::motion::activity_sweep_allowed(app)
+            && apply_settle_flash(
+                &mut lines,
+                top,
+                line_meta,
+                &app.collapsed_cell_map,
+                app.history.len(),
+                sweep_entries,
+                &app.active_tool_entry_completed_at,
+                std::time::Instant::now(),
+                app.theme_id,
+                &app.ui_theme,
+                app.viewport.detected_background,
+            );
+        app.viewport.activity_sweep_visible = activity_sweep_visible;
+        app.viewport.settle_flash_visible = settle_flash_visible;
+
         // No background "highlight" for the Alt+V detail target: it used to
         // paint the target cell's spans `Color::Reset`, which is invisible on
         // terminal-owned themes and a black hole on painted surfaces
@@ -713,10 +764,13 @@ impl ChatWidget {
             ocean_activity,
             ambient_inks,
             ocean_elapsed_ms,
+            life_elapsed_ms,
+            #[cfg(test)]
             ocean_animated,
+            #[cfg(test)]
             life_presence_fixed,
-            fish_flee_elapsed_ms,
-            ambient_life: false,
+            ambient_presence,
+            ambient_life: ambient_motion,
             scroll_track,
             scroll_thumb,
             jump_border,
@@ -795,14 +849,105 @@ fn tool_run_summary_cell(run: &ToolRun, locale: codewhale_localization::Locale) 
     }))
 }
 
+fn turn_fold_summary_cell(
+    turn: &crate::tui::history::TurnFold,
+    locale: codewhale_localization::Locale,
+) -> HistoryCell {
+    let changes = crate::tui::history::turn_fold_changes(turn, locale).map(|changes| {
+        format!(
+            "{changes} \u{00B7} {}",
+            codewhale_localization::tr(
+                locale,
+                codewhale_localization::MessageId::TurnReviewChanges
+            )
+        )
+    });
+    HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        name: "turn_work".to_string(),
+        status: ToolStatus::Success,
+        input_summary: Some(crate::tui::history::turn_fold_headline(turn, locale)),
+        output: None,
+        prompts: None,
+        spillover_path: None,
+        output_summary: changes,
+        is_diff: false,
+    }))
+}
+
+fn agent_line_summary_cell(agent: &crate::tui::history::SubAgentCell) -> HistoryCell {
+    use crate::tui::history::SubAgentCell;
+    let (tag, rest) = match agent {
+        SubAgentCell::Delegate(card) => {
+            let mut rest = format!(" \u{00B7} {}", card.status.label());
+            if let (Some(started), Some(finished)) = (card.started_at, card.finished_at) {
+                rest.push_str(" \u{00B7} ");
+                rest.push_str(&codewhale_command_contract::elapsed::format_elapsed_ms(
+                    finished.duration_since(started).as_millis() as u64,
+                ));
+            }
+            if let Some(summary) = card
+                .summary
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                rest.push_str(" \u{00B7} ");
+                rest.push_str(summary.lines().next().unwrap_or(summary));
+            }
+            (
+                codewhale_agent_contract::role::public_role_label(&card.agent_type),
+                rest,
+            )
+        }
+        SubAgentCell::Fanout(card) => (
+            card.kind.clone(),
+            format!(
+                " \u{00B7} {} \u{00B7} {}",
+                card.workers.len(),
+                card.aggregate_status_public().label()
+            ),
+        ),
+    };
+    HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        name: "agent_line".to_string(),
+        status: ToolStatus::Success,
+        input_summary: Some(rest),
+        output: None,
+        prompts: None,
+        spillover_path: None,
+        output_summary: Some(tag),
+        is_diff: false,
+    }))
+}
+
 fn tool_run_summary_revision(
     run: &ToolRun,
     revisions: &[u64],
     history_len: usize,
     active_rev: u64,
 ) -> u64 {
-    let mut revision = 0xA11C_EA5E_D00D_2692u64 ^ ((run.start as u64) << 32) ^ (run.count as u64);
-    for idx in run.start..run.start.saturating_add(run.count) {
+    members_summary_revision(
+        0xA11C_EA5E_D00D_2692u64 ^ ((run.start as u64) << 32) ^ (run.count as u64),
+        run.start..run.start.saturating_add(run.count),
+        0,
+        revisions,
+        history_len,
+        active_rev,
+    )
+}
+
+fn members_summary_revision(
+    seed: u64,
+    members: impl Iterator<Item = usize>,
+    salt: u64,
+    revisions: &[u64],
+    history_len: usize,
+    active_rev: u64,
+) -> u64 {
+    let mut revision = seed ^ salt.rotate_left(17);
+    let mut extends_into_active = false;
+    for idx in members {
+        extends_into_active |= idx >= history_len;
         let cell_revision = revisions
             .get(idx)
             .copied()
@@ -813,7 +958,6 @@ fn tool_run_summary_revision(
             });
         revision = revision.rotate_left(7) ^ cell_revision;
     }
-    let extends_into_active = run.start.saturating_add(run.count) > history_len;
     revision_in_domain(revision, extends_into_active)
 }
 
@@ -1031,53 +1175,26 @@ impl ChatWidget {
         }
 
         if self.ambient_life
-            && let Some(inks) = self.ambient_inks
+            && let (Some(inks), Some(column)) = (self.ambient_inks, self.ocean_column)
+            && let Some(theme) = column.paint_theme(self.background)
         {
-            // The scatter has a centre. It used to be column 0 with a row in
-            // the middle of the field, which is neither where the school
-            // swims nor anywhere the eye is: the flee proximity test
-            // (|dy| < 6) could not even fire on a tall field, and when it did
-            // every fish was to the right of the anchor so the whole school
-            // slid the same way. Anchored on the composer's centre line and
-            // the school's own band, a turn beginning reads as the shoal
-            // parting around the thing that just happened.
-            let cursor = crate::tui::ambient_life::AmbientCursor {
-                column: area.x.saturating_add(area.width / 2),
-                row: area
-                    .y
-                    .saturating_add(crate::tui::ambient_life::school_band_row(area)),
-                flee_elapsed_ms: self.fish_flee_elapsed_ms,
-            };
-            // Whale cameo rides the completion breath clock when present.
             let whale = crate::tui::ambient_life::WhaleCameo {
-                elapsed_ms: self.ocean_column.and_then(|c| c.completion_elapsed_ms()),
+                elapsed_ms: column.completion_elapsed_ms(),
                 anchor_x: area.x.saturating_add(area.width / 2),
                 anchor_y: area.y.saturating_add(area.height.saturating_mul(2) / 3),
             };
-            // Per-frame budget counters (built/painted/skipped/clipped);
-            // consumed by ambient-life tests and debug tooling, not by the
-            // widget itself.
             let _ambient_stats = crate::tui::ambient_life::render_ambient_life(
                 area,
                 buf,
-                inks,
+                &theme,
+                inks.0,
                 &self.lines,
-                self.ocean_elapsed_ms,
+                self.life_elapsed_ms,
                 self.ocean_presence_f32(),
-                cursor,
                 whale,
                 self.ocean_activity,
+                &self.ocean_protected,
             );
-            if let Some(column) = self.ocean_column {
-                crate::tui::ambient_life::apply_caustic_shimmer(
-                    area,
-                    buf,
-                    &column,
-                    self.ocean_elapsed_ms,
-                    self.ocean_animated,
-                    &self.lines,
-                );
-            }
         }
     }
 }
@@ -1085,13 +1202,8 @@ impl ChatWidget {
 impl ChatWidget {
     /// Life presence as a 0..=1 fraction; drives ambient-life ink fading.
     fn ocean_presence_f32(&self) -> f32 {
-        (f32::from(self.life_presence_fixed) / 1000.0).clamp(0.0, 1.0)
+        self.ambient_presence.clamp(0.0, 1.0)
     }
-}
-
-#[cfg(test)]
-fn fish_flee_offset(elapsed_ms: u128) -> u16 {
-    crate::tui::ambient_life::fish_flee_offset(elapsed_ms)
 }
 
 #[cfg(test)]
@@ -1243,7 +1355,10 @@ impl<'a> ComposerWidget<'a> {
             Focus::Launch => self.app.launch.menu_selected.is_none(),
             _ => false,
         };
-        if editing {
+        let typing = editing && !self.app.composer_display_input().trim().is_empty();
+        if !typing && let Some(live) = crate::tui::ui::motion::composer_live_border(self.app) {
+            live
+        } else if editing {
             composer_chat_color(self.app).unwrap_or(self.app.ui_theme.accent_primary)
         } else {
             self.app.ui_theme.border
@@ -1449,15 +1564,15 @@ impl<'a> ComposerWidget<'a> {
 
     pub(crate) fn plan(&self, area: Rect) -> codewhale_ratatui::NativeComposerPlan {
         let frame = self.frame(false);
-        let plan = frame.plan(area);
-        if plan.source_rows.len() > plan.input_rows_budget
+        let source = frame.source_plan(area);
+        if source.rows.len() > frame.input_rows_budget(area)
             && frame.hint.is_none()
             && frame.quiet_hint.is_none()
             && composer_submit_hint(self.app, true).is_some()
         {
-            self.frame(true).plan(area)
+            self.frame(true).plan_with_source(area, source)
         } else {
-            plan
+            frame.plan_with_source(area, source)
         }
     }
 
@@ -1506,150 +1621,201 @@ pub struct ApprovalWidget<'a> {
     view: &'a ApprovalView,
 }
 
+struct ScopeMenuRow {
+    option: Option<ApprovalOption>,
+    is_save_preview: bool,
+    line: Line<'static>,
+}
+
 impl<'a> ApprovalWidget<'a> {
     pub fn new(request: &'a ApprovalRequest, view: &'a ApprovalView) -> Self {
         Self { request, view }
     }
 
-    fn kit(&self, area: Rect) -> DecisionBand {
-        let stakes = self.request.stakes();
-        let repo_law = self.request.is_repo_law_prompt();
-        let colors = if repo_law {
-            repo_law_approval_palette()
-        } else {
-            approval_palette(stakes)
-        };
-        let (question, actions, footer, save_hint) = approval_control_facts(
-            self.request,
-            self.view,
-            self.request.risk,
-            self.view.locale(),
-            colors.accent,
-            colors.shortcut,
-        );
-        let saves = if self.view.collapsed {
-            Vec::new()
-        } else {
-            self.request
-                .allow_rule_save_preview()
-                .into_iter()
-                .map(|preview| DecisionBandSave {
-                    summary: preview.summary(self.view.locale()),
-                    entries: preview.entries,
-                    omitted: preview.omitted,
-                    label: tr(self.view.locale(), MessageId::ApprovalFieldSave).into_owned(),
-                    separator: " · ".into(),
-                    compact_more: format!(
-                        " +{}",
-                        tr(self.view.locale(), MessageId::ApprovalSaveMore)
-                    ),
-                    full_more: format!(
-                        "... {}",
-                        tr(self.view.locale(), MessageId::ApprovalSaveMore)
-                    ),
-                    label_style: Style::default()
-                        .fg(colors.shortcut)
-                        .add_modifier(Modifier::BOLD),
-                    summary_style: Style::default().fg(palette::TEXT_BODY),
-                    entries_style: Style::default().fg(palette::TEXT_SECONDARY),
-                    more_style: Style::default().fg(palette::TEXT_HINT),
-                })
-                .collect()
-        };
-        DecisionBand {
-            body: if self.view.collapsed {
-                Vec::new()
-            } else {
-                self.body_facts(area)
-            },
-            saves,
-            question,
-            actions,
-            footer,
-            save_hint,
-            background: Style::default().bg(palette::WHALE_BG),
-            rule: Span::styled(
-                if repo_law { "═" } else { "─" },
-                Style::default().fg(colors.border),
-            ),
-            truncation_hint: Span::styled(
-                approval_truncation_hint(self.view.locale()),
-                Style::default().fg(palette::TEXT_HINT),
-            ),
-            collapsed: self.view.collapsed.then(|| {
-                Line::from(Span::styled(
-                    format!(
-                        " {} — {}  [Tab to expand] ",
-                        if repo_law {
-                            tr(self.view.locale(), MessageId::ApprovalRepoLawTitle)
-                        } else {
-                            Cow::Owned(approval_heading(self.request, self.view.locale()))
-                        },
-                        if repo_law {
-                            tr(self.view.locale(), MessageId::ApprovalRepoLawBadge)
-                        } else {
-                            effect_badge_text(self.request, stakes, self.view.locale())
-                        },
-                    ),
-                    Style::default()
-                        .fg(palette::WHALE_BG)
-                        .bg(colors.accent)
-                        .add_modifier(Modifier::BOLD),
-                ))
-            }),
-        }
+    pub(crate) fn docked_height(&self, _width: u16) -> u16 {
+        1
     }
 
-    /// Project request semantics and localized dossiers. The kit owns the
-    /// final word-wrap, band fit, persistent coverage and interactive geometry.
-    fn body_facts(&self, area: Rect) -> Vec<Line<'static>> {
+    fn edge_style(&self) -> (Color, Color, Color) {
         let stakes = self.request.stakes();
-        let locale = self.view.locale();
-        let repo_law = self.request.is_repo_law_prompt();
-        let palette_colors = if repo_law {
+        let colors = if self.request.is_repo_law_prompt() {
             repo_law_approval_palette()
         } else {
             approval_palette(stakes)
         };
-        let critical = matches!(stakes, crate::tui::approval::ApprovalStakes::Critical);
+        (colors.border, colors.accent, colors.shortcut)
+    }
 
-        let mut body: Vec<Line<'static>> = Vec::with_capacity(16);
-        // Header: effect badge + the plain summary of the call (E6). The raw
-        // tool name stays one details chord away in the pager.
-        body.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                format!(
-                    " {} ",
-                    if repo_law {
-                        tr(locale, MessageId::ApprovalRepoLawBadge)
-                    } else {
-                        effect_badge_text(self.request, stakes, locale)
-                    }
+    fn edge_glyph(&self, ascii: bool) -> &'static str {
+        if ascii { "| * " } else { "┃ ⛯ " }
+    }
+
+    fn drawer_edge_glyph(&self, ascii: bool) -> &'static str {
+        if ascii { "| " } else { "┃ " }
+    }
+
+    fn scope_menu_rows(&self, width: u16) -> Vec<ScopeMenuRow> {
+        if !self.view.scopes_open || self.view.is_workflow_plan_approval() {
+            return Vec::new();
+        }
+        let locale = self.view.locale();
+        let ascii = ascii_safe_enabled();
+        let (border_color, edge_color, shortcut_color) = self.edge_style();
+        let drawer_edge = self.drawer_edge_glyph(ascii);
+        let mut rows = Vec::with_capacity(6);
+        rows.push(ScopeMenuRow {
+            option: None,
+            is_save_preview: false,
+            line: Line::from(vec![
+                Span::styled(
+                    drawer_edge,
+                    Style::default().fg(edge_color).add_modifier(Modifier::BOLD),
                 ),
-                Style::default()
-                    .fg(palette::WHALE_BG)
-                    .bg(palette_colors.accent)
-                    .add_modifier(Modifier::BOLD),
+                Span::styled("─ Scope ─", Style::default().fg(border_color)),
+            ]),
+        });
+
+        let mut items: Vec<(ApprovalOption, &str, String)> = vec![
+            (ApprovalOption::ApproveOnce, "[1]", "Allow once".to_string()),
+            (
+                ApprovalOption::ApproveAlways,
+                "[2]",
+                "Allow in this conversation".to_string(),
             ),
-            Span::raw("  "),
+        ];
+        if self.request.owner.is_none() && self.request.can_save_allow_rule() {
+            items.push((
+                ApprovalOption::AllowExactRepo,
+                "[3]",
+                "Always allow in this repo".to_string(),
+            ));
+        }
+
+        if self.view.offers_permission_settings() {
+            let chord = crate::tui::shell_key_routing::binding(
+                crate::tui::shell_key_routing::ShellBindingId::PermissionCycle,
+            )
+            .footer_chord;
+            items.push((
+                ApprovalOption::OpenPermissions,
+                chord,
+                format!("{}…", tr(locale, MessageId::ChipPermissionFullAccess)),
+            ));
+        }
+
+        for (option, key_hint, label) in items {
+            let is_selected = self.view.scope_selected == option;
+            let row_style = if is_selected {
+                menu_style::selected_row_style()
+            } else {
+                Style::default().fg(palette::TEXT_PRIMARY)
+            };
+            let hint_style = if is_selected {
+                menu_style::selected_row_style()
+            } else {
+                Style::default().fg(shortcut_color)
+            };
+            let marker = codewhale_tui_kit::glyphs::selection_marker(is_selected);
+            rows.push(ScopeMenuRow {
+                option: Some(option),
+                is_save_preview: false,
+                line: Line::from(vec![
+                    Span::styled(
+                        drawer_edge,
+                        Style::default().fg(edge_color).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(format!(" {marker} "), row_style),
+                    Span::styled(
+                        format!("{key_hint} "),
+                        hint_style.add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(label, row_style),
+                ]),
+            });
+
+            if option == ApprovalOption::AllowExactRepo
+                && let Some(preview) = self.request.allow_rule_save_preview()
+            {
+                let arrow = if ascii { "-> " } else { "↳ " };
+                let indent = "      ";
+                let prefix_width = drawer_edge.width() + indent.width() + arrow.width();
+                let avail = usize::from(width).saturating_sub(prefix_width);
+                if avail > 0 {
+                    let pattern = preview.pattern_text();
+                    let full_preview = if preview.rule_count > 1 && preview.entries.len() > 1 {
+                        format!(
+                            "{pattern} (.codewhale/permissions.toml · {})",
+                            preview.summary(locale)
+                        )
+                    } else {
+                        format!("{pattern} (.codewhale/permissions.toml)")
+                    };
+                    let wrapped = wrap_text(&full_preview, avail);
+                    let continuation_pad = " ".repeat(indent.width() + arrow.width());
+                    for (line_idx, chunk) in wrapped.into_iter().enumerate() {
+                        let mut detail_spans = vec![Span::styled(
+                            drawer_edge,
+                            Style::default().fg(edge_color).add_modifier(Modifier::BOLD),
+                        )];
+                        if line_idx == 0 {
+                            detail_spans.push(Span::raw(indent));
+                            detail_spans.push(Span::styled(
+                                arrow,
+                                Style::default().fg(palette::TEXT_MUTED),
+                            ));
+                        } else {
+                            detail_spans.push(Span::raw(continuation_pad.clone()));
+                        }
+                        detail_spans.push(Span::styled(
+                            chunk,
+                            Style::default().fg(palette::WHALE_HUMAN),
+                        ));
+                        rows.push(ScopeMenuRow {
+                            option: None,
+                            is_save_preview: true,
+                            line: Line::from(detail_spans),
+                        });
+                    }
+                }
+            }
+        }
+        rows
+    }
+
+    fn details_lines(&self, area: Rect) -> Vec<Line<'static>> {
+        let stakes = self.request.stakes();
+        let locale = self.view.locale();
+        let ascii = ascii_safe_enabled();
+        let (border_color, edge_color, shortcut_color) = self.edge_style();
+        let drawer_edge = self.drawer_edge_glyph(ascii);
+        let critical = matches!(stakes, crate::tui::approval::ApprovalStakes::Critical);
+        let repo_law = self.request.is_repo_law_prompt();
+        let mut body: Vec<Line<'static>> = Vec::with_capacity(16);
+
+        let chord = crate::tui::shell_key_routing::tool_details_chord();
+        body.push(Line::from(vec![
             Span::styled(
-                if repo_law {
-                    format!(
-                        "{} · {}",
-                        tr(locale, MessageId::ApprovalRepoLawTitle),
-                        approval_heading(self.request, locale)
-                    )
-                } else {
-                    approval_heading(self.request, locale)
-                },
-                Style::default()
-                    .fg(palette::WHALE_ACTION)
-                    .add_modifier(Modifier::BOLD),
+                drawer_edge,
+                Style::default().fg(edge_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("─ Details (Tab/d close · {chord} pager) ─"),
+                Style::default().fg(border_color),
             ),
         ]));
+        let summary_text = self.request.summary_for_locale(locale);
+        if !summary_text.trim().is_empty() {
+            body.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    summary_text,
+                    Style::default()
+                        .fg(palette::WHALE_ACTION)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+        }
 
-        // A child's card names the agent that is waiting (approvals C1).
         if let Some(owner) = self.request.owner.as_ref() {
             body.push(Line::from(vec![
                 Span::raw("  "),
@@ -1691,10 +1857,16 @@ impl<'a> ApprovalWidget<'a> {
             ]));
         }
 
-        // Command / change preview FIRST — for an approval the thing being run
-        // is the load-bearing content, so on a short terminal it is the
-        // secondary context (about/impacts/category) that scrolls away, never
-        // the command.
+        if self.request.asks_without_git {
+            body.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    tr(locale, MessageId::ApprovalAsksWithoutGit),
+                    Style::default().fg(palette::TEXT_HINT),
+                ),
+            ]));
+        }
+
         let details = self.request.prominent_detail_items(locale);
         if details.is_empty() {
             push_params_detail_line(&mut body, self.request, locale, area.width);
@@ -1703,20 +1875,12 @@ impl<'a> ApprovalWidget<'a> {
             for detail in details.iter().take(4) {
                 let is_change_preview = detail.is_preview;
                 if let Some(shell_lines) = detail.shell_lines.as_deref() {
-                    let command_width = area.width.saturating_sub(10) as usize;
-                    // A short approval band has room for only one detail row
-                    // before its truncation hint. Project the most useful
-                    // command/change into that row instead of spending it on
-                    // setup (`cd`, `set`) or diff metadata. The complete,
-                    // original-order value remains available in the details
-                    // pager.
+                    let command_width = area.width.saturating_sub(12) as usize;
                     let inline_shell_lines = prioritize_inline_shell_lines(
                         shell_lines,
                         is_change_preview,
                         area.height <= 24,
                     );
-                    // Bound every multi-line preview so one huge command cannot
-                    // grow the band without limit; the details chord opens the rest.
                     let max_rows = if is_change_preview {
                         if self.request.intent_summary.is_some() {
                             Some(3)
@@ -1743,9 +1907,8 @@ impl<'a> ApprovalWidget<'a> {
             }
         }
 
-        // Intent summary ("why this change is needed", #2381).
         if let Some(ref summary) = self.request.intent_summary {
-            let max_width = area.width.saturating_sub(14) as usize;
+            let max_width = area.width.saturating_sub(16) as usize;
             if max_width > 0 {
                 let intent_label = tr(locale, MessageId::ApprovalIntentLabel);
                 let summary_lines: Vec<&str> = summary.lines().collect();
@@ -1781,21 +1944,11 @@ impl<'a> ApprovalWidget<'a> {
             }
         }
 
-        // Destructive policy / cancel semantics — critical stakes only. For
-        // routine and elevated work the controls speak for themselves; the
-        // extra policy prose was noise that made every edit read like an
-        // emergency.
-        // The semantics prose says Esc stops the turn; a child's card hides
-        // on Esc instead, so it never shows that line.
         if critical && self.request.owner.is_none() {
             push_destructive_approval_semantics(&mut body, locale, false);
         }
 
-        // Secondary context: what it is and what it touches. Only critical
-        // prompts carry the full about/impact/category dossier by default —
-        // everything stays one details chord away in the pager. Keep a single
-        // About line as fallback context when nothing else was rendered.
-        if critical || details.is_empty() {
+        if critical || details.is_empty() || self.request.review_failure().is_some() {
             body.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(label_about(locale), Style::default().fg(palette::TEXT_HINT)),
@@ -1816,7 +1969,6 @@ impl<'a> ApprovalWidget<'a> {
                     Span::styled(impact, Style::default().fg(palette::TEXT_BODY)),
                 ]));
             }
-            // Category line — localized risk category.
             let (cat_label, cat_color) = category_label_for(self.request, locale);
             body.push(Line::from(vec![
                 Span::raw("  "),
@@ -1828,118 +1980,447 @@ impl<'a> ApprovalWidget<'a> {
             ]));
         }
 
+        if self.request.can_save_ask_rule() {
+            body.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    "[s] ",
+                    Style::default()
+                        .fg(shortcut_color)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "Ask again next time (.codewhale/permissions.toml)",
+                    Style::default().fg(palette::TEXT_HINT),
+                ),
+            ]));
+        }
+
+        for line in body.iter_mut().skip(1) {
+            line.spans.insert(
+                0,
+                Span::styled(
+                    drawer_edge,
+                    Style::default().fg(edge_color).add_modifier(Modifier::BOLD),
+                ),
+            );
+        }
         body
     }
 
+    fn drawer_height(&self, area: Rect) -> u16 {
+        let max_drawer = area.height.saturating_sub(1);
+        if max_drawer == 0 {
+            return 0;
+        }
+        if self.view.scopes_open && !self.view.is_workflow_plan_approval() {
+            return u16::try_from(self.scope_menu_rows(area.width).len())
+                .unwrap_or(u16::MAX)
+                .min(max_drawer);
+        }
+        if self.view.details_expanded {
+            let lines = self.details_lines(area);
+            let max_expanded = max_drawer.min(18);
+            return u16::try_from(lines.len())
+                .unwrap_or(u16::MAX)
+                .min(max_expanded);
+        }
+        0
+    }
+
     pub(crate) fn inline_region(&self, area: Rect) -> Rect {
-        self.kit(area).plan(area).region
+        if area.width == 0 || area.height == 0 {
+            return Rect::new(area.x, area.y, area.width, 0);
+        }
+        let total_height = 1u16
+            .saturating_add(self.drawer_height(area))
+            .min(area.height);
+        let y = area.bottom().saturating_sub(total_height);
+        Rect::new(area.x, y, area.width, total_height)
+    }
+
+    fn render_bar(
+        &self,
+        bar_area: Rect,
+        buf: &mut Buffer,
+    ) -> (Vec<Rect>, Option<Rect>, Option<Rect>) {
+        let ascii = ascii_safe_enabled();
+        let locale = self.view.locale();
+        let (_, edge_color, _) = self.edge_style();
+        let workflow_plan = self.view.is_workflow_plan_approval();
+        let selected_option = if self.view.scopes_open {
+            None
+        } else {
+            Some(ApprovalOption::from_index_for(
+                self.request,
+                self.view.selected(),
+            ))
+        };
+
+        let selected_pill = menu_style::selected_row_style().add_modifier(Modifier::REVERSED);
+        let allow_text = if workflow_plan {
+            "Approve"
+        } else if bar_area.width >= 56 {
+            if ascii { "v Allow" } else { "✓ Allow" }
+        } else {
+            "Allow"
+        };
+        let deny_text = if workflow_plan {
+            "Edit"
+        } else if bar_area.width >= 56 {
+            if ascii { "x Deny" } else { "✕ Deny" }
+        } else {
+            "Deny"
+        };
+
+        let allow_label = format!(" {allow_text} ");
+        let deny_label = format!(" {deny_text} ");
+        let m_label = if workflow_plan {
+            String::new()
+        } else if self.view.scopes_open {
+            if ascii { "[^ m]" } else { "[▴ m]" }.to_string()
+        } else {
+            if ascii { "[v m]" } else { "[▾ m]" }.to_string()
+        };
+        let d_label = if self.view.details_expanded {
+            if ascii { "[^ d]" } else { "[▴ d]" }
+        } else {
+            "[d]"
+        };
+        let cancel_label = if workflow_plan { " Cancel " } else { "" };
+
+        struct ControlSpec {
+            text: String,
+            style: Style,
+            kind: ControlKind,
+        }
+        #[derive(Clone, Copy)]
+        enum ControlKind {
+            OptionIndex(usize),
+            Scopes,
+            Details,
+        }
+
+        let mut controls: Vec<ControlSpec> = Vec::with_capacity(5);
+        let allow_color = if self.request.risk == RiskLevel::Destructive {
+            palette::WHALE_HUMAN
+        } else {
+            palette::WHALE_ACTION
+        };
+        controls.push(ControlSpec {
+            text: allow_label,
+            style: if selected_option == Some(ApprovalOption::ApproveOnce) {
+                selected_pill
+            } else {
+                Style::default()
+                    .fg(allow_color)
+                    .add_modifier(Modifier::BOLD)
+            },
+            kind: ControlKind::OptionIndex(0),
+        });
+        if !workflow_plan {
+            controls.push(ControlSpec {
+                text: m_label,
+                style: if self.view.scopes_open {
+                    Style::default()
+                        .fg(palette::WHALE_HUMAN)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(palette::TEXT_MUTED)
+                },
+                kind: ControlKind::Scopes,
+            });
+        }
+        let deny_index = if workflow_plan { 1 } else { 2 };
+        controls.push(ControlSpec {
+            text: deny_label,
+            style: if selected_option == Some(ApprovalOption::Deny) {
+                selected_pill
+            } else {
+                Style::default().fg(palette::TEXT_SECONDARY)
+            },
+            kind: ControlKind::OptionIndex(deny_index),
+        });
+        if workflow_plan {
+            controls.push(ControlSpec {
+                text: cancel_label.to_string(),
+                style: if selected_option == Some(ApprovalOption::Abort) {
+                    selected_pill
+                } else {
+                    Style::default().fg(palette::TEXT_MUTED)
+                },
+                kind: ControlKind::OptionIndex(2),
+            });
+        }
+        controls.push(ControlSpec {
+            text: d_label.to_string(),
+            style: if self.view.details_expanded {
+                Style::default()
+                    .fg(palette::WHALE_HUMAN)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(palette::TEXT_MUTED)
+            },
+            kind: ControlKind::Details,
+        });
+
+        let controls_width: usize = controls
+            .iter()
+            .map(|c| c.text.width())
+            .sum::<usize>()
+            .saturating_add(controls.len().saturating_sub(1));
+
+        let mut left_spans: Vec<Span<'static>> = Vec::with_capacity(6);
+        let mut left_used: usize = 0;
+
+        let edge = self.edge_glyph(ascii);
+        left_used = left_used.saturating_add(edge.width());
+        left_spans.push(Span::styled(
+            edge,
+            Style::default().fg(edge_color).add_modifier(Modifier::BOLD),
+        ));
+
+        if let Some(owner) = self.request.owner.as_ref() {
+            let tag = format!("[{}] ", visible_text(&owner.label, ascii));
+            left_used = left_used.saturating_add(tag.width());
+            left_spans.push(Span::styled(
+                tag,
+                Style::default()
+                    .fg(palette::TEXT_SECONDARY)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+
+        if self.request.is_repo_law_prompt() {
+            let tag = if ascii {
+                "Repo rule - "
+            } else {
+                "Repo rule · "
+            };
+            left_used = left_used.saturating_add(tag.width());
+            left_spans.push(Span::styled(
+                tag,
+                Style::default()
+                    .fg(palette::STATUS_WARNING)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else if self.request.stakes() == crate::tui::approval::ApprovalStakes::Critical {
+            let tag_text = tr(locale, MessageId::ApprovalRiskDestructive);
+            let sep = if ascii { " - " } else { " · " };
+            let tag = format!("{tag_text}{sep}");
+            left_used = left_used.saturating_add(tag.width());
+            left_spans.push(Span::styled(
+                tag,
+                Style::default()
+                    .fg(palette::WHALE_ERROR)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+
+        let (raw_verb, raw_subject, outside_workspace) = self.request.docked_parts(locale);
+        let verb = visible_text(&raw_verb, ascii);
+        let subject = visible_text(&raw_subject, ascii);
+
+        let total_width = usize::from(bar_area.width);
+        let reserved_right = if total_width > controls_width + 2 {
+            controls_width + 2
+        } else {
+            controls_width.min(total_width)
+        };
+        let left_budget = total_width.saturating_sub(reserved_right);
+        let permission_hint = format!(
+            "  {} {}",
+            crate::tui::shell_key_routing::binding(
+                crate::tui::shell_key_routing::ShellBindingId::PermissionCycle,
+            )
+            .footer_chord,
+            tr(locale, MessageId::ConfigSectionPermissions),
+        );
+        let show_permission_hint = self.view.offers_permission_settings()
+            && left_budget
+                >= left_used + verb.width() + 1 + subject.width().min(48) + permission_hint.width();
+        let left_budget = if show_permission_hint {
+            left_budget - permission_hint.width()
+        } else {
+            left_budget
+        };
+
+        if left_used < left_budget && !verb.is_empty() {
+            let verb_with_space = format!("{verb} ");
+            let verb_trunc =
+                truncate_line_to_width(&verb_with_space, left_budget.saturating_sub(left_used));
+            left_used = left_used.saturating_add(verb_trunc.width());
+            let verb_color = if outside_workspace {
+                edge_color
+            } else {
+                palette::TEXT_SECONDARY
+            };
+            left_spans.push(Span::styled(
+                verb_trunc,
+                Style::default().fg(verb_color).add_modifier(Modifier::BOLD),
+            ));
+        }
+        if left_used < left_budget && !subject.is_empty() {
+            let subj_budget = left_budget.saturating_sub(left_used);
+            let subj_trunc = truncate_line_to_width(&subject, subj_budget);
+            left_spans.push(Span::styled(
+                subj_trunc,
+                Style::default().fg(palette::TEXT_PRIMARY),
+            ));
+        }
+
+        if show_permission_hint {
+            left_spans.push(Span::styled(
+                permission_hint,
+                Style::default().fg(palette::TEXT_HINT),
+            ));
+        }
+
+        Paragraph::new(Line::from(left_spans)).render(bar_area, buf);
+
+        let mut action_rects = vec![Rect::default(); 3];
+        let mut scopes_hitbox = None;
+        let mut details_hitbox = None;
+
+        let controls_x = bar_area
+            .right()
+            .saturating_sub(u16::try_from(controls_width).unwrap_or(bar_area.width))
+            .max(bar_area.x);
+        let mut cursor_x = controls_x;
+        for (i, control) in controls.into_iter().enumerate() {
+            if i > 0 {
+                cursor_x = cursor_x.saturating_add(1);
+            }
+            let w = u16::try_from(control.text.width()).unwrap_or(0);
+            if cursor_x >= bar_area.right() || w == 0 {
+                continue;
+            }
+            let avail = bar_area.right().saturating_sub(cursor_x);
+            let render_w = w.min(avail);
+            let rect = Rect::new(cursor_x, bar_area.y, render_w, 1);
+            Span::styled(control.text, control.style).render(rect, buf);
+            match control.kind {
+                ControlKind::OptionIndex(idx) => {
+                    if idx < action_rects.len() {
+                        action_rects[idx] = rect;
+                    }
+                }
+                ControlKind::Scopes => scopes_hitbox = Some(rect),
+                ControlKind::Details => details_hitbox = Some(rect),
+            }
+            cursor_x = cursor_x.saturating_add(render_w);
+        }
+
+        (action_rects, scopes_hitbox, details_hitbox)
     }
 }
 
 impl Renderable for ApprovalWidget<'_> {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let plan = self.kit(area).render(area, buf);
-        // Publish only the painted contract, even for empty/collapsed frames.
-        self.view.set_save_preview_shown(plan.save_shown);
-        self.view.set_mouse_hitboxes(plan.action_rects);
-    }
-
-    fn desired_height(&self, _width: u16) -> u16 {
-        1
-    }
-}
-
-#[cfg(test)]
-#[path = "approval_band_legacy.rs"]
-pub(crate) mod legacy_approval_band;
-
-/// Build the always-visible approval controls: a "proceed?" prompt, the
-/// numbered/selectable options, and the selection hint. Rendered into a region
-/// reserved off the bottom of the band so it can never be clipped (#3799).
-fn approval_control_facts(
-    request: &ApprovalRequest,
-    view: &ApprovalView,
-    risk: RiskLevel,
-    locale: Locale,
-    accent: Color,
-    shortcut: Color,
-) -> (
-    Line<'static>,
-    Vec<DecisionBandAction>,
-    Line<'static>,
-    Option<Span<'static>>,
-) {
-    let mut question = Line::from(vec![
-        Span::raw("  "),
-        Span::styled(
-            approval_proceed_question(locale),
-            Style::default()
-                .fg(palette::TEXT_BODY)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]);
-    // On the question row, which is never cut, so the reason costs the
-    // change preview no rows.
-    if request.asks_without_git {
-        question.spans.push(Span::styled(
-            format!("  ·  {}", tr(locale, MessageId::ApprovalAsksWithoutGit)),
-            Style::default().fg(palette::TEXT_HINT),
-        ));
-    }
-    let mut actions = Vec::new();
-    let options = approval_options_for_request(request, risk, locale);
-    for (i, opt) in options.iter().enumerate() {
-        let is_selected = i == view.selected();
-        let label_color = if opt.dangerous {
-            accent
-        } else {
-            palette::TEXT_BODY
-        };
-        let option_style = approval_option_style(is_selected, label_color);
-        let shortcut_style = approval_option_style(is_selected, shortcut);
-        // Leading caret marks the row Enter will fire — selection is not
-        // signalled by background alone.
-        let lead = if is_selected {
-            Span::styled("\u{276f} ", approval_selected_style())
-        } else {
-            Span::raw("  ")
-        };
-        let mut spans = vec![
-            lead,
-            Span::styled(
-                format!("[{}] ", opt.key_hint),
-                shortcut_style.add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(opt.label.to_string(), option_style),
-        ];
-        // Deny is highlighted by default (#5293), so say on the row itself
-        // what Enter will do: a reflexive Enter is otherwise a silent refusal.
-        if is_selected {
-            spans.push(Span::styled(APPROVAL_ENTER_TAG, shortcut_style));
+        let region = self.inline_region(area);
+        if region.width == 0 || region.height == 0 {
+            self.view.set_save_preview_shown(false);
+            self.view.set_mouse_hitboxes(Vec::new());
+            self.view.set_scopes_toggle_hitbox(None);
+            self.view.set_details_toggle_hitbox(None);
+            self.view.set_scope_menu_hitboxes(Vec::new());
+            return;
         }
-        actions.push(DecisionBandAction {
-            persistent: opt.persistent,
-            line: Line::from(spans),
-        });
-    }
-    let footer = Line::from(vec![
-        Span::raw("  "),
-        Span::styled(
-            if request.owner.is_some() {
-                child_footer_controls(locale)
-            } else {
-                footer_controls(locale)
-            },
-            Style::default().fg(palette::TEXT_MUTED),
-        ),
-    ]);
-    (question, actions, footer, None)
-}
-/// Key name appended to the highlighted option row, like `Esc` on its own row.
-const APPROVAL_ENTER_TAG: &str = " (Enter)";
 
-fn approval_proceed_question(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalProceedQuestion)
+        for y in region.top()..region.bottom() {
+            for x in region.left()..region.right() {
+                buf[(x, y)]
+                    .set_symbol(" ")
+                    .set_style(Style::default().bg(palette::WHALE_BG));
+            }
+        }
+
+        let bar_area = Rect::new(region.x, region.bottom().saturating_sub(1), region.width, 1);
+        let (action_rects, scopes_hitbox, details_hitbox) = self.render_bar(bar_area, buf);
+
+        let mut save_shown = false;
+        let mut scope_hitboxes = Vec::new();
+        if region.height > 1 {
+            let drawer_area = Rect::new(region.x, region.y, region.width, region.height - 1);
+            if self.view.scopes_open && !self.view.is_workflow_plan_approval() {
+                let rows = self.scope_menu_rows(drawer_area.width);
+                let total_preview_rows = rows.iter().filter(|row| row.is_save_preview).count();
+                let mut drawn_preview_rows = 0usize;
+                for (row_idx, row) in rows
+                    .into_iter()
+                    .take(usize::from(drawer_area.height))
+                    .enumerate()
+                {
+                    let y = drawer_area
+                        .y
+                        .saturating_add(u16::try_from(row_idx).unwrap_or(0));
+                    let row_rect = Rect::new(drawer_area.x, y, drawer_area.width, 1);
+                    if let Some(option) = row.option {
+                        if self.view.scope_selected == option {
+                            let bg = menu_style::selected_row_bg_style();
+                            for x in row_rect.left()..row_rect.right() {
+                                buf[(x, y)].set_style(bg);
+                            }
+                        }
+                        scope_hitboxes.push((option, row_rect));
+                    } else if row.is_save_preview
+                        && row.line.width() <= usize::from(drawer_area.width)
+                    {
+                        drawn_preview_rows += 1;
+                    }
+                    Paragraph::new(row.line).render(row_rect, buf);
+                }
+                save_shown = total_preview_rows > 0 && drawn_preview_rows == total_preview_rows;
+            } else if self.view.details_expanded {
+                let lines = self.details_lines(area);
+                let cap = usize::from(drawer_area.height);
+                let total = lines.len();
+                if total > cap && cap > 1 {
+                    for (idx, line) in lines.into_iter().take(cap - 1).enumerate() {
+                        let y = drawer_area
+                            .y
+                            .saturating_add(u16::try_from(idx).unwrap_or(0));
+                        Paragraph::new(line)
+                            .render(Rect::new(drawer_area.x, y, drawer_area.width, 1), buf);
+                    }
+                    let y = drawer_area.y.saturating_add(drawer_area.height - 1);
+                    let ascii = ascii_safe_enabled();
+                    let (_, edge_color, _) = self.edge_style();
+                    let hint = Line::from(vec![
+                        Span::styled(
+                            self.drawer_edge_glyph(ascii),
+                            Style::default().fg(edge_color).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw("  "),
+                        Span::styled(
+                            approval_truncation_hint(self.view.locale()),
+                            Style::default().fg(palette::TEXT_HINT),
+                        ),
+                    ]);
+                    Paragraph::new(hint)
+                        .render(Rect::new(drawer_area.x, y, drawer_area.width, 1), buf);
+                } else {
+                    for (idx, line) in lines.into_iter().take(cap).enumerate() {
+                        let y = drawer_area
+                            .y
+                            .saturating_add(u16::try_from(idx).unwrap_or(0));
+                        Paragraph::new(line)
+                            .render(Rect::new(drawer_area.x, y, drawer_area.width, 1), buf);
+                    }
+                }
+            }
+        }
+
+        self.view.set_save_preview_shown(save_shown);
+        self.view.set_mouse_hitboxes(action_rects);
+        self.view.set_scopes_toggle_hitbox(scopes_hitbox);
+        self.view.set_details_toggle_hitbox(details_hitbox);
+        self.view.set_scope_menu_hitboxes(scope_hitboxes);
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        self.docked_height(width)
+    }
 }
 
 fn approval_truncation_hint(locale: Locale) -> Cow<'static, str> {
@@ -1982,56 +2463,6 @@ fn repo_law_approval_palette() -> ApprovalColors {
         accent: palette::WHALE_ERROR,
         shortcut: palette::STATUS_WARNING,
     }
-}
-
-fn approval_selected_style() -> Style {
-    menu_style::selected_row_style()
-}
-
-fn approval_option_style(is_selected: bool, color: Color) -> Style {
-    if is_selected {
-        approval_selected_style()
-    } else {
-        Style::default().fg(color)
-    }
-}
-
-/// The approval card's heading: the plain summary of the call (E6), in the
-/// card's language, falling back to the tool name only when no summary was
-/// derived.
-fn approval_heading(request: &ApprovalRequest, locale: Locale) -> String {
-    if request.summary.trim().is_empty() {
-        return request.tool_name.clone();
-    }
-    let summary = request.summary_for_locale(locale);
-    if summary.trim().is_empty() {
-        request.tool_name.clone()
-    } else {
-        summary
-    }
-}
-
-/// Badge naming what the call does, not a risk tier: "Reads only", "Changes
-/// files", "Runs a command", "Uses the network". Anything the stakes
-/// classifier calls destructive or publishing reads "Can't be undone".
-fn effect_badge_text(
-    request: &ApprovalRequest,
-    stakes: crate::tui::approval::ApprovalStakes,
-    locale: Locale,
-) -> Cow<'static, str> {
-    if stakes == crate::tui::approval::ApprovalStakes::Critical {
-        return tr(locale, MessageId::ApprovalRiskDestructive);
-    }
-    let id = match request.category {
-        ToolCategory::Safe | ToolCategory::McpRead => MessageId::ApprovalEffectReadsOnly,
-        ToolCategory::FileWrite => MessageId::ApprovalEffectChangesFiles,
-        ToolCategory::Shell => MessageId::ApprovalEffectRunsCommand,
-        ToolCategory::Network => MessageId::ApprovalEffectUsesNetwork,
-        ToolCategory::McpAction => MessageId::ApprovalEffectConnectedApp,
-        ToolCategory::Agent => MessageId::ApprovalEffectStartsAgent,
-        ToolCategory::Unknown => MessageId::ApprovalEffectUnclassified,
-    };
-    tr(locale, id)
 }
 
 fn category_label_for(request: &ApprovalRequest, locale: Locale) -> (Cow<'static, str>, Color) {
@@ -2320,25 +2751,6 @@ fn destructive_approval_semantics(locale: Locale) -> [(Cow<'static, str>, Cow<'s
     ]
 }
 
-fn footer_controls(locale: Locale) -> Cow<'static, str> {
-    // Platform-aware details chord (⌥V on macOS, Alt+V elsewhere). Bare `v`
-    // is never advertised as a details shortcut (TUI-DOG-002).
-    let details = crate::tui::shell_key_routing::tool_details_chord();
-    Cow::Owned(tr(locale, MessageId::ApprovalControlsHint).replace("{details}", details.as_ref()))
-}
-
-/// Controls hint for a child's card: Esc hides it, `g` opens the agent.
-fn child_footer_controls(locale: Locale) -> Cow<'static, str> {
-    let details = crate::tui::shell_key_routing::tool_details_chord();
-    Cow::Owned(format!(
-        "{}  ·  {}",
-        tr(locale, MessageId::ApprovalControlsHintChild).replace("{details}", details.as_ref()),
-        tr(locale, MessageId::ApprovalGoToAgent)
-    ))
-}
-
-/// "Agent: {agent} · {role}", dropping the role segment when the roster does
-/// not know the agent's role yet.
 fn approval_owner_header(owner: &crate::tui::approval::ApprovalOwner, locale: Locale) -> String {
     let template = tr(locale, MessageId::ApprovalOwnerHeader);
     let with_agent = template.replace("{agent}", &owner.label);
@@ -2350,109 +2762,6 @@ fn approval_owner_header(owner: &crate::tui::approval::ApprovalOwner, locale: Lo
             .trim_end()
             .to_string(),
     }
-}
-
-#[derive(Clone)]
-struct ApprovalOptionRow {
-    label: Cow<'static, str>,
-    key_hint: &'static str,
-    dangerous: bool,
-    /// Saves a persistent rule: offered only beside its save preview.
-    persistent: bool,
-}
-
-fn approval_options_for(risk: RiskLevel, locale: Locale) -> [ApprovalOptionRow; 3] {
-    let dangerous = matches!(risk, RiskLevel::Destructive);
-    [
-        ApprovalOptionRow {
-            label: option_approve_once(locale),
-            key_hint: "1 / y",
-            dangerous,
-            persistent: false,
-        },
-        ApprovalOptionRow {
-            label: option_approve_always(locale),
-            key_hint: "2 / a",
-            dangerous,
-            persistent: false,
-        },
-        ApprovalOptionRow {
-            label: option_deny(locale),
-            key_hint: "3 / d / n",
-            dangerous: false,
-            persistent: false,
-        },
-    ]
-}
-
-/// Workflow elevated-plan card options (#4126): Approve / Edit plan / Cancel.
-fn workflow_approval_options(risk: RiskLevel, locale: Locale) -> [ApprovalOptionRow; 3] {
-    let dangerous = matches!(risk, RiskLevel::Destructive);
-    [
-        ApprovalOptionRow {
-            label: workflow_option_approve(locale),
-            key_hint: "1 / y",
-            dangerous,
-            persistent: false,
-        },
-        ApprovalOptionRow {
-            label: workflow_option_edit_plan(locale),
-            key_hint: "2 / e",
-            dangerous: false,
-            persistent: false,
-        },
-        ApprovalOptionRow {
-            label: workflow_option_cancel(locale),
-            key_hint: "3 / Esc",
-            dangerous: false,
-            persistent: false,
-        },
-    ]
-}
-
-fn approval_options_for_request(
-    request: &ApprovalRequest,
-    risk: RiskLevel,
-    locale: Locale,
-) -> Vec<ApprovalOptionRow> {
-    if request.tool_name == "workflow" {
-        workflow_approval_options(risk, locale).to_vec()
-    } else {
-        let mut options = approval_options_for(risk, locale).to_vec();
-        if request.owner.is_none() && request.can_save_allow_rule() {
-            options[1] = ApprovalOptionRow {
-                label: tr(locale, MessageId::ApprovalOptionAllowExactRepo),
-                key_hint: "2 / p",
-                dangerous: false,
-                persistent: true,
-            };
-        }
-        options
-    }
-}
-
-fn workflow_option_approve(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalWorkflowApprove)
-}
-
-fn workflow_option_edit_plan(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalWorkflowEditPlan)
-}
-
-fn workflow_option_cancel(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalWorkflowCancel)
-}
-
-fn option_approve_once(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalOptionApproveOnce)
-}
-
-fn option_approve_always(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalOptionApproveAlways)
-}
-
-fn option_deny(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalOptionDeny)
 }
 
 pub struct ElevationWidget<'a> {
@@ -2840,6 +3149,243 @@ fn apply_send_flash(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_activity_sweep(
+    lines: &mut [Line<'static>],
+    top: usize,
+    line_meta: &[TranscriptLineMeta],
+    original_index_map: &[usize],
+    history: &[HistoryCell],
+    active_entries: &[HistoryCell],
+    elapsed: Duration,
+    theme_id: palette::ThemeId,
+    ui_theme: &palette::UiTheme,
+    detected_background: Option<Color>,
+) -> bool {
+    let highlight = ui_theme.text_body;
+    if !matches!(highlight, Color::Rgb(..)) {
+        return false;
+    }
+    let effective_ground = palette::effective_surface(ui_theme.surface_bg, detected_background);
+    let mut visible = false;
+    for (idx, line) in lines.iter_mut().enumerate() {
+        let Some(TranscriptLineMeta::CellLine {
+            cell_index,
+            line_in_cell,
+            ..
+        }) = line_meta.get(top + idx)
+        else {
+            continue;
+        };
+        if *line_in_cell > 1 {
+            continue;
+        }
+        let original = original_index_map
+            .get(*cell_index)
+            .copied()
+            .unwrap_or(*cell_index);
+        let cell = history.get(original).or_else(|| {
+            original
+                .checked_sub(history.len())
+                .and_then(|active| active_entries.get(active))
+        });
+        let Some(shape) = cell.and_then(HistoryCell::activity_sweep) else {
+            continue;
+        };
+        if let Some(extent) =
+            crate::tui::history::tool_header_sweep_extent(shape, line, *line_in_cell)
+            && sweep_span_extent(
+                line,
+                extent,
+                elapsed,
+                theme_id,
+                ui_theme,
+                highlight,
+                effective_ground,
+            )
+        {
+            visible = true;
+        }
+    }
+    visible
+}
+
+const SETTLE_FLASH_DURATION: Duration =
+    Duration::from_millis((codewhale_ratatui::tokens::MOTION_DURATION_PANEL_MS * 2.0) as u64);
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_settle_flash(
+    lines: &mut [Line<'static>],
+    top: usize,
+    line_meta: &[TranscriptLineMeta],
+    original_index_map: &[usize],
+    history_len: usize,
+    active_entries: &[HistoryCell],
+    completed_at: &std::collections::HashMap<usize, std::time::Instant>,
+    now: std::time::Instant,
+    theme_id: palette::ThemeId,
+    ui_theme: &palette::UiTheme,
+    detected_background: Option<Color>,
+) -> bool {
+    if completed_at.is_empty() {
+        return false;
+    }
+    let effective_ground = palette::effective_surface(ui_theme.surface_bg, detected_background);
+    let mut visible = false;
+    for (idx, line) in lines.iter_mut().enumerate() {
+        let Some(TranscriptLineMeta::CellLine {
+            cell_index,
+            line_in_cell: 0,
+            ..
+        }) = line_meta.get(top + idx)
+        else {
+            continue;
+        };
+        let original = original_index_map
+            .get(*cell_index)
+            .copied()
+            .unwrap_or(*cell_index);
+        let Some(entry) = original.checked_sub(history_len) else {
+            continue;
+        };
+        let Some(since) = completed_at
+            .get(&entry)
+            .map(|at| now.saturating_duration_since(*at))
+            .filter(|since| *since < SETTLE_FLASH_DURATION)
+        else {
+            continue;
+        };
+        let Some(HistoryCell::Tool(tool)) = active_entries.get(entry) else {
+            continue;
+        };
+        let ink = match tool.status() {
+            Some(ToolStatus::Success) => ui_theme.tool_success,
+            Some(ToolStatus::Failed) => ui_theme.tool_failed,
+            _ => continue,
+        };
+        if !matches!(ink, Color::Rgb(..)) {
+            continue;
+        }
+        let settle_spans = crate::tui::history::tool_header_settle_spans(tool, line);
+        let progress = since.as_secs_f32() / SETTLE_FLASH_DURATION.as_secs_f32();
+        let strength = codewhale_ratatui::ACTIVITY_SWEEP_PEAK
+            * (1.0 - codewhale_ratatui::MotionEasing::EaseOut.apply(progress));
+        for index in settle_spans {
+            let Some(span) = line.spans.get_mut(index) else {
+                continue;
+            };
+            let Some(fg) = span.style.fg else {
+                continue;
+            };
+            let Some(ground) = span
+                .style
+                .bg
+                .map(|bg| {
+                    palette::adapt_bg_for_palette_mode(
+                        palette::adapt_bg_for_theme(bg, theme_id, ui_theme),
+                        ui_theme.mode,
+                    )
+                })
+                .filter(|bg| palette::resolvable_rgb(*bg).is_some())
+                .or(effective_ground)
+            else {
+                continue;
+            };
+            let mapped = palette::adapt_fg_for_palette_mode(
+                palette::adapt_fg_for_theme(fg, theme_id, ui_theme),
+                ground,
+                ui_theme.mode,
+            );
+            let target = if mapped == ink {
+                ui_theme.text_body
+            } else {
+                ink
+            };
+            let next = codewhale_ratatui::activity_sweep_ink(mapped, ground, target, strength);
+            if next != mapped {
+                span.style = span.style.fg(next);
+                visible = true;
+            }
+        }
+    }
+    visible
+}
+
+fn sweep_span_extent(
+    line: &mut Line<'static>,
+    extent: std::ops::Range<usize>,
+    elapsed: Duration,
+    theme_id: palette::ThemeId,
+    ui_theme: &palette::UiTheme,
+    highlight: Color,
+    effective_ground: Option<Color>,
+) -> bool {
+    use unicode_segmentation::UnicodeSegmentation as _;
+    let width: usize = line.spans[extent.clone()].iter().map(Span::width).sum();
+    let mut sweepable = false;
+    let mut swept: Vec<Span<'static>> = Vec::new();
+    let mut offset = 0usize;
+    for span in &line.spans[extent.clone()] {
+        let span_ground = span
+            .style
+            .bg
+            .map(|bg| {
+                palette::adapt_bg_for_palette_mode(
+                    palette::adapt_bg_for_theme(bg, theme_id, ui_theme),
+                    ui_theme.mode,
+                )
+            })
+            .filter(|bg| palette::resolvable_rgb(*bg).is_some())
+            .or(effective_ground);
+        for grapheme in span.content.graphemes(true) {
+            let cells = grapheme_display_width(grapheme);
+            let mut style = span.style;
+            if cells > 0
+                && !grapheme.chars().all(char::is_whitespace)
+                && let Some(fg) = span.style.fg
+                && let Some(ground) = span_ground
+            {
+                let mapped_fg = palette::adapt_fg_for_palette_mode(
+                    palette::adapt_fg_for_theme(fg, theme_id, ui_theme),
+                    ground,
+                    ui_theme.mode,
+                );
+                if codewhale_ratatui::activity_sweep_ink(
+                    mapped_fg,
+                    ground,
+                    highlight,
+                    codewhale_ratatui::ACTIVITY_SWEEP_PEAK,
+                ) != mapped_fg
+                {
+                    sweepable = true;
+                }
+                let strength = codewhale_ratatui::activity_sweep_strength(
+                    elapsed,
+                    width,
+                    offset as f32 + (cells.saturating_sub(1)) as f32 / 2.0,
+                );
+                if strength > 0.0 {
+                    let next = codewhale_ratatui::activity_sweep_ink(
+                        mapped_fg, ground, highlight, strength,
+                    );
+                    if next != mapped_fg {
+                        style = style.fg(next);
+                    }
+                }
+            }
+            offset += cells;
+            match swept.last_mut() {
+                Some(last) if last.style == style => last.content.to_mut().push_str(grapheme),
+                _ => swept.push(Span::styled(grapheme.to_string(), style)),
+            }
+        }
+    }
+    if sweepable {
+        line.spans.splice(extent, swept);
+    }
+    sweepable
+}
+
 #[cfg(test)]
 fn apply_selection_to_line(
     line: &Line<'static>,
@@ -3010,7 +3556,7 @@ pub(crate) fn empty_composer_visual_rows(
     1
 }
 
-fn composer_chat_color(app: &App) -> Option<Color> {
+pub(crate) fn composer_chat_color(app: &App) -> Option<Color> {
     let name = app.composer_color.as_deref()?;
     let (dark, light, ansi) = match name {
         "red" => ((0xF2, 0x5F, 0x5C), (0xC6, 0x28, 0x28), Color::Red),
@@ -3665,13 +4211,16 @@ fn push_command_entry(
             info.description_for(locale).to_string()
         } else {
             format!(
-                "{}  (aliases: {})",
+                "{}  {}",
                 info.description_for(locale),
-                remaining_aliases
-                    .iter()
-                    .map(|a| format!("/{a}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                tr(locale, MessageId::HelpAliasesSuffix).replace(
+                    "{aliases}",
+                    &remaining_aliases
+                        .iter()
+                        .map(|a| format!("/{a}"))
+                        .collect::<Vec<_>>()
+                        .join(&tr(locale, MessageId::ListSeparator))
+                )
             )
         };
         (desc, hint)
@@ -3737,16 +4286,17 @@ use codewhale_ratatui::native_composer_wrap_text as wrap_text;
 mod tests {
     use super::{
         ACTIVE_REVISION_DOMAIN, ApprovalWidget, COMPOSER_PANEL_HEIGHT, COMPOSER_PLACEHOLDER,
-        ChatWidget, ComposerWidget, Renderable, SlashMenuEntry, active_composer_submit_rect,
-        active_entry_revision, apply_selection_to_line, apply_send_flash, approval_palette,
+        ChatWidget, ComposerWidget, Renderable, SETTLE_FLASH_DURATION, SlashMenuEntry,
+        active_composer_submit_rect, active_entry_revision, apply_activity_sweep,
+        apply_selection_to_line, apply_send_flash, apply_settle_flash, approval_palette,
         approval_truncation_hint, build_empty_state_lines, composer_content_geometry,
         composer_empty_hint_text, composer_height, composer_inner_area, composer_max_height,
         composer_submit_hint, composer_top_padding, cursor_row_col, empty_composer_visual_rows,
-        enclosed_composer_panel_fits, fish_flee_offset, fish_heading, fish_mark,
-        history_entry_revision, layout_input, layout_input_with_scroll, placeholder_visual_lines,
-        push_command_entry, receipt_is_settling, revision_in_domain, should_render_empty_state,
-        slash_completion_hints, test_native_ocean_caps, tool_run_summary_revision,
-        wrap_input_lines, wrap_input_lines_for_mouse, wrap_text,
+        enclosed_composer_panel_fits, fish_heading, fish_mark, history_entry_revision,
+        layout_input, layout_input_with_scroll, placeholder_visual_lines, push_command_entry,
+        receipt_is_settling, revision_in_domain, should_render_empty_state, slash_completion_hints,
+        test_native_ocean_caps, tool_run_summary_revision, wrap_input_lines,
+        wrap_input_lines_for_mouse, wrap_text,
     };
     use crate::tui::active_cell::ActiveCell;
     use crate::tui::app::{
@@ -3756,18 +4306,22 @@ mod tests {
     use crate::tui::history::{
         ExecCell, ExecSource, GenericToolCell, HistoryCell, ToolCell, ToolRun, ToolStatus,
     };
+    use crate::tui::views::ModalView;
     use codewhale_config::ProviderKind;
     use codewhale_localization::Locale;
     use codewhale_palette as palette;
     use codewhale_runtime::config::Config;
     use codewhale_tui_kit::scrolling::{TranscriptLineMeta, TranscriptScroll};
-    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use ratatui::{
         buffer::Buffer,
         layout::Rect,
         style::{Color, Modifier, Style},
         text::{Line, Span},
     };
+    use std::time::Duration;
     use std::{path::PathBuf, time::Instant};
     use unicode_width::UnicodeWidthStr;
 
@@ -3933,6 +4487,7 @@ mod tests {
             app.low_motion = true;
             app.fancy_animations = false;
             app.transcript_spacing = TranscriptSpacing::Spacious;
+            app.tool_collapse_mode = ToolCollapseMode::Expanded;
 
             for turn in 0..4 {
                 app.add_message(HistoryCell::User {
@@ -4038,6 +4593,506 @@ mod tests {
         );
     }
 
+    #[test]
+    fn activity_sweep_lights_verb_and_status_but_never_the_summary() {
+        let header = || {
+            Line::from(vec![
+                Span::styled("\u{28E4} ", Style::default().fg(palette::WHALE_ACTION)),
+                Span::styled("\u{2315} ", Style::default().fg(palette::WHALE_ACTION)),
+                Span::styled(
+                    "find",
+                    Style::default()
+                        .fg(palette::TEXT_SOFT)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled("running", Style::default().fg(palette::WHALE_ACTION)),
+                Span::styled(" \u{00B7} ", Style::default().fg(palette::TEXT_DIM)),
+                Span::styled("READINESS.md", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled("  12s", Style::default().fg(palette::TEXT_DIM)),
+            ])
+        };
+        let history = vec![HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "grep_files".to_string(),
+            status: ToolStatus::Running,
+            input_summary: None,
+            output: None,
+            prompts: None,
+            spillover_path: None,
+            output_summary: None,
+            is_diff: false,
+        }))];
+        let line_meta = vec![TranscriptLineMeta::CellLine {
+            cell_index: 0,
+            line_in_cell: 0,
+            copy_prefix_width: 0,
+            copy_separator_after: codewhale_tui_kit::ui_text::CopyLineSeparator::Newline,
+        }];
+        let theme = palette::UNDERWATER_UI_THEME;
+        let earn = Duration::from_millis(codewhale_tui_kit::spinner::LIVE_MARKER_DELAY_MS);
+        let sweep = |elapsed: Duration| {
+            let mut lines = vec![header()];
+            let visible = apply_activity_sweep(
+                &mut lines,
+                0,
+                &line_meta,
+                &[0],
+                &history,
+                &[],
+                elapsed,
+                palette::ThemeId::Underwater,
+                &theme,
+                None,
+            );
+            assert!(visible);
+            lines.remove(0)
+        };
+        let cells = |line: &Line<'static>| -> Vec<(String, Option<Color>)> {
+            line.spans
+                .iter()
+                .flat_map(|span| {
+                    span.content
+                        .chars()
+                        .map(move |ch| (ch.to_string(), span.style.fg))
+                })
+                .collect()
+        };
+        let plain = cells(&header());
+        let resting = cells(&sweep(earn + Duration::from_millis(2_000)));
+        assert_eq!(resting, plain, "the rest phase paints nothing");
+        let midway = cells(&sweep(earn + Duration::from_millis(900)));
+        assert_eq!(midway.len(), plain.len());
+        let summary = plain
+            .iter()
+            .position(|(ch, _)| ch == "R")
+            .expect("summary present");
+        assert_eq!(
+            midway[summary..],
+            plain[summary..],
+            "summary and elapsed stay still"
+        );
+        assert!(
+            midway[..summary] != plain[..summary],
+            "the verb and status brighten mid-sweep"
+        );
+        assert_eq!(
+            midway[..4],
+            plain[..4],
+            "the spinner and glyph keep their ink"
+        );
+    }
+
+    #[test]
+    fn settled_tool_rows_flash_their_outcome_ink_once() {
+        let generic = |status| {
+            HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+                name: "grep_files".to_string(),
+                status,
+                input_summary: Some("pattern: TODO, path: crates".to_string()),
+                output: None,
+                prompts: None,
+                spillover_path: None,
+                output_summary: None,
+                is_diff: false,
+            }))
+        };
+        let exec = |status| {
+            HistoryCell::Tool(ToolCell::Exec(ExecCell {
+                command: "cargo test -p codewhale-tui".to_string(),
+                description: None,
+                status,
+                output: None,
+                live_output: None,
+                shell_task_id: None,
+                owner_agent_id: None,
+                owner_agent_name: None,
+                started_at: Instant::now().checked_sub(Duration::from_secs(5)),
+                duration_ms: Some(5_000),
+                stale_elapsed_since_output_ms: None,
+                waiting: None,
+                source: ExecSource::Assistant,
+                interaction: None,
+                output_summary: None,
+            }))
+        };
+        let theme = palette::UNDERWATER_UI_THEME;
+        let options = crate::tui::history::TranscriptRenderOptions::default();
+        let completed = Instant::now();
+        let flash = |cell: &HistoryCell, after: Duration| {
+            let mut rendered = cell.lines_with_options(100, options);
+            let meta: Vec<TranscriptLineMeta> = (0..rendered.len())
+                .map(|line_in_cell| TranscriptLineMeta::CellLine {
+                    cell_index: 0,
+                    line_in_cell,
+                    copy_prefix_width: 0,
+                    copy_separator_after: codewhale_tui_kit::ui_text::CopyLineSeparator::Newline,
+                })
+                .collect();
+            let mut flashed = rendered.clone();
+            let visible = apply_settle_flash(
+                &mut flashed,
+                0,
+                &meta,
+                &[0],
+                0,
+                std::slice::from_ref(cell),
+                &std::collections::HashMap::from([(0, completed)]),
+                completed + after,
+                palette::ThemeId::Underwater,
+                &theme,
+                None,
+            );
+            (rendered.remove(0), flashed.remove(0), visible)
+        };
+        let fg_of = |line: &Line<'static>| -> Vec<Option<Color>> {
+            line.spans.iter().map(|span| span.style.fg).collect()
+        };
+
+        for cell in [
+            generic(ToolStatus::Success),
+            generic(ToolStatus::Failed),
+            exec(ToolStatus::Success),
+            exec(ToolStatus::Failed),
+        ] {
+            let (before, early, visible) = flash(&cell, Duration::from_millis(60));
+            assert!(visible, "a fresh outcome flashes: {before:?}");
+            assert_eq!(early.spans.len(), before.spans.len());
+            let summary = before
+                .spans
+                .iter()
+                .position(|span| span.content.contains("TODO") || span.content.contains("cargo"))
+                .expect("summary or command present");
+            let (before_fg, early_fg) = (fg_of(&before), fg_of(&early));
+            assert_ne!(
+                early_fg[..summary],
+                before_fg[..summary],
+                "the outcome mark lights"
+            );
+            assert_eq!(
+                early_fg[summary], before_fg[summary],
+                "the summary and command never flash"
+            );
+            let (_, settled, visible) = flash(&cell, SETTLE_FLASH_DURATION);
+            assert!(!visible);
+            assert_eq!(
+                fg_of(&settled),
+                fg_of(&before),
+                "the flash leaves no residue"
+            );
+        }
+        let (before, running, visible) = flash(&generic(ToolStatus::Running), Duration::ZERO);
+        assert!(!visible);
+        assert_eq!(fg_of(&running), fg_of(&before));
+    }
+
+    #[test]
+    fn history_inserts_mid_turn_keep_settle_timestamps_on_their_entry() {
+        let mut app = create_test_app();
+        app.active_cell = Some(crate::tui::active_cell::ActiveCell::new());
+        let at = Instant::now();
+        app.active_tool_entry_completed_at.insert(0, at);
+        app.add_message(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "grep_files".to_string(),
+            status: ToolStatus::Success,
+            input_summary: None,
+            output: None,
+            prompts: None,
+            spillover_path: None,
+            output_summary: None,
+            is_diff: false,
+        })));
+        assert_eq!(app.active_tool_entry_completed_at.get(&0), Some(&at));
+        assert_eq!(app.active_tool_entry_completed_at.len(), 1);
+    }
+
+    #[test]
+    fn activity_sweep_and_breath_stop_under_reduced_motion() {
+        let mut app = create_test_app();
+        app.ui_theme = palette::UNDERWATER_UI_THEME;
+        app.viewport.ocean_caps = Some(test_native_ocean_caps());
+        app.low_motion = false;
+        app.fancy_animations = true;
+        app.turn_started_at = Some(std::time::Instant::now());
+        assert!(crate::tui::ui::motion::activity_sweep_allowed(&app));
+        for (low_motion, fancy) in [(true, true), (false, false)] {
+            app.low_motion = low_motion;
+            app.fancy_animations = fancy;
+            assert!(!crate::tui::ui::motion::activity_sweep_allowed(&app));
+            assert!(!crate::tui::ui::motion::composer_border_breathes(&app));
+            let first = crate::tui::ui::motion::composer_live_border(&app);
+            std::thread::sleep(Duration::from_millis(30));
+            assert_eq!(crate::tui::ui::motion::composer_live_border(&app), first);
+        }
+    }
+
+    #[test]
+    fn composer_border_holds_still_while_the_transcript_is_scrolled_away() {
+        let mut app = create_test_app();
+        app.ui_theme = palette::UNDERWATER_UI_THEME;
+        app.viewport.ocean_caps = Some(test_native_ocean_caps());
+        app.low_motion = false;
+        app.fancy_animations = true;
+        app.turn_started_at = Some(std::time::Instant::now());
+        assert!(crate::tui::ui::motion::composer_border_breathes(&app));
+
+        app.viewport.transcript_scroll = codewhale_tui_kit::scrolling::TranscriptScroll::at_line(0);
+        assert!(!crate::tui::ui::motion::composer_border_breathes(&app));
+
+        app.viewport.transcript_scroll =
+            codewhale_tui_kit::scrolling::TranscriptScroll::to_bottom();
+        assert!(crate::tui::ui::motion::composer_border_breathes(&app));
+    }
+
+    #[test]
+    fn activity_sweep_real_renders_whale_and_remapped_themes() {
+        let exec = HistoryCell::Tool(ToolCell::Exec(ExecCell {
+            command: "cargo test -p codewhale-tui".to_string(),
+            description: None,
+            status: ToolStatus::Running,
+            output: None,
+            live_output: None,
+            shell_task_id: None,
+            owner_agent_id: None,
+            owner_agent_name: None,
+            started_at: Instant::now().checked_sub(Duration::from_secs(5)),
+            duration_ms: None,
+            stale_elapsed_since_output_ms: None,
+            waiting: None,
+            source: ExecSource::Assistant,
+            interaction: None,
+            output_summary: None,
+        }));
+        let generic = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "grep_files".to_string(),
+            status: ToolStatus::Running,
+            input_summary: Some("pattern: TODO, path: crates".to_string()),
+            output: None,
+            prompts: None,
+            spillover_path: None,
+            output_summary: None,
+            is_diff: false,
+        }));
+        let earn = Duration::from_millis(codewhale_tui_kit::spinner::LIVE_MARKER_DELAY_MS);
+        let mid_sweep = earn + Duration::from_millis(900);
+
+        let adapt_fg = |fg: Option<Color>,
+                        theme_id: palette::ThemeId,
+                        theme: &palette::UiTheme,
+                        detected_bg: Option<Color>| {
+            let mut cell = ratatui::buffer::Cell::default();
+            cell.set_symbol("a");
+            cell.fg = fg.unwrap_or(Color::Reset);
+            cell.bg = theme.surface_bg;
+            crate::tui::color_compat::adapt_cell_colors(
+                &mut cell,
+                palette::ColorDepth::TrueColor,
+                theme.mode,
+                theme_id,
+                theme,
+                detected_bg,
+            );
+            cell.fg
+        };
+        let cells_of = |line: &Line<'static>| -> Vec<(char, Option<Color>)> {
+            line.spans
+                .iter()
+                .flat_map(|span| span.content.chars().map(move |ch| (ch, span.style.fg)))
+                .collect()
+        };
+        let sweep_cell = |cell: &HistoryCell,
+                          width: u16,
+                          options: crate::tui::history::TranscriptRenderOptions,
+                          theme_id: palette::ThemeId,
+                          theme: palette::UiTheme,
+                          detected_bg: Option<Color>| {
+            let rendered = cell.lines_with_options(width, options);
+            let meta: Vec<TranscriptLineMeta> = (0..rendered.len())
+                .map(|line_in_cell| TranscriptLineMeta::CellLine {
+                    cell_index: 0,
+                    line_in_cell,
+                    copy_prefix_width: 0,
+                    copy_separator_after: codewhale_tui_kit::ui_text::CopyLineSeparator::Newline,
+                })
+                .collect();
+            let mut swept = rendered.clone();
+            let visible = apply_activity_sweep(
+                &mut swept,
+                0,
+                &meta,
+                &[0],
+                std::slice::from_ref(cell),
+                &[],
+                mid_sweep,
+                theme_id,
+                &theme,
+                detected_bg,
+            );
+            (rendered, swept, visible)
+        };
+        let assert_brighter_changes =
+            |before_line: &Line<'static>,
+             after_line: &Line<'static>,
+             theme_id: palette::ThemeId,
+             theme: &palette::UiTheme,
+             detected_bg: Option<Color>| {
+                let before = cells_of(before_line);
+                let after = cells_of(after_line);
+                assert_eq!(before.len(), after.len());
+                let mut changed_indices = Vec::new();
+                for (idx, ((ch, b_fg), (_, a_fg))) in before.iter().zip(after.iter()).enumerate() {
+                    if b_fg != a_fg {
+                        let drawn_before = adapt_fg(*b_fg, theme_id, theme, detected_bg);
+                        let drawn_after = adapt_fg(*a_fg, theme_id, theme, detected_bg);
+                        let l_before =
+                            palette::relative_luminance(drawn_before).expect("luma before");
+                        let l_after = palette::relative_luminance(drawn_after).expect("luma after");
+                        assert!(
+                            l_after > l_before,
+                            "{theme_id:?} cell {idx} ({ch}) dimmed: {drawn_before:?} ({l_before}) -> {drawn_after:?} ({l_after})"
+                        );
+                        changed_indices.push(idx);
+                    }
+                }
+                assert!(
+                    !changed_indices.is_empty(),
+                    "{theme_id:?} had no swept cells"
+                );
+                (before, changed_indices)
+            };
+
+        assert_eq!(palette::UI_THEME.surface_bg, Color::Reset);
+        for cell in [&generic, &exec] {
+            let opts = crate::tui::history::TranscriptRenderOptions {
+                show_tool_details: false,
+                calm_mode: false,
+                palette_mode: palette::UI_THEME.mode,
+                ..Default::default()
+            };
+            let (rendered, swept, visible) = sweep_cell(
+                cell,
+                120,
+                opts,
+                palette::ThemeId::Whale,
+                palette::UI_THEME,
+                None,
+            );
+            assert!(
+                !visible,
+                "Whale without detected background must not claim visible sweep"
+            );
+            assert_eq!(swept, rendered);
+
+            let detected = Some(Color::Rgb(16, 20, 28));
+            let (rendered, swept, visible) = sweep_cell(
+                cell,
+                120,
+                opts,
+                palette::ThemeId::Whale,
+                palette::UI_THEME,
+                detected,
+            );
+            assert!(visible, "Whale with detected dark background should sweep");
+            assert_brighter_changes(
+                &rendered[0],
+                &swept[0],
+                palette::ThemeId::Whale,
+                &palette::UI_THEME,
+                detected,
+            );
+        }
+
+        let shoreline = palette::SHORELINE_UI_THEME;
+        let calm_shoreline = crate::tui::history::TranscriptRenderOptions {
+            show_tool_details: false,
+            calm_mode: false,
+            palette_mode: shoreline.mode,
+            ..Default::default()
+        };
+        let (rendered, swept, visible) = sweep_cell(
+            &generic,
+            120,
+            calm_shoreline,
+            palette::ThemeId::Shoreline,
+            shoreline,
+            None,
+        );
+        assert!(visible);
+        let (before, changed) = assert_brighter_changes(
+            &rendered[0],
+            &swept[0],
+            palette::ThemeId::Shoreline,
+            &shoreline,
+            None,
+        );
+        let plain: String = before.iter().map(|(ch, _)| *ch).collect();
+        let dot = plain
+            .find('\u{00B7}')
+            .map(|idx| plain[..idx].chars().count())
+            .expect("separator present");
+        assert!(
+            changed.iter().all(|&idx| idx < dot),
+            "summary after separator must stay untouched in {plain:?}"
+        );
+
+        for (theme_id, theme) in [
+            (palette::ThemeId::Shoreline, shoreline),
+            (palette::ThemeId::Underwater, palette::UNDERWATER_UI_THEME),
+        ] {
+            let details_opts = crate::tui::history::TranscriptRenderOptions {
+                show_tool_details: true,
+                calm_mode: false,
+                palette_mode: theme.mode,
+                ..Default::default()
+            };
+            let (rendered, swept, visible) =
+                sweep_cell(&exec, 120, details_opts, theme_id, theme, None);
+            assert!(visible);
+            let (before, changed) =
+                assert_brighter_changes(&rendered[0], &swept[0], theme_id, &theme, None);
+            let plain: String = before.iter().map(|(ch, _)| *ch).collect();
+            let status_start = plain
+                .find("running")
+                .map(|idx| plain[..idx].chars().count())
+                .expect("status word present");
+            let status_end = status_start + "running".chars().count();
+            assert!(
+                changed
+                    .iter()
+                    .all(|&idx| idx >= status_start && idx < status_end),
+                "{theme_id:?} legacy header swept outside status in {plain:?}: {changed:?}"
+            );
+        }
+
+        let (rendered, swept, visible) = sweep_cell(
+            &exec,
+            24,
+            calm_shoreline,
+            palette::ThemeId::Shoreline,
+            shoreline,
+            None,
+        );
+        assert!(
+            rendered.len() >= 2,
+            "narrow shell header should wrap status to line 1"
+        );
+        assert!(visible);
+        assert_eq!(swept[0], rendered[0]);
+        let (before, changed) = assert_brighter_changes(
+            &rendered[1],
+            &swept[1],
+            palette::ThemeId::Shoreline,
+            &shoreline,
+            None,
+        );
+        let line1_plain: String = before.iter().map(|(ch, _)| *ch).collect();
+        let status_end = "running".len();
+        assert!(line1_plain.starts_with("running"), "{line1_plain:?}");
+        assert!(
+            changed.iter().all(|&idx| idx < status_end),
+            "narrow wrapped shell swept outside status in {line1_plain:?}: {changed:?}"
+        );
+    }
+
     /// #6704: the Alt+V detail target (here a visible error cell) must not
     /// punch the terminal's own background through a painted surface. Its
     /// text used to be forced to `Color::Reset`, which Windows Terminal shows
@@ -4054,6 +5109,7 @@ mod tests {
         app.add_message(HistoryCell::Error {
             message: "验证失败 detail target".to_string(),
             severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+            code: None,
         });
 
         let area = Rect::new(0, 0, 80, 12);
@@ -4111,6 +5167,297 @@ mod tests {
         assert_eq!(history_key, 0x2692);
         assert_eq!(active_key, ACTIVE_REVISION_DOMAIN | 0x2692);
         assert_ne!(history_key, active_key);
+    }
+
+    fn patch_cell(path: &str, added: usize, deleted: usize) -> HistoryCell {
+        use crate::tui::history::{FileMutationFile, FileMutationOutcome, PatchSummaryCell};
+        HistoryCell::Tool(ToolCell::PatchSummary(PatchSummaryCell {
+            path: path.to_string(),
+            summary: format!("Updated {path}"),
+            status: ToolStatus::Success,
+            error: None,
+            receipt: Some(crate::tui::history::FileMutationReceipt {
+                exact_diff: format!("--- a/{path}\n+++ b/{path}\n+new\n"),
+                display_diff: format!("--- a/{path}\n+++ b/{path}\n+new\n"),
+                files: vec![FileMutationFile {
+                    path: path.to_string(),
+                    previous_path: None,
+                    outcome: FileMutationOutcome::Updated,
+                }],
+                added,
+                deleted,
+            }),
+        }))
+    }
+
+    #[test]
+    fn a_finished_turn_folds_its_steps_into_one_worked_for_line() {
+        let mut app = create_test_app();
+        app.tool_collapse_mode = ToolCollapseMode::Compact;
+        app.tool_collapse_threshold = 3;
+        app.add_message(HistoryCell::User {
+            content: "fix the counter".to_string(),
+        });
+        app.add_message(success_tool_cell("read_file"));
+        app.add_message(success_tool_cell("grep_files"));
+        app.add_message(patch_cell("src/count.rs", 3, 1));
+        app.add_message(HistoryCell::Assistant {
+            content: "Fixed the counter.".to_string(),
+            streaming: false,
+        });
+        app.turn_work_durations
+            .insert(0, std::time::Duration::from_secs(72));
+        let area = Rect::new(0, 0, 80, 12);
+
+        app.is_loading = true;
+        let mut live = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut live);
+        assert!(!buffer_text(&live, area).contains("Worked for"));
+
+        app.is_loading = false;
+        let mut buf = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+        assert_eq!(app.collapsed_cell_map, vec![0, 1, 4]);
+        assert!(
+            rendered.contains("Worked for 1m 12s \u{00B7} 3 steps \u{203A}"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("1 file changed +3 -1 \u{00B7} Enter to review"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("full output from"), "{rendered}");
+        assert!(rendered.contains("Fixed the counter."), "{rendered}");
+        let turn = app.folded_turn_at(1).expect("summary row hosts the fold");
+        assert!(
+            crate::tui::history::turn_fold_diff(&turn, |index| app
+                .cell_at_virtual_index(index)
+                .cloned())
+            .contains("+++ b/src/count.rs")
+        );
+
+        assert!(app.transcript_fold_header_at(1));
+        assert!(app.toggle_tool_run_expansion_at(1));
+        let _ = ChatWidget::new(&mut app, area);
+        assert_eq!(app.collapsed_cell_map, vec![0, 1, 2, 3, 4]);
+        assert!(app.folded_turn_at(1).is_none());
+        assert!(app.toggle_tool_run_expansion_at(3));
+        let _ = ChatWidget::new(&mut app, area);
+        assert_eq!(app.collapsed_cell_map, vec![0, 1, 4]);
+    }
+
+    #[test]
+    fn a_failed_step_stays_visible_beside_the_fold() {
+        let mut app = create_test_app();
+        app.tool_collapse_mode = ToolCollapseMode::Compact;
+        app.add_message(HistoryCell::User {
+            content: "run it".to_string(),
+        });
+        app.add_message(success_tool_cell("read_file"));
+        let HistoryCell::Tool(ToolCell::Generic(mut failed)) = success_tool_cell("run_tests")
+        else {
+            unreachable!()
+        };
+        failed.status = ToolStatus::Failed;
+        app.add_message(HistoryCell::Tool(ToolCell::Generic(failed)));
+        let area = Rect::new(0, 0, 80, 12);
+        let mut buf = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+        assert_eq!(app.collapsed_cell_map, vec![0, 1, 2]);
+        assert!(
+            rendered.contains("1 step \u{00B7} 1 failed \u{203A}"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn adv_superseded_todo_first_member_breaks_click_and_enter() {
+        let mut app = create_test_app();
+        app.tool_collapse_mode = ToolCollapseMode::Compact;
+        app.add_message(HistoryCell::User {
+            content: "a".to_string(),
+        });
+        app.add_message(success_tool_cell("todo_write"));
+        app.add_message(success_tool_cell("read_file"));
+        app.add_message(patch_cell("src/a.rs", 1, 0));
+        app.add_message(HistoryCell::User {
+            content: "b".to_string(),
+        });
+        app.add_message(success_tool_cell("todo_write"));
+        let area = Rect::new(0, 0, 80, 14);
+        let mut buf = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+        assert!(rendered.contains("2 steps"), "{rendered}");
+        let host = app.collapsed_cell_map[1];
+        assert!(
+            app.transcript_fold_header_at(host),
+            "click on the fold summary row must toggle it"
+        );
+        assert!(
+            app.folded_turn_at(host).is_some(),
+            "Enter on the fold summary row must find its turn"
+        );
+    }
+
+    #[test]
+    fn adv_queued_follow_up_folds_the_running_turn() {
+        let mut app = create_test_app();
+        app.tool_collapse_mode = ToolCollapseMode::Compact;
+        app.add_message(HistoryCell::User {
+            content: "a".to_string(),
+        });
+        app.add_message(success_tool_cell("read_file"));
+        app.add_message(success_tool_cell("grep_files"));
+        app.add_message(HistoryCell::User {
+            content: "queued follow-up".to_string(),
+        });
+        app.is_loading = true;
+        let area = Rect::new(0, 0, 80, 12);
+        let mut buf = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+        assert!(
+            !rendered.contains("2 steps"),
+            "running turn folded: {rendered}"
+        );
+
+        app.active_turn_user_index = Some(0);
+        app.add_message(HistoryCell::Assistant {
+            content: "working on it".to_string(),
+            streaming: false,
+        });
+        app.history_version = app.history_version.wrapping_add(1);
+        let mut buf2 = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut buf2);
+        let rendered2 = buffer_text(&buf2, area);
+        assert!(
+            !rendered2.contains("2 steps"),
+            "active_turn_user_index must keep running turn open even after queued echo: {rendered2}"
+        );
+    }
+
+    #[test]
+    fn adv_warning_and_stopped_steps_hide_inside_fold() {
+        let mut app = create_test_app();
+        app.tool_collapse_mode = ToolCollapseMode::Compact;
+        app.add_message(HistoryCell::User {
+            content: "a".to_string(),
+        });
+        app.add_message(success_tool_cell("read_file"));
+        let HistoryCell::Tool(ToolCell::Generic(mut warn)) = success_tool_cell("run_tests") else {
+            unreachable!()
+        };
+        warn.status = ToolStatus::Warning;
+        app.add_message(HistoryCell::Tool(ToolCell::Generic(warn)));
+        let HistoryCell::Tool(ToolCell::Generic(mut stopped)) = success_tool_cell("long_task")
+        else {
+            unreachable!()
+        };
+        stopped.status = ToolStatus::Stopped;
+        app.add_message(HistoryCell::Tool(ToolCell::Generic(stopped)));
+        let area = Rect::new(0, 0, 80, 12);
+        let mut buf = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+        assert!(
+            app.collapsed_cell_map.contains(&2),
+            "warning step hidden: {rendered}"
+        );
+        assert!(
+            app.collapsed_cell_map.contains(&3),
+            "stopped step hidden: {rendered}"
+        );
+    }
+
+    #[test]
+    fn adv_exec_command_hidden_inside_fold() {
+        let mut app = create_test_app();
+        app.tool_collapse_mode = ToolCollapseMode::Compact;
+        app.add_message(HistoryCell::User {
+            content: "a".to_string(),
+        });
+        app.add_message(success_tool_cell("read_file"));
+        let HistoryCell::Tool(ToolCell::Exec(mut exec)) = running_user_shell_cell() else {
+            unreachable!()
+        };
+        exec.command = "git push --force origin main".to_string();
+        exec.status = ToolStatus::Success;
+        app.add_message(HistoryCell::Tool(ToolCell::Exec(exec)));
+        let area = Rect::new(0, 0, 80, 12);
+        let mut buf = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+        assert!(rendered.contains("git push"), "exec hidden: {rendered}");
+    }
+
+    #[test]
+    fn adv_failed_sub_agent_is_dimmed() {
+        use crate::tui::widgets::agent_card::{AgentLifecycle, DelegateCard};
+        let mut app = create_test_app();
+        app.tool_collapse_mode = ToolCollapseMode::Compact;
+        app.add_message(HistoryCell::User {
+            content: "a".to_string(),
+        });
+        let mut card = DelegateCard::new("agent_1", "reviewer");
+        card.status = AgentLifecycle::Failed;
+        card.summary = Some("crashed".to_string());
+        app.add_message(HistoryCell::SubAgent(
+            crate::tui::history::SubAgentCell::Delegate(card),
+        ));
+        let area = Rect::new(0, 0, 80, 8);
+        let mut buf = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+        assert!(
+            rendered.contains('\u{2570}'),
+            "failed sub-agent folded to dim line: {rendered}"
+        );
+    }
+
+    #[test]
+    fn main_agent_prose_has_no_author_label_and_sub_agents_carry_a_name_tag() {
+        use crate::tui::widgets::agent_card::{AgentLifecycle, DelegateCard};
+        let mut app = create_test_app();
+        app.tool_collapse_mode = ToolCollapseMode::Compact;
+        app.add_message(HistoryCell::User {
+            content: "review the change".to_string(),
+        });
+        let mut card = DelegateCard::new("agent_1", "reviewer");
+        card.status = AgentLifecycle::Completed;
+        card.summary = Some("two findings".to_string());
+        app.add_message(HistoryCell::SubAgent(
+            crate::tui::history::SubAgentCell::Delegate(card),
+        ));
+        app.add_message(HistoryCell::Assistant {
+            content: "The review found two issues.".to_string(),
+            streaming: false,
+        });
+        let area = Rect::new(0, 0, 80, 10);
+        let mut buf = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+        let role = codewhale_agent_contract::role::public_role_label("reviewer");
+        let agent_row = rendered
+            .lines()
+            .find(|line| line.contains(&role))
+            .unwrap_or_else(|| panic!("{rendered}"));
+        assert!(
+            agent_row.contains("\u{00B7} done \u{00B7} two findings \u{203A}"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains('\u{2570}'), "{rendered}");
+        let prose = rendered
+            .lines()
+            .find(|line| line.contains("The review found two issues."))
+            .unwrap();
+        assert!(!prose.to_lowercase().contains("whale"), "{prose}");
+        assert!(app.toggle_tool_run_expansion_at(1));
+        let mut opened = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut opened);
+        assert!(buffer_text(&opened, area).contains('\u{2570}'));
     }
 
     #[test]
@@ -5634,10 +6981,9 @@ mod tests {
                 "width={width} bottom border disagrees with height policy"
             );
             if expected_panel {
-                let shell = crate::tui::composer_chrome::tideline_composer_geometry(area);
                 assert_eq!(
                     widget.inner_area(area),
-                    Rect::new(1, 1, shell.content.right().saturating_sub(1), 2,),
+                    Rect::new(1, 1, area.width.saturating_sub(7), 2),
                     "width={width} panel input area must reserve the send control and breathing cell"
                 );
                 assert_eq!(buf[(area.left(), area.top())].symbol(), "\u{256d}");
@@ -6698,19 +8044,9 @@ mod tests {
 
         assert_ne!(buf[(0, 0)].bg, buf[(0, 19)].bg);
         let rendered = buffer_text(&buf, area);
-        // One loose wedge school, every member facing the same way (facing
-        // equals travel by construction). The counter knows both silhouette
-        // families: the native braille poses this terminal paints and the
-        // ASCII bodies of `CODEWHALE_ASCII_SAFE=1`.
-        let (rightward, leftward) = crate::tui::ambient_life::fish_silhouette_counts(&rendered);
         assert!(
-            rightward == 0 || leftward == 0,
-            "one school shares one direction:\n{rendered}"
-        );
-        let fish_count = rightward + leftward;
-        assert!(
-            (4..=7).contains(&fish_count),
-            "wide idle water should show one cohesive wedge school (got {fish_count}):\n{rendered}"
+            ambient_life_cells(&mut app, area, 0) > 0,
+            "wide idle water shows ocean life:\n{rendered}"
         );
 
         let context_x = ((100usize - UnicodeWidthStr::width(context.as_str())) / 2) as u16;
@@ -6744,11 +8080,10 @@ mod tests {
 
         assert_eq!(buf[(0, 0)].bg, base);
         assert_eq!(buf[(0, 19)].bg, base, "flat keeps the plain theme surface");
-        let rendered = buffer_text(&buf, area);
         assert_eq!(
-            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
-            (0, 0),
-            "terminal-owned themes must keep a normal shell without decorative fish:\n{rendered}"
+            ambient_life_cells(&mut app, area, 0),
+            0,
+            "terminal-owned themes must keep a normal shell without decorative fish"
         );
     }
 
@@ -6777,11 +8112,10 @@ mod tests {
             canonical_base3,
             "Solarized Light must keep canonical Base3 through the viewport"
         );
-        let rendered = buffer_text(&buf, area);
         assert_eq!(
-            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
-            (0, 0),
-            "a theme with no painted field earns no ambient life:\n{rendered}"
+            ambient_life_cells(&mut app, area, 0),
+            0,
+            "a theme with no painted field earns no ambient life"
         );
     }
 
@@ -6822,11 +8156,10 @@ mod tests {
             (0..area.height).all(|y| (0..area.width).all(|x| buf[(x, y)].bg == Color::Reset)),
             "the Terminal treatment must never paint a background"
         );
-        let rendered = buffer_text(&buf, area);
         assert_eq!(
-            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
-            (0, 0),
-            "Terminal must remain a quiet host-owned shell without the selected Deepsea scene:\n{rendered}"
+            ambient_life_cells(&mut app, area, 0),
+            0,
+            "Terminal must remain a quiet host-owned shell without the selected Deepsea scene"
         );
     }
 
@@ -7391,6 +8724,7 @@ mod tests {
                 row: header.y,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now(),
         );
 
         assert!(events.is_empty());
@@ -7430,7 +8764,7 @@ mod tests {
         let area = Rect::new(0, 0, 100, 20);
         let widget = ChatWidget::new(&mut app, area);
         assert!(!widget.ambient_life);
-        assert!(widget.ocean_animated);
+        assert!(!widget.ocean_animated);
         let mut buf = Buffer::empty(area);
         widget.render(area, &mut buf);
         buffer_text(&buf, area)
@@ -7443,11 +8777,6 @@ mod tests {
     fn browsing_history_holds_no_fish() {
         let rows = history_field_rows(4);
         let rendered = rows.join("\n");
-        assert_eq!(
-            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
-            (0, 0),
-            "{rendered}"
-        );
         for index in 0..4 {
             assert!(
                 rendered.contains(&format!("history row {index}")),
@@ -7456,9 +8785,95 @@ mod tests {
         }
     }
 
+    fn ambient_life_cells(app: &mut App, area: Rect, elapsed: u128) -> usize {
+        let alive = ChatWidget::new_with_ocean_elapsed(app, area, elapsed);
+        let mut still = ChatWidget::new_with_ocean_elapsed(app, area, elapsed);
+        still.ambient_life = false;
+        let mut alive_buf = Buffer::empty(area);
+        alive.render(area, &mut alive_buf);
+        let mut still_buf = Buffer::empty(area);
+        still.render(area, &mut still_buf);
+        alive_buf
+            .content
+            .iter()
+            .zip(&still_buf.content)
+            .filter(|(a, b)| a != b)
+            .count()
+    }
+
+    fn assert_life_keeps_clear_of_text(app: &mut App, area: Rect) -> String {
+        let mut painted_any = false;
+        let mut last = String::new();
+        for elapsed in [0, 4_000, 9_000, 15_000, 26_000] {
+            let alive = ChatWidget::new_with_ocean_elapsed(app, area, elapsed);
+            assert!(alive.ambient_life);
+            let mut still = ChatWidget::new_with_ocean_elapsed(app, area, elapsed);
+            still.ambient_life = false;
+            let mut alive_buf = Buffer::empty(area);
+            alive.render(area, &mut alive_buf);
+            let mut still_buf = Buffer::empty(area);
+            still.render(area, &mut still_buf);
+            let text_columns = area.right().saturating_sub(1);
+            let is_text = |x: i32, y: i32| {
+                x >= i32::from(area.left())
+                    && x < i32::from(text_columns)
+                    && y >= i32::from(area.top())
+                    && y < i32::from(area.bottom())
+                    && still_buf[(x as u16, y as u16)].symbol() != " "
+            };
+            last = buffer_text(&alive_buf, area);
+            for y in area.top()..area.bottom() {
+                for x in area.left()..text_columns {
+                    if alive_buf[(x, y)] == still_buf[(x, y)] {
+                        continue;
+                    }
+                    painted_any = true;
+                    for dy in -1..=1 {
+                        for dx in -2..=2 {
+                            assert!(
+                                !is_text(i32::from(x) + dx, i32::from(y) + dy),
+                                "life at ({x}, {y}) touches text at t={elapsed}:\n{last}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(painted_any, "the ocean painted no life at all:\n{last}");
+        last
+    }
+
     #[test]
-    fn active_tail_holds_no_fish_after_message_submit() {
+    fn browsing_history_holds_ocean_life_and_completion_still() {
         let mut app = create_test_app();
+        app.low_motion = false;
+        app.fancy_animations = true;
+        for index in 0..18 {
+            app.add_message(HistoryCell::Assistant {
+                content: format!("history turn {index:02}"),
+                streaming: false,
+            });
+        }
+        app.is_loading = true;
+        app.runtime_turn_status = Some("in_progress".to_string());
+        app.turn_started_at = Some(
+            Instant::now()
+                .checked_sub(std::time::Duration::from_millis(900))
+                .expect("recent turn start"),
+        );
+        app.ocean_completion_started_at = Some(Instant::now());
+        app.viewport.transcript_scroll = TranscriptScroll::at_line(0);
+
+        let widget = ChatWidget::new(&mut app, Rect::new(0, 0, 80, 24));
+        assert_eq!(widget.life_presence_fixed, 0);
+    }
+
+    #[test]
+    fn active_tail_life_keeps_clear_of_text() {
+        let mut app = create_test_app();
+        app.theme_id = codewhale_palette::ThemeId::Underwater;
+        app.ui_theme = palette::UNDERWATER_UI_THEME;
+        app.viewport.ocean_caps = Some(test_native_ocean_caps());
         app.low_motion = false;
         app.fancy_animations = true;
         for index in 0..18 {
@@ -7475,23 +8890,89 @@ mod tests {
                 .expect("recent turn start"),
         );
         let area = Rect::new(0, 0, 80, 24);
-        let widget = ChatWidget::new_with_ocean_elapsed(&mut app, area, 0);
-        assert!(!widget.ambient_life);
-        assert!(widget.ocean_animated);
-        let mut buf = Buffer::empty(area);
-        widget.render(area, &mut buf);
-        let rendered = buffer_text(&buf, area);
-        assert_eq!(
-            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
-            (0, 0),
-            "{rendered}"
-        );
+        assert!(ChatWidget::new_with_ocean_elapsed(&mut app, area, 0).ocean_animated);
+        let rendered = assert_life_keeps_clear_of_text(&mut app, area);
         assert!(rendered.contains("release check 17"), "{rendered}");
     }
 
     #[test]
-    fn completed_turn_holds_no_fish() {
+    fn ocean_life_moves_while_a_turn_runs_and_holds_still_when_idle() {
+        fn life_cells(app: &mut App, area: Rect, elapsed: u128) -> Vec<(u16, u16, String)> {
+            let alive = ChatWidget::new_with_ocean_elapsed(app, area, elapsed);
+            let mut still = ChatWidget::new_with_ocean_elapsed(app, area, elapsed);
+            still.ambient_life = false;
+            let mut alive_buf = Buffer::empty(area);
+            alive.render(area, &mut alive_buf);
+            let mut still_buf = Buffer::empty(area);
+            still.render(area, &mut still_buf);
+            let mut cells = Vec::new();
+            for y in area.top()..area.bottom() {
+                for x in area.left()..area.right() {
+                    if alive_buf[(x, y)] != still_buf[(x, y)] {
+                        cells.push((x, y, alive_buf[(x, y)].symbol().to_string()));
+                    }
+                }
+            }
+            cells
+        }
+
         let mut app = create_test_app();
+        app.theme_id = codewhale_palette::ThemeId::Underwater;
+        app.ui_theme = palette::UNDERWATER_UI_THEME;
+        app.viewport.ocean_caps = Some(test_native_ocean_caps());
+        app.low_motion = false;
+        app.fancy_animations = true;
+        app.add_message(HistoryCell::Assistant {
+            content: "release receipt".to_string(),
+            streaming: false,
+        });
+        let area = Rect::new(0, 0, 80, 24);
+        let start = Instant::now();
+
+        app.is_loading = true;
+        app.runtime_turn_status = Some("in_progress".to_string());
+        app.turn_started_at = Some(start);
+        app.ambient_clock_ms = 9_000;
+        assert!(!app.ambient_idle_settled(true, start));
+        let early = life_cells(&mut app, area, 4_000);
+        let late = life_cells(&mut app, area, 9_000);
+        assert!(!early.is_empty() && !late.is_empty());
+        assert_ne!(early, late, "a running turn must move the ocean");
+        assert!(crate::tui::ui::underwater_life_motion_requested(
+            &app, false, false
+        ));
+
+        app.is_loading = false;
+        app.runtime_turn_status = Some("completed".to_string());
+        app.turn_started_at = None;
+        assert!(!app.ambient_idle_settled(false, start));
+        let settle = std::time::Duration::from_millis(App::AMBIENT_IDLE_SETTLE_MS + 1);
+        assert!(app.ambient_idle_settled(false, start + settle));
+        assert!(!crate::tui::ui::underwater_life_motion_requested(
+            &app, false, true
+        ));
+        let held = life_cells(&mut app, area, 9_000);
+        let after_keystrokes = life_cells(&mut app, area, 13_000);
+        assert!(!held.is_empty(), "a settled ocean keeps its creatures");
+        assert_eq!(
+            held, after_keystrokes,
+            "an idle redraw must not step the ocean"
+        );
+
+        app.low_motion = true;
+        assert!(!app.ambient_idle_settled(true, start + settle));
+        assert!(!crate::tui::ui::underwater_life_motion_requested(
+            &app, false, false
+        ));
+        assert!(life_cells(&mut app, area, 4_000).is_empty());
+    }
+
+    #[test]
+    fn completed_turn_life_keeps_clear_of_text() {
+        let mut app = create_test_app();
+        app.theme_id = codewhale_palette::ThemeId::Underwater;
+        app.ui_theme = palette::UNDERWATER_UI_THEME;
+        app.viewport.ocean_caps = Some(test_native_ocean_caps());
         app.low_motion = false;
         app.fancy_animations = true;
         app.add_message(HistoryCell::Assistant {
@@ -7501,16 +8982,7 @@ mod tests {
         app.runtime_turn_status = Some("completed".to_string());
         app.ocean_completion_started_at = Some(Instant::now());
         let area = Rect::new(0, 0, 80, 24);
-        let widget = ChatWidget::new_with_ocean_elapsed(&mut app, area, 0);
-        assert!(!widget.ambient_life);
-        let mut buf = Buffer::empty(area);
-        widget.render(area, &mut buf);
-        let rendered = buffer_text(&buf, area);
-        assert_eq!(
-            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
-            (0, 0),
-            "{rendered}"
-        );
+        let rendered = assert_life_keeps_clear_of_text(&mut app, area);
         assert!(rendered.contains("release receipt"), "{rendered}");
     }
 
@@ -7534,8 +9006,8 @@ mod tests {
         widget.render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
         assert_eq!(
-            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
-            (0, 0),
+            ambient_life_cells(&mut app, area, 0),
+            0,
             "a full transcript is not an aquarium:\n{rendered}"
         );
     }
@@ -8100,20 +9572,28 @@ mod tests {
             &serde_json::json!({ "command": command }),
             "exec_shell:long",
         );
-        let view = crate::tui::approval::ApprovalView::new(request.clone());
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
         let widget = ApprovalWidget::new(&request, &view);
         let area = Rect::new(0, 0, 100, 30);
         let region = widget.inline_region(area);
 
         assert_eq!(region.bottom(), area.bottom());
-        assert!(region.height <= area.height.div_ceil(2), "{region:?}");
+        assert_eq!(region.height, 1, "{region:?}");
 
         let mut buf = Buffer::empty(area);
         widget.render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
-        assert!(rendered.contains("[1 / y]"), "{rendered}");
-        assert!(rendered.contains("[3 / d / n]"), "{rendered}");
-        assert!(rendered.contains("truncated"), "{rendered}");
+        assert!(rendered.contains("Allow"), "{rendered}");
+        assert!(rendered.contains("Deny"), "{rendered}");
+
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let expanded_widget = ApprovalWidget::new(&request, &view);
+        let expanded_region = expanded_widget.inline_region(area);
+        assert!(expanded_region.height > 1 && expanded_region.height < area.height);
+        let mut expanded_buf = Buffer::empty(area);
+        expanded_widget.render(area, &mut expanded_buf);
+        let expanded_rendered = buffer_text(&expanded_buf, area);
+        assert!(expanded_rendered.contains("..."), "{expanded_rendered}");
     }
 
     #[test]
@@ -8125,7 +9605,8 @@ mod tests {
             &serde_json::json!({ "command": "printf '安全確認'" }),
             "exec_shell:printf",
         );
-        let view = crate::tui::approval::ApprovalView::new(request.clone());
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         let widget = ApprovalWidget::new(&request, &view);
 
         for area in [Rect::new(0, 0, 80, 24), Rect::new(0, 0, 60, 16)] {
@@ -8140,16 +9621,16 @@ mod tests {
             for marker in ['安', '全', '確', '認'] {
                 assert!(rendered.contains(marker), "{area:?}: {rendered}");
             }
-            assert!(rendered.contains("[1 / y]"), "{area:?}: {rendered}");
-            assert!(rendered.contains("[3 / d / n]"), "{area:?}: {rendered}");
+            assert!(rendered.contains("Allow"), "{area:?}: {rendered}");
+            assert!(rendered.contains("Deny"), "{area:?}: {rendered}");
         }
 
         let tiny = Rect::new(0, 0, 40, 12);
         let mut buf = Buffer::empty(tiny);
         widget.render(tiny, &mut buf);
         let rendered = buffer_text(&buf, tiny);
-        assert!(rendered.contains("[1 / y]"), "{rendered}");
-        assert!(rendered.contains("[3 / d / n]"), "{rendered}");
+        assert!(rendered.contains("Allow"), "{rendered}");
+        assert!(rendered.contains("Deny"), "{rendered}");
         assert!(
             rendered.contains(crate::tui::shell_key_routing::tool_details_chord().as_ref()),
             "{rendered}"
@@ -8176,28 +9657,25 @@ mod tests {
             "edit_file:Cargo.toml",
         );
         assert!(request.is_repo_law_prompt());
-        let view = crate::tui::approval::ApprovalView::new(request.clone());
-        let widget = ApprovalWidget::new(&request, &view);
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
         let area = Rect::new(0, 0, 120, 30);
-        let mut buf = Buffer::empty(area);
+        let mut bar_buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &view).render(area, &mut bar_buf);
+        let bar_rendered = buffer_text(&bar_buf, area);
+        assert!(bar_rendered.contains("Repo rule"), "{bar_rendered}");
+        assert!(bar_rendered.contains("Cargo.toml"), "{bar_rendered}");
 
-        widget.render(area, &mut buf);
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let mut buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
-        assert!(rendered.contains("Repo rule"), "{rendered}");
-        assert!(rendered.contains("Repository constitution"), "{rendered}");
         assert!(
             rendered.contains("This repo's constitution asks you to confirm this change."),
             "{rendered}"
         );
-        // §19: the card says constitution and permissions, never law/posture.
         for retired in ["REPO LAW", "Repository law", "posture"] {
             assert!(!rendered.contains(retired), "{retired}: {rendered}");
         }
-        assert!(rendered.contains("Cargo.toml"), "{rendered}");
-        assert!((0..area.height).any(|y| {
-            let cell = &buf[(1, y)];
-            cell.symbol() == "═" && cell.fg == palette::STATUS_WARNING
-        }));
     }
 
     #[test]
@@ -8246,31 +9724,64 @@ mod tests {
             &serde_json::json!({ "command": "git commit -m fix" }),
             "exec_shell:git commit",
         );
-        let view = crate::tui::approval::ApprovalView::new(request.clone());
-        let widget = ApprovalWidget::new(&request, &view);
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
         let area = Rect::new(0, 0, 100, 30);
         let mut buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
+        let bar = buffer_text(&buf, area);
+        assert!(bar.contains("┃ ⛯"), "{bar}");
 
-        widget.render(area, &mut buf);
-        let rendered = buffer_text(&buf, area);
+        view.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+        let mut menu_buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &view).render(area, &mut menu_buf);
+        let rendered = buffer_text(&menu_buf, area);
+        assert!(rendered.contains('\u{25b8}'), "{rendered}");
+        assert!(rendered.contains('\u{2500}'), "{rendered}");
+    }
 
-        assert!(
-            rendered.contains('\u{276f}'),
-            "selected option row should show a caret:\n{rendered}"
+    #[test]
+    fn approval_inline_explains_auto_review_timeout_and_keeps_the_command() {
+        let description = "Auto-Review could not finish (timed out); please decide.";
+        let request = crate::tui::approval::ApprovalRequest::new(
+            "review-fallback",
+            "bash",
+            description,
+            &serde_json::json!({"command": "printf value"}),
+            "bash:printf",
         );
+        let area = Rect::new(0, 0, 120, 40);
+        let bar = render_approval_request(&request, area);
         assert!(
-            rendered.contains('\u{2500}'),
-            "inline prompt should show a top separator rule:\n{rendered}"
+            bar.contains("Auto-Review (timed out)") && bar.contains("printf value"),
+            "{bar}"
+        );
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let mut buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
+        let drawer = buffer_text(&buf, area);
+        assert!(drawer.contains(description), "{drawer}");
+
+        let mut localized =
+            crate::tui::approval::ApprovalView::new_for_locale(request.clone(), Locale::Fr);
+        let mut localized_buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &localized).render(area, &mut localized_buf);
+        let localized_bar = buffer_text(&localized_buf, area);
+        assert!(localized_bar.contains("délai dépassé"), "{localized_bar}");
+        assert!(localized_bar.contains("printf value"), "{localized_bar}");
+
+        localized.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let mut localized_buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &localized).render(area, &mut localized_buf);
+        let localized_drawer = buffer_text(&localized_buf, area);
+        assert!(
+            localized_drawer.contains("À vous de décider."),
+            "{localized_drawer}"
         );
     }
 
     #[test]
     fn approval_inline_keeps_action_row_and_leaves_transcript_visible() {
-        // The #3799 repro: a destructive approval with a long multi-line command
-        // and long intent text. Across narrow, normal, and short terminals the
-        // action row must stay visible, the band must never address cells
-        // outside the frame, and on a tall terminal the band must not fill the
-        // whole frame (transcript stays visible — no full-screen takeover).
         let request = crate::tui::approval::ApprovalRequest::new_with_intent(
             "approval-1",
             "exec_shell",
@@ -8293,39 +9804,23 @@ mod tests {
             widget.render(area, &mut buf);
             let rendered = buffer_text(&buf, area);
 
-            // Action row is always present (reserved off the bottom of the band).
             assert!(
-                rendered.contains("[1 / y]") && rendered.contains("[3 / d / n]"),
+                rendered.contains("Allow") && rendered.contains("Deny"),
                 "action row must stay visible at {w}x{h}:\n{rendered}"
             );
 
-            // Band stays inside the frame and is anchored to the bottom.
             let region = widget.inline_region(area);
             assert!(region.right() <= area.right() && region.bottom() <= area.bottom());
-            assert_eq!(
-                region.bottom(),
-                area.bottom(),
-                "band must be bottom-anchored at {w}x{h}"
-            );
-
-            // Tall terminal with content that fits: transcript above stays
-            // visible — the prompt is not a full-screen takeover.
+            assert_eq!(region.bottom(), area.bottom());
+            assert_eq!(region.height, 1);
             if h >= 40 {
-                assert!(
-                    region.y > area.y,
-                    "tall frame must leave transcript visible above the band at {w}x{h}"
-                );
+                assert!(region.y > area.y);
             }
         }
     }
 
     #[test]
     fn approval_option_two_reads_as_session_scoped_not_always() {
-        // #3766: option 2 / `a` maps to ReviewDecision::ApprovedForSession, so
-        // neither the full option rows nor the compact controls may tell the
-        // user that particular option is "always"/permanent. The distinct
-        // `[2 / p]` row offered with a persistent rule may use that word for
-        // an exact repo-scoped grant.
         let mut request = crate::tui::approval::ApprovalRequest::new(
             "approval-1",
             "exec_shell",
@@ -8335,33 +9830,37 @@ mod tests {
         );
         request.persistent_allow_rules.clear();
 
-        // Full card (tall): full option rows render the session-scoped label.
-        let full = render_approval_request(&request, Rect::new(0, 0, 100, 30));
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+
+        let mut full_buf = Buffer::empty(Rect::new(0, 0, 100, 30));
+        ApprovalWidget::new(&request, &view).render(Rect::new(0, 0, 100, 30), &mut full_buf);
+        let full = buffer_text(&full_buf, Rect::new(0, 0, 100, 30));
         let full_session_option = full
             .lines()
-            .find(|line| line.contains("[2 / a]"))
-            .expect("full approval card should render the session option");
+            .find(|line| line.contains("[2]"))
+            .expect("scope menu should render option 2");
         assert!(
             full_session_option
                 .to_lowercase()
                 .contains("this conversation")
                 && !full_session_option.to_lowercase().contains("always"),
-            "full approval option must state session scope without saying always:\n{full}"
+            "{full}"
         );
 
-        // Short terminal: the reserved controls still render the session-scoped
-        // option `[2 / a]` without calling that option "always".
-        let compact = render_approval_request(&request, Rect::new(0, 0, 60, 17));
+        let mut compact_buf = Buffer::empty(Rect::new(0, 0, 60, 17));
+        ApprovalWidget::new(&request, &view).render(Rect::new(0, 0, 60, 17), &mut compact_buf);
+        let compact = buffer_text(&compact_buf, Rect::new(0, 0, 60, 17));
         let compact_session_option = compact
             .lines()
-            .find(|line| line.contains("[2 / a]"))
-            .expect("short approval card should render the session option");
+            .find(|line| line.contains("[2]"))
+            .expect("compact scope menu should render option 2");
         assert!(
             compact_session_option
                 .to_lowercase()
                 .contains("conversation")
                 && !compact_session_option.to_lowercase().contains("always"),
-            "short-terminal controls must label [2 / a] as session-scoped:\n{compact}"
+            "{compact}"
         );
     }
 
@@ -8377,12 +9876,12 @@ mod tests {
             }),
             "exec_shell:printf",
         );
-        let view = crate::tui::approval::ApprovalView::new(request.clone());
-        let widget = ApprovalWidget::new(&request, &view);
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         let area = Rect::new(0, 0, 110, 32);
         let mut buf = Buffer::empty(area);
 
-        widget.render(area, &mut buf);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
 
         assert!(rendered.contains("Command:"), "{rendered}");
@@ -8406,19 +9905,29 @@ mod tests {
             "exec_shell:cargo-test",
         );
 
-        let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
-
+        let default_rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
         assert!(
-            !rendered.contains("s allow now, and always ask before this again"),
-            "{rendered}"
+            !default_rendered.contains(".codewhale/permissions.toml"),
+            "{default_rendered}"
         );
-        assert!(rendered.contains("Always for this command"), "{rendered}");
-        assert!(rendered.contains("Save:"), "{rendered}");
-        assert!(!rendered.contains("always ask first"), "{rendered}");
-        assert!(rendered.contains("always allow"), "{rendered}");
-        assert!(rendered.contains("run exactly cargo test"), "{rendered}");
-        assert!(rendered.contains("in /workspace"), "{rendered}");
-        assert!(!rendered.contains("tool="), "{rendered}");
+
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 40));
+        ApprovalWidget::new(&request, &view).render(Rect::new(0, 0, 120, 40), &mut buf);
+        let menu_rendered = buffer_text(&buf, Rect::new(0, 0, 120, 40));
+        assert!(
+            menu_rendered.contains("Always allow in this repo"),
+            "{menu_rendered}"
+        );
+        assert!(
+            menu_rendered.contains("cargo test --workspace"),
+            "{menu_rendered}"
+        );
+        assert!(
+            menu_rendered.contains(".codewhale/permissions.toml"),
+            "{menu_rendered}"
+        );
 
         let mut view = crate::tui::approval::ApprovalView::new(request);
         let crate::tui::views::ViewAction::Emit(crate::tui::views::ViewEvent::OpenTextPager {
@@ -8453,7 +9962,7 @@ mod tests {
                     "path": "src/main.rs",
                     "content": "fn main() {}\n",
                 }),
-                "write src/main.rs",
+                "src/main.rs",
             ),
             (
                 "edit_file",
@@ -8462,7 +9971,7 @@ mod tests {
                     "old_string": "old",
                     "new_string": "new",
                 }),
-                "edit src/lib.rs",
+                "src/lib.rs",
             ),
         ];
 
@@ -8475,20 +9984,24 @@ mod tests {
                 &format!("{tool_name}:src"),
             );
 
-            let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
+            let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+            view.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+            let area = Rect::new(0, 0, 120, 40);
+            let mut buf = Buffer::empty(area);
+            ApprovalWidget::new(&request, &view).render(area, &mut buf);
+            let rendered = buffer_text(&buf, area);
 
-            assert!(rendered.contains("Save:"), "{tool_name}:\n{rendered}");
             assert!(
-                !rendered.contains("always ask first"),
-                "{tool_name}:\n{rendered}"
-            );
-            assert!(
-                rendered.contains("always allow"),
+                rendered.contains("Always allow in this repo"),
                 "{tool_name}:\n{rendered}"
             );
             assert!(
                 rendered.contains(expected_rule),
                 "{tool_name} should preview {expected_rule}:\n{rendered}"
+            );
+            assert!(
+                rendered.contains(".codewhale/permissions.toml"),
+                "{tool_name}:\n{rendered}"
             );
         }
     }
@@ -8515,17 +10028,17 @@ diff --git a/src/b.rs b/src/b.rs\n\
             "apply_patch:multi",
         );
 
-        let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+        let area = Rect::new(0, 0, 120, 40);
+        let mut buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
 
-        assert!(rendered.contains("Save:"), "{rendered}");
-        assert!(!rendered.contains("always ask first"), "{rendered}");
-        assert!(rendered.contains("always allow"), "{rendered}");
-        assert!(rendered.contains("change src/a.rs"), "{rendered}");
-        assert!(rendered.contains("change src/b.rs"), "{rendered}");
+        assert!(rendered.contains("Always allow in this repo"), "{rendered}");
+        assert!(rendered.contains("src/a.rs, src/b.rs"), "{rendered}");
     }
 
-    /// Lesson 1, plain folder, 110x32: the card read "edit 1 / replace this
-    /// / … truncated" and never showed the change it asked about.
     #[test]
     fn approval_card_shows_a_one_line_edit_and_why_a_plain_folder_asks() {
         let old = "export function formatDuration(totalMinutes) {\n  const hours = Math.floor(totalMinutes / 60);\n  return `${hours}h ${totalMinutes}m`;\n}";
@@ -8541,7 +10054,12 @@ diff --git a/src/b.rs b/src/b.rs\n\
             "tool:edit_file",
         );
 
-        let in_repo = render_approval_request(&request, Rect::new(0, 0, 110, 32));
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let area = Rect::new(0, 0, 110, 32);
+        let mut buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
+        let in_repo = buffer_text(&buf, area);
         assert!(
             in_repo.contains("-   return `${hours}h ${totalMinutes}m`;"),
             "{in_repo}"
@@ -8550,22 +10068,22 @@ diff --git a/src/b.rs b/src/b.rs\n\
             in_repo.contains("+   return `${hours}h ${totalMinutes % 60}m`;"),
             "{in_repo}"
         );
-        assert!(!in_repo.contains("truncated"), "{in_repo}");
-        assert!(!in_repo.contains("replace this"), "{in_repo}");
         assert!(!in_repo.contains("No Git repository"), "{in_repo}");
 
         request.asks_without_git = true;
-        let plain = render_approval_request(&request, Rect::new(0, 0, 110, 32));
+        let mut plain_view = crate::tui::approval::ApprovalView::new(request.clone());
+        plain_view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let mut plain_buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &plain_view).render(area, &mut plain_buf);
+        let plain = buffer_text(&plain_buf, area);
         assert!(
-            plain.contains("proceed?  ·  No Git repository here, so edits ask first."),
+            plain.contains("No Git repository here, so edits ask first."),
             "{plain}"
         );
-        // The reason sits on the question row and takes nothing from the change.
         assert!(
             plain.contains("+   return `${hours}h ${totalMinutes % 60}m`;"),
             "{plain}"
         );
-        assert!(!plain.contains("truncated"), "{plain}");
     }
 
     #[test]
@@ -8586,22 +10104,23 @@ diff --git a/src/b.rs b/src/b.rs\n\
             "apply_patch:many",
         );
 
-        // Tall enough for the optional save preview: a band that cannot fit
-        // it drops the preview rather than calling the request truncated.
-        let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 80));
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+        let area = Rect::new(0, 0, 120, 80);
+        let mut buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
 
-        assert!(rendered.contains("always allow"), "{rendered}");
-        assert!(rendered.contains("change src/a.rs"), "{rendered}");
-        assert!(rendered.contains("... 1 more"), "{rendered}");
-        assert!(
-            !rendered.contains("change src/e.rs"),
-            "truncated rule should not render directly:\n{rendered}"
-        );
+        assert!(rendered.contains("Always allow in this repo"), "{rendered}");
+        let rule_line = rendered
+            .lines()
+            .find(|line| line.contains(".codewhale/permissions.toml"))
+            .expect("rule preview line");
+        assert!(rule_line.contains("src/a.rs"), "{rule_line}");
+        assert!(rule_line.contains("+1 more"), "{rule_line}");
+        assert!(!rule_line.contains("src/e.rs"), "{rule_line}");
     }
 
-    /// #6566: when the full save preview does not fit, the card shows one
-    /// line per rule. What a saved rule covers stays on screen next to the
-    /// controls that save it, and the request is not called truncated.
     #[test]
     fn approval_card_keeps_a_one_line_save_preview_when_the_full_one_does_not_fit() {
         let request = crate::tui::approval::ApprovalRequest::new(
@@ -8620,40 +10139,33 @@ diff --git a/src/b.rs b/src/b.rs\n\
             "apply_patch:many",
         );
 
-        let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
 
-        assert!(rendered.contains("src/a.rs"), "{rendered}");
-        assert!(rendered.contains("always allow"), "{rendered}");
-        assert!(rendered.contains("1 more"), "{rendered}");
-        assert!(!rendered.contains("truncated"), "{rendered}");
-
-        // Short bands cut the request detail, never the preview: what a
-        // saved rule covers stays pinned above the controls that save it.
-        for height in [10, 11, 12, 14, 16, 20] {
-            let rendered = render_approval_request(&request, Rect::new(0, 0, 120, height));
+        for height in [10, 12, 16, 20] {
+            let area = Rect::new(0, 0, 120, height);
+            let mut buf = Buffer::empty(area);
+            ApprovalWidget::new(&request, &view).render(area, &mut buf);
+            let rendered = buffer_text(&buf, area);
+            assert!(rendered.contains("src/a.rs"), "height {height}: {rendered}");
             assert!(
-                rendered.contains("always allow · change src/a.rs"),
+                rendered.contains(".codewhale/permissions.toml"),
                 "height {height}: {rendered}"
             );
         }
 
-        // A band with no room for the preview (short or narrow) fails
-        // closed: no save offer without the rule it would save on screen.
-        for width in [40, 60, 120] {
-            for height in 6..=20 {
-                let rendered = render_approval_request(&request, Rect::new(0, 0, width, height));
-                let offers = rendered.contains("[2 / p]");
-                let previews = rendered.contains("always allow");
-                assert!(
-                    !offers || previews,
-                    "{width}x{height} offers a save it does not preview:\n{rendered}"
-                );
-                assert!(
-                    rendered.contains("[1 / y]") && rendered.contains("[3 / d / n]"),
-                    "{width}x{height} keeps the one-off decisions:\n{rendered}"
-                );
-            }
-        }
+        let bar_only = Rect::new(0, 0, 80, 1);
+        let mut buf = Buffer::empty(bar_only);
+        ApprovalWidget::new(&request, &view).render(bar_only, &mut buf);
+        let rendered = buffer_text(&buf, bar_only);
+        assert!(
+            !rendered.contains(".codewhale/permissions.toml"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("Allow") && rendered.contains("Deny"),
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -8706,20 +10218,17 @@ diff --git a/src/b.rs b/src/b.rs\n\
             }),
             "write_file:src/main.rs",
         );
-        let view = crate::tui::approval::ApprovalView::new(request.clone());
-        let widget = ApprovalWidget::new(&request, &view);
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         let area = Rect::new(0, 0, 120, 34);
         let mut buf = Buffer::empty(area);
 
-        widget.render(area, &mut buf);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
 
         assert!(rendered.contains("Preview:"), "{rendered}");
         assert!(rendered.contains("+ fn main() {"), "{rendered}");
-        assert!(
-            rendered.contains("visible before approval"),
-            "approval modal should show proposed file content before approval:\n{rendered}"
-        );
+        assert!(rendered.contains("visible before approval"), "{rendered}");
     }
 
     #[test]
@@ -8733,25 +10242,18 @@ diff --git a/src/b.rs b/src/b.rs\n\
             }),
             "apply_patch:src/lib.rs",
         );
-        let view = crate::tui::approval::ApprovalView::new(request.clone());
-        let widget = ApprovalWidget::new(&request, &view);
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         let area = Rect::new(0, 0, 80, 20);
         let mut buf = Buffer::empty(area);
 
-        widget.render(area, &mut buf);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
 
-        // At 20 rows the compact band preserves both a load-bearing preview
-        // row and the complete action set.
         assert!(rendered.contains("Preview:"), "{rendered}");
         assert!(rendered.contains("+new"), "{rendered}");
-        assert!(rendered.contains("truncated"), "{rendered}");
-        assert!(
-            rendered.contains(crate::tui::shell_key_routing::tool_details_chord().as_ref()),
-            "{rendered}"
-        );
-        assert!(rendered.contains("[1 / y]"), "{rendered}");
-        assert!(rendered.contains("[3 / d / n]"), "{rendered}");
+        assert!(rendered.contains("Allow"), "{rendered}");
+        assert!(rendered.contains("Deny"), "{rendered}");
     }
 
     #[test]
@@ -8768,12 +10270,12 @@ diff --git a/src/b.rs b/src/b.rs\n\
             Some("Need to verify the fallback build path before editing files."),
             std::path::Path::new("/tmp/project"),
         );
-        let view = crate::tui::approval::ApprovalView::new(request.clone());
-        let widget = ApprovalWidget::new(&request, &view);
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         let area = Rect::new(0, 0, 120, 34);
         let mut buf = Buffer::empty(area);
 
-        widget.render(area, &mut buf);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
 
         assert!(rendered.contains("Intent:"), "{rendered}");
@@ -8796,7 +10298,11 @@ diff --git a/src/b.rs b/src/b.rs\n\
             Some(&intent),
             std::path::Path::new("/tmp/project"),
         );
-        let rendered = render_approval_request(&request, Rect::new(0, 0, 100, 34)).replace(' ', "");
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 100, 34));
+        ApprovalWidget::new(&request, &view).render(Rect::new(0, 0, 100, 34), &mut buf);
+        let rendered = buffer_text(&buf, Rect::new(0, 0, 100, 34)).replace(' ', "");
 
         assert!(rendered.contains(&intent), "{rendered}");
         assert!(rendered.contains(&note), "{rendered}");
@@ -8816,35 +10322,29 @@ diff --git a/src/b.rs b/src/b.rs\n\
             Some("Confirmed - passes in isolation, so this is the documentation gate."),
             std::path::Path::new("/Volumes/VIXinSSD/codewhale"),
         );
-        let view = crate::tui::approval::ApprovalView::new(request.clone());
-        let widget = ApprovalWidget::new(&request, &view);
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
         let area = Rect::new(0, 0, 80, 20);
-        let mut buf = Buffer::empty(area);
+        let mut bar_buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &view).render(area, &mut bar_buf);
+        let bar_rendered = buffer_text(&bar_buf, area);
+        assert!(bar_rendered.contains("cargo"), "{bar_rendered}");
+        assert!(bar_rendered.contains("Allow"), "{bar_rendered}");
+        assert!(bar_rendered.contains("Deny"), "{bar_rendered}");
 
-        widget.render(area, &mut buf);
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let mut buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
 
         assert!(
             !rendered.contains("Built-in safety gate requires approval"),
-            "policy internals should not be the modal summary:\n{rendered}"
-        );
-        assert!(
-            !rendered.contains("Impact: Command"),
-            "command should only render in the command block:\n{rendered}"
-        );
-        // The compact band keeps the transcript visible without hiding the
-        // load-bearing command; full content remains one details chord away.
-        assert!(rendered.contains("Command:"), "{rendered}");
-        assert!(rendered.contains("cargo clippy"), "{rendered}");
-        assert!(rendered.contains("truncated"), "{rendered}");
-        assert!(
-            rendered.contains(crate::tui::shell_key_routing::tool_details_chord().as_ref()),
             "{rendered}"
         );
-        // Action row is reserved off the bottom and always visible (#3799).
-        assert!(rendered.contains("[1 / y]"), "{rendered}");
-        assert!(rendered.contains("[2 / a]"), "{rendered}");
-        assert!(rendered.contains("[3 / d / n]"), "{rendered}");
+        assert!(!rendered.contains("Impact: Command"), "{rendered}");
+        assert!(rendered.contains("Command:"), "{rendered}");
+        assert!(rendered.contains("cargo clippy"), "{rendered}");
+        assert!(rendered.contains("Allow"), "{rendered}");
+        assert!(rendered.contains("Deny"), "{rendered}");
     }
 
     /// Regression for issue #65: after `App::handle_resize`, the chat widget
@@ -9030,14 +10530,6 @@ diff --git a/src/b.rs b/src/b.rs\n\
         assert!(receipt_is_settling(1, 140));
         assert!(!receipt_is_settling(6, 560));
         assert!(!receipt_is_settling(60, 560));
-    }
-
-    #[test]
-    fn fish_flee_is_one_shot_and_returns_to_ambient_origin() {
-        assert_eq!(fish_flee_offset(0), 0);
-        assert!(fish_flee_offset(400) >= 8);
-        assert_eq!(fish_flee_offset(800), 0);
-        assert_eq!(fish_flee_offset(8_000), 0);
     }
 
     /// Cold-versus-warm proof for the whole chat frame (#6652): the cached
@@ -9365,15 +10857,8 @@ diff --git a/src/b.rs b/src/b.rs\n\
 }
 
 #[cfg(test)]
-#[path = "composer_legacy.rs"]
-mod legacy_composer;
-#[cfg(test)]
 #[path = "mounted_composer_tests.rs"]
 mod mounted_composer_tests;
-
-#[cfg(test)]
-#[path = "transcript_legacy.rs"]
-mod legacy_transcript;
 
 #[cfg(test)]
 #[path = "mounted_transcript_tests.rs"]

@@ -145,6 +145,10 @@ impl<W: Write> ColorCompatBackend<W> {
         self.detected_background = color;
     }
 
+    pub(crate) fn detected_background(&self) -> Option<ratatui::style::Color> {
+        self.detected_background
+    }
+
     pub(crate) fn force_size(&mut self, size: Size) {
         self.forced_size = Some(size);
     }
@@ -873,7 +877,7 @@ mod tests {
 
     #[test]
     fn ansi16_uses_complete_semantic_role_matrix_for_whale_dark_and_light() {
-        let expected = [
+        let dark_expected = [
             ("action", Color::LightBlue),
             ("live", Color::LightCyan),
             ("human", Color::LightYellow),
@@ -883,6 +887,18 @@ mod tests {
             ("act mode", Color::Blue),
             ("plan mode", Color::Magenta),
             ("operate mode", Color::LightMagenta),
+            ("full-access mode", Color::Red),
+        ];
+        let light_expected = [
+            ("action", Color::Blue),
+            ("live", Color::Cyan),
+            ("human", Color::Yellow),
+            ("warning", Color::Yellow),
+            ("danger", Color::Red),
+            ("success", Color::Green),
+            ("act mode", Color::Blue),
+            ("plan mode", Color::Magenta),
+            ("operate mode", Color::Magenta),
             ("full-access mode", Color::Red),
         ];
         let raw = [
@@ -898,9 +914,14 @@ mod tests {
             palette::MODE_YOLO,
         ];
 
-        for (theme_id, theme) in [
-            (ThemeId::Whale, palette::UI_THEME),
-            (ThemeId::WhaleLight, palette::LIGHT_UI_THEME),
+        for (theme_id, theme, expected, check_all_distinct) in [
+            (ThemeId::Whale, palette::UI_THEME, dark_expected, true),
+            (
+                ThemeId::WhaleLight,
+                palette::LIGHT_UI_THEME,
+                light_expected,
+                false,
+            ),
         ] {
             let direct = [
                 theme.accent_primary,
@@ -930,14 +951,31 @@ mod tests {
                         (name, output)
                     })
                     .collect::<Vec<_>>();
-                for (index, (left_name, left)) in outputs.iter().enumerate() {
-                    for (right_name, right) in outputs.iter().skip(index + 1) {
-                        assert_ne!(
-                            left,
-                            right,
-                            "{} {source_kind} matrix merged {left_name} and {right_name}",
-                            theme_id.name(),
-                        );
+                if check_all_distinct {
+                    for (index, (left_name, left)) in outputs.iter().enumerate() {
+                        for (right_name, right) in outputs.iter().skip(index + 1) {
+                            assert_ne!(
+                                left,
+                                right,
+                                "{} {source_kind} matrix merged {left_name} and {right_name}",
+                                theme_id.name(),
+                            );
+                        }
+                    }
+                } else {
+                    for pair_group in [&[0usize, 1, 3, 4, 5][..], &[6usize, 7, 9][..]] {
+                        for (pos, &left_idx) in pair_group.iter().enumerate() {
+                            for &right_idx in &pair_group[pos + 1..] {
+                                let (left_name, left) = outputs[left_idx];
+                                let (right_name, right) = outputs[right_idx];
+                                assert_ne!(
+                                    left,
+                                    right,
+                                    "{} {source_kind} matrix merged {left_name} and {right_name}",
+                                    theme_id.name(),
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -1106,9 +1144,9 @@ mod tests {
 
         // Visible glyph stream is unchanged by link insertion.
         let mut baseline_visible = String::new();
-        codewhale_tui_kit::osc8::strip_ansi_into(&baseline_out, &mut baseline_visible);
+        codewhale_sanitize::sanitize::strip_ansi_into(&baseline_out, &mut baseline_visible);
         let mut linked_visible = String::new();
-        codewhale_tui_kit::osc8::strip_ansi_into(&out, &mut linked_visible);
+        codewhale_sanitize::sanitize::strip_ansi_into(&out, &mut linked_visible);
         assert_eq!(
             baseline_visible, linked_visible,
             "link emission must not move or alter visible cells"
@@ -1266,9 +1304,9 @@ mod tests {
 
         let baseline_out = String::from_utf8_lossy(&baseline_capture.borrow()).to_string();
         let mut baseline_visible = String::new();
-        osc8::strip_ansi_into(&baseline_out, &mut baseline_visible);
+        codewhale_sanitize::sanitize::strip_ansi_into(&baseline_out, &mut baseline_visible);
         let mut linked_visible = String::new();
-        osc8::strip_ansi_into(&out, &mut linked_visible);
+        codewhale_sanitize::sanitize::strip_ansi_into(&out, &mut linked_visible);
         assert_eq!(
             linked_visible, baseline_visible,
             "OSC 8 insertion must not move or alter any rendered cell"

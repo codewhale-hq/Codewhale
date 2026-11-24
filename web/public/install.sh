@@ -85,12 +85,26 @@ download() {
   url="$1"
   out="$2"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url" -o "$out"
+    download_tool=curl
   elif command -v wget >/dev/null 2>&1; then
-    wget -q "$url" -O "$out"
+    download_tool=wget
   else
     fail "curl or wget is required"
   fi
+  attempt=1
+  while :; do
+    if [ "$download_tool" = curl ]; then
+      curl --proto '=https' --tlsv1.2 -fsSL "$url" -o "$out" && return 0
+    else
+      wget --https-only -q "$url" -O "$out" && return 0
+    fi
+    rm -f "$out"
+    if [ "$attempt" -ge 3 ]; then
+      fail "Download failed. This is usually a network blip; run the same command again."
+    fi
+    attempt=$((attempt + 1))
+    sleep "${CODEWHALE_INSTALL_RETRY_DELAY:-1}"
+  done
 }
 
 sha256_file() {
@@ -112,7 +126,7 @@ manifest_digest() {
       digest = tolower($1)
       file = $2
       sub(/^\*/, "", file)
-      if (file == name && digest ~ /^[0-9a-f]{64}$/) {
+      if (file == name && length(digest) == 64 && digest !~ /[^0-9a-f]/) {
         print digest
         exit
       }
@@ -284,8 +298,22 @@ if [ -n "$(find "$preflight_dir" -prune \( -perm -020 -o -perm -002 \) -print)" 
   fail "$preflight_dir is writable by its group or others; run chmod go-w '$preflight_dir' or choose a directory only you can write"
 fi
 for cargo_receipt in "$(dirname "$install_dir")/.crates.toml" "$(dirname "$install_dir")/.crates2.json"; do
-  if [ -e "$cargo_receipt" ] || [ -L "$cargo_receipt" ]; then
-    fail "Cargo install metadata beside this directory; use a fresh directory instead"
+  { [ -e "$cargo_receipt" ] || [ -L "$cargo_receipt" ]; } || continue
+  cargo_owned=0
+  if [ -L "$cargo_receipt" ] || [ ! -f "$cargo_receipt" ] || [ ! -r "$cargo_receipt" ]; then
+    cargo_owned=1
+  else
+    cargo_size="$(wc -c < "$cargo_receipt" 2>/dev/null | tr -d ' ')"
+    case "$cargo_size" in
+      ''|*[!0-9]*) cargo_owned=1 ;;
+      *) [ "$cargo_size" -le 4194304 ] || cargo_owned=1 ;;
+    esac
+    cargo_grep=0
+    grep -F -q -e '"codewhale"' -e '"codew"' "$cargo_receipt" 2>/dev/null || cargo_grep=$?
+    [ "$cargo_grep" -eq 1 ] || cargo_owned=1
+  fi
+  if [ "$cargo_owned" -eq 1 ]; then
+    fail "Cargo installed Codewhale beside this directory, or its record $cargo_receipt cannot be read; manage it with cargo install or cargo uninstall, or use a fresh directory instead"
   fi
 done
 
@@ -492,8 +520,20 @@ install_binary() {
   fi
   stage_dir="$(mktemp -d "$install_dir/.codewhale-install.XXXXXX")"
   stage="$stage_dir/$(basename "$destination")"
-  cp "$source" "$stage"
-  chmod "${3:-755}" "$stage"
+  if [ "$(basename "$destination")" = "codew" ] \
+    && [ ! -L "$install_dir/codewhale" ] \
+    && [ -f "$install_dir/codewhale" ] \
+    && [ -x "$install_dir/codewhale" ] \
+    && cmp -s "$source" "$install_dir/codewhale"; then
+    if ! ln "$install_dir/codewhale" "$stage" 2>/dev/null; then
+      rm -f "$stage"
+      cp "$source" "$stage"
+      chmod "${3:-755}" "$stage"
+    fi
+  else
+    cp "$source" "$stage"
+    chmod "${3:-755}" "$stage"
+  fi
   # Pass the intended parent as the directory operand. Passing destination
   # itself would make ln treat a raced-in directory/symlink as a container.
   ln "$stage" "$install_dir/" || fail "destination appeared during install: $destination; it was not replaced"
@@ -536,16 +576,6 @@ if [ -n "$recovery_dir" ]; then
 fi
 CODEWHALE_TELEMETRY=0 CODEWHALE_NO_UPDATE_CHECK=1 "$install_dir/codewhale" doctor --installs --brief </dev/null 2>/dev/null || true
 say "Usage reporting is on by default (counts only, never your code or conversations). Turn it off: \"$install_dir/codewhale\" config set telemetry false"
-
-case "$target" in
-  macos-*)
-    if ! command -v node >/dev/null 2>&1; then
-      say ""
-      say "Computer Use is included and needs Node.js 20 or newer on PATH."
-      say "Install Node.js from https://nodejs.org/, then restart Codewhale to enable Computer Use."
-    fi
-    ;;
-esac
 
 say ""
 say "Use this installation: \"$install_dir/codewhale\""

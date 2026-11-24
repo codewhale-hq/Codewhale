@@ -18,6 +18,7 @@ for(const [backend,parsed,expected] of [
  ['searxng',{results:[a,b]},{title:'A',url:'web-url-0',snippet:'meaningful'}],
  ['sofya',{results:[a]},{title:' A ',url:' web-url-0 ',snippet:'meaningful'}],
  ['serply',{results:[{...a,link:a.url,description:' description '}]},{title:' A ',url:' web-url-0 ',snippet:'description'}],
+ ['searchapi',{organic_results:[{...a,link:a.url,snippet:' snippet '}],search_metadata:{status:'Success'}},{title:' A ',url:' web-url-0 ',snippet:'snippet'}],
  ['volcengine',{output:[{type:'message',content:[{text:'```json\n'+JSON.stringify({results:[{...a,snippet:' source '}]})+'\n```'}]}]},{title:'A',url:'web-url-0',snippet:'source'}],
 ])test(`${backend} exact aliases, whitespace and candidate order`,()=>assert.deepEqual(decode(backend,parsed).entries[0],expected))
 test('present null/wrong fields suppress fallback only for the correct providers',()=>{
@@ -48,12 +49,19 @@ test('Volcengine missing text, null error, latest message and invalid inner JSON
  assert.deepEqual(decode('volcengine',{output:[{type:'message',content:[{text:'not JSON'}]}]}).entries,[])
  assert.deepEqual(decode('volcengine',{output:[{type:'message',content:[{text:'{"results":[{"title":"old","url":"u"}]}'}]},{type:'message',content:[{text:'{"results":[]}'}]}]}).entries,[])
 })
-test('all eleven providers use keyless plans without endpoint, model or credential authority',()=>{
- for(const backend of ['firecrawl','tavily','bocha','metaso','sofya','baidu','volcengine','serply','searxng','bing','duckduckgo']){
+test('all twelve providers use keyless plans without endpoint, model or credential authority',()=>{
+ for(const backend of ['firecrawl','tavily','bocha','metaso','sofya','baidu','volcengine','serply','searchapi','searxng','bing','duckduckgo']){
   const plan=transform('web_request',{backend,query:'authorized query',max_results:5,filters:transform('web_filters',{recency_days:10,locale:' de_DE '}),locale:'de_DE'})
   assert.equal(plan.kind,'web_request');assert.equal(JSON.stringify(plan).includes('api_key'),false);assert.equal(JSON.stringify(plan).includes('Authorization'),false)
  }
  assert.deepEqual(transform('web_request',{backend:'serply',query:'q',max_results:5,filters:transform('web_filters',{locale:'zh-CN',recency_days:null})}),{kind:'web_request',payload:null,pairs:[['q','q'],['num','5'],['hl','zh'],['gl','cn']]})
+ assert.deepEqual(transform('web_request',{backend:'searchapi',query:'q',max_results:5,filters:transform('web_filters',{locale:'zh-CN',recency_days:3})}),{kind:'web_request',payload:null,pairs:[['q','q'],['engine','google'],['num','5'],['time_period','last_week'],['hl','zh'],['gl','cn']]})
+ assert.deepEqual(transform('web_request',{backend:'searchapi',query:'q',max_results:10,filters:transform('web_filters',{locale:null,recency_days:null})}).pairs,[['q','q'],['engine','google'],['num','10']])
+})
+test('SearchApi keeps Google goto redirect rows and reads a no-results body as zero entries',()=>{
+ const parsed={search_metadata:{status:'Success'},organic_results:[{position:1,title:'Ratatui',link:'web-url-0',domain:'ratatui.rs',snippet:' Cook up terminal UIs. ',date:'May 19, 2026'},{position:2,title:'Redirected',link:'https://www.google.com/goto?url=web-url-1',snippet:''},{title:'no link',snippet:'dropped'}],related_searches:[{query:'ignored'}]}
+ assert.deepEqual(decode('searchapi',parsed).entries,[{title:'Ratatui',url:'web-url-0',snippet:'Cook up terminal UIs.'},{title:'Redirected',url:'https://www.google.com/goto?url=web-url-1'}])
+ assert.deepEqual(decode('searchapi',{search_metadata:{status:'Success'},search_parameters:{engine:'google',q:'nothing'},error:"Google didn't return any results."}),{kind:'web_provider',entries:[],error:null})
 })
 test('filter rounding uses exact Rust whitespace and language/region rules',()=>{
  for(const [recency_days,window]of [[1,'day'],[2,'week'],[7,'week'],[8,'month'],[31,'month'],[32,'year'],[3650,'year']])assert.equal(transform('web_filters',{recency_days,locale:null}).window,window)

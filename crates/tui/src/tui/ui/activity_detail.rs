@@ -386,6 +386,7 @@ pub(crate) fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> b
         HistoryCell::Tool(_) => "Message".to_string(),
         HistoryCell::SubAgent(_) => "Sub-agent".to_string(),
         HistoryCell::Automation(_) => tr(app.ui_locale, MessageId::AutomationNoun).into_owned(),
+        HistoryCell::ApprovalReceipt(_) => "Approval".to_string(),
         HistoryCell::ArchivedContext { .. } => "Archived Context".to_string(),
     };
     let width = app
@@ -417,6 +418,16 @@ pub(crate) fn open_focused_cell_pager(app: &mut App) -> bool {
     let Some(cell_index) = detail_target_cell_index(app) else {
         return false;
     };
+    if let Some(turn) = app.folded_turn_at(cell_index) {
+        let Some(title) = crate::tui::history::turn_fold_changes(&turn, app.ui_locale) else {
+            return false;
+        };
+        let diff = crate::tui::history::turn_fold_diff(&turn, |index| {
+            app.cell_at_virtual_index(index).cloned()
+        });
+        super::overlays::open_diff_pager(app, title, &diff);
+        return true;
+    }
     let Some(cell) = app.cell_at_virtual_index(cell_index) else {
         return false;
     };
@@ -429,6 +440,7 @@ pub(crate) fn open_focused_cell_pager(app: &mut App) -> bool {
         HistoryCell::Tool(_) => "Tool".to_string(),
         HistoryCell::SubAgent(_) => "Sub-agent".to_string(),
         HistoryCell::Automation(_) => tr(app.ui_locale, MessageId::AutomationNoun).into_owned(),
+        HistoryCell::ApprovalReceipt(_) => "Approval".to_string(),
         HistoryCell::ArchivedContext { .. } => "Archived Context".to_string(),
     };
     let width = app
@@ -562,6 +574,13 @@ pub(crate) fn detail_target_label(app: &App, cell_index: usize) -> Option<String
             Some(format!("image {}", image.path.display()))
         }
         HistoryCell::Tool(ToolCell::WebSearch(search)) => Some(format!("search {}", search.query)),
+        HistoryCell::Tool(ToolCell::DataDisplay(data)) => Some(match &data.display {
+            Ok(display) => format!(
+                "show_data {}",
+                codewhale_ratatui::text::display_safe(display.label())
+            ),
+            Err(_) => "show_data".to_string(),
+        }),
         HistoryCell::Tool(ToolCell::Generic(generic)) => Some(
             crate::tui::widgets::tool_card::tool_activity_label_for_name(
                 &generic.name,
@@ -879,6 +898,7 @@ fn turn_full_conversation_lines(app: &App, start: usize, end: usize) -> Vec<Stri
             ),
             HistoryCell::Error { .. } => "[!]".to_string(),
             HistoryCell::Automation(_) => "[⏱]".to_string(),
+            HistoryCell::ApprovalReceipt(_) => "[✓]".to_string(),
             HistoryCell::System { .. } | HistoryCell::ArchivedContext { .. } => "[i]".to_string(),
         };
         if !out.is_empty() {
@@ -1146,7 +1166,9 @@ fn turn_timeline_lines(app: &App, start: usize, end: usize) -> Vec<String> {
                     &[],
                 ));
             }
-            HistoryCell::Error { message, severity } => {
+            HistoryCell::Error {
+                message, severity, ..
+            } => {
                 let summary = one_line_summary(message, 96);
                 let status = severity.to_string();
                 rows.push(timeline_row("error", &summary, Some(&status), None, &[]));
@@ -1154,6 +1176,10 @@ fn turn_timeline_lines(app: &App, start: usize, end: usize) -> Vec<String> {
             HistoryCell::Automation(cell) => {
                 let summary = one_line_summary(&cell.plain_summary(), 96);
                 rows.push(timeline_row("automation", &summary, None, None, &[]));
+            }
+            HistoryCell::ApprovalReceipt(cell) => {
+                let summary = one_line_summary(&cell.plain_summary(), 96);
+                rows.push(timeline_row("approval", &summary, None, None, &[]));
             }
             HistoryCell::System { content }
             | HistoryCell::ArchivedContext {
@@ -1214,6 +1240,18 @@ fn timeline_tool_summary(app: &App, idx: usize, tool: &ToolCell) -> (&'static st
             truncate_line_to_width(&image.path.display().to_string(), 88),
         ),
         ToolCell::WebSearch(search) => ("web search", truncate_line_to_width(&search.query, 88)),
+        ToolCell::DataDisplay(data) => (
+            "show_data",
+            match &data.display {
+                Ok(display) => truncate_line_to_width(
+                    &codewhale_ratatui::text::display_safe(display.label()),
+                    88,
+                ),
+                Err(error) => {
+                    truncate_line_to_width(&codewhale_ratatui::text::display_safe(error), 88)
+                }
+            },
+        ),
         ToolCell::Generic(generic) => {
             let mut label =
                 detail_target_label(app, idx).unwrap_or_else(|| generic.name.replace('_', " "));
@@ -1664,7 +1702,7 @@ fn cleaned_turn_text(text: &str, detail: ResultDetail, max_width: usize) -> Stri
     }
 
     let mut cleaned = String::with_capacity(text.len());
-    codewhale_tui_kit::osc8::strip_ansi_into(text, &mut cleaned);
+    codewhale_sanitize::sanitize::strip_ansi_into(text, &mut cleaned);
     cleaned.trim().to_string()
 }
 
@@ -1771,6 +1809,7 @@ mod tests {
                 .collect(),
             confidence_bp: 6400,
             min_confidence_bp: 5000,
+            abstained_questions: Vec::new(),
             cost_saving_kept_fast: false,
             thinking: Some("max".to_string()),
             provider_reported_cost_usd: Some("0.000019992".to_string()),

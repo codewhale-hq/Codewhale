@@ -285,7 +285,7 @@ async fn real_host_pdf_cancel_timeout_and_host_refusal_never_replay() {
     let marker_clone = marker.clone();
     tokio::spawn(async move {
         for _ in 0..1000 {
-            if marker_clone.exists() {
+            if std::fs::read(&marker_clone).is_ok_and(|bytes| bytes == b"x") {
                 stop.cancel();
                 return;
             }

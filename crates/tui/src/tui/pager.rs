@@ -31,12 +31,14 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+use crate::tui::views::rounded::{render_rounded_footer, render_rounded_surface};
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, action_footer_lines,
-    render_modal_footer, render_panel_scroll_rail, render_underwater_surface,
+    render_panel_scroll_rail,
 };
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_tui_kit::diff_render::DiffSummaryLabels;
 use codewhale_tui_kit::ui_text::grapheme_display_width;
 
 #[derive(Debug, Clone)]
@@ -191,7 +193,7 @@ fn evidence_window(content: &str, requested: u64) -> Result<EvidenceWindow, ()> 
     };
     let (text, copy, end, encoding, actual_offset, binary) = if let Some(text) = text_prefix {
         let mut sanitized = String::with_capacity(text.len());
-        codewhale_tui_kit::osc8::strip_ansi_into(text, &mut sanitized);
+        codewhale_sanitize::sanitize::strip_ansi_into(text, &mut sanitized);
         let (copy, encoding) = if sanitized == text {
             (text.to_string(), "UTF8")
         } else {
@@ -256,7 +258,7 @@ enum PagerSource {
     Text(String),
     /// Pre-styled lines, wrapped with their styles intact.
     Lines(Vec<Line<'static>>),
-    Diff(String),
+    Diff(String, DiffSummaryLabels),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -430,7 +432,7 @@ impl PagerPage {
         // Pager bodies frequently carry tool output or worker transcripts.
         // Keep the same terminal-injection boundary as the single-page path.
         let mut sanitized = String::with_capacity(text.len());
-        codewhale_tui_kit::osc8::strip_ansi_into(text, &mut sanitized);
+        codewhale_sanitize::sanitize::strip_ansi_into(text, &mut sanitized);
         Self::new(title, PagerSource::Text(sanitized), usize::from(width))
     }
 
@@ -464,12 +466,13 @@ impl PagerPage {
         let scan = |start| match &self.source {
             PagerSource::Text(source) => PagerRows::wrap_text(source, width, start),
             PagerSource::Lines(lines) => PagerRows::wrap_lines_window(lines, width, start),
-            PagerSource::Diff(diff) => {
+            PagerSource::Diff(diff, labels) => {
                 let rendered = codewhale_tui_kit::diff_render::render_diff_window(
                     diff,
                     u16::try_from(width).unwrap_or(u16::MAX),
                     start,
                     PAGER_RETAINED_ROWS,
+                    labels,
                 );
                 let total = rendered.lines.len().saturating_add(rendered.omitted_rows);
                 let plain = rendered.lines.iter().map(line_to_string).collect();
@@ -507,10 +510,11 @@ impl PagerPage {
                 rows
             }
             PagerSource::Lines(lines) => PagerRows::line_range(lines, width, origin, origin).0,
-            PagerSource::Diff(diff) => codewhale_tui_kit::diff_render::diff_row_for_origin(
+            PagerSource::Diff(diff, labels) => codewhale_tui_kit::diff_render::diff_row_for_origin(
                 diff,
                 u16::try_from(width).unwrap_or(u16::MAX),
                 origin,
+                labels,
             ),
         }
     }
@@ -532,13 +536,14 @@ impl PagerPage {
         if query.is_empty() {
             return result;
         }
-        if let PagerSource::Diff(diff) = &self.source {
+        if let PagerSource::Diff(diff, labels) = &self.source {
             let found = if let Some(origin) = anchor {
                 codewhale_tui_kit::diff_render::search_diff_from_origin(
                     diff,
                     u16::try_from(width).unwrap_or(u16::MAX),
                     &query,
                     origin,
+                    labels,
                 )
             } else {
                 codewhale_tui_kit::diff_render::search_diff(
@@ -546,6 +551,7 @@ impl PagerPage {
                     u16::try_from(width).unwrap_or(u16::MAX),
                     &query,
                     selected,
+                    labels,
                 )
             };
             result.total = found.total_matches;
@@ -591,7 +597,7 @@ impl PagerPage {
                     );
                 }
             }
-            PagerSource::Diff(_) => unreachable!(),
+            PagerSource::Diff(..) => unreachable!(),
         }
         if result.row.is_none() && result.total > 0 {
             return self.search(width, &query, 0, None);
@@ -614,7 +620,7 @@ impl PagerPage {
     /// display wrapping.
     fn source_text(&self) -> String {
         match &self.source {
-            PagerSource::Text(source) | PagerSource::Diff(source) => source.clone(),
+            PagerSource::Text(source) | PagerSource::Diff(source, _) => source.clone(),
             PagerSource::Lines(lines) => lines
                 .iter()
                 .map(line_to_string)
@@ -816,7 +822,7 @@ impl PagerView {
             self.follow = true;
         }
         let mut sanitized = String::with_capacity(text.len());
-        codewhale_tui_kit::osc8::strip_ansi_into(text, &mut sanitized);
+        codewhale_sanitize::sanitize::strip_ansi_into(text, &mut sanitized);
         let page = self.current_page_mut();
         page.source = PagerSource::Text(sanitized);
         page.copy_text = Some(text.to_string());
@@ -881,7 +887,11 @@ impl PagerView {
     }
 
     pub(crate) fn from_diff(title: impl Into<String>, diff: String, width: u16) -> Self {
-        let page = PagerPage::new(title, PagerSource::Diff(diff), usize::from(width));
+        let page = PagerPage::new(
+            title,
+            PagerSource::Diff(diff, DiffSummaryLabels::default()),
+            usize::from(width),
+        );
         Self::from_pages(vec![page], 0)
     }
 
@@ -1114,6 +1124,12 @@ impl ModalView for PagerView {
             return;
         }
         self.locale = locale;
+        for page in &mut self.pages {
+            if let PagerSource::Diff(_, labels) = &mut page.source {
+                *labels = crate::tui::history::diff_summary_labels(locale);
+                page.rows = RefCell::default();
+            }
+        }
         self.localize_evidence_page();
         if !self.search_input.trim().is_empty() {
             self.update_search_matches();
@@ -1505,7 +1521,7 @@ impl ModalView for PagerView {
         } else {
             page.title.clone()
         };
-        let inner = render_underwater_surface(area, buf, title);
+        let inner = render_rounded_surface(area, buf, title, None, self.search_mode);
 
         // The wrapping action footer is anchored to the bottom of the inner
         // area; the body fills the rows above it.
@@ -1580,7 +1596,7 @@ impl ModalView for PagerView {
                 )));
             }
         }
-        let content = render_modal_footer(inner, buf, &hints);
+        let content = render_rounded_footer(inner, buf, &hints);
 
         // Re-wrap before reserving the search-status row: resizing can make
         // the first match appear or the last match disappear. Hold a column
@@ -1597,7 +1613,7 @@ impl ModalView for PagerView {
 
         // `content` already excludes the border, padding, and footer rows.
         let mut visible_height = usize::from(content.height).min(PAGER_RETAINED_ROWS);
-        let diff_status = matches!(&page.source, PagerSource::Diff(_));
+        let diff_status = matches!(&page.source, PagerSource::Diff(..));
         let display_notice = page.rows.borrow().display_notice(self.locale, false);
         if diff_status || display_notice.is_some() {
             visible_height = visible_height.saturating_sub(1);
@@ -1724,10 +1740,6 @@ impl ModalView for PagerView {
 
         let content =
             render_panel_scroll_rail(content, buf, row_count, scroll, visible_height, true);
-        // Explicit base ink: the surface behind this body is always WHALE_BG,
-        // so spans without their own fg must not inherit a dark terminal
-        // default (light-profile terminals would render them as black-on-black).
-        // Ratatui paints the base first; styled spans patch over it.
         let paragraph = Paragraph::new(visible_lines)
             .wrap(Wrap { trim: false })
             .style(Style::default().fg(palette::TEXT_PRIMARY));
@@ -1898,6 +1910,26 @@ mod tests {
 
     fn key_mod(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, mods)
+    }
+
+    #[test]
+    fn diff_summary_follows_the_ui_locale() {
+        let diff = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,2 +1,2 @@\n line\n+new\n-old\n";
+        let mut view = PagerView::from_diff("diff", diff.to_string(), 80);
+        let english = view.body_text();
+        assert!(
+            english.starts_with("summary: 1 file, +1 -1, 1 hunk\n"),
+            "{english}"
+        );
+        assert!(english.contains("src/a.rs +1 -1 1 hunk"), "{english}");
+
+        view.set_locale(Locale::ZhHans);
+        let chinese = view.body_text();
+        assert!(
+            chinese.starts_with("摘要：1个文件，+1 -1，1处改动\n"),
+            "{chinese}"
+        );
+        assert!(chinese.contains("src/a.rs +1 -1 1处改动"), "{chinese}");
     }
 
     fn ctrl(code: KeyCode) -> KeyEvent {
@@ -2325,10 +2357,6 @@ mod tests {
 
     #[test]
     fn body_cells_carry_explicit_ink_on_the_dark_surface() {
-        // The pager paints WHALE_BG behind the body, so a body span
-        // without its own fg inherits the terminal default, black ink on
-        // light-profile terminals, i.e. black-on-black. The base paragraph
-        // style must pin every text cell to the body ink.
         let p = make_pager(3);
         let area = Rect::new(0, 0, 100, 16);
         let mut buf = Buffer::empty(area);
@@ -2344,7 +2372,8 @@ mod tests {
             }
             for x in 0..area.width {
                 let cell = &buf[(x, y)];
-                if cell.symbol().trim().is_empty() {
+                let symbol = cell.symbol();
+                if symbol.trim().is_empty() || matches!(symbol, "│" | "|") {
                     continue;
                 }
                 assert_eq!(
@@ -2753,11 +2782,10 @@ mod tests {
                 assert!(text.contains(label), "{w}x{h}: footer missing '{label}'");
             }
 
-            // Composited frame is fully opaque.
             assert!(!text.contains('X'), "{w}x{h}: background bleed-through");
             assert_eq!(
                 buf[(w / 2, h / 2)].bg,
-                palette::WHALE_BG,
+                palette::COMPOSER_BG,
                 "{w}x{h}: modal interior must be opaque"
             );
 

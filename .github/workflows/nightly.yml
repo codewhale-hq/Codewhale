@@ -62,24 +62,27 @@ jobs:
             binary: codewhale.exe
             primary_artifact: codewhale-windows-arm64.exe
             alias_artifact: codew-windows-arm64.exe
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: 1.100.0
           targets: ${{ matrix.target }}
       - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.19.0"
         id: sccache
         continue-on-error: true
       - name: Enable sccache
-        if: steps.sccache.outcome == 'success'
+        if: steps.sccache.outcome == 'success' && runner.os != 'Windows'
         shell: bash
         run: |
           {
             echo "SCCACHE_GHA_ENABLED=true"
             echo "RUSTC_WRAPPER=sccache"
             echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1"
+            echo "SCCACHE_IDLE_TIMEOUT=0"
           } >> "${GITHUB_ENV}"
       - uses: Swatinem/rust-cache@v2
         with:
@@ -99,7 +102,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y binutils musl-tools
-          rustup target add --toolchain stable aarch64-unknown-linux-musl
+          rustup target add aarch64-unknown-linux-musl
       - name: Build
         shell: bash
         # Nightly artifacts are disposable smoke binaries (14-day retention),

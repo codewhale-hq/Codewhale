@@ -82,6 +82,10 @@ pub struct SessionObservation {
 }
 
 impl SessionObservation {
+    pub(crate) fn same_session_target(&self, other: &Self) -> bool {
+        self.sessions_dir == other.sessions_dir && self.session_id == other.session_id
+    }
+
     pub(crate) fn same_checkpoint(&self, other: &Self) -> bool {
         self.sessions_dir == other.sessions_dir
             && self.session_id == other.session_id
@@ -254,26 +258,11 @@ impl SessionWriteReceipt {
 
     pub fn project_usage_record(
         &self,
-        scope: crate::cost_status::CostScopeToken,
         record: &crate::cost_status::RuntimeUsageRecord,
         cost: &mut SessionCostSnapshot,
     ) -> io::Result<Option<(u64, u64)>> {
-        if !record.has_captured_origin() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "usage projection has no captured native origin",
-            ));
-        }
-        if record.is_acknowledged() && !record.has_live_projection() {
-            return Ok(None);
-        }
-        let (store, session) = self.session_scope(false)?;
-        if !record.matches_session_projection(&store, &session)? {
-            return Ok(None);
-        }
         let mut candidate = cost.clone();
         let delta = candidate.project_usage_record(record)?;
-        crate::cost_status::acknowledge_usage_projection(scope, record)?;
         *cost = candidate;
         Ok(Some(delta))
     }
@@ -1062,6 +1051,8 @@ pub struct SessionMetadata {
     /// kind (`custom` for every named custom route).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec_route_binding: Option<crate::route_receipt::ExecRouteBinding>,
     /// Workspace directory
     pub workspace: PathBuf,
     /// Optional mode label (agent/plan/etc.)
@@ -1302,6 +1293,11 @@ fn default_model_provider() -> String {
 
 impl SessionMetadata {
     pub fn set_model_provider_route(&mut self, kind: &str, identity: Option<&str>) {
+        if self.exec_route_binding.is_some()
+            && (self.model_provider != kind || self.model_provider_id.as_deref() != identity)
+        {
+            self.exec_route_binding = Some(crate::route_receipt::ExecRouteBinding::default());
+        }
         self.model_provider = kind.to_string();
         self.model_provider_id = identity.map(str::to_string);
     }
@@ -1393,16 +1389,6 @@ pub struct SessionCostSnapshot {
     pub usage_source_fingerprints: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub accounted_usage_sources: BTreeMap<String, crate::cost_status::UsageSourceContribution>,
-    #[serde(
-        default,
-        skip_serializing_if = "BTreeMap::is_empty",
-        deserialize_with = "crate::cost_status::deserialize_missing_usage_sources"
-    )]
-    pub missing_usage_sources: BTreeMap<String, crate::cost_status::MissingUsageCoverage>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub missing_usage_overflowed: bool,
-    #[serde(skip)]
-    pub in_flight_usage_sources: BTreeSet<String>,
     /// Written by builds that track coverage, so a reader can tell "this session
     /// genuinely had zero money-metered turns" apart from "this session predates
     /// coverage tracking". Absent on legacy rows.
@@ -1415,15 +1401,16 @@ impl SessionCostSnapshot {
         &mut self,
         record: &crate::cost_status::RuntimeUsageRecord,
     ) -> io::Result<(u64, u64)> {
-        self.project_usage_record_inner(record, false)
+        let key = crate::cost_status::usage_source_fingerprint(&record.source_id);
+        self.project_usage_record_by_key(&key, record)
     }
 
-    pub(crate) fn project_usage_record_inner(
+    pub(crate) fn project_usage_record_by_key(
         &mut self,
+        key: &str,
         record: &crate::cost_status::RuntimeUsageRecord,
-        protected_ledger: bool,
     ) -> io::Result<(u64, u64)> {
-        let key = crate::cost_status::usage_source_fingerprint(&record.source_id);
+        let key = key.to_string();
         let previous = self.accounted_usage_sources.get(&key);
         if let Some(previous) = previous {
             previous.validate()?;
@@ -1432,30 +1419,34 @@ impl SessionCostSnapshot {
             return Ok((0, 0));
         }
         if self.usage_source_fingerprints.contains(&key) && previous.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "legacy accounted usage has no provable prior contribution; correction retained",
-            ));
+            return Ok((0, 0));
         }
-        if !protected_ledger {
-            if !record.has_live_projection() {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "usage source has no admitted live publication",
-                ));
-            }
-            record.permits_replacement(previous.map(|previous| &previous.record))?;
+        if record.route_conflicts_with(previous.map(|previous| &previous.record)) {
+            tracing::warn!(
+                source_id = %record.source_id,
+                "usage source changed its captured route; recording unknown cost"
+            );
+            self.unpriced_reasons
+                .insert("request_outcome_unknown".to_string());
+            self.cny_unpriced_reasons
+                .insert("request_outcome_unknown".to_string());
+            return Ok((0, 0));
+        }
+        if !record.supersedes(previous.map(|previous| &previous.record)) {
+            return Ok((0, 0));
+        }
+        let unknown_fallback;
+        let record = if let Err(error) = record.validate() {
+            tracing::warn!(%error, source_id = %record.source_id, "usage record validation failed; continuing with unknown cost");
+            unknown_fallback = crate::cost_status::unknown_cost_record(
+                &record.source_id,
+                &record.usage.route,
+                record.usage.usage.clone(),
+            );
+            &unknown_fallback
         } else {
-            record.validate()?;
-            if let Some(previous) = previous
-                && !record.follows_protected(&previous.record)?
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "protected usage projection changed route or spend owner",
-                ));
-            }
-        }
+            record
+        };
         let next = crate::cost_status::UsageSourceContribution::for_record(record);
         let old_tokens =
             previous.map_or(0, crate::cost_status::UsageSourceContribution::total_tokens);
@@ -1544,108 +1535,34 @@ impl SessionCostSnapshot {
             self.unpriced_reasons.insert(reason.label().to_string());
             self.cny_unpriced_reasons.insert(reason.label().to_string());
         }
-        if let Some(revision) = record.settlement.as_ref() {
-            if matches!(
+        if let Some(revision) = record.settlement.as_ref()
+            && matches!(
                 revision.coverage,
                 crate::llm_client::ProviderUsageCoverage::Missing
                     | crate::llm_client::ProviderUsageCoverage::Incomplete
-            ) {
-                let label = if revision.is_reservation() {
-                    self.in_flight_usage_sources.insert(key.clone());
-                    crate::pricing::UnpricedReason::RequestInProgress.label()
-                } else {
-                    self.in_flight_usage_sources.remove(&key);
-                    revision.reason.label()
-                };
-                self.unpriced_reasons.insert(label.to_string());
-                self.cny_unpriced_reasons.insert(label.to_string());
-                if self.missing_usage_sources.len() < crate::cost_status::MAX_MISSING_USAGE_SOURCES
-                    || self.missing_usage_sources.contains_key(&key)
-                {
-                    self.missing_usage_sources.insert(
-                        key.clone(),
-                        crate::cost_status::MissingUsageCoverage::for_route(
-                            &record.usage.route,
-                            revision.reason,
-                        ),
-                    );
-                } else {
-                    self.missing_usage_overflowed = true;
-                }
+            )
+        {
+            let label = if revision.is_reservation() {
+                crate::pricing::UnpricedReason::RequestInProgress.label()
             } else {
-                self.missing_usage_sources.remove(&key);
-                self.in_flight_usage_sources.remove(&key);
-            }
+                revision.reason.label()
+            };
+            self.unpriced_reasons.insert(label.to_string());
+            self.cny_unpriced_reasons.insert(label.to_string());
         }
+        self.usage_source_fingerprints.insert(key.clone());
+        self.accounted_usage_sources.insert(key, next);
         crate::cost_status::prune_settled_missing_reasons(
-            &self.missing_usage_sources,
-            self.missing_usage_overflowed,
-            &mut self.in_flight_usage_sources,
+            &self.accounted_usage_sources,
             self.unpriced_turns,
             self.cny_unpriced_turns,
             &mut self.unpriced_reasons,
             &mut self.cny_unpriced_reasons,
         );
-        self.usage_source_fingerprints.insert(key.clone());
-        self.accounted_usage_sources.insert(key, next);
         let total = self.total_estimate();
         self.displayed_cost_high_water_usd = self.displayed_cost_high_water_usd.max(total.usd);
         self.displayed_cost_high_water_cny = self.displayed_cost_high_water_cny.max(total.cny);
         Ok((old_tokens, new_tokens))
-    }
-
-    fn absorb_late_background_cost(&mut self, pool: &crate::cost_status::PendingBackgroundCost) {
-        let pool = crate::cost_status::project_missing_usage_ledger(
-            &mut self.missing_usage_sources,
-            &mut self.missing_usage_overflowed,
-            &mut self.unpriced_turns,
-            &mut self.cny_unpriced_turns,
-            pool,
-        );
-        let estimate = crate::pricing::CostEstimate {
-            usd: self.subagent_cost_usd,
-            cny: self.subagent_cost_cny,
-        }
-        .saturating_add(pool.estimate);
-        self.subagent_cost_usd = estimate.usd;
-        self.subagent_cost_cny = estimate.cny;
-        self.priced_turns = self.priced_turns.saturating_add(pool.priced_turns);
-        self.unpriced_turns = self.unpriced_turns.saturating_add(pool.unpriced_turns);
-        self.cny_priced_turns = self.cny_priced_turns.saturating_add(pool.cny_priced_turns);
-        self.cny_unpriced_turns = self
-            .cny_unpriced_turns
-            .saturating_add(pool.cny_unpriced_turns);
-        self.unpriced_reasons
-            .extend(pool.unpriced_reasons.iter().map(ToString::to_string));
-        self.cny_unpriced_reasons
-            .extend(pool.cny_unpriced_reasons.iter().map(ToString::to_string));
-        crate::cost_status::prune_settled_missing_reasons(
-            &self.missing_usage_sources,
-            self.missing_usage_overflowed,
-            &mut self.in_flight_usage_sources,
-            self.unpriced_turns,
-            self.cny_unpriced_turns,
-            &mut self.unpriced_reasons,
-            &mut self.cny_unpriced_reasons,
-        );
-        self.unpriced_classes
-            .extend(pool.unpriced_classes.iter().map(ToString::to_string));
-        self.pricing_provenances
-            .extend(pool.pricing_provenances.iter().map(ToString::to_string));
-        self.live_pricing_defects
-            .extend(pool.live_pricing_defects.iter().map(ToString::to_string));
-        self.live_pricing_unusable_defects.extend(
-            pool.live_pricing_unusable_defects
-                .iter()
-                .map(ToString::to_string),
-        );
-        self.route_receipts
-            .extend(pool.route_receipts.iter().cloned());
-        self.usage_source_fingerprints
-            .extend(pool.usage_source_fingerprints.iter().cloned());
-        let total = self.total_estimate();
-        self.displayed_cost_high_water_usd = self.displayed_cost_high_water_usd.max(total.usd);
-        self.displayed_cost_high_water_cny = self.displayed_cost_high_water_cny.max(total.cny);
     }
 
     /// Session + subagent spend as **one** dual-currency accumulator.
@@ -1999,6 +1916,8 @@ pub struct SavedTurnOutcome {
     pub status: crate::core::events::TurnOutcomeStatus,
     /// User-facing error text, secrets redacted.
     pub error: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
     pub ended_at: DateTime<Utc>,
     /// Transcript messages that existed when the turn ended. Resume places
     /// the notice after that many messages (clamped to the transcript).
@@ -2009,7 +1928,11 @@ impl SavedTurnOutcome {
     /// Build the persisted record for a failed turn. Redacts before bounding
     /// so a cut can never leave half a secret behind.
     pub fn failed(error: &str, after_message_count: usize) -> Self {
-        let redacted = codewhale_secrets::redact::redact_secrets(error.trim());
+        Self::failed_with_code(error, None, after_message_count)
+    }
+
+    pub fn failed_with_code(error: &str, code: Option<&str>, after_message_count: usize) -> Self {
+        let redacted = codewhale_sanitize::redact::redact_secrets(error.trim());
         let error = if redacted.chars().count() > MAX_SAVED_TURN_OUTCOME_ERROR_CHARS {
             let mut cut: String = redacted
                 .chars()
@@ -2020,9 +1943,14 @@ impl SavedTurnOutcome {
         } else {
             redacted
         };
+        let code = code
+            .map(|value| value.trim().trim_matches(['[', ']']).trim())
+            .filter(|value| !value.is_empty())
+            .map(codewhale_sanitize::redact::redact_secrets);
         Self {
             status: crate::core::events::TurnOutcomeStatus::Failed,
             error,
+            code,
             ended_at: Utc::now(),
             after_message_count,
         }
@@ -2090,9 +2018,29 @@ pub struct SavedSession {
     /// record resume, export, and the Runtime API read back.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub turn_outcomes: Vec<SavedTurnOutcome>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub delegated_writes: std::collections::BTreeMap<u64, Vec<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "read_saved_agent_preset"
+    )]
     pub agent_preset: Option<String>,
 }
+
+fn read_saved_agent_preset<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(
+        match <Option<serde_json::Value> as serde::Deserialize>::deserialize(deserializer)? {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(id)) => Some(id),
+            Some(other) => Some(other.to_string()),
+        },
+    )
+}
+
 impl SavedSession {
     pub fn capture_publication(
         &mut self,
@@ -2276,6 +2224,7 @@ impl SavedSession {
             model,
             model_provider: default_model_provider(),
             model_provider_id: None,
+            exec_route_binding: None,
             workspace,
             mode: None,
             cost: SessionCostSnapshot::default(),
@@ -2304,6 +2253,7 @@ impl SavedSession {
             composer_color: None,
             last_auto_route: None,
             turn_outcomes: Vec::new(),
+            delegated_writes: std::collections::BTreeMap::new(),
             agent_preset: None,
         })
     }
@@ -2775,6 +2725,39 @@ impl SessionManager {
         &self.sessions_dir
     }
 
+    pub fn exec_route_binding_key(sessions_dir: &Path, create: bool) -> anyhow::Result<[u8; 32]> {
+        use ring::rand::SecureRandom as _;
+        let directory = sessions_dir.join(".exec-route");
+        let directory = if create {
+            codewhale_config::private_directory::PrivateDirectory::open(&directory)?
+        } else {
+            codewhale_config::private_directory::PrivateDirectory::inspect(&directory)?
+        };
+        let name = "key";
+        let read = || -> anyhow::Result<Option<[u8; 32]>> {
+            directory
+                .read_private_receipt(name, 32)?
+                .map(|(bytes, _)| {
+                    bytes
+                        .try_into()
+                        .map_err(|_| anyhow::anyhow!("invalid exec route binding key"))
+                })
+                .transpose()
+        };
+        if let Some(key) = read()? {
+            return Ok(key);
+        }
+        anyhow::ensure!(create, "exec route binding key is missing");
+        let mut key = [0u8; 32];
+        ring::rand::SystemRandom::new()
+            .fill(&mut key)
+            .map_err(|_| anyhow::anyhow!("could not generate an exec route binding key"))?;
+        if let Err(error) = directory.write_owned_file(name, &key, false) {
+            return read()?.ok_or(error);
+        }
+        Ok(key)
+    }
+
     /// The live-lease file for `session_id`; see [`set_live_session`].
     fn live_lease_path(&self, session_id: &str, create_dir: bool) -> io::Result<PathBuf> {
         let (late_path, _) = if create_dir {
@@ -3036,13 +3019,48 @@ impl SessionManager {
     }
 
     fn write_late_usage_ledger(path: &Path, ledger: &LateUsageLedger) -> io::Result<()> {
-        let bytes = serde_json::to_vec(ledger)
+        let mut bytes = serde_json::to_vec(ledger)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_LATE_USAGE_LEDGER_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "late usage ledger exceeds its size bound",
-            ));
+        let limit = usize::try_from(MAX_LATE_USAGE_LEDGER_BYTES).unwrap_or(usize::MAX);
+        if bytes.len() > limit {
+            let mut remaining_bytes = bytes.len();
+            let mut pruned = 0;
+            for record in ledger
+                .records
+                .iter()
+                .filter(|record| record.diagnostic_only)
+            {
+                let record_len = serde_json::to_vec(record)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+                    .len();
+                pruned += 1;
+                let comma = usize::from(pruned < ledger.records.len());
+                remaining_bytes -= record_len + comma;
+                if remaining_bytes <= limit {
+                    break;
+                }
+            }
+            if remaining_bytes > limit {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "late usage ledger exceeds its size bound",
+                ));
+            }
+            let mut compacted = ledger.clone();
+            let mut remaining = pruned;
+            compacted.records.retain(|record| {
+                if record.diagnostic_only && remaining > 0 {
+                    remaining -= 1;
+                    return false;
+                }
+                true
+            });
+            bytes = serde_json::to_vec(&compacted)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            tracing::warn!(
+                pruned,
+                "compacted late usage diagnostic receipts to fit the ledger bound"
+            );
         }
         let parent = path.parent().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "usage ledger has no parent")
@@ -3156,7 +3174,6 @@ impl SessionManager {
         let _guard = lock.write()?;
         if Self::late_usage_is_deleted(&path)? {
             Self::sync_late_usage_ledger(&path.with_extension("deleted"))?;
-            crate::cost_status::retire_session_usage_records(&self.sessions_dir, session_id)?;
             return Ok(None);
         }
         write().map(Some)
@@ -3371,87 +3388,15 @@ impl SessionManager {
             .collect())
     }
 
-    pub fn flush_pending_usage(&self, session_id: &str) -> io::Result<()> {
-        self.with_session_write_admission(session_id, || {
-            self.flush_pending_usage_admitted(session_id)
-        })
-        .map(|_| ())
-    }
-
-    fn flush_pending_usage_admitted(&self, session_id: &str) -> io::Result<()> {
-        for record in
-            crate::cost_status::retained_session_usage_records(&self.sessions_dir, session_id)
-        {
-            let Some((store, session, operation, scope)) = record.captured_session_origin()? else {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "retained usage lacks its native Session origin",
-                ));
-            };
-            if store != self.sessions_dir || session != session_id {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "retained usage belongs to another Session origin",
-                ));
-            }
-            if !record.is_acknowledged() {
-                self.persist_runtime_usage_record_admitted(session_id, &operation, &record)?;
-                record.acknowledge_persisted()?;
-                record.acknowledge_live_projection()?;
-                crate::cost_status::record_interactive_runtime_usage(scope, record.clone());
-            }
-            crate::cost_status::retire_session_usage_record(
-                &self.sessions_dir,
-                session_id,
-                &record,
-            );
-        }
-        Ok(())
-    }
-
     pub fn persist_runtime_usage_record(
         &self,
         session_id: &str,
         record: &crate::cost_status::RuntimeUsageRecord,
     ) -> io::Result<bool> {
-        if !record.has_native_producer() {
-            return self
-                .with_session_write_admission(session_id, || {
-                    let (path, _) = self.late_usage_paths(session_id)?;
-                    let ledger = Self::load_late_usage_unlocked(&path)?;
-                    if ledger
-                        .records
-                        .iter()
-                        .any(|old| !old.diagnostic_only && old.runtime_record() == *record)
-                    {
-                        Self::sync_late_usage_ledger(&path)?;
-                        return Ok(true);
-                    }
-                    Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "serialized usage cannot admit a new source or correction",
-                    ))
-                })
-                .map(|handled| handled.unwrap_or(true));
-        }
-        let (store, origin_session, operation) = record.session_destination()?;
-        if store != self.sessions_dir || origin_session != session_id {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "usage source belongs to another captured session origin",
-            ));
-        }
-        let handled = self.with_session_write_admission(session_id, || {
-            let handled =
-                self.persist_runtime_usage_record_admitted(session_id, &operation, record)?;
-            record.acknowledge_persisted()?;
-            record.acknowledge_live_projection()?;
-            Ok(handled)
-        })?;
-        if handled.is_none() {
-            record.acknowledge_persisted()?;
-        }
-        Ok(handled.unwrap_or(true))
+        self.with_session_write_admission(session_id, || {
+            self.persist_runtime_usage_record_admitted(session_id, session_id, record)
+        })
+        .map(|handled| handled.unwrap_or(true))
     }
 
     pub(crate) fn persist_runtime_usage_record_admitted(
@@ -3489,7 +3434,7 @@ impl SessionManager {
             record.settlement = old.settlement.clone();
             record
         });
-        if !record.permits_replacement(previous_record.as_ref())? {
+        if !record.supersedes(previous_record.as_ref()) {
             Self::sync_late_usage_ledger(&path)?;
             return Ok(true);
         }
@@ -3694,7 +3639,10 @@ impl SessionManager {
                     },
                 );
                 source.settlement = record.settlement.clone();
-                match metadata.cost.project_usage_record_inner(&source, true) {
+                match metadata
+                    .cost
+                    .project_usage_record_by_key(&record.source_fingerprint, &source)
+                {
                     Ok((old, new)) => {
                         metadata.total_tokens = metadata
                             .total_tokens
@@ -3702,7 +3650,7 @@ impl SessionManager {
                             .saturating_add(new)
                     }
                     Err(error) => {
-                        tracing::warn!(%error, "saved usage projection refused an unprovable correction");
+                        tracing::warn!(%error, "saved usage projection skipped invalid entry");
                         metadata
                             .cost
                             .unpriced_reasons
@@ -3711,7 +3659,6 @@ impl SessionManager {
                             .cost
                             .cny_unpriced_reasons
                             .insert("usage_correction_unverified".into());
-                        metadata.cost.missing_usage_overflowed = true;
                     }
                 }
                 continue;
@@ -3719,75 +3666,40 @@ impl SessionManager {
             if record.usage.as_ref() == Some(&codewhale_models::Usage::default()) {
                 record.usage = None;
             }
-            if let Some(receipt) = &record.decision
-                && receipt.is_bounded()
-            {
-                metadata
-                    .cost
-                    .route_receipts
-                    .insert(receipt.diagnostic_receipt());
-            }
-            let coverage =
-                crate::cost_status::MissingUsageCoverage::for_route(&record.route, record.reason);
             let source_fingerprint = record.source_fingerprint.clone();
-            let source_id = format!("late:{}", record.source_fingerprint);
-            let mut pending = if let Some(usage) = record.usage.as_ref() {
-                crate::cost_status::background_cost_for_runtime_usage(
-                    &crate::cost_status::RuntimeUsageRecord::legacy(
-                        source_id,
-                        crate::cost_status::EffectiveRouteUsage {
-                            route: record.route,
-                            usage: usage.clone(),
-                        },
-                    ),
+            let source = if let Some(usage) = record.usage.clone() {
+                crate::cost_status::NativeUsageSource::capture(
+                    source_fingerprint.clone(),
+                    crate::cost_status::UsageSpendOwner::Auxiliary,
+                )
+                .prepare(
+                    &record.route,
+                    &usage,
+                    crate::llm_client::ProviderUsageCoverage::Reported,
+                    record.reason,
                 )
             } else {
-                crate::cost_status::background_cost_for_runtime_drop(
-                    &crate::cost_status::RuntimeUsageDropRecord {
-                        reason: record.reason,
-                        source_id,
-                        route: record.route,
-                    },
-                )
+                crate::cost_status::RuntimeUsageDropRecord {
+                    reason: record.reason,
+                    source_id: source_fingerprint.clone(),
+                    route: record.route.clone(),
+                }
+                .as_usage_record()
             };
-            // The sidecar already stores the canonical SHA-256 identity. Do
-            // not hash it again while projecting the receipt into the saved
-            // session, or a concurrent main-snapshot writer that already
-            // contains the response would not dedupe against this overlay.
-            pending.usage_source_fingerprints.clear();
-            pending
-                .usage_source_fingerprints
-                .insert(source_fingerprint.clone());
-            let was_missing = metadata
+            match metadata
                 .cost
-                .missing_usage_sources
-                .contains_key(&source_fingerprint);
-            if metadata
-                .cost
-                .usage_source_fingerprints
-                .contains(&source_fingerprint)
-                && (!was_missing || record.usage.is_none())
+                .project_usage_record_by_key(&source_fingerprint, &source)
             {
-                continue;
+                Ok((old, new)) => {
+                    metadata.total_tokens = metadata
+                        .total_tokens
+                        .saturating_sub(old)
+                        .saturating_add(new);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "saved late usage projection skipped invalid entry");
+                }
             }
-            pending.missing_usage_sources.clear();
-            pending.resolved_missing_usage_sources.clear();
-            if record.usage.is_some() {
-                pending
-                    .resolved_missing_usage_sources
-                    .insert(source_fingerprint.clone());
-            } else {
-                pending
-                    .missing_usage_sources
-                    .insert(source_fingerprint.clone(), coverage);
-            }
-            if let Some(usage) = record.usage {
-                metadata.total_tokens = metadata
-                    .total_tokens
-                    .saturating_add(u64::from(usage.input_tokens))
-                    .saturating_add(u64::from(usage.output_tokens));
-            }
-            metadata.cost.absorb_late_background_cost(&pending);
         }
         if ledger.overflowed {
             let fingerprint = crate::cost_status::usage_source_fingerprint(&format!(
@@ -3938,6 +3850,19 @@ impl SessionManager {
         metadata.title_is_custom = persisted.title_is_custom;
         metadata.archived = persisted.archived;
         metadata.created_at = persisted.created_at;
+        if metadata.exec_route_binding.is_none()
+            && let Some(binding) = persisted.exec_route_binding.as_ref()
+        {
+            metadata.exec_route_binding = Some(
+                if metadata.model_provider == persisted.model_provider
+                    && metadata.model_provider_id == persisted.model_provider_id
+                {
+                    binding.clone()
+                } else {
+                    crate::route_receipt::ExecRouteBinding::default()
+                },
+            );
+        }
         metadata
             .parent_session_id
             .clone_from(&persisted.parent_session_id);
@@ -4131,7 +4056,6 @@ impl SessionManager {
         let result = self
             .with_session_write_admission(&id, || {
                 let base = self.validate_publication_admitted(&session, &receipt)?;
-                self.flush_pending_usage_admitted(&id)?;
                 let persisted = self.load_session_write_metadata(&id)?;
                 session.make_storage_compatible();
                 let checkpoint_receipt = Self::publication_receipt(&session)?;
@@ -4174,7 +4098,6 @@ impl SessionManager {
             .with_session_write_admission(&id, || {
                 let base = self.validate_publication_admitted(&session, &receipt)?;
                 Self::validate_checkpoint_authority(&base)?;
-                self.flush_pending_usage_admitted(&id)?;
                 let persisted = self.load_session_write_metadata(&id)?;
                 Self::prepare_session_write(&mut session, &persisted, true)?;
                 let session_path = self.validated_session_path(&id)?;
@@ -4256,7 +4179,6 @@ impl SessionManager {
                         ));
                     }
                 }
-                self.flush_pending_usage_admitted(&id)?;
                 let persisted = self.load_session_write_metadata(&id)?;
                 session.make_storage_compatible();
                 let checkpoint_receipt = Self::publication_receipt(&session)?;
@@ -4307,23 +4229,6 @@ impl SessionManager {
     #[cfg(any(test, feature = "test-support"))]
     pub fn save_session_bounded(&self, session: SavedSession) -> std::io::Result<PathBuf> {
         self.save_session_inner(session, JournalPrune::Excess, true)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn commit_completed_session(&self, session: SavedSession) -> io::Result<io::Result<()>> {
-        let session_id = session.metadata.id.clone();
-        let exec_mode = session.metadata.mode.as_deref() == Some("exec");
-        let clear = self
-            .with_session_write_admission(&session_id, || {
-                let persisted = self.load_session_write_metadata(&session_id)?;
-                self.write_session_admitted(session, JournalPrune::Excess, true, &persisted)?;
-                Ok(self.clear_session_checkpoint_admitted(&session_id))
-            })?
-            .ok_or_else(Self::retired_session_write_error)?;
-        if let Err(error) = self.cleanup_old_sessions_for_mode(None, Some(exec_mode)) {
-            tracing::warn!(session_id = %session_id, %error, "completion was committed but retention could not be inspected");
-        }
-        Ok(clear)
     }
 
     /// Make a saved document whose file exceeds the full-history transport
@@ -6658,6 +6563,718 @@ impl SessionManager {
             .filter(|s| s.title.to_lowercase().contains(&query_lower))
             .collect())
     }
+
+    pub fn missing_workspace_session_hint(&self, current_workspace: &Path) -> Option<PathBuf> {
+        let catalog = self.scan_session_records().ok()?;
+        let current_abs = make_absolute_lexical(current_workspace).ok();
+        let current_parent = current_abs
+            .as_deref()
+            .and_then(Path::parent)
+            .or_else(|| current_workspace.parent())
+            .map(canonicalize_existing_prefix);
+        let current_name = current_workspace.file_name();
+        catalog.records.into_iter().find_map(|(_, session)| {
+            if session.archived
+                || is_empty_auto_created_session(&session)
+                || workspace_scope_matches(&session.workspace, current_workspace)
+                || session.workspace.exists()
+            {
+                return None;
+            }
+            let same_parent = session
+                .workspace
+                .parent()
+                .map(canonicalize_existing_prefix)
+                .zip(current_parent.as_ref())
+                .is_some_and(|(lhs, rhs)| lhs == *rhs);
+            let same_leaf = session
+                .workspace
+                .file_name()
+                .zip(current_name)
+                .is_some_and(|(lhs, rhs)| lhs == rhs);
+            (same_parent || same_leaf).then_some(session.workspace)
+        })
+    }
+
+    pub fn migrate_workspace(
+        &self,
+        options: &WorkspaceMigrationOptions,
+    ) -> std::io::Result<WorkspaceMigrationReport> {
+        struct MigrationCheckpointEntry {
+            path: PathBuf,
+            legacy: bool,
+            metadata: Option<SessionMetadata>,
+            error: Option<String>,
+        }
+
+        let old_abs = make_absolute_lexical(&options.old_path)?;
+        let new_abs = make_absolute_lexical(&options.new_path)?;
+        let old_is_symlink =
+            fs::symlink_metadata(&old_abs).is_ok_and(|meta| meta.file_type().is_symlink());
+        let resolved_old = if old_is_symlink {
+            old_abs
+                .parent()
+                .zip(old_abs.file_name())
+                .map(|(parent, name)| canonicalize_existing_prefix(parent).join(name))
+                .unwrap_or_else(|| old_abs.clone())
+        } else {
+            canonicalize_existing_prefix(&old_abs)
+        };
+        let resolved_new = if new_abs.exists() {
+            if !new_abs.is_dir() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "New workspace path {} is not a directory",
+                        options.new_path.display()
+                    ),
+                ));
+            }
+            fs::canonicalize(&new_abs)?
+        } else if options.dry_run {
+            canonicalize_existing_prefix(&new_abs)
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "New workspace directory {} does not exist",
+                    options.new_path.display()
+                ),
+            ));
+        };
+        let old_norm = normalize_workspace_path_for_compare(&old_abs);
+        let new_norm = normalize_workspace_path_for_compare(&resolved_new);
+        if old_norm == new_norm {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Old and new workspace paths are identical",
+            ));
+        }
+        let resolved_old_cmp = normalize_workspace_path_for_compare(&resolved_old);
+        if resolved_old_cmp == new_norm
+            || strip_workspace_prefix(&old_abs, &new_abs).is_some()
+            || strip_workspace_prefix(&new_abs, &old_abs).is_some()
+            || strip_workspace_prefix(&old_abs, &resolved_new).is_some()
+            || strip_workspace_prefix(&resolved_new, &old_abs).is_some()
+            || strip_workspace_prefix(&resolved_old, &resolved_new).is_some()
+            || strip_workspace_prefix(&resolved_new, &resolved_old).is_some()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Old and new workspace paths cannot overlap",
+            ));
+        }
+
+        let remap = |workspace: &Path| {
+            let mapped =
+                remap_workspace_path(workspace, &old_abs, &resolved_new).or_else(|| {
+                    (!old_is_symlink
+                        && normalize_workspace_path_for_compare(&resolved_old)
+                            != normalize_workspace_path_for_compare(&resolved_new))
+                    .then(|| remap_workspace_path(workspace, &resolved_old, &resolved_new))
+                    .flatten()
+                })?;
+            (normalize_workspace_path_for_compare(workspace)
+                != normalize_workspace_path_for_compare(&mapped))
+            .then_some(mapped)
+        };
+        let matches_old = |workspace: &Path| remap(workspace).is_some();
+        let is_under_new = |workspace: &Path| {
+            let abs =
+                make_absolute_lexical(workspace).unwrap_or_else(|_| clean_lexical_path(workspace));
+            let canonical_abs = canonicalize_existing_prefix(&abs);
+            paths_equivalent(workspace, &resolved_new)
+                || strip_workspace_prefix(&abs, &new_abs).is_some()
+                || strip_workspace_prefix(&abs, &resolved_new).is_some()
+                || strip_workspace_prefix(&canonical_abs, &resolved_new).is_some()
+        };
+
+        let mut report = WorkspaceMigrationReport {
+            old_path: old_abs.clone(),
+            new_path: resolved_new.clone(),
+            ..Default::default()
+        };
+
+        let catalog = self.scan_session_records()?;
+        if let Some(warning) = catalog.warning() {
+            report.unreadable.push(warning);
+        }
+        let mut docs_by_id: BTreeMap<String, SessionMetadata> = BTreeMap::new();
+        for (path, metadata) in catalog.records {
+            if path.file_stem().and_then(|s| s.to_str()) != Some(metadata.id.as_str()) {
+                report.unreadable.push(format!(
+                    "{}: session id {} does not match filename",
+                    path.display(),
+                    metadata.id
+                ));
+                continue;
+            }
+            docs_by_id.insert(metadata.id.clone(), metadata);
+        }
+        let mut ckpts_by_id: BTreeMap<String, Vec<MigrationCheckpointEntry>> = BTreeMap::new();
+        match self.list_checkpoints() {
+            Ok(checkpoints) => {
+                for checkpoint in checkpoints {
+                    let is_legacy = matches!(checkpoint.source, CheckpointSource::Legacy);
+                    match self.checkpoint_metadata(&checkpoint) {
+                        Ok(Some(metadata)) => {
+                            let id = metadata.id.clone();
+                            ckpts_by_id
+                                .entry(id)
+                                .or_default()
+                                .push(MigrationCheckpointEntry {
+                                    path: checkpoint.path,
+                                    legacy: is_legacy,
+                                    metadata: Some(metadata),
+                                    error: None,
+                                });
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            if let CheckpointSource::Session(ref id) = checkpoint.source {
+                                ckpts_by_id.entry(id.clone()).or_default().push(
+                                    MigrationCheckpointEntry {
+                                        path: checkpoint.path.clone(),
+                                        legacy: false,
+                                        metadata: None,
+                                        error: Some(format!(
+                                            "{}: {error}",
+                                            checkpoint.path.display()
+                                        )),
+                                    },
+                                );
+                            } else {
+                                report
+                                    .unreadable
+                                    .push(format!("{}: {error}", checkpoint.path.display()));
+                            }
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                report
+                    .unreadable
+                    .push(format!("checkpoints listing: {error}"));
+            }
+        }
+
+        let mut all_ids: std::collections::BTreeSet<String> = docs_by_id.keys().cloned().collect();
+        all_ids.extend(ckpts_by_id.keys().cloned());
+
+        let target_ids: Vec<String> = if let Some(selector) = options.session_id.as_deref() {
+            let resolved_id = match self.resolve_recoverable_session_id_prefix(selector) {
+                Ok(id) => id,
+                Err(_err) if all_ids.contains(selector) => selector.to_string(),
+                Err(err) => return Err(err),
+            };
+            vec![resolved_id]
+        } else {
+            all_ids.into_iter().collect()
+        };
+
+        let tasks_runtime_dir = (self.sessions_dir.file_name().and_then(|n| n.to_str())
+            == Some("sessions"))
+        .then(|| {
+            self.sessions_dir
+                .parent()
+                .map(|root| root.join("tasks").join("runtime"))
+        })
+        .flatten()
+        .filter(|dir| dir.join("threads").is_dir())
+        .or_else(|| {
+            let dir = crate::task_manager::default_tasks_dir().join("runtime");
+            dir.join("threads").is_dir().then_some(dir)
+        });
+
+        for id in target_ids {
+            let doc_meta = docs_by_id.get(&id);
+            let ckpt_entries = ckpts_by_id.get(&id).map(Vec::as_slice).unwrap_or(&[]);
+            let doc_matches_old = doc_meta.is_some_and(|meta| matches_old(&meta.workspace));
+            let ckpt_matches_old = ckpt_entries.iter().any(|entry| {
+                entry
+                    .metadata
+                    .as_ref()
+                    .is_some_and(|meta| matches_old(&meta.workspace))
+            });
+            let doc_already_new = doc_meta.is_some_and(|meta| is_under_new(&meta.workspace));
+            let ckpt_already_new = ckpt_entries.iter().any(|entry| {
+                entry
+                    .metadata
+                    .as_ref()
+                    .is_some_and(|meta| is_under_new(&meta.workspace))
+            });
+
+            if options.session_id.is_some()
+                && !doc_matches_old
+                && !ckpt_matches_old
+                && !doc_already_new
+                && !ckpt_already_new
+            {
+                let actual = doc_meta
+                    .or_else(|| {
+                        ckpt_entries
+                            .iter()
+                            .find_map(|entry| entry.metadata.as_ref())
+                    })
+                    .map(|m| m.workspace.display().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "Session {id} belongs to workspace {actual}, not {}",
+                        old_abs.display()
+                    ),
+                ));
+            }
+            if !doc_matches_old && !ckpt_matches_old && !doc_already_new && !ckpt_already_new {
+                if doc_meta.is_none() && ckpt_entries.iter().all(|entry| entry.metadata.is_none()) {
+                    report
+                        .unreadable
+                        .extend(ckpt_entries.iter().filter_map(|entry| entry.error.clone()));
+                }
+                continue;
+            }
+
+            let mut candidate_bindings = Vec::new();
+            let mut seen_store_dirs = std::collections::HashSet::new();
+            let mut push_binding = |binding: crate::runtime_threads::RuntimeStoreBinding| {
+                if seen_store_dirs.insert(binding.data_dir.clone()) {
+                    candidate_bindings.push(binding);
+                }
+            };
+            if let Some(binding) = doc_meta.and_then(|meta| meta.runtime_store.clone()) {
+                push_binding(binding);
+            }
+            for entry in ckpt_entries {
+                if let Some(binding) = entry
+                    .metadata
+                    .as_ref()
+                    .and_then(|meta| meta.runtime_store.clone())
+                {
+                    push_binding(binding);
+                }
+            }
+            let session_dir = self.sessions_dir.join(&id);
+            if fs::symlink_metadata(&session_dir).is_ok_and(|meta| meta.file_type().is_symlink()) {
+                push_binding(crate::runtime_threads::RuntimeStoreBinding {
+                    data_dir: session_dir.join("runtime"),
+                    execution_scope: String::new(),
+                });
+            } else if let Ok(entries) = fs::read_dir(&session_dir) {
+                for entry in entries.flatten() {
+                    if !is_runtime_store_dir_name(&entry.file_name()) {
+                        continue;
+                    }
+                    let path = entry.path();
+                    if fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+                        push_binding(crate::runtime_threads::RuntimeStoreBinding {
+                            data_dir: path,
+                            execution_scope: String::new(),
+                        });
+                    } else if path.is_dir()
+                        && let Ok(binding) =
+                            crate::runtime_threads::RuntimeStoreBinding::for_store_dir(&path)
+                    {
+                        push_binding(binding);
+                    }
+                }
+            }
+            drop(push_binding);
+            if candidate_bindings.is_empty()
+                && let Some(tasks_dir) = tasks_runtime_dir.as_ref()
+            {
+                let tasks_has_symlink = tasks_dir
+                    .parent()
+                    .into_iter()
+                    .chain(std::iter::once(tasks_dir.as_path()))
+                    .any(|p| {
+                        fs::symlink_metadata(p).is_ok_and(|meta| meta.file_type().is_symlink())
+                    });
+                if tasks_has_symlink {
+                    candidate_bindings.push(crate::runtime_threads::RuntimeStoreBinding {
+                        data_dir: tasks_dir.clone(),
+                        execution_scope: String::new(),
+                    });
+                } else if let Ok(binding) =
+                    crate::runtime_threads::RuntimeStoreBinding::for_store_dir(tasks_dir)
+                {
+                    candidate_bindings.push(binding);
+                }
+            }
+
+            if options.dry_run {
+                if self.is_session_live_anywhere(&id) {
+                    report.busy_sessions.push(id);
+                    continue;
+                }
+                let mut thread_ids = Vec::new();
+                let mut hold_failed = false;
+                let mut store_busy = false;
+                let mut session_filter = std::collections::HashSet::new();
+                session_filter.insert(id.clone());
+                for binding in &candidate_bindings {
+                    if !binding.data_dir.is_dir() {
+                        continue;
+                    }
+                    match binding.preview_migrate_session_workspace(
+                        &self.sessions_dir,
+                        Some(&session_filter),
+                        &old_abs,
+                        &resolved_new,
+                    ) {
+                        Ok(Some((mut found, skipped))) => {
+                            if found.is_empty()
+                                && !old_is_symlink
+                                && resolved_old != old_abs
+                                && let Ok(Some((alt_found, _))) = binding
+                                    .preview_migrate_session_workspace(
+                                        &self.sessions_dir,
+                                        Some(&session_filter),
+                                        &resolved_old,
+                                        &resolved_new,
+                                    )
+                            {
+                                found = alt_found;
+                            }
+                            thread_ids.extend(found);
+                            report.unreadable.extend(skipped);
+                        }
+                        Ok(None) => {
+                            store_busy = true;
+                            break;
+                        }
+                        Err(error) => {
+                            report
+                                .unreadable
+                                .push(format!("{id} runtime store: {error}"));
+                            hold_failed = true;
+                            break;
+                        }
+                    }
+                }
+                if store_busy {
+                    report.busy_sessions.push(id);
+                    continue;
+                }
+                if hold_failed || (!doc_matches_old && !ckpt_matches_old && thread_ids.is_empty()) {
+                    continue;
+                }
+                if resolved_new.is_dir() {
+                    let missing_target = doc_meta
+                        .filter(|_| doc_matches_old)
+                        .into_iter()
+                        .chain(
+                            ckpt_entries
+                                .iter()
+                                .filter_map(|entry| entry.metadata.as_ref()),
+                        )
+                        .filter_map(|meta| remap(&meta.workspace))
+                        .find(|next_ws| !next_ws.is_dir());
+                    if let Some(next_ws) = missing_target {
+                        report.unreadable.push(format!(
+                            "{id}: target workspace directory {} does not exist",
+                            next_ws.display()
+                        ));
+                        continue;
+                    }
+                }
+                for entry in ckpt_entries {
+                    if let Some(error) = entry.error.as_ref() {
+                        report.unreadable.push(error.clone());
+                    }
+                }
+                if doc_matches_old {
+                    report.migrated_sessions.push(id.clone());
+                }
+                if ckpt_matches_old {
+                    report.migrated_checkpoints.push(id.clone());
+                }
+                report.migrated_threads.extend(thread_ids);
+                continue;
+            }
+
+            let _lease = match self.reserve_session_for_external_write(&id) {
+                Ok(lease) => lease,
+                Err(error) if error.kind() == io::ErrorKind::ResourceBusy => {
+                    report.busy_sessions.push(id);
+                    continue;
+                }
+                Err(error) => {
+                    report.unreadable.push(format!("{id}: {error}"));
+                    continue;
+                }
+            };
+
+            let mut held_stores = Vec::new();
+            let mut hold_failed = false;
+            let mut store_busy = false;
+            for binding in candidate_bindings {
+                if !binding.data_dir.is_dir() {
+                    continue;
+                }
+                match binding.try_hold_for_sessions_dir(&self.sessions_dir) {
+                    Ok(Some(held)) => held_stores.push(held),
+                    Ok(None) => {
+                        store_busy = true;
+                        break;
+                    }
+                    Err(error) => {
+                        report
+                            .unreadable
+                            .push(format!("{id} runtime store: {error}"));
+                        hold_failed = true;
+                        break;
+                    }
+                }
+            }
+            if store_busy {
+                report.busy_sessions.push(id);
+                continue;
+            }
+            if hold_failed {
+                continue;
+            }
+
+            let mut session_filter = std::collections::HashSet::new();
+            session_filter.insert(id.clone());
+            let mut thread_ids = Vec::new();
+            let mut thread_probe_failed = false;
+            for held in &held_stores {
+                match held.migrate_session_workspace(
+                    Some(&session_filter),
+                    &old_abs,
+                    &resolved_new,
+                    true,
+                    None,
+                ) {
+                    Ok((mut found, skipped)) => {
+                        if found.is_empty()
+                            && !old_is_symlink
+                            && resolved_old != old_abs
+                            && let Ok((alt_found, _)) = held.migrate_session_workspace(
+                                Some(&session_filter),
+                                &resolved_old,
+                                &resolved_new,
+                                true,
+                                None,
+                            )
+                        {
+                            found = alt_found;
+                        }
+                        thread_ids.extend(found);
+                        report.unreadable.extend(skipped);
+                    }
+                    Err(error) => {
+                        report.unreadable.push(format!("{id} threads: {error}"));
+                        thread_probe_failed = true;
+                        break;
+                    }
+                }
+            }
+            if thread_probe_failed {
+                continue;
+            }
+
+            if !doc_matches_old && !ckpt_matches_old && thread_ids.is_empty() {
+                continue;
+            }
+
+            let doc_target_ws = doc_matches_old
+                .then(|| doc_meta.and_then(|meta| remap(&meta.workspace)))
+                .flatten();
+            let mut ckpt_targets = Vec::new();
+            for entry in ckpt_entries {
+                if let Some(ref error) = entry.error {
+                    if !options.dry_run {
+                        report.unreadable.push(error.clone());
+                    }
+                    continue;
+                }
+                if let Some(ref meta) = entry.metadata
+                    && let Some(next_ws) = remap(&meta.workspace)
+                {
+                    ckpt_targets.push((entry.path.clone(), entry.legacy, next_ws));
+                }
+            }
+
+            let mut target_missing = false;
+            if let Some(ref next_ws) = doc_target_ws
+                && !next_ws.is_dir()
+            {
+                report.unreadable.push(format!(
+                    "{id}: target workspace directory {} does not exist",
+                    next_ws.display()
+                ));
+                target_missing = true;
+            }
+            for (_, _, next_ws) in &ckpt_targets {
+                if !next_ws.is_dir() {
+                    report.unreadable.push(format!(
+                        "{id}: target workspace directory {} does not exist",
+                        next_ws.display()
+                    ));
+                    target_missing = true;
+                }
+            }
+            if target_missing {
+                continue;
+            }
+
+            let pre_observation = if doc_meta.is_some()
+                && (doc_target_ws.is_some() || !ckpt_targets.is_empty() || !thread_ids.is_empty())
+            {
+                self.with_session_write_admission(&id, || self.observe_session_admitted(&id))
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            };
+
+            if doc_target_ws.is_some() {
+                let doc_write = self.with_session_write_admission(&id, || {
+                    let persisted = self.load_session_write_metadata(&id)?;
+                    let mut session = self.load_session_snapshot_with_limit(&id, None, true)?;
+                    repair_recovered_session(&mut session);
+                    if let Some(next_ws) = remap(&session.metadata.workspace) {
+                        session.metadata.workspace = next_ws;
+                        self.write_session_admitted(
+                            session,
+                            JournalPrune::Keep,
+                            false,
+                            &persisted,
+                        )?;
+                        Ok(true)
+                    } else {
+                        Ok(false)
+                    }
+                });
+                match doc_write {
+                    Ok(Some(true)) => report.migrated_sessions.push(id.clone()),
+                    Ok(Some(false)) => {}
+                    Ok(None) => {
+                        report.unreadable.push(format!("{id}: session retired"));
+                        continue;
+                    }
+                    Err(error) => {
+                        report.unreadable.push(format!("{id}: {error}"));
+                        continue;
+                    }
+                }
+            }
+
+            let mut migrated_any_ckpt = false;
+            for (ckpt_path, legacy, _next_ws) in ckpt_targets {
+                let expected_id = (!legacy).then_some(id.as_str());
+                let ckpt_result = self.with_session_write_admission(&id, || {
+                    let Some(mut checkpoint) =
+                        self.read_checkpoint_file(&ckpt_path, expected_id, true)?
+                    else {
+                        return Ok(false);
+                    };
+                    if checkpoint.metadata.id != id {
+                        return Ok(false);
+                    }
+                    let Some(next_ws) = remap(&checkpoint.metadata.workspace) else {
+                        return Ok(false);
+                    };
+                    let persisted = self.load_session_write_metadata(&id)?;
+                    Self::prepare_session_write(&mut checkpoint, &persisted, true)?;
+                    checkpoint.metadata.workspace = next_ws;
+                    self.hydrate_approval_receipts(&mut checkpoint)?;
+                    checkpoint.make_storage_compatible();
+                    checkpoint.metadata.publication_id = Some(Uuid::new_v4().to_string());
+                    let content = serialize_saved_session(checkpoint)?;
+                    write_atomic(&ckpt_path, content.as_bytes())?;
+                    Ok(true)
+                });
+                match ckpt_result {
+                    Ok(Some(true)) => migrated_any_ckpt = true,
+                    Ok(Some(false)) => {}
+                    Ok(None) => {
+                        report
+                            .unreadable
+                            .push(format!("{}: session retired", ckpt_path.display()));
+                    }
+                    Err(error) => {
+                        report
+                            .unreadable
+                            .push(format!("{}: {error}", ckpt_path.display()));
+                    }
+                }
+            }
+            if migrated_any_ckpt {
+                report.migrated_checkpoints.push(id.clone());
+            }
+
+            let post_observation = if doc_meta.is_some() {
+                self.with_session_write_admission(&id, || self.observe_session_admitted(&id))
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            };
+
+            if !held_stores.is_empty() && (!thread_ids.is_empty() || post_observation.is_some()) {
+                let publication_update = post_observation
+                    .as_ref()
+                    .map(|post| (id.as_str(), pre_observation.as_ref(), post));
+                for held in &held_stores {
+                    match held.migrate_session_workspace(
+                        Some(&session_filter),
+                        &old_abs,
+                        &resolved_new,
+                        false,
+                        publication_update,
+                    ) {
+                        Ok((mut updated, skipped)) => {
+                            if updated.is_empty()
+                                && !old_is_symlink
+                                && resolved_old != old_abs
+                                && let Ok((alt_updated, _)) = held.migrate_session_workspace(
+                                    Some(&session_filter),
+                                    &resolved_old,
+                                    &resolved_new,
+                                    false,
+                                    publication_update,
+                                )
+                            {
+                                updated = alt_updated;
+                            }
+                            report.migrated_threads.extend(updated);
+                            report.unreadable.extend(skipped);
+                        }
+                        Err(error) => {
+                            report
+                                .unreadable
+                                .push(format!("{id} thread update: {error}"));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(report)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkspaceMigrationOptions {
+    pub old_path: PathBuf,
+    pub new_path: PathBuf,
+    pub session_id: Option<String>,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkspaceMigrationReport {
+    pub old_path: PathBuf,
+    pub new_path: PathBuf,
+    pub migrated_sessions: Vec<String>,
+    pub migrated_checkpoints: Vec<String>,
+    pub migrated_threads: Vec<String>,
+    pub busy_sessions: Vec<String>,
+    pub unreadable: Vec<String>,
 }
 
 /// A Runtime store directory inside a session directory: `runtime`, or a
@@ -6695,10 +7312,11 @@ pub fn session_recovery_hint(workspace: &Path, current_session_id: Option<&str>)
     let manager = SessionManager::default_location().ok()?;
     let meta = manager.interrupted_workspace_session(workspace, current_session_id)?;
     Some(format!(
-        "A previous Codewhale session in this workspace (\"{}\", id {}, last active {}) has a recovery checkpoint — it likely ended mid-task. Use session_search/session_get to inspect it and offer to summarize or continue the work; resuming is the user's decision (e.g. /resume).",
+        "A previous Codewhale session in this workspace (\"{}\", id {}, last active {}) has a recovery checkpoint — it likely ended mid-task. To inspect it, call session_get with session_id \"{}\" (load session_get with tool_search first if it is not among your tools), then offer to summarize or continue the work; resuming is the user's decision (e.g. /resume).",
         meta.title,
         truncate_id(&meta.id),
         meta.updated_at.format("%Y-%m-%d %H:%M UTC"),
+        meta.id,
     ))
 }
 
@@ -6768,8 +7386,188 @@ pub fn paths_equivalent(lhs: &Path, rhs: &Path) -> bool {
     let lhs_canonical = fs::canonicalize(lhs).ok();
     let rhs_canonical = fs::canonicalize(rhs).ok();
     match (lhs_canonical, rhs_canonical) {
-        (Some(lhs), Some(rhs)) => lhs == rhs,
-        _ => lhs == rhs,
+        (Some(lhs), Some(rhs)) => {
+            normalize_workspace_path_for_compare(&lhs) == normalize_workspace_path_for_compare(&rhs)
+        }
+        _ => {
+            normalize_workspace_path_for_compare(&canonicalize_existing_prefix(lhs))
+                == normalize_workspace_path_for_compare(&canonicalize_existing_prefix(rhs))
+        }
+    }
+}
+
+fn make_absolute_lexical(path: &Path) -> std::io::Result<PathBuf> {
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    Ok(clean_lexical_path(&joined))
+}
+
+fn clean_lexical_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match out.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    out.pop();
+                }
+                None | Some(Component::ParentDir) => {
+                    out.push(Component::ParentDir);
+                }
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                Some(Component::CurDir) => unreachable!(),
+            },
+            other => out.push(other.as_os_str()),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        out
+    }
+}
+
+fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else if let Ok(cwd) = std::env::current_dir() {
+        cwd.join(path)
+    } else {
+        return clean_lexical_path(path);
+    };
+    let mut resolved = PathBuf::new();
+    let mut missing = Vec::<std::ffi::OsString>::new();
+    let mut prefix_open = true;
+
+    for component in joined.components() {
+        match component {
+            Component::Prefix(prefix) => resolved.push(prefix.as_os_str()),
+            Component::RootDir => resolved.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::Normal(part) => {
+                if prefix_open {
+                    let next = resolved.join(part);
+                    match fs::canonicalize(&next) {
+                        Ok(canon) => {
+                            resolved = canon;
+                        }
+                        Err(_) => {
+                            prefix_open = false;
+                            missing.push(part.to_os_string());
+                        }
+                    }
+                } else {
+                    missing.push(part.to_os_string());
+                }
+            }
+            Component::ParentDir => {
+                if missing.pop().is_some() {
+                    prefix_open = missing.is_empty();
+                } else if let Some(parent) = resolved.parent() {
+                    resolved = parent.to_path_buf();
+                }
+            }
+        }
+    }
+
+    for part in missing {
+        resolved.push(part);
+    }
+    if resolved.as_os_str().is_empty() {
+        clean_lexical_path(&joined)
+    } else {
+        resolved
+    }
+}
+
+#[cfg(windows)]
+fn normalize_workspace_path_for_compare(path: &Path) -> String {
+    let mut normalized = clean_lexical_path(path)
+        .to_string_lossy()
+        .replace('/', "\\");
+    if let Some(rest) = normalized.strip_prefix(r"\\?\UNC\") {
+        normalized = format!("\\\\{rest}");
+    } else if let Some(rest) = normalized.strip_prefix(r"\\?\") {
+        normalized = rest.to_string();
+    }
+    while normalized.len() > 3 && normalized.ends_with('\\') {
+        normalized.pop();
+    }
+    normalized.to_ascii_lowercase()
+}
+
+#[cfg(not(windows))]
+fn normalize_workspace_path_for_compare(path: &Path) -> PathBuf {
+    clean_lexical_path(path)
+}
+
+pub fn shell_quote_path(path: &Path) -> String {
+    let raw = path.display().to_string();
+    if !raw.is_empty()
+        && raw.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'\\' | b'.' | b'_' | b'-' | b':')
+        })
+    {
+        return raw;
+    }
+    let escaped = raw.replace('\'', "'\\''");
+    format!("'{escaped}'")
+}
+
+pub fn remap_workspace_path(stored: &Path, old_base: &Path, new_base: &Path) -> Option<PathBuf> {
+    let stored_clean = canonicalize_existing_prefix(stored);
+    let stored_raw = clean_lexical_path(stored);
+    let old_clean = canonicalize_existing_prefix(old_base);
+    let old_raw = clean_lexical_path(old_base);
+
+    for (candidate_stored, candidate_old) in [(&stored_raw, &old_raw), (&stored_clean, &old_clean)]
+    {
+        if let Some(suffix) = strip_workspace_prefix(candidate_stored, candidate_old) {
+            let mapped = if suffix.as_os_str().is_empty() {
+                new_base.to_path_buf()
+            } else {
+                new_base.join(suffix)
+            };
+            let mapped = clean_lexical_path(&mapped);
+            if normalize_workspace_path_for_compare(stored)
+                != normalize_workspace_path_for_compare(&mapped)
+            {
+                return Some(mapped);
+            }
+        }
+    }
+    None
+}
+
+fn strip_workspace_prefix(path: &Path, base: &Path) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let norm_path = normalize_workspace_path_for_compare(path);
+        let norm_base = normalize_workspace_path_for_compare(base);
+        if norm_path == norm_base {
+            return Some(PathBuf::new());
+        }
+        let prefix = if norm_base.ends_with('\\') {
+            norm_base
+        } else {
+            format!("{norm_base}\\")
+        };
+        if norm_path.starts_with(&prefix) {
+            let base_count = clean_lexical_path(base).components().count();
+            let suffix: PathBuf = clean_lexical_path(path)
+                .components()
+                .skip(base_count)
+                .collect();
+            return Some(suffix);
+        }
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        path.strip_prefix(base).ok().map(Path::to_path_buf)
     }
 }
 
@@ -7056,6 +7854,7 @@ fn create_saved_session_inner(
             model: model.to_string(),
             model_provider: default_model_provider(),
             model_provider_id: None,
+            exec_route_binding: None,
             workspace: workspace.to_path_buf(),
             mode: mode.map(str::to_string),
             cost: SessionCostSnapshot::default(),
@@ -7082,6 +7881,7 @@ fn create_saved_session_inner(
         composer_color: None,
         last_auto_route: None,
         turn_outcomes: Vec::new(),
+        delegated_writes: std::collections::BTreeMap::new(),
         agent_preset: None,
     }
 }
@@ -7456,7 +8256,7 @@ pub fn strip_thinking_tags(text: &str) -> String {
 }
 
 /// Truncate a string to create a title (character-safe for UTF-8)
-fn truncate_title(s: &str, max_len: usize) -> String {
+pub(crate) fn truncate_title(s: &str, max_len: usize) -> String {
     let s = s.trim();
     // Older sessions may carry a title saved before sanitization existed;
     // never echo raw controls into stdout or the picker. Take the first

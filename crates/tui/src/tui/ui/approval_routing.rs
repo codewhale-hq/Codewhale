@@ -37,6 +37,8 @@ pub(super) fn end_turn_scoped_denials(app: &mut App) {
 pub(super) fn reset_approval_scope_for_new_conversation(app: &mut App) {
     app.approval_session_denied.clear();
     app.approval_session_approved.clear();
+    app.auto_review_blocked_receipts.clear();
+    app.pending_auto_review_retry = None;
     crate::tui::pending_requests::clear_all(app);
 }
 
@@ -113,7 +115,7 @@ pub(super) fn app_auto_approve_enabled(app: &App) -> bool {
 /// Shell/trust bits do not affect disposition; mode + approval_mode + the
 /// full-access shape (Bypass) are what the shared resolver consults.
 fn app_turn_authority_for_approvals(app: &App) -> codewhale_engine::core::authority::TurnAuthority {
-    codewhale_engine::core::authority::TurnAuthority::from_effective_fields(
+    codewhale_engine::core::authority::TurnAuthority::for_tui_surface(
         app.mode,
         true,
         false,
@@ -134,7 +136,7 @@ pub(super) fn auto_approval_decider(
         false,
         false,
         approval_force_prompt,
-        false,
+        "",
     ) {
         ApprovalRequestDisposition::AutoApprove => {
             codewhale_engine::approval_log::ApprovalDecider::Posture
@@ -155,8 +157,7 @@ pub(super) fn resolve_ui_approval_disposition(
         is_session_approved_for_tool(app, tool_name, grouping_key),
         is_session_denied_for_key(app, approval_key),
         approval_force_prompt,
-        // This namespace is minted by the Engine, not by plugin card text.
-        approval_key.starts_with("extcall:ext:"),
+        approval_key,
     );
     // Full Access holds a required prompt only because a programme with no
     // person at the card must not be stranded by one. This surface always has

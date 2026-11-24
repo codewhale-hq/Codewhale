@@ -59,7 +59,7 @@ const classBody = (source, name) => {
   const next = rest.search(/\n\s*(export )?(class |function )/)
   return next < 0 ? rest : rest.slice(0, next)
 }
-const defines = (body, name) => new RegExp(`^\\s*(async\\s+)?${name}\\s*\\(`, 'm').test(body)
+const defines = (body, name) => new RegExp(`^\\s*(?:async\\s*(?:\\*\\s*)?|\\*\\s*)?${name}\\s*\\(`, 'm').test(body)
 
 test('every curated method is defined on the class that serves it', () => {
   const served = {
@@ -68,6 +68,10 @@ test('every curated method is defined on the class that serves it', () => {
     mcp: ['shims/mcp.ts', 'McpShim'], shellHooks: ['shims/shell-hooks.ts', 'ShellHooks'], remote: ['dsh/remote.ts', 'RemoteService'],
     sessions: ['dsh/session-prompt.ts', 'SessionsService'], userQuestions: ['root.ts', 'UserQuestionsShim'],
     subagents: ['dsh/agents.ts', 'SubagentsShim'], systemPrompt: ['dsh/session-prompt.ts', 'SystemPromptService'],
+    workspace: ['dsh/workspace.ts', 'WorkspaceService'], llm: ['dsh/llm.ts', 'LlmService'],
+    credentials: ['dsh/network.ts', 'CredentialsService'], settings: ['dsh/settings.ts', 'SettingsService'],
+    pluginManager: ['dsh/catalog.ts', 'PluginManagerService'], deepseekAccount: ['dsh/catalog.ts', 'DeepSeekAccountService'],
+    terminal: ['dsh/terminal.ts', 'TerminalService'],
   }
   const cordis = { events: ['events', ['on', 'once', 'emit']], reflect: ['reflect', ['provide', 'get']], registry: ['registry', ['get', 'resolve']] }
   const agentsSource = text(src('dsh/agents.ts'))
@@ -114,7 +118,7 @@ test('an output that is not JSON is refused as DSH refuses it', async () => {
 test('every slot and its seat equal the Engine seat table', () => {
   const block = seatSource.slice(seatSource.indexOf('const DSH_SEAT_TABLE'), seatSource.indexOf('];', seatSource.indexOf('const DSH_SEAT_TABLE')))
   const names = [...block.matchAll(/\(\s*"([^"]+)",\s*DshSeat::/g)].map((m) => m[1])
-  assert.equal(names.length, 30)
+  assert.equal(names.length, 33)
   assert.deepEqual(catalog.client.slots.map((s) => s.slot), names)
   const unsupported = [...block.matchAll(/\(\s*"([^"]+)",\s*DshSeat::Unsupported/g)].map((m) => m[1])
   assert.deepEqual(catalog.client.slots.filter((s) => !s.supported).map((s) => s.slot), unsupported)
@@ -127,23 +131,23 @@ test('every slot and its seat equal the Engine seat table', () => {
 test('the refused events equal the list in root.ts', () => {
   const body = rootSource.slice(rootSource.indexOf('unsupportedDshLifecycle = new Set(['), rootSource.indexOf('])', rootSource.indexOf('unsupportedDshLifecycle = new Set([')))
   const refused = [...body.matchAll(/'([^']+)'/g)].map((m) => m[1])
-  assert.equal(refused.length, 5)
+  assert.equal(refused.length, 4)
   assert.deepEqual(catalog.host.events.filter((e) => e.status === 'refused').map((e) => e.name), refused)
   for (const name of catalog.host.events.filter((e) => e.status === 'supported').map((e) => e.name)) assert.ok(rootSource.includes(`'${name}'`) || text(src('dsh/agents.ts')).includes(`'${name}'`), name)
 })
 
 test('the Service provider answers a directory, one contract, and refuses a name the host lacks', async () => {
   const directory = await ask('host', 'Service', 'listService')
-  assert.equal(directory.services.length, 18)
-  assert.ok(!directory.services.some((s) => s.key === 'fs' || s.key === 'llm'))
+  assert.equal(directory.services.length, 25)
+  assert.ok(!directory.services.some((s) => s.key === 'fs'))
   const one = await ask('host', 'Service', 'listService', { service: 'prompt' })
   assert.equal(one.service.methods[0].name, 'registerSection')
-  await assert.rejects(ask('host', 'Service', 'listService', { service: 'llm' }), /not provided by this host/)
+  await assert.rejects(ask('host', 'Service', 'listService', { service: 'fs' }), /not provided by this host/)
 })
 
 test('the Event provider separates supported from refused', async () => {
   const { events } = await ask('host', 'Event', 'listEvents')
-  assert.deepEqual(events.map((e) => e.status), ['supported', 'supported', 'refused', 'refused', 'refused', 'refused', 'refused'])
+  assert.deepEqual(events.map((e) => e.status), ['supported', 'supported', 'supported', 'refused', 'refused', 'refused', 'refused'])
   assert.equal((await ask('host', 'Event', 'listEvents', { event: 'tools/pre-execute' })).event.name, 'tools/pre-execute')
   await assert.rejects(ask('host', 'Event', 'listEvents', { event: 'subagent/start-x' }), /not known/)
 })
@@ -151,7 +155,7 @@ test('the Event provider separates supported from refused', async () => {
 test('the Config provider lists exactly the row packages, pages, and shows installed rows', async () => {
   const page = await ask('host', 'Config', 'listConfigs')
   assert.deepEqual(page.entries.map((e) => e.name).sort(), Object.keys(compatibility.row_bridges).sort())
-  assert.equal(page.total, 5)
+  assert.equal(page.total, 14)
   const paged = await ask('host', 'Config', 'listConfigs', { limit: 2 })
   assert.equal(paged.entries.length, 2)
   assert.equal(paged.nextOffset, 2)
@@ -188,7 +192,7 @@ test('Slots says no client is connected in a terminal and marks no slot drawn', 
   const out = await ask('client', 'Slots', 'listSubTree')
   assert.equal(out.client.connected, false)
   assert.match(out.client.message, /No client is connected/)
-  assert.equal(out.trees.length, 30)
+  assert.equal(out.trees.length, 33)
   assert.ok(out.trees.every((s) => s.drawn === false))
   assert.deepEqual((await ask('client', 'Slots', 'listSubTree', { root: 'conversation.composer.dock' })).selected.seat, 'conversation.composer.dock')
   assert.equal((await ask('client', 'Slots', 'listSubTree', { root: 'nope' })).requestedRoot.available, false)
@@ -198,7 +202,7 @@ test('Slots marks only the drawn seats when a client is connected', async () => 
   const connected = createCordisInspect({ client: () => ({ connected: true }) })
   const out = await connected.query('client', 'Slots', 'listSubTree')
   const drawn = out.trees.filter((s) => s.drawn).map((s) => s.name)
-  assert.deepEqual(drawn, ['plugins.bundle.config', 'plugins.row.config', 'plugins.tab', 'plugins.detail.section', 'settings.section', 'settings.plugin.item', 'settings.general.item', 'settings.plugins.tab'])
+  assert.deepEqual(drawn, ['plugins.bundle.config', 'plugins.row.config', 'plugins.tab', 'plugins.detail.section', 'plugins.item', 'plugins.detail.actions', 'plugins.detail.badge', 'settings.section', 'settings.plugin.item', 'settings.general.item', 'settings.plugins.tab'])
   const all = createCordisInspect({ client: () => ({ connected: true, drawnSeats: ['conversation.composer.dock'] }) })
   const composer = (await all.query('client', 'Slots', 'listSubTree')).trees.filter((s) => s.drawn).map((s) => s.name)
   assert.ok(composer.includes('conversation.input.dock') && !composer.includes('plugins.tab'))
@@ -210,4 +214,11 @@ test('Theme reports that the frame defines no named tokens', async () => {
   assert.deepEqual(out.tokens, [])
   assert.deepEqual(out.colorSchemes, ['light', 'dark'])
   assert.ok(out.api.some((a) => a.name === 'ctx.theme.overrideTokens'))
+})
+
+test('Tool.listTools description says name, not schema', () => {
+  const withTools = createCordisInspect({ tools: () => [{ name: 'read_file' }] })
+  const toolProvider = withTools.list().find((p) => p.id === 'Tool')
+  const listTools = toolProvider.methods.find((m) => m.name === 'listTools')
+  assert.equal(listTools.description, 'Return the name of every tool currently callable by this agent.')
 })

@@ -26,7 +26,7 @@ use ratatui::{
 };
 
 use crate::tui::app::App;
-use crate::tui::history::{HistoryCell, history_cells_from_message};
+use crate::tui::history::{HistoryCell, history_cells_from_message_with_results};
 use codewhale_engine::tools::subagent::SubAgentStatus;
 use codewhale_localization::MessageId;
 use codewhale_models::Message;
@@ -191,7 +191,7 @@ fn cells_for_messages(messages: &[Message], receipts: &[(String, String)]) -> Ve
     }
     let mut cells = Vec::new();
     for message in messages {
-        cells.extend(history_cells_from_message(message));
+        cells.extend(history_cells_from_message_with_results(message, messages));
         for block in &message.content {
             let Some(key) = block.tool_call_key() else {
                 continue;
@@ -268,7 +268,7 @@ pub(crate) fn settled_result_raw(app: &App, agent_id: &str) -> Option<(String, b
 /// Strip terminal escapes and redact secrets before agent text is shown.
 fn visible_agent_text(text: &str) -> String {
     let mut visible = String::with_capacity(text.len());
-    codewhale_tui_kit::osc8::strip_ansi_into(text, &mut visible);
+    codewhale_sanitize::sanitize::strip_ansi_into(text, &mut visible);
     codewhale_config::persistence::redact_secrets(&visible)
 }
 
@@ -1486,84 +1486,5 @@ mod tests {
             app.agent_focus.as_ref().unwrap().scroll_top.is_none(),
             "following the tail must not flip into a pinned offset"
         );
-    }
-}
-
-#[cfg(test)]
-#[path = "agent_focus/transcript_legacy.rs"]
-mod transcript_legacy;
-
-#[cfg(test)]
-mod mounted_transcript_acceptance {
-    use super::*;
-    use codewhale_localization::Locale;
-    use codewhale_runtime::config::Config;
-    use std::path::PathBuf;
-
-    fn fixture(locale: Locale, offset: Option<usize>) -> App {
-        let mut app = App::new(
-            crate::tui::test_support::test_tui_options(PathBuf::from(".")),
-            &Config::default(),
-        );
-        app.launch.visible = false;
-        app.ui_locale = locale;
-        app.low_motion = true;
-        let mut focus = AgentFocus::new("worker".into(), "Builder 中".into());
-        focus.omitted_messages = 2;
-        focus.cells = vec![
-            HistoryCell::User { content: "Review the changed source".into() },
-            HistoryCell::Assistant { content: "A child receipt with 鲸鱼 cafe\u{0301} and wrapped source.\n\n```rust\nlet x = 1;\n```".into(), streaming: true },
-        ];
-        focus.local_cells.push(HistoryCell::User {
-            content: "Keep this local follow-up".into(),
-        });
-        focus.scroll_top = offset;
-        app.agent_focus = Some(focus);
-        app
-    }
-    #[test]
-    fn mounted_transcript_focused_child_banner_and_scroll_match_frozen_painter() {
-        for &locale in Locale::shipped() {
-            for offset in [None, Some(0), Some(2)] {
-                let (mut actual_app, mut old_app) =
-                    (fixture(locale, offset), fixture(locale, offset));
-                for width in [20, 40, 80, 120] {
-                    for height in [1, 3, 6, 12] {
-                        let area = Rect::new(7, 5, width, height);
-                        let mut actual = Buffer::empty(Rect::new(2, 3, width + 12, height + 8));
-                        for cell in &mut actual.content {
-                            cell.set_symbol("~");
-                        }
-                        let mut expected = actual.clone();
-                        transcript_legacy::render_focus(&mut old_app, area, &mut expected);
-                        render_focus(&mut actual_app, area, &mut actual);
-                        assert_eq!(
-                            actual, expected,
-                            "locale={locale:?} offset={offset:?} area={area:?}"
-                        );
-                        assert_eq!(
-                            actual_app.viewport.last_transcript_area,
-                            old_app.viewport.last_transcript_area
-                        );
-                        assert_eq!(
-                            actual_app.viewport.last_transcript_top,
-                            old_app.viewport.last_transcript_top
-                        );
-                        assert_eq!(
-                            actual_app.viewport.last_transcript_total,
-                            old_app.viewport.last_transcript_total
-                        );
-                        assert_eq!(
-                            actual_app.viewport.last_transcript_visible,
-                            old_app.viewport.last_transcript_visible
-                        );
-                        assert_eq!(
-                            actual_app.agent_focus.as_ref().unwrap().scroll_top,
-                            old_app.agent_focus.as_ref().unwrap().scroll_top
-                        );
-                    }
-                }
-            }
-        }
     }
 }

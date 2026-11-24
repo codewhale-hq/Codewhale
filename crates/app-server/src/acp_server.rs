@@ -7,7 +7,8 @@
 //! Known limits: a slow editor no longer slows a turn, because updates queue
 //! (SDK queue, then 256 frames of up to 8 MiB each) and memory is bounded only
 //! by what one turn emits; `$/cancel_request` for a running `session/prompt` is
-//! not honored (only `session/cancel` is).
+//! not honored (only `session/cancel` is). Requested file arguments carry no
+//! verified full preimage, so live approvals and replay omit structured diffs.
 use agent_client_protocol::Error as SdkError;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::schema as acp;
@@ -170,7 +171,7 @@ impl crate::RuntimeOwnerFrontend for CapturedAcpFrontend {
 }
 
 struct AcpServer {
-    config: Config,
+    config: Arc<Config>,
     model: String,
     default_cwd: PathBuf,
     runtime: Arc<RuntimeThreadManager>,
@@ -208,9 +209,541 @@ enum Inbound {
     Eof,
 }
 type Emit<'a> = &'a mut (dyn FnMut(Outgoing) -> Result<()> + Send);
+struct SessionViewContext {
+    config: Arc<Config>,
+    runtime: Arc<RuntimeThreadManager>,
+    thread_id: String,
+}
+
+struct NewSessionContext {
+    config: Arc<Config>,
+    model: String,
+    default_cwd: PathBuf,
+    runtime: Arc<RuntimeThreadManager>,
+    sessions_dir: PathBuf,
+    config_path: Option<PathBuf>,
+    config_profile: Option<String>,
+    shell_allowed: bool,
+}
+
+struct LoadSessionContext {
+    config: Arc<Config>,
+    runtime: Arc<RuntimeThreadManager>,
+    sessions_dir: PathBuf,
+    config_path: Option<PathBuf>,
+    config_profile: Option<String>,
+    shell_allowed: bool,
+}
+
+struct SetSessionConfigContext {
+    view: SessionViewContext,
+    config_path: Option<PathBuf>,
+    config_profile: Option<String>,
+    shell_allowed: bool,
+}
+
+async fn spawn_blocking_io<T, F>(f: F) -> std::result::Result<T, tokio::task::JoinError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+        f()
+    })
+    .await
+}
+
+async fn create_new_session(
+    ctx: NewSessionContext,
+    params: Value,
+) -> std::result::Result<(String, String), AcpError> {
+    validate_mcp_servers(&params)?;
+    let cwd = absolute_cwd(&params, "session/new")?.unwrap_or(ctx.default_cwd);
+    let identity = ctx
+        .config
+        .active_provider_identity()
+        .map_err(|error| AcpError::internal(error.to_string()))?;
+    let thread = Box::pin(
+        ctx.runtime.create_thread_with_shell_policy(
+            CreateThreadRequest {
+                model: Some(ctx.model),
+                model_provider: Some(identity.persisted_kind().to_string()),
+                model_provider_id: identity.persisted_id().map(str::to_string),
+                workspace: Some(cwd),
+                mode: Some(
+                    if acp_mode(&ctx.config) == AppMode::Plan {
+                        "plan"
+                    } else {
+                        "agent"
+                    }
+                    .to_string(),
+                ),
+                permission_posture: Some(acp_permission_value(&ctx.config).to_string()),
+                allow_shell: Some(ctx.shell_allowed),
+                ..Default::default()
+            },
+            ctx.config_path.as_deref(),
+            ctx.config_profile.as_deref(),
+        ),
+    )
+    .await
+    .map_err(|error| AcpError::internal(error.to_string()))?;
+    let id = uuid::Uuid::new_v4().to_string();
+    Box::pin(crate::runtime_api::sessions::initialize_empty_session(
+        &ctx.runtime,
+        &ctx.sessions_dir,
+        &thread.id,
+        &id,
+    ))
+    .await
+    .map_err(|error| AcpError::internal(error.message))?;
+    Ok((id, thread.id))
+}
+
+async fn list_sessions_from_dir(
+    sessions_dir: PathBuf,
+    params: Value,
+) -> std::result::Result<Value, AcpError> {
+    let cwd = match params.get("cwd") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(path)) if std::path::Path::new(path).is_absolute() => {
+            Some(PathBuf::from(path))
+        }
+        Some(_) => {
+            return Err(AcpError::invalid_params(
+                "session/list cwd must be an absolute path",
+            ));
+        }
+    };
+    let sessions = spawn_blocking_io(move || {
+        codewhale_engine::session_manager::SessionManager::new(sessions_dir)
+            .ok()
+            .map(|manager| manager.list_sessions_lenient())
+            .unwrap_or_default()
+    })
+    .await
+    .map_err(|error| AcpError::internal(format!("list sessions task failed: {error}")))?;
+    let sessions: Vec<acp::SessionInfo> = sessions
+        .into_iter()
+        .filter(|meta| {
+            cwd.as_ref().is_none_or(|cwd| {
+                codewhale_engine::session_manager::paths_equivalent(&meta.workspace, cwd)
+            })
+        })
+        .map(|meta| {
+            acp::SessionInfo::new(
+                meta.id,
+                PathBuf::from(meta.workspace.to_string_lossy().into_owned()),
+            )
+            .title(meta.title)
+            .updated_at(meta.updated_at.to_rfc3339())
+            .meta(codewhale_meta(json!({
+                "createdAt": meta.created_at.to_rfc3339(),
+                "messageCount": meta.message_count,
+            })))
+        })
+        .collect();
+    to_wire(&acp::ListSessionsResponse::new(sessions))
+}
+
+async fn resolve_saved_session_id(
+    sessions_dir: PathBuf,
+    requested: String,
+) -> std::result::Result<String, AcpError> {
+    spawn_blocking_io(move || {
+        let store = codewhale_engine::session_manager::SessionManager::new(sessions_dir)
+            .map_err(|error| AcpError::internal(error.to_string()))?;
+        store
+            .resume_session_by_prefix(&requested)
+            .map(|resumed| resumed.session.metadata.id)
+            .map_err(|error| {
+                AcpError::invalid_params(format!("could not load session {requested}: {error}"))
+            })
+    })
+    .await
+    .map_err(|error| AcpError::internal(format!("load session task failed: {error}")))?
+}
+
+async fn resume_and_configure_loaded_session(
+    ctx: &LoadSessionContext,
+    id: &str,
+) -> std::result::Result<String, AcpError> {
+    let (_, axum::Json(resumed)) =
+        Box::pin(crate::runtime_api::sessions::resume_session_in_runtime(
+            &ctx.runtime,
+            &ctx.sessions_dir,
+            id,
+            crate::runtime_api::sessions::ResumeSessionRequest {
+                model: None,
+                mode: (acp_mode(&ctx.config) == AppMode::Plan).then(|| "plan".to_string()),
+            },
+            (ctx.config_path.as_deref(), ctx.config_profile.as_deref()),
+            Some(ctx.shell_allowed),
+        ))
+        .await
+        .map_err(|error| AcpError::internal(error.message))?;
+    // A saved posture cannot widen the server, and connection terminal
+    // negotiation only narrows the canonical thread's shell ceiling.
+    Box::pin(ctx.runtime.update_thread_with_shell_policy(
+        &resumed.thread_id,
+        UpdateThreadRequest {
+            permission_posture: Some(acp_permission_value(&ctx.config).to_string()),
+            allow_shell: Some(ctx.shell_allowed),
+            ..Default::default()
+        },
+        ctx.config_path.as_deref(),
+        ctx.config_profile.as_deref(),
+    ))
+    .await
+    .map_err(|error| AcpError::internal(error.to_string()))?;
+    Ok(resumed.thread_id)
+}
+
+async fn history_updates_for(
+    sessions_dir: PathBuf,
+    config: Arc<Config>,
+    session_id: String,
+) -> Result<Vec<acp::SessionUpdate>> {
+    use codewhale_models::ContentBlock;
+    let saved = spawn_blocking_io(move || {
+        codewhale_engine::session_manager::SessionManager::new(sessions_dir)?
+            .load_session(&session_id)
+    })
+    .await
+    .map_err(|error| anyhow!("load session history task failed: {error}"))??;
+    let secrets = Box::pin(
+        codewhale_engine::runtime_threads::manager::receipt_secret_values((*config).clone()),
+    )
+    .await?;
+    let mut calls = HashMap::new();
+    let mut updates = Vec::new();
+    for message in &saved.messages {
+        let chunk: Option<fn(acp::ContentChunk) -> acp::SessionUpdate> = match message.role.as_str()
+        {
+            "user" => Some(acp::SessionUpdate::UserMessageChunk),
+            "assistant" => Some(acp::SessionUpdate::AgentMessageChunk),
+            _ => None,
+        };
+        if let Some(chunk) = chunk
+            && !codewhale_engine::runtime_handoff::is_internal_runtime_handoff(message)
+            && codewhale_models::turn_classify::restored_subagent_checkpoint_display(message)
+                .is_none()
+        {
+            let mut chunks = Vec::<String>::new();
+            let mut coalesce = false;
+            for (index, block) in message.content.iter().enumerate() {
+                match block {
+                    ContentBlock::Text { text, .. } => {
+                        if codewhale_engine::runtime_handoff::is_turn_metadata_block(
+                            message, index, text,
+                        ) {
+                            continue;
+                        }
+                        if text.starts_with("[tool_history_repair]")
+                            || (message.role == "assistant"
+                                && codewhale_engine::runtime_handoff::archived_context_parts(text)
+                                    .is_some())
+                        {
+                            coalesce = false;
+                            continue;
+                        }
+                        if coalesce {
+                            if let Some(chunk) = chunks.last_mut() {
+                                if !chunk.is_empty() {
+                                    chunk.push('\n');
+                                }
+                                chunk.push_str(text);
+                            }
+                        } else {
+                            chunks.push(text.clone());
+                        }
+                        coalesce = true;
+                    }
+                    ContentBlock::Thinking { thinking, .. }
+                        if thinking != "(reasoning omitted)" =>
+                    {
+                        coalesce = false;
+                    }
+                    ContentBlock::ToolUse { name, .. } if name == "update_plan" => {
+                        coalesce = false;
+                    }
+                    _ => {}
+                }
+            }
+            updates.extend(
+                chunks
+                    .into_iter()
+                    .map(|text| chunk(acp::ContentChunk::new(acp::ContentBlock::from(text)))),
+            );
+        }
+        for block in &message.content {
+            let Some(key) = block.tool_call_key().map(|key| key.as_str().to_string()) else {
+                continue;
+            };
+            match block {
+                ContentBlock::ToolUse { name, input, .. } => {
+                    let call = PendingToolCall {
+                        execution_id: key.clone(),
+                        name: name.clone(),
+                        input: input.clone(),
+                    };
+                    updates.push(acp::SessionUpdate::ToolCall(tool_call_start(
+                        &call,
+                        &saved.metadata.workspace,
+                        None,
+                    )));
+                    calls.insert(key, call);
+                }
+                ContentBlock::ToolResult {
+                    content, is_error, ..
+                } => {
+                    if let Some(call) = calls.remove(&key) {
+                        let status = if is_error.unwrap_or(false) {
+                            acp::ToolCallStatus::Failed
+                        } else {
+                            acp::ToolCallStatus::Completed
+                        };
+                        let detail =
+                            codewhale_engine::runtime_threads::manager::tool_receipt_detail(
+                                &call.name, content, &secrets,
+                            );
+                        updates.push(acp::SessionUpdate::ToolCallUpdate(tool_call_update(
+                            &call,
+                            &saved.metadata.workspace,
+                            status,
+                            Some(&detail),
+                            &[],
+                            None,
+                        )));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(updates)
+}
+
+async fn current_acp_locale() -> codewhale_localization::Locale {
+    let settings =
+        spawn_blocking_io(|| codewhale_runtime::settings::Settings::load().unwrap_or_default())
+            .await
+            .unwrap_or_default();
+    codewhale_localization::resolve_locale(&settings.locale)
+}
+
+async fn session_view_from(
+    ctx: &SessionViewContext,
+    session_id: &str,
+    locale: codewhale_localization::Locale,
+) -> std::result::Result<acp::NewSessionResponse, AcpError> {
+    use codewhale_localization::{MessageId, tr};
+    let thread = ctx
+        .runtime
+        .get_thread(&ctx.thread_id)
+        .await
+        .map_err(|error| AcpError::internal(error.to_string()))?;
+    let identity = ctx
+        .config
+        .resolve_persisted_provider_identity(
+            thread.model_provider.as_deref(),
+            thread.model_provider_id.as_deref(),
+        )
+        .map_err(AcpError::invalid_params)?;
+    let mut models = codewhale_engine::provider_lake::models_for_provider(&ctx.config, &identity);
+    if !models.contains(&thread.model) {
+        models.push(thread.model.clone());
+    }
+    let mut modes = vec![
+        acp::SessionMode::new("plan", tr(locale, MessageId::AppModePlan).to_string())
+            .description(tr(locale, MessageId::AppModePlanHint).to_string()),
+    ];
+    // #6310: the permission posture is server-owned (a client can never
+    // relax it), but it must be discoverable. Work under Full Access must
+    // not claim that edits ask for approval, and the posture is surfaced
+    // below as a read-only select that names how Full Access is enabled.
+    let posture = acp_approval_mode(&ctx.config);
+    let agent_hint = if posture == ApprovalMode::Bypass {
+        tr(locale, MessageId::HomeYoloModeTip)
+    } else {
+        tr(locale, MessageId::AppModeAgentHint)
+    };
+    if acp_mode(&ctx.config) != AppMode::Plan {
+        modes.insert(
+            0,
+            acp::SessionMode::new("agent", tr(locale, MessageId::AppModeAgent).to_string())
+                .description(agent_hint.to_string()),
+        );
+    }
+    let current_mode = if thread.mode == "plan" {
+        "plan"
+    } else {
+        "agent"
+    };
+    let (posture_value, posture_name, posture_description) = match posture {
+        ApprovalMode::Bypass => (
+            "full-access",
+            MessageId::ConfigChoiceFullAccess,
+            MessageId::PermissionsPostureBypass,
+        ),
+        ApprovalMode::Auto => (
+            "auto-review",
+            MessageId::ConfigChoiceAutoReview,
+            MessageId::PermissionsPostureAuto,
+        ),
+        ApprovalMode::Never => (
+            "never",
+            MessageId::ConfigChoiceNever,
+            MessageId::PermissionsPostureNever,
+        ),
+        ApprovalMode::Suggest | ApprovalMode::AcceptEdits => (
+            "ask",
+            MessageId::ConfigChoiceAsk,
+            MessageId::PermissionsPostureAsk,
+        ),
+    };
+    let mode_choices: Vec<acp::SessionConfigSelectOption> = modes
+        .iter()
+        .map(|mode| {
+            acp::SessionConfigSelectOption::new(mode.id.0.clone(), mode.name.clone())
+                .description(mode.description.clone())
+        })
+        .collect();
+    let model_choices: Vec<acp::SessionConfigSelectOption> = models
+        .iter()
+        .map(|model| acp::SessionConfigSelectOption::new(model.clone(), model.clone()))
+        .collect();
+    let options = vec![
+        acp::SessionConfigOption::select(
+            "mode",
+            tr(locale, MessageId::SettingSubjectMode).to_string(),
+            current_mode,
+            mode_choices,
+        )
+        .category(acp::SessionConfigOptionCategory::Mode),
+        acp::SessionConfigOption::select(
+            "model",
+            tr(locale, MessageId::SettingSubjectModel).to_string(),
+            thread.model.clone(),
+            model_choices,
+        )
+        .category(acp::SessionConfigOptionCategory::Model),
+        // Exactly one option: the posture the server was started
+        // with. Offering a looser value here would let a client relax
+        // the operator's floor.
+        acp::SessionConfigOption::select(
+            "permission",
+            tr(locale, MessageId::SettingSubjectPermissions).to_string(),
+            posture_value,
+            vec![
+                acp::SessionConfigSelectOption::new(
+                    posture_value,
+                    tr(locale, posture_name).to_string(),
+                )
+                .description(tr(locale, posture_description).to_string()),
+            ],
+        )
+        .category(acp::SessionConfigOptionCategory::Other(
+            "_permission".to_string(),
+        ))
+        .meta(codewhale_meta(json!({
+            "readOnly": true,
+            "fullAccess": posture == ApprovalMode::Bypass,
+            "enableFullAccess": tr(locale, MessageId::AcpFullAccessHint).to_string(),
+        }))),
+    ];
+    Ok(acp::NewSessionResponse::new(session_id.to_string())
+        .modes(acp::SessionModeState::new(current_mode, modes))
+        .config_options(options))
+}
+
+fn parse_set_session_config_params(
+    params: &Value,
+) -> std::result::Result<(String, String, String), AcpError> {
+    let session_id = params
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AcpError::invalid_params("sessionId is required"))?;
+    let config_id = params
+        .get("configId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AcpError::invalid_params("configId is required"))?;
+    let value = params
+        .get("value")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AcpError::invalid_params("value must be an offered string option"))?;
+    Ok((
+        session_id.to_string(),
+        config_id.to_string(),
+        value.to_string(),
+    ))
+}
+
+async fn set_session_config_with(
+    ctx: SetSessionConfigContext,
+    session_id: &str,
+    config_id: &str,
+    value: &str,
+) -> std::result::Result<Value, AcpError> {
+    let locale = current_acp_locale().await;
+    let options = Box::pin(session_view_from(&ctx.view, session_id, locale))
+        .await?
+        .config_options
+        .unwrap_or_default();
+    let offered = options.iter().any(|option| {
+        &*option.id.0 == config_id
+            && match &option.kind {
+                acp::SessionConfigKind::Select(select) => match &select.options {
+                    acp::SessionConfigSelectOptions::Ungrouped(choices) => {
+                        choices.iter().any(|choice| &*choice.value.0 == value)
+                    }
+                    _ => false,
+                },
+                _ => false,
+            }
+    });
+    if !offered {
+        return Err(AcpError::invalid_params(
+            "unknown configuration option or value",
+        ));
+    }
+    let request = match config_id {
+        "model" => UpdateThreadRequest {
+            model: Some(value.to_string()),
+            ..Default::default()
+        },
+        "mode" => UpdateThreadRequest {
+            mode: Some(value.to_string()),
+            allow_shell: Some(value != "plan" && ctx.shell_allowed),
+            ..Default::default()
+        },
+        "permission" => {
+            return to_wire(&acp::SetSessionConfigOptionResponse::new(options));
+        }
+        _ => unreachable!("validated offered option"),
+    };
+    Box::pin(ctx.view.runtime.update_thread_with_shell_policy(
+        &ctx.view.thread_id,
+        request,
+        ctx.config_path.as_deref(),
+        ctx.config_profile.as_deref(),
+    ))
+    .await
+    .map_err(|error| AcpError::internal(error.to_string()))?;
+    let options = Box::pin(session_view_from(&ctx.view, session_id, locale))
+        .await?
+        .config_options
+        .unwrap_or_default();
+    to_wire(&acp::SetSessionConfigOptionResponse::new(options))
+}
+
 impl AcpServer {
     fn new(
-        config: Config,
+        config: impl Into<Arc<Config>>,
         model: String,
         default_cwd: PathBuf,
         runtime: Arc<RuntimeThreadManager>,
@@ -219,7 +752,7 @@ impl AcpServer {
         config_profile: Option<String>,
     ) -> Self {
         Self {
-            config,
+            config: config.into(),
             model,
             default_cwd,
             runtime,
@@ -237,7 +770,59 @@ impl AcpServer {
             sessions_dir: self.sessions_dir.clone(),
         }
     }
-    async fn handle_request(
+
+    fn session_view_context(
+        &self,
+        session_id: &str,
+    ) -> std::result::Result<SessionViewContext, AcpError> {
+        let binding = self
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| AcpError::invalid_params("unknown sessionId"))?;
+        Ok(SessionViewContext {
+            config: Arc::clone(&self.config),
+            runtime: Arc::clone(&self.runtime),
+            thread_id: binding.thread_id.clone(),
+        })
+    }
+
+    fn new_session_context(&self) -> NewSessionContext {
+        NewSessionContext {
+            config: Arc::clone(&self.config),
+            model: self.model.clone(),
+            default_cwd: self.default_cwd.clone(),
+            runtime: Arc::clone(&self.runtime),
+            sessions_dir: self.sessions_dir.clone(),
+            config_path: self.config_path.clone(),
+            config_profile: self.config_profile.clone(),
+            shell_allowed: self.shell_allowed(),
+        }
+    }
+
+    fn load_session_context(&self) -> LoadSessionContext {
+        LoadSessionContext {
+            config: Arc::clone(&self.config),
+            runtime: Arc::clone(&self.runtime),
+            sessions_dir: self.sessions_dir.clone(),
+            config_path: self.config_path.clone(),
+            config_profile: self.config_profile.clone(),
+            shell_allowed: self.shell_allowed(),
+        }
+    }
+
+    fn set_session_config_context(
+        &self,
+        session_id: &str,
+    ) -> std::result::Result<SetSessionConfigContext, AcpError> {
+        Ok(SetSessionConfigContext {
+            view: self.session_view_context(session_id)?,
+            config_path: self.config_path.clone(),
+            config_profile: self.config_profile.clone(),
+            shell_allowed: self.shell_allowed(),
+        })
+    }
+
+    fn handle_sync_request(
         &mut self,
         method: &str,
         params: Value,
@@ -256,24 +841,154 @@ impl AcpServer {
                     .unwrap_or(false);
                 Ok(to_wire(&initialize_result(&self.config, terminal_auth))?)
             }
-            "session/new" => Ok(self.new_session(params).await?),
-            "session/list" => Ok(self.list_sessions(params)?),
-            "session/load" => Ok(self.load_session(params).await?),
             "session/listProviders" => Ok(self.list_providers()),
             "session/currentModel" => Ok(self.current_model()),
             "session/selectModel" => Ok(self.select_model(params)?),
-            "session/set_config_option" => Ok(self.set_session_config(params).await?),
+            _ => Err(SdkError::method_not_found().data(Value::String(method.to_string()))),
+        }
+    }
+
+    async fn handle_request_shared(
+        server: &tokio::sync::Mutex<Self>,
+        method: &str,
+        params: Value,
+    ) -> std::result::Result<Value, SdkError> {
+        match method {
+            "initialize"
+            | "session/listProviders"
+            | "session/currentModel"
+            | "session/selectModel" => server.lock().await.handle_sync_request(method, params),
+            "session/list" => {
+                let sessions_dir = server.lock().await.sessions_dir.clone();
+                Ok(Box::pin(list_sessions_from_dir(sessions_dir, params)).await?)
+            }
+            "session/new" => {
+                let ctx = server.lock().await.new_session_context();
+                let (id, thread_id) = Box::pin(create_new_session(ctx, params)).await?;
+                let view_ctx = {
+                    let mut guard = server.lock().await;
+                    guard.remember(id.clone(), thread_id);
+                    guard.session_view_context(&id)?
+                };
+                let locale = current_acp_locale().await;
+                Ok(to_wire(
+                    &Box::pin(session_view_from(&view_ctx, &id, locale)).await?,
+                )?)
+            }
+            "session/load" => Ok(Box::pin(Self::load_session_shared(server, params)).await?),
+            "session/set_config_option" => {
+                let (session_id, config_id, value) = parse_set_session_config_params(&params)?;
+                let ctx = server
+                    .lock()
+                    .await
+                    .set_session_config_context(&session_id)?;
+                Ok(Box::pin(set_session_config_with(
+                    ctx,
+                    &session_id,
+                    &config_id,
+                    &value,
+                ))
+                .await?)
+            }
             "session/set_mode" | "session/set_model" => {
                 let (config_id, field) = if method == "session/set_mode" {
                     ("mode", "modeId")
                 } else {
                     ("model", "modelId")
                 };
-                self.set_session_config(json!({
+                let normalized = json!({
                     "sessionId": params.get("sessionId"),
                     "configId": config_id,
                     "value": params.get(field),
-                }))
+                });
+                let (session_id, config_id, value) = parse_set_session_config_params(&normalized)?;
+                let ctx = server
+                    .lock()
+                    .await
+                    .set_session_config_context(&session_id)?;
+                Box::pin(set_session_config_with(
+                    ctx,
+                    &session_id,
+                    &config_id,
+                    &value,
+                ))
+                .await?;
+                Ok(to_wire(&acp::SetSessionModeResponse::new())?)
+            }
+            _ => Err(SdkError::method_not_found().data(Value::String(method.to_string()))),
+        }
+    }
+
+    async fn load_session_shared(
+        server: &tokio::sync::Mutex<Self>,
+        params: Value,
+    ) -> std::result::Result<Value, AcpError> {
+        validate_mcp_servers(&params)?;
+        absolute_cwd(&params, "session/load")?;
+        let requested = params
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| AcpError::invalid_params("session/load requires sessionId"))?
+            .to_string();
+        let initial = {
+            let guard = server.lock().await;
+            match guard.session_view_context(&requested) {
+                Ok(view_ctx) => Ok(view_ctx),
+                Err(_) => Err(guard.load_session_context()),
+            }
+        };
+        let ctx = match initial {
+            Ok(view_ctx) => {
+                let locale = current_acp_locale().await;
+                return to_wire(&Box::pin(session_view_from(&view_ctx, &requested, locale)).await?);
+            }
+            Err(ctx) => ctx,
+        };
+        let id = resolve_saved_session_id(ctx.sessions_dir.clone(), requested).await?;
+        let existing = {
+            let guard = server.lock().await;
+            guard.session_view_context(&id).ok()
+        };
+        if let Some(view_ctx) = existing {
+            let locale = current_acp_locale().await;
+            return to_wire(&Box::pin(session_view_from(&view_ctx, &id, locale)).await?);
+        }
+        let thread_id = Box::pin(resume_and_configure_loaded_session(&ctx, &id)).await?;
+        let view_ctx = {
+            let mut guard = server.lock().await;
+            guard.remember(id.clone(), thread_id);
+            guard.session_view_context(&id)?
+        };
+        let locale = current_acp_locale().await;
+        to_wire(&Box::pin(session_view_from(&view_ctx, &id, locale)).await?)
+    }
+
+    #[cfg(test)]
+    async fn handle_request(
+        &mut self,
+        method: &str,
+        params: Value,
+    ) -> std::result::Result<Value, SdkError> {
+        match method {
+            "initialize"
+            | "session/listProviders"
+            | "session/currentModel"
+            | "session/selectModel" => self.handle_sync_request(method, params),
+            "session/new" => Ok(Box::pin(self.new_session(params)).await?),
+            "session/list" => Ok(Box::pin(self.list_sessions(params)).await?),
+            "session/load" => Ok(Box::pin(self.load_session(params)).await?),
+            "session/set_config_option" => Ok(Box::pin(self.set_session_config(params)).await?),
+            "session/set_mode" | "session/set_model" => {
+                let (config_id, field) = if method == "session/set_mode" {
+                    ("mode", "modeId")
+                } else {
+                    ("model", "modelId")
+                };
+                Box::pin(self.set_session_config(json!({
+                    "sessionId": params.get("sessionId"),
+                    "configId": config_id,
+                    "value": params.get(field),
+                })))
                 .await?;
                 Ok(to_wire(&acp::SetSessionModeResponse::new())?)
             }
@@ -314,48 +1029,10 @@ impl AcpServer {
         self.insertion_order.push_back(id.clone());
         self.sessions.insert(id, AcpSession { thread_id });
     }
+    #[cfg(test)]
     async fn new_session(&mut self, params: Value) -> std::result::Result<Value, AcpError> {
-        validate_mcp_servers(&params)?;
-        let cwd = absolute_cwd(&params, "session/new")?.unwrap_or_else(|| self.default_cwd.clone());
-        let identity = self
-            .config
-            .active_provider_identity()
-            .map_err(|error| AcpError::internal(error.to_string()))?;
-        let thread = self
-            .runtime
-            .create_thread_with_shell_policy(
-                CreateThreadRequest {
-                    model: Some(self.model.clone()),
-                    model_provider: Some(identity.persisted_kind().to_string()),
-                    model_provider_id: identity.persisted_id().map(str::to_string),
-                    workspace: Some(cwd),
-                    mode: Some(
-                        if acp_mode(&self.config) == AppMode::Plan {
-                            "plan"
-                        } else {
-                            "agent"
-                        }
-                        .to_string(),
-                    ),
-                    permission_posture: Some(self.permission_value().to_string()),
-                    allow_shell: Some(self.shell_allowed()),
-                    ..Default::default()
-                },
-                self.config_path.as_deref(),
-                self.config_profile.as_deref(),
-            )
-            .await
-            .map_err(|error| AcpError::internal(error.to_string()))?;
-        let id = uuid::Uuid::new_v4().to_string();
-        crate::runtime_api::sessions::initialize_empty_session(
-            &self.runtime,
-            &self.sessions_dir,
-            &thread.id,
-            &id,
-        )
-        .await
-        .map_err(|error| AcpError::internal(error.message))?;
-        self.remember(id.clone(), thread.id);
+        let (id, thread_id) = create_new_session(self.new_session_context(), params).await?;
+        self.remember(id.clone(), thread_id);
         self.session_configuration(&id).await
     }
     /// Durable Codewhale sessions an ACP client can resume (#5864).
@@ -365,421 +1042,64 @@ impl AcpServer {
     /// that cannot be read is an empty list, not a failed request: enumeration
     /// is discovery, and a client asking what exists should not be broken by a
     /// missing sessions directory.
-    fn list_sessions(&self, params: Value) -> std::result::Result<Value, AcpError> {
-        let cwd = match params.get("cwd") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(path)) if std::path::Path::new(path).is_absolute() => {
-                Some(PathBuf::from(path))
-            }
-            Some(_) => {
-                return Err(AcpError::invalid_params(
-                    "session/list cwd must be an absolute path",
-                ));
-            }
-        };
-        let sessions =
-            codewhale_engine::session_manager::SessionManager::new(self.sessions_dir.clone())
-                .ok()
-                .map(|manager| manager.list_sessions_lenient())
-                .unwrap_or_default();
-        let sessions: Vec<acp::SessionInfo> = sessions
-            .into_iter()
-            .filter(|meta| {
-                cwd.as_ref().is_none_or(|cwd| {
-                    codewhale_engine::session_manager::paths_equivalent(&meta.workspace, cwd)
-                })
-            })
-            .map(|meta| {
-                acp::SessionInfo::new(
-                    meta.id,
-                    PathBuf::from(meta.workspace.to_string_lossy().into_owned()),
-                )
-                .title(meta.title)
-                .updated_at(meta.updated_at.to_rfc3339())
-                .meta(codewhale_meta(json!({
-                    "createdAt": meta.created_at.to_rfc3339(),
-                    "messageCount": meta.message_count,
-                })))
-            })
-            .collect();
-        to_wire(&acp::ListSessionsResponse::new(sessions))
+    #[cfg(test)]
+    async fn list_sessions(&self, params: Value) -> std::result::Result<Value, AcpError> {
+        list_sessions_from_dir(self.sessions_dir.clone(), params).await
     }
 
+    #[cfg(test)]
     async fn load_session(&mut self, params: Value) -> std::result::Result<Value, AcpError> {
         validate_mcp_servers(&params)?;
         absolute_cwd(&params, "session/load")?;
         let requested = params
             .get("sessionId")
             .and_then(Value::as_str)
-            .ok_or_else(|| AcpError::invalid_params("session/load requires sessionId"))?;
-        if self.sessions.contains_key(requested) {
-            return self.session_configuration(requested).await;
+            .ok_or_else(|| AcpError::invalid_params("session/load requires sessionId"))?
+            .to_string();
+        if self.sessions.contains_key(&requested) {
+            return self.session_configuration(&requested).await;
         }
-        let store =
-            codewhale_engine::session_manager::SessionManager::new(self.sessions_dir.clone())
-                .map_err(|error| AcpError::internal(error.to_string()))?;
-        let saved = store
-            .resume_session_by_prefix(requested)
-            .map_err(|error| {
-                AcpError::invalid_params(format!("could not load session {requested}: {error}"))
-            })?
-            .session;
-        let id = saved.metadata.id;
+        let id = resolve_saved_session_id(self.sessions_dir.clone(), requested).await?;
         if self.sessions.contains_key(&id) {
             return self.session_configuration(&id).await;
         }
-        let (_, axum::Json(resumed)) = crate::runtime_api::sessions::resume_session_in_runtime(
-            &self.runtime,
-            &self.sessions_dir,
-            &id,
-            crate::runtime_api::sessions::ResumeSessionRequest {
-                model: None,
-                mode: (acp_mode(&self.config) == AppMode::Plan).then(|| "plan".to_string()),
-            },
-            (self.config_path.as_deref(), self.config_profile.as_deref()),
-            Some(self.shell_allowed()),
-        )
-        .await
-        .map_err(|error| AcpError::internal(error.message))?;
-        // A saved posture cannot widen the server, and connection terminal
-        // negotiation only narrows the canonical thread's shell ceiling.
-        self.runtime
-            .update_thread_with_shell_policy(
-                &resumed.thread_id,
-                UpdateThreadRequest {
-                    permission_posture: Some(self.permission_value().to_string()),
-                    allow_shell: Some(self.shell_allowed()),
-                    ..Default::default()
-                },
-                self.config_path.as_deref(),
-                self.config_profile.as_deref(),
-            )
-            .await
-            .map_err(|error| AcpError::internal(error.to_string()))?;
-        self.remember(id.clone(), resumed.thread_id);
+        let ctx = self.load_session_context();
+        let thread_id = Box::pin(resume_and_configure_loaded_session(&ctx, &id)).await?;
+        self.remember(id.clone(), thread_id);
         self.session_configuration(&id).await
     }
+    #[cfg(test)]
     async fn history_updates(&self, session_id: &str) -> Result<Vec<acp::SessionUpdate>> {
-        use codewhale_models::ContentBlock;
-        let saved =
-            codewhale_engine::session_manager::SessionManager::new(self.sessions_dir.clone())?
-                .load_session(session_id)?;
-        let secrets =
-            codewhale_engine::runtime_threads::manager::receipt_secret_values(self.config.clone())
-                .await?;
-        let mut calls = HashMap::new();
-        let mut updates = Vec::new();
-        for message in &saved.messages {
-            let chunk: Option<fn(acp::ContentChunk) -> acp::SessionUpdate> =
-                match message.role.as_str() {
-                    "user" => Some(acp::SessionUpdate::UserMessageChunk),
-                    "assistant" => Some(acp::SessionUpdate::AgentMessageChunk),
-                    _ => None,
-                };
-            if let Some(chunk) = chunk
-                && !codewhale_engine::runtime_handoff::is_internal_runtime_handoff(message)
-                && codewhale_models::turn_classify::restored_subagent_checkpoint_display(message)
-                    .is_none()
-            {
-                let mut chunks = Vec::<String>::new();
-                let mut coalesce = false;
-                for (index, block) in message.content.iter().enumerate() {
-                    match block {
-                        ContentBlock::Text { text, .. } => {
-                            if codewhale_engine::runtime_handoff::is_turn_metadata_block(
-                                message, index, text,
-                            ) {
-                                continue;
-                            }
-                            if text.starts_with("[tool_history_repair]")
-                                || (message.role == "assistant"
-                                    && codewhale_engine::runtime_handoff::archived_context_parts(
-                                        text,
-                                    )
-                                    .is_some())
-                            {
-                                coalesce = false;
-                                continue;
-                            }
-                            if coalesce {
-                                if let Some(chunk) = chunks.last_mut() {
-                                    if !chunk.is_empty() {
-                                        chunk.push('\n');
-                                    }
-                                    chunk.push_str(text);
-                                }
-                            } else {
-                                chunks.push(text.clone());
-                            }
-                            coalesce = true;
-                        }
-                        ContentBlock::Thinking { thinking, .. }
-                            if thinking != "(reasoning omitted)" =>
-                        {
-                            coalesce = false;
-                        }
-                        ContentBlock::ToolUse { name, .. } if name == "update_plan" => {
-                            coalesce = false;
-                        }
-                        _ => {}
-                    }
-                }
-                updates.extend(
-                    chunks
-                        .into_iter()
-                        .map(|text| chunk(acp::ContentChunk::new(acp::ContentBlock::from(text)))),
-                );
-            }
-            for block in &message.content {
-                let Some(key) = block.tool_call_key().map(|key| key.as_str().to_string()) else {
-                    continue;
-                };
-                match block {
-                    ContentBlock::ToolUse { name, input, .. } => {
-                        let call = PendingToolCall {
-                            execution_id: key.clone(),
-                            name: name.clone(),
-                            input: input.clone(),
-                        };
-                        updates.push(acp::SessionUpdate::ToolCall(tool_call_start(&call)));
-                        calls.insert(key, call);
-                    }
-                    ContentBlock::ToolResult {
-                        content, is_error, ..
-                    } => {
-                        if let Some(call) = calls.remove(&key) {
-                            let status = if is_error.unwrap_or(false) {
-                                acp::ToolCallStatus::Failed
-                            } else {
-                                acp::ToolCallStatus::Completed
-                            };
-                            let detail =
-                                codewhale_engine::runtime_threads::manager::tool_receipt_detail(
-                                    &call.name, content, &secrets,
-                                );
-                            updates.push(acp::SessionUpdate::ToolCallUpdate(tool_call_update(
-                                &call,
-                                status,
-                                Some(&detail),
-                                &[],
-                            )));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        Ok(updates)
+        history_updates_for(
+            self.sessions_dir.clone(),
+            Arc::clone(&self.config),
+            session_id.to_string(),
+        )
+        .await
     }
-    fn permission_value(&self) -> &'static str {
-        acp_permission_value(&self.config)
-    }
+    #[cfg(test)]
     async fn session_configuration(
         &self,
         session_id: &str,
     ) -> std::result::Result<Value, AcpError> {
-        to_wire(&self.session_view(session_id).await?)
+        let locale = current_acp_locale().await;
+        to_wire(&self.session_view_for_locale(session_id, locale).await?)
     }
-    async fn session_view(
+    #[cfg(test)]
+    async fn session_view_for_locale(
         &self,
         session_id: &str,
+        locale: codewhale_localization::Locale,
     ) -> std::result::Result<acp::NewSessionResponse, AcpError> {
-        use codewhale_localization::{MessageId, resolve_locale, tr};
-        let settings = codewhale_runtime::settings::Settings::load().unwrap_or_default();
-        let locale = resolve_locale(&settings.locale);
-        let binding = self
-            .sessions
-            .get(session_id)
-            .ok_or_else(|| AcpError::invalid_params("unknown sessionId"))?;
-        let thread = self
-            .runtime
-            .get_thread(&binding.thread_id)
-            .await
-            .map_err(|error| AcpError::internal(error.to_string()))?;
-        let identity = self
-            .config
-            .resolve_persisted_provider_identity(
-                thread.model_provider.as_deref(),
-                thread.model_provider_id.as_deref(),
-            )
-            .map_err(AcpError::invalid_params)?;
-        let mut models =
-            codewhale_engine::provider_lake::models_for_provider(&self.config, &identity);
-        if !models.contains(&thread.model) {
-            models.push(thread.model.clone());
-        }
-        let mut modes = vec![
-            acp::SessionMode::new("plan", tr(locale, MessageId::AppModePlan).to_string())
-                .description(tr(locale, MessageId::AppModePlanHint).to_string()),
-        ];
-        // #6310: the permission posture is server-owned (a client can never
-        // relax it), but it must be discoverable. Work under Full Access must
-        // not claim that edits ask for approval, and the posture is surfaced
-        // below as a read-only select that names how Full Access is enabled.
-        let posture = acp_approval_mode(&self.config);
-        let agent_hint = if posture == ApprovalMode::Bypass {
-            tr(locale, MessageId::HomeYoloModeTip)
-        } else {
-            tr(locale, MessageId::AppModeAgentHint)
-        };
-        if acp_mode(&self.config) != AppMode::Plan {
-            modes.insert(
-                0,
-                acp::SessionMode::new("agent", tr(locale, MessageId::AppModeAgent).to_string())
-                    .description(agent_hint.to_string()),
-            );
-        }
-        let current_mode = if thread.mode == "plan" {
-            "plan"
-        } else {
-            "agent"
-        };
-        let (posture_value, posture_name, posture_description) = match posture {
-            ApprovalMode::Bypass => (
-                "full-access",
-                MessageId::ConfigChoiceFullAccess,
-                MessageId::PermissionsPostureBypass,
-            ),
-            ApprovalMode::Auto => (
-                "auto-review",
-                MessageId::ConfigChoiceAutoReview,
-                MessageId::PermissionsPostureAuto,
-            ),
-            ApprovalMode::Never => (
-                "never",
-                MessageId::ConfigChoiceNever,
-                MessageId::PermissionsPostureNever,
-            ),
-            ApprovalMode::Suggest | ApprovalMode::AcceptEdits => (
-                "ask",
-                MessageId::ConfigChoiceAsk,
-                MessageId::PermissionsPostureAsk,
-            ),
-        };
-        let mode_choices: Vec<acp::SessionConfigSelectOption> = modes
-            .iter()
-            .map(|mode| {
-                acp::SessionConfigSelectOption::new(mode.id.0.clone(), mode.name.clone())
-                    .description(mode.description.clone())
-            })
-            .collect();
-        let model_choices: Vec<acp::SessionConfigSelectOption> = models
-            .iter()
-            .map(|model| acp::SessionConfigSelectOption::new(model.clone(), model.clone()))
-            .collect();
-        let options = vec![
-            acp::SessionConfigOption::select(
-                "mode",
-                tr(locale, MessageId::SettingSubjectMode).to_string(),
-                current_mode,
-                mode_choices,
-            )
-            .category(acp::SessionConfigOptionCategory::Mode),
-            acp::SessionConfigOption::select(
-                "model",
-                tr(locale, MessageId::SettingSubjectModel).to_string(),
-                thread.model.clone(),
-                model_choices,
-            )
-            .category(acp::SessionConfigOptionCategory::Model),
-            // Exactly one option: the posture the server was started
-            // with. Offering a looser value here would let a client relax
-            // the operator's floor.
-            acp::SessionConfigOption::select(
-                "permission",
-                tr(locale, MessageId::SettingSubjectPermissions).to_string(),
-                posture_value,
-                vec![
-                    acp::SessionConfigSelectOption::new(
-                        posture_value,
-                        tr(locale, posture_name).to_string(),
-                    )
-                    .description(tr(locale, posture_description).to_string()),
-                ],
-            )
-            .category(acp::SessionConfigOptionCategory::Other(
-                "_permission".to_string(),
-            ))
-            .meta(codewhale_meta(json!({
-                "readOnly": true,
-                "fullAccess": posture == ApprovalMode::Bypass,
-                "enableFullAccess": ACP_FULL_ACCESS_HINT,
-            }))),
-        ];
-        Ok(acp::NewSessionResponse::new(session_id.to_string())
-            .modes(acp::SessionModeState::new(current_mode, modes))
-            .config_options(options))
+        let ctx = self.session_view_context(session_id)?;
+        session_view_from(&ctx, session_id, locale).await
     }
 
+    #[cfg(test)]
     async fn set_session_config(&mut self, params: Value) -> std::result::Result<Value, AcpError> {
-        let session_id = params
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .ok_or_else(|| AcpError::invalid_params("sessionId is required"))?;
-        let config_id = params
-            .get("configId")
-            .and_then(Value::as_str)
-            .ok_or_else(|| AcpError::invalid_params("configId is required"))?;
-        let value = params
-            .get("value")
-            .and_then(Value::as_str)
-            .ok_or_else(|| AcpError::invalid_params("value must be an offered string option"))?;
-        if !self.sessions.contains_key(session_id) {
-            return Err(AcpError::invalid_params("unknown sessionId"));
-        }
-        let options = self
-            .session_view(session_id)
-            .await?
-            .config_options
-            .unwrap_or_default();
-        let offered = options.iter().any(|option| {
-            &*option.id.0 == config_id
-                && match &option.kind {
-                    acp::SessionConfigKind::Select(select) => match &select.options {
-                        acp::SessionConfigSelectOptions::Ungrouped(choices) => {
-                            choices.iter().any(|choice| &*choice.value.0 == value)
-                        }
-                        _ => false,
-                    },
-                    _ => false,
-                }
-        });
-        if !offered {
-            return Err(AcpError::invalid_params(
-                "unknown configuration option or value",
-            ));
-        }
-        let binding = &self.sessions[session_id];
-        let request = match config_id {
-            "model" => UpdateThreadRequest {
-                model: Some(value.to_string()),
-                ..Default::default()
-            },
-            "mode" => UpdateThreadRequest {
-                mode: Some(value.to_string()),
-                allow_shell: Some(value != "plan" && self.shell_allowed()),
-                ..Default::default()
-            },
-            "permission" => {
-                return to_wire(&acp::SetSessionConfigOptionResponse::new(options));
-            }
-            _ => unreachable!("validated offered option"),
-        };
-        self.runtime
-            .update_thread_with_shell_policy(
-                &binding.thread_id,
-                request,
-                self.config_path.as_deref(),
-                self.config_profile.as_deref(),
-            )
-            .await
-            .map_err(|error| AcpError::internal(error.to_string()))?;
-        let options = self
-            .session_view(session_id)
-            .await?
-            .config_options
-            .unwrap_or_default();
-        to_wire(&acp::SetSessionConfigOptionResponse::new(options))
+        let (session_id, config_id, value) = parse_set_session_config_params(&params)?;
+        let ctx = self.set_session_config_context(&session_id)?;
+        set_session_config_with(ctx, &session_id, &config_id, &value).await
     }
 
     fn list_providers(&self) -> Value {
@@ -821,7 +1141,7 @@ impl AcpServer {
                 .config
                 .resolve_provider_selection_identity(provider_name)
                 .map_err(AcpError::invalid_params)?;
-            self.config
+            Arc::make_mut(&mut self.config)
                 .scope_to_provider_identity(&identity)
                 .map_err(AcpError::invalid_params)?;
         }
@@ -830,7 +1150,6 @@ impl AcpServer {
         Ok(self.current_model())
     }
 }
-const ACP_FULL_ACCESS_HINT: &str = "Start the server with `codewhale serve --acp --full-access` (alias `--yolo`), or set `yolo = true` in config.toml. Full Access also turns off Codewhale's own sandbox unless sandbox_mode tightens it; Plan stays read-only.";
 
 fn acp_permission_value(config: &Config) -> &'static str {
     match acp_approval_mode(config) {
@@ -915,8 +1234,9 @@ fn tool_call_kind(call: &PendingToolCall) -> acp::ToolKind {
         "apply_patch" | "write" | "edit" | "write_file" | "edit_file" => acp::ToolKind::Edit,
         "read" | "read_file" => acp::ToolKind::Read,
         "Git" => acp::ToolKind::Read,
-        "bash" | "Bash" | "terminal/run" | "terminal/send" | "terminal/wait"
-        | "terminal/cancel" | "terminal/reset" => acp::ToolKind::Execute,
+        "bash" | "Bash" | "terminal_run" | "terminal_send" | "terminal_wait"
+        | "terminal_cancel" | "terminal_reset" | "terminal/run" | "terminal/send"
+        | "terminal/wait" | "terminal/cancel" | "terminal/reset" => acp::ToolKind::Execute,
         _ => acp::ToolKind::Other,
     }
 }
@@ -932,9 +1252,15 @@ fn tool_call_title(call: &PendingToolCall) -> String {
         .or_else(|| call.input.get("pattern"))
         .or_else(|| call.input.get("task_id"))
         .and_then(Value::as_str);
+    let action = if call.name == "File" {
+        call.input.get("action").and_then(Value::as_str)
+    } else {
+        None
+    };
+    let name = action.map_or_else(|| call.name.clone(), |action| format!("File {action}"));
     match detail {
-        Some(detail) => format!("{}: {}", call.name, detail),
-        None => call.name.clone(),
+        Some(detail) => format!("{name}: {detail}"),
+        None => name,
     }
 }
 
@@ -949,22 +1275,100 @@ fn truncate_for_acp(content: &str) -> String {
     format!("{truncated}\n… [truncated for display; the full result was sent to the model]")
 }
 
-fn tool_call_start(call: &PendingToolCall) -> acp::ToolCall {
-    acp::ToolCall::new(call.execution_id.clone(), tool_call_title(call))
+fn tool_call_location(call: &PendingToolCall, workspace: &Path) -> Option<PathBuf> {
+    matches!(
+        tool_call_kind(call),
+        acp::ToolKind::Read | acp::ToolKind::Edit
+    )
+    .then(|| {
+        ["path", "file_path", "filePath"]
+            .iter()
+            .find_map(|key| call.input.get(*key).and_then(Value::as_str))
+    })
+    .flatten()
+    .filter(|path| !path.is_empty())
+    .and_then(|path| {
+        let resolved = codewhale_engine::tools::spec::resolve_home_path(path)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| workspace.join(path));
+        let normalized = codewhale_engine::tools::spec::normalize_path(&resolved);
+        normalized.to_str().map(PathBuf::from)
+    })
+}
+
+fn tool_call_requested_diffs(_call: &PendingToolCall, _workspace: &Path) -> Vec<acp::Diff> {
+    Vec::new()
+}
+
+fn external_locations(value: &Value) -> Option<Vec<acp::ToolCallLocation>> {
+    value.as_array().map(|entries| {
+        entries
+            .iter()
+            .filter_map(|entry| {
+                let path = entry.get("path").and_then(Value::as_str)?;
+                let mut location = acp::ToolCallLocation::new(PathBuf::from(path));
+                if let Some(line) = entry.get("line").and_then(Value::as_u64) {
+                    location = location.line(line as u32);
+                }
+                Some(location)
+            })
+            .collect()
+    })
+}
+
+fn tool_call_start(
+    call: &PendingToolCall,
+    workspace: &Path,
+    external_locations: Option<Vec<acp::ToolCallLocation>>,
+) -> acp::ToolCall {
+    let foreign = external_locations.is_some();
+    let mut start = acp::ToolCall::new(call.execution_id.clone(), tool_call_title(call))
         .kind(tool_call_kind(call))
-        .status(acp::ToolCallStatus::Pending)
-        .raw_input((!call.input.is_null()).then(|| call.input.clone()))
+        .status(acp::ToolCallStatus::Pending);
+    if let Some(locations) = external_locations {
+        start = start.locations(locations);
+    } else {
+        start = start.locations(
+            tool_call_location(call, workspace)
+                .map(acp::ToolCallLocation::new)
+                .into_iter()
+                .collect(),
+        );
+    }
+    if !foreign {
+        start = start.content(
+            tool_call_requested_diffs(call, workspace)
+                .into_iter()
+                .map(acp::ToolCallContent::Diff)
+                .collect(),
+        );
+    }
+    start.raw_input((!call.input.is_null()).then(|| call.input.clone()))
 }
 
 fn tool_call_update(
     call: &PendingToolCall,
+    workspace: &Path,
     status: acp::ToolCallStatus,
     content: Option<&str>,
     rich_blocks: &[codewhale_tools::ToolResultContentBlock],
+    external_locations: Option<Vec<acp::ToolCallLocation>>,
 ) -> acp::ToolCallUpdate {
+    let foreign = external_locations.is_some();
     let mut fields = acp::ToolCallUpdateFields::new().status(status);
+    if let Some(locations) = external_locations {
+        fields = fields.locations(locations);
+    }
     if content.is_some() || !rich_blocks.is_empty() {
-        let mut blocks = Vec::with_capacity(rich_blocks.len() + usize::from(content.is_some()));
+        let mut blocks = Vec::with_capacity(rich_blocks.len() + 2);
+        if !foreign {
+            blocks.extend(
+                tool_call_requested_diffs(call, workspace)
+                    .into_iter()
+                    .map(acp::ToolCallContent::Diff),
+            );
+        }
         if let Some(content) = content {
             blocks.push(acp::ToolCallContent::from(truncate_for_acp(content)));
         }
@@ -1891,6 +2295,141 @@ mod tests {
     }
 
     #[test]
+    fn file_tool_start_preserves_requests_without_speculative_diffs() {
+        let directory = tempfile::tempdir().expect("workspace");
+        let workspace = directory.path();
+        std::fs::create_dir(workspace.join("src")).expect("source directory");
+        std::fs::write(workspace.join("src/lib.rs"), "prefix a middle c suffix")
+            .expect("existing file");
+        let at = |rel: &str| {
+            codewhale_engine::tools::spec::normalize_path(&workspace.join(rel))
+                .to_string_lossy()
+                .into_owned()
+        };
+        let abs_new = codewhale_engine::tools::spec::normalize_path(&workspace.join("src/lib.rs"));
+        let abs_new_str = abs_new.to_string_lossy().into_owned();
+        let start = |name: &str, input: Value| {
+            to_wire(&tool_call_start(
+                &PendingToolCall {
+                    execution_id: "call-1".to_string(),
+                    name: name.to_string(),
+                    input,
+                },
+                workspace,
+                None,
+            ))
+            .expect("ACP tool call")
+        };
+        let edit = start(
+            "File",
+            json!({"action": "edit", "path": "src/lib.rs", "old_string": "a", "new_string": "b"}),
+        );
+        assert_eq!(edit["locations"], json!([{"path": at("src/lib.rs")}]));
+        assert_eq!(edit["title"], "File edit: src/lib.rs");
+        assert_eq!(edit["rawInput"]["old_string"], "a");
+        assert!(edit.get("content").is_none_or(|c| c == &json!([])));
+        let write = start("write_file", json!({"path": abs_new_str, "content": "hi"}));
+        assert_eq!(write["locations"], json!([{"path": abs_new_str}]));
+        assert!(write.get("content").is_none_or(|c| c == &json!([])));
+        assert_eq!(write["rawInput"]["content"], "hi");
+        let read = start("File", json!({"action": "read", "path": "README.md"}));
+        assert_eq!(read["locations"], json!([{"path": at("README.md")}]));
+        assert!(read.get("content").is_none_or(|c| c == &json!([])));
+        let shell = start("bash", json!({"command": "ls", "path": "x"}));
+        assert!(shell.get("locations").is_none_or(|l| l == &json!([])));
+        let aliased = start("write", json!({"file_path": "a.txt", "content": "x"}));
+        assert_eq!(aliased["locations"], json!([{"path": at("a.txt")}]));
+        let completed = to_wire(&tool_call_update(
+            &PendingToolCall {
+                execution_id: "exec-edit".to_string(),
+                name: "File".to_string(),
+                input: json!({"action": "edit", "path": "src/lib.rs", "search": "a", "replace": "b"}),
+            },
+            workspace,
+            acp::ToolCallStatus::Completed,
+            Some("edited"),
+            &[],
+            None,
+        ))
+        .expect("ACP update");
+        assert_eq!(completed["content"].as_array().unwrap().len(), 1);
+        assert_eq!(completed["content"][0]["content"]["text"], "edited");
+        let home = codewhale_paths::user_home().expect("home");
+        let home_edit = start(
+            "File",
+            json!({"action": "edit", "path": "~/notes.txt", "old_string": "a", "new_string": "b"}),
+        );
+        let expected_home_note =
+            codewhale_engine::tools::spec::normalize_path(&home.join("notes.txt"));
+        assert_eq!(
+            home_edit["locations"],
+            json!([{"path": expected_home_note.to_string_lossy()}])
+        );
+        let edits_array = start(
+            "edit",
+            json!({"path": "src/lib.rs", "edits": [
+                {"oldText": "a", "newText": "b"},
+                {"oldText": "c", "newText": "d"}
+            ]}),
+        );
+        assert!(edits_array.get("content").is_none_or(|c| c == &json!([])));
+        assert_eq!(
+            edits_array["rawInput"]["edits"].as_array().unwrap().len(),
+            2
+        );
+        let encoded = start(
+            "edit",
+            json!({"path": "src/lib.rs", "edits": "[{\"oldText\":\"a\",\"newText\":\"b\"}]"}),
+        );
+        assert!(encoded.get("content").is_none_or(|c| c == &json!([])));
+        let dotted = start(
+            "File",
+            json!({"action": "read", "path": "./sub/../README.md"}),
+        );
+        assert_eq!(dotted["locations"], json!([{"path": at("README.md")}]));
+    }
+
+    #[test]
+    fn external_tool_start_forwards_agent_locations_without_fabricated_diff() {
+        let workspace = Path::new("/work/repo");
+        let start = to_wire(&tool_call_start(
+            &PendingToolCall {
+                execution_id: "call-1".to_string(),
+                name: "File".to_string(),
+                input: json!({"action": "edit", "path": "notes.txt", "edits": [{"oldText": "a", "newText": "b"}]}),
+            },
+            workspace,
+            Some(vec![acp::ToolCallLocation::new(Path::new(
+                "/other/agent-workspace/notes.txt",
+            ))]),
+        ))
+        .expect("ACP tool call");
+        assert_eq!(
+            start["locations"],
+            json!([{"path": "/other/agent-workspace/notes.txt"}])
+        );
+        assert!(start["content"].as_array().is_none_or(|c| c.is_empty()));
+        let suppressed = to_wire(&tool_call_update(
+            &PendingToolCall {
+                execution_id: "call-1".to_string(),
+                name: "File".to_string(),
+                input: json!({"action": "edit", "path": "notes.txt", "edits": [{"oldText": "a", "newText": "b"}]}),
+            },
+            workspace,
+            acp::ToolCallStatus::Completed,
+            Some("edited"),
+            &[],
+            Some(Vec::new()),
+        ))
+        .expect("ACP update");
+        assert!(
+            suppressed["update"]["content"]
+                .as_array()
+                .is_none_or(|c| c.iter().all(|block| block["type"] != "diff"))
+        );
+    }
+
+    #[test]
     fn tool_update_emits_typed_acp_image_content() {
         let call = PendingToolCall {
             execution_id: uuid::Uuid::new_v4().to_string(),
@@ -1899,12 +2438,14 @@ mod tests {
         };
         let update = to_wire(&tool_call_update(
             &call,
+            Path::new("/"),
             acp::ToolCallStatus::Completed,
             Some("screenshot captured"),
             &[codewhale_tools::ToolResultContentBlock::Image {
                 mime_type: "image/png".to_string(),
                 data: "QUJD".to_string(),
             }],
+            None,
         ))
         .expect("ACP update");
         let content = update["content"].as_array().expect("ACP content blocks");
@@ -2047,6 +2588,7 @@ mod tests {
         let listed = rig
             .server
             .list_sessions(json!({"cwd":rig.workspace}))
+            .await
             .unwrap();
         assert_eq!(listed["sessions"].as_array().unwrap().len(), 2);
         let store = codewhale_engine::session_manager::SessionManager::new(
@@ -2465,9 +3007,15 @@ mod tests {
                     .await?;
                 let v = editor.until_permission().await?;
                 assert!(
-                    v.pointer("/params/toolCall/content/0/content/text")
-                        .and_then(Value::as_str)
-                        .is_some_and(|text| !text.is_empty())
+                    v.pointer("/params/toolCall/content")
+                        .and_then(Value::as_array)
+                        .is_some_and(|content| {
+                            content.iter().any(|item| {
+                                item.pointer("/content/text")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|text| !text.is_empty())
+                            })
+                        })
                 );
                 let detail = manager.get_thread_detail(&thread).await?;
                 let pending = detail
@@ -3495,6 +4043,133 @@ mod tests {
         sink.send(update).await?;
         assert!(queued.try_recv().is_err());
         assert!(shared.take_failure().is_some());
+        rig.close().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn acp_full_access_hint_is_localized_for_every_shipped_locale() -> Result<()> {
+        use codewhale_localization::{Locale, MessageId, tr};
+        let mut rig = Rig::new(fixture_config(), vec![])?;
+        let id = rig.new_session().await;
+        let english = tr(Locale::En, MessageId::AcpFullAccessHint);
+        for &locale in Locale::shipped_complete() {
+            let view = to_wire(
+                &rig.server
+                    .session_view_for_locale(&id, locale)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            let hint = view["configOptions"][2]["_meta"]["codewhale"]["enableFullAccess"]
+                .as_str()
+                .expect("permission option must include enableFullAccess hint");
+            assert_eq!(
+                hint,
+                tr(locale, MessageId::AcpFullAccessHint),
+                "{} enableFullAccess did not use localized MessageId::AcpFullAccessHint",
+                locale.tag()
+            );
+            assert!(hint.contains("codewhale serve --acp --full-access"));
+            assert!(hint.contains("--yolo"));
+            assert!(hint.contains("yolo = true"));
+            assert!(hint.contains("sandbox_mode"));
+            if locale != Locale::En {
+                assert_ne!(
+                    hint,
+                    english,
+                    "{} enableFullAccess fell back to English",
+                    locale.tag()
+                );
+            }
+        }
+        rig.close().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn acp_load_session_offloads_store_io_and_releases_server_mutex_across_awaits()
+    -> Result<()> {
+        use std::future::Future;
+        use std::task::{Context, Poll, Waker};
+
+        let mut rig = Rig::new(fixture_config(), vec![])?;
+        let id = rig.new_session().await;
+        let store = codewhale_engine::session_manager::SessionManager::new(
+            rig.server.sessions_dir.clone(),
+        )?;
+        let mut saved = store.load_session(&id)?;
+        saved.messages = serde_json::from_value(Value::Array(
+            (0..64)
+                .map(|i| {
+                    json!({
+                        "role": if i % 2 == 0 { "user" } else { "assistant" },
+                        "content": [{ "type": "text", "text": format!("message-{i}: {}", "x".repeat(512)) }]
+                    })
+                })
+                .collect(),
+        ))?;
+        store.save_session(&saved)?;
+        rig.server.sessions.clear();
+        rig.server.insertion_order.clear();
+
+        let worker_thread = std::thread::current().id();
+        let blocking_thread = super::spawn_blocking_io(|| std::thread::current().id()).await?;
+        assert_ne!(
+            worker_thread, blocking_thread,
+            "spawn_blocking_io must run off the Tokio async worker thread"
+        );
+
+        let placeholder = rig.placeholder();
+        let server = tokio::sync::Mutex::new(std::mem::replace(&mut rig.server, placeholder));
+        let mut load_fut = Box::pin(super::AcpServer::load_session_shared(
+            &server,
+            json!({ "sessionId": id }),
+        ));
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let mut pending_polls = 0usize;
+        let mut concurrent_served = false;
+        let loaded = loop {
+            match load_fut.as_mut().poll(&mut cx) {
+                Poll::Ready(result) => break result.unwrap(),
+                Poll::Pending => {
+                    pending_polls += 1;
+                    assert!(
+                        server.try_lock().is_ok(),
+                        "server mutex must not be held across await points during session/load"
+                    );
+                    if !concurrent_served {
+                        let model = super::AcpServer::handle_request_shared(
+                            &server,
+                            "session/currentModel",
+                            json!({}),
+                        )
+                        .await
+                        .unwrap();
+                        assert!(model.get("model").is_some());
+                        concurrent_served = true;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            }
+        };
+        drop(load_fut);
+        assert!(
+            pending_polls > 0,
+            "session/load must yield off the async worker"
+        );
+        assert!(concurrent_served);
+        assert_eq!(loaded["sessionId"], id);
+
+        let (sessions_dir, config) = {
+            let guard = server.lock().await;
+            (guard.sessions_dir.clone(), guard.config.clone())
+        };
+        let updates = super::history_updates_for(sessions_dir, config, id).await?;
+        assert_eq!(updates.len(), 64);
+
+        rig.server = server.into_inner();
         rig.close().await;
         Ok(())
     }

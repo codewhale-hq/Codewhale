@@ -31,6 +31,7 @@ use codewhale_models::schema_sanitize;
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn ToolSpec>>,
     context: ToolContext,
+    read_only_shell: bool,
     /// Memoised serialised tool catalog. Rebuilt lazily on first
     /// `to_api_tools` call after a mutation; pinned across reads so the
     /// description and schema bytes stay byte-stable for DeepSeek's KV
@@ -54,6 +55,7 @@ impl ToolRegistry {
         Self {
             tools: HashMap::new(),
             context,
+            read_only_shell: false,
             api_cache: OnceLock::new(),
         }
     }
@@ -77,6 +79,13 @@ impl ToolRegistry {
         for tool in tools {
             self.register(tool);
         }
+    }
+
+    pub(crate) fn delegated_mcp_read(
+        &self,
+        name: &str,
+    ) -> Option<Arc<crate::mcp::DelegatedMcpRead>> {
+        self.get(name)?.delegated_mcp_read()
     }
 
     /// Get a tool by name.
@@ -264,6 +273,13 @@ impl ToolRegistry {
         &self.context
     }
 
+    pub fn set_plugin_registry(
+        &mut self,
+        plugins: Option<std::sync::Arc<codewhale_plugins::PluginRegistry>>,
+    ) {
+        self.context.plugin_registry = plugins;
+    }
+
     /// Convert all tools to API Tool format for sending to the model.
     ///
     /// Output is sorted by tool name for **prefix-cache stability** (#263).
@@ -314,6 +330,12 @@ impl ToolRegistry {
                 let mut schema = tool.input_schema();
                 if evidence_only {
                     project_readonly_evidence_schema(tool.name(), &mut schema);
+                } else if tool.name() == "bash"
+                    && (self.read_only_shell
+                        || self.context.shell_policy
+                            == codewhale_agent_contract::worker_profile::ShellPolicy::ReadOnly)
+                {
+                    super::shell::strip_readonly_bash_schema_properties(&mut schema);
                 }
                 schema_sanitize::sanitize(&mut schema);
                 schema_canonicalize::canonicalize_schema(&mut schema);
@@ -493,13 +515,23 @@ impl ToolRegistry {
         for (tool_name, override_cfg) in overrides {
             match override_cfg {
                 codewhale_runtime::config::ToolOverride::Disabled => {
-                    if self.remove_tool(tool_name) {
+                    let canonical = crate::conversation_modes::CREATOR_TOOL_NAMES
+                        .iter()
+                        .copied()
+                        .find(|reserved| reserved.eq_ignore_ascii_case(tool_name));
+                    let removed = self.remove_tool(tool_name)
+                        || canonical.is_some_and(|reserved| self.remove_tool(reserved));
+                    if removed {
                         tracing::info!("Tool '{}' disabled via config override", tool_name);
                     } else {
                         tracing::warn!("Cannot disable tool '{}': not registered", tool_name);
                     }
                 }
-                _ if builtin_names.contains(tool_name) => {
+                _ if builtin_names.contains(tool_name)
+                    || crate::conversation_modes::CREATOR_TOOL_NAMES
+                        .iter()
+                        .any(|reserved| reserved.eq_ignore_ascii_case(tool_name)) =>
+                {
                     tracing::error!("{}", override_refusal_notice(tool_name));
                     refused.push(tool_name.clone());
                 }
@@ -572,6 +604,18 @@ impl ToolRegistry {
                 );
                 continue;
             }
+            if crate::conversation_modes::CREATOR_TOOL_NAMES
+                .iter()
+                .any(|reserved| reserved.eq_ignore_ascii_case(tool.name()))
+            {
+                tracing::error!(
+                    previous_origin = "reserved built-in tool",
+                    plugin_origin = ?tool.registration_origin(),
+                    "Cannot load plugin tool '{}': name is already registered; script tools cannot replace a registered tool, so give the script its own name",
+                    codewhale_runtime::safe_label::SafeLabel::identifier(tool.name())
+                );
+                continue;
+            }
             self.register(tool);
             count += 1;
         }
@@ -613,6 +657,10 @@ pub fn readonly_evidence_tool(tool: &dyn ToolSpec) -> bool {
 }
 
 fn project_readonly_evidence_schema(name: &str, schema: &mut Value) {
+    if name == "bash" {
+        super::shell::strip_readonly_bash_schema_properties(schema);
+        return;
+    }
     if name == "Bash" {
         *schema = super::shell::readonly_bash_input_schema();
         return;
@@ -859,7 +907,8 @@ fn authority_mutation_paths(name: &str, input: &Value) -> Result<Option<Vec<Stri
     let is_patch = canonical == "apply_patch"
         || (name == "File" && input.get("action").and_then(Value::as_str) == Some("patch"));
     if is_patch {
-        let mut patch_input = input.clone();
+        let mut patch_input =
+            codewhale_tools::param_alias::with_canonical_path_argument(input).into_owned();
         if let Some(object) = patch_input.as_object_mut() {
             object.remove("action");
         }
@@ -878,19 +927,33 @@ fn authority_mutation_paths(name: &str, input: &Value) -> Result<Option<Vec<Stri
     if !path_bound {
         return Ok(None);
     }
-    Ok(Some(
-        input
-            .get("path")
-            .or_else(|| input.get("output_path"))
+    Ok(Some(mutation_target_paths(name, input)))
+}
+
+pub(crate) fn mutation_target_paths(name: &str, input: &Value) -> Vec<String> {
+    if name == "pandoc_convert" {
+        return input
+            .get("output_path")
             .and_then(Value::as_str)
-            .map(|path| vec![path.to_string()])
-            .unwrap_or_default(),
-    ))
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+    }
+    let mut paths = Vec::new();
+    for key in codewhale_tools::param_alias::path_argument_keys() {
+        if let Some(path) = input.get(key).and_then(Value::as_str)
+            && !paths.iter().any(|seen| seen == path)
+        {
+            paths.push(path.to_string());
+        }
+    }
+    paths
 }
 
 /// Builder for constructing a `ToolRegistry` with common tools.
 pub struct ToolRegistryBuilder {
     tools: Vec<Arc<dyn ToolSpec>>,
+    read_only_shell: bool,
 }
 
 /// Feature/config-dependent native Agent-mode tool surface.
@@ -946,7 +1009,10 @@ impl ToolRegistryBuilder {
     /// Create a new builder.
     #[must_use]
     pub fn new() -> Self {
-        Self { tools: Vec::new() }
+        Self {
+            tools: Vec::new(),
+            read_only_shell: false,
+        }
     }
 
     /// Add a custom tool.
@@ -1043,6 +1109,11 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(PresentTool))
     }
 
+    #[must_use]
+    pub fn with_show_data_tool(self) -> Self {
+        self.with_tool(Arc::new(super::show_data::ShowDataTool))
+    }
+
     /// Include shell execution tools.
     ///
     /// New turns expose lowercase `bash`; uppercase `Bash` remains a hidden
@@ -1065,8 +1136,9 @@ impl ToolRegistryBuilder {
 
     /// Include only the foreground, direct-argv read-only shell surface.
     #[must_use]
-    pub fn with_read_only_shell_tool(self) -> Self {
+    pub fn with_read_only_shell_tool(mut self) -> Self {
         use super::shell::{BashTool, LowercaseBashTool};
+        self.read_only_shell = true;
         self.with_tool(Arc::new(LowercaseBashTool))
             .with_tool(Arc::new(BashTool::read_only("Bash")))
     }
@@ -1078,13 +1150,18 @@ impl ToolRegistryBuilder {
     pub fn with_terminal_tools(self) -> Self {
         use super::terminal_session::{
             TerminalCancelTool, TerminalResetTool, TerminalRunTool, TerminalSendTool,
-            TerminalWaitTool,
+            TerminalWaitTool, legacy_terminal_tool_aliases,
         };
-        self.with_tool(Arc::new(TerminalRunTool))
+        let mut builder = self
+            .with_tool(Arc::new(TerminalRunTool))
             .with_tool(Arc::new(TerminalSendTool))
             .with_tool(Arc::new(TerminalWaitTool))
             .with_tool(Arc::new(TerminalCancelTool))
-            .with_tool(Arc::new(TerminalResetTool))
+            .with_tool(Arc::new(TerminalResetTool));
+        for alias in legacy_terminal_tool_aliases() {
+            builder = builder.with_tool(alias);
+        }
+        builder
     }
 
     /// OpenHarmony does not include the `portable-pty` dependency, so keep the
@@ -1470,24 +1547,25 @@ impl ToolRegistryBuilder {
     /// MCP tools are marked `defer_loading` by default (except discovery
     /// helpers) to keep the model-visible catalog compact.
     #[must_use]
-    pub fn with_mcp_tools(
+    pub async fn with_mcp_tools(
         mut self,
         mcp_pool: std::sync::Arc<tokio::sync::Mutex<crate::mcp::McpPool>>,
     ) -> Self {
-        // Snapshot the current tool list from the pool (non-blocking).
-        // The adapter lazily resolves at execution time via the pool.
-        if let Ok(pool) = mcp_pool.try_lock() {
-            let tool_servers = pool.resolved_tool_servers();
-            for (name, tool) in pool.all_tools() {
-                let adapter = Arc::new(McpToolAdapter {
-                    server_name: tool_servers.get(&name).cloned(),
-                    name: name.clone(),
-                    tool: tool.clone(),
-                    pool: mcp_pool.clone(),
-                });
-                self.tools.push(adapter);
-            }
+        let pool = mcp_pool.lock().await;
+        let tool_servers = pool.resolved_tool_servers();
+        for (name, tool) in pool.all_tools() {
+            let adapter = Arc::new(McpToolAdapter {
+                delegated_read: tool_servers
+                    .get(&name)
+                    .and_then(|server| pool.delegated_read_for(&name, server, &tool.name)),
+                server_name: tool_servers.get(&name).cloned(),
+                name: name.clone(),
+                tool: tool.clone(),
+                pool: mcp_pool.clone(),
+            });
+            self.tools.push(adapter);
         }
+        drop(pool);
         self
     }
 
@@ -1540,6 +1618,7 @@ impl ToolRegistryBuilder {
         let builder = self
             .with_file_tools()
             .with_present_tool()
+            .with_show_data_tool()
             .with_note_tool()
             .with_search_tools()
             .with_user_input_tool(user_input_limits)
@@ -1737,6 +1816,7 @@ impl ToolRegistryBuilder {
         let blind = context.route_capabilities.image_input
             == codewhale_config::route::CapabilityState::Unsupported;
         let mut registry = ToolRegistry::new(context);
+        registry.read_only_shell = self.read_only_shell;
         registry.register_all(
             self.tools
                 .into_iter()
@@ -1772,6 +1852,7 @@ fn to_snake_case(s: &str) -> String {
 /// Adapter that wraps an MCP tool definition so it can live in the
 /// unified `ToolRegistry` alongside native tools (§5.B).
 struct McpToolAdapter {
+    delegated_read: Option<Arc<crate::mcp::DelegatedMcpRead>>,
     name: String,
     /// Diagnostic snapshot from the pool's exact route projection.
     server_name: Option<String>,
@@ -1792,6 +1873,10 @@ fn is_mcp_read_helper(name: &str) -> bool {
 
 #[async_trait::async_trait]
 impl ToolSpec for McpToolAdapter {
+    fn delegated_mcp_read(&self) -> Option<Arc<crate::mcp::DelegatedMcpRead>> {
+        self.delegated_read.clone()
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -1828,6 +1913,12 @@ impl ToolSpec for McpToolAdapter {
         // network access unless they're known discovery helpers.
         if is_mcp_read_helper(&self.name) {
             vec![ToolCapability::ReadOnly]
+        } else if self.delegated_read.is_some() {
+            vec![
+                ToolCapability::ReadOnly,
+                ToolCapability::Network,
+                ToolCapability::RequiresApproval,
+            ]
         } else {
             vec![ToolCapability::Network, ToolCapability::RequiresApproval]
         }
@@ -1869,6 +1960,15 @@ impl ToolSpec for McpToolAdapter {
             context.account_fence.as_deref(),
         )
         .await?;
+        if context.child_host.is_some()
+            && let Some(grant) = &self.delegated_read
+        {
+            let result = pool
+                .call_delegated_read(grant, &self.name, input, &context.disallowed_tools)
+                .await
+                .map_err(|error| ToolError::permission_denied(error.to_string()))?;
+            return Ok(mcp_result_to_bounded_rich_tool_result(result));
+        }
         let result = pool
             .call_tool_with_disallowed(
                 &self.name,
@@ -1893,11 +1993,16 @@ const MCP_IMAGE_TEXT_PLACEHOLDER: &str = "[MCP image payload removed from text o
 /// verbatim so the model still sees the server's message (#5123-class).
 fn mcp_result_to_rich_tool_result(mut result: Value) -> RichToolResult {
     let mut content_blocks = Vec::new();
+    if let Some(object) = result.as_object_mut() {
+        object.remove("_meta");
+        object.remove("resultType");
+    }
     if let Some(items) = result.get_mut("content").and_then(Value::as_array_mut) {
         for item in items {
             let Some(object) = item.as_object_mut() else {
                 continue;
             };
+            object.remove("_meta");
             if object.get("type").and_then(Value::as_str) != Some("image") {
                 continue;
             }
@@ -1962,6 +2067,7 @@ pub fn mcp_result_to_bounded_rich_tool_result(result: Value) -> RichToolResult {
 #[cfg(test)]
 pub(super) fn mcp_tool_adapter_for_test(name: &str) -> Arc<dyn ToolSpec> {
     Arc::new(McpToolAdapter {
+        delegated_read: None,
         name: name.to_string(),
         server_name: None,
         tool: crate::mcp::McpTool {

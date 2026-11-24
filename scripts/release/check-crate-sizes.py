@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 # crates.io's own number, verbatim: "max upload size is: 10485760".
@@ -48,6 +49,8 @@ def main() -> int:
     target_directory = Path(parsed.get("build_directory") or parsed["target_directory"])
     versions = {package["name"]: package["version"] for package in parsed["packages"]}
 
+    root = Path(parsed["workspace_root"])
+    notices = {name: (root / name).read_bytes() for name in ("LICENSE", "THIRD_PARTY_NOTICES.md", "docs/THIRD_PARTY_NOTICES.md")}
     failures: list[str] = []
     warnings: list[str] = []
     for name in crates:
@@ -67,6 +70,16 @@ def main() -> int:
                 + "; package the release crates first"
             )
             continue
+        with tarfile.open(tarball, "r:gz") as archive:
+            for document, expected in notices.items():
+                member = f"{name}-{version}/codewhale-notices/{document}"
+                try:
+                    packed = archive.getmember(member)
+                except KeyError:
+                    failures.append(f"{name}: missing {document} in package")
+                    continue
+                if not packed.isfile() or archive.extractfile(packed).read() != expected:
+                    failures.append(f"{name}: packaged {document} differs from release source")
         size = tarball.stat().st_size
         status = "ok"
         if size > LIMIT_BYTES:

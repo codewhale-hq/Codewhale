@@ -38,6 +38,16 @@ pub enum KeyStatus {
     Retired,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyRole {
+    Founder,
+    Automation,
+}
+
+pub const AUTOMATION_CHANNEL_SUFFIX: &str = "-models";
+pub const AUTOMATION_MAX_VALIDITY_SECS: u64 = 7 * 24 * 60 * 60;
+pub const AUTOMATION_MAX_MODELS: usize = 256;
+
 /// One pinned Ed25519 verifying key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrustedKey {
@@ -46,6 +56,7 @@ pub struct TrustedKey {
     /// Raw 32-byte Ed25519 public key.
     pub public_key: [u8; 32],
     pub status: KeyStatus,
+    pub role: KeyRole,
 }
 
 /// Pinned production trust anchors.
@@ -68,10 +79,18 @@ pub const TRUSTED_KEYS: &[TrustedKey] = &[TrustedKey {
         190, 129, 220, 233, 125, 216, 136, 82, 215, 148, 26, 6, 133,
     ],
     status: KeyStatus::Active,
+    role: KeyRole::Founder,
 }];
 
 /// Look up a pinned key by id.
 #[must_use]
 pub fn trusted_key<'a>(keys: &'a [TrustedKey], key_id: &str) -> Option<&'a TrustedKey> {
+    if keys.iter().enumerate().any(|(index, left)| {
+        keys[index + 1..]
+            .iter()
+            .any(|right| left.key_id == right.key_id || left.public_key == right.public_key)
+    }) {
+        return None;
+    }
     keys.iter().find(|key| key.key_id == key_id)
 }

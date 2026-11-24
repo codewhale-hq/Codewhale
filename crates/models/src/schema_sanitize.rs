@@ -1297,6 +1297,14 @@ fn normalize_kimi_compatibility(
     }
 
     let nullable = obj.remove("nullable");
+    let admits_null = nullable == Some(Value::Bool(true))
+        || obj
+            .get("anyOf")
+            .and_then(Value::as_array)
+            .is_some_and(|branches| branches.iter().any(is_null_type));
+    if admits_null && obj.get("default").is_some_and(Value::is_null) {
+        obj.remove("default");
+    }
     if nullable.is_some()
         && !obj
             .get("type")
@@ -2305,6 +2313,34 @@ mod kimi_tests {
             query["anyOf"],
             json!([{"type": "string"}, {"type": "null"}])
         );
+        validate_mfjs_parameters(&schema).unwrap();
+    }
+
+    #[test]
+    fn kimi_parameters_accepts_pydantic_optional_with_null_default() {
+        let mut schema = json!({
+            "type": "object",
+            "$defs": {
+                "Filters": {
+                    "type": "object",
+                    "properties": {"state": {"type": "string"}}
+                }
+            },
+            "properties": {
+                "limit": {
+                    "anyOf": [{"type": "integer"}, {"type": "null"}],
+                    "default": null
+                },
+                "filters": {
+                    "anyOf": [{"$ref": "#/$defs/Filters"}, {"type": "null"}],
+                    "default": null
+                }
+            }
+        });
+
+        sanitize(&mut schema);
+        sanitize_for_kimi_parameters(&mut schema).unwrap();
+
         validate_mfjs_parameters(&schema).unwrap();
     }
 

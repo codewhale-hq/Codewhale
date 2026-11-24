@@ -1,8 +1,18 @@
 //! Workspace-confined file operations shared by Fleet artifacts and its ledger.
 
 use std::fs::File;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Component, Path};
+
+pub struct ConfinedDirEntry {
+    pub name: String,
+    pub is_dir: bool,
+}
+
+pub struct ConfinedDirListing {
+    pub entries: Vec<ConfinedDirEntry>,
+    pub total_entries: usize,
+}
 
 pub fn path_is_confined(path: &Path) -> bool {
     !path.as_os_str().is_empty()
@@ -145,6 +155,186 @@ fn invalid_path() -> io::Error {
 }
 
 #[cfg(unix)]
+fn open_confined_dir_fd(
+    workspace: &Path,
+    relative: Option<&Path>,
+    create: bool,
+    shared: bool,
+    resolve_root: bool,
+) -> io::Result<File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    if let Some(rel) = relative
+        && !path_is_confined(rel)
+    {
+        return Err(invalid_path());
+    }
+    let workspace = if resolve_root {
+        workspace.canonicalize()?
+    } else {
+        if !workspace.is_absolute() {
+            return Err(invalid_path());
+        }
+        workspace.to_path_buf()
+    };
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let fd = unsafe {
+        libc::open(
+            c"/".as_ptr(),
+            libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let fd = unsafe {
+        libc::open(
+            c"/".as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut directory = unsafe { File::from_raw_fd(fd) };
+    let empty = Path::new("");
+    for (path, may_create) in [
+        (workspace.as_path(), false),
+        (relative.unwrap_or(empty), create),
+    ] {
+        for component in path.components() {
+            let Component::Normal(name) = component else {
+                if component == Component::RootDir {
+                    continue;
+                }
+                return Err(invalid_path());
+            };
+            let name = std::ffi::CString::new(name.as_bytes())?;
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            let flags = libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+            #[cfg(not(any(target_os = "linux", target_os = "android")))]
+            let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+            let mut fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
+            if fd < 0 && may_create && io::Error::last_os_error().kind() == io::ErrorKind::NotFound
+            {
+                let mode = if shared { 0o777 } else { 0o700 };
+                if unsafe { libc::mkdirat(directory.as_raw_fd(), name.as_ptr(), mode) } != 0
+                    && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
+            }
+            if fd < 0 {
+                let err = io::Error::last_os_error();
+                if matches!(err.raw_os_error(), Some(libc::ENOTDIR) | Some(libc::ELOOP)) {
+                    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+                    if unsafe {
+                        libc::fstatat(
+                            directory.as_raw_fd(),
+                            name.as_ptr(),
+                            &mut st,
+                            libc::AT_SYMLINK_NOFOLLOW,
+                        )
+                    } == 0
+                        && (st.st_mode & libc::S_IFMT) == libc::S_IFLNK
+                    {
+                        return Err(io::Error::from_raw_os_error(libc::ELOOP));
+                    }
+                }
+                return Err(err);
+            }
+            directory = unsafe { File::from_raw_fd(fd) };
+        }
+    }
+    let real_fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            c".".as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if real_fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { File::from_raw_fd(real_fd) })
+}
+
+#[cfg(unix)]
+struct DirStream(*mut libc::DIR);
+
+#[cfg(unix)]
+impl Drop for DirStream {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                libc::closedir(self.0);
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+pub fn read_confined_dir(
+    workspace: &Path,
+    relative: Option<&Path>,
+    max_entries: usize,
+) -> io::Result<ConfinedDirListing> {
+    use std::os::fd::AsRawFd;
+    let normalized = relative.filter(|p| !p.as_os_str().is_empty() && *p != Path::new("."));
+    let dir_file = open_confined_dir_fd(workspace, normalized, false, true, true)?;
+    let iter_fd = unsafe { libc::dup(dir_file.as_raw_fd()) };
+    if iter_fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let raw_dir = unsafe { libc::fdopendir(iter_fd) };
+    if raw_dir.is_null() {
+        let error = io::Error::last_os_error();
+        unsafe { libc::close(iter_fd) };
+        return Err(error);
+    }
+    let stream = DirStream(raw_dir);
+    let mut entries = Vec::new();
+    let mut total_entries = 0usize;
+    loop {
+        let entry = unsafe { libc::readdir(stream.0) };
+        if entry.is_null() {
+            break;
+        }
+        let name_cstr = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) };
+        let name_bytes = name_cstr.to_bytes();
+        if name_bytes == b"." || name_bytes == b".." {
+            continue;
+        }
+        total_entries += 1;
+        if entries.len() >= max_entries {
+            continue;
+        }
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+        let st_ok = unsafe {
+            libc::fstatat(
+                dir_file.as_raw_fd(),
+                name_cstr.as_ptr(),
+                stat.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } == 0;
+        let is_dir = if st_ok {
+            let stat = unsafe { stat.assume_init() };
+            (stat.st_mode & libc::S_IFMT) == libc::S_IFDIR
+        } else {
+            false
+        };
+        entries.push(ConfinedDirEntry {
+            name: String::from_utf8_lossy(name_bytes).into_owned(),
+            is_dir,
+        });
+    }
+    Ok(ConfinedDirListing {
+        entries,
+        total_entries,
+    })
+}
+
+#[cfg(unix)]
 #[derive(Debug)]
 pub struct WorkspaceFile {
     directory: File,
@@ -191,114 +381,18 @@ impl WorkspaceFile {
         shared: bool,
         resolve_root: bool,
     ) -> io::Result<Self> {
-        use std::os::fd::{AsRawFd, FromRawFd};
         use std::os::unix::ffi::OsStrExt;
         if !path_is_confined(relative) {
             return Err(invalid_path());
         }
-        let workspace = if resolve_root {
-            workspace.canonicalize()?
-        } else {
-            if !workspace.is_absolute() {
-                return Err(invalid_path());
-            }
-            workspace.to_path_buf()
-        };
-        // Use the established credential/artifact openat pattern, without
-        // touching credentials or creating a second filesystem store.
-        //
-        // The anchor and every intermediate component are only pinned, never
-        // read, and the final `openat` on the filename applies the real
-        // access mode. On Linux, `O_PATH` pins a directory without read
-        // permission, which keeps this working on Android: SELinux grants
-        // apps search but not read on `/` and mount-point directories, so
-        // `open("/", O_RDONLY|O_DIRECTORY)` fails with EACCES there and
-        // every confined read/write was denied (#6980). O_PATH|O_DIRECTORY
-        // still refuses non-directories (ENOTDIR), so the per-component type
-        // check below is unchanged. Other Unixes have no O_PATH and keep the
-        // readable-directory anchor.
-        // SAFETY: static path and immediate ownership of a successful fd.
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        let fd = unsafe {
-            libc::open(
-                c"/".as_ptr(),
-                libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
-        };
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        let fd = unsafe {
-            libc::open(
-                c"/".as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
-        };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: this fd was just created and has no other owner.
-        let mut directory = unsafe { File::from_raw_fd(fd) };
         let parents = relative.parent().ok_or_else(invalid_path)?;
-        for (path, may_create) in [(workspace.as_path(), false), (parents, create)] {
-            for component in path.components() {
-                let Component::Normal(name) = component else {
-                    if component == Component::RootDir {
-                        continue;
-                    }
-                    return Err(invalid_path());
-                };
-                let name = std::ffi::CString::new(name.as_bytes())?;
-                // Pin only: the caller opens the entry for real through
-                // this directory fd; intermediate components need neither
-                // read permission nor access to their contents. The flags
-                // still reject non-directories on every platform.
-                #[cfg(any(target_os = "linux", target_os = "android"))]
-                let flags = libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
-                #[cfg(not(any(target_os = "linux", target_os = "android")))]
-                let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
-                // SAFETY: directory pins the parent; name is one component.
-                let mut fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
-                if fd < 0
-                    && may_create
-                    && io::Error::last_os_error().kind() == io::ErrorKind::NotFound
-                {
-                    // SAFETY: directory and relative basename remain valid.
-                    let mode = if shared { 0o777 } else { 0o700 };
-                    if unsafe { libc::mkdirat(directory.as_raw_fd(), name.as_ptr(), mode) } != 0
-                        && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists
-                    {
-                        return Err(io::Error::last_os_error());
-                    }
-                    // SAFETY: reject a symlink inserted after mkdirat.
-                    fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
-                }
-                if fd < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                // SAFETY: fd is freshly owned.
-                directory = unsafe { File::from_raw_fd(fd) };
-            }
-        }
-        // The walk above pinned every component O_PATH, and O_PATH fds cannot
-        // be fsynced (EBADF) or read. Reopen the file's immediate parent with
-        // real access flags through the pinned walk so `sync_all`, `renameat`
-        // and every other use of `directory` keeps working. This open cannot
-        // follow a link or escape: it resolves "." inside the pinned parent
-        // itself, and O_NOFOLLOW is irrelevant for an exact "." entry.
-        {
-            use std::os::fd::AsRawFd;
-            let real_fd = unsafe {
-                libc::openat(
-                    directory.as_raw_fd(),
-                    c".".as_ptr(),
-                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                )
-            };
-            if real_fd < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            // SAFETY: fd is freshly owned; the O_PATH fd it replaces is dropped.
-            directory = unsafe { File::from_raw_fd(real_fd) };
-        }
+        let directory = open_confined_dir_fd(
+            workspace,
+            (!parents.as_os_str().is_empty()).then_some(parents),
+            create,
+            shared,
+            resolve_root,
+        )?;
         Ok(Self {
             directory,
             filename: std::ffi::CString::new(
@@ -348,6 +442,14 @@ impl WorkspaceFile {
     }
 
     fn open_with_flags(&self, flags: libc::c_int) -> io::Result<File> {
+        self.open_with_flags_and_max_links(flags, 1)
+    }
+
+    fn open_with_flags_and_max_links(
+        &self,
+        flags: libc::c_int,
+        max_links: u64,
+    ) -> io::Result<File> {
         use std::os::fd::{AsRawFd, FromRawFd};
         use std::os::unix::fs::MetadataExt;
         // macOS can fail an `openat(O_CREAT)` with ENOENT while another thread
@@ -381,7 +483,7 @@ impl WorkspaceFile {
         // SAFETY: fd is freshly owned.
         let file = unsafe { File::from_raw_fd(fd) };
         let metadata = file.metadata()?;
-        if !metadata.is_file() || metadata.nlink() != 1 {
+        if !metadata.is_file() || !(1..=max_links).contains(&metadata.nlink()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Fleet file must be a regular, non-hard-linked file",
@@ -394,21 +496,30 @@ impl WorkspaceFile {
         self.atomic_write(bytes, false)
     }
 
+    pub fn publish_from_reader(&self, reader: &mut impl io::Read) -> io::Result<()> {
+        self.atomic_write_retained(reader, false, None).map(drop)
+    }
+
     pub fn replace(&self, bytes: &[u8]) -> io::Result<()> {
         self.atomic_write(bytes, true)
     }
 
     fn atomic_write(&self, bytes: &[u8], replace: bool) -> io::Result<()> {
-        self.atomic_write_retained(bytes, replace, None).map(drop)
+        self.atomic_write_retained(&mut io::Cursor::new(bytes), replace, None)
+            .map(drop)
     }
 
     pub fn publish_retained(&self, bytes: &[u8], executable: bool) -> io::Result<File> {
-        self.atomic_write_retained(bytes, false, Some(if executable { 0o755 } else { 0o644 }))
+        self.atomic_write_retained(
+            &mut io::Cursor::new(bytes),
+            false,
+            Some(if executable { 0o755 } else { 0o644 }),
+        )
     }
 
     fn atomic_write_retained(
         &self,
-        bytes: &[u8],
+        reader: &mut impl io::Read,
         replace: bool,
         mode: Option<u32>,
     ) -> io::Result<File> {
@@ -447,7 +558,7 @@ impl WorkspaceFile {
                     return Err(error);
                 }
             }
-            file.write_all(bytes)?;
+            io::copy(reader, &mut file)?;
             file.sync_all()?;
             if !replace
                 && rename_exclusive(
@@ -498,11 +609,21 @@ impl WorkspaceFile {
     }
 
     pub fn open_retained(&self) -> io::Result<File> {
-        self.open_file()
+        self.open_retained_with_max_links(1)
+    }
+
+    /// Open a delivery file while bounding its permitted Unix hard-link count.
+    pub fn open_retained_with_max_links(&self, max_links: u64) -> io::Result<File> {
+        self.open_with_flags_and_max_links(libc::O_RDONLY, max_links)
     }
 
     pub fn identity_probe(&self) -> io::Result<File> {
-        self.open_file()
+        self.identity_probe_with_max_links(1)
+    }
+
+    /// Probe a delivery path while bounding its permitted Unix hard-link count.
+    pub fn identity_probe_with_max_links(&self, max_links: u64) -> io::Result<File> {
+        self.open_with_flags_and_max_links(libc::O_RDONLY, max_links)
     }
 
     pub fn move_opened_to_sibling(&self, file: &File, destination: &Self) -> io::Result<()> {
@@ -515,6 +636,15 @@ impl WorkspaceFile {
     }
 
     pub fn verify_delivery_owner(&self, file: &File) -> io::Result<()> {
+        self.verify_delivery_owner_with_max_links(file, 1)
+    }
+
+    /// Verify parent and file ownership/permissions while bounding permitted links.
+    pub fn verify_delivery_owner_with_max_links(
+        &self,
+        file: &File,
+        max_links: u64,
+    ) -> io::Result<()> {
         use std::os::unix::fs::MetadataExt;
         let owner = codewhale_config::private_directory::PrivateDirectory::current_user_id();
         let parent = self.directory.metadata()?;
@@ -534,15 +664,25 @@ impl WorkspaceFile {
                 "delivery file and retained parent must be owned by the current user and not writable by group or others",
             ));
         }
-        if !same_file(file, &self.identity_probe()?)? {
+        if !same_file(file, &self.identity_probe_with_max_links(max_links)?)? {
             return Err(invalid_path());
         }
         Ok(())
     }
 
     pub fn move_opened_to_directory(&self, file: &File, destination: &Self) -> io::Result<()> {
+        self.move_opened_to_directory_with_max_links(file, destination, 1)
+    }
+
+    /// Move an opened delivery entry into a destination directory while bounding permitted links.
+    pub fn move_opened_to_directory_with_max_links(
+        &self,
+        file: &File,
+        destination: &Self,
+        max_links: u64,
+    ) -> io::Result<()> {
         use std::os::fd::AsRawFd;
-        if !same_file(file, &self.identity_probe()?)? {
+        if !same_file(file, &self.identity_probe_with_max_links(max_links)?)? {
             return Err(invalid_path());
         }
         if !rename_exclusive(
@@ -560,12 +700,17 @@ impl WorkspaceFile {
     }
 
     pub fn unlink_opened(&self, file: &File) -> io::Result<()> {
+        self.unlink_opened_with_max_links(file, 1)
+    }
+
+    /// Unlink an opened delivery entry after verifying its private parent and bounded links.
+    pub fn unlink_opened_with_max_links(&self, file: &File, max_links: u64) -> io::Result<()> {
         use std::os::fd::AsRawFd;
         use std::os::unix::fs::MetadataExt;
         let parent = self.directory.metadata()?;
         let public = parent.mode() & 0o077 != 0 || parent.uid() != unsafe { libc::geteuid() };
         let unverified = public && !mount_cannot_extend_guard(&self.directory);
-        if unverified || !same_file(file, &self.identity_probe()?)? {
+        if unverified || !same_file(file, &self.identity_probe_with_max_links(max_links)?)? {
             return Err(invalid_path());
         }
         if unsafe { libc::unlinkat(self.directory.as_raw_fd(), self.filename.as_ptr(), 0) } != 0 {
@@ -690,6 +835,49 @@ fn exclusive_rename_outcome(renamed: bool) -> io::Result<bool> {
     Ok(false)
 }
 
+#[cfg(windows)]
+pub fn read_confined_dir(
+    workspace: &Path,
+    relative: Option<&Path>,
+    max_entries: usize,
+) -> io::Result<ConfinedDirListing> {
+    let normalized = relative.filter(|p| !p.as_os_str().is_empty() && *p != Path::new("."));
+    if let Some(rel) = normalized
+        && !path_is_confined(rel)
+    {
+        return Err(invalid_path());
+    }
+    let resolved = workspace.canonicalize()?;
+    let root = WindowsDirectory::open(&resolved)?;
+    let pinned = match normalized {
+        Some(rel) => WindowsDirectory::open_inner(&resolved.join(rel), false, false)?,
+        None => WindowsDirectory::open(&resolved)?,
+    };
+    let mut entries = Vec::new();
+    let mut total_entries = 0usize;
+    for entry in std::fs::read_dir(&pinned.directory)? {
+        let entry = entry?;
+        total_entries += 1;
+        if entries.len() >= max_entries {
+            continue;
+        }
+        let file_type = entry.file_type()?;
+        let is_reparse = file_type.is_symlink()
+            || std::fs::symlink_metadata(entry.path())
+                .ok()
+                .is_some_and(|meta| crate::path_identity::metadata_is_link_or_reparse(&meta));
+        entries.push(ConfinedDirEntry {
+            name: entry.file_name().to_string_lossy().to_string(),
+            is_dir: file_type.is_dir() && !is_reparse,
+        });
+    }
+    let _keep_root_pinned = root;
+    Ok(ConfinedDirListing {
+        entries,
+        total_entries,
+    })
+}
+
 /// Windows path fence shared by Fleet publication and Native sandbox ACL
 /// admission. Every original absolute ancestor is opened without delete/write
 /// sharing and without following reparse points before path-based calls.
@@ -759,7 +947,7 @@ impl WindowsDirectory {
             options
                 .access_mode(READ_CONTROL | WRITE_DAC | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES);
         }
-        let file = options.open(path)?;
+        let file = retry_windows_io(false, || options.open(path))?;
         let metadata = file.metadata()?;
         if !metadata.is_dir() || crate::path_identity::metadata_is_link_or_reparse(&metadata) {
             return Err(invalid_path());
@@ -924,24 +1112,39 @@ impl WorkspaceFile {
         self.atomic_write(bytes, false)
     }
 
+    pub fn publish_from_reader(&self, reader: &mut impl io::Read) -> io::Result<()> {
+        self.atomic_write_retained(reader, false).map(drop)
+    }
+
     pub fn replace(&self, bytes: &[u8]) -> io::Result<()> {
         self.atomic_write(bytes, true)
     }
 
     fn atomic_write(&self, bytes: &[u8], replace: bool) -> io::Result<()> {
-        self.atomic_write_retained(bytes, replace).map(drop)
+        self.atomic_write_retained(&mut io::Cursor::new(bytes), replace)
+            .map(drop)
     }
 
     pub fn publish_retained(&self, bytes: &[u8], _executable: bool) -> io::Result<File> {
-        self.atomic_write_retained(bytes, false)
+        self.atomic_write_retained(&mut io::Cursor::new(bytes), false)
     }
 
     pub fn open_retained(&self) -> io::Result<File> {
         crate::bundle_file::open_bundle_file_for_retirement(&self.directory.join(&self.filename))
     }
 
+    /// Windows delivery files remain strictly single-link.
+    pub fn open_retained_with_max_links(&self, _max_links: u64) -> io::Result<File> {
+        self.open_retained()
+    }
+
     pub fn identity_probe(&self) -> io::Result<File> {
         crate::bundle_file::open_bundle_identity_probe(&self.directory.join(&self.filename), false)
+    }
+
+    /// Windows delivery identity probes remain strictly single-link.
+    pub fn identity_probe_with_max_links(&self, _max_links: u64) -> io::Result<File> {
+        self.identity_probe()
     }
 
     pub fn move_opened_to_sibling(&self, file: &File, destination: &Self) -> io::Result<()> {
@@ -955,13 +1158,13 @@ impl WorkspaceFile {
         Ok(())
     }
 
-    fn atomic_write_retained(&self, bytes: &[u8], replace: bool) -> io::Result<File> {
+    fn atomic_write_retained(&self, reader: &mut impl io::Read, replace: bool) -> io::Result<File> {
         use std::os::windows::fs::OpenOptionsExt;
         use windows_sys::Win32::Storage::FileSystem::{
             DELETE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ,
         };
 
-        let mut temporary =
+        let mut temporary = retry_windows_io(false, || {
             tempfile::Builder::new()
                 .prefix(".fleet-write-")
                 .make_in(&self.directory, |path| {
@@ -971,9 +1174,10 @@ impl WorkspaceFile {
                         .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE)
                         .share_mode(FILE_SHARE_READ)
                         .open(path)
-                })?;
+                })
+        })?;
         let result = (|| {
-            temporary.write_all(bytes)?;
+            io::copy(reader, &mut temporary)?;
             temporary.as_file().sync_all()?;
 
             rename_windows_opened(temporary.as_file(), &self.filename, replace)
@@ -990,6 +1194,33 @@ impl WorkspaceFile {
                 temporary.into_temp_path().close()?;
                 Err(error)
             }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn retry_windows_io<T>(
+    include_permission_denied: bool,
+    mut op: impl FnMut() -> io::Result<T>,
+) -> io::Result<T> {
+    let mut attempt = 0;
+    loop {
+        match op() {
+            Ok(value) => return Ok(value),
+            Err(error)
+                if matches!(error.raw_os_error(), Some(32 | 33))
+                    || (include_permission_denied
+                        && (error.kind() == io::ErrorKind::PermissionDenied
+                            || error.raw_os_error() == Some(5))) =>
+            {
+                let Some(backoff) = crate::utils::windows_publish_retry_delay(&error, attempt)
+                else {
+                    return Err(error);
+                };
+                std::thread::sleep(backoff);
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
         }
     }
 }
@@ -1027,8 +1258,7 @@ pub fn rename_windows_opened(
         (*rename).FileNameLength = name_bytes as u32;
         std::ptr::copy_nonoverlapping(name.as_ptr(), (*rename).FileName.as_mut_ptr(), name.len());
     }
-    let mut attempt = 0;
-    loop {
+    retry_windows_io(true, || {
         let mut status = IO_STATUS_BLOCK::default();
         // SAFETY: this synchronously opened file has DELETE access;
         // every handle and buffer remains live throughout the call.
@@ -1042,16 +1272,14 @@ pub fn rename_windows_opened(
             )
         };
         if result >= 0 {
-            return Ok(());
+            Ok(())
+        } else {
+            // SAFETY: converts the returned NTSTATUS without dereferencing.
+            Err(io::Error::from_raw_os_error(unsafe {
+                RtlNtStatusToDosError(result) as i32
+            }))
         }
-        // SAFETY: converts the returned NTSTATUS without dereferencing.
-        let error = io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(result) as i32 });
-        let Some(backoff) = crate::utils::windows_publish_retry_delay(&error, attempt) else {
-            return Err(error);
-        };
-        std::thread::sleep(backoff);
-        attempt += 1;
-    }
+    })
 }
 
 /// Whether `directory`'s filesystem reports an owner and mode of its own for
@@ -1228,6 +1456,40 @@ mod unix_publication_tests {
         assert_eq!(mode(&workspace.path().join("private")), 0o700);
         assert_eq!(mode(&workspace.path().join("private/receipt.json")), 0o600);
     }
+
+    #[test]
+    fn read_confined_dir_lists_entries_and_refuses_symlinks() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(workspace.path().join("sub")).unwrap();
+        std::fs::write(workspace.path().join("sub/file.txt"), "hi").unwrap();
+        std::os::unix::fs::symlink(outside.path(), workspace.path().join("out")).unwrap();
+        std::os::unix::fs::symlink(workspace.path().join("sub"), workspace.path().join("alias"))
+            .unwrap();
+
+        let root_listing = read_confined_dir(workspace.path(), None, 100).unwrap();
+        assert_eq!(root_listing.total_entries, 3);
+        let sub_entry = root_listing
+            .entries
+            .iter()
+            .find(|e| e.name == "sub")
+            .unwrap();
+        assert!(sub_entry.is_dir);
+        let link_entry = root_listing
+            .entries
+            .iter()
+            .find(|e| e.name == "out")
+            .unwrap();
+        assert!(!link_entry.is_dir);
+
+        let sub_listing = read_confined_dir(workspace.path(), Some(Path::new("sub")), 100).unwrap();
+        assert_eq!(sub_listing.entries.len(), 1);
+        assert_eq!(sub_listing.entries[0].name, "file.txt");
+
+        assert!(read_confined_dir(workspace.path(), Some(Path::new("out")), 100).is_err());
+        assert!(read_confined_dir(workspace.path(), Some(Path::new("alias")), 100).is_err());
+        assert!(read_confined_dir(workspace.path(), Some(Path::new("../escape")), 100).is_err());
+    }
 }
 
 #[cfg(all(test, windows))]
@@ -1366,6 +1628,14 @@ mod windows_root_link_tests {
 }
 
 #[cfg(all(not(unix), not(windows)))]
+pub fn read_confined_dir(_: &Path, _: Option<&Path>, _: usize) -> io::Result<ConfinedDirListing> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Confined Fleet artifact I/O is unavailable on this platform",
+    ))
+}
+
+#[cfg(all(not(unix), not(windows)))]
 #[derive(Debug)]
 pub struct WorkspaceFile;
 #[cfg(all(not(unix), not(windows)))]
@@ -1403,14 +1673,23 @@ impl WorkspaceFile {
     pub fn publish(&self, _: &[u8]) -> io::Result<()> {
         unreachable!()
     }
+    pub fn publish_from_reader(&self, _: &mut impl io::Read) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
     pub fn open_delivery(workspace: &Path, relative: &Path) -> io::Result<Self> {
         Self::open(workspace, relative, false)
     }
     pub fn open_retained(&self) -> io::Result<File> {
         self.open_file()
     }
+    pub fn open_retained_with_max_links(&self, _max_links: u64) -> io::Result<File> {
+        self.open_retained()
+    }
     pub fn identity_probe(&self) -> io::Result<File> {
         self.open_file()
+    }
+    pub fn identity_probe_with_max_links(&self, _max_links: u64) -> io::Result<File> {
+        self.identity_probe()
     }
     pub fn publish_retained(&self, _: &[u8], _: bool) -> io::Result<File> {
         Err(io::ErrorKind::Unsupported.into())

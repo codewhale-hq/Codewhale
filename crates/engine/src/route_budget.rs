@@ -302,40 +302,35 @@ impl OutputCeilingSource {
     }
 }
 
-/// Whether an absent compatibility ceiling is a *declared* unknown for this
-/// route, rather than a gap in the catalogue.
-///
-/// Deliberately an allowlist. Everything not named here is uncatalogued and
-/// gets the conservative ceiling.
 #[must_use]
 fn route_declares_unknown_output_ceiling(provider: ProviderKind, model: &str) -> bool {
-    match provider {
-        // Operator-owned engines: the local server, not this process, owns the
-        // output ceiling, and it is routinely far above any catalogue row.
-        ProviderKind::Ollama | ProviderKind::Sglang | ProviderKind::Vllm => true,
-        // Kimi Code membership ids publish their limits in the membership
-        // catalog rather than the static model catalogue.
-        ProviderKind::Moonshot => codewhale_runtime::config::is_kimi_code_membership_model(model),
-        _ => false,
+    if codewhale_config::provider::credential_help(provider).acquisition
+        == codewhale_config::provider::CredentialAcquisition::LocalOptional
+    {
+        return true;
     }
+    if codewhale_config::route::ProviderDescriptor::for_kind(provider).family() == "moonshot" {
+        let resolved = codewhale_config::route::resolve_model(provider, model, None)
+            .ok()
+            .filter(|row| !row.is_auto);
+        let wire_id = resolved
+            .as_ref()
+            .map_or_else(|| model.trim(), |row| row.wire_id.as_str());
+        return codewhale_runtime::config::is_kimi_code_membership_model(wire_id);
+    }
+    false
 }
 
-/// Resolve the compatibility output ceiling for a route, with its provenance.
 #[must_use]
 pub fn output_ceiling_source(provider: ProviderKind, model: &str) -> OutputCeilingSource {
-    // #5440: two routes clamp to a number the route itself never documented.
-    // The clamps stay (see `OutputCeilingSource::Unverified`); the labels must
-    // not borrow the documented rung's authority.
     if provider == ProviderKind::Custom {
         return OutputCeilingSource::RouteDeclaredUnknown;
     }
     if provider == ProviderKind::OpenaiCodex {
         return OutputCeilingSource::Unverified(CODEX_OAUTH_MAX_OUTPUT_TOKENS);
     }
-    if matches!(
-        provider,
-        ProviderKind::Anthropic | ProviderKind::MinimaxAnthropic | ProviderKind::Openmodel
-    ) && codewhale_models::max_output_tokens_for_model(model).is_none()
+    if crate::provider_lake::provider_uses_anthropic_messages_floor(provider)
+        && crate::provider_lake::catalog_max_output_for_route(provider, model).is_none()
     {
         return OutputCeilingSource::Unverified(ANTHROPIC_UNKNOWN_MAX_OUTPUT_TOKENS);
     }

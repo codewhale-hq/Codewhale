@@ -23,8 +23,8 @@ use super::events::{
 };
 use super::ids::{ChangeId, WorkEdgeId, WorkNodeId};
 use super::model::{
-    EdgeKind, EvidenceRef, NodeKind, NodeState, OperationBinding, Provenance, WorkActivityEvent,
-    WorkEdge, WorkGraphSnapshot, WorkNode,
+    EdgeKind, EvidenceRef, NodeKind, NodeState, Provenance, WorkActivityEvent, WorkEdge,
+    WorkGraphSnapshot, WorkNode,
 };
 use super::validate::{ValidationCode, ValidationReport, validate};
 
@@ -411,7 +411,8 @@ fn reconcile(
                 OwnerState::Cancelled => NodeState::Cancelled,
             })
         }
-        OperationObservation::OwnerMissing { .. } => Some(NodeState::Stale),
+        OperationObservation::OwnerMissing { .. }
+        | OperationObservation::OwnerUnreadable { .. } => Some(NodeState::Stale),
         OperationObservation::CancelUpdate { outcome, .. } => match outcome {
             // In-flight acknowledgements: record only, no state claim yet.
             CancelOutcome::Requested

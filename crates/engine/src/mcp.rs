@@ -32,6 +32,7 @@ mod http;
 pub mod http_client;
 pub mod oauth;
 pub mod process_broker;
+pub mod project_authority;
 pub mod sse;
 mod stdio;
 mod streamable_http;
@@ -47,7 +48,8 @@ use self::stdio::StdioTransport;
 pub use self::wire::MAX_MCP_RESPONSE_BYTES;
 pub use self::wire::read_line_capped;
 use self::wire::{
-    is_mcp_connection_lost_error, is_mcp_session_rejected_error, is_mcp_stale_session_body,
+    is_mcp_connection_lost_error, is_mcp_server_reply_unsupported_error,
+    is_mcp_session_rejected_error, is_mcp_stale_session_body,
 };
 use codewhale_mcp::config::{
     McpConfig, McpProvenance, McpServerConfig, McpServerOAuthConfig, McpTimeouts,
@@ -1124,7 +1126,7 @@ fn reviewed_redirect_matches_origin(endpoint: &reqwest::Url, approved_origin: &s
 // === MCP Tool Definition ===
 
 /// Tool discovered from an MCP server
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct McpTool {
     pub name: String,
     #[serde(default)]
@@ -2091,9 +2093,33 @@ impl McpConnection {
         backend: McpBackend,
         auth_context: Arc<dyn AuthContext>,
     ) -> Result<Self> {
+        Self::connect_with_backend_auth_and_cancel(
+            name,
+            config,
+            global_timeouts,
+            network_policy,
+            backend,
+            auth_context,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+    }
+
+    pub async fn connect_with_backend_auth_and_cancel(
+        name: String,
+        config: McpServerConfig,
+        global_timeouts: &McpTimeouts,
+        network_policy: Option<&NetworkPolicyDecider>,
+        backend: McpBackend,
+        auth_context: Arc<dyn AuthContext>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<Self> {
         let connect_timeout_secs = config.effective_connect_timeout(global_timeouts);
         let read_timeout_secs = config.effective_read_timeout(global_timeouts);
-        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let cancel_token = cancel.child_token();
+        if cancel_token.is_cancelled() {
+            anyhow::bail!("MCP connection '{name}' was cancelled");
+        }
         let authority_revocation_reason = Arc::new(std::sync::Mutex::new(None));
         if let Some(source) = config.reviewed_plugin_source() {
             source.validate_before_use(&name, "connect")?;
@@ -2112,8 +2138,12 @@ impl McpConnection {
             )
         });
         let http_client = if config.url.is_some() {
-            Some(
-                prepare_mcp_http_client(
+            let client_res = tokio::select! {
+                biased;
+                () = cancel_token.cancelled() => {
+                    anyhow::bail!("MCP connection '{name}' was cancelled");
+                }
+                res = prepare_mcp_http_client(
                     &name,
                     &config,
                     global_timeouts,
@@ -2121,36 +2151,44 @@ impl McpConnection {
                     &cancel_token,
                     connect_timeout_secs,
                     Arc::clone(&auth_context),
-                )
-                .await?,
-            )
+                ) => res?,
+            };
+            Some(client_res)
         } else {
             None
         };
         let transport: Box<dyn McpTransport> = if backend == McpBackend::Host {
-            Box::new(
-                crate::extension_host::mcp::SdkTransport::connect_with_http_and_auth_context(
+            let sdk_transport = tokio::select! {
+                biased;
+                () = cancel_token.cancelled() => {
+                    anyhow::bail!("MCP connection '{name}' was cancelled");
+                }
+                res = crate::extension_host::mcp::SdkTransport::connect_with_http_and_auth_context(
                     &name,
                     &config,
                     cancel_token.clone(),
                     Duration::from_secs(connect_timeout_secs),
                     http_client,
                     Arc::clone(&auth_context),
-                )
-                .await?,
-            )
+                ) => res?,
+            };
+            Box::new(sdk_transport)
         } else if let Some(url) = &config.url {
             let client = http_client.expect("prepared HTTP authority");
             if is_legacy_sse_transport(&config) {
-                Box::new(
-                    SseTransport::connect(
+                let sse_transport = tokio::select! {
+                    biased;
+                    () = cancel_token.cancelled() => {
+                        anyhow::bail!("MCP connection '{name}' was cancelled");
+                    }
+                    res = SseTransport::connect(
                         client,
                         url.clone(),
                         cancel_token.clone(),
                         Duration::from_secs(connect_timeout_secs),
-                    )
-                    .await?,
-                )
+                    ) => res?,
+                };
+                Box::new(sse_transport)
             } else {
                 let mut http = HttpTransport::new(
                     client,
@@ -2163,13 +2201,21 @@ impl McpConnection {
                 // (e.g. Hindsight, #1629). Failures are non-fatal — the
                 // `initialize` POST will proceed and may capture a session
                 // ID from the response instead.
-                if let Err(e) = http.try_establish_session().await {
-                    tracing::debug!(
-                        target: "mcp",
-                        server = %name,
-                        error = %e,
-                        "session-establishment GET skipped; proceeding with POST initialize"
-                    );
+                tokio::select! {
+                    biased;
+                    () = cancel_token.cancelled() => {
+                        anyhow::bail!("MCP connection '{name}' was cancelled");
+                    }
+                    res = http.try_establish_session() => {
+                        if let Err(e) = res {
+                            tracing::debug!(
+                                target: "mcp",
+                                server = %name,
+                                error = %e,
+                                "session-establishment GET skipped; proceeding with POST initialize"
+                            );
+                        }
+                    }
                 }
                 Box::new(http)
             }
@@ -2184,13 +2230,6 @@ impl McpConnection {
         } else {
             anyhow::bail!("MCP server '{name}' config must have either 'command' or 'url'");
         };
-        // Revalidate after transport construction as well: remote setup may
-        // await DNS/TLS/SSE preflight, and a concurrent process can revoke the
-        // receipt during that interval. Initialization and catalog discovery
-        // never start under a stale generation.
-        if let Some(source) = config.reviewed_plugin_source() {
-            source.validate_before_use(&name, "initialize")?;
-        }
         let authority_watch = authority_watch.map(PendingAuthorityWatch::disarm);
 
         let mut conn = Self {
@@ -2211,7 +2250,7 @@ impl McpConnection {
             instructions: None,
             discovery_timeout: Duration::from_secs(connect_timeout_secs),
             read_timeout_secs,
-            cancel_token,
+            cancel_token: cancel_token.clone(),
             authority_revocation_reason,
             authority_watch,
             catalog_generation: 0,
@@ -2221,20 +2260,48 @@ impl McpConnection {
             decision_key: None,
         };
 
+        let setup_result: Result<()> = tokio::select! {
+            biased;
+            () = cancel_token.cancelled() => {
+                Err(anyhow::anyhow!("MCP connection '{name}' was cancelled"))
+            }
+            res = conn.finish_connect(backend, connect_timeout_secs) => res,
+        };
+        if let Err(error) = setup_result {
+            conn.transport.shutdown().await;
+            return Err(error);
+        }
+        if cancel_token.is_cancelled() {
+            conn.transport.shutdown().await;
+            anyhow::bail!("MCP connection '{name}' was cancelled");
+        }
+        conn.state = ConnectionState::Ready;
+        Ok(conn)
+    }
+
+    async fn finish_connect(
+        &mut self,
+        backend: McpBackend,
+        connect_timeout_secs: u64,
+    ) -> Result<()> {
+        if let Some(source) = self.config.reviewed_plugin_source() {
+            source.validate_before_use(&self.name, "initialize")?;
+        }
+
         // The reviewed Computer Use plugin accepts consent and script calls
         // only with a decision attested by its host. Its keys travel as the
         // first message on the plugin's own stdin, never in its environment.
         if backend == McpBackend::Rust
-            && conn.config.url.is_none()
-            && conn.config.command.is_some()
-            && conn
+            && self.config.url.is_none()
+            && self.config.command.is_some()
+            && self
                 .config
                 .reviewed_plugin_source()
                 .is_some_and(|source| source.plugin_name() == COMPUTER_USE_PLUGIN_NAME)
         {
             let decision_key = random_key()?;
             let ledger_key = computer_use_ledger_key().await;
-            conn.send(serde_json::json!({
+            self.send(serde_json::json!({
                 "jsonrpc": "2.0",
                 "method": COMPUTER_USE_HOST_KEYS_METHOD,
                 "params": {
@@ -2243,31 +2310,32 @@ impl McpConnection {
                 }
             }))
             .await?;
-            conn.decision_key = Some(decision_key);
+            self.decision_key = Some(decision_key);
         }
 
         // Initialize with timeout
         let connect_deadline = Duration::from_secs(connect_timeout_secs);
         let initialize_started = std::time::Instant::now();
-        let initialized = tokio::time::timeout(connect_deadline, conn.initialize())
+        let initialized = tokio::time::timeout(connect_deadline, self.initialize())
             .await
             .map_err(anyhow::Error::from)
             .and_then(|result| result);
         if let Err(error) = initialized {
             if initialize_started.elapsed() >= connect_deadline {
                 return Err(error.context(format!(
-                    "MCP server '{name}' didn't start within {connect_timeout_secs}s; retry with /mcp restart, or raise its connect_timeout"
+                    "MCP server '{}' didn't start within {connect_timeout_secs}s; retry with /mcp restart, or raise its connect_timeout",
+                    self.name
                 )));
             }
             return Err(error);
         }
 
-        conn.discover_all()
+        self.discover_all()
             .await
-            .with_context(|| format!("MCP server '{name}' discovery failed"))?;
+            .with_context(|| format!("MCP server '{}' discovery failed", self.name))?;
 
-        conn.state = ConnectionState::Ready;
-        Ok(conn)
+        self.ensure_not_disconnected()?;
+        Ok(())
     }
 
     /// Send initialize request and wait for response
@@ -2376,8 +2444,20 @@ impl McpConnection {
         Ok(())
     }
 
+    fn ensure_not_disconnected(&mut self) -> Result<()> {
+        if self.cancel_token.is_cancelled() {
+            self.state = ConnectionState::Disconnected;
+            anyhow::bail!("MCP connection '{}' was cancelled", self.name);
+        }
+        if self.state == ConnectionState::Disconnected {
+            anyhow::bail!("MCP connection '{}' is disconnected", self.name);
+        }
+        Ok(())
+    }
+
     /// Discover and admit one complete tools/resources/prompts generation.
     async fn discover_all(&mut self) -> Result<()> {
+        self.ensure_not_disconnected()?;
         let capabilities = self.server_capabilities;
         let server = self.name.clone();
         let discovery_timeout = self.discovery_timeout;
@@ -2417,6 +2497,7 @@ impl McpConnection {
                 self.discover_resources(&mut budget),
             )
             .await;
+            self.ensure_not_disconnected()?;
             resource_templates = run_optional_discovery(
                 &server,
                 "resources/templates/list",
@@ -2424,6 +2505,7 @@ impl McpConnection {
                 self.discover_resource_templates(&mut budget),
             )
             .await;
+            self.ensure_not_disconnected()?;
         }
         if capabilities.is_none_or(|capabilities| capabilities.prompts) {
             prompts = run_optional_discovery(
@@ -2433,6 +2515,7 @@ impl McpConnection {
                 self.discover_prompts(&mut budget),
             )
             .await;
+            self.ensure_not_disconnected()?;
         }
         if self.skills_extension {
             skills = run_optional_discovery(
@@ -2442,6 +2525,7 @@ impl McpConnection {
                 self.discover_skills(&mut budget),
             )
             .await;
+            self.ensure_not_disconnected()?;
         }
         // Ordinary optional-method errors remain best effort. Admit only the
         // freshly staged families; do not mix them with an old generation.
@@ -3105,6 +3189,7 @@ impl McpConnection {
         decision: Option<&crate::core::engine::HumanDecision>,
         timeout: Duration,
     ) -> Result<()> {
+        self.ensure_not_disconnected()?;
         anyhow::ensure!(
             self.runtime_registration_is_current(),
             "MCP runtime registration changed before dispatch; retry against the current config"
@@ -3112,6 +3197,7 @@ impl McpConnection {
         let bytes = serde_json::to_vec(&msg).context("Failed to serialize MCP JSON-RPC message")?;
         let cancel_token = self.cancel_token.clone();
         let name = self.name.clone();
+        let prev_state = std::mem::replace(&mut self.state, ConnectionState::Disconnected);
         let result = tokio::select! {
             biased;
             _ = cancel_token.cancelled() => {
@@ -3119,37 +3205,71 @@ impl McpConnection {
             }
             result = self.transport.send_decided(bytes, decision, timeout) => result,
         };
-        if result.is_err() {
+        if result.is_ok() {
             // A dead write side is as fatal as a dead read side: the pool
             // reuses any connection whose `is_ready()` is true, so leaving
             // this one in `Ready` would hand the same broken transport back
             // on every later call instead of rebuilding it.
-            self.state = ConnectionState::Disconnected;
+            self.state = prev_state;
         }
         result
     }
 
-    async fn answer_server_request(&mut self, reply: &serde_json::Value) {
-        let result = match serde_json::to_vec(reply) {
-            Ok(bytes) => {
-                let cancel_token = self.cancel_token.clone();
-                tokio::select! {
-                    biased;
-                    _ = cancel_token.cancelled() => {
-                        Err(anyhow::anyhow!("MCP connection was cancelled"))
-                    }
-                    result = self.transport.send_reply(bytes) => result,
-                }
+    async fn answer_server_request(&mut self, reply: &serde_json::Value) -> Result<()> {
+        self.ensure_not_disconnected()?;
+        let bytes = match serde_json::to_vec(reply) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                tracing::debug!(
+                    target: "mcp",
+                    server = %self.name,
+                    error = %err,
+                    "could not serialize an MCP server request reply"
+                );
+                return Ok(());
             }
-            Err(err) => Err(err.into()),
         };
-        if let Err(err) = result {
-            tracing::debug!(
-                target: "mcp",
-                server = %self.name,
-                error = %err,
-                "could not answer an MCP server request"
-            );
+        let prev_state = std::mem::replace(&mut self.state, ConnectionState::Disconnected);
+        let cancel_token = self.cancel_token.clone();
+        let name = self.name.clone();
+        let (result, cancelled) = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => {
+                (Err(anyhow::anyhow!("MCP connection '{name}' was cancelled")), true)
+            }
+            result = self.transport.send_reply(bytes) => (result, false),
+        };
+        match result {
+            Ok(()) if !cancelled => {
+                self.state = prev_state;
+                Ok(())
+            }
+            Err(err) if !cancelled && is_mcp_server_reply_unsupported_error(&err) => {
+                self.state = prev_state;
+                tracing::debug!(
+                    target: "mcp",
+                    server = %self.name,
+                    error = %err,
+                    "could not answer an MCP server request"
+                );
+                Ok(())
+            }
+            other => {
+                let err = match other {
+                    Ok(()) => anyhow::anyhow!("MCP connection '{}' was cancelled", self.name),
+                    Err(err) => err,
+                };
+                tracing::debug!(
+                    target: "mcp",
+                    server = %self.name,
+                    error = %err,
+                    "could not answer an MCP server request"
+                );
+                anyhow::bail!(
+                    "MCP connection '{}' failed while answering server request: {err:#}",
+                    self.name
+                );
+            }
         }
     }
 
@@ -3242,7 +3362,7 @@ impl McpConnection {
                             "error": {"code": -32601, "message": format!("Method not found: {method}")}
                         })
                     };
-                    self.answer_server_request(&reply).await;
+                    self.answer_server_request(&reply).await?;
                 }
                 continue;
             }
@@ -3327,13 +3447,83 @@ impl Drop for McpConnection {
 
 // === McpPool - Connection Pool Management ===
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConfigRefresh {
+    IfChanged,
+    VerifyContents,
+    Reconnect,
+}
+
 #[derive(Debug, Clone)]
 struct McpToolRoute {
     server_name: String,
-    tool_name: String,
+    tool: McpTool,
     catalog_generation: u64,
     catalog_revision: u64,
-    plugin_authority: Option<codewhale_config::PluginAuthority>,
+    server_identity: McpServerIdentity,
+    runtime_added: bool,
+}
+
+impl McpToolRoute {
+    fn permits(&self, conn: &McpConnection, timeouts: McpTimeouts) -> bool {
+        conn.name == self.server_name
+            && conn.catalog_authorized()
+            && conn.config().runtime_added == self.runtime_added
+            && conn.catalog_generation == self.catalog_generation
+            && conn.config().is_tool_enabled(&self.tool.name)
+            && conn.tools().contains(&self.tool)
+            && mcp_configured_server_identity(timeouts, &conn.name, conn.config())
+                == self.server_identity
+    }
+}
+
+#[derive(Clone)]
+pub struct DelegatedMcpRead {
+    route: McpToolRoute,
+    lifetime: tokio_util::sync::CancellationToken,
+    instance: Arc<std::sync::Mutex<Option<String>>>,
+    grant: codewhale_mcp::config::DelegatedOperation,
+}
+
+impl DelegatedMcpRead {
+    pub(crate) fn current(&self) -> bool {
+        !self.lifetime.is_cancelled()
+    }
+
+    pub(crate) fn permits_arguments(&self, input: &serde_json::Value) -> bool {
+        self.current() && self.grant.allowed_arguments.contains(input)
+    }
+}
+
+fn static_mcp_binding(server: &McpServerConfig) -> Option<String> {
+    if server.runtime_added
+        || server.reviewed_plugin.is_some()
+        || server.command.is_some()
+        || !server.env_headers.is_empty()
+        || server.bearer_token_env_var.is_some()
+        || server
+            .headers
+            .iter()
+            .filter(|(key, _)| key.eq_ignore_ascii_case("authorization"))
+            .count()
+            != 1
+        || !server.headers.iter().any(|(key, value)| {
+            key.eq_ignore_ascii_case("authorization") && !value.trim().is_empty()
+        })
+        || server.headers.values().any(|value| value.contains("${"))
+    {
+        return None;
+    }
+    let endpoint = server.url.as_deref()?;
+    if endpoint.contains("${") {
+        return None;
+    }
+    let headers = server
+        .headers
+        .iter()
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let bytes = serde_json::to_vec(&(endpoint, headers)).ok()?;
+    Some(codewhale_runtime::hashing::sha256_hex(bytes))
 }
 
 /// Model-facing name suffix of the synthetic self-serve OAuth login tool
@@ -3491,6 +3681,7 @@ fn mcp_configured_server_identity(
 ) -> McpServerIdentity {
     (
         hash_mcp_config(&McpConfig {
+            delegated_operations: Default::default(),
             timeouts,
             servers: HashMap::from([(name.to_string(), server.clone())]),
         }),
@@ -3504,6 +3695,7 @@ fn runtime_servers_hash(servers: &HashMap<String, McpServerConfig>) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     hash_mcp_config(&McpConfig {
+        delegated_operations: Default::default(),
         timeouts: McpTimeouts::default(),
         servers: servers.clone(),
     })
@@ -3736,23 +3928,6 @@ impl McpPool {
         Ok(pool)
     }
 
-    /// Construct a source-aware empty pool after the initial config load
-    /// failed. Keeping the source paths means a later edit or explicit
-    /// `/mcp reload` can recover in-process instead of pinning the session to
-    /// an ad-hoc pool that has no files to re-read.
-    pub fn empty_with_workspace_config_sources(
-        path: &std::path::Path,
-        workspace: &Path,
-        plugins: Arc<codewhale_plugins::PluginRegistry>,
-    ) -> Result<Self> {
-        Self::empty_with_workspace_config_sources_and_auth_context(
-            path,
-            workspace,
-            plugins,
-            process_mcp_auth_context(),
-        )
-    }
-
     pub fn empty_with_workspace_config_sources_and_auth_context(
         path: &std::path::Path,
         workspace: &Path,
@@ -3845,6 +4020,10 @@ impl McpPool {
     pub fn with_network_policy(mut self, policy: NetworkPolicyDecider) -> Self {
         self.network_policy = Some(policy);
         self
+    }
+
+    pub fn set_network_policy(&mut self, policy: Option<NetworkPolicyDecider>) {
+        self.network_policy = policy;
     }
 
     /// Configure the OAuth callback overrides (`mcp_oauth_callback_port` /
@@ -3956,7 +4135,8 @@ impl McpPool {
     /// call (and only re-reads the file when the mtime moved). On networked
     /// or remote filesystems where mtime granularity is poor, the hash
     /// compare keeps us from churning connections on every check.
-    fn reload_from_config_sources(&mut self, force: bool) -> Result<bool> {
+    fn reload_from_config_sources(&mut self, mode: ConfigRefresh) -> Result<bool> {
+        let force = mode == ConfigRefresh::Reconnect;
         let runtime_changed = self.sync_runtime_servers();
         if self.config_sources.is_empty() {
             if force {
@@ -3972,7 +4152,8 @@ impl McpPool {
         let native_epoch = crate::extension_host::native_mcp::epoch();
         let native_changed =
             self.plugin_registry.is_some() && native_epoch != self.native_mcp_epoch;
-        if !force && !native_changed && current_mtimes == self.last_mtimes {
+        if mode == ConfigRefresh::IfChanged && !native_changed && current_mtimes == self.last_mtimes
+        {
             return Ok(runtime_changed);
         }
         // An mtime moved, or the user explicitly requested a reload: re-read
@@ -4037,7 +4218,7 @@ impl McpPool {
     }
 
     pub async fn reload_if_config_changed(&mut self) -> Result<bool> {
-        self.reload_from_config_sources(false)
+        self.reload_from_config_sources(ConfigRefresh::IfChanged)
     }
 
     /// Force a source re-read and drop every live connection so the next
@@ -4050,7 +4231,8 @@ impl McpPool {
     /// in-memory servers remain registered because this mutates the existing
     /// pool rather than replacing it.
     pub fn force_reload_config_sources(&mut self) -> Result<()> {
-        self.reload_from_config_sources(true).map(|_| ())
+        self.reload_from_config_sources(ConfigRefresh::Reconnect)
+            .map(|_| ())
     }
 
     /// Install a replacement global config source transactionally, preserving
@@ -4156,6 +4338,23 @@ impl McpPool {
         &self,
         plugins: Arc<codewhale_plugins::PluginRegistry>,
     ) -> Result<Self> {
+        self.fork_for_plugins_inner(plugins, false, None)
+    }
+
+    pub fn fork_isolated_for_plugins(
+        &self,
+        plugins: Arc<codewhale_plugins::PluginRegistry>,
+        network_policy_override: Option<NetworkPolicyDecider>,
+    ) -> Result<Self> {
+        self.fork_for_plugins_inner(plugins, true, network_policy_override)
+    }
+
+    fn fork_for_plugins_inner(
+        &self,
+        plugins: Arc<codewhale_plugins::PluginRegistry>,
+        isolated: bool,
+        network_policy_override: Option<NetworkPolicyDecider>,
+    ) -> Result<Self> {
         let workspace = checked_workspace_path(plugins.workspace())?;
         let config = match self.config_sources.first() {
             Some(primary) => {
@@ -4172,10 +4371,10 @@ impl McpPool {
         let mut pool = Self::new_with_auth_context(config, Arc::clone(&self.auth_context))
             .with_backend(self.backend)
             .with_disallowed_tools(self.disallowed_tools.clone());
-        pool.network_policy = self.network_policy.clone();
+        pool.network_policy = network_policy_override.or_else(|| self.network_policy.clone());
         pool.oauth_callback_port = self.oauth_callback_port;
         pool.oauth_callback_url = self.oauth_callback_url.clone();
-        if self.workspace.as_deref() == Some(workspace.as_path()) {
+        if !isolated && self.workspace.as_deref() == Some(workspace.as_path()) {
             pool.dynamic_servers = Arc::clone(&self.dynamic_servers);
         }
         pool.config_sources = self.config_sources.clone();
@@ -4190,6 +4389,11 @@ impl McpPool {
         pool.workspace = Some(workspace);
         pool.plugin_registry = Some(plugins);
         Ok(pool)
+    }
+
+    #[must_use]
+    pub fn static_server_config(&self, server_name: &str) -> Option<&McpServerConfig> {
+        self.config.servers.get(server_name)
     }
     pub fn validate_native_caller(
         &self,
@@ -4221,6 +4425,26 @@ impl McpPool {
     }
     /// Get or create a connection to a server
     pub async fn get_or_connect(&mut self, server_name: &str) -> Result<&mut McpConnection> {
+        self.get_or_connect_inner(server_name, &tokio_util::sync::CancellationToken::new())
+            .await
+    }
+
+    pub async fn get_or_connect_with_cancel(
+        &mut self,
+        server_name: &str,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<&mut McpConnection> {
+        self.get_or_connect_inner(server_name, cancel).await
+    }
+
+    async fn get_or_connect_inner(
+        &mut self,
+        server_name: &str,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<&mut McpConnection> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("MCP connection '{server_name}' was cancelled");
+        }
         // Lazy auto-reload (#1267 part 2): cheap mtime-then-hash check before
         // each connection lookup. Transient FS errors are logged but not
         // propagated so a brief hiccup can't take down the whole tool dispatch.
@@ -4287,13 +4511,14 @@ impl McpPool {
             anyhow::bail!("Failed to connect MCP server '{server_name}': server is disabled");
         }
 
-        let mut connection = match McpConnection::connect_with_backend_and_auth_context(
+        let mut connection = match McpConnection::connect_with_backend_auth_and_cancel(
             server_name.to_string(),
             server_config,
             &self.config.timeouts,
             self.network_policy.as_ref(),
             self.backend,
             Arc::clone(&self.auth_context),
+            cancel.clone(),
         )
         .await
         {
@@ -5149,7 +5374,9 @@ impl McpPool {
     ) -> Result<Vec<String>> {
         const MAX_DISCOVERY_SERVERS: usize = 8;
         let regex = match match_kind {
-            "regex" => Some(codewhale_runtime::regex_cache::compile_user_regex(query)?),
+            "regex" => {
+                Some(codewhale_runtime::regex_cache::compile_user_regex_case_insensitive(query)?)
+            }
             "bm25" => None,
             _ => anyhow::bail!("Unsupported tool search match algorithm"),
         };
@@ -6168,6 +6395,99 @@ impl McpPool {
             })
     }
 
+    pub(crate) fn delegated_read(&self, name: &str) -> Option<Arc<DelegatedMcpRead>> {
+        if self.config_sources.is_empty() || self.config.delegated_operations.is_empty() {
+            return None;
+        }
+        let (server, tool) = self.parse_prefixed_name(name).ok()?;
+        self.delegated_read_for(name, &server, &tool)
+    }
+
+    pub(crate) fn delegated_read_for(
+        &self,
+        name: &str,
+        server: &str,
+        tool: &str,
+    ) -> Option<Arc<DelegatedMcpRead>> {
+        let declaration = self.config.delegated_operations.get(server)?.get(tool)?;
+        let conn = self.connections.get(server)?;
+        let configured = self.config.servers.get(server)?;
+        if declaration.effect != codewhale_mcp::config::McpOperationEffect::Read
+            || self.config_sources.is_empty()
+            || !self.server_allowed(server)
+            || !self.tool_allowed(name)
+            || !conn.catalog_authorized()
+            || !conn.is_ready()
+            || !configured.is_enabled()
+            || !configured.is_tool_enabled(tool)
+            || declaration.allowed_arguments.is_empty()
+            || !declaration
+                .allowed_arguments
+                .iter()
+                .all(serde_json::Value::is_object)
+            || static_mcp_binding(configured).as_ref() != Some(&declaration.binding_sha256)
+            || static_mcp_binding(conn.config()).as_ref() != Some(&declaration.binding_sha256)
+        {
+            return None;
+        }
+        let route = self
+            .capture_tool_route(server.to_owned(), tool.to_owned())
+            .ok()?;
+        if route.tool.input_schema != declaration.input_schema
+            || route
+                .tool
+                .annotations
+                .is_some_and(|hint| hint.destructive_hint == Some(true))
+            || self.authenticate_tool_target(name).is_some()
+        {
+            return None;
+        }
+        Some(Arc::new(DelegatedMcpRead {
+            route,
+            lifetime: conn.cancel_token.clone(),
+            instance: Arc::clone(&conn.authority_revocation_reason),
+            grant: declaration.clone(),
+        }))
+    }
+
+    pub(crate) async fn call_delegated_read(
+        &mut self,
+        expected: &DelegatedMcpRead,
+        name: &str,
+        input: serde_json::Value,
+        rules: &[String],
+    ) -> Result<serde_json::Value> {
+        Self::authorize_call(&self.disallowed_tools, name, &input)?;
+        Self::authorize_call(rules, name, &input)?;
+        self.reload_from_config_sources(ConfigRefresh::VerifyContents)?;
+        let current = self
+            .delegated_read(name)
+            .context("delegated connector binding is stale")?;
+        anyhow::ensure!(
+            expected.current()
+                && Arc::ptr_eq(&expected.instance, &current.instance)
+                && current.route.server_name == expected.route.server_name
+                && current.route.tool == expected.route.tool
+                && current.route.catalog_generation == expected.route.catalog_generation
+                && current.route.catalog_revision == expected.route.catalog_revision
+                && current.grant == expected.grant,
+            "delegated connector binding changed"
+        );
+        anyhow::ensure!(
+            expected.permits_arguments(&input),
+            "delegated connector disclosure denied"
+        );
+        let conn = self
+            .connections
+            .get_mut(&expected.route.server_name)
+            .context("delegated connector is unavailable")?;
+        let timeout = conn
+            .config()
+            .effective_execute_timeout(&self.config.timeouts);
+        conn.call_tool_decided(&expected.route.tool.name, input, timeout, None)
+            .await
+    }
+
     pub(crate) fn always_allow_binding(&self, name: &str) -> Option<u64> {
         let (server, tool) = self.parse_prefixed_name(name).ok()?;
         let cfg = self.config.servers.get(&server)?;
@@ -6266,16 +6586,21 @@ impl McpPool {
             .connections
             .get(&server_name)
             .context("advertised MCP connection disappeared during resolution")?;
-        let plugin_authority = connection
-            .config()
-            .reviewed_plugin_source()
-            .map(|source| source.authority.clone());
+        let tool = connection
+            .tools()
+            .iter()
+            .find(|tool| tool.name == tool_name)
+            .context("advertised MCP operation is no longer available")?
+            .clone();
+        let server_identity =
+            mcp_configured_server_identity(self.config.timeouts, &server_name, connection.config());
         Ok(McpToolRoute {
             server_name,
-            tool_name,
+            tool,
             catalog_generation: connection.catalog_generation,
             catalog_revision: connection.catalog_revision,
-            plugin_authority,
+            server_identity,
+            runtime_added: connection.config().runtime_added,
         })
     }
 
@@ -6683,24 +7008,13 @@ impl McpPool {
             }
         };
         let server_name = route.server_name.clone();
-        let tool_name = route.tool_name.clone();
+        let tool_name = route.tool.name.clone();
         // Copy the global timeouts to avoid borrow conflict
         let global_timeouts = self.config.timeouts;
         let conn = self.get_or_connect(&server_name).await?;
-        if conn.catalog_generation != route.catalog_generation
-            || conn.catalog_revision != route.catalog_revision
+        if conn.catalog_revision != route.catalog_revision || !route.permits(conn, global_timeouts)
         {
-            anyhow::bail!("MCP catalog changed after tool resolution; retry the call");
-        }
-        if conn
-            .config()
-            .reviewed_plugin_source()
-            .map(|source| &source.authority)
-            != route.plugin_authority.as_ref()
-            || !conn.config().is_tool_enabled(&tool_name)
-            || !conn.tools().iter().any(|tool| tool.name == tool_name)
-        {
-            anyhow::bail!("MCP tool '{tool_name}' is disabled for server '{server_name}'");
+            anyhow::bail!("MCP operation binding changed after tool resolution; retry the call");
         }
         let timeout = conn.config().effective_execute_timeout(&global_timeouts);
         let result = match conn
@@ -6729,17 +7043,9 @@ impl McpPool {
                 // still reach the classification below.
                 match self.get_or_connect(&server_name).await {
                     Ok(conn) => {
-                        if conn.catalog_generation != route.catalog_generation
-                            || conn
-                                .config()
-                                .reviewed_plugin_source()
-                                .map(|source| &source.authority)
-                                != route.plugin_authority.as_ref()
-                            || !conn.config().is_tool_enabled(&tool_name)
-                            || !conn.tools().iter().any(|tool| tool.name == tool_name)
-                        {
+                        if decision.is_some() || !route.permits(conn, global_timeouts) {
                             Err(anyhow::anyhow!(
-                                "MCP tool '{tool_name}' is disabled for server '{server_name}'"
+                                "MCP operation binding changed on reconnect; prepare a new call"
                             ))
                         } else {
                             let timeout = conn.config().effective_execute_timeout(&global_timeouts);
@@ -6790,6 +7096,49 @@ impl McpPool {
     }
 
     /// Get list of configured server names (static + dynamic)
+    #[must_use]
+    pub fn subagent_unavailable_tool_reason(&self, model_tool: &str) -> String {
+        let routes = self.resolved_tool_servers();
+        let server = routes.get(model_tool).cloned().or_else(|| {
+            let dynamic = self.dynamic_servers.read();
+            self.config
+                .servers
+                .keys()
+                .chain(dynamic.keys())
+                .filter(|server| model_tool.starts_with(&Self::mcp_model_tool_name(server, "")))
+                .max_by_key(|server| server.len())
+                .cloned()
+        });
+        let Some(server) = server else {
+            return format!(
+                "MCP tool '{model_tool}' is unavailable to this sub-agent: no MCP server configured for this session owns that name. Use tool_search to list the MCP tools this sub-agent can call."
+            );
+        };
+        let reason = if !self.server_allowed(&server) {
+            "is denied by this session's MCP policy".to_string()
+        } else if self.needs_auth_servers.contains(&server) {
+            format!("needs authorization; run /mcp login {server} in the parent session")
+        } else if self.connecting.contains(&server) {
+            "was still connecting when this sub-agent's tools were built".to_string()
+        } else if routes.contains_key(model_tool) {
+            "is connected, but this tool is outside this sub-agent's role or tool scope".to_string()
+        } else if self
+            .connections
+            .get(&server)
+            .is_some_and(McpConnection::is_ready)
+        {
+            "is connected but does not offer this tool (disabled, denied, or not in its catalog)"
+                .to_string()
+        } else if let Some(backoff) = self.connect_backoff.get(&server) {
+            format!("failed to connect: {}", backoff.last_error)
+        } else {
+            "is configured but not connected in this session".to_string()
+        };
+        format!(
+            "MCP tool '{model_tool}' is unavailable to this sub-agent: server '{server}' {reason}."
+        )
+    }
+
     pub fn server_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self
             .config
@@ -6825,8 +7174,19 @@ impl McpPool {
     pub fn add_desktop_browser_server_config(
         &mut self,
         name: String,
+        config: McpServerConfig,
+        proof: Option<(&str, &str)>,
+    ) -> Result<(), String> {
+        let owner = self.auth_context.env("CODEWHALE_BROWSER_OWNER_PUBLIC_KEY");
+        self.add_desktop_browser_server_config_for_owner(name, config, proof, owner.as_deref())
+    }
+
+    pub fn add_desktop_browser_server_config_for_owner(
+        &mut self,
+        name: String,
         mut config: McpServerConfig,
         proof: Option<(&str, &str)>,
+        owner_public_key: Option<&str>,
     ) -> Result<(), String> {
         use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
         if !is_desktop_browser_server(&name, &config) {
@@ -6839,10 +7199,9 @@ impl McpPool {
             .ok_or_else(|| "Invalid desktop browser endpoint".to_string())?;
         match proof {
             Some((bearer, signature)) if url.path() != "/mcp" => {
-                let public_key = self
-                    .auth_context
-                    .env("CODEWHALE_BROWSER_OWNER_PUBLIC_KEY")
+                let public_key = owner_public_key
                     .and_then(|key| URL_SAFE_NO_PAD.decode(key).ok())
+                    .filter(|bytes| bytes.len() == 32)
                     .ok_or_else(|| "Desktop browser owner is unavailable".to_string())?;
                 let signature = URL_SAFE_NO_PAD
                     .decode(signature)
@@ -7457,7 +7816,7 @@ pub enum McpServerScope {
     /// The user's own config file, shared by every workspace.
     Global,
     /// `<workspace>/.codewhale/mcp.json`, honoured only once the workspace
-    /// is trusted in user-owned config (#417).
+    /// is trusted in user-owned config (#417) and its exact contents are approved.
     Project(PathBuf),
     /// Contributed by an installed plugin bundle. It lives in no config
     /// file, so it is switched off by disabling the plugin that owns it.
@@ -7492,16 +7851,15 @@ pub fn project_server_names(global_path: &Path, workspace: &Path) -> BTreeSet<St
     let Ok(workspace) = checked_workspace_path(workspace) else {
         return BTreeSet::new();
     };
-    if !workspace_allows_project_mcp_config(&workspace) {
-        return BTreeSet::new();
-    }
     let Ok(project_path) = checked_workspace_mcp_config_path(&workspace) else {
         return BTreeSet::new();
     };
     if !project_path.exists() || paths_refer_to_same_config(global_path, &project_path) {
         return BTreeSet::new();
     }
-    load_config(&project_path)
+    project_authority::approved_project_mcp(&workspace)
+        .ok()
+        .and_then(|reviewed| serde_json::from_str::<McpConfig>(&reviewed.contents).ok())
         .map(|config| config.servers.into_keys().collect())
         .unwrap_or_default()
 }
@@ -7509,11 +7867,13 @@ pub fn project_server_names(global_path: &Path, workspace: &Path) -> BTreeSet<St
 #[must_use]
 pub fn resolve_server_scope(global_path: &Path, workspace: &Path, name: &str) -> McpServerScope {
     if let Ok(workspace) = checked_workspace_path(workspace)
-        && workspace_allows_project_mcp_config(&workspace)
         && let Ok(project_path) = checked_workspace_mcp_config_path(&workspace)
         && project_path.exists()
         && !paths_refer_to_same_config(global_path, &project_path)
-        && load_config(&project_path).is_ok_and(|config| config.servers.contains_key(name))
+        && project_authority::approved_project_mcp(&workspace)
+            .ok()
+            .and_then(|reviewed| serde_json::from_str::<McpConfig>(&reviewed.contents).ok())
+            .is_some_and(|config| config.servers.contains_key(name))
     {
         return McpServerScope::Project(project_path);
     }
@@ -7682,6 +8042,40 @@ fn launches_computer_use_plugin(server: &McpServerConfig) -> Option<String> {
     })
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub fn generate_desktop_browser_owner_keypair_for_test() -> Vec<u8> {
+    ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+        .expect("ed25519 pkcs8")
+        .as_ref()
+        .to_vec()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn desktop_browser_owner_public_key_for_test(pkcs8: &[u8]) -> String {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use ring::signature::KeyPair as _;
+    let pair = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8).expect("ed25519 pair");
+    URL_SAFE_NO_PAD.encode(pair.public_key().as_ref())
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn sign_desktop_browser_registration_for_test(
+    pkcs8: &[u8],
+    workspace: &Path,
+    url: &str,
+    bearer: &str,
+) -> String {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    let pair = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8).expect("ed25519 pair");
+    let raw_ws = workspace.to_str().expect("utf8 workspace");
+    let normalized_ws = raw_ws
+        .strip_prefix(r"\\?\UNC\")
+        .map(|tail| format!(r"\\{tail}"))
+        .unwrap_or_else(|| raw_ws.strip_prefix(r"\\?\").unwrap_or(raw_ws).to_owned());
+    let data = format!("codewhale-browser-v2\0{normalized_ws}\0{url}\0{bearer}");
+    URL_SAFE_NO_PAD.encode(pair.sign(data.as_bytes()).as_ref())
+}
+
 pub fn is_desktop_browser_server(name: &str, server: &McpServerConfig) -> bool {
     name == "codewhale-browser"
         && server.is_enabled()
@@ -7744,25 +8138,40 @@ pub fn load_config_with_workspace_and_plugins(
         .retain(|name, server| !is_desktop_browser_server(name, server));
     let workspace = checked_workspace_path(workspace)?;
     let project_path = checked_workspace_mcp_config_path(&workspace)?;
+    if global_path
+        .canonicalize()
+        .is_ok_and(|path| path.starts_with(&workspace))
+        || paths_refer_to_same_config(global_path, &project_path)
+    {
+        merged.delegated_operations.clear();
+    }
     if !project_path.exists() || paths_refer_to_same_config(global_path, &project_path) {
         return merge_plugin_mcp_servers(merged, plugins);
     }
     // Workspace-local MCP can spawn stdio servers, so it is only honored after
-    // the user has trusted this workspace in user-owned config. Do not accept
-    // project-local legacy trust markers here: a repository could carry those
-    // files itself and silently reintroduce the project-scope `mcp_config_path`
-    // risk denied in #417.
-    if !workspace_allows_project_mcp_config(&workspace) {
+    // the user has trusted this workspace and approved the exact file contents
+    // in user-owned config. Do not accept project-local legacy trust markers
+    // here: a repository could carry those files itself and silently
+    // reintroduce the project-scope `mcp_config_path` risk denied in #417.
+    let Ok(reviewed) = project_authority::approved_project_mcp(&workspace) else {
         return merge_plugin_mcp_servers(merged, plugins);
-    }
+    };
 
-    let mut project = load_config(&project_path)?;
+    let mut project: McpConfig = serde_json::from_str(&reviewed.contents).map_err(|_| {
+        anyhow::anyhow!(
+            "Failed to parse MCP config {}; file contents were omitted",
+            codewhale_config::quote_os_path(&project_path)
+        )
+    })?;
     for server in project.servers.values_mut() {
         server.always_allow_tools.clear();
         if server.command.is_some() && server.url.is_none() {
             server.cwd = Some(resolve_project_mcp_cwd(&workspace, server.cwd.as_deref())?);
         }
     }
+    merged
+        .delegated_operations
+        .retain(|name, _| !project.servers.contains_key(name));
     merged.servers.extend(project.servers);
 
     merge_plugin_mcp_servers(merged, plugins)
@@ -7998,10 +8407,6 @@ fn resolve_plugin_mcp_cwd(plugin_path: &Path, cwd: Option<&Path>) -> Result<Path
         anyhow::bail!("reviewed plugin MCP path escaped its staged root");
     }
     Ok(resolved)
-}
-
-fn workspace_allows_project_mcp_config(workspace: &Path) -> bool {
-    codewhale_runtime::config::is_workspace_trusted(workspace)
 }
 
 fn checked_workspace_mcp_config_path(workspace: &Path) -> Result<PathBuf> {
@@ -8325,6 +8730,7 @@ pub fn mutate_config<T>(
         }
         write_atomic(path, rendered.as_bytes())
             .with_context(|| format!("Failed to write MCP config {}", path.display()))?;
+        project_authority::carry_approval_across_product_edit(path, original.as_deref(), &rendered);
         Ok((result, config_revision(Some(&rendered))))
     })
 }

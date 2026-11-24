@@ -44,6 +44,23 @@ The profile can provide:
   `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY`, and other local sockets stay
   denied.
 
+A shell command under the `read-only` policy (for example the agent
+`read_only: true` mode) gets one private, empty, writable temporary directory as
+`TMPDIR` (also `TMP`, `TEMP` and zsh's `TMPPREFIX`), created under the Darwin
+per-user temporary directory (falling back to `/private/tmp`, outside the
+working directory), protected against unlinking the root itself, and deleted
+when the command ends, so `zsh` heredocs (`<<EOF` via `TMPPREFIX`),
+`mktemp -p "$TMPDIR"` and tools that honor `TMPDIR` work. A bare `mktemp`
+on macOS and here-documents (`<<EOF`) in macOS `/bin/sh` or `/bin/bash` ignore
+`TMPDIR` for the shared per-user or `/var/tmp` directories and are refused.
+Nothing else is writable: the workspace, home, Git metadata and caches stay
+read-only, so `git fetch` (which writes `.git/FETCH_HEAD`) is refused;
+`git ls-remote` reads remote refs without writing. Keychain reads through the
+system security service are not blocked, so `gh` finds its stored token when
+the run has network. Seatbelt never starts a setuid program in any sandbox, so
+`ps` and `top` fail with `Operation not permitted`; `pgrep -lf` and `lsof` list
+processes instead. Signals reach only processes in the same sandbox.
+
 If the probe fails or `sandbox-exec` is unavailable, Codewhale reports no OS
 sandbox and launches the command without a Seatbelt wrapper. It does not set a
 Seatbelt marker on that fallback.
@@ -99,7 +116,9 @@ remounted read-only after their writable parent. Missing paths, non-directory
 paths, and `/` are not promoted to writable mounts.
 
 For `read-only`, there are no writable binds, so the working directory remains
-inside the read-only root view. `--unshare-all` isolates the network namespace
+inside the read-only root view; `TMPDIR` (with `TMP`, `TEMP` and `TMPPREFIX`)
+points at the private tmpfs `/tmp`, which disappears with the sandbox. The PID
+namespace is private too, so `ps` lists only the command's own processes. `--unshare-all` isolates the network namespace
 by default. Codewhale adds `--share-net` only when the policy's
 `network_access` is true. The agent `read_only: true` shell mode turns it on
 only in Full Access (see [Subagents](SUBAGENTS.md)); it then shares the host
@@ -199,7 +218,8 @@ With a launcher configured:
   (`linux-bwrap` once the launcher probe passed) and `sandbox.tool_launcher`.
 
 Limits: only commands the sandbox manager prepares (shell commands, terminal
-sessions, workspace runners) go through the launcher. In-process file tools,
+sessions, workspace runners, `code_execution` and the Python kernels) go
+through the launcher. In-process file tools,
 MCP servers, hooks, LSP servers, the extension host, external ACP agents and
 the Engine's own `git`, formatter and diagnostic helpers still run as the
 Engine's user. A Fleet local worker is its own Engine, so its shell commands
@@ -207,9 +227,7 @@ go through the launcher only because it loads the same managed file.
 `codewhale serve --mcp` does not run commands through the launcher. When the
 managed file it loads sets a launcher, it does not expose `shell` or
 `exec_shell`, whatever its own `expose_tools` lists; its file tools use the
-built-in read deny list only. Model-written Python in the session REPL kernel
-(` ```repl ` blocks and the `rlm` tool) runs in a local interpreter as the
-Engine's user. With `sandbox_backend = "opensandbox"` a shell command goes to
+built-in read deny list only. With `sandbox_backend = "opensandbox"` a shell command goes to
 the remote backend before the launcher is consulted, so a launcher host pins
 `sandbox_backend = "none"`, `prefer_bwrap = true` and `sandbox_network_access`
 in the managed file. A `tool_launcher` in a project config stops an
@@ -279,7 +297,7 @@ sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-acc
 - `read-only` and `workspace-write` are enforced by Seatbelt or bubblewrap only
   when that wrapper is selected and available.
 - The configured value can only narrow the sandbox the permission mode
-  picks: Full Access (`yolo`) runs without the wrapper, Ask and Auto-Review
+  picks: Full Access (`yolo`) runs without the wrapper, Ask and [Auto-Review](AUTO_REVIEW.md)
   use `workspace-write`, and Plan uses `read-only`. A configured
   `danger-full-access` or `external-sandbox` therefore takes effect only in
   Full Access; it never loosens Ask or Auto-Review.
@@ -292,6 +310,15 @@ sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-acc
 - When no wrapper is selected, the shell command runs without Codewhale OS
   isolation. Approval rules and workspace-aware native file tools remain
   separate controls.
+- The persistent Python kernels (`rlm` sessions, inline `repl` fences) obey the
+  same policy: they start through the launcher `code_execution` uses, so a
+  configured `sandbox_mode` that narrows Full Access narrows them too, a
+  read-only policy with no enforcing wrapper refuses to start one, and an
+  `opensandbox` backend starts no local kernel. A kernel is dropped when the
+  sandbox policy it started under changes; dropping it stops the
+  interpreter, not a background process its code already started. Its long
+  input travels over stdin, so a private `/tmp` or a read-only filesystem does
+  not hide it.
 
 Canonical environment overrides exist for `sandbox_mode` and the external
 backend:

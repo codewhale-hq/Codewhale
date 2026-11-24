@@ -6053,30 +6053,29 @@ mode = "token-plan-usa"
     assert_eq!(resolved.base_url, DEFAULT_XIAOMI_MIMO_BASE_URL);
 }
 
+fn norm(provider: ProviderKind, model: &str) -> String {
+    crate::route::resolve_model(provider, model, None)
+        .map_or_else(|_| model.trim().to_string(), |r| r.wire_id)
+}
+
 #[test]
 fn xiaomi_mimo_aliases_resolve_to_canonical_models() {
+    assert_eq!(norm(ProviderKind::XiaomiMimo, "omni"), "mimo-v2.6-flash");
     assert_eq!(
-        normalize_model_for_provider(ProviderKind::XiaomiMimo, "omni"),
-        "mimo-v2.6-flash"
-    );
-    assert_eq!(
-        normalize_model_for_provider(ProviderKind::XiaomiMimo, "pro-ultraspeed"),
+        norm(ProviderKind::XiaomiMimo, "pro-ultraspeed"),
         "mimo-v2.5-pro-ultraspeed"
     );
+    assert_eq!(norm(ProviderKind::XiaomiMimo, "tts"), "mimo-v2.5-tts");
     assert_eq!(
-        normalize_model_for_provider(ProviderKind::XiaomiMimo, "tts"),
-        "mimo-v2.5-tts"
-    );
-    assert_eq!(
-        normalize_model_for_provider(ProviderKind::XiaomiMimo, "voice-design"),
+        norm(ProviderKind::XiaomiMimo, "voice-design"),
         "mimo-v2.5-tts-voicedesign"
     );
     assert_eq!(
-        normalize_model_for_provider(ProviderKind::XiaomiMimo, "voiceclone"),
+        norm(ProviderKind::XiaomiMimo, "voiceclone"),
         "mimo-v2.5-tts-voiceclone"
     );
     assert_eq!(
-        normalize_model_for_provider(ProviderKind::XiaomiMimo, "custom-mimo-model"),
+        norm(ProviderKind::XiaomiMimo, "custom-mimo-model"),
         "custom-mimo-model"
     );
 }
@@ -6085,15 +6084,12 @@ fn xiaomi_mimo_aliases_resolve_to_canonical_models() {
 fn zai_aliases_resolve_to_canonical_models() {
     // GLM-5.3 is the default; the glm-5.1 alias must still resolve to 5.1
     // (not to the default), and GLM-5-Turbo resolves to its own id.
-    assert_eq!(
-        normalize_model_for_provider(ProviderKind::Zai, "glm-5.1"),
-        ZAI_GLM_5_1_MODEL
-    );
+    assert_eq!(norm(ProviderKind::Zai, "glm-5.1"), ZAI_GLM_5_1_MODEL);
     assert_eq!(DEFAULT_ZAI_MODEL, "GLM-5.3");
     assert_eq!(DEFAULT_ZAI_MODEL, ZAI_GLM_5_3_MODEL);
     for alias in ["glm-5.3", "glm-5-3", "zai-glm-5.3", "zai-glm-5-3"] {
         assert_eq!(
-            normalize_model_for_provider(ProviderKind::Zai, alias),
+            norm(ProviderKind::Zai, alias),
             ZAI_GLM_5_3_MODEL,
             "{alias} must canonicalize to GLM-5.3"
         );
@@ -6102,12 +6098,12 @@ fn zai_aliases_resolve_to_canonical_models() {
     // must keep its own id and must never fold into DEFAULT_ZAI_MODEL.
     for alias in ["glm-5.2", "glm-5-2", "zai-glm-5.2", "zai-glm-5-2"] {
         assert_eq!(
-            normalize_model_for_provider(ProviderKind::Zai, alias),
+            norm(ProviderKind::Zai, alias),
             ZAI_GLM_5_2_MODEL,
             "{alias} must canonicalize to GLM-5.2"
         );
         assert_ne!(
-            normalize_model_for_provider(ProviderKind::Zai, alias),
+            norm(ProviderKind::Zai, alias),
             DEFAULT_ZAI_MODEL,
             "{alias} must not resolve to the Z.ai default"
         );
@@ -6119,22 +6115,22 @@ fn zai_aliases_resolve_to_canonical_models() {
         "GLM-5.3-Flash",
     ] {
         assert_eq!(
-            normalize_model_for_provider(ProviderKind::Zai, alias),
+            norm(ProviderKind::Zai, alias),
             ZAI_GLM_5_3_FLASH_MODEL,
             "{alias} must canonicalize to GLM-5.3-Flash"
         );
         assert_ne!(
-            normalize_model_for_provider(ProviderKind::Zai, alias),
+            norm(ProviderKind::Zai, alias),
             ZAI_GLM_5_3_MODEL,
             "{alias} must not collapse onto GLM-5.3"
         );
     }
     assert_eq!(
-        normalize_model_for_provider(ProviderKind::Zai, "glm-5-turbo"),
+        norm(ProviderKind::Zai, "glm-5-turbo"),
         ZAI_GLM_5_TURBO_MODEL
     );
     assert_eq!(
-        normalize_model_for_provider(ProviderKind::Zai, "custom-glm-preview"),
+        norm(ProviderKind::Zai, "custom-glm-preview"),
         "custom-glm-preview"
     );
 }
@@ -6169,10 +6165,7 @@ fn zhipu_aliases_fold_into_zai_provider() {
     assert_eq!(provider.model.as_deref(), Some("glm-5-2"));
 
     // GLM aliases canonicalize under the Zai umbrella, to their own ids.
-    assert_eq!(
-        normalize_model_for_provider(ProviderKind::Zai, "glm-5-2"),
-        ZAI_GLM_5_2_MODEL
-    );
+    assert_eq!(norm(ProviderKind::Zai, "glm-5-2"), ZAI_GLM_5_2_MODEL);
 }
 
 #[test]
@@ -10962,6 +10955,7 @@ fn stream_settings_are_typed_nested_and_fail_without_mutation() {
     for (key, value) in [
         ("stream.max_resumes", "-1"),
         ("stream.max_resumes", "4294967296"),
+        ("stream.open_retries", "4294967296"),
         ("stream.force_http1", "flase"),
         ("stream.tcp_keepalive_secs", "1.5"),
         ("stream.open_timout_secs", "45"),
@@ -11089,4 +11083,83 @@ model = "fixture-model"
     assert!(!shown.contains("private-s10-synthetic"));
     assert!(!shown.contains("client-s10-synthetic"));
     assert!(shown.contains("fixture-model"));
+}
+
+#[test]
+fn resolve_runtime_options_fails_loud_on_rejected_or_empty_models() {
+    let _lock = env_lock();
+    let _env = EnvGuard::without_deepseek_runtime_overrides();
+
+    for (provider, raw, expected_provider, expected_model) in [
+        (
+            ProviderKind::Deepseek,
+            "totally-unknown-model-x",
+            "deepseek",
+            "totally-unknown-model-x",
+        ),
+        (
+            ProviderKind::OpencodeGo,
+            "totally-unknown-model-x",
+            "opencode-go",
+            "totally-unknown-model-x",
+        ),
+        (ProviderKind::Google, "models/", "google", "models/"),
+    ] {
+        let cli = CliRuntimeOverrides {
+            provider: Some(provider),
+            model: Some(raw.to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+        assert!(resolved.model.is_empty(), "{provider:?} {raw}");
+        let err = resolved
+            .ensure_valid_model()
+            .expect_err("rejected model must fail loud")
+            .to_string();
+        assert!(err.contains(expected_provider), "{err}");
+        assert!(err.contains(expected_model), "{err}");
+    }
+
+    let xiaomi = ConfigToml {
+        provider: ProviderKind::XiaomiMimo,
+        default_text_model: Some(DEFAULT_OPENROUTER_MODEL.to_string()),
+        ..ConfigToml::default()
+    };
+    let resolved = xiaomi.resolve_runtime_options(&CliRuntimeOverrides::default());
+    assert_eq!(resolved.model, DEFAULT_XIAOMI_MIMO_MODEL);
+    assert!(resolved.model_error.is_none());
+
+    let declared: ConfigToml = toml::from_str(
+        r#"provider = "deepseek"
+[providers.deepseek]
+base_url = "https://api.deepseek.com"
+model = "account-model"
+[[custom_models]]
+provider = "deepseek"
+base_url = "https://api.deepseek.com"
+id = "account-model"
+"#,
+    )
+    .expect("declared custom_models config");
+    let resolved = declared.resolve_runtime_options(&CliRuntimeOverrides::default());
+    assert_eq!(resolved.model, "account-model");
+    assert!(resolved.model_error.is_none());
+    assert!(resolved.route.is_ok());
+}
+
+#[test]
+fn config_store_refuses_a_user_layer_tool_launcher() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config_path = dir.path().join("config.toml");
+    for body in [
+        "tool_launcher = [\"/usr/bin/sudo\", \"-n\", \"-u\", \"agent\", \"--\"]\n",
+        "[profiles.work]\ntool_launcher = [\"/usr/bin/sudo\"]\n",
+    ] {
+        fs::write(&config_path, body).expect("write config");
+        let error = ConfigStore::load(Some(config_path.clone()))
+            .expect_err("a user-layer tool_launcher is a load error");
+        assert!(error.to_string().contains("`tool_launcher`"), "{error}");
+    }
+    fs::write(&config_path, "model = \"deepseek-v4-flash\"\n").expect("write config");
+    ConfigStore::load(Some(config_path)).expect("a config without a launcher loads");
 }

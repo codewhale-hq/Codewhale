@@ -85,6 +85,7 @@ mod tests {
             aliases: aliases.iter().map(|s| s.to_string()).collect(),
             hidden,
             plugin_authority: None,
+            workspace_sourced: false,
             extension: None,
         }
     }

@@ -11,7 +11,7 @@
 //! - the provider enum and the non-secret configured route key,
 //! - the canonical wire model id,
 //! - a **normalized, redacted** endpoint identity (URL userinfo and sensitive
-//!   query values masked by [`codewhale_secrets::sanitize::redact_url_for_display`]),
+//!   query values masked by [`codewhale_sanitize::sanitize::redact_url_for_display`]),
 //! - a one-way credential *generation* digest that is never rendered.
 //!
 //! The credential generation is deliberately taken over the endpoint **and** the
@@ -33,6 +33,41 @@ use codewhale_runtime::config::ProviderIdentity;
 /// generation digest below is what still tells them apart.
 const OPAQUE_ENDPOINT: &str = "<opaque-endpoint>";
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExecRouteBinding {
+    pub endpoint: Option<String>,
+    pub authority: Option<String>,
+}
+
+impl ExecRouteBinding {
+    pub fn endpoint_tag(key: &[u8; 32], base_url: &str) -> String {
+        Self::tag(key, b"endpoint", &[base_url.trim().trim_end_matches('/')])
+    }
+
+    pub(crate) fn tag(key: &[u8; 32], domain: &[u8], values: &[&str]) -> String {
+        use ring::hmac;
+        let key = hmac::Key::new(hmac::HMAC_SHA256, key);
+        let mut digest = hmac::Context::with_key(&key);
+        digest.update(b"codewhale/exec-resume-route/v1\0");
+        digest.update(domain);
+        digest.update(b"\0");
+        for value in values {
+            digest.update(&(value.len() as u64).to_le_bytes());
+            digest.update(value.as_bytes());
+        }
+        digest
+            .sign()
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    pub fn matches(&self, current: &Self) -> bool {
+        self.endpoint.is_some() && self.authority.is_some() && self == current
+    }
+}
+
 /// Normalized, redacted, comparable identity for an API endpoint.
 ///
 /// Safe to print. Trailing slashes are folded so `…/v1` and `…/v1/` are one
@@ -47,7 +82,7 @@ pub fn endpoint_identity(base_url: &str) -> String {
     if reqwest::Url::parse(trimmed).is_err() {
         return OPAQUE_ENDPOINT.to_string();
     }
-    codewhale_secrets::sanitize::redact_url_for_display(trimmed)
+    codewhale_sanitize::sanitize::redact_url_for_display(trimmed)
         .trim_end_matches('/')
         .to_string()
 }

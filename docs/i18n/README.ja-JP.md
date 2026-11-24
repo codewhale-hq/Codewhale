@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fd76d718e3a2 -->
+<!-- source: README.md sha256:8f9ce64ce19c -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ curl -fsSL https://codewhale.net/install.sh | sh
 
 <sub>この翻訳は機械翻訳による下書きで、ネイティブによるレビューはまだありません。</sub>
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="デモタスクを終えたターミナルの Codewhale。export.py に --json フラグを追加し、ローカルテスト 3 件がすべて通り、委任したレビューで問題が見つからなかったと報告しています。下のタスク一覧には完了した 3 つのステップが並び、ステータス行には Full Access とローカルの website-demo プロバイダーが表示されています。">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="deepseek-flash で実際のタスクを終えたターミナルの Codewhale。python3 -m unittest -v test_ls.py を実行して 2 件のテストが通り、ls.py に --json オプションを追加したと報告しています。ステータス行には accept edits と deepseek-flash が表示されています。">
 
-<sub>スクリプト化したテストモデルを使う 0.10.3（未リリース）の開発ビルドを、使い捨てのワークスペースで Full Access で動かしたものです。編集、3 件のテスト、サブエージェントによるレビューは実際に実行されました。</sub>
+<sub>0.10.3 の開発ビルドでの実際のセッションです。DeepSeek の API 経由で deepseek-flash が変更を書き、あなたがテストの実行を一度だけ許可しました。</sub>
 
 </div>
 
@@ -77,9 +77,9 @@ Anthropic、OpenAI、DeepSeek、Google、Mistral、Moonshot、OpenRouter、xAI �
 
 `/goal` はターンをまたいで続く目標を設定します。Codewhale は作業を[サブエージェント](../SUBAGENTS.md)に分け、それぞれの役割とモデルを持つエージェントの [Fleet](../FLEET.md) を動かし、リポジトリにコミットされた[ワークフロー](../WORKFLOW_AUTHORING.md)に従うこともできます。
 
-### 拡張
+### プラグイン
 
-[MCP サーバー](../MCP.md)を接続し、[スキル](../SKILLS.md)と[プラグイン](../PLUGINS.md)を追加し、セッションやツールのイベントで[フック](../HOOKS.md)を実行できます。コードモード（実験的、既定で有効）では、モデルが複数の MCP ツールやプラグインツールを呼び出す `execute_tools` プログラムを 1 つ書けます。各呼び出しはあなたの承認ルールに従い、レシートも残ります。v0.10.2 に同梱の Computer Use プラグイン（実験的、macOS のみ）は他のアプリを観察・操作でき、あなたがアクセス権を確認して有効にするまではオフのままです（[ガイド](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/crates/tui/plugins/computer-use/README.md)）。0.10.3 で予定：このプラグインは[別途リリース](https://github.com/codewhale-hq/codewhale-cu-plugin)されます。
+[MCP サーバー](../MCP.md)を接続し、[スキル](../SKILLS.md)と[プラグイン](../PLUGINS.md)を追加し、セッションやツールのイベントで[フック](../HOOKS.md)を実行できます。コードモード（実験的、既定で有効）では、モデルが複数の MCP ツールやプラグインツールを呼び出す `execute_tools` プログラムを 1 つ書けます。各呼び出しはあなたの承認ルールに従い、レシートも残ります。[Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) は独立してリリースされる別のプラグイン（実験的、macOS のみ）で、アクセス権を確認して有効にするまでオフのままです。
 
 ### 実行方法
 
@@ -96,11 +96,9 @@ Anthropic、OpenAI、DeepSeek、Google、Mistral、Moonshot、OpenRouter、xAI �
 
 ## 安全を保つしくみ
 
-2 つの切り替えで、Codewhale が確認なしにどこまで行うかが決まります。入力欄が空のとき `Tab` はモードを切り替えます。**Plan** は読み取りと検索だけで何も変更せず、**Work** はファイルを編集しコマンドを実行し、**Operate** は Work と同じ権限で、目標が検証されるかあなたの入力が必要になるまで作業を続けます。`Shift+Tab` は権限を切り替えます。既定の **Ask** はリポジトリ内のファイル編集を確認なしで適用し、読み取り専用でないシェルコマンドの前に確認します。**Auto-Review** はルールとレビュー用モデルに日常的な呼び出しを承認させ、高リスクなものは拒否します。それらを自分で承認するには Ask に切り替えます。**Full Access** は一切確認せず Codewhale のサンドボックスを無効にしますが、リポジトリのルールと管理ポリシーは引き続き適用されます。詳しくは [v0.10.2 のガイド](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md)をご覧ください。
+1 つのダイヤルで、Codewhale が確認なしにどこまで行うかが決まります。`Shift+Tab` で順に切り替わります：**Ask → Accept Edits → Plan → Auto-Review → Full Access**。既定の **Accept Edits** は git リポジトリ内のファイル編集を確認なしで適用し、コマンドの前には確認します。**Ask** はすべてのファイル編集とすべてのコマンドの前に確認します。**Plan** は読み取りと検索だけで何も変更しません。**Auto-Review** はルールとレビュー用モデルに日常的な呼び出しを承認させ、高リスクなものは拒否します。それらを自分で承認するには Ask に切り替えます。**Full Access** は一切確認せず Codewhale のサンドボックスを無効にしますが、リポジトリのルールと管理ポリシーは引き続き適用されます。`Tab` は補完にだけ使われ、モードを切り替えることはありません。Operate は廃止されました。詳しくは[モードのガイド](../MODES.md)をご覧ください。
 
-0.10.3 で予定：`Shift+Tab` は Ask、Accept Edits、Plan、Auto-Review、Full Access を順に切り替える 1 つのダイヤルになり、`Tab` はモードを切り替えなくなり、Operate は廃止されます。Ask はファイル編集の前にも毎回確認するようになり、新しい既定の Accept Edits は git リポジトリ内の編集を適用し、コマンドの前には引き続き確認します。[現在のガイド](../MODES.md)で説明しています。
-
-Ask と Auto-Review では、システムに OS のサンドボックスがあればその中でコマンドを実行します。macOS では Seatbelt、Linux では bubblewrap がインストールされていればそれを使います。Windows にはまだ OS のサンドボックスがなく、Full Access ではサンドボックスがオフになります。サンドボックス内では、シェルコマンドとターミナルセッションは `~/.ssh`、`~/.aws`、`.env` ファイルなどの資格情報ストアを読めません。`/preview-request` は次のリクエストを送らずに、伏せ字にしたプレビューを表示します。
+Ask、Accept Edits、Auto-Review では、システムに OS のサンドボックスがあればその中でコマンドを実行します。macOS では Seatbelt、Linux では bubblewrap がインストールされていればそれを使います。Windows にはまだ OS のサンドボックスがなく、Full Access ではサンドボックスがオフになります。サンドボックス内では、シェルコマンドとターミナルセッションは `~/.ssh`、`~/.aws`、`.env` ファイルなどの資格情報ストアを読めません。`/preview-request` は次のリクエストを送らずに、伏せ字にしたプレビューを表示します。
 
 アカウントは不要で、`/provider` で追加したキーはあなたのマシンに残ります。自分の API キーを使うと料金はプロバイダーに直接支払い、ローカルモデルにはキーが要りません。料金がわかる場合はフッターと `/cost` にセッションの費用が表示され、不明な料金は不明と表示され、無料とは表示されません。
 

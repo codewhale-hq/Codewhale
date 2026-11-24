@@ -459,7 +459,10 @@ async fn run_in_ctx(
         &args_json,
         host_runtime,
     )?;
-    ctx.eval::<(), _>(prelude())
+    ctx.eval::<(), _>(URL_PRELUDE)
+        .catch(&ctx)
+        .map_err(|err| WorkflowJsError::VmInit(format!("url prelude failed: {err}")))?;
+    ctx.eval::<(), _>(prelude(invoker.is_some()))
         .catch(&ctx)
         .map_err(|err| WorkflowJsError::VmInit(format!("prelude failed: {err}")))?;
     if invoker.is_some() {
@@ -1626,20 +1629,26 @@ fn task_role_kind(value: &str) -> Option<TaskRoleKind> {
     }
 }
 
-/// The JS prelude injected before every script: determinism bans, the
-/// `task`/`parallel`/`pipeline`/`log`/`phase` stdlib (design §7), and the
-/// `budget` global.
-fn prelude() -> String {
-    PRELUDE_TEMPLATE.replace("__MAX_ITEMS__", &PARALLEL_MAX_ITEMS.to_string())
+const URL_PRELUDE: &str = include_str!("url_prelude.js");
+
+fn prelude(is_codemode: bool) -> String {
+    let determinism_reason = if is_codemode {
+        "in execute_tools programs: scripts run in a deterministic sandbox without wall-clock or random state"
+    } else {
+        "in Workflow scripts: runs must be deterministic for record/replay"
+    };
+    PRELUDE_TEMPLATE
+        .replace("__MAX_ITEMS__", &PARALLEL_MAX_ITEMS.to_string())
+        .replace("__DETERMINISM_REASON__", determinism_reason)
 }
 
 const PRELUDE_TEMPLATE: &str = r#""use strict";
 (() => {
   const banned = (name) => () => {
-    throw new Error(name + " is unavailable in Workflow scripts: runs must be deterministic for record/replay");
+    throw new Error(name + " is unavailable __DETERMINISM_REASON__");
   };
   const BannedDate = function Date() {
-    throw new Error("new Date()/Date() is unavailable in Workflow scripts: runs must be deterministic for record/replay");
+    throw new Error("new Date()/Date() is unavailable __DETERMINISM_REASON__");
   };
   BannedDate.now = banned("Date.now()");
   BannedDate.parse = banned("Date.parse()");
@@ -1907,9 +1916,71 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
     });
   };
 
-  globalThis.log = (message) => {
-    hostLog(typeof message === "string" ? message : (JSON.stringify(message) ?? String(message)));
+  const UrlCtor = globalThis.URL;
+  const UrlSearchParamsCtor = globalThis.URLSearchParams;
+  const safeString = (value) => {
+    try {
+      return String(value);
+    } catch (_) {
+      return "[object Object]";
+    }
   };
+  const formatLogValue = (value) => {
+    if (typeof value === "string") return value;
+    if (value === null) return "null";
+    if (value === undefined) return "undefined";
+    if (
+      typeof value === "number" ||
+      typeof value === "boolean" ||
+      typeof value === "bigint" ||
+      typeof value === "symbol" ||
+      typeof value === "function"
+    ) {
+      return String(value);
+    }
+    if (
+      value instanceof Error ||
+      (UrlCtor && value instanceof UrlCtor) ||
+      (UrlSearchParamsCtor && value instanceof UrlSearchParamsCtor)
+    ) {
+      return safeString(value);
+    }
+    try {
+      const encoded = JSON.stringify(value);
+      return encoded === undefined ? safeString(value) : encoded;
+    } catch (_) {
+      return safeString(value);
+    }
+  };
+  const formatConsoleArgs = (items) => {
+    if (items.length === 0) return "";
+    const parts = new Array(items.length);
+    for (let i = 0; i < items.length; i++) {
+      parts[i] = formatLogValue(items[i]);
+    }
+    return parts.join(" ");
+  };
+  const emitConsole = (prefix, items) => {
+    const text = formatConsoleArgs(items);
+    if (prefix === "") {
+      hostLog(text);
+    } else if (text === "") {
+      hostLog(prefix);
+    } else {
+      hostLog(prefix + " " + text);
+    }
+  };
+
+  globalThis.log = (message) => {
+    hostLog(formatLogValue(message));
+  };
+  globalThis.console = Object.freeze({
+    log: (...items) => emitConsole("", items),
+    info: (...items) => emitConsole("[info]", items),
+    warn: (...items) => emitConsole("[warn]", items),
+    error: (...items) => emitConsole("[error]", items),
+    debug: (...items) => emitConsole("[debug]", items),
+  });
   globalThis.phase = (title) => {
     hostPhase(String(title));
   };

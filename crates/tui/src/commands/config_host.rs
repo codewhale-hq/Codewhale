@@ -30,6 +30,9 @@ use codewhale_runtime::config::SearchProvider;
 pub(crate) fn config_action_to_app_action(action: ConfigAction) -> AppAction {
     match action {
         ConfigAction::PermissionRulesChanged => AppAction::PermissionRulesChanged,
+        ConfigAction::ApproveAutoReviewRetry { target } => {
+            AppAction::ApproveAutoReviewRetry { target }
+        }
         ConfigAction::OpenModelConnectionSetup => AppAction::OpenModelConnectionSetup,
         ConfigAction::StartAccountConnect => AppAction::StartAccountConnect,
         ConfigAction::StartAccountLogin => AppAction::StartAccountLogin,
@@ -41,6 +44,7 @@ pub(crate) fn config_action_to_app_action(action: ConfigAction) -> AppAction {
         ConfigAction::StartOrcarouterRevoke => AppAction::StartOrcarouterRevoke,
         ConfigAction::OpenConfigView => AppAction::OpenConfigView,
         ConfigAction::OpenModePicker => AppAction::OpenModePicker,
+        ConfigAction::SetConversationMode { id } => AppAction::SetConversationMode { id },
         ConfigAction::OpenThemePicker => AppAction::OpenThemePicker,
         ConfigAction::OpenStatusPicker => AppAction::OpenStatusPicker,
         ConfigAction::OpenProviderPicker => AppAction::OpenProviderPicker,
@@ -78,6 +82,9 @@ pub(crate) fn config_action_to_app_action(action: ConfigAction) -> AppAction {
         ConfigAction::PromptSuggestionChanged { enabled } => {
             AppAction::UpdatePromptSuggestion { enabled }
         }
+        ConfigAction::AutoReviewReviewerModelChanged { reviewer_model } => {
+            AppAction::SetAutoReviewReviewerModel { reviewer_model }
+        }
         ConfigAction::NotificationChanged(update) => AppAction::UpdateNotification {
             update: to_notification_update(update),
         },
@@ -89,6 +96,9 @@ pub(crate) fn config_action_to_app_action(action: ConfigAction) -> AppAction {
 pub(crate) fn app_action_to_config_action(action: AppAction) -> Option<ConfigAction> {
     Some(match action {
         AppAction::PermissionRulesChanged => ConfigAction::PermissionRulesChanged,
+        AppAction::ApproveAutoReviewRetry { target } => {
+            ConfigAction::ApproveAutoReviewRetry { target }
+        }
         AppAction::OpenModelConnectionSetup => ConfigAction::OpenModelConnectionSetup,
         AppAction::StartAccountConnect => ConfigAction::StartAccountConnect,
         AppAction::StartAccountLogin => ConfigAction::StartAccountLogin,
@@ -100,6 +110,7 @@ pub(crate) fn app_action_to_config_action(action: AppAction) -> Option<ConfigAct
         AppAction::StartOrcarouterRevoke => ConfigAction::StartOrcarouterRevoke,
         AppAction::OpenConfigView => ConfigAction::OpenConfigView,
         AppAction::OpenModePicker => ConfigAction::OpenModePicker,
+        AppAction::SetConversationMode { id } => ConfigAction::SetConversationMode { id },
         AppAction::OpenThemePicker => ConfigAction::OpenThemePicker,
         AppAction::OpenStatusPicker => ConfigAction::OpenStatusPicker,
         AppAction::OpenProviderPicker => ConfigAction::OpenProviderPicker,
@@ -143,6 +154,9 @@ pub(crate) fn app_action_to_config_action(action: AppAction) -> Option<ConfigAct
         }
         AppAction::UpdatePromptSuggestion { enabled } => {
             ConfigAction::PromptSuggestionChanged { enabled }
+        }
+        AppAction::SetAutoReviewReviewerModel { reviewer_model } => {
+            ConfigAction::AutoReviewReviewerModelChanged { reviewer_model }
         }
         AppAction::UpdateNotification { update } => {
             ConfigAction::NotificationChanged(from_notification_update(update))
@@ -241,6 +255,7 @@ fn to_search_provider(provider: CommandSearchProvider) -> SearchProvider {
         CommandSearchProvider::Sofya => SearchProvider::Sofya,
         CommandSearchProvider::Serply => SearchProvider::Serply,
         CommandSearchProvider::DeepSeek => SearchProvider::DeepSeek,
+        CommandSearchProvider::SearchApi => SearchProvider::SearchApi,
     }
 }
 
@@ -258,6 +273,7 @@ fn from_search_provider(provider: SearchProvider) -> CommandSearchProvider {
         SearchProvider::Sofya => CommandSearchProvider::Sofya,
         SearchProvider::Serply => CommandSearchProvider::Serply,
         SearchProvider::DeepSeek => CommandSearchProvider::DeepSeek,
+        SearchProvider::SearchApi => CommandSearchProvider::SearchApi,
     }
 }
 

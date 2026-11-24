@@ -2,7 +2,7 @@
 /** Local source, release, pinned-key parity and public-fixture gate. */
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { validateSource, verifyEnvelope, parseTsKeys, validateTrustedKeys, readBoundedFile } from "./facts-publish.mjs";
+import { validateSource, verifyEnvelope, parseTsKeys, validateTrustedKeys, deriveBundledRegistryTrust, readBoundedFile } from "./facts-publish.mjs";
 
 const WEB_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO_ROOT = resolve(WEB_ROOT, "..");
@@ -15,12 +15,12 @@ export function parseRustKeys(text) {
   const table = tables[0];
   const body = table[1].replace(/^\s*\/\/.*$/gm, "");
   const keys = [];
-  const remainder = body.replace(/TrustedKey\s*\{\s*key_id:\s*"([^"]+)",\s*public_key:\s*\[([^\]]*)\],\s*status:\s*KeyStatus::(Active|Retired)\s*,?\s*\}/g, (_, keyId, encoded, status) => {
+  const remainder = body.replace(/TrustedKey\s*\{\s*key_id:\s*"([^"]+)",\s*public_key:\s*\[([^\]]*)\],\s*status:\s*KeyStatus::(Active|Retired),\s*role:\s*KeyRole::(Founder|Automation)\s*,?\s*\}/g, (_, keyId, encoded, status, role) => {
     const pieces = encoded.split(",").map((piece) => piece.trim()).filter(Boolean);
     if (pieces.length !== 32 || pieces.some((piece) => !/^(?:\d+|0x[0-9a-fA-F]+)$/.test(piece))) throw new Error("Rust public key must contain 32 literal bytes");
     const bytes = pieces.map(Number);
     if (bytes.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)) throw new Error("Rust public key byte out of range");
-    keys.push({ keyId, publicKey: Buffer.from(bytes).toString("base64"), status: status.toLowerCase() });
+    keys.push({ keyId, publicKey: Buffer.from(bytes).toString("base64"), status: status.toLowerCase(), role: role.toLowerCase() });
     return "";
   });
   if (remainder.replace(/[\s,]/g, "")) throw new Error("unparsed Rust TRUSTED_KEYS entry");
@@ -42,6 +42,11 @@ export function checkCloudFacts() {
   const rustKeys = parseRustKeys(text(resolve(REPO_ROOT, "crates/config/src/cloud_facts/keys.rs")));
   const tsKeys = parseTsKeys(text(resolve(WEB_ROOT, "lib/cloud-facts/keys.ts")));
   if (JSON.stringify(rustKeys) !== JSON.stringify(tsKeys)) failures.push("Rust and web pinned key tables diverge");
+  const expectedBundled = deriveBundledRegistryTrust(json(resolve(REPO_ROOT, "crates/config/assets/provider_descriptors.json")));
+  const committedBundled = json(resolve(WEB_ROOT, "lib/cloud-facts/bundled-providers.json"));
+  if (JSON.stringify(expectedBundled) !== JSON.stringify(committedBundled)) {
+    failures.push("crates/config/assets/provider_descriptors.json and web/lib/cloud-facts/bundled-providers.json diverge");
+  }
   const testOnlyPub = text(resolve(REPO_ROOT, "docs/cloud-facts/fixtures/test-only.pub")).trim();
   for (const name of ["envelope-stable-v7.json", "envelope-future-only-v8.json"]) {
     const result = verifyEnvelope(json(resolve(REPO_ROOT, "docs/cloud-facts/fixtures", name)), testOnlyPub);

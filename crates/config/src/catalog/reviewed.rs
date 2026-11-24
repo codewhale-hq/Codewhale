@@ -53,6 +53,10 @@ pub struct IntrinsicModel {
     #[serde(default)]
     pub reasoning: Option<bool>,
     #[serde(default)]
+    pub thought_signatures_required: Option<bool>,
+    #[serde(default)]
+    pub thinking_can_disable: Option<bool>,
+    #[serde(default)]
     pub family: Option<ModelFamily>,
     #[serde(default)]
     pub display_name: Option<String>,
@@ -71,14 +75,11 @@ pub struct IntrinsicModel {
     pub source: String,
 }
 
-/// Exact provider-scoped selector aliases. Their order preserves the released
-/// first-match contract. These rows do not assert live account availability.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSelection {
     pub provider: String,
     pub id: String,
-    pub aliases: Vec<String>,
     pub supports_tools: bool,
     pub supports_reasoning: bool,
 }
@@ -159,8 +160,6 @@ pub struct ReviewedCatalog {
     #[serde(default)]
     pub intrinsic: BTreeMap<String, IntrinsicModel>,
     #[serde(default)]
-    pub official_deepseek_aliases: BTreeMap<String, String>,
-    #[serde(default)]
     pub openai_reasoning_ids: BTreeMap<String, String>,
     #[serde(default)]
     pub snapshot_prefixes: BTreeMap<String, String>,
@@ -177,11 +176,7 @@ pub struct ReviewedCatalog {
     #[serde(default)]
     pub groups: BTreeMap<String, Vec<String>>,
     #[serde(default)]
-    pub compatibility_aliases: BTreeMap<String, BTreeMap<String, String>>,
-    #[serde(default)]
     pub completion_rosters: BTreeMap<String, Vec<String>>,
-    #[serde(default)]
-    pub go_aliases: BTreeMap<String, String>,
     #[serde(default)]
     pub search_models: BTreeMap<String, Vec<String>>,
     #[serde(default)]
@@ -225,7 +220,6 @@ impl ReviewedCatalog {
                 || provider.is_none_or(|p| {
                     p.as_str() != row.provider || p == crate::ProviderKind::Antigravity
                 })
-                || row.aliases.iter().any(|s| !identifier(s))
             {
                 return Err(format!(
                     "malformed provider selector {}/{}",
@@ -264,15 +258,6 @@ impl ReviewedCatalog {
                 return Err(format!("malformed reference price {id}"));
             }
         }
-        for (alias, target) in self
-            .official_deepseek_aliases
-            .iter()
-            .chain(&self.go_aliases)
-        {
-            if !identifier(alias) || !identifier(target) {
-                return Err("malformed exact alias".into());
-            }
-        }
         for (prefix, target) in &self.snapshot_prefixes {
             if !identifier(prefix) || !self.intrinsic.contains_key(target) {
                 return Err("missing snapshot target".into());
@@ -305,15 +290,6 @@ impl ReviewedCatalog {
                 return Err(format!("missing public model {}", row.id));
             }
         }
-        for (group, aliases) in &self.compatibility_aliases {
-            if !identifier(group)
-                || aliases
-                    .iter()
-                    .any(|(alias, target)| !identifier(alias) || !identifier(target))
-            {
-                return Err("malformed compatibility selector".into());
-            }
-        }
         for (provider, entries) in &self.completion_rosters {
             if provider != crate::descriptors::LEGACY_DEEPSEEK_CN.id
                 && crate::ProviderKind::parse_config_identity(provider)
@@ -339,6 +315,15 @@ pub fn bundled_reviewed() -> &'static ReviewedCatalog {
 /// Never examine the process's live/custom/account catalog here.
 #[must_use]
 pub fn intrinsic_model(model: &str) -> Option<IntrinsicModel> {
+    let id = model.trim().to_ascii_lowercase();
+    if let Some(reg) = crate::cloud_facts::overlay::pulled_registry()
+        && let Some(mut pulled) = reg.compiled.intrinsic_models.get(&id).cloned()
+    {
+        if let Some(bundled) = intrinsic_model_in(super::bundled_models_dev_catalog(), model) {
+            fill_missing(&mut pulled, &bundled);
+        }
+        return Some(pulled);
+    }
     intrinsic_model_in(super::bundled_models_dev_catalog(), model)
 }
 
@@ -352,6 +337,14 @@ pub fn intrinsic_model_in(catalog: &ModelsDevCatalog, model: &str) -> Option<Int
         .find(|(key, _)| key.eq_ignore_ascii_case(&id))
         .map(|(_, row)| row);
     let mut result = reviewed.cloned().or_else(|| canonical.map(from_canonical));
+    if let Some(base) = result
+        .as_ref()
+        .and_then(|row| row.canonical_id.as_deref())
+        .and_then(|base| catalog.reviewed.intrinsic.get(&base.to_ascii_lowercase()))
+        && let Some(row) = &mut result
+    {
+        fill_missing(row, base);
+    }
     if let Some(canonical) = canonical {
         let canonical = from_canonical(canonical);
         if let Some(row) = &mut result {
@@ -426,7 +419,7 @@ fn consensus<T: Copy + PartialEq>(values: impl IntoIterator<Item = T>) -> Option
     values.all(|value| value == first).then_some(first)
 }
 
-fn from_canonical(row: &ModelsDevModel) -> IntrinsicModel {
+pub(crate) fn from_canonical(row: &ModelsDevModel) -> IntrinsicModel {
     IntrinsicModel {
         canonical_id: (!row.id.is_empty()).then(|| row.id.clone()),
         context_window: row
@@ -459,14 +452,26 @@ fn from_canonical(row: &ModelsDevModel) -> IntrinsicModel {
     }
 }
 
-fn fill_missing(row: &mut IntrinsicModel, other: &IntrinsicModel) {
+pub(crate) fn fill_missing(row: &mut IntrinsicModel, other: &IntrinsicModel) {
     row.context_window = row.context_window.or(other.context_window);
     row.max_output = row.max_output.or(other.max_output);
     row.reasoning = row.reasoning.or(other.reasoning);
+    row.thought_signatures_required = row
+        .thought_signatures_required
+        .or(other.thought_signatures_required);
+    row.thinking_can_disable = row.thinking_can_disable.or(other.thinking_can_disable);
     row.family = row.family.or(other.family);
     if row.display_name.is_none() {
         row.display_name.clone_from(&other.display_name);
     }
+}
+
+#[must_use]
+pub fn selection_supports_reasoning(provider: &str, model: &str) -> bool {
+    let trimmed = model.trim();
+    bundled_reviewed().selections.iter().any(|row| {
+        row.supports_reasoning && row.provider == provider && row.id.eq_ignore_ascii_case(trimmed)
+    })
 }
 
 /// Exact public bundled identifiers only. Live/private/configured model IDs
@@ -486,17 +491,15 @@ pub fn public_model_identifier(model: &str) -> bool {
 
 #[must_use]
 pub fn official_deepseek_model_id(model: &str) -> Option<&'static str> {
-    bundled_reviewed()
-        .official_deepseek_aliases
-        .get(&model.trim().to_ascii_lowercase())
-        .map(String::as_str)
-}
-
-/// Exact data-owned compatibility selector. Provider/endpoint policy remains
-/// at the caller; this projection cannot choose or authorize a route.
-#[must_use]
-pub fn compatibility_alias(group: &str, model: &str) -> Option<&'static str> {
-    constants::compatibility_alias(group, model)
+    let key = model.trim().to_ascii_lowercase();
+    if !key.starts_with("deepseek") && !key.contains("/deepseek")
+        || crate::legacy_deepseek_alias_reasoning_effort(&key).is_some()
+    {
+        return None;
+    }
+    let target = crate::descriptors::provider_model_alias(crate::ProviderKind::Deepseek, &key)
+        .unwrap_or(&key);
+    crate::route::bundled_offering_wire_id(crate::ProviderKind::Deepseek, target)
 }
 
 #[must_use]
@@ -613,8 +616,8 @@ mod tests {
     fn reviewed_selection_and_transport_preserve_separate_scopes() {
         let reviewed = bundled_reviewed();
         reviewed.validate().expect("committed data");
-        assert_eq!(reviewed.selections.len(), 188);
-        assert_eq!(reviewed.transports.len(), 123);
+        assert_eq!(reviewed.selections.len(), 190);
+        assert_eq!(reviewed.transports.len(), 112);
         let go = reviewed_transport("opencode-go", "gpt-5.6-luna").unwrap();
         assert_eq!(go.endpoint_key, "responses");
         assert_eq!(
@@ -632,11 +635,11 @@ mod tests {
         assert!(constants::completion_names("custom").is_empty());
         assert!(constants::completion_names("antigravity").is_empty());
         assert_eq!(
-            compatibility_alias("canonical_zai_model_id", "glm-5.2"),
+            crate::descriptors::provider_model_alias(crate::ProviderKind::Zai, "glm-5.2"),
             Some("GLM-5.2")
         );
         assert_eq!(
-            compatibility_alias("canonical_zai_model_id", "glm-5.3"),
+            crate::descriptors::provider_model_alias(crate::ProviderKind::Zai, "glm-5.3"),
             Some("GLM-5.3")
         );
     }
@@ -657,7 +660,6 @@ mod tests {
             selections: vec![ModelSelection {
                 provider: "minimax-anthropic".into(),
                 id: "MiniMax-M3".into(),
-                aliases: vec![],
                 supports_tools: true,
                 supports_reasoning: true,
             }],

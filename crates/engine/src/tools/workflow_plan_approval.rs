@@ -7,6 +7,7 @@
 use codewhale_config::WorkflowConfigToml;
 use codewhale_workflow::{
     ElevationOptions, WorkflowPlanElevation, WorkflowSpec, assess_workflow_elevation,
+    elevation::{ToolAuthority, tool_name_authority},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -599,82 +600,6 @@ fn collect_children(
     }
 }
 
-/// What an allowed-tool entry lets a child do.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct ToolAuthority {
-    shell: bool,
-    network: bool,
-    writes: bool,
-    secrets: bool,
-}
-
-/// Classify one allowed-tool name, as a plan's `allowed_tools` or a script's
-/// quoted tool name spells it.
-///
-/// Names match case-insensitively (the model-facing families are spelled
-/// `Bash`, `Web`, `File`, `Run`, `Git`), and a pattern suffix such as
-/// `Web(*)` or `Bash(git status)` names the same family.
-fn tool_name_authority(raw: &str) -> ToolAuthority {
-    let name = raw
-        .split('(')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    let name = name.as_str();
-    let mut authority = ToolAuthority::default();
-    if name.contains("shell")
-        || name.contains("exec")
-        || name.contains("bash")
-        || name == "run"
-        || name.starts_with("run_")
-        // `rlm` evaluates code as well as fetching.
-        || name == "rlm"
-    {
-        authority.shell = true;
-    }
-    if name.contains("secret") || name.contains("credential") || name == "read_env" {
-        authority.secrets = true;
-    }
-    if matches!(
-        name,
-        "web" | "web_search" | "web_run" | "web.run" | "fetch_url" | "rlm" | "git_fetch"
-    ) || name.starts_with("mcp_")
-    {
-        authority.network = true;
-    }
-    // `File` carries write/edit/patch actions as well as reads; an
-    // allow-list entry for the family grants all of them.
-    if matches!(
-        name,
-        "file" | "write" | "edit" | "write_file" | "edit_file" | "apply_patch"
-    ) {
-        authority.writes = true;
-    }
-    // Git fetches and commits; the GitHub tools comment, close and publish.
-    if matches!(name, "git" | "github" | "gh") || name.starts_with("github_") {
-        authority.network = true;
-        authority.writes = true;
-    }
-    // Computer and browser control act on apps and pages directly.
-    if name.starts_with("computer") || name.starts_with("browser") {
-        authority.network = true;
-        authority.writes = true;
-    }
-    if name.starts_with("computer") {
-        authority.shell = true;
-    }
-    // Tasks and automations start delegated work that runs on its own.
-    if matches!(
-        name,
-        "task" | "tasks" | "task_create" | "automation" | "automations" | "automation_create"
-    ) {
-        authority.shell = true;
-        authority.writes = true;
-    }
-    authority
-}
-
 /// Tool names a script quotes, in any quote style (`"Web"`, `'Web'`,
 /// `` `Web` ``), combined. Only identifier-like literals count, so prompt
 /// text in the script is not read as a tool name.
@@ -1214,6 +1139,36 @@ mod tests {
         assert_eq!(
             labels,
             vec!["Goal", "Children", "Writes", "Shell", "Network", "Budget"]
+        );
+    }
+
+    #[test]
+    fn nodes_plan_read_only_step_with_canonical_tools_requires_approval() {
+        let input = json!({
+            "action": "start",
+            "plan": {
+                "goal": "inspect with canonical tools",
+                "nodes": [{
+                    "agent": {
+                        "id": "scout",
+                        "prompt": "inspect",
+                        "agent_type": "explore",
+                        "mode": "read_only",
+                        "permissions": {
+                            "allowed_tools": ["Bash", "Web", "File"]
+                        }
+                    }
+                }]
+            }
+        });
+        let summary = analyze_workflow_plan_approval(&input);
+        assert!(summary.elevated, "{summary:?}");
+        assert!(summary.writes, "{summary:?}");
+        assert!(summary.shell, "{summary:?}");
+        assert!(summary.network, "{summary:?}");
+        assert_eq!(
+            workflow_approval_requirement_for(&input, &config()),
+            ApprovalRequirement::Required
         );
     }
 }

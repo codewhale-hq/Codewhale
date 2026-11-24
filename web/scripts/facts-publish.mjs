@@ -33,9 +33,21 @@ export const ENVELOPE_VERSION = 1;
 export const SCHEMA_VERSION = 1;
 export const MAX_PAYLOAD_BYTES = 512 * 1024;
 export const MAX_ENVELOPE_BYTES = 768 * 1024;
+export const REGISTRY_CHANNEL = "registry";
+export const REGISTRY_SCHEMA = "codewhale.registry.v1";
+export const MAX_REGISTRY_PAYLOAD_BYTES = 8 * 1024 * 1024;
+export const MAX_REGISTRY_ENVELOPE_BYTES = Math.floor(MAX_REGISTRY_PAYLOAD_BYTES / 3) * 4 + 64 * 1024;
 const KEY_ID_RE = /^cwf-[a-z0-9-]{1,32}$/;
 const CHANNEL_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const CI_MARKERS = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "BUILDKITE", "CIRCLECI", "JENKINS_URL", "TF_BUILD"];
+
+export function maxPayloadBytesFor(channel) {
+  return channel === REGISTRY_CHANNEL ? MAX_REGISTRY_PAYLOAD_BYTES : MAX_PAYLOAD_BYTES;
+}
+
+export function maxEnvelopeBytesFor(channel) {
+  return channel === REGISTRY_CHANNEL ? MAX_REGISTRY_ENVELOPE_BYTES : MAX_ENVELOPE_BYTES;
+}
 
 const here = dirname(fileURLToPath(import.meta.url));
 const WEB_ROOT = resolve(here, "..");
@@ -120,7 +132,7 @@ export function verifyEnvelope(envelope, publicKeyB64) {
   if (errors.length) return { ok: false, errors };
   let payloadBytes, sig, key;
   try {
-    payloadBytes = strictBase64(envelope.payload_b64, MAX_PAYLOAD_BYTES);
+    payloadBytes = strictBase64(envelope.payload_b64, maxPayloadBytesFor(envelope.channel));
     sig = strictBase64(envelope.sig_b64, 64);
     if (sig.length !== 64) throw new Error("bad signature size");
     key = publicKeyObjectFromRaw(publicKeyB64);
@@ -131,6 +143,15 @@ export function verifyEnvelope(envelope, publicKeyB64) {
   let payload;
   try { payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payloadBytes)); }
   catch { return { ok: false, errors: ["payload is not UTF-8 JSON"] }; }
+  if (envelope.channel === REGISTRY_CHANNEL) {
+    errors.push(...validateRegistrySource(payload));
+    if (envelope.facts_version !== payload?.revision) errors.push("outer facts_version differs from signed revision");
+    if (envelope.published_at !== payload?.generated_at) errors.push("outer published_at differs from signed generated_at");
+    if (envelope.applies_to !== (payload?.applies_to ?? "*")) errors.push("outer applies_to differs from signed payload");
+    if ((envelope.not_after ?? null) !== (payload?.not_after ?? null)) errors.push("outer not_after differs from signed payload");
+    if (payload?.not_after != null && utcTime(payload.not_after) <= utcTime(payload.generated_at)) errors.push("not_after must follow generated_at");
+    return errors.length ? { ok: false, errors } : { ok: true, errors: [], payload, sha256: sha };
+  }
   errors.push(...validateSource(payload));
   for (const field of ["channel", "facts_version", "applies_to", "schema_version", "published_at"]) {
     if (envelope[field] !== payload?.[field]) errors.push(`outer ${field} differs from signed payload`);
@@ -269,8 +290,69 @@ export function validateSource(source) {
   return errors;
 }
 
+export function canonicalUtcTimestamp(value) {
+  const time = utcTime(value);
+  if (time === null) return null;
+  return new Date(time).toISOString().replace(/\.000Z$/, "Z");
+}
+
+export function validateRegistrySource(source) {
+  const errors = [];
+  if (!isPlainObject(source)) return ["registry source must be an object"];
+  if (source.schema !== REGISTRY_SCHEMA) errors.push(`schema must be ${REGISTRY_SCHEMA}`);
+  if (!Number.isSafeInteger(source.revision) || source.revision <= 0) errors.push("revision must be a positive integer");
+  if (typeof source.content_hash !== "string" || !/^sha256:[a-f0-9]{64}$/.test(source.content_hash)) {
+    errors.push("content_hash must be sha256:<64 hex>");
+  }
+  const canonicalGenerated = canonicalUtcTimestamp(source.generated_at);
+  if (canonicalGenerated === null || source.generated_at !== canonicalGenerated) {
+    errors.push("generated_at must be a canonical UTC timestamp");
+  }
+  if (source.not_after !== undefined && source.not_after !== null) {
+    const canonicalNotAfter = canonicalUtcTimestamp(source.not_after);
+    if (canonicalNotAfter === null || source.not_after !== canonicalNotAfter) {
+      errors.push("not_after must be a canonical UTC timestamp");
+    }
+  }
+  if (!Array.isArray(source.providers)) errors.push("providers must be an array");
+  if (!Array.isArray(source.models)) errors.push("models must be an array");
+  if (!Array.isArray(source.offerings)) errors.push("offerings must be an array");
+  if (!isPlainObject(source.dialects)) errors.push("dialects must be an object");
+  optVersionReq(errors, "root", source);
+  return errors;
+}
+
+export function buildRegistryPayload(source, { factsVersion, publishedAt, notAfter, appliesTo } = {}) {
+  if (!isPlainObject(source)) throw new Error("registry source must be an object");
+  const revision = factsVersion ?? source.revision;
+  const generatedAt = canonicalUtcTimestamp(publishedAt ?? source.generated_at);
+  if (!generatedAt) throw new Error("generated_at must be a valid UTC timestamp");
+  const payload = {
+    ...source,
+    schema: REGISTRY_SCHEMA,
+    revision,
+    generated_at: generatedAt,
+  };
+  const resolvedAppliesTo = appliesTo ?? source.applies_to;
+  if (resolvedAppliesTo !== undefined) payload.applies_to = String(resolvedAppliesTo).trim();
+  const resolvedNotAfter = notAfter === undefined ? source.not_after : notAfter;
+  if (resolvedNotAfter != null) {
+    const canonicalExpiry = canonicalUtcTimestamp(resolvedNotAfter);
+    if (!canonicalExpiry) throw new Error("not_after must be a valid UTC timestamp");
+    payload.not_after = canonicalExpiry;
+  } else {
+    delete payload.not_after;
+  }
+  const errors = validateRegistrySource(payload);
+  if (errors.length) throw new Error(`registry invalid:\n  - ${errors.join("\n  - ")}`);
+  return payload;
+}
+
 /** Build the signed payload object (no signing) from a source file. */
 export function buildPayload(source, { channel, factsVersion, publishedAt }) {
+  if (channel === REGISTRY_CHANNEL) {
+    return buildRegistryPayload(source, { factsVersion, publishedAt });
+  }
   const errors = validateSource(source);
   if (errors.length) throw new Error(`source invalid:\n  - ${errors.join("\n  - ")}`);
   const payload = {
@@ -294,19 +376,22 @@ export function buildPayload(source, { channel, factsVersion, publishedAt }) {
 
 export function buildEnvelope({ privateKey, keyId, payload }) {
   if (!KEY_ID_RE.test(keyId)) throw new Error(`key_id must match ${KEY_ID_RE}`);
+  const isRegistry = payload?.schema === REGISTRY_SCHEMA;
+  const channel = isRegistry ? REGISTRY_CHANNEL : payload.channel;
+  const maxPayload = maxPayloadBytesFor(channel);
   const payloadBytes = Buffer.from(canonicalize(payload), "utf8");
-  if (payloadBytes.length > MAX_PAYLOAD_BYTES) throw new Error(`payload exceeds ${MAX_PAYLOAD_BYTES} bytes`);
+  if (payloadBytes.length > maxPayload) throw new Error(`payload exceeds ${maxPayload} bytes`);
   const sig = signPayload(privateKey, keyId, payloadBytes);
   const sha256 = createHash("sha256").update(payloadBytes).digest("hex");
   const envelope = {
     envelope: ENVELOPE_VERSION,
-    channel: payload.channel,
-    facts_version: payload.facts_version,
-    schema_version: payload.schema_version,
+    channel,
+    facts_version: isRegistry ? payload.revision : payload.facts_version,
+    schema_version: isRegistry ? SCHEMA_VERSION : payload.schema_version,
     key_id: keyId,
     alg: "ed25519",
-    applies_to: payload.applies_to,
-    published_at: payload.published_at,
+    applies_to: isRegistry ? (typeof payload.applies_to === "string" ? payload.applies_to : "*") : payload.applies_to,
+    published_at: isRegistry ? payload.generated_at : payload.published_at,
     payload_b64: payloadBytes.toString("base64"),
     sig_b64: sig.toString("base64"),
     sigs: [],
@@ -373,8 +458,9 @@ function loadPrivateKeyFromEnv() {
 export function validateTrustedKeys(keys) {
   const seen = new Set();
   for (const key of keys) {
-    if (!KEY_ID_RE.test(key.keyId) || seen.has(key.keyId) || !["active", "retired"].includes(key.status) || strictBase64(key.publicKey, 32).length !== 32) throw new Error("invalid or duplicated pinned key");
+    if (!KEY_ID_RE.test(key.keyId) || seen.has(key.keyId) || !["active", "retired"].includes(key.status) || !["founder", "automation"].includes(key.role) || strictBase64(key.publicKey, 32).length !== 32 || seen.has(key.publicKey)) throw new Error("invalid or duplicated pinned key");
     seen.add(key.keyId);
+    seen.add(key.publicKey);
   }
   return keys;
 }
@@ -387,8 +473,8 @@ export function parseTsKeys(text) {
   const table = tables[0];
   const body = table[1].replace(/^\s*\/\/.*$/gm, "");
   const keys = [];
-  const remainder = body.replace(/\{\s*keyId:\s*"([^"]+)",\s*publicKey:\s*"([^"]+)",\s*status:\s*"([^"]+)"\s*,?\s*\}/g, (_, keyId, publicKey, status) => {
-    keys.push({ keyId, publicKey, status });
+  const remainder = body.replace(/\{\s*keyId:\s*"([^"]+)",\s*publicKey:\s*"([^"]+)",\s*status:\s*"([^"]+)",\s*role:\s*"([^"]+)"\s*,?\s*\}/g, (_, keyId, publicKey, status, role) => {
+    keys.push({ keyId, publicKey, status, role });
     return "";
   });
   if (remainder.replace(/[\s,]/g, "")) throw new Error("unparsed TypeScript TRUSTED_KEYS entry");
@@ -400,12 +486,162 @@ function loadTrustedKeysFromRepo() {
   return new Map(keys.map((key) => [key.keyId, key]));
 }
 
+const AUTOMATION_CHANNEL_SUFFIX = "-models";
+const AUTOMATION_MAX_VALIDITY_MS = 7 * 24 * 60 * 60 * 1000;
+const AUTOMATION_MAX_MODELS = 256;
+const AUTOMATION_PAYLOAD_FIELDS = new Set([
+  "schema_version", "channel", "facts_version", "published_at", "not_after", "applies_to",
+  "models", "provider_defaults", "release", "announcements",
+]);
+const AUTOMATION_MODEL_FIELDS = new Set([
+  "provider", "id", "op", "context_window", "max_output", "reasoning", "display_name",
+  "deprecated_at", "replacement", "note", "applies_to", "pricing_withheld",
+]);
+
+export function automationScopeViolation(facts, channel) {
+  const published = utcTime(facts.published_at);
+  const expires = facts.not_after == null ? null : utcTime(facts.not_after);
+  if (published === null || (facts.not_after != null && expires === null)) return "timestamp is not whole-second UTC";
+  if (!channel.endsWith(AUTOMATION_CHANNEL_SUFFIX) || channel.length <= AUTOMATION_CHANNEL_SUFFIX.length || !/^[a-z0-9]/.test(channel)) return `channel ${JSON.stringify(channel)} is not an automation channel`;
+  const plain = (value, max) => value === undefined || (typeof value === "string" && [...value].length <= max && !/\p{Cc}/u.test(value));
+  if (!plain(facts.applies_to, 200)) return "applies_to is too long or not plain";
+  if (isPlainObject(facts.provider_defaults) && Object.keys(facts.provider_defaults).length > 0) return "provider defaults";
+  if (facts.release != null) return "release facts";
+  if (Array.isArray(facts.announcements) && facts.announcements.length > 0) return "announcements";
+  const unknown = Object.keys(facts).find((field) => !AUTOMATION_PAYLOAD_FIELDS.has(field));
+  if (unknown !== undefined) return `field ${JSON.stringify(unknown)} is not allowed`;
+  const models = facts.models === undefined ? [] : facts.models;
+  if (!Array.isArray(models)) return "models is not a list";
+  if (models.length > AUTOMATION_MAX_MODELS) return `more than ${AUTOMATION_MAX_MODELS} models`;
+  for (const model of models) {
+    if (!isPlainObject(model) || typeof model.provider !== "string" || !model.provider || typeof model.id !== "string" || !model.id) return "malformed model entry";
+    const name = `${model.provider}/${model.id}`;
+    const field = Object.keys(model).find((key) => !AUTOMATION_MODEL_FIELDS.has(key));
+    if (field !== undefined) return `${name}: field ${JSON.stringify(field)} is not allowed`;
+    const nullField = Object.keys(model).find((key) => model[key] === null);
+    if (nullField !== undefined) return `${name}: field ${JSON.stringify(nullField)} is null`;
+    const op = model.op === undefined ? "upsert" : model.op;
+    if (op !== "upsert" && op !== "deprecate") return `${name} is not an upsert or deprecation`;
+    if (model.reasoning !== undefined && typeof model.reasoning !== "boolean") return `${name}: malformed model entry`;
+    if (!plain(model.provider, 64) || !plain(model.id, 200) || !plain(model.display_name, 120) || !plain(model.deprecated_at, 40) ||
+        !plain(model.replacement, 200) || !plain(model.note, 300) || !plain(model.applies_to, 200) || !plain(model.pricing_withheld, 300)) return `${name}: text too long or not plain`;
+    const window = model.context_window;
+    const output = model.max_output;
+    const windowOk = window === undefined || (typeof window === "number" && Number.isSafeInteger(window) && window >= 1024 && window <= 20_000_000);
+    const outputOk = output === undefined || (typeof output === "number" && Number.isSafeInteger(output) && output >= 1 && output <= 2_000_000 && (typeof window !== "number" || output <= window));
+    if (!windowOk || !outputOk) return `${name}: limit out of range`;
+  }
+  const wholeSecond = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+  if (typeof facts.published_at !== "string" || !wholeSecond.test(facts.published_at) ||
+      (facts.not_after != null && (typeof facts.not_after !== "string" || !wholeSecond.test(facts.not_after)))) return "timestamp is not whole-second UTC";
+  if (facts.facts_version !== published / 1000) return "facts_version is not the publication time";
+  if (expires === null) return "no not_after";
+  if (expires <= published || expires - published > AUTOMATION_MAX_VALIDITY_MS) return "validity outside the automation limit";
+  return null;
+}
+
+const REGISTRY_PROVIDER_TRUST_FIELDS = [
+  "origin", "kind", "base_url", "base_url_config_key", "env_vars", "api_key_env",
+  "secret_store_slot", "config_key", "wire", "wire_policy", "auth", "aliases",
+  "selector_aliases", "subagent_aliases", "credential_help", "credential_url",
+  "docs_url", "discovery", "catalog_id", "catalog_source_id", "tui_wire_tag",
+  "table_field", "web",
+];
+
+function sortKeysDeep(value) {
+  if (Array.isArray(value)) return value.map(sortKeysDeep);
+  if (!isPlainObject(value)) return value;
+  const out = {};
+  for (const key of Object.keys(value).sort()) {
+    if (value[key] !== undefined) out[key] = sortKeysDeep(value[key]);
+  }
+  return out;
+}
+
+function projectProviderTrust(row) {
+  const synthesized = row.origin === "descriptor" ? { ...row } : row;
+  if (row.origin === "descriptor") {
+    if (synthesized.wire_policy === undefined) {
+      synthesized.wire_policy = typeof synthesized.wire === "string" && synthesized.wire ? synthesized.wire : "openai-compatible";
+    }
+    if (synthesized.auth === undefined) {
+      const env = typeof synthesized.api_key_env === "string" && synthesized.api_key_env
+        ? synthesized.api_key_env
+        : `${String(synthesized.id).toUpperCase().replace(/-/g, "_")}_API_KEY`;
+      synthesized.auth = { secret_slot: synthesized.id, env_vars: [env] };
+    }
+  }
+  const out = {};
+  for (const field of REGISTRY_PROVIDER_TRUST_FIELDS) {
+    if (synthesized[field] !== undefined) out[field] = synthesized[field];
+  }
+  return sortKeysDeep(out);
+}
+
+export function deriveBundledRegistryTrust(descriptors) {
+  const providers = {};
+  for (const row of descriptors.providers || []) providers[row.id] = projectProviderTrust({ ...row, origin: "builtin" });
+  for (const row of descriptors.descriptors || []) providers[row.id] = projectProviderTrust({ ...row, origin: "descriptor" });
+  const compat = {};
+  for (const [key, value] of Object.entries(descriptors)) {
+    if (key !== "providers" && key !== "descriptors") compat[key] = value;
+  }
+  return sortKeysDeep({ providers, providerDescriptorsCompat: compat });
+}
+
+let cachedBundledRegistryTrust = null;
+function loadBundledRegistryTrust() {
+  if (!cachedBundledRegistryTrust) {
+    cachedBundledRegistryTrust = readJson(resolve(WEB_ROOT, "lib/cloud-facts/bundled-providers.json"), 512 * 1024);
+  }
+  return cachedBundledRegistryTrust;
+}
+
+export function registryAutomationScopeViolation(facts, bundledTrust = loadBundledRegistryTrust()) {
+  const published = utcTime(facts.generated_at);
+  const expires = facts.not_after == null ? null : utcTime(facts.not_after);
+  if (published === null || (facts.not_after != null && expires === null)) return "timestamp is not valid UTC";
+  if (expires === null) return "no not_after";
+  if (expires <= published || expires - published > AUTOMATION_MAX_VALIDITY_MS) return "validity outside the automation limit";
+  if (!Array.isArray(facts.providers)) return "providers is not a list";
+  const bundledProviders = bundledTrust?.providers ?? {};
+  const bundledIds = Object.keys(bundledProviders);
+  const seen = new Set();
+  for (const provider of facts.providers) {
+    if (!isPlainObject(provider) || typeof provider.id !== "string" || !provider.id) return "malformed provider entry";
+    if (seen.has(provider.id)) return `${provider.id}: duplicate provider`;
+    seen.add(provider.id);
+    if (provider.origin !== "builtin" && provider.origin !== "descriptor") return `${provider.id}: unsupported provider origin`;
+    if (provider.admission !== undefined) return `${provider.id}: admitted provider requires a founder signature`;
+    if (!(provider.id in bundledProviders)) return `${provider.id}: unbundled provider requires a founder signature`;
+    if (canonicalize(projectProviderTrust(provider)) !== canonicalize(bundledProviders[provider.id])) {
+      return `${provider.id}: provider trust fields require a founder signature`;
+    }
+  }
+  if (seen.size !== bundledIds.length) return "missing bundled provider requires a founder signature";
+  if (isPlainObject(facts.engine_compat) && facts.engine_compat.provider_descriptors !== undefined) {
+    if (canonicalize(facts.engine_compat.provider_descriptors) !== canonicalize(bundledTrust?.providerDescriptorsCompat ?? {})) {
+      return "engine_compat.provider_descriptors requires a founder signature";
+    }
+  }
+  return null;
+}
+
 export function activePublishingKey(envelope, keys, now = Date.now()) {
   const key = validateTrustedKeys(keys).find((key) => key.keyId === envelope.key_id && key.status === "active");
   if (!key) throw new Error("primary signing key is not pinned and active; refusing publication");
   const check = verifyEnvelope(envelope, key.publicKey);
   if (!check.ok) throw new Error(`envelope does not verify: ${check.errors.join("; ")}`);
-  if (!Number.isFinite(now) || utcTime(check.payload.published_at) > now + 300_000 ||
+  if (key.role !== "founder") {
+    const violation = envelope.channel === REGISTRY_CHANNEL
+      ? registryAutomationScopeViolation(check.payload)
+      : automationScopeViolation(check.payload, envelope.channel);
+    if (violation !== null) throw new Error(`payload is outside the automation key's scope: ${violation}`);
+  }
+  const publishedTime = envelope.channel === REGISTRY_CHANNEL
+    ? utcTime(check.payload.generated_at)
+    : utcTime(check.payload.published_at);
+  if (!Number.isFinite(now) || publishedTime > now + 300_000 ||
       (check.payload.not_after != null && utcTime(check.payload.not_after) <= now)) throw new Error("publication timestamp is future or expired");
   return { key, check };
 }
@@ -481,7 +717,7 @@ export async function publishRelease(request, envelope, row, publicKey) {
   await request("facts_key", { method: "POST", body: { key_id: envelope.key_id, scope: "global", algorithm: "ed25519", public_key: publicKey, status: "active" }, prefer: "resolution=ignore-duplicates,return=minimal" });
   let inserted;
   try {
-    inserted = await request("facts_release", { method: "POST", body: { ...row, channel_id: channelId }, prefer: "return=representation" });
+    inserted = await request("facts_release?select=id,payload_sha256", { method: "POST", body: { ...row, channel_id: channelId }, prefer: "return=representation" });
   } catch (error) {
     if (error?.status !== 409) throw error;
     const existing = await request(`facts_release?channel_id=eq.${channelId}&facts_version=eq.${envelope.facts_version}&select=id,payload_sha256,status`);
@@ -544,8 +780,8 @@ export async function readBoundedResponse(response, maxBytes = MAX_ENVELOPE_BYTE
   return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, size));
 }
 
-function readJson(path) {
-  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(readBoundedFile(path)));
+function readJson(path, maxBytes = MAX_REGISTRY_ENVELOPE_BYTES) {
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(readBoundedFile(path, maxBytes)));
 }
 
 function nowIso() {
@@ -585,14 +821,17 @@ async function main(argv) {
     refuseUnderCi();
     const sourcePath = resolve(String(flags.source ?? resolve(REPO_ROOT, "docs/cloud-facts/stable.json")));
     const source = readJson(sourcePath);
-    const channel = String(flags.channel ?? source.channel ?? "stable");
+    const defaultChannel = source?.schema === REGISTRY_SCHEMA ? REGISTRY_CHANNEL : (source.channel ?? "stable");
+    const channel = String(flags.channel ?? defaultChannel);
     if (!CHANNEL_RE.test(channel)) throw new Error("bad channel slug");
-    const factsVersion = Number(flags["facts-version"] ?? source.facts_version);
+    const factsVersion = Number(flags["facts-version"] ?? (channel === REGISTRY_CHANNEL ? source.revision : source.facts_version));
     if (!Number.isSafeInteger(factsVersion) || factsVersion <= 0) throw new Error("--facts-version (or source.facts_version) must be a positive integer");
     const keyId = String(flags["key-id"] ?? "");
     const privateKey = loadPrivateKeyFromEnv();
-    const publishedAt = String(flags["published-at"] ?? nowIso());
-    const payload = buildPayload(source, { channel, factsVersion, publishedAt });
+    const publishedAt = String(flags["published-at"] ?? (channel === REGISTRY_CHANNEL && source.generated_at ? canonicalUtcTimestamp(source.generated_at) : nowIso()));
+    const payload = channel === REGISTRY_CHANNEL
+      ? buildRegistryPayload(source, { factsVersion, publishedAt, notAfter: flags["not-after"] })
+      : buildPayload(source, { channel, factsVersion, publishedAt });
     const envelope = buildEnvelope({ privateKey, keyId, payload });
     const text = `${JSON.stringify(envelope, null, 2)}\n`;
     if (flags.out) {
@@ -604,12 +843,22 @@ async function main(argv) {
   if (cmd === "verify") {
     const envelope = readJson(resolve(String(positional[1] ?? "")));
     let pub = flags["public-key"];
+    let trusted;
     if (!pub) {
-      const trusted = loadTrustedKeysFromRepo().get(envelope.key_id);
+      trusted = loadTrustedKeysFromRepo().get(envelope.key_id);
       if (!trusted || trusted.status !== "active") throw new Error("key is not pinned and active; use --public-key only for explicit offline verification");
       pub = trusted.publicKey;
     }
     const result = verifyEnvelope(envelope, String(pub));
+    if (result.ok && trusted && trusted.role !== "founder") {
+      const violation = envelope.channel === REGISTRY_CHANNEL
+        ? registryAutomationScopeViolation(result.payload)
+        : automationScopeViolation(result.payload, envelope.channel);
+      if (violation !== null) {
+        result.ok = false;
+        result.errors = [`payload is outside the automation key's scope: ${violation}`];
+      }
+    }
     console.log(JSON.stringify({ ok: result.ok, errors: result.errors, channel: envelope.channel, facts_version: envelope.facts_version, key_id: envelope.key_id, sha256: result.sha256 ?? null }, null, 2));
     return result.ok ? 0 : 1;
   }

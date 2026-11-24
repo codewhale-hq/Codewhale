@@ -60,7 +60,13 @@ fn file_provider_extensions_intersect_each_workspace_root_and_exclusions() {
     assert_eq!(read_only.matches(read_write_extension).count(), 1);
     assert!(!read_only.contains("WRITABLE_ROOT"));
 
-    let args = create_seatbelt_args(vec!["/usr/bin/true".to_string()], &policy, &workspace, &[]);
+    let args = create_seatbelt_args(
+        vec!["/usr/bin/true".to_string()],
+        &policy,
+        &workspace,
+        &[],
+        None,
+    );
     let output = Command::new(SANDBOX_EXEC_PATH)
         .args(args)
         .current_dir(&workspace)
@@ -152,7 +158,7 @@ fn file_provider_synthetic_operations_are_independent_under_seatbelt() {
             }
         };
 
-        let args = create_seatbelt_args(command, &SandboxPolicy::default(), &workspace, &[]);
+        let args = create_seatbelt_args(command, &SandboxPolicy::default(), &workspace, &[], None);
         let output = Command::new(SANDBOX_EXEC_PATH)
             .args(args)
             .current_dir(&workspace)
@@ -205,7 +211,8 @@ fn denied_read_subpaths_block_reads_under_every_sandboxed_posture() {
 
     for policy in [SandboxPolicy::read_only(), SandboxPolicy::default()] {
         // Without the deny-list the read succeeds (full-disk read posture).
-        let open_args = create_seatbelt_args(read_cmd.clone(), &policy, workspace.path(), &[]);
+        let open_args =
+            create_seatbelt_args(read_cmd.clone(), &policy, workspace.path(), &[], None);
         let open = Command::new(SANDBOX_EXEC_PATH)
             .args(open_args)
             .current_dir(workspace.path())
@@ -229,6 +236,7 @@ fn denied_read_subpaths_block_reads_under_every_sandboxed_posture() {
             &policy,
             workspace.path(),
             manager.denied_read_subpaths_for_test(),
+            None,
         );
         let denied = Command::new(SANDBOX_EXEC_PATH)
             .args(denied_args)
@@ -241,4 +249,51 @@ fn denied_read_subpaths_block_reads_under_every_sandboxed_posture() {
             String::from_utf8_lossy(&denied.stdout)
         );
     }
+}
+
+#[test]
+fn private_tmpdir_rule_precedes_deny_list_and_blocks_root_unlink() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let secret_dir = workspace.path().join("secret");
+    let scratch_dir = tempfile::tempdir().expect("scratch tempdir");
+    let scratch = scratch_dir
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|_| scratch_dir.path().to_path_buf());
+    let args = create_seatbelt_args(
+        vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "echo ok > \"$1/f\" && ! rmdir \"$1\"".to_string(),
+            "_".to_string(),
+            scratch.to_string_lossy().into_owned(),
+        ],
+        &SandboxPolicy::read_only(),
+        workspace.path(),
+        std::slice::from_ref(&secret_dir),
+        Some(&scratch),
+    );
+    assert_eq!(args[0], "-p");
+    let policy_text = &args[1];
+    let allow_pos = policy_text
+        .find("(allow file-write* (subpath (param \"PRIVATE_TMPDIR\")))")
+        .expect("allow rule");
+    let unlink_pos = policy_text
+        .find("(deny file-write-unlink (literal (param \"PRIVATE_TMPDIR\")))")
+        .expect("unlink deny rule");
+    let deny_read_pos = policy_text
+        .find("(deny file-read* (subpath")
+        .expect("read deny-list");
+    assert!(allow_pos < unlink_pos && unlink_pos < deny_read_pos);
+
+    let output = Command::new(SANDBOX_EXEC_PATH)
+        .args(args)
+        .current_dir(workspace.path())
+        .output()
+        .expect("run seatbelt");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

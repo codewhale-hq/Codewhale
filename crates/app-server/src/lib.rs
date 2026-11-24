@@ -14,7 +14,6 @@ use crate::stdio::{BoundedLines, run_stdio_loop};
 use anyhow::Context as _;
 use anyhow::{Result, anyhow};
 use axum::http::{Method, StatusCode};
-use codewhale_agent::ModelRegistry;
 use codewhale_app_server_protocol::rpc::{
     RequestId, RpcCall, RpcErrorDetails, RpcErrorResponse, RpcResponse,
 };
@@ -23,7 +22,6 @@ use codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES;
 use codewhale_app_server_protocol::runtime::RuntimeImageInput;
 use codewhale_config::ConfigStore;
 use codewhale_core::Runtime;
-use codewhale_hooks::{HookDispatcher, JsonlHookSink, StdoutHookSink, UnixSocketHookSink};
 use codewhale_protocol::EventFrame;
 use codewhale_state::StateStore;
 use serde::Deserialize;
@@ -43,6 +41,7 @@ use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 mod chat_completions;
 mod connection;
+pub mod native_runtime;
 mod thread_control;
 mod websocket;
 pub use codewhale_protocol::{
@@ -93,7 +92,6 @@ const DEFAULT_CORS_ORIGINS: &[&str] = &[
     "http://localhost:5173",
     "http://127.0.0.1",
     "http://127.0.0.1:1420",
-    "tauri://localhost",
 ];
 
 #[derive(Clone)]
@@ -139,6 +137,16 @@ pub struct RuntimeListenerSelection {
     pub insecure_no_auth: bool,
     pub mobile: bool,
     pub web: bool,
+    #[serde(default, skip_serializing)]
+    pub desktop_browser_owner: Option<String>,
+}
+
+pub fn is_valid_desktop_browser_owner_key(key: &str) -> bool {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    key.len() == 43
+        && URL_SAFE_NO_PAD
+            .decode(key)
+            .is_ok_and(|bytes| bytes.len() == 32 && URL_SAFE_NO_PAD.encode(&bytes) == key)
 }
 
 impl std::fmt::Debug for RuntimeListenerSelection {
@@ -152,6 +160,10 @@ impl std::fmt::Debug for RuntimeListenerSelection {
             )
             .field("mobile", &self.mobile)
             .field("web", &self.web)
+            .field(
+                "desktop_browser_owner",
+                &self.desktop_browser_owner.as_ref().map(|_| "<present>"),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -174,7 +186,11 @@ impl RuntimeListenerSelection {
                 && self
                     .auth_token
                     .as_ref()
-                    .is_none_or(|token| token.len() <= 8192),
+                    .is_none_or(|token| token.len() <= 8192)
+                && self
+                    .desktop_browser_owner
+                    .as_deref()
+                    .is_none_or(is_valid_desktop_browser_owner_key),
             "selected frontend input exceeds its bounds"
         );
         Ok(())
@@ -230,6 +246,10 @@ pub struct RuntimeOwnerEventFrame {
 
 #[derive(Debug, Clone)]
 pub enum RuntimeOwnerRequest {
+    Native {
+        workspace: PathBuf,
+        request: codewhale_app_server_protocol::runtime::NativeRuntimeRequest,
+    },
     Capabilities,
     Providers,
     ProviderModels {
@@ -319,6 +339,17 @@ pub trait RuntimeOwnerFrontend: Send + Sync {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<RuntimeOwnerEventStream>> + Send + '_>,
     >;
+    fn events_in_workspace(
+        &self,
+        workspace: PathBuf,
+        thread_id: String,
+        since_seq: u64,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<RuntimeOwnerEventStream>> + Send + '_>,
+    > {
+        let _ = workspace;
+        self.events(thread_id, since_seq)
+    }
     fn validate_selection<'a>(
         &'a self,
         selection: &'a RuntimeOwnerFrontendSelection,
@@ -364,7 +395,6 @@ pub struct AppState {
     /// Bookkeeping config and read-only historical archive access.
     /// Actual turns and transcript writes belong to the captured owner.
     runtime: Arc<RwLock<Runtime>>,
-    registry: ModelRegistry,
     auth_token: Option<String>,
     #[cfg(test)]
     runtime_bridge: Arc<Mutex<Option<SharedRuntimeBridge>>>,
@@ -797,46 +827,20 @@ async fn build_state_off_runtime(
 fn build_state_with_transport(
     config_path: Option<PathBuf>,
     auth_token: Option<String>,
-    transport: AppTransport,
+    _transport: AppTransport,
 ) -> Result<AppState> {
     let has_explicit_config_path = config_path.is_some();
     let store = ConfigStore::load(config_path)?;
+    store.config.validate_configured_model()?;
     let config_path = has_explicit_config_path.then(|| store.path().to_path_buf());
     let config = store.config.clone();
-    let registry = ModelRegistry::default();
 
     let state_db_path = config_path
         .as_ref()
         .and_then(|p| p.parent().map(|parent| parent.join("state.db")));
     let state_store = StateStore::open(state_db_path)?;
 
-    let mut hooks = HookDispatcher::default();
-    // Stdio carries JSON-RPC on stdout: printing raw hook events there
-    // corrupts the protocol stream (#5165). HTTP mode keeps the stdout
-    // sink for local development visibility.
-    if transport == AppTransport::Http {
-        hooks.add_sink(Arc::new(StdoutHookSink));
-    }
-    // The hook log sits beside the state database: next to an explicit
-    // config, otherwise in the directory the state store resolved under the
-    // Codewhale home. Never relative to the process cwd (#6513).
-    let hook_log_path = state_store
-        .db_path()
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("events.jsonl");
-    hooks.add_sink(Arc::new(JsonlHookSink::new(hook_log_path)));
-
-    if let Some(socket_path) = config
-        .hook_sinks
-        .as_ref()
-        .and_then(|sinks| sinks.unix_socket_path.as_ref())
-        .filter(|path| !path.as_os_str().is_empty())
-    {
-        hooks.add_sink(Arc::new(UnixSocketHookSink::new(socket_path.clone())));
-    }
-
-    let runtime = Runtime::new(config.clone(), state_store, hooks);
+    let runtime = Runtime::new(config.clone(), state_store);
 
     Ok(AppState {
         captured_owner: None,
@@ -846,7 +850,6 @@ fn build_state_with_transport(
         config_path,
         config: Arc::new(RwLock::new(config)),
         runtime: Arc::new(RwLock::new(runtime)),
-        registry,
         auth_token,
         #[cfg(test)]
         runtime_bridge: Arc::new(Mutex::new(None)),

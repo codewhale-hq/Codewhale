@@ -153,6 +153,8 @@ impl PluginDiscoveryContext {
         // safe once this build holds its own. Unit tests call the collector
         // directly so that no test ever mutates a home implicitly.
         #[cfg(not(any(test, feature = "test-support")))]
+        registry_mut.retire_withdrawn_bundles();
+        #[cfg(not(any(test, feature = "test-support")))]
         registry_mut.collect_garbage_at_startup();
         #[cfg(not(any(test, feature = "test-support")))]
         registry_mut.reconcile_missing_stages();
@@ -182,7 +184,7 @@ impl PluginDiscoveryContext {
             super::discovery::default_workspace_plugins_dir(workspace),
         ];
         roots.extend(self.builtin_plugin_dirs.iter().cloned());
-        super::discovery::PluginCatalogStamp::capture(roots)
+        super::discovery::PluginCatalogStamp::capture(roots, &self.state_path)
     }
 }
 

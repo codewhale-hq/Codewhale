@@ -19,9 +19,7 @@ use codewhale_config::ProviderKind;
 use codewhale_models::auto_route_evidence::AutoRouteDecisionEvidence;
 use codewhale_models::{ContentBlock, Message, MessageRequest, MessageResponse, SystemPrompt};
 use codewhale_models::{Role, Usage};
-use codewhale_runtime::config::{
-    AutoRouterKind, Config, ProviderIdentity, normalize_model_name_for_provider,
-};
+use codewhale_runtime::config::{AutoRouterKind, Config, ProviderIdentity};
 
 /// Big/cheap model pair the auto-router may choose between for the active
 /// provider (#3018).
@@ -52,8 +50,11 @@ fn catalog_family_candidates(
     provider: ProviderKind,
     current_model: &str,
 ) -> Option<RouterCandidates> {
-    let normalized = normalize_model_name_for_provider(provider, current_model)
-        .unwrap_or_else(|| current_model.trim().to_string());
+    let normalized = codewhale_config::route::resolve_model(provider, current_model, None)
+        .map_or_else(
+            |_| current_model.trim().to_string(),
+            |resolved| resolved.wire_id,
+        );
     let lower = normalized.to_ascii_lowercase();
 
     let cheap = match provider {
@@ -144,13 +145,9 @@ pub fn provider_router_candidates(
     }
 
     if provider == ProviderKind::Zai {
-        let normalized =
-            codewhale_runtime::config::normalize_model_name_for_provider(provider, current_model)
-                .unwrap_or_else(|| current_model.to_string());
+        let normalized = codewhale_config::route::resolve_model(provider, current_model, None)
+            .map_or_else(|_| current_model.to_string(), |resolved| resolved.wire_id);
         return RouterCandidates {
-            // GLM-5.3 routes faster/explore children to GLM-5.3-Flash.
-            // GLM-5.2 still uses GLM-5-Turbo. Flash, Turbo, and 5.1 have no
-            // cheaper tier and keep children on the parent model.
             cheap: if normalized
                 == codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_3_MODEL
             {
@@ -173,10 +170,9 @@ pub fn provider_router_candidates(
     }
 
     if provider == ProviderKind::Openrouter
-        && let Some(normalized) =
-            codewhale_runtime::config::normalize_model_name_for_provider(provider, current_model)
+        && let Ok(resolved) = codewhale_config::route::resolve_model(provider, current_model, None)
         && matches!(
-            normalized.as_str(),
+            resolved.wire_id.as_str(),
             codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_1_MODEL
                 | codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_2_MODEL
                 | codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_3_MODEL
@@ -184,10 +180,8 @@ pub fn provider_router_candidates(
                 | codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_TURBO_MODEL
         )
     {
+        let normalized = resolved.wire_id;
         return RouterCandidates {
-            // z-ai/glm-5.3 routes faster children to z-ai/glm-5.3-flash;
-            // z-ai/glm-5.2 still uses z-ai/glm-5-turbo. Flash, turbo, and 5.1
-            // have no cheaper tier and keep children on parent.
             cheap: if normalized
                 == codewhale_config::catalog::reviewed::constants::OPENROUTER_GLM_5_3_MODEL
             {
@@ -222,14 +216,18 @@ pub fn provider_router_candidates(
             if current_model.to_ascii_lowercase().contains("deepseek") =>
         {
             RouterCandidates {
-                big: codewhale_runtime::config::wire_model_for_provider(
-                    provider,
-                    "deepseek-v4-pro",
+                big: codewhale_config::route::resolve_model(provider, "deepseek-v4-pro", None)
+                    .map_or_else(
+                        |_| "deepseek-v4-pro".to_string(),
+                        |resolved| resolved.wire_id,
+                    ),
+                cheap: Some(
+                    codewhale_config::route::resolve_model(provider, "deepseek-v4-flash", None)
+                        .map_or_else(
+                            |_| "deepseek-v4-flash".to_string(),
+                            |resolved| resolved.wire_id,
+                        ),
                 ),
-                cheap: Some(codewhale_runtime::config::wire_model_for_provider(
-                    provider,
-                    "deepseek-v4-flash",
-                )),
             }
         }
         ProviderKind::Volcengine if current_model.to_ascii_lowercase().contains("deepseek") => {
@@ -857,13 +855,6 @@ fn auto_route_without_router(config: &Config, inventory: &ModelInventory) -> Aut
 /// Ask the configured router (either kind) for this turn's route. Callers
 /// have already checked `inventory.router_available`. The `cfg!(any(test, feature = "test-support"))`
 /// short-circuit lives in the caller, so tests exercise this directly.
-#[derive(Debug, thiserror::Error)]
-#[error("classifier accounting admission or settlement failed")]
-struct ClassifierAccountingFailure {
-    #[source]
-    source: anyhow::Error,
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn auto_route_via_router(
     config: &Config,
@@ -920,7 +911,6 @@ async fn auto_route_via_router(
         Ok(attempt) => Ok(auto_route_from_classifier_attempt(
             fallback, inventory, attempt,
         )),
-        Err(error) if error.is::<ClassifierAccountingFailure>() => Err(error),
         // Only client construction/preflight failures use the local fallback.
         Err(_) => {
             let mut selection = auto_route_classifier_fallback(fallback, inventory);
@@ -1087,8 +1077,8 @@ fn explicit_model_matches_candidate(
     requested_model: &str,
 ) -> bool {
     candidate.model.eq_ignore_ascii_case(requested_model)
-        || normalize_model_name_for_provider(candidate.provider, requested_model)
-            .is_some_and(|model| candidate.model.eq_ignore_ascii_case(&model))
+        || codewhale_config::route::resolve_model(candidate.provider, requested_model, None)
+            .is_ok_and(|resolved| candidate.model.eq_ignore_ascii_case(&resolved.wire_id))
 }
 
 /// Declared local fallback for Auto routing when the flash classifier is
@@ -1363,36 +1353,6 @@ fn auto_route_usage_has_reported_data(usage: &codewhale_models::Usage) -> bool {
         || usage.server_tool_use.is_some()
 }
 
-/// Stable, persistence-safe identity for one classifier response. The raw
-/// provider response id is hashed with the frozen dispatch route and instant;
-/// neither it nor any custom route label crosses into telemetry/persistence.
-pub fn auto_route_usage_source_id(route: &EffectiveRouteEnvelope, response_id: &str) -> String {
-    use sha2::{Digest as _, Sha256};
-
-    let mut digest = Sha256::new();
-    let dispatched_at = route.dispatched_at.to_rfc3339();
-    for part in [
-        b"codewhale:auto-route-classifier:v1".as_slice(),
-        route.provider.as_str().as_bytes(),
-        route.provider_identity.as_bytes(),
-        route.model.as_bytes(),
-        route
-            .endpoint_fingerprint
-            .as_deref()
-            .unwrap_or_default()
-            .as_bytes(),
-        dispatched_at.as_bytes(),
-        response_id.as_bytes(),
-    ] {
-        digest.update((part.len() as u64).to_le_bytes());
-        digest.update(part);
-    }
-    format!(
-        "auto-router:{}",
-        codewhale_runtime::hashing::hex_bytes(digest.finalize())
-    )
-}
-
 fn auto_route_attempt_from_response(
     _request_route: EffectiveRouteEnvelope,
     response: &MessageResponse,
@@ -1507,6 +1467,8 @@ async fn auto_route_inventory_recommendation(
         stream: Some(false),
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
 
     // Freeze pricing at the last application seam before the provider future
@@ -1516,106 +1478,83 @@ async fn auto_route_inventory_recommendation(
     preflight_auto_route_request(&client, &request)?;
     let request_route =
         client.effective_route_envelope(&inventory.router_model, chrono::Utc::now());
-    let accounting_source = accounting_source
-        .or_else(|| {
-            cfg!(any(test, feature = "test-support")).then(|| {
-                crate::cost_status::NativeUsageSource::capture(
-                    format!("auto-router:{}", uuid::Uuid::new_v4()),
-                    crate::cost_status::UsageSpendOwner::Auxiliary,
-                )
-            })
-        })
-        .ok_or_else(|| ClassifierAccountingFailure {
-            source: anyhow::anyhow!("classifier requires a captured native accounting source"),
-        })?;
-    if !cfg!(any(test, feature = "test-support")) && !accounting_source.has_captured_origin() {
-        return Err(ClassifierAccountingFailure {
-            source: anyhow::anyhow!("classifier has no admitted usage origin"),
-        }
-        .into());
-    }
-    async {
-        let observation = accounting_source.observe_route(&request_route)?;
-        accounting_source.admit_dispatch(&request_route).await?;
-        let response = if allow_response_cache {
-            tokio::time::timeout(
-                Duration::from_secs(inventory.router_timeout_secs),
-                crate::llm_client::observe_request_retries(
-                    Some(observation.clone()),
-                    client.create_message(request),
-                ),
-            )
-            .await
-        } else {
-            tokio::time::timeout(
-                Duration::from_secs(inventory.router_timeout_secs),
-                client.create_message_without_response_cache(request, observation.clone()),
-            )
-            .await
-        };
-        let wire = observation.wire_observations.drain();
-        let (response, failure) = match response {
-            Ok(Ok(response)) => (Some(response), None),
-            Ok(Err(error)) => (
-                None,
-                Some(crate::client::system_one::router_failure_from_error(&error)),
+    let accounting_source = accounting_source.unwrap_or_else(|| {
+        crate::cost_status::NativeUsageSource::capture(
+            format!("auto-router:{}", uuid::Uuid::new_v4()),
+            crate::cost_status::UsageSpendOwner::Auxiliary,
+        )
+    });
+    let observation = accounting_source.observation();
+    let response = if allow_response_cache {
+        tokio::time::timeout(
+            Duration::from_secs(inventory.router_timeout_secs),
+            crate::llm_client::observe_request_retries(
+                Some(observation.clone()),
+                client.create_message(request),
             ),
-            Err(_) => (None, Some(AutoRouterFailure::Timeout)),
-        };
-        if response.is_none() && wire.transmissions.is_empty() {
-            return Ok(InventoryAutoRouteAttempt::failed(
-                failure.unwrap_or(AutoRouterFailure::Transport),
-            ));
-        }
-        let usage = response
-            .as_ref()
-            .map(|response| &response.usage)
-            .cloned()
-            .unwrap_or_default();
-        let complete = response.is_some();
-        let coverage = if wire.last_transmission.is_none() {
-            if auto_route_usage_has_reported_data(&usage) {
-                if complete {
-                    crate::llm_client::ProviderUsageCoverage::Reported
-                } else {
-                    crate::llm_client::ProviderUsageCoverage::Incomplete
-                }
+        )
+        .await
+    } else {
+        tokio::time::timeout(
+            Duration::from_secs(inventory.router_timeout_secs),
+            client.create_message_without_response_cache(request, observation.clone()),
+        )
+        .await
+    };
+    let wire = observation.wire_observations.drain();
+    let (response, failure) = match response {
+        Ok(Ok(response)) => (Some(response), None),
+        Ok(Err(error)) => (
+            None,
+            Some(crate::client::system_one::router_failure_from_error(&error)),
+        ),
+        Err(_) => (None, Some(AutoRouterFailure::Timeout)),
+    };
+    if response.is_none() && wire.transmissions.is_empty() {
+        return Ok(InventoryAutoRouteAttempt::failed(
+            failure.unwrap_or(AutoRouterFailure::Transport),
+        ));
+    }
+    let usage = response
+        .as_ref()
+        .map(|response| &response.usage)
+        .cloned()
+        .unwrap_or_default();
+    let complete = response.is_some();
+    let coverage = if wire.last_transmission.is_none() {
+        if auto_route_usage_has_reported_data(&usage) {
+            if complete {
+                crate::llm_client::ProviderUsageCoverage::Reported
             } else {
-                crate::llm_client::ProviderUsageCoverage::Missing
+                crate::llm_client::ProviderUsageCoverage::Incomplete
             }
         } else {
-            wire.usage_coverage(auto_route_usage_has_reported_data(&usage), complete)
-        };
-        let reason = if response.is_some() {
-            crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
-        } else {
-            crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
-        };
-        let record =
-            accounting_source.prepare_observed(&request_route, &usage, coverage, reason, &wire)?;
-        if record.has_captured_origin() {
-            crate::cost_status::settle_runtime_usage_record(
-                crate::cost_status::scope_token(),
-                None,
-                &record,
-            )
-            .await?;
+            crate::llm_client::ProviderUsageCoverage::Missing
         }
-        match response {
-            Some(response) => Ok(auto_route_attempt_from_provider_response(
-                request_route,
-                &response,
-                inventory,
-                record,
-            )),
-            None => Ok(auto_route_attempt_with_dropped_response(
-                record,
-                failure.unwrap_or(AutoRouterFailure::Transport),
-            )),
-        }
+    } else {
+        wire.usage_coverage(auto_route_usage_has_reported_data(&usage), complete)
+    };
+    let reason = if response.is_some() {
+        crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
+    } else {
+        crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+    };
+    let record = accounting_source.prepare_record(&request_route, &usage, coverage, reason, &wire);
+    if let Some(origin) = accounting_source.origin() {
+        crate::cost_status::record_runtime_usage_async(origin.scope(), Some(origin), &record).await;
     }
-    .await
-    .map_err(|source| ClassifierAccountingFailure { source }.into())
+    match response {
+        Some(response) => Ok(auto_route_attempt_from_provider_response(
+            request_route,
+            &response,
+            inventory,
+            record,
+        )),
+        None => Ok(auto_route_attempt_with_dropped_response(
+            record,
+            failure.unwrap_or(AutoRouterFailure::Transport),
+        )),
+    }
 }
 
 /// The active provider's runnable strong/fast pair, when both tiers can run.
@@ -1720,24 +1659,12 @@ async fn auto_route_decision_recommendation(
     selected_thinking_mode: &str,
     accounting_source: Option<crate::cost_status::NativeUsageSource>,
 ) -> Result<InventoryAutoRouteAttempt> {
-    let accounting_source = accounting_source
-        .or_else(|| {
-            cfg!(any(test, feature = "test-support")).then(|| {
-                crate::cost_status::NativeUsageSource::capture(
-                    format!("auto-router:{}", uuid::Uuid::new_v4()),
-                    crate::cost_status::UsageSpendOwner::Auxiliary,
-                )
-            })
-        })
-        .ok_or_else(|| ClassifierAccountingFailure {
-            source: anyhow::anyhow!("classifier requires a captured native accounting source"),
-        })?;
-    if !cfg!(any(test, feature = "test-support")) && !accounting_source.has_captured_origin() {
-        return Err(ClassifierAccountingFailure {
-            source: anyhow::anyhow!("classifier has no admitted usage origin"),
-        }
-        .into());
-    }
+    let accounting_source = accounting_source.unwrap_or_else(|| {
+        crate::cost_status::NativeUsageSource::capture(
+            format!("auto-router:{}", uuid::Uuid::new_v4()),
+            crate::cost_status::UsageSpendOwner::Auxiliary,
+        )
+    });
     let route = inventory
         .router_decision_route
         .ok_or_else(|| anyhow::anyhow!("decision router has no route"))?;
@@ -1764,87 +1691,76 @@ async fn auto_route_decision_recommendation(
     // own Custom/Unknown identity; no chat price or zero-cost claim is inherited.
     let request_route =
         client.effective_route_envelope(&inventory.router_model, chrono::Utc::now());
-    async {
-        let observation = accounting_source.observe_route(&request_route)?;
-        accounting_source.admit_dispatch(&request_route).await?;
-        let started = Instant::now();
-        let outcome = tokio::time::timeout(
-            Duration::from_secs(inventory.router_timeout_secs),
-            client.system_one_decide(&body, observation.clone()),
-        )
-        .await;
-        let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let wire = observation.wire_observations.drain();
-        let (response, failure) = match outcome {
-            Ok(Ok(response)) => (Some(response), None),
-            Ok(Err(failure)) => (None, Some(failure)),
-            Err(_) => (None, Some(AutoRouterFailure::Timeout)),
-        };
-        if response.is_none() && wire.transmissions.is_empty() {
-            return Ok(InventoryAutoRouteAttempt::failed(
-                failure.unwrap_or(AutoRouterFailure::Transport),
-            ));
-        }
-        let usage = Usage {
-            input_tokens: response
-                .as_ref()
-                .and_then(|response| response.usage.as_ref())
-                .map_or(0, |usage| usage.input_tokens),
-            output_tokens: response
-                .as_ref()
-                .and_then(|response| response.usage.as_ref())
-                .map_or(0, |usage| usage.output_tokens),
-            ..Default::default()
-        };
-        let complete = response
+    let observation = accounting_source.observation();
+    let started = Instant::now();
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(inventory.router_timeout_secs),
+        client.system_one_decide(&body, observation.clone()),
+    )
+    .await;
+    let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let wire = observation.wire_observations.drain();
+    let (response, failure) = match outcome {
+        Ok(Ok(response)) => (Some(response), None),
+        Ok(Err(failure)) => (None, Some(failure)),
+        Err(_) => (None, Some(AutoRouterFailure::Timeout)),
+    };
+    if response.is_none() && wire.transmissions.is_empty() {
+        return Ok(InventoryAutoRouteAttempt::failed(
+            failure.unwrap_or(AutoRouterFailure::Transport),
+        ));
+    }
+    let usage = Usage {
+        input_tokens: response
             .as_ref()
             .and_then(|response| response.usage.as_ref())
-            .is_some_and(|usage| usage.complete);
-        let coverage = if wire.last_transmission.is_none() {
-            if auto_route_usage_has_reported_data(&usage) {
-                if complete {
-                    crate::llm_client::ProviderUsageCoverage::Reported
-                } else {
-                    crate::llm_client::ProviderUsageCoverage::Incomplete
-                }
+            .map_or(0, |usage| usage.input_tokens),
+        output_tokens: response
+            .as_ref()
+            .and_then(|response| response.usage.as_ref())
+            .map_or(0, |usage| usage.output_tokens),
+        ..Default::default()
+    };
+    let complete = response
+        .as_ref()
+        .and_then(|response| response.usage.as_ref())
+        .is_some_and(|usage| usage.complete);
+    let coverage = if wire.last_transmission.is_none() {
+        if auto_route_usage_has_reported_data(&usage) {
+            if complete {
+                crate::llm_client::ProviderUsageCoverage::Reported
             } else {
-                crate::llm_client::ProviderUsageCoverage::Missing
+                crate::llm_client::ProviderUsageCoverage::Incomplete
             }
         } else {
-            wire.usage_coverage(auto_route_usage_has_reported_data(&usage), complete)
-        };
-        let reason = if response.is_some() {
-            crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
-        } else {
-            crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
-        };
-        let record =
-            accounting_source.prepare_observed(&request_route, &usage, coverage, reason, &wire)?;
-        if record.has_captured_origin() {
-            crate::cost_status::settle_runtime_usage_record(
-                crate::cost_status::scope_token(),
-                None,
-                &record,
-            )
-            .await?;
+            crate::llm_client::ProviderUsageCoverage::Missing
         }
-        Ok(match response {
-            Some(response) => decision_attempt_from_response(
-                config.auto_cost_saving(),
-                inventory,
-                pair,
-                Some(record),
-                &response,
-                latency_ms,
-            ),
-            None => auto_route_attempt_with_dropped_response(
-                record,
-                failure.unwrap_or(AutoRouterFailure::Transport),
-            ),
-        })
+    } else {
+        wire.usage_coverage(auto_route_usage_has_reported_data(&usage), complete)
+    };
+    let reason = if response.is_some() {
+        crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
+    } else {
+        crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+    };
+    let record = accounting_source.prepare_record(&request_route, &usage, coverage, reason, &wire);
+    if let Some(origin) = accounting_source.origin() {
+        crate::cost_status::record_runtime_usage_async(origin.scope(), Some(origin), &record).await;
     }
-    .await
-    .map_err(|source| ClassifierAccountingFailure { source }.into())
+    Ok(match response {
+        Some(response) => decision_attempt_from_response(
+            config.auto_cost_saving(),
+            inventory,
+            pair,
+            Some(record),
+            &response,
+            latency_ms,
+        ),
+        None => auto_route_attempt_with_dropped_response(
+            record,
+            failure.unwrap_or(AutoRouterFailure::Transport),
+        ),
+    })
 }
 
 /// A validated `choice` answer.
@@ -1852,6 +1768,7 @@ pub struct ValidChoice {
     pub choice: String,
     pub probabilities_bp: BTreeMap<String, u16>,
     pub confidence_bp: u16,
+    pub abstained: bool,
 }
 
 /// Validate one `choice` answer against the offered options. Any violation
@@ -1894,6 +1811,7 @@ pub fn validated_choice(answer: Option<&SystemOneAnswer>, options: &[&str]) -> O
         choice: choice.to_string(),
         probabilities_bp,
         confidence_bp: probability_bp(confidence),
+        abstained: answer.abstained,
     })
 }
 
@@ -1931,24 +1849,16 @@ pub fn decision_usage_batch(
     } else {
         wire.usage_coverage(auto_route_usage_has_reported_data(&usage), complete)
     };
-    match source.prepare_observed(
+    let record = source.prepare_record(
         request_route,
         &usage,
         coverage,
         crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
         wire,
-    ) {
-        Ok(record) => crate::cost_status::RuntimeUsageBatch {
-            records: vec![record],
-            ..Default::default()
-        },
-        Err(error) => {
-            tracing::error!(%error, "decision source predecessor remains unresolved");
-            crate::cost_status::RuntimeUsageBatch {
-                dropped_records: 1,
-                ..Default::default()
-            }
-        }
+    );
+    crate::cost_status::RuntimeUsageBatch {
+        records: vec![record],
+        ..Default::default()
     }
 }
 
@@ -1982,6 +1892,7 @@ fn decision_attempt_from_response(
         probabilities_bp: Default::default(),
         confidence_bp: 0,
         min_confidence_bp: inventory.router_min_confidence_bp,
+        abstained_questions: response.abstained_questions(&["tier", "thinking"]),
         cost_saving_kept_fast: false,
         thinking: None,
         provider_reported_cost_usd: response
@@ -2005,17 +1916,18 @@ fn decision_attempt_from_response(
     let min_confidence_bp = inventory.router_min_confidence_bp;
     // An invalid or unsure `thinking` answer drops only the effort.
     let thinking = validated_choice(response.answers.get("thinking"), &DECISION_THINKING_OPTIONS)
-        .filter(|thinking| thinking.confidence_bp >= min_confidence_bp)
+        .filter(|thinking| !thinking.abstained && thinking.confidence_bp >= min_confidence_bp)
         .map(|thinking| thinking.choice);
     let strong_bp = tier.probabilities_bp.get("strong").copied().unwrap_or(0);
     let cost_saving_kept_fast =
         cost_saving && tier.choice == "strong" && strong_bp < COST_SAVING_STRONG_MIN_BP;
-    let acted = tier.confidence_bp >= min_confidence_bp;
+    let acted = !tier.abstained && tier.confidence_bp >= min_confidence_bp;
     attempt.decision = Some(AutoRouteDecisionEvidence {
         choice: tier.choice.clone(),
         probabilities_bp: tier.probabilities_bp,
         confidence_bp: tier.confidence_bp,
         min_confidence_bp,
+        abstained_questions: response.abstained_questions(&["tier", "thinking"]),
         cost_saving_kept_fast: acted && cost_saving_kept_fast,
         thinking: thinking.clone().filter(|_| acted),
         provider_reported_cost_usd: response
@@ -2277,6 +2189,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage,
+            title: None,
+            stop_details: None,
+            refusal: None,
         }
     }
 
@@ -2363,9 +2278,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            let record = native
-                .reported(&route, &response.usage)
-                .expect("native fixture response");
+            let record = native.reported(&route, &response.usage);
             auto_route_attempt_from_response(route, &response, &inventory, record)
         };
 
@@ -2399,9 +2312,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            let record = native
-                .reported(&route, &response.usage)
-                .expect("native fixture response");
+            let record = native.reported(&route, &response.usage);
             auto_route_attempt_from_response(route, &response, &inventory, record)
         };
         let incomplete = {
@@ -2424,9 +2335,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            let record = native
-                .reported(&route, &response.usage)
-                .expect("native fixture response");
+            let record = native.reported(&route, &response.usage);
             auto_route_attempt_from_response(route, &response, &inventory, record)
         };
         let missing_usage_route =
@@ -2446,9 +2355,7 @@ mod tests {
                 "stop",
                 codewhale_models::Usage::default(),
             );
-            let record = native
-                .reported(&route, &response.usage)
-                .expect("native fixture response");
+            let record = native.reported(&route, &response.usage);
             auto_route_attempt_from_provider_response(route, &response, &inventory, record)
         };
         assert_eq!(missing_usage.routed_usage.len(), 1);
@@ -2484,14 +2391,12 @@ mod tests {
             );
             let route = client
                 .effective_route_envelope(model, second_at + chrono::Duration::nanoseconds(3));
-            let record = native
-                .prepare(
-                    &route,
-                    &codewhale_models::Usage::default(),
-                    crate::llm_client::ProviderUsageCoverage::Missing,
-                    crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
-                )
-                .unwrap();
+            let record = native.prepare(
+                &route,
+                &codewhale_models::Usage::default(),
+                crate::llm_client::ProviderUsageCoverage::Missing,
+                crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            );
             auto_route_attempt_with_dropped_response(record, AutoRouterFailure::Transport)
         };
         assert_eq!(transport.routed_usage_dropped_records, 0);
@@ -3473,7 +3378,7 @@ mod tests {
                 .await
                 .expect("declared-default Volcengine route should resolve");
             assert_eq!(route.provider.provider, ProviderKind::Volcengine);
-            assert_eq!(route.model, "deepseek-v4-pro");
+            assert_eq!(route.model, "DeepSeek-V4-Pro");
             assert_eq!(route.source, AutoRouteSource::Heuristic);
         }
     }
@@ -4188,6 +4093,60 @@ mod decision_router_tests {
     }
 
     #[test]
+    fn explicit_abstention_survives_decode_and_never_authorizes_auto_at_floor_zero() {
+        let _env = hermetic_env();
+        let mut config = decision_config("https://openrouter.invalid/api/v1", false, 2);
+        config
+            .auto
+            .as_mut()
+            .unwrap()
+            .router
+            .as_mut()
+            .unwrap()
+            .min_confidence = Some(0.0);
+        let inventory = ModelInventory::from_config(&config).unwrap();
+        let attempt = |body: serde_json::Value| {
+            decision_attempt_from_response(false, &inventory, &pair(), None, &parsed(body), 120)
+        };
+        let mut body = answer_body(0.1, 0.9);
+        body["answers"]["thinking"]["abstained"] = true.into();
+        let effort_abstained = attempt(body.clone());
+        let recommendation = effort_abstained
+            .recommendation
+            .expect("valid tier survives effort abstention");
+        assert_eq!(recommendation.model, "deepseek-v4-flash");
+        assert_eq!(recommendation.reasoning_effort, None);
+        assert_eq!(
+            effort_abstained.decision.unwrap().abstained_questions,
+            vec!["thinking"]
+        );
+        body["answers"]["tier"]["abstained"] = true.into();
+        let tier_abstained = attempt(body);
+        assert!(tier_abstained.recommendation.is_none());
+        assert_eq!(
+            tier_abstained.fallback_reason,
+            Some(AutoRouteHeuristicReason::LowConfidence)
+        );
+        assert_eq!(tier_abstained.failure, None);
+        let decision = tier_abstained.decision.unwrap();
+        assert_eq!(decision.abstained_questions, vec!["tier", "thinking"]);
+        assert_eq!(decision.choice, "fast");
+        assert_eq!(
+            decision.provider_reported_cost_usd.as_deref(),
+            Some("0.000019992")
+        );
+    }
+
+    #[test]
+    fn non_boolean_abstention_is_refused_not_ignored() {
+        let mut body = answer_body(0.1, 0.9);
+        body["answers"]["tier"]["abstained"] = "yes".into();
+        let attempt = policy(false, &parsed(body));
+        assert!(attempt.recommendation.is_none());
+        assert_eq!(attempt.failure, Some(AutoRouterFailure::InvalidAnswer));
+    }
+
+    #[test]
     fn invalid_answers_are_rejected_not_repaired() {
         let mut outside = answer_body(0.8, 0.6);
         outside["answers"]["tier"]["choice"] = "medium".into();
@@ -4314,5 +4273,44 @@ mod decision_router_tests {
         assert_eq!(receipt.router_failure, None);
         // And the new fields stay off the wire when empty.
         assert_eq!(serde_json::to_string(&receipt).expect("json"), json);
+    }
+
+    #[tokio::test]
+    async fn auto_routing_routes_without_an_admitted_usage_origin() {
+        let _env = hermetic_env();
+        for use_source in [false, true] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api/alpha/decisions"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(answer_body(0.85, 0.90)))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let config = decision_config(&format!("{}/api/v1", server.uri()), false, 2);
+            let inventory = ModelInventory::from_config(&config).unwrap();
+            let source = use_source.then(|| {
+                let s = crate::cost_status::NativeUsageSource::capture(
+                    "router-no-origin".to_string(),
+                    crate::cost_status::UsageSpendOwner::Auxiliary,
+                );
+                assert!(s.origin().is_none());
+                s
+            });
+            let selection = auto_route_via_router(
+                &config,
+                &inventory,
+                "refactor module",
+                "",
+                "agent",
+                "auto",
+                "auto",
+                false,
+                source,
+            )
+            .await
+            .expect("classifier must route without an admitted usage origin");
+            assert_eq!(selection.source, AutoRouteSource::FlashRouter);
+            assert_eq!(selection.model, "deepseek-v4-pro");
+        }
     }
 }

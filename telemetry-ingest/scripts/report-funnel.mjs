@@ -13,7 +13,7 @@ export const CAVEATS = [
   "Runtime install means first initialized enabled telemetry state, not all installations or new people. IDs rotate every 90 days and are removed on opt-out.",
   "Native success is observed model turns_ok, not a first-ever primary or useful task. Missing usage, same-process child activity and late cancellation can affect it.",
   "Dates are received batch dates rather than exact event times. Offline, opted-out and dropped deliveries are absent; ingest has no replay deduplication guarantee.",
-  "Native IDs with an observed CI start are excluded in full because the aggregate schema cannot assign model counts to individual sessions.",
+  "Native IDs with an observed CI, fleet worker, agent or scripted start are excluded in full because the aggregate schema cannot assign model counts to individual sessions.",
 ];
 
 function instant(value, field) {
@@ -72,7 +72,7 @@ export function buildFunnelReport(input, { now = new Date() } = {}) {
   const installs = new Map(); const successes = new Map(); const started = new Set(); const ci = new Set();
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
   for (const row of input.native_rows) {
-    if (!uuid.test(row.install_id) || !NATIVE_SURFACES.includes(row.surface) || ![1, 2, 3, 4].includes(count(row.schema_version, "schema_version"))) throw new Error("invalid native identity, surface or version");
+    if (!uuid.test(row.install_id) || !NATIVE_SURFACES.includes(row.surface) || ![1, 2, 3, 4, 6].includes(count(row.schema_version, "schema_version"))) throw new Error("invalid native identity, surface or version");
     const at = instant(fresh(row.received_at), "received_at");
     if (!within(at, from, to)) throw new Error("native row outside coverage");
     if (newest === null || at > newest) newest = at;
@@ -82,11 +82,11 @@ export function buildFunnelReport(input, { now = new Date() } = {}) {
       if (!["install", "upgrade", "downgrade"].includes(row.install_kind)) throw new Error("invalid install kind");
       if (row.install_kind === "install" && (!installs.has(row.install_id) || at < installs.get(row.install_id))) installs.set(row.install_id, at);
     } else if (row.event === "session_start") {
-      if (!["interactive", "resume", "fork", "api", "unknown", "ci"].includes(row.session_source)) throw new Error("invalid session source");
-      if (row.session_source === "ci") ci.add(row.install_id);
+      if (!["interactive", "resume", "fork", "api", "unknown", "ci", "fleet_worker", "agent", "scripted"].includes(row.session_source)) throw new Error("invalid session source");
+      if (["ci", "fleet_worker", "agent", "scripted"].includes(row.session_source)) ci.add(row.install_id);
       started.add(row.install_id);
     } else if (row.event === "model_usage") {
-      if (count(row.schema_version, "schema_version") !== 4) throw new Error("model usage requires v4");
+      if (![4, 6].includes(count(row.schema_version, "schema_version"))) throw new Error("model usage requires v4 or v6");
       if (count(row.turns_ok, "turns_ok") > 0) {
         const observations = successes.get(row.install_id) ?? []; observations.push(at); successes.set(row.install_id, observations);
       }

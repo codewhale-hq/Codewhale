@@ -13,10 +13,15 @@
 //!
 //! Routes:
 //!   GET /v1/lsp          — capability: enabled, languages, operations
-//!   GET /v1/diagnostics  — ?path= (workspace-relative)
-//!   GET /v1/definition   — ?path=&line=&character= (1-based)
-//!   GET /v1/references   — ?path=&line=&character= (1-based)
-//!   GET /v1/symbols      — ?path=&query= (query empty → document symbols)
+//!   GET /v1/diagnostics  — ?path= (workspace-relative); `items[].line`/`column`
+//!                          are 1-based (`position_base: 1`)
+//!   GET /v1/definition   — ?path=&line=&character= (1-based input);
+//!                          `locations[].range`/`result` are raw 0-based
+//!                          LSP positions (`position_base: 0`, `position_encoding:
+//!                          "utf-16"`)
+//!   GET /v1/references   — same input/output position contract as /v1/definition
+//!   GET /v1/symbols      — ?path=&query= (query empty → document symbols);
+//!                          same 0-based output positions as /v1/definition
 
 use std::path::PathBuf;
 use std::sync::Arc;

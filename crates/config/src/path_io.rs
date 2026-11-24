@@ -48,7 +48,7 @@ pub(crate) fn normalize_config_file_path(path: PathBuf) -> Result<PathBuf> {
     Ok(normalized)
 }
 
-pub(crate) fn normalize_project_workspace(workspace: &Path) -> Result<PathBuf> {
+pub fn normalize_project_workspace(workspace: &Path) -> Result<PathBuf> {
     if workspace.as_os_str().is_empty() {
         bail!("project workspace path cannot be empty");
     }
@@ -132,35 +132,42 @@ pub(crate) fn reject_path_symlink(path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
+pub(crate) fn read_bounded_file_to_string(
+    file: &fs::File,
+    path: &Path,
+    max_bytes: u64,
+    label: &str,
+) -> std::io::Result<String> {
+    let too_large = || {
+        let limit = if max_bytes == MAX_CONFIG_FILE_BYTES {
+            "1 MiB".to_string()
+        } else {
+            format!("{max_bytes}-byte")
+        };
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{label} {} exceeds the {limit} limit", path.display()),
+        )
+    };
+    if file.metadata()?.len() > max_bytes {
+        return Err(too_large());
+    }
+    let mut raw = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut raw)?;
+    if raw.len() as u64 > max_bytes {
+        return Err(too_large());
+    }
+    String::from_utf8(raw).map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))
+}
+
 pub(crate) fn read_string_no_follow(path: &Path) -> std::io::Result<String> {
+    #[cfg(unix)]
     let file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)?;
-    let mut raw = String::new();
-    file.take(MAX_CONFIG_FILE_BYTES + 1)
-        .read_to_string(&mut raw)?;
-    if raw.len() as u64 > MAX_CONFIG_FILE_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("config file {} exceeds the 1 MiB limit", path.display()),
-        ));
-    }
-    Ok(raw)
-}
-
-#[cfg(not(unix))]
-pub(crate) fn read_string_no_follow(path: &Path) -> std::io::Result<String> {
+    #[cfg(not(unix))]
     let file = fs::File::open(path)?;
-    let mut raw = String::new();
-    file.take(MAX_CONFIG_FILE_BYTES + 1)
-        .read_to_string(&mut raw)?;
-    if raw.len() as u64 > MAX_CONFIG_FILE_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("config file {} exceeds the 1 MiB limit", path.display()),
-        ));
-    }
-    Ok(raw)
+    read_bounded_file_to_string(&file, path, MAX_CONFIG_FILE_BYTES, "config file")
 }

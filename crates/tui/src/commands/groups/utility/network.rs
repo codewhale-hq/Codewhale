@@ -313,8 +313,6 @@ fn display_list(values: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     struct EnvGuard {
         _home: crate::test_support::EnvVarGuard,
@@ -345,14 +343,7 @@ mod tests {
     }
 
     fn temp_home(label: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = env::temp_dir().join(format!(
-            "deepseek-network-{label}-{}-{nanos}",
-            std::process::id()
-        ));
+        let path = crate::test_support::test_scratch_dir(&format!("deepseek-network-{label}"));
         fs::create_dir_all(&path).unwrap();
         path
     }

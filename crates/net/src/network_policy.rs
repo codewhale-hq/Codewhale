@@ -309,6 +309,24 @@ impl NetworkPolicy {
         self.default.into()
     }
 
+    #[must_use]
+    pub fn explicitly_allows(&self, host: &str) -> bool {
+        let normalized = normalize_host(host);
+        if normalized.is_empty() {
+            return false;
+        }
+        if self
+            .deny
+            .iter()
+            .any(|entry| host_matches(entry, &normalized))
+        {
+            return false;
+        }
+        self.allow
+            .iter()
+            .any(|entry| host_matches(entry, &normalized))
+    }
+
     /// Append `host` to the allow list (de-duplicated, case-insensitive).
     /// Used by the prompt flow when the user picks "always for this host".
     pub fn add_allow(&mut self, host: &str) {
@@ -359,11 +377,39 @@ impl NetworkPolicy {
 /// `host_matches` can detect the wildcard intent).
 fn normalize_host(host: &str) -> String {
     let trimmed = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    if let Some(rest) = trimmed.strip_prefix("*.") {
-        format!(".{rest}")
-    } else {
-        trimmed
+    let (wildcard, name) = match trimmed.strip_prefix("*.") {
+        Some(rest) => (".", rest),
+        None => match trimmed.strip_prefix('.') {
+            Some(rest) => (".", rest),
+            None => ("", trimmed.as_str()),
+        },
+    };
+    if wildcard.is_empty() {
+        let unbracketed = name
+            .strip_prefix('[')
+            .and_then(|rest| rest.strip_suffix(']'))
+            .unwrap_or(name);
+        if let Ok(v6) = unbracketed.parse::<std::net::Ipv6Addr>() {
+            return v6.to_string();
+        }
     }
+    // Only a bare host goes through the URL parser: an entry with URL syntax
+    // in it would otherwise turn into a different host (`例子.com@evil.com`
+    // into `evil.com`), so it keeps matching nothing, as it did before.
+    if name.is_ascii()
+        || name.contains(['@', '/', '\\', '?', '#', ':'])
+        || name.chars().any(char::is_whitespace)
+    {
+        return format!("{wildcard}{name}");
+    }
+    let ascii = reqwest::Url::parse(&format!("http://{name}/"))
+        .ok()
+        .and_then(|url| {
+            url.host_str()
+                .map(|host| host.trim_end_matches('.').to_owned())
+        })
+        .unwrap_or_else(|| name.to_string());
+    format!("{wildcard}{ascii}")
 }
 
 /// Match a single allow/deny entry against an already-normalized host.
@@ -372,7 +418,7 @@ fn host_matches(entry: &str, normalized_host: &str) -> bool {
     if let Some(suffix) = entry_norm.strip_prefix('.') {
         // Wildcard subdomain rule. Match any host ending in `.suffix`, but
         // *not* the bare `suffix` itself (per spec).
-        if suffix.is_empty() {
+        if suffix.is_empty() || normalized_host.parse::<IpAddr>().is_ok() {
             return false;
         }
         normalized_host.ends_with(&format!(".{suffix}"))
@@ -805,6 +851,41 @@ mod tests {
         }
     }
 
+    #[test]
+    fn deny_entries_match_internationalized_domain_names() {
+        let policy = mk(Decision::Allow, &[], &["例子.com", "*.中国", "BÜCHER.de"]);
+        for url in [
+            "https://例子.com/",
+            "https://www.例子.中国/",
+            "https://bücher.de/",
+        ] {
+            let host = host_from_url(url).expect("host");
+            assert_eq!(policy.decide(&host), Decision::Deny, "{url}");
+        }
+
+        // A full stop typed with an IME still names the same host.
+        let policy = mk(Decision::Allow, &[], &["例子.com。"]);
+        let host = host_from_url("https://例子.com/").expect("host");
+        assert_eq!(policy.decide(&host), Decision::Deny);
+
+        // An entry with URL syntax in it must not turn into another host.
+        for entry in [
+            "例子.com@evil.com",
+            "evil.com/例",
+            "evil.com#例",
+            "evil.com?例",
+            "evil.com\\例",
+            "例子.com:8080",
+            "evil\t.com。",
+        ] {
+            let policy = mk(Decision::Prompt, &[entry], &[]);
+            for url in ["https://evil.com/", "https://例子.com/"] {
+                let host = host_from_url(url).expect("host");
+                assert_eq!(policy.decide(&host), Decision::Prompt, "{entry} {url}");
+            }
+        }
+    }
+
     /// The network auditor writes to the one `audit.log` (which follows
     /// `CODEWHALE_HOME`); it used to join `$HOME/.codewhale` itself.
     #[test]
@@ -838,6 +919,29 @@ mod tests {
     }
 
     #[test]
+    fn deny_wins_across_ipv6_spellings() {
+        for (allow, deny) in [
+            ("[fd00::1]", "fd00::1"),
+            ("fd00::1", "[fd00::1]"),
+            ("[fd00:0::1]", "fd00::1"),
+            ("[::1]", "0:0:0:0:0:0:0:1"),
+        ] {
+            let p = mk(Decision::Prompt, &[allow], &[deny]);
+            for probe in [allow, deny] {
+                assert_eq!(
+                    p.decide(probe),
+                    Decision::Deny,
+                    "{allow} vs {deny} on {probe}"
+                );
+                assert!(
+                    !p.explicitly_allows(probe),
+                    "{allow} vs {deny} must not explicitly allow {probe}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn deny_wins_with_subdomain_rules() {
         // Deny-wins applies even when the deny is a wildcard and the allow is exact.
         let p = mk(Decision::Allow, &["api.example.com"], &[".example.com"]);
@@ -858,6 +962,15 @@ mod tests {
         let p = mk(Decision::Deny, &["*.example.com"], &[]);
         assert_eq!(p.decide("api.example.com"), Decision::Allow);
         assert_eq!(p.decide("example.com"), Decision::Deny);
+    }
+
+    #[test]
+    fn wildcard_rules_never_match_ip_literals() {
+        let p = mk(Decision::Prompt, &[".1", "*.0.0.1", ".0.0.1"], &[]);
+        for ip in ["127.0.0.1", "10.0.0.1", "192.168.1.1", "::1"] {
+            assert!(!p.explicitly_allows(ip), "{ip} must not match wildcard");
+            assert_eq!(p.decide(ip), Decision::Prompt, "{ip} must not be allowed");
+        }
     }
 
     #[test]

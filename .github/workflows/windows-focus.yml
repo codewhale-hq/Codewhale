@@ -33,8 +33,10 @@ jobs:
         with:
           ref: ${{ inputs.expected_sha }}
           fetch-depth: 1
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@nextest
+      - uses: dtolnay/rust-toolchain@1.100.0
+      - uses: taiki-e/install-action@b6620ca104fb7b50dafa1109be9622abc1fdd381
+        with:
+          tool: cargo-nextest@0.9.151
       - name: Run focused tests
         shell: bash
         run: cargo nextest run -p codewhale-engine -p codewhale-plugins -p codewhale-tui -p codewhale-app-server --lib --locked --profile ci -E "$FILTER"

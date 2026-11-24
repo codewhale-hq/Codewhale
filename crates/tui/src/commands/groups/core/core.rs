@@ -6,7 +6,7 @@ use codewhale_config::ProviderKind;
 #[cfg(test)]
 use codewhale_engine::reasoning_preference::ReasoningEffort;
 use codewhale_localization::{MessageId, tr};
-use codewhale_runtime::config::{normalize_custom_model_id, normalize_model_name_for_provider};
+use codewhale_runtime::config::normalize_custom_model_id;
 
 use super::CommandResult;
 
@@ -58,6 +58,7 @@ pub fn clear(app: &mut App) -> CommandResult {
             model: app.model.clone(),
             workspace: app.workspace.clone(),
             mode: app.mode,
+            agent_preset: app.agent_preset(),
         },
     )
 }
@@ -138,6 +139,8 @@ pub(crate) fn reset_conversation_state(app: &mut App) -> bool {
     // "approve for session" grants (UX-8).
     app.approval_session_denied.clear();
     app.approval_session_approved.clear();
+    app.auto_review_blocked_receipts.clear();
+    app.pending_auto_review_retry = None;
     // Nor this one's child-agent approval cards, footer rows, or web-mirror
     // copies: the reset finalizes those children engine-side.
     crate::tui::pending_requests::clear_all(app);
@@ -228,13 +231,14 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
             };
             model_id
         } else {
-            let Some(model_id) = normalize_model_name_for_provider(app.api_provider, name) else {
+            let Ok(resolved) = codewhale_config::route::resolve_model(app.api_provider, name, None)
+            else {
                 return CommandResult::error(format!(
                     "Invalid model '{name}'. Expected auto or a model for the active provider ({}).",
                     app.api_provider.as_str()
                 ));
             };
-            model_id
+            resolved.wire_id
         };
         let strict_direct_custom_endpoint = app.accepts_custom_model_ids()
             && matches!(app.api_provider, ProviderKind::Deepseek | ProviderKind::Zai);

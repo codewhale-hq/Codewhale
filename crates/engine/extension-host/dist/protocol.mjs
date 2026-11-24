@@ -6,6 +6,14 @@ var MAGIC_ASCII = "CWX1";
 var HEADER_LEN = 8;
 var MAX_FRAME = 33554432;
 var MAX_INFLIGHT = 256;
+var IMAGE_LIMITS = {
+  maxImageBytes: 5242880,
+  maxImagesPerMessage: 1,
+  maxMessageImageBytes: 5242880,
+  maxImagePixels: 33554432,
+  maxImageDimension: 8192,
+  mediaTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"]
+};
 var ErrorCode = {
   ParseError: -32700,
   InvalidRequest: -32600,
@@ -18,7 +26,7 @@ var ErrorCode = {
   Denied: -32003,
   Cancelled: -32800
 };
-var DSH_SERVICES = ["workspace", "llm", "network", "settings", "catalog", "terminal", "remote"];
+var DSH_SERVICES = ["workspace", "llm", "network", "settings", "catalog", "terminal", "remote", "attachments", "plugins"];
 var METHODS = [
   { name: "host/initialize", direction: "core_to_host", request: true, params: "InitializeParams", tiers: ["plugin", "builtin"] },
   { name: "host/ping", direction: "core_to_host", request: true, params: "EmptyParams", tiers: ["plugin", "builtin"] },
@@ -432,6 +440,7 @@ export {
   FrameDecoder,
   FrameError,
   HEADER_LEN,
+  IMAGE_LIMITS,
   MAGIC,
   MAGIC_ASCII,
   MAX_FRAME,

@@ -1402,19 +1402,6 @@ impl StateStore {
         Ok(out)
     }
 
-    /// Look up the rollout file path for a thread by its ID.
-    pub fn find_rollout_path_by_id(&self, id: &str) -> Result<Option<PathBuf>> {
-        let conn = self.conn()?;
-        conn.query_row(
-            "SELECT rollout_path FROM threads WHERE id = ?1",
-            params![id],
-            |row| row.get::<_, Option<String>>(0),
-        )
-        .optional()
-        .context("failed to lookup rollout path")
-        .map(|opt| opt.flatten().map(PathBuf::from))
-    }
-
     /// Append an entry to the JSONL session index file.
     ///
     /// The session index is an append-only log that maps thread IDs to their names,
@@ -1533,22 +1520,6 @@ impl StateStore {
         Ok(map
             .get(thread_id)
             .and_then(|entry| entry.thread_name.clone()))
-    }
-
-    /// Look up display names for multiple thread IDs at once.
-    ///
-    /// Returns a map from thread ID to its name (which may be `None`).
-    pub fn find_thread_names_by_ids(
-        &self,
-        ids: &[String],
-    ) -> Result<HashMap<String, Option<String>>> {
-        let map = self.session_index_map()?;
-        let mut out = HashMap::new();
-        for id in ids {
-            let name = map.get(id).and_then(|entry| entry.thread_name.clone());
-            out.insert(id.clone(), name);
-        }
-        Ok(out)
     }
 
     /// Find the rollout path for a thread by its display name (case-insensitive).

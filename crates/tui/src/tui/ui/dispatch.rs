@@ -63,6 +63,8 @@ pub(crate) fn queued_session_to_ui(msg: QueuedSessionMessage) -> QueuedMessage {
         skill_instruction: msg.skill_instruction,
         skill_provenance: msg.skill_provenance,
         extension_command: None,
+        approved_plan: None,
+        owner_input: false,
         // Persistence does not carry this flag; restore may re-echo or rely on
         // pending preview. Live Queue path sets true after painting.
         history_echoed: false,
@@ -694,6 +696,7 @@ pub(crate) fn prepare_user_dispatch(
         history_revisions_len: app.history_revisions.len(),
         api_messages_len: app.api_messages.len(),
         last_send_at: app.last_send_at,
+        active_turn_user_index: app.active_turn_user_index,
     };
 
     // --- Sync prepare: show the user message and spinner immediately so the
@@ -709,6 +712,7 @@ pub(crate) fn prepare_user_dispatch(
     // Already painted at Queue time — reuse that cell for reference
     // recording instead of duplicating the bubble.
     let history_cell = paint_user_turn_cell(app, &message, message.display.clone());
+    app.active_turn_user_index = (!extension_command).then_some(history_cell);
     app.scroll_to_bottom();
     // Anchor the tail-flash to the moment the user message appears, not to
     // the async dispatch completion (which can lag by a route plan). The
@@ -731,15 +735,24 @@ pub(crate) fn prepare_user_dispatch(
     };
     let allowed_tools = allowed_tools_for_message(app.active_allowed_tools.clone(), &message);
 
-    let accounting_origin = app
-        .session_write_receipt
-        .as_ref()
-        .map(|source| source.usage_origin(codewhale_engine::cost_status::scope_token()))
-        .transpose()?;
-    anyhow::ensure!(
-        !should_auto_resolve || accounting_origin.is_some(),
-        "Auto routing has no admitted session accounting origin"
-    );
+    let accounting_origin = app.session_write_receipt.as_ref().and_then(|source| {
+        match source.usage_origin(codewhale_engine::cost_status::scope_token()) {
+            Ok(origin) => Some(origin),
+            Err(error) => {
+                tracing::warn!(%error, "auto routing session accounting origin unavailable; continuing with unknown cost");
+                None
+            }
+        }
+    });
+    let input_authorship = if extension_command {
+        codewhale_engine::core::ops::TurnInputAuthorship::NotPerson
+    } else if let Some(plan) = message.approved_plan.as_ref() {
+        codewhale_engine::core::ops::TurnInputAuthorship::ApprovedPlan(plan.clone())
+    } else if message.owner_input {
+        codewhale_engine::core::ops::TurnInputAuthorship::Person(message.display.clone())
+    } else {
+        codewhale_engine::core::ops::TurnInputAuthorship::NotPerson
+    };
     Ok(UserDispatchPrepare {
         submission_id: uuid::Uuid::new_v4().to_string(),
         message,
@@ -769,6 +782,7 @@ pub(crate) fn prepare_user_dispatch(
         } else {
             UserInputProvenance::ExternalUser
         },
+        input_authorship,
         auto_router_context,
         should_auto_resolve,
         auto_compact_user_configured: app.auto_compact_user_configured,
@@ -936,7 +950,7 @@ pub(super) struct UnacceptedDispatchUsage {
 impl Drop for UnacceptedDispatchUsage {
     fn drop(&mut self) {
         if let Some(batch) = self.batch.as_ref() {
-            codewhale_engine::cost_status::report_runtime_usage_batch(self.scope, None, batch);
+            codewhale_engine::cost_status::record_runtime_usage_batch(self.scope, None, batch);
         }
     }
 }
@@ -1045,6 +1059,7 @@ pub(crate) async fn spawned_dispatch_inner(
         hook_executor: prepare.hook_executor.clone(),
         verbosity: prepare.verbosity.clone(),
         provenance: prepare.provenance,
+        input_authorship: prepare.input_authorship.clone(),
         submission_id: Some(prepare.submission_id.clone()),
     });
     // Reserve capacity off the render thread, but do not let Engine start
@@ -1297,6 +1312,7 @@ pub(crate) fn build_dispatch_error_closure(
             app.history_version = app.history_version.wrapping_add(1);
             app.truncate_api_messages(prepare.snapshot.api_messages_len);
             app.last_send_at = prepare.snapshot.last_send_at;
+            app.active_turn_user_index = prepare.snapshot.active_turn_user_index;
             app.needs_redraw = true;
 
             match recovery {
@@ -1469,7 +1485,19 @@ pub(crate) async fn steer_user_message(
         return Err(err.context("could not release shell wait before steering"));
     }
 
-    if let Err(err) = engine_handle.steer(content.clone()).await {
+    let person_text = if message.extension_command.is_none()
+        && message.approved_plan.is_none()
+        && message.owner_input
+    {
+        Some(message.display.clone())
+    } else {
+        None
+    };
+
+    if let Err(err) = engine_handle
+        .steer_with_person_text(content.clone(), person_text)
+        .await
+    {
         restore_steer_paused_state(app, &paused_snapshot);
         engine_handle.set_paused(paused_snapshot.paused);
         return Err(err);
@@ -1790,16 +1818,21 @@ pub(crate) fn merge_pending_steers(app: &mut App) -> Option<QueuedMessage> {
     }
     let mut skill_instruction: Option<String> = None;
     let mut skill_provenance = None;
+    let mut owner_input = true;
     let mut bodies: Vec<String> = Vec::with_capacity(drained.len());
     for msg in drained {
         if skill_instruction.is_none() {
             skill_instruction = msg.skill_instruction;
             skill_provenance = msg.skill_provenance;
         }
+        owner_input &=
+            msg.owner_input && msg.approved_plan.is_none() && msg.extension_command.is_none();
         bodies.push(msg.display);
     }
-    Some(
-        QueuedMessage::new(bodies.join("\n\n"), skill_instruction)
-            .with_skill_provenance(skill_provenance),
-    )
+    let mut merged = QueuedMessage::new(bodies.join("\n\n"), skill_instruction)
+        .with_skill_provenance(skill_provenance);
+    if !owner_input {
+        merged = merged.without_owner_input();
+    }
+    Some(merged)
 }

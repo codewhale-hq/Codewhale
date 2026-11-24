@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "crates/account-cli",
-    "crates/agent",
     "crates/agent-contract",
     "crates/app-server",
     "crates/app-server-protocol",
@@ -46,16 +45,16 @@ members = [
     "crates/repl",
     "crates/workflow",
     "crates/workflow-js",
+    "vendor/codewhale-ratatui",
     "tests/portable-session",
     "tests/portable-config",
     "tests/portable-core-navigation",
 ]
-exclude = ["vendor/codewhale-ratatui"]
 default-members = ["crates/cli"]
 resolver = "2"
 
 [workspace.package]
-version = "0.10.3"
+version = "0.10.4"
 edition = "2024"
 # The floor is what CI's MSRV job builds (1.89): Rust 1.88 stabilized the
 # `let_chains` the codebase relies on, but a locked dependency
@@ -86,14 +85,14 @@ encoding_rs = "0.8.35"
 # Users: crates/workflow-js and the extension host in crates/tui (schemaui is
 # gone); keep the graph on one jsonschema/jsonschema-regex/referencing/
 # fancy-regex stack.
-jsonschema = { version = "0.57", default-features = false }
+jsonschema = { version = "0.61", default-features = false }
 libc = "0.2"
 reqwest = { version = "0.13.1", default-features = false, features = ["json", "rustls-no-provider", "socks"] }
 # NOT "parallel": the Workflow VM stays single-threaded and bridges to the
 # multi-thread engine over channels (see crates/workflow-js).
 rquickjs = { version = "0.14", features = ["futures"] }
 rustls = { version = "0.23.36", default-features = false, features = ["ring", "std", "tls12"] }
-rusqlite = { version = "0.41.1", features = ["bundled"] }
+rusqlite = { version = "0.43.0", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 # DSH bundle import: event-level parsing so aliases and explicit tags can be refused.
@@ -130,6 +129,9 @@ rusty_alloc-api = "1.1.6"
 # Anyone stepping through under lldb can override this locally.
 [profile.dev]
 debug = "line-tables-only"
+
+[profile.dev.package.rquickjs-sys]
+opt-level = 3
 
 [profile.release]
 lto = "thin"

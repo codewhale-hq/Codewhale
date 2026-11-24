@@ -18,15 +18,24 @@
     }
   ],
 
-  // Per-install rate limiting. Keyed on `install_id` from the validated batch
-  // body — never on a network address. 20 POSTs per 60s is generous against the
-  // client's single bounded flush attempt at shutdown.
+  // Rate limiting without network addresses: `INGEST_RATE_LIMITER` enforces a
+  // server-keyed per-location ceiling before parsing/delivery so rotating
+  // `install_id` cannot bypass the Worker quota; `RATE_LIMITER` caps any
+  // single `install_id` at 20 POSTs per 60s.
   "ratelimits": [
     {
       "name": "RATE_LIMITER",
       "namespace_id": "1001",
       "simple": {
         "limit": 20,
+        "period": 60
+      }
+    },
+    {
+      "name": "INGEST_RATE_LIMITER",
+      "namespace_id": "1002",
+      "simple": {
+        "limit": 600,
         "period": 60
       }
     }

@@ -75,6 +75,7 @@ fn sync_session(sync: codewhale_command_contract::facets::SessionSyncPayload) ->
         model: sync.model,
         workspace: sync.workspace,
         mode: super::contract::from_command_mode(sync.mode),
+        agent_preset: sync.agent_preset,
     }
 }
 

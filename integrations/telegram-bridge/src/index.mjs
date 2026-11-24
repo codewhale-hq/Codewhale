@@ -10,6 +10,7 @@ import {
   helpText,
   isAllowed,
   isGroupChat,
+  isPermanentTelegramError,
   isTelegramMarkdownParseError,
   latestRunningTurn,
   looksLikePollingConflict,
@@ -31,13 +32,19 @@ import {
   admitTurn,
   questionText,
   parseQuestionAnswers,
+  createdByBridge,
   createRuntimeClient,
+  listOwnedThreads,
   readJsonSafe,
   readThreadEvents,
+  settleLegacyOwners,
+  THREAD_NOT_OWNED_MESSAGE,
+  ThreadOwnershipError,
   ThreadStore as CoreThreadStore,
   ApprovalOwnershipError,
   decideApproval as decideRuntimeApproval,
-  settleStoredApproval
+  settleStoredApproval,
+  splitAtCodePoint
 } from "../../bridge-core/src/lib.mjs";
 
 const TYPING_INTERVAL_MS = 2000;
@@ -83,6 +90,9 @@ const { runtimeJson, authHeaders } = createRuntimeClient({ ...config, runtimeReq
 const botAccountId = config.botToken.split(":")[0];
 let runtimeCapabilities = {};
 
+const TELEGRAM_SYSTEM_PROMPT =
+  "You are being controlled from a Telegram phone chat. Keep status updates concise. Ask for tool approvals when needed; do not assume mobile messages imply blanket approval.";
+
 const threadStore = await ThreadStore.open(config.threadMapPath);
 const activeTurnTasks = new Map();
 let stopping = false;
@@ -111,6 +121,7 @@ try {
 } catch {
   console.warn("Engine recovery capabilities unavailable; uncertain admissions will remain retained.");
 }
+await settleLegacyOwners(threadStore, runtimeJson, (thread) => createdByBridge(thread, { systemPrompt: TELEGRAM_SYSTEM_PROMPT, workspace: config.workspace }));
 await configureBotCommands().catch((error) => {
   console.error("failed to configure Telegram bot command menu", error);
 });
@@ -150,6 +161,11 @@ async function pollTelegram() {
           await markUpdateHandled(update);
         } catch (error) {
           console.error("failed to handle incoming Telegram update", error);
+          if (isPermanentTelegramError(error)) {
+            await markUpdateHandled(update);
+            continue;
+          }
+          await delay(telegramRetryDelayMs(error));
           break;
         }
       }
@@ -246,7 +262,16 @@ async function isReplayCallbackUpdate(update) {
   return threadStore.recordMessage(`callback:${update.update_id}`);
 }
 
+async function releaseUnownedRecovery(chatId) {
+  const state = await threadStore.getChat(chatId);
+  if (!state?.threadId || threadStore.ownsThread(chatId, state.threadId) || threadStore.ownershipPending(chatId, state.threadId)) return state;
+  if (!state.pendingAdmission && !state.activeTurnId && !state.pendingQuestion) return state;
+  await clearActiveTurn(chatId);
+  return threadStore.patchChat(chatId, { pendingAdmission: null });
+}
+
 async function handleCommand(chatId, command, identity) {
+  await releaseUnownedRecovery(chatId);
   const action = commandAction(command);
   if (["new_thread", "resume", "compact"].includes(action.kind)) {
     const state = await threadStore.getChat(chatId);
@@ -436,7 +461,10 @@ async function ensureThread(chatId, { forceNew = false, threadRequest } = {}) {
   if (forceNew && (existing?.pendingAdmission || existing?.activeTurnId)) {
     throw new Error("This chat has a pending turn or retained reply. Use /status to inspect it before replacing its thread.");
   }
-  if (existing?.threadId && !forceNew) return existing;
+  if (existing?.threadId && !forceNew) {
+    threadStore.requireOwnedThread(chatId, existing.threadId);
+    return existing;
+  }
 
   const effectiveModel = existing?.model || config.model;
   const thread = await runtimeJson("/v1/threads", {
@@ -449,8 +477,7 @@ async function ensureThread(chatId, { forceNew = false, threadRequest } = {}) {
       trust_mode: config.trustMode,
       auto_approve: config.autoApprove,
       archived: false,
-      system_prompt:
-        "You are being controlled from a Telegram phone chat. Keep status updates concise. Ask for tool approvals when needed; do not assume mobile messages imply blanket approval."
+      system_prompt: TELEGRAM_SYSTEM_PROMPT
     }
   });
 
@@ -461,6 +488,7 @@ async function ensureThread(chatId, { forceNew = false, threadRequest } = {}) {
     activeTurnId: null,
     updatedAt: new Date().toISOString()
   };
+  await threadStore.recordThreadOwner(chatId, thread.id);
   await threadStore.setChat(chatId, state);
   return state;
 }
@@ -484,6 +512,10 @@ async function startPromptTurn(chatId, prompt, identity) {
     return;
   }
   if (!prompt.trim()) return sendText(chatId, helpText(), { replyMarkup: controlKeyboard() });
+  if (current?.threadId && !threadStore.ownsThread(chatId, current.threadId)) {
+    await sendText(chatId, THREAD_NOT_OWNED_MESSAGE, { replyMarkup: controlKeyboard() });
+    return;
+  }
   const actorId = turnActor(identity);
   if (!actorId || !identity.messageKey) throw new ApprovalOwnershipError("turn needs its initiating human and message");
   const request = {
@@ -504,7 +536,7 @@ async function startPromptTurn(chatId, prompt, identity) {
       model: request.model, workspace: config.workspace, mode: request.mode,
       allow_shell: request.allow_shell, trust_mode: request.trust_mode,
       auto_approve: request.auto_approve, archived: false,
-      system_prompt: "You are being controlled from a Telegram phone chat. Keep status updates concise. Ask for tool approvals when needed; do not assume mobile messages imply blanket approval."
+      system_prompt: TELEGRAM_SYSTEM_PROMPT
     }
   } });
   if (!replay) startTrackedTurnStream(chatId);
@@ -543,9 +575,13 @@ function startTrackedTurnStream(chatId) {
   activeTurnTasks.set(chatId, task);
   void (async () => {
     while (!stopping && !controller.signal.aborted) {
-      const state = await threadStore.getChat(chatId);
+      const state = await releaseUnownedRecovery(chatId);
       if (!recoveryAllowed(chatId, state)) return;
       if (!state?.pendingAdmission && !state?.activeTurnId) return;
+      if (threadStore.ownershipPending(chatId, state.pendingAdmission?.threadId || state.threadId)) {
+        await delay(2000);
+        continue;
+      }
       try {
         if (await runPrompt(chatId, { signal: controller.signal })) return;
         const pending = (await threadStore.getChat(chatId))?.pendingAdmission;
@@ -568,10 +604,17 @@ function turnActor(identity) {
 }
 
 async function runPrompt(chatId, options = {}) {
-  let state = await threadStore.getChat(chatId);
+  let state = await releaseUnownedRecovery(chatId);
   if (!recoveryAllowed(chatId, state)) return true;
+  if (threadStore.ownershipPending(chatId, state?.pendingAdmission?.threadId || state?.threadId)) return false;
   let pending = state?.pendingAdmission;
   if (pending) {
+    if (pending.threadId && !pending.submitted && !threadStore.ownsThread(chatId, pending.threadId)) {
+      if (threadStore.ownershipPending(chatId, pending.threadId)) return false;
+      await threadStore.patchChat(chatId, { pendingAdmission: null });
+      await sendText(chatId, THREAD_NOT_OWNED_MESSAGE);
+      return true;
+    }
     const admission = await admitTurn({
       runtimeJson, pending, capabilities: runtimeCapabilities,
       persistPending: (value) => threadStore.patchChat(chatId, { pendingAdmission: value }),
@@ -693,8 +736,9 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq, options = {}
         responseText += record.payload.delta || "";
         const now = Date.now();
         if (responseText.length > config.maxReplyChars && now - sentProgressAt > 15000) {
-          await sendTurnText(chatId, responseText.slice(0, config.maxReplyChars));
-          responseText = responseText.slice(config.maxReplyChars);
+          const [head, rest] = splitAtCodePoint(responseText, config.maxReplyChars);
+          await sendTurnText(chatId, head);
+          responseText = rest;
           sentProgressAt = now;
         }
       }
@@ -878,10 +922,10 @@ async function sendStatus(chatId, identity) {
 async function sendThreads(chatId, identity) {
   const state = await threadStore.getChat(chatId);
   const threads = isGroupChat(identity?.chatType)
-    ? state?.threadId ? [{ id: state.threadId }] : []
-    : await runtimeJson("/v1/threads/summary?limit=8&include_archived=true");
+    ? state?.threadId && threadStore.ownsThread(chatId, state.threadId) ? [{ id: state.threadId }] : []
+    : await listOwnedThreads(threadStore, runtimeJson, chatId);
   if (!threads.length) {
-    await sendText(chatId, "No runtime threads yet.", { replyMarkup: controlKeyboard() });
+    await sendText(chatId, "No threads started by this chat yet.", { replyMarkup: controlKeyboard() });
     return;
   }
   const actions = [];
@@ -915,6 +959,10 @@ async function resumeThread(chatId, args, identity) {
     await sendText(chatId, "Usage: /resume <thread_id>");
     return;
   }
+  if (!threadStore.ownsThread(chatId, threadId)) {
+    await sendText(chatId, THREAD_NOT_OWNED_MESSAGE);
+    return;
+  }
   if (isGroupChat(identity?.chatType) && (threadId !== existing?.threadId ||
       !(existing?.turnOrigins || []).some((origin) => origin.threadId === threadId && origin.actorId === turnActor(identity)))) {
     await sendText(chatId, "Group chats can only resume their own thread through a recorded initiating human.");
@@ -946,6 +994,10 @@ async function interruptActiveTurn(chatId, identity) {
     await sendText(chatId, "No runtime thread recorded for this chat.");
     return;
   }
+  if (!threadStore.ownsThread(chatId, state.threadId)) {
+    await sendText(chatId, THREAD_NOT_OWNED_MESSAGE);
+    return;
+  }
   const detail = await runtimeJson(`/v1/threads/${encodeURIComponent(state.threadId)}`);
   const runningTurn = latestRunningTurn(detail);
   const turnId = state.activeTurnId || runningTurn?.id;
@@ -971,6 +1023,11 @@ async function interruptActiveTurn(chatId, identity) {
 }
 
 async function compactThread(chatId) {
+  const current = await threadStore.getChat(chatId);
+  if (current?.threadId && !threadStore.ownsThread(chatId, current.threadId)) {
+    await sendText(chatId, THREAD_NOT_OWNED_MESSAGE);
+    return;
+  }
   const state = await ensureThread(chatId);
   const result = await runtimeJson(`/v1/threads/${encodeURIComponent(state.threadId)}/compact`, {
     method: "POST",
@@ -993,8 +1050,12 @@ async function decideApproval(chatId, action, identity) {
     return false;
   }
   try {
-    await decideRuntimeApproval(runtimeJson, { store: threadStore, chatId, actorId: turnActor(identity), approvalId, decision, remember, turnId: action.turnId });
+    await decideRuntimeApproval(runtimeJson, { store: threadStore, chatId, actorId: turnActor(identity), approvalId, decision, remember, turnId: action.turnId, ownsThread: (threadId) => threadStore.ownsThread(chatId, threadId) });
   } catch (error) {
+    if (error instanceof ThreadOwnershipError) {
+      await sendText(chatId, THREAD_NOT_OWNED_MESSAGE);
+      return false;
+    }
     if (!(error instanceof ApprovalOwnershipError)) throw error;
     await sendText(chatId, `Approval ${approvalId} is not waiting in this chat.`);
     return false;

@@ -128,6 +128,8 @@ fn make_request(messages: Vec<Message>) -> MessageRequest {
         stream: Some(true),
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     }
 }
 
@@ -392,6 +394,9 @@ async fn compaction_non_streaming_returns_queued_message_response() {
         stop_sequence: None,
         container: None,
         usage: Usage::default(),
+        title: None,
+        stop_details: None,
+        refusal: None,
     });
 
     // The runtime's compaction path uses create_message (not stream).

@@ -4,10 +4,10 @@
 > 最后与英文同步日期（last synced with English revision）：2026-09-29。
 > 2026-10-06 补齐平铺根目录、冲突优先级与 Codewhale 专用扫描范围。
 
-在终端中，`/skills` 会打开 **Extensions → Skills**。在某个 skill 上按 Enter 会打开专用管理器（也可直接用 `/skills manage` 打开），用于现有 skill 的安装、更新、移除和信任操作。`/skill <name>` 仍然用于激活 skill，显式的检查、远程、同步和建议子命令也仍然可用。
+在终端中，`/skills` 会打开 **Plugins → Skills**。在某个 skill 上按 Enter 会打开专用管理器（也可直接用 `/skills manage` 打开），用于现有 skill 的安装、更新、移除和信任操作。`/skill <name>` 仍然用于激活 skill，显式的检查、远程、同步和建议子命令也仍然可用。
 
 你添加到 Codewhale 的一切都叫插件：你手动设置的 skill 是 **Skill** 类插件；
-插件包里的 skill 属于该插件。skill 仍在 Extensions → Skills 和 Customize › Skills 管理；把所有种类放在一个
+插件包里的 skill 属于该插件。skill 仍在 Plugins → Skills 和 Customize › Skills 管理；把所有种类放在一个
 插件列表里是 0.10.3 的计划，当前版本尚无。本页用“skill”指这一种类；文件、信任和 `/skills` 命令都不变。
 
 Skills 是可复用的 `SKILL.md` 指令包。Codewhale 从多个根目录发现它们，但**只有 Codewhale 拥有的目录可写**。统一的 `/skills manage` 管理器是审计与变更的交互界面；斜杠别名共享同一条写入路径。
@@ -81,7 +81,7 @@ Skills 是可复用的 `SKILL.md` 指令包。Codewhale 从多个根目录发现
 
 | 命令 | 行为 |
 | --- | --- |
-| `/skills` | 打开 Extensions → Skills（仅扫描 Codewhale 自有目录，**无网络**）。 |
+| `/skills` | 打开 Plugins → Skills（仅扫描 Codewhale 自有目录，**无网络**）。 |
 | `/skills manage` | 打开专用的 Skills 管理器，用于审计和变更。 |
 | `/skills <prefix>` | 按名称前缀过滤的文本列表。 |
 | `/skills inspect` | 文本发现模式、搜索的目录与来源路径。 |
@@ -174,7 +174,7 @@ ASCII 名称保留现有命令拼写。包含非 ASCII 字符的名称会获得�
 
 ### 目录夹具矩阵（无需提供商）
 
-[`crates/tui/assets/skills-catalog-matrix.json`](../../crates/tui/assets/skills-catalog-matrix.json) 是一张**编写**的期望表，覆盖每个内置 skill：规范名称、层级、调用、别名、是否渲染为环境目录条目，以及它的哪些别名被另一个规范名称遮蔽。`crates/skills/src/catalog_matrix.rs` 中的测试断言该夹具与 `BUNDLED_SKILLS` 之间存在一一对应，因此随附包不能在没有显式夹具更新的情况下改变。
+[`crates/skills/assets/skills-catalog-matrix.json`](../../crates/skills/assets/skills-catalog-matrix.json) 是一张**编写**的期望表，覆盖每个内置 skill：规范名称、层级、调用、别名、是否渲染为环境目录条目，以及它的哪些别名被另一个规范名称遮蔽。`crates/skills/src/catalog_matrix.rs` 中的测试断言该夹具与 `BUNDLED_SKILLS` 之间存在一一对应，因此随附包不能在没有显式夹具更新的情况下改变。
 
 这些测试断言什么、不断言什么：
 
@@ -189,7 +189,7 @@ ASCII 名称保留现有命令拼写。包含非 ASCII 字符的名称会获得�
 | 单一别名所有者 | 不得有两个内置 skills 声称同一别名。 |
 | 无重复条目 | 每个规范名称最多渲染一行目录；别名渲染零行。 |
 | 预算余量 | 随附包单独渲染时低于随窗口缩放的 skills 预算（默认 128k 窗口下为 2,400 字符，即索引下限），且**没有**“additional skills omitted”行，因此用户 skills 永远不会被静默挤掉。 |
-| 无上下文污染 | 描述保持单行，并在进入提示前被截断到 配置的 `listing_max_description_chars`（默认 120）。 |
+| 预览大小限制 | 技能目录预览中的描述保持单行，长度受 `[skills] listing_max_description_chars` 限制（默认 120）。 |
 
 ### 区域感知的路由元数据
 
@@ -265,9 +265,11 @@ ASCII 名称保留现有命令拼写。包含非 ASCII 字符的名称会获得�
 
 ## 配置项
 
-父代理、新建或嵌套子代理及 `/context` 使用同一个环境索引渲染器。`[skills] listing_max_description_chars` 设置单条描述上限（1–40,000，默认 120）；`listing_budget_fraction` 设置索引占当前路由上下文窗口的比例（大于 0 且不大于 1，默认 0.002），按每 token 四个字符估算。总索引保留 2,400 字符下限和 40,000 字符上限。配置档中的两个值分别覆盖继承值。切换路由会重算预算，不会暗中修改描述上限。
+父代理和子代理均通过 `load_skill` 按需发现技能。`/context` 和 `codewhale doctor --context-json` 会估算技能目录预览的大小，并将该预览占用的提示词 token 数记为零。`[skills] listing_max_description_chars` 设置预览中单条描述的上限（1–40,000，默认 120）。`listing_budget_fraction` 设置预览占当前路由上下文窗口的比例（大于 0 且不大于 1，默认 0.002），按每 token 四个字符估算，最低 2,400 字符，最高 40,000 字符。配置档中的两个值分别覆盖继承值。
 
-渲染器优先保留 `Use when:` 触发条件，先缩短描述，再退到仅名称，并报告缩短或省略的条目。超过配置上限且没有触发条件的描述会产生加载警告。`/skills inspect` 显示含实际上限的本地化提示，`/context` 显示同一损失计数。`load_skill name="list"` 和按名称加载仍返回完整文本。这些限制仅控制环境索引，不截断技能正文或外部 MCP 资源描述。
+预览优先保留 `Use when:` 触发条件，先缩短描述，再退到仅显示名称。如果描述被缩短，上下文报告会在预览详情中显示条目数量。描述超过配置上限且没有可识别的触发条件时会产生加载警告。`/skills inspect` 会显示包含实际上限的本地化提示。
+
+`load_skill name="list"` 显示项目技能和 Codewhale 技能的简短描述，并按来源统计全局兼容技能。使用 `name="list-all"` 或 `include_external=true` 逐项列出这些技能。多词 `query` 会搜索两组技能的名称、别名和完整描述。按确切名称加载可获取完整的技能正文。对于文件系统中的技能，配套文件列表仅列出与 `SKILL.md` 同级的常规文件。子目录中的资料可通过技能正文记录的路径查找。
 
 ```toml
 # 发现偏好的可选覆盖项（除非是 Codewhale 项目/全局拥有路径，否则不会自动成为写入目标）。

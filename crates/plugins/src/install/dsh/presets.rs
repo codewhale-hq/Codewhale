@@ -22,14 +22,14 @@ pub fn contained_module(package: &Package, name: &str) -> Result<PathBuf> {
     )?;
     let identity = parts[..count].join("/");
     let own_manifest = package.contained(Path::new("package.json"))?;
-    let own_data = parse_json(&utf8(read_file(&own_manifest, MAX_DOCUMENT)?)?)?;
+    let own_data = parse_package_json(&utf8(read_file(&own_manifest, MAX_DOCUMENT)?)?)?;
     let root = if own_data.get("name").and_then(Value::str) == Some(identity.as_str()) {
         PathBuf::new()
     } else {
         PathBuf::from(format!("node_modules/{identity}"))
     };
     let manifest = package.contained(&root.join("package.json"))?;
-    let data = parse_json(&utf8(read_file(&manifest, MAX_DOCUMENT)?)?)?;
+    let data = parse_package_json(&utf8(read_file(&manifest, MAX_DOCUMENT)?)?)?;
     let valid_type = match data.get("type") {
         None => true,
         Some(Value::Str(kind)) => matches!(kind.as_str(), "module" | "commonjs"),
@@ -106,7 +106,7 @@ pub fn contained_module(package: &Package, name: &str) -> Result<PathBuf> {
     Ok(resolved)
 }
 
-pub(super) fn has_roster(entries: &[Value]) -> bool {
+pub(crate) fn has_roster(entries: &[Value]) -> bool {
     entries.iter().any(|row| {
         row.get("name").and_then(Value::str) == Some(AGENT_PRESETS)
             || row

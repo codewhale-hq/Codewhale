@@ -6,7 +6,7 @@ impl Engine {
     pub(super) async fn run_tool_batch_phase(
         &mut self,
         turn: &mut TurnContext,
-        tool_policy: &ToolSurfacePolicy,
+        tool_policy: &mut ToolSurfacePolicy,
         progress: &mut TurnLoopProgress,
         client: &SharedModelClient,
         response: AcceptedModelStep,
@@ -51,7 +51,12 @@ impl Engine {
         let mcp_pool = if !fleet_report_response
             && self.config.features.enabled(Feature::Mcp)
             && tool_uses.iter().any(|tool| {
-                McpPool::is_mcp_tool(&tool.name) || tool.name == EXECUTE_TOOLS_TOOL_NAME
+                McpPool::is_mcp_tool(&tool.name)
+                    || tool.name == EXECUTE_TOOLS_TOOL_NAME
+                    || tool_policy
+                        .registry
+                        .get(&tool.name)
+                        .is_some_and(|spec| spec.extension_caller().is_some())
             }) {
             match self.ensure_mcp_pool().await {
                 Ok(pool) => Some(pool),
@@ -103,6 +108,7 @@ impl Engine {
                 progress.mode,
                 progress.fleet_denial_guard.as_ref(),
                 ToolCallSource::Model,
+                None,
             )
             .await;
 
@@ -141,7 +147,7 @@ impl Engine {
         let denial_action = self
             .process_tool_results(
                 client.as_ref(),
-                tool_policy.strict_tool_mode,
+                tool_policy,
                 outcomes,
                 turn,
                 &mut progress.tool_catalog,
@@ -152,22 +158,28 @@ impl Engine {
                 } else {
                     progress.fleet_denial_guard.as_mut()
                 },
+                progress.mode,
             )
             .await;
 
         let accepted_steer_after_tools = !pending_steers.is_empty();
         if !pending_steers.is_empty() {
             for pending in pending_steers.drain(..) {
-                let steer = pending.commit().trim().to_string();
+                let (raw_steer, person_text) = self.commit_pending_steer_with_intent(pending);
+                let steer = raw_steer.trim().to_string();
                 self.session
                     .working_set
                     .observe_user_message(&steer, &self.session.workspace);
                 self.add_session_message(self.user_text_message_with_turn_metadata(steer))
                     .await;
+                if let Some(person_text) = person_text {
+                    let index = self.session.messages.len().saturating_sub(1);
+                    self.session.record_person_message(person_text, Some(index));
+                }
             }
         }
 
-        if let Some(stop) = turn.auto_review_denials.stop().map(str::to_string) {
+        if let Some(stop) = self.auto_review_stop_reason() {
             let _ = self.send_event(Event::status(stop.clone())).await;
             return PhaseResult::Return((TurnOutcomeStatus::Interrupted, Some(stop)));
         }

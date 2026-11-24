@@ -29,9 +29,7 @@ use uuid::Uuid;
 
 use crate::compaction::CompactionConfig;
 use crate::core::engine::handle::SteerOutcome;
-use crate::core::engine::{
-    EngineConfig, EngineHandle, spawn_engine_with_authoritative_route_config,
-};
+use crate::core::engine::{EngineConfig, EngineHandle};
 use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
 use crate::core::ops::{Op, TurnSpec};
 use crate::cost_status::{
@@ -74,10 +72,10 @@ use codewhale_runtime::runtime_policy::RuntimePolicyProjection;
 pub const RUNTIME_EVENT_REPLAY_BATCH_SIZE: usize = 256;
 pub const MAX_RUNTIME_EVENT_REPLAY_TAIL: usize = 4096;
 pub const MAX_RUNTIME_TURN_OPERATION_KEY_BYTES: usize = 128;
-const EVENT_TRANSACTION_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+const EVENT_TRANSACTION_LOCK_TIMEOUT: Duration = Duration::from_secs(25);
 const EVENT_TRANSACTION_LOCK_POLL: Duration = Duration::from_millis(5);
 const EVENT_TRANSACTION_LOCK_FILE: &str = "events.lock";
-const RUNTIME_PROCESS_OWNER_LOCK_FILE: &str = "runtime-process.owner.lock";
+pub(crate) const RUNTIME_PROCESS_OWNER_LOCK_FILE: &str = "runtime-process.owner.lock";
 const RUNTIME_PROCESS_OWNER_LOCK_HELD: &str = "This runtime is already active in another process. Close the other Codewhale session and try again, or set CODEWHALE_RUNTIME_DIR to a different directory.";
 const AGENT_MAIL_OWNER_FILE: &str = "owner.json";
 /// Every directory `RuntimeThreadStore::open` creates to hold work. Emptiness
@@ -227,7 +225,16 @@ const IMAGE_RUNTIME_SCHEMA_VERSION: u32 = 3;
 const OUTPUT_LIMIT_RUNTIME_SCHEMA_VERSION: u32 = 4;
 const PREFIX_CHECKPOINT_RUNTIME_SCHEMA_VERSION: u32 = 5;
 const SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION: u32 = 6;
-const MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION: u32 = SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION;
+const DISALLOWED_TOOLS_RUNTIME_SCHEMA_VERSION: u32 = 7;
+const MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION: u32 = DISALLOWED_TOOLS_RUNTIME_SCHEMA_VERSION;
+
+pub(crate) const fn required_thread_schema_version(disallowed_tools: &[String]) -> u32 {
+    if disallowed_tools.is_empty() {
+        CURRENT_RUNTIME_SCHEMA_VERSION
+    } else {
+        DISALLOWED_TOOLS_RUNTIME_SCHEMA_VERSION
+    }
+}
 
 fn is_zero_u64(value: &u64) -> bool {
     *value == 0
@@ -386,6 +393,8 @@ pub struct ThreadRecord {
     /// normal configured tool catalog; `Some([])` deliberately exposes none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_tools: Vec<String>,
     /// Extra roots the file tools may read and write outside the workspace.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub add_dirs: Vec<PathBuf>,
@@ -1141,6 +1150,8 @@ pub struct TurnRecord {
     /// carry none, and so have no restore point.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_snapshots: Vec<codewhale_snapshot::WorkspaceSnapshotRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delegated_writes: Vec<String>,
 }
 
 impl TurnRecord {
@@ -1222,6 +1233,7 @@ impl TurnRecord {
                     && self.artifacts.is_empty()
                     && self.workspace.is_none()
                     && self.workspace_snapshots.is_empty()
+                    && self.delegated_writes.is_empty()
                     && self.source_accounting
                     && self.source_usage_records.len() == 1
                     && self
@@ -1690,6 +1702,7 @@ pub struct RuntimeThreadStore {
     /// whether a read is running by probing it. A writer never holds it, so a
     /// running turn's write is never behind a store-wide read.
     item_index_seed: Arc<parking_lot::Mutex<()>>,
+    thread_progress: Arc<parking_lot::Mutex<HashMap<String, DateTime<Utc>>>>,
     /// Files read by whole-directory turn scans (`list_all_turns`). Shared
     /// across store clones so a `spawn_blocking` snapshot still counts against
     /// the manager the test holds. Per-store so parallel tests do not collide.
@@ -1778,6 +1791,7 @@ impl RuntimeThreadStore {
             mail_mutation: Arc::new(parking_lot::Mutex::new(())),
             item_index: Arc::new(parking_lot::RwLock::new(ItemIndex::default())),
             item_index_seed: Arc::new(parking_lot::Mutex::new(())),
+            thread_progress: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             #[cfg(any(test, feature = "test-support"))]
             turn_dir_files_read: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(any(test, feature = "test-support"))]
@@ -1835,6 +1849,7 @@ impl RuntimeThreadStore {
             mail_mutation: Arc::new(parking_lot::Mutex::new(())),
             item_index: Arc::new(parking_lot::RwLock::new(ItemIndex::default())),
             item_index_seed: Arc::new(parking_lot::Mutex::new(())),
+            thread_progress: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             #[cfg(any(test, feature = "test-support"))]
             turn_dir_files_read: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(any(test, feature = "test-support"))]
@@ -2526,6 +2541,19 @@ impl RuntimeThreadStore {
 
     pub fn save_thread(&self, thread: &ThreadRecord) -> Result<()> {
         let path = self.thread_path(&thread.id)?;
+        let min_version = required_thread_schema_version(&thread.disallowed_tools);
+        if thread.schema_version < min_version {
+            let mut updated = thread.clone();
+            updated.schema_version = min_version;
+            return write_json_atomic(&path, &updated).with_context(|| {
+                RuntimeStoreRecordFailure::new(
+                    RuntimeStoreOperation::Write,
+                    RuntimeStoreRecordKind::Thread,
+                    &updated.id,
+                    &path,
+                )
+            });
+        }
         write_json_atomic(&path, thread).with_context(|| {
             RuntimeStoreRecordFailure::new(
                 RuntimeStoreOperation::Write,
@@ -4020,7 +4048,7 @@ impl RuntimeThreadStore {
         let turn_id = turn_id.map(ToString::to_string);
         let item_id = item_id.map(ToString::to_string);
         let event = event.into();
-        tokio::task::spawn_blocking(move || {
+        let record = tokio::task::spawn_blocking(move || {
             store.append_event_transaction(
                 thread_id,
                 turn_id,
@@ -4031,7 +4059,24 @@ impl RuntimeThreadStore {
             )
         })
         .await
-        .context("Runtime event transaction worker failed")?
+        .context("Runtime event transaction worker failed")??;
+        let mut progress = self.thread_progress.lock();
+        let newest = progress
+            .entry(record.thread_id.clone())
+            .or_insert(record.timestamp);
+        *newest = (*newest).max(record.timestamp);
+        drop(progress);
+        Ok(record)
+    }
+
+    pub fn thread_last_progress_at(&self, thread_id: &str) -> Option<DateTime<Utc>> {
+        self.thread_progress.lock().get(thread_id).copied()
+    }
+
+    pub fn forget_thread_progress(&self, keep: &std::collections::HashSet<String>) {
+        self.thread_progress
+            .lock()
+            .retain(|thread, _| keep.contains(thread));
     }
 
     fn append_event_transaction(
@@ -4557,11 +4602,10 @@ pub struct RuntimeStoreBinding {
 
 impl RuntimeStoreBinding {
     /// The confinement shared by every store-recovery predicate: the bound
-    /// store must sit at `<state>/sessions/<session-id>/runtime` (or a
+    /// store must sit at `<sessions>/<session-id>/runtime` (or a
     /// `runtime-recovered-*` sibling) with no symlink on the way down. Wrong
     /// owner, symlinks and external paths fail closed for all callers.
-    fn is_confined_session_store(&self) -> Result<bool> {
-        let sessions = codewhale_config::resolve_state_dir("sessions")?;
+    fn is_confined_to_sessions_root(&self, sessions: &Path) -> Result<bool> {
         let Some(session_dir) = self.data_dir.parent() else {
             return Ok(false);
         };
@@ -4583,9 +4627,9 @@ impl RuntimeStoreBinding {
         // via `prepare_canonical_sessions_root`; only a caller that never
         // warmed it (synchronous tests and tools) resolves it here.
         let parent = session_dir.parent();
-        let under_sessions = parent == Some(sessions.as_path())
-            || cached_canonical_sessions_root(&sessions)
-                .or_else(|| resolve_canonical_sessions_root(&sessions))
+        let under_sessions = parent == Some(sessions)
+            || cached_canonical_sessions_root(sessions)
+                .or_else(|| resolve_canonical_sessions_root(sessions))
                 .is_some_and(|canonical| parent == Some(canonical.as_path()));
         if !under_sessions
             || !(store_name == "runtime" || store_name.starts_with("runtime-recovered-"))
@@ -4596,10 +4640,43 @@ impl RuntimeStoreBinding {
         {
             return Ok(false);
         }
-        for path in [&sessions, session_dir, &self.data_dir] {
+        for path in [sessions, session_dir, &self.data_dir] {
             reject_symlinked_store_dir(path)?;
         }
         Ok(true)
+    }
+
+    fn is_confined_session_store(&self) -> Result<bool> {
+        let sessions = codewhale_config::resolve_state_dir("sessions")?;
+        self.is_confined_to_sessions_root(&sessions)
+    }
+
+    fn is_confined_migration_store(&self, sessions_dir: &Path) -> Result<bool> {
+        if self.is_confined_to_sessions_root(sessions_dir)? || self.is_confined_session_store()? {
+            return Ok(true);
+        }
+        let mut tasks_roots = vec![crate::task_manager::default_tasks_dir()];
+        if sessions_dir.file_name().and_then(|n| n.to_str()) == Some("sessions")
+            && let Some(state_root) = sessions_dir.parent()
+        {
+            tasks_roots.push(state_root.join("tasks"));
+        }
+        for tasks_dir in tasks_roots {
+            let runtime_dir = tasks_dir.join("runtime");
+            let matches = self.data_dir == runtime_dir
+                || cached_canonical_sessions_root(&tasks_dir)
+                    .or_else(|| resolve_canonical_sessions_root(&tasks_dir))
+                    .is_some_and(|canonical_tasks| {
+                        self.data_dir == canonical_tasks.join("runtime")
+                    });
+            if matches {
+                for path in [&tasks_dir, &runtime_dir, &self.data_dir] {
+                    reject_symlinked_store_dir(path)?;
+                }
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Only a missing, confined session store can recover from its transcript.
@@ -4935,19 +5012,94 @@ impl RuntimeStoreBinding {
             "Runtime store {} is outside the sessions directory",
             self.data_dir.display()
         );
+        self.try_hold_verified_store(None)
+    }
+
+    pub fn try_hold_for_sessions_dir(
+        &self,
+        sessions_dir: &Path,
+    ) -> Result<Option<HeldRuntimeStore>> {
+        anyhow::ensure!(
+            self.is_confined_migration_store(sessions_dir)?,
+            "Runtime store {} is outside the sessions or tasks runtime directories",
+            self.data_dir.display()
+        );
+        self.try_hold_verified_store(Some(sessions_dir.to_path_buf()))
+    }
+
+    fn try_hold_verified_store(
+        &self,
+        migration_sessions_dir: Option<PathBuf>,
+    ) -> Result<Option<HeldRuntimeStore>> {
         anyhow::ensure!(
             self.data_dir.is_dir(),
             "Runtime store {} is not a directory",
             self.data_dir.display()
         );
-        let lock = RuntimeProcessOwnerLock::try_acquire_file(
+        reject_symlinked_store_dir(&self.data_dir)?;
+        let Some(lock) = RuntimeProcessOwnerLock::try_acquire_file(
             &self.data_dir.join(RUNTIME_PROCESS_OWNER_LOCK_FILE),
             true,
-        )?;
-        Ok(lock.map(|lock| HeldRuntimeStore {
+        )?
+        else {
+            return Ok(None);
+        };
+        let held = HeldRuntimeStore {
             binding: self.clone(),
+            migration_sessions_dir,
             _lock: lock,
-        }))
+        };
+        held.verify_confined()?;
+        Ok(Some(held))
+    }
+
+    pub fn preview_migrate_session_workspace(
+        &self,
+        sessions_dir: &Path,
+        session_ids: Option<&HashSet<String>>,
+        old_workspace: &Path,
+        new_workspace: &Path,
+    ) -> Result<Option<(Vec<String>, Vec<String>)>> {
+        anyhow::ensure!(
+            self.is_confined_migration_store(sessions_dir)?,
+            "Runtime store {} is outside the sessions or tasks runtime directories",
+            self.data_dir.display()
+        );
+        reject_symlinked_store_dir(&self.data_dir)?;
+        let lock_path = self.data_dir.join(RUNTIME_PROCESS_OWNER_LOCK_FILE);
+        match open_runtime_store_file(&lock_path, "Execution owner lease", |options| {
+            options.read(true);
+        }) {
+            Ok(file) => {
+                let unlocked = codewhale_util::lock::try_lock_file_exclusive(&file)
+                    .context("Failed to probe execution owner lease")?;
+                if unlocked {
+                    codewhale_util::lock::unlock(&file);
+                } else {
+                    return Ok(None);
+                }
+            }
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io_err| io_err.kind() == std::io::ErrorKind::NotFound) => {}
+            Err(error) => return Err(error),
+        }
+        if !self.data_dir.join("threads").is_dir() {
+            return Ok(Some((Vec::new(), Vec::new())));
+        }
+        let Some(store) = RuntimeThreadStore::open_read_only(self.data_dir.clone())? else {
+            return Ok(Some((Vec::new(), Vec::new())));
+        };
+        let (migrated, skipped) = migrate_store_threads(
+            &store,
+            session_ids,
+            old_workspace,
+            new_workspace,
+            true,
+            None,
+        )?;
+        Ok(Some((migrated, skipped)))
     }
 }
 
@@ -4955,6 +5107,7 @@ impl RuntimeStoreBinding {
 /// session reconcile, or the switch/delete that just stopped binding it.
 pub struct HeldRuntimeStore {
     binding: RuntimeStoreBinding,
+    migration_sessions_dir: Option<PathBuf>,
     _lock: RuntimeProcessOwnerLock,
 }
 
@@ -5055,7 +5208,21 @@ impl HeldRuntimeStore {
     }
 
     fn open_store(&self) -> Result<RuntimeThreadStore> {
+        self.verify_confined()?;
         RuntimeThreadStore::open(self.binding.data_dir.clone())
+    }
+
+    fn verify_confined(&self) -> Result<()> {
+        let confined = match self.migration_sessions_dir.as_deref() {
+            Some(dir) => self.binding.is_confined_migration_store(dir)?,
+            None => self.binding.is_confined_session_store()?,
+        };
+        anyhow::ensure!(
+            confined,
+            "Runtime store {} is outside its confined root",
+            self.binding.data_dir.display()
+        );
+        reject_symlinked_store_dir(&self.binding.data_dir)
     }
 
     /// Threads in this store that name no session document, with their
@@ -5160,6 +5327,100 @@ impl HeldRuntimeStore {
         }
         Ok(unbound)
     }
+
+    pub fn migrate_session_workspace(
+        &self,
+        session_ids: Option<&HashSet<String>>,
+        old_workspace: &Path,
+        new_workspace: &Path,
+        dry_run: bool,
+        publication_update: Option<(
+            &str,
+            Option<&crate::session_manager::SessionObservation>,
+            &crate::session_manager::SessionObservation,
+        )>,
+    ) -> Result<(Vec<String>, Vec<String>)> {
+        if !self.binding.data_dir.join("threads").is_dir() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let store = if dry_run {
+            self.verify_confined()?;
+            let Some(store) = RuntimeThreadStore::open_read_only(self.binding.data_dir.clone())?
+            else {
+                return Ok((Vec::new(), Vec::new()));
+            };
+            store
+        } else {
+            self.open_store()?
+        };
+        migrate_store_threads(
+            &store,
+            session_ids,
+            old_workspace,
+            new_workspace,
+            dry_run,
+            publication_update,
+        )
+    }
+}
+
+fn migrate_store_threads(
+    store: &RuntimeThreadStore,
+    session_ids: Option<&HashSet<String>>,
+    old_workspace: &Path,
+    new_workspace: &Path,
+    dry_run: bool,
+    publication_update: Option<(
+        &str,
+        Option<&crate::session_manager::SessionObservation>,
+        &crate::session_manager::SessionObservation,
+    )>,
+) -> Result<(Vec<String>, Vec<String>)> {
+    let _thread_mutation = store.thread_mutation.lock();
+    let (threads, mut skipped) = store.list_threads_lenient()?;
+    let mut migrated = Vec::new();
+    for mut thread in threads {
+        if let Some(allowed) = session_ids {
+            let Some(session_id) = thread.session_id.as_deref() else {
+                continue;
+            };
+            if !allowed.contains(session_id) {
+                continue;
+            }
+        }
+        let next_workspace = crate::session_manager::remap_workspace_path(
+            &thread.workspace,
+            old_workspace,
+            new_workspace,
+        );
+        let mut observation_updated = false;
+        if let Some((expected_id, before_obs, after_obs)) = publication_update
+            && thread.session_id.as_deref() == Some(expected_id)
+            && let Some(checkpoint) = thread.saved_session_checkpoint.as_mut()
+            && let Some(obs) = checkpoint.publication_observation.as_ref()
+            && obs.same_session_target(after_obs)
+            && obs != after_obs
+        {
+            if before_obs.is_some_and(|pre| obs == pre) {
+                checkpoint.publication_observation = Some(after_obs.clone());
+                observation_updated = true;
+            } else {
+                skipped.push(format!(
+                    "thread {}: its saved-session observation predates this migration or a change made outside it; reopen session {expected_id} before saving from this thread",
+                    thread.id
+                ));
+            }
+        }
+        let workspace_remapped = next_workspace.is_some();
+        if let Some(next) = next_workspace {
+            thread.workspace = next;
+            migrated.push(thread.id.clone());
+        }
+        if !dry_run && (workspace_remapped || observation_updated) {
+            store.save_thread(&thread)?;
+        }
+    }
+    Ok((migrated, skipped))
 }
 
 /// Clear `session_id` (and its checkpoint) on every thread in `store` that
@@ -6036,8 +6297,8 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let name = path
         .file_name()
         .ok_or_else(|| anyhow!("Runtime record has no basename"))?;
-    codewhale_util::files::WorkspaceFile::open_resolved_root(parent, Path::new(name), false)?
-        .replace(payload.as_bytes())
+    codewhale_util::files::WorkspaceFile::open_resolved_root(parent, Path::new(name), false)
+        .and_then(|file| file.replace(payload.as_bytes()))
         .with_context(|| format!("Failed to write {}", path.display()))?;
     #[cfg(unix)]
     if let (Some(ancestor), Some(name)) = (parent.parent(), parent.file_name()) {

@@ -36,6 +36,7 @@ use codewhale_localization::{Locale, MessageId, tr};
 #[cfg(test)]
 use codewhale_runtime::config::ApprovalDefaultSelection;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -55,16 +56,15 @@ mod view;
 pub use ask_rules::PermissionRuleSavePreview;
 #[cfg(test)]
 use ask_rules::build_save_preview as build_permission_rule_save_preview;
-use ask_rules::{
-    SAVE_PREVIEW_MAX_ENTRIES, build_persistent_allow_rules, build_persistent_ask_rules,
-    build_save_preview,
-};
+pub(crate) use ask_rules::format_allow_rules_pattern;
+use ask_rules::{SAVE_PREVIEW_MAX_ENTRIES, build_save_preview};
 pub use elevation::{ElevationOption, ElevationRequest, ElevationView};
 #[cfg(test)]
 use previews::apply_patch_preview_lines;
 pub(crate) use previews::format_shell_command_for_approval;
 use previews::{
-    file_write_preview_lines, localize_detail_label, localize_preview_shell_line, param_text,
+    docked_prompt_parts, file_write_preview_lines, localize_detail_label,
+    localize_preview_shell_line, param_text, receipt_subject,
 };
 // Keep the existing module path even though production callers only construct
 // `ApprovalView`; approval characterization tests inspect its typed options.
@@ -161,7 +161,7 @@ impl ApprovalRequest {
     /// `.codewhale/constitution.json` ask rule forces review.
     #[must_use]
     pub fn is_repo_law_prompt(&self) -> bool {
-        description_is_repo_law_prompt(&self.description)
+        codewhale_engine::core::authority::persistent_rules::is_repo_law_prompt(&self.description)
     }
 
     /// Presentation stakes for this request (see [`ApprovalStakes`]).
@@ -204,20 +204,16 @@ impl ApprovalRequest {
         let approval_grouping_key =
             codewhale_engine::tools::approval_cache::build_approval_grouping_key(tool_name, params)
                 .0;
-        let persistent_ask_rules =
-            build_persistent_ask_rules(semantic_tool_name, params, workspace);
         let stakes = classify_stakes(tool_name, category, risk, params);
-        let persistent_allow_rules =
-            if stakes == ApprovalStakes::Critical || description_is_repo_law_prompt(description) {
-                Vec::new()
-            } else {
-                build_persistent_allow_rules(
-                    semantic_tool_name,
-                    params,
-                    workspace,
-                    &persistent_ask_rules,
-                )
-            };
+        let codewhale_engine::core::authority::persistent_rules::PersistentRuleCandidates {
+            ask: persistent_ask_rules,
+            allow: persistent_allow_rules,
+        } = codewhale_engine::core::authority::persistent_rules::persistent_rule_candidates(
+            tool_name,
+            params,
+            description,
+            workspace,
+        );
 
         Self {
             id: id.to_string(),
@@ -273,7 +269,32 @@ impl ApprovalRequest {
         )
     }
 
+    pub(crate) fn review_failure(&self) -> Option<(&str, &str)> {
+        self.description
+            .strip_prefix("Auto-Review could not finish (")?
+            .split_once("); please decide.")
+    }
+
+    fn localized_review_failure(locale: Locale, reason: &str) -> Cow<'_, str> {
+        let id = match reason {
+            "timed out" => MessageId::BackgroundOutcomeTimedOut,
+            "transport error" => MessageId::ApprovalReviewTransport,
+            "unparseable answer" => MessageId::ApprovalReviewUnparseable,
+            "incomplete answer" => MessageId::ApprovalReviewIncomplete,
+            "review context over budget" => MessageId::ApprovalReviewOverBudget,
+            _ => return Cow::Borrowed(reason),
+        };
+        tr(locale, id)
+    }
+
     pub fn description_for_locale(&self, locale: Locale) -> String {
+        if let Some((reason, detail)) = self.review_failure() {
+            let reason = Self::localized_review_failure(locale, reason);
+            let mut description =
+                tr(locale, MessageId::ApprovalReviewFallback).replace("{reason}", &reason);
+            description.push_str(detail);
+            return description;
+        }
         match locale {
             Locale::En if self.category == ToolCategory::Shell => {
                 "Review the command before it runs.".to_string()
@@ -316,6 +337,35 @@ impl ApprovalRequest {
         })
     }
 
+    pub(crate) fn docked_parts(&self, locale: Locale) -> (String, String, bool) {
+        let parts = docked_prompt_parts(
+            &self.tool_name,
+            &self.params,
+            &self.workspace,
+            &self.summary,
+        );
+        let verb = match self.review_failure() {
+            Some((reason, _)) => format!(
+                "{} ({}) · {}",
+                tr(locale, MessageId::ConfigChoiceAutoReview),
+                Self::localized_review_failure(locale, reason),
+                parts.verb
+            ),
+            None => parts.verb,
+        };
+        (verb, parts.subject, parts.outside_workspace)
+    }
+
+    #[must_use]
+    pub(crate) fn receipt_subject(&self) -> String {
+        receipt_subject(
+            &self.tool_name,
+            &self.params,
+            &self.workspace,
+            &self.summary,
+        )
+    }
+
     #[must_use]
     #[cfg(test)]
     pub fn ask_rule_preview(&self) -> Option<String> {
@@ -356,11 +406,6 @@ impl ApprovalRequest {
 }
 
 pub use codewhale_engine::mcp::connected_app_server;
-
-fn description_is_repo_law_prompt(description: &str) -> bool {
-    description.starts_with("Repo law holds this write:")
-        && description.contains(".codewhale/constitution.json")
-}
 
 fn mcp_target_hint(tool_name: &str) -> Option<String> {
     let remainder = tool_name.strip_prefix("mcp_")?;

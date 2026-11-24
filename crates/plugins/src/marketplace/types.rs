@@ -218,8 +218,9 @@ pub enum MarketplaceSourceSpec {
     /// Non-GitHub git URL. The installer cannot fetch these yet; the plan
     /// stays [`MarketplaceInstallPlan::Unsupported`].
     GitUrl { url: String },
-    /// npm package declaration. Codewhale does not execute npm; the plan
-    /// stays unsupported.
+    /// npm package declaration. Codewhale never executes npm: a DSH market
+    /// entry plans a fetch of its exact version's registry tarball, and the
+    /// unversioned Claude and Codex declarations stay unsupported.
     Npm { package: String },
     /// A source form the catalog format defines but Codewhale refuses to
     /// execute (e.g. Claude `command` sources), with the reason.

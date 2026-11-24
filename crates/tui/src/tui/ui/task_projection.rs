@@ -7,10 +7,11 @@ use crate::tui::automation_panel::AutomationScan;
 use crate::tui::background_finished::{FinishedOutcome, FinishedWork, MAX_FINISHED_SHELLS};
 use codewhale_localization::{Locale, MessageId, tr};
 
-pub(super) async fn refresh_active_task_panel(
-    app: &mut App,
-    task_manager: &SharedTaskManager,
-) -> bool {
+pub(super) async fn refresh_active_task_panel(app: &mut App) -> LiveRefresh {
+    let Some(task_manager) = app.task_manager() else {
+        return LiveRefresh::Unchanged;
+    };
+    let task_manager = &task_manager;
     let namespace_changed = app.task_panel_session_id != app.current_session_id;
     if namespace_changed {
         app.task_panel.clear();
@@ -38,7 +39,11 @@ pub(super) async fn refresh_active_task_panel(
                     tracing::warn!(%error, "Task inventory unavailable; preserving scoped snapshot");
                 }
                 app.task_panel_unavailable = true;
-                return changed;
+                return if changed {
+                    LiveRefresh::Changed
+                } else {
+                    LiveRefresh::Unchanged
+                };
             }
         },
         None => Vec::new(),
@@ -173,17 +178,47 @@ pub(super) async fn refresh_active_task_panel(
     // Report whether anything visible changed so the idle tick can skip the
     // redraw: an unconditional 2.5 s repaint kept the app from ever going
     // quiescent (#3757).
-    let changed = namespace_changed
-        || was_unavailable
-        || lifecycle_changed
-        || shell_background_completed
-        || app.task_panel != entries;
-    app.task_panel = entries;
+    let refresh = fold_task_panel(
+        app,
+        entries,
+        namespace_changed || was_unavailable || lifecycle_changed || shell_background_completed,
+    );
     let tip_shown = (durable_background_completed || shell_background_completed)
         && app.maybe_show_behavioral_tip(
             crate::tui::behavioral_tips::BehavioralTip::BackgroundJobReceipt,
         );
-    changed || tip_shown
+    if tip_shown {
+        LiveRefresh::Changed
+    } else {
+        refresh
+    }
+}
+
+pub(super) fn fold_task_panel(
+    app: &mut App,
+    entries: Vec<TaskPanelEntry>,
+    changed: bool,
+) -> LiveRefresh {
+    let refresh = if changed || !task_rows_differ_only_in_elapsed(&app.task_panel, &entries) {
+        LiveRefresh::Changed
+    } else if app.task_panel != entries {
+        LiveRefresh::ElapsedOnly
+    } else {
+        LiveRefresh::Unchanged
+    };
+    app.task_panel = entries;
+    refresh
+}
+
+fn task_rows_differ_only_in_elapsed(before: &[TaskPanelEntry], after: &[TaskPanelEntry]) -> bool {
+    before.len() == after.len()
+        && before.iter().zip(after).all(|(old, new)| {
+            TaskPanelEntry {
+                duration_ms: new.duration_ms,
+                elapsed_since_output_ms: new.elapsed_since_output_ms,
+                ..old.clone()
+            } == *new
+        })
 }
 
 /// Fold one session-scoped snapshot. An empty snapshot may be a lock miss;
@@ -206,8 +241,9 @@ pub(super) fn project_shell_jobs(
         while retained.len() > MAX_FINISHED_SHELLS {
             retained.pop_front();
         }
+        let label = FinishedWork::shell_display_label(&job.command, job.description.as_deref());
         let (outcome, summary) = shell_outcome(app.ui_locale, job);
-        let toast = format!("shell · {} · {summary}", job.command.trim());
+        let toast = format!("shell · {label} · {summary}");
         let level = if outcome == FinishedOutcome::Done {
             crate::tui::app::StatusToastLevel::Info
         } else {
@@ -218,6 +254,7 @@ pub(super) fn project_shell_jobs(
         app.background_finished.push(
             FinishedWork::shell(
                 &job.command,
+                job.description.as_deref(),
                 outcome,
                 summary,
                 std::time::Duration::from_millis(job.elapsed_ms),
@@ -232,20 +269,23 @@ pub(super) fn project_shell_jobs(
         .flatten()
         .cloned()
         .collect::<Vec<_>>();
-    let shell_entry = |job: &codewhale_engine::tools::shell::ShellJobSnapshot| TaskPanelEntry {
-        id: job.id.clone(),
-        status: shell_status_token(&job.status).to_string(),
-        prompt_summary: format!("shell: {}", job.command),
-        duration_ms: Some(job.elapsed_ms),
-        kind: TaskPanelEntryKind::Shell,
-        stale: job.stale,
-        elapsed_since_output_ms: job.elapsed_since_output_ms,
-        owner_agent_id: job.owner_agent_id.clone(),
-        owner_agent_name: job.owner_agent_name.clone(),
-        current_tool: None,
-        role: None,
-        files_touched: 0,
-        exit_code: job.exit_code,
+    let shell_entry = |job: &codewhale_engine::tools::shell::ShellJobSnapshot| {
+        let label = FinishedWork::shell_display_label(&job.command, job.description.as_deref());
+        TaskPanelEntry {
+            id: job.id.clone(),
+            status: shell_status_token(&job.status).to_string(),
+            prompt_summary: format!("shell: {label}"),
+            duration_ms: Some(job.elapsed_ms),
+            kind: TaskPanelEntryKind::Shell,
+            stale: job.stale,
+            elapsed_since_output_ms: job.elapsed_since_output_ms,
+            owner_agent_id: job.owner_agent_id.clone(),
+            owner_agent_name: job.owner_agent_name.clone(),
+            current_tool: None,
+            role: None,
+            files_touched: 0,
+            exit_code: job.exit_code,
+        }
     };
     // Only shells that really run in the background are jobs. A foreground
     // Bash wait is already the live tool card in the transcript; listing it
@@ -492,6 +532,7 @@ fn start_automation_scan(app: &App, full: bool) -> Option<tokio::task::JoinHandl
     let manager = automations.try_lock().ok()?.clone();
     let live_owners = app.automation_panel.live_run_owners();
     Some(tokio::task::spawn_blocking(move || {
+        let execution_scope = manager.execution_scope().map(str::to_string);
         let records = match manager.list_automations() {
             Ok(records) => records,
             Err(err) => {
@@ -532,7 +573,11 @@ fn start_automation_scan(app: &App, full: bool) -> Option<tokio::task::JoinHandl
         // fold counts by id, so dedupe before handing the scan over.
         let mut seen = std::collections::BTreeSet::new();
         runs.retain(|run| seen.insert(run.id.clone()));
-        AutomationScan { records, runs }
+        AutomationScan {
+            records,
+            runs,
+            execution_scope,
+        }
     }))
 }
 
@@ -542,9 +587,12 @@ fn start_automation_scan(app: &App, full: bool) -> Option<tokio::task::JoinHandl
 /// repaints the band.
 fn fold_automation_scan(app: &mut App, scan: &AutomationScan) -> bool {
     let session_started_at = app.session_started_at;
-    let delta = app
-        .automation_panel
-        .fold_scan(&scan.records, &scan.runs, session_started_at);
+    let delta = app.automation_panel.fold_scan_in_scope(
+        &scan.records,
+        &scan.runs,
+        session_started_at,
+        scan.execution_scope.as_deref(),
+    );
     let locale = app.ui_locale;
     for run in &delta.settled {
         app.add_message(crate::tui::automation_routing::settled_run_receipt(
@@ -554,23 +602,37 @@ fn fold_automation_scan(app: &mut App, scan: &AutomationScan) -> bool {
     delta.changed || !delta.settled.is_empty()
 }
 
-pub(super) fn refresh_shell_exec_live_output(app: &mut App) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum LiveRefresh {
+    Unchanged,
+    ElapsedOnly,
+    Changed,
+}
+
+pub(super) fn refresh_shell_exec_live_output(app: &mut App) -> LiveRefresh {
     let Some(shell_mgr) = app.runtime_services.shell_manager.as_ref().cloned() else {
-        return false;
+        return LiveRefresh::Unchanged;
     };
     // #3804: render-only read — try_lock so a contended shell Mutex can never
     // block the async UI loop; skip this frame's live-output update on
     // contention (the next refresh picks it up).
     let jobs = {
         let Ok(mut mgr) = shell_mgr.try_lock() else {
-            return false;
+            return LiveRefresh::Unchanged;
         };
         mgr.list_jobs_for_session(app.current_session_id.as_deref().unwrap_or_default())
             .into_iter()
             .map(|job| (job.id.clone(), job))
             .collect::<std::collections::HashMap<_, _>>()
     };
-    let mut changed = false;
+    apply_shell_job_snapshots(app, &jobs)
+}
+
+pub(super) fn apply_shell_job_snapshots(
+    app: &mut App,
+    jobs: &std::collections::HashMap<String, ShellJobSnapshot>,
+) -> LiveRefresh {
+    let mut refresh = LiveRefresh::Unchanged;
     for index in 0..app.virtual_cell_count() {
         let Some(ShellExecLiveUpdate {
             task_id,
@@ -579,7 +641,7 @@ pub(super) fn refresh_shell_exec_live_output(app: &mut App) -> bool {
             duration_ms: next_duration,
             finalized,
             stale_elapsed_since_output_ms,
-        }) = shell_exec_live_update(app, index, &jobs)
+        }) = shell_exec_live_update(app, index, jobs)
         else {
             continue;
         };
@@ -590,6 +652,8 @@ pub(super) fn refresh_shell_exec_live_output(app: &mut App) -> bool {
         if exec.output.is_some() || exec.shell_task_id.as_deref() != Some(task_id.as_str()) {
             continue;
         }
+        let elapsed_only =
+            !finalized && exec.status == next_status && exec.live_output == next_live;
         exec.status = next_status;
         exec.duration_ms = Some(next_duration);
         exec.stale_elapsed_since_output_ms = stale_elapsed_since_output_ms;
@@ -604,9 +668,13 @@ pub(super) fn refresh_shell_exec_live_output(app: &mut App) -> bool {
         } else {
             exec.live_output = next_live;
         }
-        changed = true;
+        refresh = if elapsed_only {
+            refresh.max(LiveRefresh::ElapsedOnly)
+        } else {
+            LiveRefresh::Changed
+        };
     }
-    changed
+    refresh
 }
 
 pub(super) struct ShellExecLiveUpdate {

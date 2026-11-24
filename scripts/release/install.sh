@@ -154,7 +154,24 @@ if [[ -n "$(find "$preflight_dir" -prune \( -perm -020 -o -perm -002 \) -print)"
     exit 1
 fi
 for cargo_receipt in "$(dirname "$BIN_DIR")/.crates.toml" "$(dirname "$BIN_DIR")/.crates2.json"; do
-    [[ ! -e "$cargo_receipt" && ! -L "$cargo_receipt" ]] || { echo "ERROR: Cargo install metadata beside this directory; choose a fresh PREFIX" >&2; exit 1; }
+    [[ -e "$cargo_receipt" || -L "$cargo_receipt" ]] || continue
+    cargo_owned=0
+    if [[ -L "$cargo_receipt" || ! -f "$cargo_receipt" || ! -r "$cargo_receipt" ]]; then
+        cargo_owned=1
+    else
+        cargo_size="$(wc -c < "$cargo_receipt" 2>/dev/null | tr -d ' ')" || cargo_size=""
+        case "$cargo_size" in
+            ''|*[!0-9]*) cargo_owned=1 ;;
+            *) (( cargo_size <= 4194304 )) || cargo_owned=1 ;;
+        esac
+        cargo_grep=0
+        grep -F -q -e '"codewhale"' -e '"codew"' "$cargo_receipt" 2>/dev/null || cargo_grep=$?
+        [[ "$cargo_grep" -eq 1 ]] || cargo_owned=1
+    fi
+    if [[ "$cargo_owned" -eq 1 ]]; then
+        echo "ERROR: Cargo installed Codewhale beside this directory, or its record $cargo_receipt cannot be read; manage it with cargo install or cargo uninstall, or choose a fresh PREFIX" >&2
+        exit 1
+    fi
 done
 
 (umask 077; mkdir -p "$BIN_DIR")
@@ -298,8 +315,16 @@ install_binary() {
     fi
     stage_dir="$(mktemp -d "$BIN_DIR/.codewhale-install.XXXXXX")"
     stage="$stage_dir/$(basename "$dst")"
-    cp "$src" "$stage"
-    chmod "$mode" "$stage"
+    if [[ "$(basename "$dst")" == "codew" && ! -L "$BIN_DIR/codewhale" && -f "$BIN_DIR/codewhale" && -x "$BIN_DIR/codewhale" ]] && cmp -s "$src" "$BIN_DIR/codewhale"; then
+        if ! ln "$BIN_DIR/codewhale" "$stage" 2>/dev/null; then
+            rm -f "$stage"
+            cp "$src" "$stage"
+            chmod "$mode" "$stage"
+        fi
+    else
+        cp "$src" "$stage"
+        chmod "$mode" "$stage"
+    fi
     # Same-directory hard-link publication is atomic and never overwrites a
     # destination created between preflight and this operation.
     # The explicit parent operand avoids treating a raced-in destination
@@ -346,11 +371,6 @@ echo "Usage reporting is on by default (counts only, never your code or conversa
 echo "Future updates: \"$BIN_DIR/codewhale\" update"
 if [[ "$supports_uninstall" == 1 ]]; then
     echo "Updates install automatically; turn off with: codewhale config set update.mode notify"
-fi
-if [[ "$(uname -s)" == Darwin ]] && ! command -v node >/dev/null 2>&1; then
-    echo ""
-    echo "Computer Use is included and needs Node.js 20 or newer on PATH."
-    echo "Install Node.js from https://nodejs.org/, then restart Codewhale to enable Computer Use."
 fi
 path_selected=1
 for bin in codewhale codew; do

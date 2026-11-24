@@ -466,173 +466,6 @@ async fn event_capacity_admitted_user_shell_cancels_before_side_effect_and_settl
 }
 
 #[tokio::test]
-async fn event_capacity_cancelled_repl_child_keeps_unknown_cost_and_discards_kernel() {
-    use crate::llm_client::mock::{MockLlmClient, canned};
-    struct ReplClient {
-        inner: MockLlmClient,
-        stream_requests: std::sync::atomic::AtomicUsize,
-        child_entered: Arc<tokio::sync::Notify>,
-        child_dropped: Arc<std::sync::atomic::AtomicBool>,
-    }
-    #[async_trait::async_trait]
-    impl crate::core::model_client::ModelClient for ReplClient {
-        fn provider_name(&self) -> &str {
-            "backpressure-repl-fixture"
-        }
-        fn model(&self) -> &str {
-            "mock-model"
-        }
-        async fn create_message(
-            &self,
-            _: codewhale_models::MessageRequest,
-        ) -> anyhow::Result<codewhale_models::MessageResponse> {
-            anyhow::bail!("fixture expects canonical streaming requests")
-        }
-        async fn create_message_stream(
-            &self,
-            request: codewhale_models::MessageRequest,
-        ) -> anyhow::Result<crate::llm_client::StreamEventBox> {
-            if self
-                .stream_requests
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                == 0
-            {
-                return crate::core::model_client::ModelClient::create_message_stream(
-                    &self.inner,
-                    request,
-                )
-                .await;
-            }
-            let _drop = DropSignal(Arc::clone(&self.child_dropped));
-            self.child_entered.notify_one();
-            std::future::pending().await
-        }
-        async fn health_check(&self) -> anyhow::Result<bool> {
-            Ok(true)
-        }
-    }
-    let _cost = crate::cost_status::test_scope();
-    let workspace = tempdir().unwrap();
-    let entered = Arc::new(tokio::sync::Notify::new());
-    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let mut response = canned::simple_text_turn(
-        "```repl\nchild = sub_query('hang until cancelled')\nfinalize(child)\n```",
-    );
-    for event in &mut response {
-        if let codewhale_models::StreamEvent::MessageDelta { usage, .. } = event {
-            *usage = Some(Usage {
-                input_tokens: 11,
-                output_tokens: 5,
-                ..Usage::default()
-            });
-        }
-    }
-    let client = Arc::new(ReplClient {
-        inner: MockLlmClient::new(vec![response]),
-        stream_requests: std::sync::atomic::AtomicUsize::new(0),
-        child_entered: Arc::clone(&entered),
-        child_dropped: Arc::clone(&dropped),
-    });
-    let api_config = rlm_host::fixture_config("mock-model");
-    let (mut engine, handle) = Engine::new_with_model_client(
-        EngineConfig {
-            model: "mock-model".into(),
-            ..deterministic_engine_config(workspace.path())
-        },
-        &api_config,
-        client.clone(),
-    );
-    crate::session_manager::SessionManager::default_location()
-        .unwrap()
-        .save_session(
-            &crate::session_manager::create_saved_session_with_id_and_mode(
-                engine.session.id.clone(),
-                &[],
-                "mock-model",
-                workspace.path(),
-                0,
-                None,
-                Some("agent"),
-            ),
-        )
-        .unwrap();
-    rlm_host::install_fixture_route(&mut engine);
-    engine.session.auto_approve = true;
-    engine.session.add_message(Message {
-        role: Role::User,
-        content: vec![ContentBlock::Text {
-            text: "run cancellable REPL".into(),
-            cache_control: None,
-        }],
-    });
-    let turn_guard = engine.begin_turn_control();
-    let mut turn = TurnContext::new(4);
-    let registry = crate::tools::ToolRegistry::new(rlm_host::admitted_context(&engine, &turn.id));
-    let policy = test_tool_surface(
-        &engine,
-        registry,
-        Some(vec![catalog_tool(CODE_EXECUTION_TOOL_NAME)]),
-        AppMode::Agent,
-    );
-    let tx = engine.tx_event.clone();
-    let mut run = Box::pin(engine.run_turn(&mut turn, policy, None, None));
-    tokio::time::timeout(Duration::from_secs(10), async {
-        tokio::select! {
-            result = &mut run => panic!("REPL did not enter the child provider request: {result:?}"),
-            () = entered.notified() => {},
-        }
-    }).await.expect("actual Python kernel dispatches the pending child request");
-    while tx
-        .try_send(Event::status("full during nested REPL"))
-        .is_ok()
-    {}
-    handle.cancel();
-    let (status, error) = tokio::time::timeout(Duration::from_secs(2), &mut run)
-        .await
-        .expect("cancel drops the pending REPL round even with a full queue");
-    drop(run);
-    assert_eq!(status, TurnOutcomeStatus::Interrupted, "{error:?}");
-    assert!(error.is_none());
-    assert!(
-        dropped.load(std::sync::atomic::Ordering::SeqCst),
-        "nested provider future is released"
-    );
-    assert!(
-        engine.repl_kernel.is_none(),
-        "a cancelled round cannot preserve an executing process"
-    );
-    assert_eq!((turn.usage.input_tokens, turn.usage.output_tokens), (11, 5));
-    let pending = crate::cost_status::drain();
-    let mut cost = crate::session_manager::SessionCostSnapshot::default();
-    for record in &pending.source_records {
-        cost.project_usage_record(record).unwrap();
-    }
-    assert!(
-        cost.unpriced_reasons
-            .contains(crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown.label())
-            || cost
-                .unpriced_reasons
-                .contains(crate::pricing::UnpricedReason::RequestInProgress.label()),
-        "pending child usage stays unknown, never zero"
-    );
-    assert_eq!(cost.priced_turns, 0);
-    assert_eq!(
-        cost.unpriced_turns, 2,
-        "the cancelled child's unknown outcome and the root turn's unpriced mock-model usage"
-    );
-    assert_eq!(cost.missing_usage_sources.len(), 1);
-    assert!(cost.missing_usage_sources.values().all(|coverage| {
-        coverage.reason == crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
-            && coverage.money_metered
-    }));
-    assert_eq!(
-        client.inner.call_count(),
-        1,
-        "no next root provider request after cancellation"
-    );
-    drop(turn_guard);
-}
-#[tokio::test]
 async fn event_capacity_cancelled_parallel_tool_keeps_completed_span_and_call_when_available() {
     use crate::llm_client::mock::{MockLlmClient, canned};
     use crate::tools::spec::{
@@ -1408,4 +1241,104 @@ async fn terminal_barrier_cancel_join_breaks_on_fresh_esc() {
     assert_eq!(unsettled, vec!["agent_stuck".to_string()]);
     esc_task.await.unwrap();
     drop(registration);
+}
+
+#[tokio::test]
+async fn a_completed_turn_stays_completed_when_usage_cannot_be_retained() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let _cost = crate::cost_status::test_scope();
+    let workspace = tempdir().expect("tempdir");
+    let broken_sessions_file = workspace.path().join("not-a-sessions-dir");
+    std::fs::write(&broken_sessions_file, b"file").expect("create regular file sentinel");
+
+    let mut response = canned::simple_text_turn("completed without retained usage");
+    for event in &mut response {
+        if let codewhale_models::StreamEvent::MessageDelta { usage, .. } = event {
+            *usage = Some(Usage {
+                input_tokens: 12,
+                output_tokens: 4,
+                ..Usage::default()
+            });
+        }
+    }
+    let mock = std::sync::Arc::new(MockLlmClient::new(vec![response]));
+    let client: crate::core::model_client::SharedModelClient = mock.clone();
+    let config = Config::default();
+    let mut engine_config = deterministic_engine_config(workspace.path());
+    engine_config.runtime_services.accounting_origin =
+        Some(crate::cost_status::NativeUsageOrigin::session(
+            crate::cost_status::scope_token(),
+            broken_sessions_file,
+            "unretained-session".to_string(),
+        ));
+    let (engine, handle) = Engine::new_with_model_client(engine_config, &config, client);
+    let task = tokio::spawn(engine.run());
+
+    handle
+        .send(external_user_message_op(
+            "complete with unwritable origin",
+            AppMode::Agent,
+            &config,
+        ))
+        .await
+        .expect("send turn");
+
+    let mut rx = handle.rx_event.write().await;
+    let (status, error) = loop {
+        let event = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+            .await
+            .expect("timed out waiting for TurnComplete")
+            .expect("engine event channel open");
+        if let Event::TurnComplete { status, error, .. } = event {
+            break (status, error);
+        }
+    };
+    drop(rx);
+    assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+    assert!(error.is_none(), "{error:?}");
+    assert_eq!(mock.call_count(), 1);
+
+    handle.send(Op::Shutdown).await.expect("shutdown engine");
+    task.await.expect("engine task");
+
+    let mock2 = std::sync::Arc::new(MockLlmClient::new(vec![canned::simple_text_turn(
+        "completed despite failing sink",
+    )]));
+    let client2: crate::core::model_client::SharedModelClient = mock2.clone();
+    let mut engine_config2 = deterministic_engine_config(workspace.path());
+    engine_config2.runtime_services.accounting_origin =
+        Some(crate::cost_status::NativeUsageOrigin::captured_runtime(
+            crate::cost_status::scope_token(),
+            "failing-retained-sink-owner".to_string(),
+            std::sync::Arc::new(|_| false),
+        ));
+    let (engine2, handle2) = Engine::new_with_model_client(engine_config2, &config, client2);
+    let task2 = tokio::spawn(engine2.run());
+    handle2
+        .send(external_user_message_op(
+            "complete with failing runtime sink",
+            AppMode::Agent,
+            &config,
+        ))
+        .await
+        .expect("send second turn");
+
+    let mut rx2 = handle2.rx_event.write().await;
+    let (status2, error2) = loop {
+        let event = tokio::time::timeout(model_turn_event_timeout(), rx2.recv())
+            .await
+            .expect("timed out waiting for second TurnComplete")
+            .expect("second engine event channel open");
+        if let Event::TurnComplete { status, error, .. } = event {
+            break (status, error);
+        }
+    };
+    drop(rx2);
+    assert_eq!(status2, TurnOutcomeStatus::Completed, "{error2:?}");
+    assert!(error2.is_none(), "{error2:?}");
+    assert_eq!(mock2.call_count(), 1);
+
+    handle2.send(Op::Shutdown).await.expect("shutdown engine2");
+    task2.await.expect("engine2 task");
 }

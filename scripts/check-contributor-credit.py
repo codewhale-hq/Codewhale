@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SKIP = {
     "codewhale bot", "codewhalebot", "codewhale agent", "claude", "codex", "dependabot[bot]",
     "codewhale-maint", "copilot",
-    "hunter bown", "hunter b", "hmbown", "deepseek-v41-flash", "devin",
+    "hunter bown", "hunter b", "hmbown", "deepseek-v41-flash", "devin", "gemini",
 }
 
 

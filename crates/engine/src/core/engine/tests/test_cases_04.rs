@@ -179,6 +179,7 @@ async fn ordinary_prose_never_activates_a_goal() {
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -281,6 +282,7 @@ async fn operate_goal_probe(mode: AppMode, prompt: &str) -> (Option<String>, boo
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -465,6 +467,7 @@ async fn operate_turns_append_no_contract_and_never_replace_an_existing_goal() {
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         })
     };
@@ -1304,6 +1307,7 @@ async fn host_managed_engine_does_not_self_dispatch_goal_continuation() {
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await

@@ -99,7 +99,7 @@ pub fn toml_error_location(source: Option<&str>, err: &toml::de::Error) -> Strin
         .and_then(|rest| rest.strip_prefix("\nin `"))
         .and_then(|rest| rest.strip_suffix("`\n"))
         .filter(|keys| !keys.is_empty())
-        .map(|keys| format!("in `{}`", codewhale_secrets::redact::redact_secrets(keys)));
+        .map(|keys| format!("in `{}`", codewhale_sanitize::redact::redact_secrets(keys)));
     match (position, key_path) {
         (Some(position), Some(keys)) => format!("{position}, {keys}"),
         (Some(position), None) => position,
@@ -125,6 +125,27 @@ pub(crate) fn config_toml_error_location(raw: &str, err: &toml::de::Error) -> St
 /// top-level key can never land in `extras`.
 pub fn parse_config_toml(contents: &str) -> Result<ConfigToml, toml::de::Error> {
     parse_config_toml_str(contents)
+}
+
+pub fn tool_launcher_in_profiles(document: &toml::Value) -> bool {
+    document
+        .get("profiles")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|profiles| {
+            profiles
+                .values()
+                .any(|profile| profile.get("tool_launcher").is_some())
+        })
+}
+
+pub fn reject_unmanaged_tool_launcher(document: &toml::Value, path: &Path) -> Result<()> {
+    if document.get("tool_launcher").is_some() || tool_launcher_in_profiles(document) {
+        bail!(
+            "`tool_launcher` in {} is not accepted: it is read only from the managed configuration (CODEWHALE_MANAGED_CONFIG_PATH, or the default managed path), in a file the Engine cannot write",
+            quote_os_path(path)
+        );
+    }
+    Ok(())
 }
 
 impl ConfigStore {
@@ -154,6 +175,7 @@ impl ConfigStore {
                     toml_error_location(Some(&raw), &err)
                 )
             })?;
+            reject_unmanaged_tool_launcher(&raw_document, &path)?;
             if let Some(provider_id) = raw_document.get("provider").and_then(toml::Value::as_str) {
                 parsed
                     .bind_persisted_provider_id(provider_id)

@@ -1,13 +1,13 @@
 # MCP (External Tool Servers)
 
-In the terminal, `/mcp` (also `/mcps`) opens **Extensions → MCP**. Enter opens the selected server’s recovery action or read-only details. An empty inventory offers server suggestions; browsing them installs nothing. Explicit subcommands such as `/mcp status`, `/mcp doctor`, `/mcp login`, and `/mcp add` retain their existing behavior.
+In the terminal, `/mcp` (also `/mcps`) opens **Plugins → Connectors**. Enter opens the selected server’s recovery action or read-only details. An empty inventory offers server suggestions; browsing them installs nothing. Explicit subcommands such as `/mcp status`, `/mcp doctor`, `/mcp login`, and `/mcp add` retain their existing behavior.
 
 
 > 阅读简体中文版：[zh_hans/MCP.md](zh_hans/MCP.md)
 
 Everything you add to Codewhale is a plugin. An MCP server you configure is a
 plugin of the kind **Connector**, and a plugin bundle can also carry connectors.
-Connectors are still managed under Extensions → MCP in the terminal and
+Connectors are still managed under Plugins → Connectors in the terminal and
 Customize › Connectors on the desktop; one Plugins list that shows every kind
 together is planned for 0.10.3 and is not in this build. The configuration
 files, sign-in and the `/mcp` commands are unchanged. "Connection" on this page
@@ -249,7 +249,7 @@ bundle and marketplace semantics, see [Plugin bundles](PLUGIN_BUNDLES.md).
 
 `/mcp validate` (alias `/mcp doctor`) with no name reports each server's state
 from the last MCP snapshot the TUI recorded, in a pager over
-**Extensions → MCP**. That snapshot is usually the engine pool's latest report,
+**Plugins → Connectors**. That snapshot is usually the engine pool's latest report,
 but some actions, such as `/mcp import`, replace it with a separate UI
 discovery pass that also connects `lazy` servers the engine has not started.
 Validate also re-reads the MCP config files without connecting: it
@@ -515,16 +515,63 @@ Overrides:
 Custom paths must be absolute; a relative `mcp_config_path` falls back to the
 user-global path rather than changing with the launch directory.
 
-Codewhale also reads `<workspace>/.codewhale/mcp.json` after the workspace is
-trusted in user-owned configuration. Project entries override same-named global
-servers; project-local files cannot grant that trust themselves or redirect the
-global `mcp_config_path`. Global and trusted-project entries take precedence
-over a colliding plugin-contributed identity. Project stdio commands default
+Codewhale also reads `<workspace>/.codewhale/mcp.json`, but only after the
+workspace is trusted in user-owned configuration **and** you have approved the
+exact contents of that file. A stdio entry is a command line and a server that
+is not `lazy` starts at session start, so the project file is executable
+configuration, like project hooks. Use `/mcp review` to see the file and its
+digest, then `/mcp approve <digest>` to load those bytes. The approval is stored
+in user-owned configuration under the workspace's `projects` entry
+(`mcp_sha256`), never in the repository, and a symlinked `.codewhale` or
+`mcp.json` is refused. Any later change to the file, such as a pull or a branch
+switch, loads none of its servers until you review and approve again.
+`/mcp revoke` removes the approval. `/mcp disable`, `/mcp enable` and
+`/mcp remove` on a project server edit the file and keep its approval. Review
+any scripts a server command runs as well: the approval covers the file, not
+the files it points to. `codewhale doctor` and `/mcp validate` report a project
+file that is waiting for approval. Project entries override same-named global
+servers; project-local files cannot grant trust or approval themselves or
+redirect the global `mcp_config_path`. Global and approved-project entries take
+precedence over a colliding plugin-contributed identity. Project stdio commands default
 their working directory to the workspace. In the main candidate,
 `always_allow_tools` is accepted only from the global server configuration,
 not from project or plugin declarations.
 
 `codewhale mcp init` (and `codewhale setup --mcp`) writes to this resolved path.
+
+#### Delegated connector reads
+
+An operator can authorize a child to send a specific read to a static HTTP connector. Put the declaration in the global MCP config outside the workspace. Verify the connector implementation and operation before declaring its effect. The child needs network access, the exact tool name in its scope, and the session's per-call approval. Each declaration pins the server URL, literal authorization headers, advertised input schema and allowed argument objects. Changing the binding or schema requires a new declaration. OAuth, environment-supplied credentials, runtime servers, project files and plugins cannot supply this grant.
+
+For a server named `books` that advertises `lookup`, the child tool name is `mcp_books_lookup`. This example adds its read policy to the global config.
+
+```json
+{
+  "delegated_operations": {
+    "books": {
+      "lookup": {
+        "effect": "read",
+        "binding_sha256": "<binding digest>",
+        "input_schema": {"type": "object", "properties": {"isbn": {"type": "string"}}},
+        "allowed_arguments": [{"isbn": "sample"}]
+      }
+    }
+  }
+}
+```
+
+Compute the binding digest locally using the exact URL and all literal headers. This example reads the selected server and prints only its digest.
+
+```sh
+python3 - /path/to/global/mcp.json books <<'PYTHON'
+import hashlib, json, sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    config = json.load(source)
+server = (config.get("servers") or config["mcpServers"])[sys.argv[2]]
+binding = json.dumps([server["url"], server["headers"]], sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+print(hashlib.sha256(binding.encode()).hexdigest())
+PYTHON
+```
 
 The interactive `/config` editor also exposes `mcp_config_path`. Changing it in
 the TUI updates the path used by `/mcp` and marks the pool reload-required;

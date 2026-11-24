@@ -91,20 +91,9 @@ pub(crate) async fn process_app_request(
             }
         }
         AppRequest::ConfigReload => {
-            // Re-read both `config.toml` and the sibling `permissions.toml`
-            // from disk (the headless equivalent of the TUI
-            // `reload_runtime_config` codepath) and push the fresh
-            // snapshots into `state.config` and the live `Runtime`.
-            //
-            // `ConfigStore::load` resolves the same default config path
-            // that `build_state` used at startup when `config_path` is
-            // `None`, so a `None` here reloads from the same on-disk file
-            // the server booted from.
-            // Disk is already the source of truth here, so nothing to
-            // persist. External `permissions.toml` edits reach the Engine
-            // because the update invalidates the runtime bridge; the next
-            // turn's child loads both files fresh.
-            if let Err(error) = update_config_store(state, |_| Ok(())).await {
+            if let Err(error) =
+                update_config_store(state, |store| store.config.validate_configured_model()).await
+            {
                 return AppResponse {
                     ok: false,
                     data: json!({ "error": error.to_string() }),
@@ -238,6 +227,7 @@ pub(crate) async fn persist_config_mutation(
 ) -> Result<()> {
     update_config_store(state, move |store| {
         mutate(&mut store.config)?;
+        store.config.validate_configured_model()?;
         store
             .save()
             .map_err(|err| anyhow!("{CONFIG_SAVE_ERROR}: {err}"))

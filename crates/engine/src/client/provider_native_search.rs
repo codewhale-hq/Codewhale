@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use codewhale_config::ProviderKind;
 
+use super::wire::read_bounded_response_bytes;
 use super::{CodewhaleClient, api_url, responses_api_url};
 
 mod zai;
@@ -242,10 +243,7 @@ impl ProviderNativeSearchClient {
             })
             .await
             .context("provider-native web search request failed")?;
-        let payload = response
-            .json::<Value>()
-            .await
-            .context("provider-native web search returned invalid JSON")?;
+        let payload = read_bounded_json(response, MAX_NATIVE_SEARCH_RESPONSE_BYTES).await?;
         let mut parsed = match self.inner.api_provider {
             ProviderKind::Openai
             | ProviderKind::Xai
@@ -285,10 +283,7 @@ impl ProviderNativeSearchClient {
             })
             .await
             .context("provider-native web search request failed")?;
-        response
-            .json::<Value>()
-            .await
-            .context("provider-native web search returned invalid JSON")
+        read_bounded_json(response, MAX_NATIVE_SEARCH_RESPONSE_BYTES).await
     }
 
     pub(super) async fn get_json(&self, url: &str) -> Result<Value> {
@@ -307,11 +302,18 @@ impl ProviderNativeSearchClient {
             )
             .await
             .context("provider-native web search request failed")?;
-        response
-            .json::<Value>()
-            .await
-            .context("provider-native web search returned invalid JSON")
+        read_bounded_json(response, MAX_NATIVE_SEARCH_RESPONSE_BYTES).await
     }
+}
+
+const MAX_NATIVE_SEARCH_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
+async fn read_bounded_json(response: reqwest::Response, max_bytes: usize) -> Result<Value> {
+    let bytes = read_bounded_response_bytes(response, max_bytes)
+        .await
+        .context("failed to read provider-native web search response")?;
+    serde_json::from_slice::<Value>(&bytes)
+        .context("provider-native web search returned invalid JSON")
 }
 
 #[derive(Clone, Copy)]
@@ -1351,5 +1353,59 @@ mod tests {
             .expect("attached participant resumes after relay settlement")
             .expect("participant task")
             .expect("participant native search fixture");
+    }
+
+    #[tokio::test]
+    async fn native_search_rejects_oversized_response_bodies() {
+        let server = MockServer::start().await;
+        let oversized = "x".repeat(MAX_NATIVE_SEARCH_RESPONSE_BYTES + 1);
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(oversized.clone(), "application/json"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/post-json"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(oversized.clone(), "application/json"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/get-json"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(oversized, "application/json"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = xai_client_with_boundary(&server, false, false);
+
+        let search_err = match client.search(&request()).await {
+            Ok(_) => panic!("oversized search response must fail"),
+            Err(err) => err,
+        };
+        let search_msg = format!("{search_err:#}");
+        assert!(search_msg.contains("byte limit"), "{search_msg}");
+        assert!(!search_msg.contains("invalid JSON"), "{search_msg}");
+
+        let post_err = client
+            .post_json(&format!("{}/v1/post-json", server.uri()), &json!({}), &[])
+            .await
+            .expect_err("oversized post_json response must fail");
+        let post_msg = format!("{post_err:#}");
+        assert!(post_msg.contains("byte limit"), "{post_msg}");
+        assert!(!post_msg.contains("invalid JSON"), "{post_msg}");
+
+        let get_err = client
+            .get_json(&format!("{}/v1/get-json", server.uri()))
+            .await
+            .expect_err("oversized get_json response must fail");
+        let get_msg = format!("{get_err:#}");
+        assert!(get_msg.contains("byte limit"), "{get_msg}");
+        assert!(!get_msg.contains("invalid JSON"), "{get_msg}");
     }
 }

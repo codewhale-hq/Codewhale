@@ -4988,3 +4988,258 @@ fn account_errors_stay_typed_so_callers_can_tell_refusals_from_unknown_outcomes(
         "Codewhale account request failed (HTTP 422)"
     );
 }
+
+#[test]
+fn claude_org_token_contract_parses_and_maps_errors() {
+    use claude_org::claude_org_token_from_response;
+
+    let token = claude_org_token_from_response(&response(
+        200,
+        json!({
+            "tokenType": "Bearer",
+            "accessToken": "org-token",
+            "expiresAt": "2030-01-01T00:00:00Z",
+            "baseUrl": "https://api.anthropic.com",
+            "anthropicVersion": "2026-10-21"
+        }),
+    ))
+    .expect("token parses");
+    assert_eq!(token.access_token, "org-token");
+    assert_eq!(token.base_url, "https://api.anthropic.com");
+    assert_eq!(token.anthropic_version, "2026-10-21");
+    let at = |value: &str| {
+        chrono::DateTime::parse_from_rfc3339(value)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    };
+    assert!(token.is_fresh_at(at("2029-12-31T23:57:00Z")));
+    assert!(!token.is_fresh_at(at("2029-12-31T23:58:30Z")));
+    assert!(!format!("{token:?}").contains("org-token"));
+
+    for (status, code, kind) in [
+        (409, "claude_not_linked", ClaudeOrgErrorKind::NotLinked),
+        (
+            409,
+            "claude_relink_required",
+            ClaudeOrgErrorKind::RelinkRequired,
+        ),
+        (404, "claude_billing_disabled", ClaudeOrgErrorKind::Disabled),
+        (
+            503,
+            "claude_temporarily_unavailable",
+            ClaudeOrgErrorKind::Unavailable,
+        ),
+        (
+            503,
+            "claude_billing_not_configured",
+            ClaudeOrgErrorKind::Unavailable,
+        ),
+        (401, "unauthorized", ClaudeOrgErrorKind::NotSignedIn),
+        (503, "claude_refresh_busy", ClaudeOrgErrorKind::Unavailable),
+        (
+            409,
+            "claude_already_linked",
+            ClaudeOrgErrorKind::AlreadyLinkedElsewhere,
+        ),
+    ] {
+        let error = claude_org_token_from_response(&response(
+            status,
+            json!({"code": code, "message": "server text"}),
+        ))
+        .expect_err(code);
+        assert_eq!(error.kind, kind, "{code}");
+    }
+    assert_eq!(
+        claude_org_token_from_response(&response(404, json!({})))
+            .expect_err("bare 404")
+            .kind,
+        ClaudeOrgErrorKind::Disabled
+    );
+    let token_with_profile = |profile: &str| {
+        claude_org_token_from_response(&response(
+            200,
+            json!({
+                "tokenType": "Bearer",
+                "accessToken": "org-token",
+                "expiresAt": "2030-01-01T00:00:00Z",
+                "baseUrl": "https://api.anthropic.com",
+                "anthropicVersion": "2026-10-21",
+                "userProfileId": profile
+            }),
+        ))
+    };
+    assert_eq!(
+        token_with_profile("uprof_01AbC-x_9")
+            .expect("valid profile")
+            .user_profile_id
+            .as_deref(),
+        Some("uprof_01AbC-x_9")
+    );
+    assert_eq!(token.user_profile_id, None);
+    for profile in [
+        "uprof_",
+        "uprof_bad id",
+        "prof_abc",
+        &format!("uprof_{}", "a".repeat(97)),
+    ] {
+        assert_eq!(
+            token_with_profile(profile).expect_err(profile).kind,
+            ClaudeOrgErrorKind::Invalid,
+            "{profile}"
+        );
+    }
+    let relink = claude_org_token_from_response(&response(
+        409,
+        json!({"code": "claude_relink_required", "message": "x"}),
+    ))
+    .expect_err("relink")
+    .to_string();
+    assert!(relink.contains("link ended"), "{relink}");
+    assert!(
+        relink.contains("codewhale account claude-org link"),
+        "{relink}"
+    );
+
+    for invalid in [
+        json!({"tokenType": "Basic", "accessToken": "t", "expiresAt": "2030-01-01T00:00:00Z", "baseUrl": "https://api.anthropic.com", "anthropicVersion": "2026-10-21"}),
+        json!({"tokenType": "Bearer", "accessToken": "t", "expiresAt": "2030-01-01T00:00:00Z", "baseUrl": "http://api.anthropic.com", "anthropicVersion": "2026-10-21"}),
+        json!({"tokenType": "Bearer", "accessToken": "t t", "expiresAt": "2030-01-01T00:00:00Z", "baseUrl": "https://api.anthropic.com", "anthropicVersion": "2026-10-21"}),
+    ] {
+        let error = claude_org_token_from_response(&response(200, invalid)).expect_err("invalid");
+        assert_eq!(error.kind, ClaudeOrgErrorKind::Invalid);
+    }
+
+    assert!(
+        Cli::try_parse_from(["codewhale", "account", "claude-org", "link", "--no-open"]).is_ok()
+    );
+    assert!(Cli::try_parse_from(["codewhale", "account", "claude-org", "status"]).is_ok());
+    assert!(Cli::try_parse_from(["codewhale", "account", "claude-org", "unlink"]).is_ok());
+}
+
+fn run_claude_org_link(transport: &FakeTransport, opened: &mut Vec<String>) -> Result<String> {
+    let (temp, mut config) = test_config();
+    let _keep_temp = temp;
+    let (secrets, _) = test_secrets();
+    CloudClient::new(transport, &secrets, "default", "https://api.codewhale.net")
+        .save_auth(auth("access-secret", "refresh-secret", "acct-org"))
+        .unwrap();
+    let mut output = Vec::new();
+    let mut key_reader = |_| bail!("unused");
+    let mut opener = |url: String| {
+        opened.push(url);
+        true
+    };
+    let mut sleeper = |_| {};
+    run_with(
+        command(&["codewhale", "account", "claude-org", "link"]),
+        "default",
+        "https://api.codewhale.net",
+        &mut config,
+        &secrets,
+        &secrets,
+        &machine::MachineKeyEnv::default(),
+        transport,
+        &mut output,
+        &mut key_reader,
+        &mut opener,
+        &mut sleeper,
+    )?;
+    Ok(String::from_utf8(output).unwrap())
+}
+
+#[test]
+fn claude_org_link_pins_the_start_url_and_tolerates_one_poll_error() {
+    let unlinked = || {
+        response(
+            200,
+            json!({"available": true, "linked": false, "linkedAt": null}),
+        )
+    };
+    let start = "https://api.codewhale.net/api/claude-billing/start?ticket=t1";
+    let transport = FakeTransport::new(vec![
+        unlinked(),
+        response(
+            200,
+            json!({"authorizationUrl": start, "expiresAt": "2030-01-01T00:00:00Z"}),
+        ),
+        unlinked(),
+        response(503, json!({"code": "claude_temporarily_unavailable"})),
+        response(
+            200,
+            json!({"available": true, "linked": true, "linkedAt": "2026-11-17T00:00:00Z"}),
+        ),
+    ]);
+    let mut opened = Vec::new();
+    let output = run_claude_org_link(&transport, &mut opened).expect("link finishes");
+    assert_eq!(opened, vec![start.to_string()]);
+    assert!(output.contains("Linked."), "{output}");
+    assert!(!output.contains("access-secret"));
+
+    let transport = FakeTransport::new(vec![response(
+        200,
+        json!({"available": true, "linked": true, "linkedAt": null}),
+    )]);
+    let mut opened = Vec::new();
+    let output = run_claude_org_link(&transport, &mut opened).expect("already linked");
+    assert!(opened.is_empty());
+    assert!(output.contains("already linked"), "{output}");
+
+    for hostile in [
+        "https://auth.claude.com/oauth/authorize?x=1",
+        "http://api.codewhale.net/api/claude-billing/start?ticket=t",
+        "https://api.codewhale.net/api/claude-billing/other?ticket=t",
+        "https://user@api.codewhale.net/api/claude-billing/start?ticket=t",
+        "https://api.codewhale.net/api/claude-billing/start?ticket=t#frag",
+        "https://api.codewhale.net.evil.test/api/claude-billing/start",
+    ] {
+        let transport = FakeTransport::new(vec![
+            unlinked(),
+            response(
+                200,
+                json!({"authorizationUrl": hostile, "expiresAt": "2030-01-01T00:00:00Z"}),
+            ),
+        ]);
+        let mut opened = Vec::new();
+        let error = run_claude_org_link(&transport, &mut opened).expect_err(hostile);
+        assert!(opened.is_empty(), "{hostile}");
+        assert!(
+            error.to_string().contains("unsafe Claude link URL"),
+            "{hostile}: {error}"
+        );
+    }
+
+    let transport = FakeTransport::new(vec![
+        unlinked(),
+        response(
+            200,
+            json!({"authorizationUrl": start, "expiresAt": "2030-01-01T00:00:00Z"}),
+        ),
+        response(
+            200,
+            json!({"available": false, "linked": false, "linkedAt": null}),
+        ),
+    ]);
+    let mut opened = Vec::new();
+    let error = run_claude_org_link(&transport, &mut opened).expect_err("unavailable stops");
+    assert!(error.to_string().contains("not available"), "{error}");
+
+    let transport = FakeTransport::new(vec![
+        unlinked(),
+        response(
+            200,
+            json!({"authorizationUrl": start, "expiresAt": "2030-01-01T00:00:00Z"}),
+        ),
+        response(
+            200,
+            json!({
+                "available": true,
+                "linked": false,
+                "linkedAt": null,
+                "lastLinkFailure": {"code": "declined", "at": chrono::Utc::now().to_rfc3339()}
+            }),
+        ),
+    ]);
+    let mut opened = Vec::new();
+    let error = run_claude_org_link(&transport, &mut opened).expect_err("declined stops");
+    assert!(error.to_string().contains("declined"), "{error}");
+}

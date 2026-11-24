@@ -18,7 +18,6 @@ use codewhale_core::ContextReference;
 use codewhale_error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_release::InstallMethod;
-use codewhale_runtime::resource_telemetry::estimate_output_tokens_from_text;
 // On Windows the push/pop helpers write the escapes directly; crossterm's
 // PushKeyboardEnhancementFlags / PopKeyboardEnhancementFlags commands are
 // never referenced, so the imports are gated to avoid -D warnings failures.
@@ -48,7 +47,6 @@ use windows::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleMo
 
 use crate::commands;
 use crate::tui::auto_router;
-use crate::tui::clipboard::ClipboardContent;
 use crate::tui::color_compat::ColorCompatBackend;
 use crate::tui::command_palette::{
     CommandPaletteView, build_entries_with_plugins as build_command_palette_entries,
@@ -78,7 +76,7 @@ use codewhale_engine::client::{
 };
 use codewhale_engine::compaction::CompactionConfig;
 use codewhale_engine::compaction::{estimate_input_tokens_conservative, estimate_tokens};
-use codewhale_engine::core::engine::{EngineConfig, EngineHandle, spawn_engine};
+use codewhale_engine::core::engine::{EngineConfig, EngineHandle};
 use codewhale_engine::core::events::Event as EngineEvent;
 use codewhale_engine::core::ops::{Op, ProviderRuntimeStatus, UserInputProvenance};
 use codewhale_engine::hooks::{HookExecutor, TurnEndPayloadInput, TurnEndTotals};
@@ -224,6 +222,8 @@ const TOOL_HANG_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(600);
 // braille pattern reads as continuous motion instead of teleport-frames.
 const UI_STATUS_ANIMATION_MS: u64 = codewhale_tui_kit::spinner::BRAILLE_SPINNER_FRAME_MS;
 const UI_QUIET_STATUS_ANIMATION_MS: u64 = 1_000;
+const UI_ACTIVITY_ANIMATION_MS: u64 =
+    (1_000.0 / codewhale_ratatui::tokens::MOTION_LOOP_FPS_CAP) as u64;
 /// Ambient fish, the idle-mark caustic, and the completion wake use a modest
 /// ~12.5fps clock by default. On measured high-Hz displays the adaptive probe
 /// may raise this (still bounded); low_motion always freezes the cadence.
@@ -506,7 +506,7 @@ async fn spawn_tui_engine(
     api_config: &Config,
     mcp_handoff: Option<codewhale_engine::mcp::McpHandoff>,
 ) -> EngineHandle {
-    let handle = spawn_engine(
+    let handle = codewhale_engine::core::engine::spawn_tui_engine(
         build_engine_config(app, api_config),
         api_config,
         mcp_handoff,
@@ -582,6 +582,7 @@ async fn spawn_tui_engine_with_session(
                     model: app.model.clone(),
                     workspace: app.workspace.clone(),
                     mode: app.mode,
+                    agent_preset: app.agent_preset(),
                 })
                 .await?;
         }
@@ -981,13 +982,15 @@ pub(crate) use compaction_flow::*;
 pub(crate) use provider_setup::*;
 mod dispatch;
 mod dispatch_prepare;
+mod external_catalog;
 pub(crate) use dispatch_prepare::*;
+pub(crate) use external_catalog::*;
 pub(crate) mod fatal_signal_guard;
 // #6169: runtime half of the foreground-ownership contract — restore on stop,
 // rebuild on continue. Sits next to the fatal guard because both write the same
 // teardown table.
 pub(crate) mod job_control_guard;
-mod motion;
+pub(crate) mod motion;
 mod observer_hooks;
 mod provider_setup;
 mod release_check;
@@ -1033,7 +1036,6 @@ async fn execute_command_input(
     terminal: &mut AppTerminal,
     app: &mut App,
     engine_handle: &mut EngineHandle,
-    task_manager: &SharedTaskManager,
     config: &mut Config,
     input: &str,
 ) -> Result<bool> {
@@ -1078,7 +1080,7 @@ async fn execute_command_input(
         app.api_key_env_only =
             codewhale_runtime::config::active_provider_uses_env_only_api_key(config);
     }
-    apply_command_result(terminal, app, engine_handle, task_manager, config, result).await
+    apply_command_result(terminal, app, engine_handle, config, result).await
 }
 
 #[derive(Debug, Clone)]
@@ -1149,6 +1151,7 @@ pub(crate) struct ApprovalDecisionEvent {
     approval_key: String,
     approval_grouping_key: String,
     persistent_rules: Vec<codewhale_config::ToolAskRule>,
+    subject: Option<String>,
 }
 
 fn mark_active_turn_cancelled_locally(app: &mut App) {
@@ -1864,7 +1867,7 @@ mod provider_key_validation_tests {
             Some(codewhale_config::catalog::CatalogStatus::Fresh)
         );
         let generic = make_roster(&["qwen3:4b", "nomic-embed-text:latest"], &fingerprint);
-        publish_verified_roster(&identity, base_url, Some(generic));
+        publish_verified_roster(&config, &identity, base_url, Some(generic));
         let cached = codewhale_engine::provider_catalog_live::cached_entry_for_route(
             ProviderKind::Ollama,
             identity.key.as_str(),
@@ -1894,7 +1897,7 @@ mod provider_key_validation_tests {
             &["qwen3:4b", "nomic-embed-text:latest"],
             &base_url_fingerprint(empty_base_url),
         );
-        publish_verified_roster(&identity, empty_base_url, Some(generic));
+        publish_verified_roster(&config, &identity, empty_base_url, Some(generic));
         assert!(
             codewhale_engine::provider_catalog_live::cached_entry_for_route(
                 ProviderKind::Ollama,

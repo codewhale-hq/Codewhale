@@ -98,7 +98,7 @@ use super::protocol::{
     self, CoreRequest, Direction, HelloParams, HostLimits, HostMessage, HostNotification,
     HostRequest, InitializeParams, RegisterResult, RpcErrorWire, error_code,
 };
-use super::tier::{self, BuiltinModule, HostTier};
+use super::tier::{self, BuiltinModule, HostCohort, HostTier, PluginCohort};
 
 /// Budget for spawn → `host/hello` → `host/initialize` → `host/ready`.
 ///
@@ -144,6 +144,7 @@ pub enum HostCallError {
 /// available), its working directory, and which sandbox applies.
 #[derive(Debug, Clone)]
 pub struct HostLaunch {
+    pub cohort: HostCohort,
     /// The trust tier this host process serves (`--tier=` in its argv).
     pub tier: HostTier,
     pub program: PathBuf,
@@ -427,7 +428,7 @@ const HOST_DENIED_HOME_ENTRIES: &[&str] = &[
 /// tier-0 state. Planning materializes that sibling before the wrapper masks
 /// it, because bubblewrap cannot mask a directory that does not exist yet.
 pub fn host_denied_read_paths(
-    tier: HostTier,
+    cohort: &HostCohort,
     home: &Path,
     whole_homes: bool,
 ) -> (Vec<PathBuf>, Vec<PathBuf>) {
@@ -447,19 +448,40 @@ pub fn host_denied_read_paths(
         roots.push(user.join(".deepseek"));
     }
     for root in roots {
-        // The builtin tier's data directory, inside the readable
-        // `extension-host/` entry of every Codewhale home: not for plugin code.
-        let tier_zero_data =
-            (tier == HostTier::Plugin).then(|| tier_data_dir(&root, HostTier::Builtin));
+        let is_plugin = cohort.tier() == HostTier::Plugin;
+        if is_plugin {
+            push(tier_data_dir(&root, HostTier::Builtin));
+        }
+        let mut sibling_agent_dirs: Vec<std::ffi::OsString> = Vec::new();
+        match cohort {
+            HostCohort::Builtin => {
+                push(tier_data_dir(&root, HostTier::Plugin));
+                push(root.join("extension-host").join("data-agent"));
+            }
+            HostCohort::Plugin(PluginCohort::Reviewed) => {
+                push(root.join("extension-host").join("data-agent"));
+            }
+            HostCohort::Plugin(PluginCohort::Agent { .. }) => {
+                push(tier_data_dir(&root, HostTier::Plugin));
+                let own_data = cohort_data_dir(&root, cohort);
+                let agent_root = root.join("extension-host").join("data-agent");
+                if let Ok(entries) = std::fs::read_dir(&agent_root) {
+                    for entry in entries.filter_map(Result::ok) {
+                        let path = entry.path();
+                        if path != own_data {
+                            sibling_agent_dirs.push(entry.file_name());
+                            push(path);
+                        }
+                    }
+                }
+            }
+        }
         if whole_homes {
             for entry in HOST_READABLE_HOME_ENTRIES {
                 let readable = root.join(entry);
                 if !exceptions.contains(&readable) {
                     exceptions.push(readable);
                 }
-            }
-            if let Some(dir) = tier_zero_data {
-                push(dir);
             }
             push(root);
             continue;
@@ -476,15 +498,27 @@ pub fn host_denied_read_paths(
                     .map(|entry| entry.file_name()),
             );
         }
-        // Seatbelt matches the kernel-resolved path, and a name that does not
-        // exist yet cannot be canonicalized later, so deny it under both the
-        // given and the resolved spelling of its (existing) root.
         let resolved = std::fs::canonicalize(&root).ok();
-        if let Some(dir) = tier_zero_data {
-            if let Some(resolved) = &resolved {
+        if let Some(resolved) = &resolved {
+            if is_plugin {
                 push(tier_data_dir(resolved, HostTier::Builtin));
             }
-            push(dir);
+            match cohort {
+                HostCohort::Builtin => {
+                    push(tier_data_dir(resolved, HostTier::Plugin));
+                    push(resolved.join("extension-host").join("data-agent"));
+                }
+                HostCohort::Plugin(PluginCohort::Reviewed) => {
+                    push(resolved.join("extension-host").join("data-agent"));
+                }
+                HostCohort::Plugin(PluginCohort::Agent { .. }) => {
+                    push(tier_data_dir(resolved, HostTier::Plugin));
+                    let agent_root = resolved.join("extension-host").join("data-agent");
+                    for name in &sibling_agent_dirs {
+                        push(agent_root.join(name));
+                    }
+                }
+            }
         }
         for name in names {
             let readable = name
@@ -498,8 +532,6 @@ pub fn host_denied_read_paths(
             }
         }
     }
-    // Codex's home (ChatGPT OAuth tokens in `auth.json`) and the DSH home
-    // (`.credentials.yaml`), wherever the environment points them.
     if let Some(codex_home) = codewhale_runtime::oauth::auth_file_path().parent() {
         push(codex_home.to_path_buf());
     }
@@ -518,18 +550,17 @@ pub fn host_denied_read_paths(
 /// Blocking (creates the tier's data dir, canonicalizes the deny-list, and on
 /// Linux runs the bwrap probe); call from `spawn_blocking`.
 pub fn plan_launch(
-    tier: HostTier,
+    cohort: &HostCohort,
     runtime: &HostRuntime,
     bundle: &Path,
     home: &Path,
     memory_cap: u64,
     snapshot_state_paths: &[PathBuf],
 ) -> Result<HostLaunch, String> {
-    let data = host_data_dir(home, tier)?;
-    // Bubblewrap cannot mask a root that does not exist yet. Materialize the
-    // sibling before a Native host gets its immutable read-deny projection.
+    let tier = cohort.tier();
+    let data = host_cohort_data_dir(home, cohort)?;
     if tier == HostTier::Plugin {
-        host_data_dir(home, HostTier::Builtin)?;
+        host_cohort_data_dir(home, HostCohort::Builtin)?;
     }
     let mut args = runtime_args(runtime);
     if !runtime.compiled {
@@ -541,6 +572,7 @@ pub fn plan_launch(
         let sandbox =
             super::windows::NativeSandbox::prepare(runtime, bundle, home, &data, memory_cap)?;
         return Ok(HostLaunch {
+            cohort: cohort.clone(),
             tier,
             program: sandbox.program.clone(),
             args,
@@ -561,7 +593,7 @@ pub fn plan_launch(
         Vec::new()
     };
     let wrapped = wrap_host(
-        tier,
+        cohort,
         &runtime.path,
         &args,
         &data,
@@ -569,7 +601,7 @@ pub fn plan_launch(
         bundle,
         &snapshot_roots,
     );
-    let launch = host_launch(tier, runtime, args, data, memory_cap, wrapped)?;
+    let launch = host_launch(cohort, runtime, args, data, memory_cap, wrapped)?;
     #[cfg(not(windows))]
     let launch = HostLaunch {
         native_snapshot_roots: snapshot_roots,
@@ -582,12 +614,25 @@ pub fn plan_launch(
 /// as [`plan_launch`] does, without package-store grants, for doctor.
 /// Blocking; creates nothing, so a host that has not started yet is reported
 /// as not planned, naming the first path its start would create.
-pub fn planned_sandbox(
+pub fn planned_sandbox_tier(
     tier: HostTier,
     runtime: &HostRuntime,
     home: &Path,
 ) -> Result<HostSandbox, String> {
-    let data = tier_data_dir(home, tier);
+    let cohort = match tier {
+        HostTier::Builtin => HostCohort::Builtin,
+        HostTier::Plugin => HostCohort::reviewed(),
+    };
+    planned_sandbox(&cohort, runtime, home)
+}
+
+pub fn planned_sandbox(
+    cohort: &HostCohort,
+    runtime: &HostRuntime,
+    home: &Path,
+) -> Result<HostSandbox, String> {
+    let tier = cohort.tier();
+    let data = cohort_data_dir(home, cohort);
     let mut required = vec![data.clone()];
     if tier == HostTier::Plugin {
         required.push(tier_data_dir(home, HostTier::Builtin));
@@ -619,7 +664,7 @@ pub fn planned_sandbox(
     };
     Ok(
         match wrap_host(
-            tier,
+            cohort,
             &runtime.path,
             &runtime_args(runtime),
             &data,
@@ -643,32 +688,39 @@ pub fn planned_sandbox(
 /// child: a child would lie inside the plugin tier's writable root, and the
 /// host sandbox has no per-subpath write deny, so plugin code could then write
 /// tier-0 state.
-pub fn tier_data_dir(home: &Path, tier: HostTier) -> PathBuf {
+pub fn agent_cohort_digest(workspace: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let normalized = codewhale_config::normalize_project_workspace(Path::new(workspace))
+        .unwrap_or_else(|_| Path::new(workspace).components().collect());
+    let bytes = normalized.to_string_lossy().into_owned();
+    let digest = Sha256::digest(bytes.as_bytes());
+    digest[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+pub fn cohort_data_dir(home: &Path, cohort: impl Into<HostCohort>) -> PathBuf {
+    let cohort = cohort.into();
     let base = home.join("extension-host");
-    match tier {
-        HostTier::Plugin => base.join("data"),
-        HostTier::Builtin => base.join("data-builtin"),
+    match cohort {
+        HostCohort::Builtin => base.join("data-builtin"),
+        HostCohort::Plugin(PluginCohort::Reviewed) => base.join("data"),
+        HostCohort::Plugin(PluginCohort::Agent { workspace }) => base
+            .join("data-agent")
+            .join(agent_cohort_digest(&workspace)),
     }
 }
 
-/// The directory an owner's code is given as its own: a plugin's
-/// ([`plugin_data_dir`], unchanged), or `modules/<module>` under the builtin
-/// tier's data directory for a built-in module (`plugin_name` is the module
-/// name, which [`HostTier::check_owner_id`] has restricted to a plain name).
-/// Pure.
-pub fn owner_data_dir(home: &Path, tier: HostTier, plugin_id: &str, plugin_name: &str) -> PathBuf {
-    match tier {
-        HostTier::Plugin => plugin_data_dir(home, plugin_id, plugin_name),
-        HostTier::Builtin => tier_data_dir(home, tier).join("modules").join(plugin_name),
-    }
+pub fn tier_data_dir(home: &Path, tier: HostTier) -> PathBuf {
+    let cohort = match tier {
+        HostTier::Builtin => HostCohort::Builtin,
+        HostTier::Plugin => HostCohort::reviewed(),
+    };
+    cohort_data_dir(home, cohort)
 }
 
-/// One plugin's own directory inside the host's data dir, which is the host
-/// sandbox's writable root: stable for one plugin id (so it survives updates
-/// and restarts), distinct per plugin, and a single path component under
-/// `plugins/`. The id contains slashes and the name alone can collide between
-/// scopes, so the name is joined to a digest of the id. Pure.
-pub fn plugin_data_dir(home: &Path, plugin_id: &str, plugin_name: &str) -> PathBuf {
+fn plugin_dir_name_parts(plugin_id: &str, plugin_name: &str) -> (String, String) {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(plugin_id.as_bytes());
     let short: String = digest
@@ -687,6 +739,32 @@ pub fn plugin_data_dir(home: &Path, plugin_id: &str, plugin_name: &str) -> PathB
         })
         .take(64)
         .collect();
+    (name, short)
+}
+
+pub fn owner_data_dir(
+    home: &Path,
+    cohort: impl Into<HostCohort>,
+    plugin_id: &str,
+    plugin_name: &str,
+) -> PathBuf {
+    let cohort = cohort.into();
+    match cohort {
+        HostCohort::Builtin => cohort_data_dir(home, cohort)
+            .join("modules")
+            .join(plugin_name),
+        HostCohort::Plugin(PluginCohort::Reviewed) => plugin_data_dir(home, plugin_id, plugin_name),
+        HostCohort::Plugin(PluginCohort::Agent { .. }) => {
+            let (name, short) = plugin_dir_name_parts(plugin_id, plugin_name);
+            cohort_data_dir(home, cohort)
+                .join("plugins")
+                .join(format!("{name}-{short}"))
+        }
+    }
+}
+
+pub fn plugin_data_dir(home: &Path, plugin_id: &str, plugin_name: &str) -> PathBuf {
+    let (name, short) = plugin_dir_name_parts(plugin_id, plugin_name);
     home.join("extension-host")
         .join("data")
         .join("plugins")
@@ -700,8 +778,8 @@ pub fn would_create(path: &Path) -> String {
     )
 }
 
-fn host_data_dir(home: &Path, tier: HostTier) -> Result<PathBuf, String> {
-    let data = tier_data_dir(home, tier);
+pub fn host_cohort_data_dir(home: &Path, cohort: impl Into<HostCohort>) -> Result<PathBuf, String> {
+    let data = cohort_data_dir(home, cohort);
     std::fs::create_dir_all(&data)
         .map_err(|error| format!("cannot create {}: {error}", data.display()))?;
     Ok(data)
@@ -757,11 +835,21 @@ fn native_readable_paths(
     data: &Path,
     snapshot_roots: &[PathBuf],
 ) -> Result<Vec<PathBuf>, String> {
-    for path in [data, data.parent().ok_or("Native data path has no parent")?] {
+    let mut check = Some(data);
+    while let Some(path) = check {
         let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        if !metadata.is_dir()
+            || codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata)
+        {
             return Err("Native data directory must not traverse symbolic links".into());
         }
+        if path
+            .file_name()
+            .is_some_and(|name| name == "extension-host")
+        {
+            break;
+        }
+        check = path.parent();
     }
     let mut paths = vec![
         program.to_path_buf(),
@@ -969,7 +1057,7 @@ fn native_runtime_libraries(program: &Path) -> Result<Vec<PathBuf>, String> {
 /// Wrap `program args` in the host's OS sandbox (module docs), or say why it
 /// has none here. Blocking.
 fn wrap_host(
-    tier: HostTier,
+    cohort: &HostCohort,
     program: &Path,
     args: &[String],
     data: &Path,
@@ -981,6 +1069,7 @@ fn wrap_host(
     if cfg!(windows) {
         return Err(WINDOWS_UNSANDBOXED.to_string());
     }
+    let tier = cohort.tier();
     let spec = |args: Vec<String>| {
         CommandSpec::program(
             &program.to_string_lossy(),
@@ -997,14 +1086,8 @@ fn wrap_host(
     };
     let bwrap = cfg!(all(target_os = "linux", not(target_env = "ohos")));
     let mut manager = SandboxManager::with_bwrap_preference(bwrap);
-    let (mut denied, exceptions) = if tier == HostTier::Plugin {
-        let mut denied =
-            codewhale_sandbox::read_guard::ReadDenylist::build(true, &[], &[]).subtree_paths();
-        denied.push(tier_data_dir(home, HostTier::Builtin));
-        (denied, Vec::new())
-    } else {
-        host_denied_read_paths(tier, home, bwrap)
-    };
+    let (mut denied, exceptions) =
+        host_denied_read_paths(cohort, home, bwrap && tier != HostTier::Plugin);
     if tier == HostTier::Plugin {
         let readable = native_readable_paths(program, bundle, data, snapshot_roots)?;
         denied.retain(|path| {
@@ -1060,13 +1143,14 @@ fn wrap_host(
 /// pinned Builtin runtime itself, carrying the reason `/plugin` shows. Native
 /// code is refused without the verified wrapper. Pure.
 fn host_launch(
-    tier: HostTier,
+    cohort: &HostCohort,
     runtime: &HostRuntime,
     args: Vec<String>,
     data: PathBuf,
     memory_cap: u64,
     wrapped: Result<Wrapped, String>,
 ) -> Result<HostLaunch, String> {
+    let tier = cohort.tier();
     let (program, args, sandbox, sandbox_env) = match wrapped {
         Ok(wrapped) => {
             let mut command = wrapped.command.into_iter();
@@ -1095,6 +1179,7 @@ fn host_launch(
         ),
     };
     Ok(HostLaunch {
+        cohort: cohort.clone(),
         tier,
         program,
         args,
@@ -1572,6 +1657,7 @@ struct Handshake {
 }
 
 pub struct HostProcess {
+    pub cohort: HostCohort,
     /// The tier this process was launched for.
     pub tier: HostTier,
     /// The generation of its tier's host this process is (what the manager
@@ -1728,6 +1814,15 @@ fn spawn_host(
 }
 
 impl HostProcess {
+    pub fn grant_data_dir(&self, dir: &Path) -> Result<(), String> {
+        #[cfg(windows)]
+        if let Some(windows) = &self.windows {
+            return windows.grant_data_dir(dir);
+        }
+        let _ = dir;
+        Ok(())
+    }
+
     pub async fn admit_native_root(
         &self,
         authority: codewhale_config::PluginAuthority,
@@ -1963,6 +2058,7 @@ impl HostProcess {
         }
 
         let host = Arc::new(Self {
+            cohort: launch.cohort.clone(),
             tier: launch.tier,
             generation,
             pid,
@@ -2569,7 +2665,7 @@ mod tests {
         assert!(runtime_args(&runtime).is_empty());
         let temp = tempfile::tempdir().unwrap();
         let launch = host_launch(
-            HostTier::Builtin,
+            &HostCohort::Builtin,
             &runtime,
             vec![HostTier::Builtin.argv_flag()],
             temp.path().to_path_buf(),
@@ -2630,7 +2726,7 @@ mod tests {
             "{refused}"
         );
         let error = host_launch(
-            HostTier::Plugin,
+            &HostCohort::reviewed(),
             &runtime,
             args.clone(),
             data.clone(),
@@ -2641,7 +2737,7 @@ mod tests {
         assert!(error.contains("Native extensions require a verified OS sandbox"));
         assert!(error.contains(&refused));
         let launch = host_launch(
-            HostTier::Builtin,
+            &HostCohort::Builtin,
             &runtime,
             args.clone(),
             data.clone(),
@@ -2686,7 +2782,7 @@ mod tests {
             .chain(args.iter().cloned())
             .collect();
         let launch = host_launch(
-            HostTier::Plugin,
+            &HostCohort::reviewed(),
             &runtime,
             args.clone(),
             data.clone(),
@@ -2732,14 +2828,14 @@ mod tests {
         assert_eq!(plugin, home.join("extension-host").join("data"));
 
         for whole_homes in [false, true] {
-            let (denied, _) = host_denied_read_paths(HostTier::Plugin, &home, whole_homes);
+            let (denied, _) = host_denied_read_paths(&HostCohort::reviewed(), &home, whole_homes);
             assert!(
                 denied.contains(&builtin),
                 "plugin tier (whole_homes {whole_homes}) must deny {}",
                 builtin.display()
             );
             assert!(!denied.contains(&plugin));
-            let (denied, _) = host_denied_read_paths(HostTier::Builtin, &home, whole_homes);
+            let (denied, _) = host_denied_read_paths(&HostCohort::Builtin, &home, whole_homes);
             assert!(
                 !denied.contains(&builtin),
                 "the builtin tier reads its own directory"
@@ -2759,11 +2855,11 @@ mod tests {
             home.join("extension-host/data/plugins/demo-e9f63c6f1a7f")
         );
         assert_eq!(
-            owner_data_dir(&home, HostTier::Plugin, id, "demo"),
+            owner_data_dir(&home, HostCohort::reviewed(), id, "demo"),
             plugin_data_dir(&home, id, "demo")
         );
         assert_eq!(
-            owner_data_dir(&home, HostTier::Builtin, "host:mcp", "mcp"),
+            owner_data_dir(&home, &HostCohort::Builtin, "host:mcp", "mcp"),
             home.join("extension-host/data-builtin/modules/mcp")
         );
     }
@@ -2778,7 +2874,7 @@ mod tests {
         std::fs::create_dir_all(home.join("extension-host")).unwrap();
         std::fs::write(home.join("config.toml.bak-1"), "").unwrap();
 
-        let (seatbelt, none) = host_denied_read_paths(HostTier::Plugin, &home, false);
+        let (seatbelt, none) = host_denied_read_paths(&HostCohort::reviewed(), &home, false);
         assert!(none.is_empty());
         assert!(seatbelt.contains(&home.join("config.toml.bak-1")));
         assert!(
@@ -2788,7 +2884,7 @@ mod tests {
         assert!(!seatbelt.contains(&home));
         assert!(!seatbelt.contains(&home.join("extension-host")));
 
-        let (bwrap, exceptions) = host_denied_read_paths(HostTier::Plugin, &home, true);
+        let (bwrap, exceptions) = host_denied_read_paths(&HostCohort::reviewed(), &home, true);
         assert!(bwrap.contains(&home));
         assert!(!bwrap.contains(&home.join("config.toml.bak-1")));
         for entry in HOST_READABLE_HOME_ENTRIES {
@@ -2808,11 +2904,13 @@ mod tests {
             id: "demo",
             source_sha256: DEMO_DIGEST,
             tools: &[],
+            services: &[],
         },
         BuiltinModule {
             id: "other",
             source_sha256: OTHER_DIGEST,
             tools: &[],
+            services: &[],
         },
     ];
 

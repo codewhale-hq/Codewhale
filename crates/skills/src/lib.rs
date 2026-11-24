@@ -16,16 +16,16 @@ pub mod roots;
 mod system;
 #[allow(unused_imports)]
 pub use roots::{
-    CompatibleHarness, SkillRootAccess, SkillRootCatalog, SkillRootDescriptor, SkillRootId,
-    SkillRootKind, SkillScope, classify_configured_skills_dir, safe_display_path,
+    CompatibleHarness, SkillCatalogGroup, SkillRootAccess, SkillRootCatalog, SkillRootDescriptor,
+    SkillRootId, SkillRootKind, SkillScope, classify_configured_skills_dir, safe_display_path,
 };
 #[allow(unused_imports)]
 pub use system::is_exact_bundled_skill;
 pub use system::{
     BundledSkillLoadContext, BundledSkillTier, BundledSkillsStatus, CREATOR_SKILL_NAMES,
-    bundled_skill_load_context, bundled_skill_tier, bundled_skills_status,
-    canonical_bundled_skill_name, creator_skills_enabled, install_system_skills, is_bundled_copy,
-    is_bundled_skill_name, set_creator_skills_enabled, unrecognized_system_skills,
+    bundled_creator_skill, bundled_creator_skill_dirs, bundled_skill_load_context,
+    bundled_skill_tier, bundled_skills_status, canonical_bundled_skill_name, install_system_skills,
+    is_bundled_copy, is_bundled_skill_name, unrecognized_system_skills,
 };
 
 use std::fs;
@@ -1066,6 +1066,19 @@ pub fn discover_in_workspace_with_mode_and_plugins(
     with_untrusted_project_skills_warning(registry, workspace, None, mode)
 }
 
+#[must_use]
+pub fn skill_root_catalog_for_workspace(
+    workspace: &Path,
+    skills_dir: Option<&Path>,
+    config: &SkillsConfig,
+) -> (SkillRootCatalog, Option<PathBuf>) {
+    let mode = SkillDiscoveryMode::from_config(config);
+    let home = codewhale_paths::user_home();
+    let catalog = SkillRootCatalog::build(workspace, home.as_deref(), skills_dir)
+        .with_flat_workspace_root(mode.flat_workspace_root());
+    (catalog, home)
+}
+
 pub fn discover_for_workspace(
     workspace: &Path,
     skills_dir: Option<&Path>,
@@ -1078,7 +1091,12 @@ pub fn discover_for_workspace(
         None => skills_directories_for_mode(workspace, mode),
     };
     let registry = merge_plugin_skills(
-        cached_merged_discovery(dirs, Some(workspace.to_path_buf()), &config.bundled),
+        cached_merged_discovery(
+            dirs,
+            Some(workspace.to_path_buf()),
+            &config.bundled,
+            config.creator_skills,
+        ),
         plugins,
     );
     with_untrusted_project_skills_warning(registry, workspace, skills_dir, mode)
@@ -1212,6 +1230,7 @@ pub fn discover_from_directories_in_workspace(
         dirs,
         workspace.map(Path::to_path_buf),
         &BundledSkillsConfig::default(),
+        false,
     );
     merge_plugin_skills(merged, plugins)
 }
@@ -1273,6 +1292,15 @@ fn merge_watched_directories(
         let (registry, dir_watched) = SkillRegistry::discover_watched_confined(&dir, confine_to);
         watched.extend(dir_watched);
         for mut skill in registry.skills {
+            if let Some(owned) = owned {
+                if let Some(retired) = system::retired_bundled_skill_name(&skill.name) {
+                    let marker = owned.join(retired).join(".installed-from");
+                    watched.push((marker.clone(), watched_path_stamp(&marker)));
+                }
+                if system::retired_bundled_copy_disabled(policy, &skill.path, &skill.name, owned) {
+                    continue;
+                }
+            }
             if let Some(owned) = owned.filter(|_| system::is_bundled_skill_name(&skill.name)) {
                 let marker = owned.join(&skill.name).join(".installed-from");
                 watched.push((marker.clone(), watched_path_stamp(&marker)));
@@ -1370,8 +1398,9 @@ fn cached_merged_discovery(
     dirs: Vec<PathBuf>,
     workspace: Option<PathBuf>,
     policy: &BundledSkillsConfig,
+    creator: bool,
 ) -> SkillRegistry {
-    let policy = &system::effective_bundled_policy(policy);
+    let policy = &system::effective_bundled_policy(policy, creator);
     let has_policy = [&policy.selected, &policy.disabled, &policy.explicit_only]
         .iter()
         .any(|names| names.as_ref().is_some_and(|names| !names.is_empty()));

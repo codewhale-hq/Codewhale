@@ -1892,6 +1892,40 @@ fn serply_search_provider_parses_and_round_trips() {
 }
 
 #[test]
+fn explicit_searchapi_search_provider_is_preserved() {
+    let config: Config = toml::from_str(
+        r#"
+        [search]
+        provider = "searchapi"
+        "#,
+    )
+    .expect("searchapi search config");
+
+    assert_eq!(
+        config.search.and_then(|search| search.provider),
+        Some(SearchProvider::SearchApi)
+    );
+}
+
+#[test]
+fn searchapi_search_provider_parses_aliases_and_round_trips() {
+    for value in ["searchapi", "SearchApi", "search-api", "search_api"] {
+        assert_eq!(
+            SearchProvider::parse(value),
+            Some(SearchProvider::SearchApi),
+            "{value}"
+        );
+    }
+    assert_eq!(SearchProvider::SearchApi.as_str(), "searchapi");
+    let json = serde_json::to_string(&SearchProvider::SearchApi).expect("serialize");
+    assert_eq!(json, "\"searchapi\"");
+    assert_eq!(
+        serde_json::from_str::<SearchProvider>(&json).expect("deserialize"),
+        SearchProvider::SearchApi
+    );
+}
+
+#[test]
 fn live_search_provider_update_preserves_environment_precedence() {
     let _guard = lock_test_env();
     let previous_codewhale = env::var_os("CODEWHALE_SEARCH_PROVIDER");
@@ -5377,81 +5411,68 @@ fn apply_env_overrides_does_not_copy_api_key_into_config() -> Result<()> {
 
 #[test]
 fn normalize_model_name_preserves_v_series_snapshots() {
-    // v4 canonical forms still resolve
+    let deepseek_wire = |model: &str| {
+        codewhale_config::route::resolve_model(ProviderKind::Deepseek, model, None)
+            .ok()
+            .map(|resolved| resolved.wire_id)
+    };
     assert_eq!(
-        normalize_model_name("deepseek-v4-pro").as_deref(),
+        deepseek_wire("deepseek-v4-pro").as_deref(),
         Some("deepseek-v4-pro")
     );
     assert_eq!(
-        normalize_model_name("deepseek-v4pro").as_deref(),
+        deepseek_wire("deepseek-v4pro").as_deref(),
         Some("deepseek-v4-pro")
     );
-    assert_eq!(
-        normalize_model_name("pro").as_deref(),
-        Some("deepseek-v4-pro")
-    );
-    assert_eq!(
-        normalize_model_name("flash").as_deref(),
-        Some("deepseek-flash")
-    );
+    assert_eq!(deepseek_wire("pro").as_deref(), Some("deepseek-v4-pro"));
+    assert_eq!(deepseek_wire("flash").as_deref(), Some("deepseek-flash"));
     for alias in ["flash-vision", "deepseek-v4flashvisionexp"] {
-        assert_eq!(canonical_model_name(alias), Some("deepseek-flash"));
-        assert_eq!(
-            normalize_model_name(alias).as_deref(),
-            Some("deepseek-flash")
-        );
-        assert_eq!(
-            normalize_model_name_for_provider(ProviderKind::Deepseek, alias).as_deref(),
-            Some("deepseek-flash")
-        );
+        assert_eq!(deepseek_wire(alias).as_deref(), Some("deepseek-flash"));
         assert!(validate_route(ProviderKind::Deepseek, alias).is_ok());
     }
-    // v-series dated snapshots pass through unchanged
     assert_eq!(
-        normalize_model_name("deepseek-v4-flash-20260423").as_deref(),
+        deepseek_wire("deepseek-v4-flash-20260423").as_deref(),
         Some("deepseek-v4-flash-20260423")
     );
-    // future v-series identities pass through
     assert_eq!(
-        normalize_model_name("deepseek-v5-pro-20270101").as_deref(),
+        deepseek_wire("deepseek-v5-pro-20270101").as_deref(),
         Some("deepseek-v5-pro-20270101")
     );
-    // legacy names pass through unchanged — server decides
     assert_eq!(
-        normalize_model_name("deepseek-chat").as_deref(),
-        Some("deepseek-chat")
-    );
-    // cross-provider names still normalize
-    assert_eq!(
-        normalize_model_name("deepseek-ai/deepseek-v4-pro").as_deref(),
-        Some("deepseek-ai/deepseek-v4-pro")
-    );
-    // preserve exact case for providers that require case-sensitive model IDs
-    assert_eq!(
-        normalize_model_name("DeepSeek-V4-Pro").as_deref(),
-        Some("DeepSeek-V4-Pro")
+        deepseek_wire("deepseek-chat").as_deref(),
+        Some(DEEPSEEK_ALIAS_REPLACEMENT)
     );
     assert_eq!(
-        normalize_model_name("deepseek-ai/DeepSeek-V4-Pro").as_deref(),
-        Some("deepseek-ai/DeepSeek-V4-Pro")
+        deepseek_wire("deepseek-ai/deepseek-v4-pro").as_deref(),
+        Some("deepseek-v4-pro")
+    );
+    assert_eq!(
+        deepseek_wire("DeepSeek-V4-Pro").as_deref(),
+        Some("deepseek-v4-pro")
+    );
+    assert_eq!(
+        deepseek_wire("deepseek-ai/DeepSeek-V4-Pro").as_deref(),
+        Some("deepseek-v4-pro")
     );
 }
 
 #[test]
 fn normalize_model_scenario() {
-    // Scenario consolidation of: normalize_model_for_provider_keeps_provider_remaps_when_case_is_preserved, normalize_model_name_for_provider_maps_moonshot_aliases, normalize_model_name_for_provider_maps_minimax_direct_aliases, normalize_model_name_for_provider_maps_arcee_direct_aliases, normalize_model_name_rejects_invalid_or_non_deepseek_ids, normalize_model_name_accepts_provider_prefixed_deepseek_ids
-    // from normalize_model_for_provider_keeps_provider_remaps_when_case_is_preserved
+    let resolve_wire = |provider: ProviderKind, model: &str| {
+        codewhale_config::route::resolve_model(provider, model, None)
+            .ok()
+            .map(|resolved| resolved.wire_id)
+    };
     {
         assert_eq!(
-            normalize_model_for_provider(ProviderKind::Deepseek, "DeepSeek-V4-Pro").as_deref(),
-            Some("DeepSeek-V4-Pro")
+            resolve_wire(ProviderKind::Deepseek, "DeepSeek-V4-Pro").as_deref(),
+            Some("deepseek-v4-pro")
         );
         assert_eq!(
-            normalize_model_for_provider(ProviderKind::NvidiaNim, "DeepSeek-V4-Pro").as_deref(),
+            resolve_wire(ProviderKind::NvidiaNim, "DeepSeek-V4-Pro").as_deref(),
             Some(DEFAULT_NVIDIA_NIM_MODEL)
         );
     }
-    // from normalize_model_name_for_provider_maps_moonshot_aliases
     {
         for (alias, expected) in [
             ("kimi", DEFAULT_MOONSHOT_MODEL),
@@ -5461,12 +5482,11 @@ fn normalize_model_scenario() {
             ("kimi-k2.6", MOONSHOT_KIMI_K2_6_MODEL),
         ] {
             assert_eq!(
-                normalize_model_name_for_provider(ProviderKind::Moonshot, alias).as_deref(),
+                resolve_wire(ProviderKind::Moonshot, alias).as_deref(),
                 Some(expected)
             );
         }
     }
-    // from normalize_model_name_for_provider_maps_minimax_direct_aliases
     {
         for (alias, expected) in [
             ("minimax", DEFAULT_MINIMAX_MODEL),
@@ -5480,12 +5500,11 @@ fn normalize_model_scenario() {
             ("minimax-m2", MINIMAX_M2_MODEL),
         ] {
             assert_eq!(
-                normalize_model_name_for_provider(ProviderKind::Minimax, alias).as_deref(),
+                resolve_wire(ProviderKind::Minimax, alias).as_deref(),
                 Some(expected)
             );
         }
     }
-    // from normalize_model_name_for_provider_maps_arcee_direct_aliases
     {
         for (alias, expected) in [
             ("trinity", DEFAULT_ARCEE_MODEL),
@@ -5501,40 +5520,57 @@ fn normalize_model_scenario() {
             ("TRINITY_LARGE_PREVIEW", ARCEE_TRINITY_LARGE_PREVIEW_MODEL),
         ] {
             assert_eq!(
-                normalize_model_name_for_provider(ProviderKind::Arcee, alias).as_deref(),
+                resolve_wire(ProviderKind::Arcee, alias).as_deref(),
                 Some(expected)
             );
         }
     }
-    // from normalize_model_name_rejects_invalid_or_non_deepseek_ids
     {
-        assert!(normalize_model_name("qwen3-coder").is_none());
-        assert!(normalize_model_name("codewhale v4").is_none());
-        assert!(normalize_model_name("").is_none());
+        assert!(resolve_wire(ProviderKind::Deepseek, "qwen3-coder").is_none());
+        assert!(resolve_wire(ProviderKind::Deepseek, "codewhale v4").is_none());
+        assert!(resolve_wire(ProviderKind::Deepseek, "").is_none());
     }
-    // from normalize_model_name_accepts_provider_prefixed_deepseek_ids
     {
         assert_eq!(
-            normalize_model_name("accounts/fireworks/models/deepseek-v4-flash").as_deref(),
-            Some("accounts/fireworks/models/deepseek-v4-flash")
+            resolve_wire(ProviderKind::Deepseek, "vendor/deepseek-v4-pro").as_deref(),
+            Some("vendor/deepseek-v4-pro")
+        );
+        assert!(
+            resolve_wire(
+                ProviderKind::Deepseek,
+                "accounts/fireworks/models/deepseek-v4-flash"
+            )
+            .is_none()
         );
         assert_eq!(
-            normalize_model_name("provider/deepseek-ai/deepseek-v4-pro").as_deref(),
-            Some("provider/deepseek-ai/deepseek-v4-pro")
+            resolve_wire(
+                ProviderKind::Fireworks,
+                "accounts/fireworks/models/deepseek-v4-flash"
+            )
+            .as_deref(),
+            Some("accounts/fireworks/models/deepseek-v4-flash")
         );
     }
 }
 
 #[test]
 fn normalize_model_name_for_provider_canonicalizes_deepseek_api_variants() {
+    let resolve_wire = |provider: ProviderKind, model: &str| {
+        codewhale_config::route::resolve_model(provider, model, None)
+            .ok()
+            .map(|resolved| resolved.wire_id)
+    };
+    let resolve_logical = |provider: ProviderKind, model: &str| {
+        codewhale_config::route::resolve_model(provider, model, None)
+            .ok()
+            .map(|resolved| resolved.logical)
+    };
     assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::Deepseek, "deepseek-ai/DeepSeek-V4-Pro")
-            .as_deref(),
+        resolve_wire(ProviderKind::Deepseek, "deepseek-ai/DeepSeek-V4-Pro").as_deref(),
         Some("deepseek-v4-pro")
     );
     assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::Deepseek, "deepseek/deepseek-v4-flash")
-            .as_deref(),
+        resolve_wire(ProviderKind::Deepseek, "deepseek/deepseek-v4-flash").as_deref(),
         Some("deepseek-v4-flash")
     );
 
@@ -5545,12 +5581,12 @@ fn normalize_model_name_for_provider_canonicalizes_deepseek_api_variants() {
     ] {
         for alias in ["deepseek-chat", "deepseek-reasoner"] {
             assert_eq!(
-                canonical_model_id_for_provider(provider, alias).as_deref(),
+                resolve_logical(provider, alias).as_deref(),
                 Some(DEEPSEEK_ALIAS_REPLACEMENT),
                 "{provider:?} must retire {alias} before the wire boundary"
             );
             assert_eq!(
-                normalize_model_name_for_provider(provider, alias).as_deref(),
+                resolve_wire(provider, alias).as_deref(),
                 Some(DEEPSEEK_ALIAS_REPLACEMENT),
                 "{provider:?} config normalization must retire {alias}"
             );
@@ -5653,7 +5689,10 @@ fn retired_deepseek_aliases_do_not_escape_provider_owned_namespaces() {
     ] {
         for alias in ["deepseek-chat", "deepseek-reasoner"] {
             assert_eq!(
-                canonical_model_id_for_provider(provider, alias).as_deref(),
+                codewhale_config::route::resolve_model(provider, alias, None)
+                    .ok()
+                    .map(|resolved| resolved.logical)
+                    .as_deref(),
                 Some(alias),
                 "{provider:?} owns the meaning of {alias}"
             );
@@ -5672,13 +5711,19 @@ fn openrouter_hunyuan_aliases_resolve_to_hy3_preview() {
         "hunyuan-hy3",
     ] {
         assert_eq!(
-            canonical_model_id_for_provider(ProviderKind::Openrouter, alias).as_deref(),
+            codewhale_config::route::resolve_model(ProviderKind::Openrouter, alias, None)
+                .ok()
+                .map(|resolved| resolved.logical)
+                .as_deref(),
             Some(OPENROUTER_TENCENT_HY3_PREVIEW_MODEL),
             "{alias} should select the public Hy3 preview id"
         );
     }
     assert_ne!(
-        canonical_model_id_for_provider(ProviderKind::Openrouter, "hy4").as_deref(),
+        codewhale_config::route::resolve_model(ProviderKind::Openrouter, "hy4", None)
+            .ok()
+            .map(|resolved| resolved.logical)
+            .as_deref(),
         Some(OPENROUTER_TENCENT_HY3_PREVIEW_MODEL),
         "hy4 is not a released public model id"
     );
@@ -5715,19 +5760,22 @@ fn deepseek_default_model_canonicalizes_provider_prefixed_ids() {
 
 #[test]
 fn requested_model_for_provider_is_permissive_off_deepseek() {
-    // #3018: the provider API is the authority for non-DeepSeek routes.
+    let requested = |provider: ProviderKind, model: &str| {
+        codewhale_config::route::resolve_model(provider, model, None)
+            .ok()
+            .map(|resolved| resolved.logical)
+    };
     assert_eq!(
-        requested_model_for_provider(ProviderKind::Moonshot, "kimi-k2.5").as_deref(),
+        requested(ProviderKind::Moonshot, "kimi-k2.5").as_deref(),
         Some("kimi-k2.5")
     );
     assert_eq!(
-        requested_model_for_provider(ProviderKind::Ollama, "qwen3:32b").as_deref(),
+        requested(ProviderKind::Ollama, "qwen3:32b").as_deref(),
         Some("qwen3:32b")
     );
-    // The official DeepSeek API stays strict.
-    assert!(requested_model_for_provider(ProviderKind::Deepseek, "kimi-k2.5").is_none());
+    assert!(requested(ProviderKind::Deepseek, "kimi-k2.5").is_none());
     assert_eq!(
-        requested_model_for_provider(ProviderKind::Deepseek, "deepseek-v4-pro").as_deref(),
+        requested(ProviderKind::Deepseek, "deepseek-v4-pro").as_deref(),
         Some("deepseek-v4-pro")
     );
 }
@@ -5772,58 +5820,66 @@ fn validate_route_rejects_mismatched_provider_model_tuple() {
 
 #[test]
 fn wire_model_for_provider_matches_active_provider_shape() {
+    let wire = |provider: ProviderKind, model: &str| {
+        codewhale_config::route::resolve_model(provider, model, None)
+            .map_or_else(|_| model.trim().to_string(), |resolved| resolved.wire_id)
+    };
     assert_eq!(
-        wire_model_for_provider(ProviderKind::Deepseek, DEFAULT_OPENROUTER_MODEL),
+        wire(ProviderKind::Deepseek, DEFAULT_OPENROUTER_MODEL),
         "deepseek-v4-pro"
     );
     assert_eq!(
-        wire_model_for_provider(ProviderKind::Openrouter, "deepseek-v4-pro"),
+        wire(ProviderKind::Openrouter, "deepseek-v4-pro"),
         DEFAULT_OPENROUTER_MODEL
     );
     assert_eq!(
-        wire_model_for_provider(ProviderKind::NvidiaNim, "deepseek-v4-pro"),
+        wire(ProviderKind::NvidiaNim, "deepseek-v4-pro"),
         DEFAULT_NVIDIA_NIM_MODEL
     );
     assert_eq!(
-        wire_model_for_provider(ProviderKind::Together, "deepseek-v4-pro"),
+        wire(ProviderKind::Together, "deepseek-v4-pro"),
         DEFAULT_TOGETHER_MODEL
     );
     assert_eq!(
-        wire_model_for_provider(ProviderKind::Together, "deepseek-v4-flash"),
+        wire(ProviderKind::Together, "deepseek-v4-flash"),
         DEFAULT_TOGETHER_FLASH_MODEL
     );
     assert_eq!(
-        wire_model_for_provider(ProviderKind::Together, "thinkingmachines/inkling"),
+        wire(ProviderKind::Together, "thinkingmachines/inkling"),
         TOGETHER_INKLING_MODEL
     );
     assert_eq!(
-        wire_model_for_provider(ProviderKind::Together, "inkling"),
+        wire(ProviderKind::Together, "inkling"),
         TOGETHER_INKLING_MODEL
     );
     assert_eq!(
-        wire_model_for_provider(ProviderKind::Together, "together-inkling"),
+        wire(ProviderKind::Together, "together-inkling"),
         TOGETHER_INKLING_MODEL
     );
     assert_eq!(
-        wire_model_for_provider(ProviderKind::Openai, DEFAULT_OPENROUTER_MODEL),
+        wire(ProviderKind::Openai, DEFAULT_OPENROUTER_MODEL),
         DEFAULT_OPENROUTER_MODEL
     );
     assert_eq!(
-        wire_model_for_provider(ProviderKind::Openrouter, OPENROUTER_MINIMAX_M3_MODEL),
+        wire(ProviderKind::Openrouter, OPENROUTER_MINIMAX_M3_MODEL),
         OPENROUTER_MINIMAX_M3_MODEL
     );
     assert_eq!(
-        wire_model_for_provider(ProviderKind::SiliconflowCN, DEFAULT_SILICONFLOW_MODEL),
+        wire(ProviderKind::SiliconflowCN, DEFAULT_SILICONFLOW_MODEL),
         DEFAULT_SILICONFLOW_MODEL
     );
     assert_eq!(
-        wire_model_for_provider(ProviderKind::SiliconflowCN, "deepseek-v4-pro"),
+        wire(ProviderKind::SiliconflowCN, "deepseek-v4-pro"),
         DEFAULT_SILICONFLOW_MODEL
     );
 }
 
 #[test]
 fn wire_model_route_retires_aliases_only_on_official_deepseek_endpoints() {
+    let route_wire = |provider: ProviderKind, base_url: &str, model: &str| {
+        codewhale_config::route::resolve_model(provider, model, Some(base_url))
+            .map_or_else(|_| model.trim().to_string(), |resolved| resolved.wire_id)
+    };
     for (provider, base_url) in [
         (ProviderKind::Deepseek, "https://api.deepseek.com"),
         (ProviderKind::Deepseek, "https://api.deepseek.com/v1"),
@@ -5839,7 +5895,7 @@ fn wire_model_route_retires_aliases_only_on_official_deepseek_endpoints() {
     ] {
         for alias in ["deepseek-chat", "deepseek-reasoner"] {
             assert_eq!(
-                wire_model_for_provider_route(provider, base_url, alias),
+                route_wire(provider, base_url, alias),
                 DEEPSEEK_ALIAS_REPLACEMENT,
                 "{provider:?} {base_url} must not send {alias}"
             );
@@ -5869,7 +5925,7 @@ fn wire_model_route_retires_aliases_only_on_official_deepseek_endpoints() {
         ),
     ] {
         assert_eq!(
-            wire_model_for_provider_route(provider, base_url, alias),
+            route_wire(provider, base_url, alias),
             alias,
             "{provider:?} owns the meaning of {alias}"
         );
@@ -5878,54 +5934,57 @@ fn wire_model_route_retires_aliases_only_on_official_deepseek_endpoints() {
 
 #[test]
 fn normalize_model_name_for_provider_keeps_provider_specific_ids() {
+    let resolve_wire = |provider: ProviderKind, model: &str| {
+        codewhale_config::route::resolve_model(provider, model, None)
+            .ok()
+            .map(|resolved| resolved.wire_id)
+    };
     assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::NvidiaNim, "deepseek-v4-pro").as_deref(),
+        resolve_wire(ProviderKind::NvidiaNim, "deepseek-v4-pro").as_deref(),
         Some(DEFAULT_NVIDIA_NIM_MODEL)
     );
     assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::Openrouter, "deepseek-v4-flash").as_deref(),
+        resolve_wire(ProviderKind::Openrouter, "deepseek-v4-flash").as_deref(),
         Some(DEFAULT_OPENROUTER_FLASH_MODEL)
     );
     assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::Siliconflow, "deepseek-v4-pro").as_deref(),
+        resolve_wire(ProviderKind::Siliconflow, "deepseek-v4-pro").as_deref(),
         Some(DEFAULT_SILICONFLOW_MODEL)
     );
     assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::Siliconflow, "deepseek-reasoner")
-            .as_deref(),
+        resolve_wire(ProviderKind::Siliconflow, "deepseek-reasoner").as_deref(),
         Some(DEFAULT_SILICONFLOW_MODEL)
     );
     assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::Siliconflow, "deepseek-r1").as_deref(),
+        resolve_wire(ProviderKind::Siliconflow, "deepseek-r1").as_deref(),
         Some(DEFAULT_SILICONFLOW_MODEL)
     );
     assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::SiliconflowCN, "deepseek-reasoner")
-            .as_deref(),
+        resolve_wire(ProviderKind::SiliconflowCN, "deepseek-reasoner").as_deref(),
         Some(DEFAULT_SILICONFLOW_MODEL)
     );
     assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::Siliconflow, "deepseek-chat").as_deref(),
+        resolve_wire(ProviderKind::Siliconflow, "deepseek-chat").as_deref(),
         Some(DEFAULT_SILICONFLOW_FLASH_MODEL)
     );
     assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::SiliconflowCN, "deepseek-chat").as_deref(),
+        resolve_wire(ProviderKind::SiliconflowCN, "deepseek-chat").as_deref(),
         Some(DEFAULT_SILICONFLOW_FLASH_MODEL)
     );
     assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::Siliconflow, "deepseek-v3").as_deref(),
+        resolve_wire(ProviderKind::Siliconflow, "deepseek-v3").as_deref(),
         Some(DEFAULT_SILICONFLOW_FLASH_MODEL)
     );
     assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::Siliconflow, "deepseek-v3.2").as_deref(),
+        resolve_wire(ProviderKind::Siliconflow, "deepseek-v3.2").as_deref(),
         Some("deepseek-v3.2")
     );
     assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::Together, "deepseek-v4-pro").as_deref(),
+        resolve_wire(ProviderKind::Together, "deepseek-v4-pro").as_deref(),
         Some(DEFAULT_TOGETHER_MODEL)
     );
     assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::Together, "deepseek-chat").as_deref(),
+        resolve_wire(ProviderKind::Together, "deepseek-chat").as_deref(),
         Some(DEFAULT_TOGETHER_FLASH_MODEL)
     );
 }
@@ -5954,7 +6013,10 @@ fn normalize_model_name_for_provider_maps_recent_openrouter_aliases() {
         ("glm-5.2", OPENROUTER_GLM_5_2_MODEL),
     ] {
         assert_eq!(
-            normalize_model_name_for_provider(ProviderKind::Openrouter, alias).as_deref(),
+            codewhale_config::route::resolve_model(ProviderKind::Openrouter, alias, None)
+                .ok()
+                .map(|resolved| resolved.wire_id)
+                .as_deref(),
             Some(expected)
         );
     }
@@ -5962,21 +6024,20 @@ fn normalize_model_name_for_provider_maps_recent_openrouter_aliases() {
 
 #[test]
 fn normalize_xiaomi_mimo_aliases_for_provider() {
+    let mimo_wire = |model: &str| {
+        codewhale_config::route::resolve_model(ProviderKind::XiaomiMimo, model, None)
+            .ok()
+            .map(|resolved| resolved.wire_id)
+    };
+    assert_eq!(mimo_wire("omni").as_deref(), Some("mimo-v2.6-flash"));
+    assert_eq!(mimo_wire("tts").as_deref(), Some("mimo-v2.5-tts"));
     assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::XiaomiMimo, "omni").as_deref(),
-        Some("mimo-v2.6-flash")
-    );
-    assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::XiaomiMimo, "tts").as_deref(),
-        Some("mimo-v2.5-tts")
-    );
-    assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::XiaomiMimo, "voice-design").as_deref(),
+        mimo_wire("voice-design").as_deref(),
         Some("mimo-v2.5-tts-voicedesign")
     );
     assert_eq!(
-        wire_model_for_provider(ProviderKind::XiaomiMimo, "voiceclone"),
-        "mimo-v2.5-tts-voiceclone"
+        mimo_wire("voiceclone").as_deref(),
+        Some("mimo-v2.5-tts-voiceclone")
     );
 }
 
@@ -6163,6 +6224,11 @@ fn model_completion_scenario_2() {
 
 #[test]
 fn normalize_model_name_for_zai_canonicalizes_current_glm_models() {
+    let zai_wire = |model: &str| {
+        codewhale_config::route::resolve_model(ProviderKind::Zai, model, None)
+            .ok()
+            .map(|resolved| resolved.wire_id)
+    };
     for (alias, expected) in [
         ("glm-5.1", ZAI_GLM_5_1_MODEL),
         ("glm-5-1", ZAI_GLM_5_1_MODEL),
@@ -6177,20 +6243,12 @@ fn normalize_model_name_for_zai_canonicalizes_current_glm_models() {
         ("glm-5-turbo", ZAI_GLM_5_TURBO_MODEL),
         ("zai-glm-5-turbo", ZAI_GLM_5_TURBO_MODEL),
     ] {
-        assert_eq!(
-            normalize_model_name_for_provider(ProviderKind::Zai, alias).as_deref(),
-            Some(expected)
-        );
+        assert_eq!(zai_wire(alias).as_deref(), Some(expected));
     }
-    // The 5.1-era bug shape: an alias silently resolving to the provider
-    // default. Now that GLM-5.3 is the default, GLM-5.2 must keep its own id.
     assert_ne!(ZAI_GLM_5_2_MODEL, DEFAULT_ZAI_MODEL);
+    assert_eq!(zai_wire("glm-5.2").as_deref(), Some(ZAI_GLM_5_2_MODEL));
     assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::Zai, "glm-5.2").as_deref(),
-        Some(ZAI_GLM_5_2_MODEL)
-    );
-    assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::Zai, "glm-next-preview").as_deref(),
+        zai_wire("glm-next-preview").as_deref(),
         Some("glm-next-preview")
     );
 }
@@ -6220,7 +6278,13 @@ model = "opencode-go/glm-5.2"
     assert_eq!(config.default_model(), "glm-5.2");
     assert_eq!(config.active_route_api_key()?, "go-config-key");
     assert_eq!(
-        wire_model_for_provider(ProviderKind::OpencodeGo, "opencode-go/mimo-v2.5-pro"),
+        codewhale_config::route::resolve_model(
+            ProviderKind::OpencodeGo,
+            "opencode-go/mimo-v2.5-pro",
+            None,
+        )
+        .unwrap()
+        .wire_id,
         "mimo-v2.5-pro"
     );
     assert_eq!(
@@ -6229,7 +6293,10 @@ model = "opencode-go/glm-5.2"
     );
     for chat_model in opencode_go_models() {
         assert_eq!(
-            canonical_model_id_for_provider(ProviderKind::OpencodeGo, chat_model).as_deref(),
+            codewhale_config::route::resolve_model(ProviderKind::OpencodeGo, chat_model, None)
+                .ok()
+                .map(|resolved| resolved.logical)
+                .as_deref(),
             Some(chat_model)
         );
         assert!(validate_route(ProviderKind::OpencodeGo, chat_model).is_ok());
@@ -6240,29 +6307,18 @@ model = "opencode-go/glm-5.2"
             "{messages_only} has no documented Go protocol and must not be advertised"
         );
         assert!(
-            canonical_model_id_for_provider(ProviderKind::OpencodeGo, messages_only).is_none(),
+            codewhale_config::route::resolve_model(ProviderKind::OpencodeGo, messages_only, None)
+                .is_err(),
             "{messages_only} must not pass the explicit selector gate"
         );
-        assert!(
-            requested_model_for_provider(ProviderKind::OpencodeGo, messages_only).is_none(),
-            "{messages_only} must not pass the runtime request gate"
-        );
         assert!(validate_route(ProviderKind::OpencodeGo, messages_only).is_err());
-        // Never substitute a different model. Keep the caller's spelling so
-        // validate_route / the route resolver can reject by name. A base URL
-        // override still cannot grant an unknown ID a protocol.
-        assert_eq!(
-            wire_model_for_provider(ProviderKind::OpencodeGo, messages_only),
-            messages_only,
-            "must not silently rewrite {messages_only} to the Chat default"
-        );
-        assert_eq!(
-            wire_model_for_provider_route(
+        assert!(
+            codewhale_config::route::resolve_model(
                 ProviderKind::OpencodeGo,
-                "https://go-gateway.example/v1",
                 messages_only,
-            ),
-            messages_only,
+                Some("https://go-gateway.example/v1"),
+            )
+            .is_err(),
             "a base URL override must not rewrite or re-admit {messages_only}"
         );
     }
@@ -7307,7 +7363,7 @@ fn xiaomi_mimo_env_token_plan_mode_uses_token_plan_key_and_endpoint() -> Result<
         config.active_route_base_url(),
         XIAOMI_MIMO_TOKEN_PLAN_CN_BASE_URL
     );
-    assert_eq!(config.default_model(), "voiceclone");
+    assert_eq!(config.default_model(), "mimo-v2.5-tts-voiceclone");
     Ok(())
 }
 
@@ -8446,10 +8502,13 @@ model = "deepseek-ai/DeepSeek-V4-Pro"
     );
     assert_eq!(config.default_model(), DEFAULT_SILICONFLOW_MODEL);
     assert_eq!(
-        wire_model_for_provider(
+        codewhale_config::route::resolve_model(
             config.active_provider_identity().unwrap().provider,
-            &config.default_model()
-        ),
+            &config.default_model(),
+            None,
+        )
+        .unwrap()
+        .wire_id,
         DEFAULT_SILICONFLOW_MODEL
     );
     Ok(())
@@ -9378,7 +9437,10 @@ fn openrouter_nemotron_ultra_aliases_resolve_to_live_id() {
         "nvidia-nemotron-3-ultra",
     ] {
         assert_eq!(
-            normalize_model_name_for_provider(ProviderKind::Openrouter, alias).as_deref(),
+            codewhale_config::route::resolve_model(ProviderKind::Openrouter, alias, None)
+                .ok()
+                .map(|resolved| resolved.wire_id)
+                .as_deref(),
             Some(OPENROUTER_NEMOTRON_3_ULTRA_MODEL)
         );
     }
@@ -10739,11 +10801,13 @@ fn cli_model_flag_selects_kimi_k3_on_the_moonshot_platform_route() -> Result<()>
     assert_eq!(config.default_model(), MOONSHOT_KIMI_K3_MODEL);
     assert_eq!(config.active_route_base_url(), DEFAULT_MOONSHOT_BASE_URL);
     assert_eq!(
-        wire_model_for_provider_route(
+        codewhale_config::route::resolve_model(
             ProviderKind::Moonshot,
-            &config.active_route_base_url(),
             &config.default_model(),
-        ),
+            Some(&config.active_route_base_url()),
+        )
+        .unwrap()
+        .wire_id,
         MOONSHOT_KIMI_K3_MODEL,
         "the id the user named must be the id on the wire"
     );
@@ -11060,11 +11124,13 @@ fn config_selects_bare_k3_on_the_kimi_code_route() {
 
     assert_eq!(config.default_model(), KIMI_CODE_K3_MODEL);
     assert_eq!(
-        wire_model_for_provider_route(
+        codewhale_config::route::resolve_model(
             ProviderKind::Moonshot,
-            &config.active_route_base_url(),
             &config.default_model(),
-        ),
+            Some(&config.active_route_base_url()),
+        )
+        .unwrap()
+        .wire_id,
         KIMI_CODE_K3_MODEL
     );
     assert_eq!(
@@ -11144,42 +11210,55 @@ fn unknown_models_pass_through_on_canonical_moonshot_endpoints() {
 /// sent. A first-party/catalog route still canonicalizes to its documented id.
 #[test]
 fn model_alias_matching_stays_case_insensitive() {
-    // Mixed-case aliases still resolve to the provider's documented wire id.
     assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::NvidiaNim, "DeepSeek-V4-Pro").as_deref(),
+        codewhale_config::route::resolve_model(ProviderKind::NvidiaNim, "DeepSeek-V4-Pro", None)
+            .ok()
+            .map(|resolved| resolved.wire_id)
+            .as_deref(),
         Some(DEFAULT_NVIDIA_NIM_MODEL)
     );
     assert_eq!(
-        normalize_model_name_for_provider(ProviderKind::Openrouter, "DeepSeek-V4-Flash").as_deref(),
+        codewhale_config::route::resolve_model(
+            ProviderKind::Openrouter,
+            "DeepSeek-V4-Flash",
+            None,
+        )
+        .ok()
+        .map(|resolved| resolved.wire_id)
+        .as_deref(),
         Some(DEFAULT_OPENROUTER_FLASH_MODEL)
     );
     assert_eq!(
-        canonical_model_id_for_provider(ProviderKind::Zai, "GLM-5.1").as_deref(),
-        canonical_model_id_for_provider(ProviderKind::Zai, "glm-5.1").as_deref()
+        codewhale_config::route::resolve_model(ProviderKind::Zai, "GLM-5.1", None)
+            .ok()
+            .map(|resolved| resolved.logical),
+        codewhale_config::route::resolve_model(ProviderKind::Zai, "glm-5.1", None)
+            .ok()
+            .map(|resolved| resolved.logical)
     );
 
-    // A first-party DeepSeek route still migrates the retired aliases,
-    // whatever case they are typed in.
     for alias in ["deepseek-chat", "DeepSeek-Chat", "DEEPSEEK-REASONER"] {
         assert_eq!(
-            wire_model_for_provider_route(
+            codewhale_config::route::resolve_model(
                 ProviderKind::Deepseek,
-                "https://api.deepseek.com",
-                alias
-            ),
+                alias,
+                Some("https://api.deepseek.com"),
+            )
+            .unwrap()
+            .wire_id,
             DEEPSEEK_ALIAS_REPLACEMENT,
             "first-party DeepSeek must canonicalize {alias}"
         );
     }
 
-    // The same alias on a custom endpoint keeps the user's exact spelling:
-    // that endpoint owns both the id and its meaning.
     assert_eq!(
-        wire_model_for_provider_route(
+        codewhale_config::route::resolve_model(
             ProviderKind::Deepseek,
-            "https://llm.corp.internal/v1",
-            "DeepSeek-Chat"
-        ),
+            "DeepSeek-Chat",
+            Some("https://llm.corp.internal/v1"),
+        )
+        .unwrap()
+        .wire_id,
         "DeepSeek-Chat"
     );
 }
@@ -11962,8 +12041,10 @@ fn canonical_stream_config_env_clamps_and_keepalive_disable() {
     assert_eq!(config.tcp_keepalive(), None);
     assert_eq!(config.http2_keep_alive_interval(), None);
     assert_eq!(config.http2_keep_alive_timeout(), Duration::from_secs(20));
-    let positive: Config = toml::from_str("[stream]\nopen_timeout_secs=12\nchunk_timeout_secs=14\ntcp_keepalive_secs=9000\nhttp2_keep_alive_interval_secs=9000\nhttp2_keep_alive_timeout_secs=9000\n").unwrap();
+    let positive: Config = toml::from_str("[stream]\nopen_timeout_secs=12\nopen_retries=0\nchunk_timeout_secs=14\ntcp_keepalive_secs=9000\nhttp2_keep_alive_interval_secs=9000\nhttp2_keep_alive_timeout_secs=9000\n").unwrap();
     assert_eq!(positive.stream_open_timeout(), Duration::from_secs(12));
+    assert_eq!(config.stream_retry_limits().open_retries, 1);
+    assert_eq!(positive.stream_retry_limits().open_retries, 0);
     assert_eq!(positive.stream_chunk_timeout_secs(), 14);
     assert_eq!(positive.tcp_keepalive(), Some(Duration::from_secs(3600)));
     assert_eq!(
@@ -11989,11 +12070,11 @@ fn canonical_stream_config_env_clamps_and_keepalive_disable() {
 
 #[test]
 fn canonical_stream_config_profile_merges_independent_keys() {
-    let config = parse_config_file("[stream]\nmax_resumes=7\ntcp_keepalive_secs=41\n[profiles.mobile.stream]\nopen_timeout_secs=180\n").unwrap();
+    let config = parse_config_file("[stream]\nmax_resumes=7\ntcp_keepalive_secs=41\n[profiles.mobile.stream]\nopen_timeout_secs=240\n").unwrap();
     let resolved = apply_profile(config, Some("mobile")).unwrap();
     assert_eq!(resolved.stream_retry_limits().max_resumes, 7);
     assert_eq!(resolved.tcp_keepalive(), Some(Duration::from_secs(41)));
-    assert_eq!(resolved.stream_open_timeout(), Duration::from_secs(180));
+    assert_eq!(resolved.stream_open_timeout(), Duration::from_secs(240));
 }
 
 #[test]

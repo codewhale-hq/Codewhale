@@ -23,7 +23,7 @@ use super::file::{EXPECTED_HASH_DESCRIPTION, PATCH_PARAMS, content_hash};
 use super::rust_format::normalize_edit;
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
-    lsp_diagnostics_for_paths, optional_bool, optional_str, optional_u64,
+    optional_bool, optional_str, optional_u64,
 };
 use super::syntax_check::guard_edit;
 
@@ -199,23 +199,11 @@ impl ToolSpec for ApplyPatchTool {
                 },
                 "patch": {
                     "type": "string",
-                    "description": "Unified diff patch content"
+                    "description": "Unified diff patch content. Pass exactly one of `patch` or `replace`."
                 },
                 "replace": {
                     "type": "array",
-                    "description": "Optional full file replacements (path + content).",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "path": { "type": "string" },
-                            "content": { "type": "string" }
-                        },
-                        "required": ["path", "content"]
-                    }
-                },
-                "changes": {
-                    "type": "array",
-                    "description": "Deprecated compatibility alias for `replace` (full file replacements by path + content).",
+                    "description": "Full file replacements (path + content); use instead of `patch`.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -239,12 +227,7 @@ impl ToolSpec for ApplyPatchTool {
                         "{EXPECTED_HASH_DESCRIPTION} Verifies the patch target — the `path` argument when given, otherwise the first file the patch touches; other files in a multi-file patch are not hash-checked."
                     )
                 }
-            },
-            "oneOf": [
-                { "required": ["patch"] },
-                { "required": ["replace"] },
-                { "required": ["changes"] }
-            ]
+            }
         })
     }
 
@@ -289,9 +272,6 @@ impl ToolSpec for ApplyPatchTool {
             for entry in pending.iter().filter(|p| p.content.is_some()) {
                 context.note_file_read(&entry.path);
             }
-            // Resolve absolute paths for LSP diagnostics query.
-            let abs_paths: Vec<PathBuf> = pending.iter().map(|p| p.path.clone()).collect();
-            let diag_block = lsp_diagnostics_for_paths(context, &abs_paths).await;
             let result = PatchResult {
                 success: true,
                 files_applied: stats.stats.files_applied,
@@ -305,17 +285,13 @@ impl ToolSpec for ApplyPatchTool {
                 file_summaries: stats.file_summaries.clone(),
                 message: build_summary_message(&stats),
             };
-            let mut tool_result = ToolResult::json(&result)
-                .map_err(|e| ToolError::execution_failed(e.to_string()))?;
-            tool_result = tool_result.with_metadata(apply_patch_result_metadata(
-                &preflight.summary,
-                &pending,
-                &stats,
-            ));
-            if !diag_block.is_empty() {
-                tool_result.content.push('\n');
-                tool_result.content.push_str(&diag_block);
-            }
+            let tool_result = ToolResult::json(&result)
+                .map_err(|e| ToolError::execution_failed(e.to_string()))?
+                .with_metadata(apply_patch_result_metadata(
+                    &preflight.summary,
+                    &pending,
+                    &stats,
+                ));
             return Ok(tool_result);
         }
 
@@ -348,13 +324,6 @@ impl ToolSpec for ApplyPatchTool {
         for entry in pending.iter().filter(|p| p.content.is_some()) {
             context.note_file_read(&entry.path);
         }
-        // Resolve absolute paths for LSP diagnostics query.
-        let abs_paths: Vec<PathBuf> = pending
-            .iter()
-            .filter(|p| p.content.is_some()) // skip deleted files
-            .map(|p| p.path.clone())
-            .collect();
-        let diag_block = lsp_diagnostics_for_paths(context, &abs_paths).await;
         let result = PatchResult {
             success: true,
             files_applied: stats.stats.files_applied,
@@ -368,17 +337,13 @@ impl ToolSpec for ApplyPatchTool {
             file_summaries: stats.file_summaries.clone(),
             message: build_summary_message(&stats),
         };
-        let mut tool_result =
-            ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))?;
-        tool_result = tool_result.with_metadata(apply_patch_result_metadata(
-            &preflight.summary,
-            &pending,
-            &stats,
-        ));
-        if !diag_block.is_empty() {
-            tool_result.content.push('\n');
-            tool_result.content.push_str(&diag_block);
-        }
+        let tool_result = ToolResult::json(&result)
+            .map_err(|e| ToolError::execution_failed(e.to_string()))?
+            .with_metadata(apply_patch_result_metadata(
+                &preflight.summary,
+                &pending,
+                &stats,
+            ));
         Ok(tool_result)
     }
 }
@@ -437,7 +402,7 @@ fn verify_patch_expected_hash(
     Err(ToolError::execution_failed(format!(
         "File `patch` refused: {target} changed since it was read. \
          expected_hash was {expected} but the file is now {actual}, so nothing was written. \
-         Recovery: call File with action=\"read\" path=\"{target}\" to get the current contents \
+         Recovery: call read with path=\"{target}\" to get the current contents \
          and its content_hash, then rebuild the patch against them."
     )))
 }
@@ -1353,24 +1318,12 @@ mod tests {
     }
 
     #[test]
-    fn input_schema_exposes_replace_and_deprecated_changes_alias() {
+    fn input_schema_exposes_replace_without_top_level_combinators() {
         let schema = ApplyPatchTool.input_schema();
 
         assert_eq!(schema["properties"]["replace"]["type"], "array");
-        assert_eq!(schema["properties"]["changes"]["type"], "array");
-        assert!(
-            schema["properties"]["changes"]["description"]
-                .as_str()
-                .is_some_and(|description| description.contains("Deprecated"))
-        );
-        assert_eq!(
-            schema["oneOf"],
-            json!([
-                { "required": ["patch"] },
-                { "required": ["replace"] },
-                { "required": ["changes"] }
-            ])
-        );
+        assert!(schema["properties"].get("changes").is_none());
+        assert!(schema.get("oneOf").is_none(), "{schema}");
     }
 
     #[test]

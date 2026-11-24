@@ -15,42 +15,58 @@ impl CommandPresentationContext for English {
         if self.fail_key == Some(key) {
             return Err("invalid translation replacement contract".into());
         }
-        let catalog: serde_json::Value =
-            serde_json::from_str(include_str!("../../../../../localization/locales/en.json"))
-                .unwrap();
-        let id: String = key
-            .split('_')
-            .map(|word| {
-                let mut chars = word.chars();
-                chars
-                    .next()
-                    .unwrap()
-                    .to_uppercase()
-                    .chain(chars)
-                    .collect::<String>()
-            })
-            .collect();
-        let template = catalog[&id]
-            .as_str()
-            .ok_or_else(|| format!("unknown test key {key}"))?;
-        let names: Vec<_> = replacements
-            .iter()
-            .map(|(name, value)| (format!("{{{name}}}"), *value))
-            .collect();
-        Ok(interpolate(
-            template,
-            &names
-                .iter()
-                .map(|(name, value)| (name.as_str(), *value))
-                .collect::<Vec<_>>(),
-        ))
+        translate_from(
+            include_str!("../../../../../localization/locales/en.json"),
+            key,
+            replacements,
+        )
     }
+}
+struct ZhHans;
+impl CommandPresentationContext for ZhHans {
+    fn translate(&self, key: &str, replacements: &[(&str, &str)]) -> Result<String, String> {
+        translate_from(
+            include_str!("../../../../../localization/locales/zh-Hans.json"),
+            key,
+            replacements,
+        )
+    }
+}
+fn translate_from(pack: &str, key: &str, replacements: &[(&str, &str)]) -> Result<String, String> {
+    let catalog: serde_json::Value = serde_json::from_str(pack).unwrap();
+    let id: String = key
+        .split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            chars
+                .next()
+                .unwrap()
+                .to_uppercase()
+                .chain(chars)
+                .collect::<String>()
+        })
+        .collect();
+    let template = catalog[&id]
+        .as_str()
+        .ok_or_else(|| format!("unknown test key {key}"))?;
+    let names: Vec<_> = replacements
+        .iter()
+        .map(|(name, value)| (format!("{{{name}}}"), *value))
+        .collect();
+    Ok(interpolate(
+        template,
+        &names
+            .iter()
+            .map(|(name, value)| (name.as_str(), *value))
+            .collect::<Vec<_>>(),
+    ))
 }
 struct Permissions {
     view: PermissionsView,
     reads: Cell<usize>,
     removals: Vec<(usize, String)>,
     failure: bool,
+    blocked: Vec<BlockedPermissionAction>,
 }
 impl Permissions {
     fn new() -> Self {
@@ -74,6 +90,7 @@ impl Permissions {
             reads: Cell::new(0),
             removals: vec![],
             failure: false,
+            blocked: vec![],
         }
     }
 }
@@ -96,6 +113,9 @@ impl CommandPermissionsContext for Permissions {
             action: rule.action,
             tool: rule.tool,
         })
+    }
+    fn blocked_actions(&self) -> Vec<BlockedPermissionAction> {
+        self.blocked.clone()
     }
 }
 fn permission(p: &mut Permissions, arg: Option<&str>) -> CommandResult {
@@ -163,6 +183,9 @@ impl CommandConfigStatusContext for Status {
     }
 }
 fn report(view: ConfigStatusView) -> String {
+    report_in(view, &mut English { fail_key: None })
+}
+fn report_in(view: ConfigStatusView, presentation: &mut dyn CommandPresentationContext) -> String {
     let expected = view.clone();
     let mut s = Status {
         view,
@@ -171,7 +194,7 @@ fn report(view: ConfigStatusView) -> String {
     let result = status::execute(
         CommandContexts::empty()
             .with_config_status(&mut s)
-            .with_presentation(&mut English { fail_key: None }),
+            .with_presentation(presentation),
         Some("ignored"),
     );
     assert!(!result.is_error, "{result:?}");
@@ -366,6 +389,28 @@ fn status_optional_drift_notice_catalog_metrics_and_output_keep_order() {
     assert!(text.find("Fleet:").unwrap() < text.find("Context window:").unwrap());
 }
 #[test]
+fn status_window_source_row_follows_the_locale() {
+    let mut view = status_view();
+    view.catalog = StatusCatalog {
+        freshness: StatusCatalogFreshness::Live,
+        offering_count: 9070,
+        fetched_at: Some(3480),
+        last_error: None,
+    };
+    let english = report(view.clone());
+    assert!(
+        english.contains(
+            "Catalog: models.dev live · 9070 offerings · fetched 2m ago · Cloud facts: off"
+        ),
+        "{english}"
+    );
+    let chinese = report_in(view, &mut ZhHans);
+    assert!(
+        chinese.contains("目录: models.dev 实时 · 9070 个可用模型 · 2 分钟前获取 · 云端事实: 关闭"),
+        "{chinese}"
+    );
+}
+#[test]
 fn status_translation_failure_never_observes_host() {
     let mut s = Status {
         view: status_view(),
@@ -434,4 +479,74 @@ fn permissions_quote_non_utf8_paths_without_losing_bytes_or_emitting_controls() 
     assert!(text.contains("\"bad\\xff\\x1b\""), "{text}");
     assert!(!text.contains('\u{1b}'));
     assert!(permissions.removals.is_empty());
+}
+
+#[test]
+fn permissions_blocked_lists_escapes_and_approves_retry() {
+    let mut permissions = Permissions::new();
+    let empty = permission(&mut permissions, Some("blocked"));
+    assert!(!empty.is_error);
+    let empty_msg = empty.message.unwrap();
+    assert!(empty_msg.contains("No blocked"), "{empty_msg}");
+
+    let no_latest = permission(&mut permissions, Some("blocked approve"));
+    assert!(no_latest.is_error);
+
+    permissions.blocked = vec![
+        BlockedPermissionAction {
+            receipt_id: Some("ar-1".into()),
+            tool_name: "Bash".into(),
+            rule: "guardian".into(),
+            reason: "rm\x1b[31m blocked".into(),
+            action_summary: "rm -rf\n/tmp/x".into(),
+            approvable: true,
+            approved: true,
+        },
+        BlockedPermissionAction {
+            receipt_id: Some("ar-2".into()),
+            tool_name: "Bash".into(),
+            rule: "guardian".into(),
+            reason: "chmod 777".into(),
+            action_summary: "chmod 777 /tmp/y".into(),
+            approvable: true,
+            approved: false,
+        },
+        BlockedPermissionAction {
+            receipt_id: None,
+            tool_name: "MCPTool".into(),
+            rule: "guardian".into(),
+            reason: "unapprovable".into(),
+            action_summary: "ext:run".into(),
+            approvable: false,
+            approved: false,
+        },
+    ];
+
+    let listed = permission(&mut permissions, Some("blocked"));
+    assert!(!listed.is_error);
+    let msg = listed.message.unwrap();
+    assert!(!msg.contains('\x1b'), "{msg}");
+    assert!(msg.contains("ar-2"), "{msg}");
+    assert!(msg.contains("/permissions blocked approve"), "{msg}");
+
+    let latest = permission(&mut permissions, Some("blocked approve"));
+    assert!(!latest.is_error);
+    assert_eq!(
+        latest.action,
+        Some(ConfigPolicyAction::ApproveAutoReviewRetry {
+            target: "ar-2".into(),
+        })
+    );
+
+    let explicit = permission(&mut permissions, Some("blocked approve ar-1"));
+    assert!(!explicit.is_error);
+    assert_eq!(
+        explicit.action,
+        Some(ConfigPolicyAction::ApproveAutoReviewRetry {
+            target: "ar-1".into(),
+        })
+    );
+
+    let bad = permission(&mut permissions, Some("blocked unknown"));
+    assert!(bad.is_error);
 }

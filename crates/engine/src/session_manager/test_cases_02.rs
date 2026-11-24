@@ -25,6 +25,7 @@
                 model: "deepseek-v4-flash".to_string(),
                 model_provider: "deepseek".to_string(),
                 model_provider_id: None,
+                exec_route_binding: None,
                 workspace: workspace.to_path_buf(),
                 mode: None,
                 cost: SessionCostSnapshot::default(),
@@ -46,6 +47,7 @@
             composer_color: None,
             last_auto_route: None,
             turn_outcomes: Vec::new(),
+            delegated_writes: std::collections::BTreeMap::new(),
             agent_preset: None,
         };
         manager.save_session(&session).expect("save");
@@ -76,6 +78,7 @@
                 model: "deepseek-v4-pro".to_string(),
                 model_provider: "deepseek".to_string(),
                 model_provider_id: None,
+                exec_route_binding: None,
                 workspace: workspace.to_path_buf(),
                 mode: Some("yolo".to_string()),
                 cost: SessionCostSnapshot::default(),
@@ -97,6 +100,7 @@
             composer_color: None,
             last_auto_route: None,
             turn_outcomes: Vec::new(),
+            delegated_writes: std::collections::BTreeMap::new(),
             agent_preset: None,
         };
         manager.save_session(&session).expect("save empty");

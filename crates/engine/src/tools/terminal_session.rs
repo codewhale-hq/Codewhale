@@ -41,6 +41,11 @@ use super::spec::{
 };
 #[cfg(unix)]
 use super::spec::{optional_u64, required_str};
+use codewhale_tools::names::{
+    LEGACY_TERMINAL_CANCEL_NAME, LEGACY_TERMINAL_RESET_NAME, LEGACY_TERMINAL_RUN_NAME,
+    LEGACY_TERMINAL_SEND_NAME, LEGACY_TERMINAL_WAIT_NAME, TERMINAL_CANCEL_NAME,
+    TERMINAL_RESET_NAME, TERMINAL_RUN_NAME, TERMINAL_SEND_NAME, TERMINAL_WAIT_NAME,
+};
 
 #[cfg(unix)]
 const BUFFER_LIMIT: usize = 512 * 1024;
@@ -59,6 +64,8 @@ const MAX_TIMEOUT_SECS: u64 = 600;
 const CANCEL_CONFIRM_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(unix)]
 const CANCEL_SENTINEL_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+#[cfg(unix)]
+const CANCEL_INTERRUPT_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
 #[cfg(unix)]
 pub struct TerminalSession {
@@ -122,7 +129,9 @@ pub enum DurableTerminalState {
 
 #[cfg(unix)]
 struct CommandState {
+    id: String,
     marker: String,
+    start_marker: String,
 }
 
 #[cfg(unix)]
@@ -499,6 +508,23 @@ pub fn get_or_create(
         }
         return Ok(session);
     }
+    if let Some((plugin_id, _)) = crate::extension_host::dsh_terminal::session_parts(name) {
+        let held = registry
+            .keys()
+            .filter(|entry| {
+                entry.workspace == key.workspace
+                    && entry.owner == key.owner
+                    && crate::extension_host::dsh_terminal::session_parts(&entry.name)
+                        .is_some_and(|(other, _)| other == plugin_id)
+            })
+            .count();
+        if held >= crate::extension_host::dsh_terminal::MAX_TERMINALS {
+            return Err(
+                "this plugin already holds the most terminals it may open in this session"
+                    .to_string(),
+            );
+        }
+    }
     let session = create_session(owner, name, workspace, policy, shell_manager)?;
     registry.insert(key, Registered::new(&session)?);
     Ok(session)
@@ -543,7 +569,7 @@ fn find(owner: &str, name: &str, workspace: &Path) -> Result<SharedSession, Stri
         record.updated_at = chrono::Utc::now().to_rfc3339();
         let _ = persist_durable(&path, &record);
         return Err(format!(
-            "terminal session '{name}' is stale/lost after restart (last cwd: {}); run terminal/run with this name to start a replacement while preserving the historical summary",
+            "terminal session '{name}' is stale/lost after restart (last cwd: {}); run {TERMINAL_RUN_NAME} with this name to start a replacement while preserving the historical summary",
             record.last_known_cwd.display()
         ));
     }
@@ -659,14 +685,13 @@ pub fn kill_session(session: &mut TerminalSession) -> Result<(), String> {
 }
 
 #[cfg(unix)]
-pub fn kill_owner_sessions(workspace: &Path, owner: &str) -> Result<usize, String> {
-    let workspace = canonical(workspace);
+fn kill_matching_sessions(mut matches: impl FnMut(&SessionKey) -> bool) -> Result<usize, String> {
     let mut registry = sessions()
         .lock()
         .map_err(|_| "terminal session registry lock poisoned".to_string())?;
     let keys = registry
         .keys()
-        .filter(|key| key.workspace == workspace && key.owner == owner)
+        .filter(|key| matches(key))
         .cloned()
         .collect::<Vec<_>>();
     let mut ended = 0;
@@ -687,8 +712,35 @@ pub fn kill_owner_sessions(workspace: &Path, owner: &str) -> Result<usize, Strin
     Ok(ended)
 }
 
+#[cfg(unix)]
+pub fn kill_owner_sessions(workspace: &Path, owner: &str) -> Result<usize, String> {
+    let workspace = canonical(workspace);
+    kill_matching_sessions(|key| key.workspace == workspace && key.owner == owner)
+}
+
+#[cfg(unix)]
+pub fn kill_sessions_named(prefix: &str) -> Result<usize, String> {
+    let valid_prefix = prefix
+        .strip_prefix("dsh:")
+        .and_then(|rest| rest.strip_suffix(':'))
+        .is_some_and(|plugin_id| !plugin_id.is_empty());
+    if !valid_prefix {
+        return Ok(0);
+    }
+    kill_matching_sessions(|key| {
+        key.name
+            .strip_prefix(prefix)
+            .is_some_and(crate::extension_host::dsh_terminal::is_valid_session_name)
+    })
+}
+
 #[cfg(not(unix))]
 pub fn kill_owner_sessions(_workspace: &std::path::Path, _owner: &str) -> Result<usize, String> {
+    Ok(0)
+}
+
+#[cfg(not(unix))]
+pub fn kill_sessions_named(_prefix: &str) -> Result<usize, String> {
     Ok(0)
 }
 
@@ -850,7 +902,7 @@ impl std::fmt::Display for HumanInputError {
 }
 
 /// Human input is bound to the displayed incarnation, including across reset.
-/// It follows the same sandbox-reuse guard as the model's terminal/run path.
+/// It follows the same sandbox-reuse guard as the model's terminal_run path.
 #[cfg(unix)]
 pub fn write_human_input(
     handle: &SharedSession,
@@ -943,16 +995,209 @@ fn prune_output(input: &str) -> String {
 }
 
 #[cfg(unix)]
+fn strip_zsh_prompt_marks(raw: &str) -> String {
+    if !raw.contains("\x1b[") {
+        return raw.to_string();
+    }
+    const MARKS: &[&str] = &[
+        "\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m",
+        "\x1b[1m\x1b[7m#\x1b[27m\x1b[1m\x1b[0m",
+        "\x1b[7m%\x1b[27m",
+        "\x1b[7m#\x1b[27m",
+    ];
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while !rest.is_empty() {
+        let mut matched = None;
+        for mark in MARKS {
+            if let Some(after) = rest.strip_prefix(mark) {
+                matched = Some(after);
+                break;
+            }
+        }
+        if let Some(mut after) = matched {
+            let trimmed_spaces = after.trim_start_matches(' ');
+            if let Some(post_cr) = trimmed_spaces
+                .strip_prefix("\r \r")
+                .or_else(|| trimmed_spaces.strip_prefix('\r'))
+            {
+                after = post_cr;
+            } else if trimmed_spaces.starts_with('\n') {
+                after = trimmed_spaces;
+            }
+            rest = after;
+            continue;
+        }
+        let next_esc = rest
+            .match_indices('\x1b')
+            .find(|(offset, _)| *offset > 0)
+            .map_or(rest.len(), |(offset, _)| offset);
+        out.push_str(&rest[..next_esc]);
+        rest = &rest[next_esc..];
+    }
+    out
+}
+
+#[cfg(unix)]
+fn collapse_carriage_returns(line: &str) -> String {
+    if !line.contains('\r') {
+        return line.to_string();
+    }
+    let mut buf: Vec<char> = Vec::new();
+    let mut col = 0usize;
+    for ch in line.chars() {
+        if ch == '\r' {
+            col = 0;
+        } else {
+            if col < buf.len() {
+                buf[col] = ch;
+            } else {
+                buf.push(ch);
+            }
+            col += 1;
+        }
+    }
+    if buf.iter().all(|ch| *ch == ' ') {
+        return String::new();
+    }
+    let collapsed: String = buf.into_iter().collect();
+    collapsed.trim_end_matches(' ').to_string()
+}
+
+#[cfg(unix)]
+fn normalize_pty_text(raw: &str) -> String {
+    let without_zsh = strip_zsh_prompt_marks(raw);
+    let mut stripped = String::with_capacity(without_zsh.len());
+    codewhale_sanitize::sanitize::strip_ansi_into(&without_zsh, &mut stripped);
+    let lf = stripped.replace("\r\n", "\n");
+    let mut out = String::with_capacity(lf.len());
+    for (idx, line) in lf.split('\n').enumerate() {
+        if idx > 0 {
+            out.push('\n');
+        }
+        let collapsed = collapse_carriage_returns(line);
+        for ch in collapsed.chars() {
+            if ch == '\t' || (!ch.is_control() && ch != '\x7f') {
+                out.push(ch);
+            }
+        }
+    }
+    out
+}
+
+#[cfg(unix)]
+fn parse_completion_marker(raw: &str, marker: &str) -> Option<(i32, String)> {
+    let marker_colon = format!("{marker}:");
+    if !raw.contains(&marker_colon) {
+        return None;
+    }
+    let cleaned = normalize_pty_text(raw);
+    let needle = format!("\n{marker}:");
+    let tail = cleaned
+        .rsplit_once(&needle)
+        .map(|(_, tail)| tail)
+        .or_else(|| cleaned.strip_prefix(&marker_colon))?;
+    let (line, _) = tail.split_once('\n')?;
+    let (status, cwd) = line.split_once(':')?;
+    Some((status.trim().parse().ok()?, cwd.to_string()))
+}
+
+#[cfg(unix)]
+fn is_internal_sentinel_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    let Some(rest) = trimmed.strip_prefix("__CODEWHALE_TERM_") else {
+        return false;
+    };
+    if let Some((prefix, tail)) = rest.split_once("__:") {
+        !prefix.is_empty()
+            && prefix.bytes().all(|b| b.is_ascii_alphanumeric())
+            && tail
+                .split_once(':')
+                .is_some_and(|(code, _)| code.trim().parse::<i32>().is_ok())
+    } else {
+        rest.ends_with("__START") || rest.ends_with("SOURCE")
+    }
+}
+
+#[cfg(unix)]
+fn strip_internal_scaffolding(input: &str) -> String {
+    if !input.contains("__CODEWHALE_TERM_") {
+        return input.to_string();
+    }
+    let has_trailing_nl = input.ends_with('\n');
+    let lines: Vec<&str> = if has_trailing_nl {
+        input[..input.len() - 1].split('\n').collect()
+    } else {
+        input.split('\n').collect()
+    };
+    let mut start = 0usize;
+    if let Some(wrapper_idx) = lines
+        .iter()
+        .position(|line| line.contains(". /dev/fd/9 9<<'__CODEWHALE_TERM_"))
+        && let Some(rel_end) = lines[wrapper_idx + 1..].iter().position(|line| {
+            line.contains("__CODEWHALE_TERM_") && line.trim_end().ends_with("SOURCE")
+        })
+    {
+        start = wrapper_idx + 1 + rel_end + 1;
+    }
+    let mut end = lines.len();
+    if let Some(rel_sentinel) = lines[start..].iter().rposition(|line| {
+        let trimmed = line.trim();
+        trimmed.starts_with("__CODEWHALE_TERM_")
+            && trimmed.contains("__:")
+            && is_internal_sentinel_line(trimmed)
+    }) {
+        end = start + rel_sentinel;
+    }
+    let kept: Vec<&str> = lines[start..end]
+        .iter()
+        .copied()
+        .filter(|line| {
+            !(line.contains(". /dev/fd/9 9<<'__CODEWHALE_TERM_")
+                || (line.contains("__cw_status=") && line.contains("__CODEWHALE_TERM_"))
+                || (line.contains("heredoc>") && line.contains("__CODEWHALE_TERM_"))
+                || is_internal_sentinel_line(line))
+        })
+        .collect();
+    let mut joined = kept.join("\n");
+    if has_trailing_nl && end == lines.len() && !joined.is_empty() {
+        joined.push('\n');
+    }
+    joined
+}
+
+#[cfg(unix)]
+fn clean_pty_output(raw: &str, command: Option<&CommandState>) -> String {
+    let normalized = normalize_pty_text(raw);
+    let mut body: &str = &normalized;
+    if let Some(state) = command {
+        let start_with_nl = format!("\n{}\n", state.start_marker);
+        let start_prefix = format!("{}\n", state.start_marker);
+        let start_trailing = format!("\n{}", state.start_marker);
+        if let Some(pos) = body.find(&start_with_nl) {
+            body = &body[pos + start_with_nl.len()..];
+        } else if let Some(rest) = body.strip_prefix(&start_prefix) {
+            body = rest;
+        } else if let Some(pos) = body.find(&start_trailing) {
+            body = &body[pos + start_trailing.len()..];
+            body = body.strip_prefix('\n').unwrap_or(body);
+        }
+        let end_nl = format!("\n{}:", state.marker);
+        let end_prefix = format!("{}:", state.marker);
+        if let Some((before, _)) = body.rsplit_once(&end_nl) {
+            body = before;
+        } else if body.starts_with(&end_prefix) {
+            body = "";
+        }
+    }
+    strip_internal_scaffolding(body)
+}
+
+#[cfg(unix)]
 fn completion(session: &TerminalSession) -> Option<(i32, String)> {
     let state = session.command.as_ref()?;
     let output = output_snapshot(session);
-    let marker = format!("\n{}:", state.marker);
-    let line = output
-        .rsplit(&marker)
-        .next()
-        .and_then(|tail| tail.lines().next())?;
-    let (status, cwd) = line.split_once(':')?;
-    Some((status.parse().ok()?, cwd.to_string()))
+    parse_completion_marker(&output, &state.marker)
 }
 
 #[cfg(unix)]
@@ -960,20 +1205,20 @@ fn start_command(session: &mut TerminalSession, command: &str) -> Result<(), Str
     if session.command.is_some() && completion(session).is_none() {
         return Err("terminal session already has a running foreground command".to_string());
     }
-    let marker = format!("__CODEWHALE_TERM_{}__", Uuid::new_v4().simple());
-    // The command must run in the CURRENT shell — a subshell would discard
-    // exactly the state (cd, exports, functions, activated envs) this tool
-    // exists to preserve (EXEC-001). Parse the source and sentinel together,
-    // but read source lines from a separate fd: interactive commands keep the
-    // PTY as stdin, and aliases defined on earlier lines expand in every shell.
-    // The random quoted delimiter prevents source expansion by the outer shell.
-    let delimiter = format!("{marker}_SOURCE");
+    let id = Uuid::new_v4().simple().to_string();
+    let marker = format!("__CODEWHALE_TERM_{id}__");
+    let start_marker = format!("{marker}START");
+    let delimiter = format!("{marker}SOURCE");
     let wrapped = format!(
-        ". /dev/fd/9 9<<'{delimiter}'; __cw_status=$?; printf '\\n{marker}:%s:%s\\n' \"$__cw_status\" \"$PWD\"\n{command}\n{delimiter}\n"
+        "printf '\\n__CODEWHALE_TERM_%s__START\\n' '{id}'; . /dev/fd/9 9<<'{delimiter}'; __cw_status=$?; printf '\\n__CODEWHALE_TERM_%s__:%s:%s\\n' '{id}' \"$__cw_status\" \"$PWD\"\n{command}\n{delimiter}\n"
     );
     write_bytes(session, wrapped.as_bytes())
         .map_err(|error| format!("PTY write failed: {error}"))?;
-    session.command = Some(CommandState { marker });
+    session.command = Some(CommandState {
+        id,
+        marker,
+        start_marker,
+    });
     session.durable.state = DurableTerminalState::Running;
     session.durable.updated_at = chrono::Utc::now().to_rfc3339();
     persist_durable(&session.durable_path, &session.durable)?;
@@ -983,11 +1228,12 @@ fn start_command(session: &mut TerminalSession, command: &str) -> Result<(), Str
 #[cfg(unix)]
 fn write_completion_sentinel(
     session: &TerminalSession,
-    marker: &str,
+    id: &str,
     status: i32,
 ) -> Result<(), String> {
-    let sentinel =
-        format!("__cw_status={status}; printf '\\n{marker}:%s:%s\\n' \"$__cw_status\" \"$PWD\"\n");
+    let sentinel = format!(
+        "__cw_status={status}; printf '\\n__CODEWHALE_TERM_%s__:%s:%s\\n' '{id}' \"$__cw_status\" \"$PWD\"\n"
+    );
     write_bytes(session, sentinel.as_bytes()).map_err(|error| format!("PTY write failed: {error}"))
 }
 
@@ -1006,8 +1252,8 @@ fn wait_session(session: &mut TerminalSession, timeout: Duration) -> (Option<(i3
     }
 }
 
-/// Wait without monopolizing the per-session lock. `terminal/send` and
-/// `terminal/cancel` must be able to acquire the lock while a foreground
+/// Wait without monopolizing the per-session lock. `terminal_send` and
+/// `terminal_cancel` must be able to acquire the lock while a foreground
 /// command is active; otherwise interactive input and cancellation deadlock
 /// behind the waiter.
 #[cfg(unix)]
@@ -1036,13 +1282,15 @@ fn wait_shared_session(
 /// Interrupt a foreground command and wait until the persistent shell confirms
 /// that it is ready again.
 ///
-/// Canonical PTYs may flush queued input when they process ETX. Resubmit the
-/// completion sentinel until the shell acknowledges it so a busy host cannot
-/// strand the session merely because the one post-interrupt write raced that
-/// flush.
+/// Canonical PTYs may flush queued input when they process ETX, and an ETX
+/// sent before the foreground child owns the terminal never interrupts it.
+/// Resubmit the completion sentinel until the shell acknowledges it, and
+/// resubmit the interrupt on a slower cadence only while the terminal's
+/// foreground group is not the shell's own, so a re-interrupt cannot flush or
+/// abort a sentinel the shell is about to run.
 #[cfg(unix)]
 fn cancel_shared_session(session: &SharedSession) -> Result<(i32, String), ToolError> {
-    let marker = {
+    let command_id = {
         let session = session
             .lock()
             .map_err(|_| ToolError::execution_failed("terminal session lock poisoned"))?;
@@ -1057,10 +1305,11 @@ fn cancel_shared_session(session: &SharedSession) -> Result<(i32, String), ToolE
             .command
             .as_ref()
             .expect("running command checked above")
-            .marker
+            .id
             .clone()
     };
     let deadline = Instant::now() + CANCEL_CONFIRM_TIMEOUT;
+    let mut last_interrupt = Instant::now();
 
     loop {
         std::thread::sleep(CANCEL_SENTINEL_RETRY_INTERVAL);
@@ -1075,7 +1324,21 @@ fn cancel_shared_session(session: &SharedSession) -> Result<(i32, String), ToolE
                 "terminal interrupt was sent, but cancellation was not confirmed within 2 seconds",
             ));
         }
-        write_completion_sentinel(&session, &marker, 130).map_err(ToolError::execution_failed)?;
+        if last_interrupt.elapsed() >= CANCEL_INTERRUPT_RETRY_INTERVAL {
+            let shell_foreground = session
+                .master
+                .process_group_leader()
+                .and_then(|leader| u32::try_from(leader).ok())
+                .is_some_and(|foreground| Some(foreground) == session.child.process_id());
+            if !shell_foreground {
+                write_bytes(&session, &[3]).map_err(|error| {
+                    ToolError::execution_failed(format!("PTY write failed: {error}"))
+                })?;
+                last_interrupt = Instant::now();
+            }
+        }
+        write_completion_sentinel(&session, &command_id, 130)
+            .map_err(ToolError::execution_failed)?;
     }
 }
 
@@ -1085,19 +1348,36 @@ fn session_result(
     done: Option<(i32, String)>,
     timed_out: bool,
 ) -> ToolResult {
-    let output = prune_output(&take_output(session));
+    session_result_with_status(session, done, timed_out, None)
+}
+
+#[cfg(unix)]
+fn session_result_with_status(
+    session: &mut TerminalSession,
+    done: Option<(i32, String)>,
+    timed_out: bool,
+    status_override: Option<&str>,
+) -> ToolResult {
+    let raw = take_output(session);
+    let cleaned = clean_pty_output(&raw, session.command.as_ref());
+    let stdout = prune_output(&cleaned);
     let finished = done.is_some();
     let (exit_code, cwd) = done.map_or((None, String::new()), |(code, cwd)| (Some(code), cwd));
-    let status = if timed_out {
+    let status = status_override.unwrap_or(if timed_out {
         "timed_out"
     } else if finished {
         "completed"
     } else {
         "running"
-    };
+    });
     if !cwd.is_empty() {
         session.durable.last_known_cwd = PathBuf::from(&cwd);
     }
+    let effective_cwd = if cwd.is_empty() {
+        session.durable.last_known_cwd.display().to_string()
+    } else {
+        cwd.clone()
+    };
     session.durable.state = if timed_out || !finished {
         DurableTerminalState::Running
     } else if exit_code == Some(0) {
@@ -1117,12 +1397,21 @@ fn session_result(
             "updated_at": record.updated_at,
         })
     });
+    let content = json!({
+        "stdout": stdout,
+        "exit_code": exit_code,
+        "cwd": effective_cwd,
+        "status": status,
+        "session": session.durable.name,
+        "session_id": session.durable.session_id,
+    })
+    .to_string();
     ToolResult {
-        content: output,
+        content,
         // A successful send while the command is still running is itself a
         // successful tool operation. Completed commands still report their
         // real exit status, and timeouts remain unsuccessful.
-        success: !timed_out && (!finished || exit_code == Some(0)),
+        success: status == "canceled" || (!timed_out && (!finished || exit_code == Some(0))),
         metadata: Some(json!({
             "status": status,
             "exit_code": exit_code,
@@ -1157,8 +1446,15 @@ fn timeout_secs(input: &serde_json::Value, key: &str) -> Result<Duration, ToolEr
 
 fn shell_allowed(context: &ToolContext, name: &str) -> Result<(), ToolError> {
     crate::tools::execution_envelope::enforce_tool_denial(context, name, &json!({}))?;
-    if matches!(name, "terminal/run" | "terminal/send" | "terminal/reset")
-        && context.shell_policy != codewhale_agent_contract::worker_profile::ShellPolicy::Full
+    if matches!(
+        name,
+        TERMINAL_RUN_NAME
+            | TERMINAL_SEND_NAME
+            | TERMINAL_RESET_NAME
+            | LEGACY_TERMINAL_RUN_NAME
+            | LEGACY_TERMINAL_SEND_NAME
+            | LEGACY_TERMINAL_RESET_NAME
+    ) && context.shell_policy != codewhale_agent_contract::worker_profile::ShellPolicy::Full
     {
         return Err(ToolError::permission_denied(
             "Persistent terminal execution and input require full shell permission.",
@@ -1179,7 +1475,7 @@ fn unsupported() -> ToolResult {
 }
 
 macro_rules! terminal_tool_common {
-    ($name:literal, $description:literal) => {
+    ($name:expr, $description:literal) => {
         fn name(&self) -> &'static str {
             $name
         }
@@ -1198,12 +1494,84 @@ macro_rules! terminal_tool_common {
     };
 }
 
+pub struct LegacyTerminalToolAlias<T> {
+    name: &'static str,
+    inner: T,
+}
+
+impl<T> LegacyTerminalToolAlias<T> {
+    pub const fn new(name: &'static str, inner: T) -> Self {
+        Self { name, inner }
+    }
+}
+
+#[async_trait]
+impl<T: ToolSpec + Send + Sync> ToolSpec for LegacyTerminalToolAlias<T> {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn model_visible(&self) -> bool {
+        false
+    }
+
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        self.inner.input_schema()
+    }
+
+    fn capabilities(&self) -> Vec<ToolCapability> {
+        self.inner.capabilities()
+    }
+
+    fn approval_requirement(&self) -> ApprovalRequirement {
+        self.inner.approval_requirement()
+    }
+
+    async fn execute(
+        &self,
+        input: serde_json::Value,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        shell_allowed(context, self.name)?;
+        self.inner.execute(input, context).await
+    }
+}
+
+pub fn legacy_terminal_tool_aliases() -> Vec<std::sync::Arc<dyn ToolSpec>> {
+    vec![
+        std::sync::Arc::new(LegacyTerminalToolAlias::new(
+            LEGACY_TERMINAL_RUN_NAME,
+            TerminalRunTool,
+        )),
+        std::sync::Arc::new(LegacyTerminalToolAlias::new(
+            LEGACY_TERMINAL_SEND_NAME,
+            TerminalSendTool,
+        )),
+        std::sync::Arc::new(LegacyTerminalToolAlias::new(
+            LEGACY_TERMINAL_WAIT_NAME,
+            TerminalWaitTool,
+        )),
+        std::sync::Arc::new(LegacyTerminalToolAlias::new(
+            LEGACY_TERMINAL_CANCEL_NAME,
+            TerminalCancelTool,
+        )),
+        std::sync::Arc::new(LegacyTerminalToolAlias::new(
+            LEGACY_TERMINAL_RESET_NAME,
+            TerminalResetTool,
+        )),
+    ]
+}
+
 pub struct TerminalRunTool;
 #[async_trait]
 impl ToolSpec for TerminalRunTool {
     terminal_tool_common!(
-        "terminal/run",
-        "Run a command in a persistent PTY shell session. cd, exports, shell functions, and activated environments persist across calls in this process. Identity and a non-secret last-known summary persist across restarts; prior shells are surfaced as stale/lost and are never reattached. On timeout the wait is abandoned but the command keeps running in the session (use terminal/wait or cancel). (Unix only)"
+        TERMINAL_RUN_NAME,
+        "Run a command in a persistent PTY shell session. cd, exports, shell functions, and activated environments persist across calls in this process. Identity and a non-secret last-known summary persist across restarts; prior shells are surfaced as stale/lost and are never reattached. On timeout the wait is abandoned but the command keeps running in the session (use terminal_wait or terminal_cancel). (Unix only)"
     );
     fn input_schema(&self) -> serde_json::Value {
         json!({"type":"object","properties":{"command":{"type":"string"},"session":{"type":"string","default":"term-1"},"timeout_secs":{"type":"integer","default":120}},"required":["command"]})
@@ -1255,7 +1623,7 @@ pub struct TerminalSendTool;
 #[async_trait]
 impl ToolSpec for TerminalSendTool {
     terminal_tool_common!(
-        "terminal/send",
+        TERMINAL_SEND_NAME,
         "Send raw input to a live persistent terminal session. Use a literal ETX control byte to interrupt an interactive process. A prior-process shell is reported as stale/lost rather than reattached. (Unix only)"
     );
     fn input_schema(&self) -> serde_json::Value {
@@ -1304,7 +1672,7 @@ pub struct TerminalWaitTool;
 #[async_trait]
 impl ToolSpec for TerminalWaitTool {
     terminal_tool_common!(
-        "terminal/wait",
+        TERMINAL_WAIT_NAME,
         "Wait for the current foreground command in a live persistent terminal session and return buffered output. A prior-process shell is reported as stale/lost rather than reattached. Output buffer holds at most 512KiB; older bytes are dropped silently. (Unix only)"
     );
     fn input_schema(&self) -> serde_json::Value {
@@ -1344,7 +1712,7 @@ pub struct TerminalCancelTool;
 #[async_trait]
 impl ToolSpec for TerminalCancelTool {
     terminal_tool_common!(
-        "terminal/cancel",
+        TERMINAL_CANCEL_NAME,
         "Interrupt the running foreground command with ETX. The live terminal session survives and can be reused; its non-secret summary persists. (Unix only)"
     );
     fn input_schema(&self) -> serde_json::Value {
@@ -1366,10 +1734,9 @@ impl ToolSpec for TerminalCancelTool {
                 let mut session = session
                     .lock()
                     .map_err(|_| ToolError::execution_failed("terminal session lock poisoned"))?;
-                let mut result = session_result(&mut session, Some(done), false);
-                result.success = true;
+                let mut result =
+                    session_result_with_status(&mut session, Some(done), false, Some("canceled"));
                 if let Some(metadata) = result.metadata.as_mut() {
-                    metadata["status"] = json!("canceled");
                     metadata["canceled"] = json!(true);
                 }
                 Ok(result)
@@ -1389,7 +1756,7 @@ pub struct TerminalResetTool;
 #[async_trait]
 impl ToolSpec for TerminalResetTool {
     terminal_tool_common!(
-        "terminal/reset",
+        TERMINAL_RESET_NAME,
         "Kill and recreate a persistent terminal session with a fresh environment. This loses live cd, exports, functions, activated environments, and running work while retaining the prior historical summary. (Unix only)"
     );
     fn input_schema(&self) -> serde_json::Value {
@@ -1507,26 +1874,42 @@ mod tests {
         }
     }
 
+    fn open_when_pty_available(open: impl Fn() -> Result<SharedSession, String>) -> SharedSession {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            match open() {
+                Err(error)
+                    if error.starts_with("failed to open PTY") && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                opened => return opened.unwrap(),
+            }
+        }
+    }
+
     fn fresh(name: &str) -> SharedSession {
-        let session = get_or_create(
-            OWNER,
-            name,
-            std::path::Path::new("/tmp"),
-            codewhale_sandbox::SandboxPolicy::DangerFullAccess,
-            &test_shell_manager(),
-        )
-        .unwrap();
+        let session = open_when_pty_available(|| {
+            get_or_create(
+                OWNER,
+                name,
+                std::path::Path::new("/tmp"),
+                codewhale_sandbox::SandboxPolicy::DangerFullAccess,
+                &test_shell_manager(),
+            )
+        });
         let mut session_guard = session.lock().unwrap();
         let _ = session_guard.child.kill();
         drop(session_guard);
-        let replacement = create_session(
-            OWNER,
-            name,
-            std::path::Path::new("/tmp"),
-            codewhale_sandbox::SandboxPolicy::DangerFullAccess,
-            &test_shell_manager(),
-        )
-        .unwrap();
+        let replacement = open_when_pty_available(|| {
+            create_session(
+                OWNER,
+                name,
+                std::path::Path::new("/tmp"),
+                codewhale_sandbox::SandboxPolicy::DangerFullAccess,
+                &test_shell_manager(),
+            )
+        });
         replace_registered(session_key(OWNER, name, Path::new("/tmp")), &replacement).unwrap();
         replacement
     }
@@ -1579,11 +1962,11 @@ mod tests {
             TerminalRunTool
                 .description()
                 .contains("the command keeps running in the session"),
-            "terminal/run must disclose that a timeout abandons the wait, not the command"
+            "terminal_run must disclose that a timeout abandons the wait, not the command"
         );
         assert!(
             TerminalWaitTool.description().contains("512KiB"),
-            "terminal/wait must disclose the retained-output bound"
+            "terminal_wait must disclose the retained-output bound"
         );
     }
 
@@ -2053,15 +2436,15 @@ mod tests {
                 .await
         });
         // Observe the PTY reader directly: taking the session mutex here would
-        // hide the old bug by waiting for terminal/send to finish first.
+        // hide the old bug by waiting for terminal_send to finish first.
         let deadline = Instant::now() + Duration::from_secs(10);
         while !output.lock().unwrap().text().contains("model-") {
-            assert!(Instant::now() < deadline, "terminal/send did not write");
+            assert!(Instant::now() < deadline, "terminal_send did not write");
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         assert!(
             !send.is_finished(),
-            "terminal/send already finished its wait"
+            "terminal_send already finished its wait"
         );
         let path = workspace.path().to_path_buf();
         let mut dock = tokio::task::spawn_blocking(move || {
@@ -2086,7 +2469,7 @@ mod tests {
         .unwrap()
         .unwrap();
         let result = send.await.unwrap().unwrap();
-        assert!(responsive, "terminal/send held the session during wait_ms");
+        assert!(responsive, "terminal_send held the session during wait_ms");
         assert_eq!(entries[0].state, DurableTerminalState::Running);
         assert!(String::from_utf8_lossy(&snapshot.unwrap().bytes).contains("model-"));
         assert!(result.content.contains("answer=model-human"), "{result:?}");
@@ -2231,8 +2614,80 @@ mod tests {
     fn output_is_capped_with_notice() {
         let session = fresh("test-output-cap");
         let result = run(&session, "yes x | head -n 100000", Duration::from_secs(3));
-        assert!(result.content.len() <= OUTPUT_LIMIT + 100);
-        assert!(result.content.contains("output truncated"));
+        let parsed: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+        let stdout = parsed["stdout"].as_str().unwrap();
+        assert!(stdout.len() <= OUTPUT_LIMIT + 100);
+        assert!(stdout.contains("output truncated"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pty_run_strips_wrapper_heredoc_ansi_and_sentinel_into_clean_json() {
+        let state = CommandState {
+            id: "deadbeef1234".to_string(),
+            marker: "__CODEWHALE_TERM_deadbeef1234__".to_string(),
+            start_marker: "__CODEWHALE_TERM_deadbeef1234__START".to_string(),
+        };
+        let raw_zsh = concat!(
+            "\x1b]2;zsh\x07\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m     \r \r",
+            "user@host CW % \x1b[?2004hprintf '\\n__CODEWHALE_TERM_%s__START\\n' 'deadbeef1234'; ",
+            ". /dev/fd/9 9<<'__CODEWHALE_TERM_deadbeef1234__SOURCE'; __cw_status=$?; ",
+            "printf '\\n__CODEWHALE_TERM_%s__:%s:%s\\n' 'deadbeef1234' \"$__cw_status\" \"$PWD\"\x1b[?2004l\r\n",
+            "heredoc> \x1b[?2004hpwd && echo ok\x1b[?2004l\r\n",
+            "heredoc> \x1b[?2004h__CODEWHALE_TERM_deadbeef1234__SOURCE\x1b[?2004l\r\n",
+            "\r\n__CODEWHALE_TERM_deadbeef1234__START\r\n",
+            "\x1b]0;running\x07\x1b[32m/tmp/work\x1b[0m\r\n",
+            "col1\t\x1b[1mok\x1b[0m\r\n",
+            "\r\n__CODEWHALE_TERM_deadbeef1234__:0:/tmp/work\r\n",
+            "\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m     \r \ruser@host CW % \x1b[?2004h"
+        );
+        assert_eq!(
+            parse_completion_marker(raw_zsh, &state.marker),
+            Some((0, "/tmp/work".to_string()))
+        );
+        assert_eq!(strip_zsh_prompt_marks("é\x1b[0m🐳"), "é\x1b[0m🐳");
+        let cleaned = clean_pty_output(raw_zsh, Some(&state));
+        assert_eq!(cleaned, "/tmp/work\ncol1\tok\n");
+        assert!(!cleaned.contains("__CODEWHALE_TERM_"));
+        assert!(!cleaned.contains("heredoc>"));
+        assert!(!cleaned.contains("/dev/fd/9"));
+        assert!(!cleaned.contains('\x1b'));
+
+        let legacy_without_start = concat!(
+            "user@host % . /dev/fd/9 9<<'__CODEWHALE_TERM_abcd__SOURCE'; __cw_status=$?; printf '\\n__CODEWHALE_TERM_abcd__:%s:%s\\n' \"$__cw_status\" \"$PWD\"\r\n",
+            "heredoc> pwd && echo ok\r\n",
+            "heredoc> __CODEWHALE_TERM_abcd__SOURCE\r\n",
+            "/tmp/work\r\nok\r\n",
+            "\r\n__CODEWHALE_TERM_abcd__:0:/tmp/work\r\n",
+            "\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m   \r \ruser@host % "
+        );
+        assert_eq!(
+            clean_pty_output(legacy_without_start, None),
+            "/tmp/work\nok\n"
+        );
+
+        let session = fresh("test-clean-pty-json");
+        let result = run(
+            &session,
+            "pwd && printf 'a\\tok\\n'",
+            Duration::from_secs(5),
+        );
+        assert!(result.success, "{}", result.content);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&result.content).expect("structured json content");
+        assert_eq!(parsed["exit_code"], 0);
+        assert_eq!(parsed["status"], "completed");
+        assert_eq!(parsed["session"], "test-clean-pty-json");
+        assert!(parsed["session_id"].as_str().is_some_and(|s| !s.is_empty()));
+        let cwd = parsed["cwd"].as_str().expect("cwd");
+        assert!(!cwd.is_empty());
+        let stdout = parsed["stdout"].as_str().expect("stdout");
+        assert!(stdout.contains("a\tok"), "{stdout:?}");
+        assert!(stdout.contains(cwd), "{stdout:?} vs {cwd:?}");
+        assert!(!stdout.contains("__CODEWHALE_TERM_"), "{stdout:?}");
+        assert!(!stdout.contains("/dev/fd/9"), "{stdout:?}");
+        assert!(!stdout.contains("heredoc>"), "{stdout:?}");
+        assert!(!stdout.contains('\x1b'), "{stdout:?}");
     }
 
     /// The cursor contract the Engine byte stream rides on: offsets are
@@ -2412,5 +2867,137 @@ mod tests {
                 result.content
             );
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn kill_sessions_named_ends_only_matching_plugin_sessions_and_get_or_create_caps_per_plugin() {
+        let workspace = DockWorkspace::new();
+        let path = workspace.path();
+        let manager = test_shell_manager();
+        let policy = codewhale_sandbox::SandboxPolicy::DangerFullAccess;
+        let thread = format!("thread-named-{}", Uuid::new_v4());
+        let suffix = Uuid::new_v4().simple().to_string();
+        let plugin_a = format!("plug-a-{suffix}");
+        let plugin_ab = format!("{plugin_a}b");
+        let plugin_b = format!("plug-b-{suffix}");
+
+        let term1 = get_or_create(&thread, "term-1", path, policy.clone(), &manager).unwrap();
+        let colliding = get_or_create(
+            &thread,
+            &format!("dsh:{plugin_a}:b:x"),
+            path,
+            policy.clone(),
+            &manager,
+        )
+        .unwrap();
+        let other_prefix = get_or_create(
+            &thread,
+            &format!("dsh:{plugin_ab}:s0"),
+            path,
+            policy.clone(),
+            &manager,
+        )
+        .unwrap();
+        let other_plugin = get_or_create(
+            &thread,
+            &format!("dsh:{plugin_b}:s0"),
+            path,
+            policy.clone(),
+            &manager,
+        )
+        .unwrap();
+
+        let mut plugin_sessions = Vec::new();
+        for idx in 0..crate::extension_host::dsh_terminal::MAX_TERMINALS {
+            let session = get_or_create(
+                &thread,
+                &format!("dsh:{plugin_a}:s{idx}"),
+                path,
+                policy.clone(),
+                &manager,
+            )
+            .unwrap();
+            plugin_sessions.push(session);
+        }
+        assert!(
+            get_or_create(
+                &thread,
+                &format!("dsh:{plugin_a}:s0"),
+                path,
+                policy.clone(),
+                &manager,
+            )
+            .is_ok()
+        );
+        assert!(
+            get_or_create(
+                &thread,
+                &format!("dsh:{plugin_a}:overflow"),
+                path,
+                policy.clone(),
+                &manager,
+            )
+            .is_err()
+        );
+        assert!(get_or_create(&thread, "term-2", path, policy, &manager).is_ok());
+        {
+            let mut first = plugin_sessions[0].lock().unwrap();
+            start_command(&mut first, "sleep 30").unwrap();
+        }
+
+        assert_eq!(kill_sessions_named("").unwrap(), 0);
+        assert_eq!(kill_sessions_named("dsh::").unwrap(), 0);
+        assert_eq!(kill_sessions_named("term-").unwrap(), 0);
+        assert_eq!(
+            kill_sessions_named(&format!("dsh:{plugin_a}:")).unwrap(),
+            crate::extension_host::dsh_terminal::MAX_TERMINALS
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        for session in &plugin_sessions {
+            while session_exit_status(&mut session.lock().unwrap())
+                .unwrap()
+                .is_none()
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "killed plugin shell did not exit"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        for survivor in [&term1, &colliding, &other_prefix, &other_plugin] {
+            assert!(
+                session_exit_status(&mut survivor.lock().unwrap())
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        let remaining: Vec<String> = owned_sessions(path, &thread)
+            .unwrap()
+            .into_iter()
+            .map(|info| info.name)
+            .collect();
+        assert!(remaining.contains(&"term-1".to_string()), "{remaining:?}");
+        assert!(remaining.contains(&"term-2".to_string()), "{remaining:?}");
+        assert!(
+            remaining.contains(&format!("dsh:{plugin_a}:b:x")),
+            "{remaining:?}"
+        );
+        assert!(
+            remaining.contains(&format!("dsh:{plugin_ab}:s0")),
+            "{remaining:?}"
+        );
+        assert!(
+            remaining.contains(&format!("dsh:{plugin_b}:s0")),
+            "{remaining:?}"
+        );
+        assert!(
+            !remaining
+                .iter()
+                .any(|name| name.starts_with(&format!("dsh:{plugin_a}:s"))),
+            "{remaining:?}"
+        );
     }
 }

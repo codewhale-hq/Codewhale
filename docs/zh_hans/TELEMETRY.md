@@ -45,14 +45,16 @@ codewhale --telemetry false              # 同样的终止开关，仅对单条�
 
 | 文件 | 作用 |
 |---|---|
-| `buffer.jsonl` | 待处理事件，每行一个 JSON 对象 |
+| `spool/<nonce>.jsonl` | 单个进程的待发送事件。首行记录模式版本、告知版本、应用版本、发布提交、使用界面和终端状态，其余各行各存一个事件。 |
+| `spool/<nonce>.lock` | 进程运行时持有该锁。锁已释放表示进程已结束。 |
+| `buffer.jsonl` | 旧版本遗留的缓冲文件。客户端只清空它，不再写入或发送其中的内容。 |
 | `buffer.jsonl.lock` | 兄弟排序锁，写入、投递、启动和擦除共享 |
 | `dryrun.jsonl` | 端点配置为空时批次的去向 |
 | `state.json` | 上次看到的应用版本和上次的 flush 尝试 |
 | `install_id.json` | 随机安装 id 及其生成时间 |
 | `disabled` | tombstone；存在即表示不会追加或发送任何内容 |
 
-`buffer.jsonl` 和 `dryrun.jsonl` 都是环形缓冲，上限为 512 条记录或 256 KiB，先到先截，最旧的被丢弃。因此整个目录有记录的占用上限为 **512 KiB 加几百字节元数据**。
+文件名中的随机数仅用于本机，不会发送。每个进程的暂存文件和 `dryrun.jsonl` 各自最多保存 512 条记录（含首行）或 256 KiB，达到任一上限就丢弃最旧的事件。因此磁盘占用上限是每个运行中的进程 256 KiB，另加 `dryrun.jsonl` 的 256 KiB。每次启动 TUI、`exec` 或 `serve` 后，最多保留四个已结束进程的暂存文件，此外还有几百字节的元数据。
 
 安装 id 是一个随机的 v4 UUID。它绝不从你的主机名、MAC 地址、`machine-id`、主目录、用户名或可执行文件路径派生——派生的 id 就是设备指纹，重装后依然存在，并在你自己选择退出之后重新识别你。每当 `$CODEWHALE_HOME/telemetry/` 被清空时它都会重新生成（选择退出会自动清空），并且在任何情况下每 90 天轮换一次。
 
@@ -275,7 +277,7 @@ Codewhale 没有恢复出厂设置命令，因此本文档也不会声称有。
 
 本节曾是配置任何非回环端点的门槛。端点现在默认已配置，因此这是对已存在服务的描述，而不是对可能存在的服务的承诺。
 
-**它是什么。** `https://telemetry.codewhale.net/v1/telemetry` ——一个名为 `codewhale-telemetry-ingest` 的 Cloudflare Worker，其完整源码就在本仓库的 [`telemetry-ingest/`](../../telemetry-ingest/) 中。它是唯一的 schema 与存储权威；浏览器应用可使用只转发主体的同源代理。没有遥测队列或第二套运行时采集器。它只写：Worker 中没有任何东西能回读已存储的内容，查询通过 Cloudflare 的 SQL API、以所有者的令牌带外进行。主机名刻意自描述，因此任何检查自己网络流量的人光看名字就能知道它是什么。
+**它是什么。** `https://telemetry.codewhale.net/v1/telemetry` ——一个名为 `codewhale-telemetry-ingest` 的 Cloudflare Worker，其完整源码就在本仓库的 [`telemetry-ingest/`](../../telemetry-ingest/) 中。它是唯一的 schema 与存储权威；浏览器应用可使用只转发主体的同源代理。没有遥测队列或第二套运行时采集器。它只写：Worker 中没有任何东西能回读已存储的内容，查询带外进行：所有者用令牌访问 Cloudflare 的 SQL API，或通过独立的私有 [`telemetry-stats/`](../../telemetry-stats/) Worker，它经账户绑定就地读取数据集，不使用令牌。主机名刻意自描述，因此任何检查自己网络流量的人光看名字就能知道它是什么。
 
 **它存储什么。** 本文档中的一切，仅此而已，存放在 Workers Analytics Engine——每个事件一行。`telemetry-ingest/src/schema.ts` 中的校验器是一个**封闭**字段集：批次任意位置的未知键都会以 `400` 拒绝整个批次。未来某个客户端 bug 开始附带路径、提示词或提供商表名时，会被服务器拒绝，而不是被悄悄存储。`telemetry-ingest/test/schema-doc.test.ts` 会从*本文件*中解析出字段名和枚举拼写，并断言与校验器的集合相等；`telemetry-ingest/test/ingest.test.ts` 会发布 Rust 客户端自己钉住的 golden 批次，并断言它被逐字节接受——因此本文档、客户端和端点不会在没有红色测试的情况下彼此漂移。
 
@@ -288,7 +290,7 @@ Codewhale 没有恢复出厂设置命令，因此本文档也不会声称有。
 - 限流以校验过主体中的 `install_id` 为键，绝不基于网络地址。按 IP 键控的限流器意味着这个 Worker 要处理 IP。它是更弱的限流器，也是正确的取舍。
 - `telemetry-ingest/test/no-ip.test.ts` 将已发布的源码作为文本读取，如果出现任何地址或地理名称、读取的头集合增长到两个以上、新增 `console.*` 调用，或构造带主体的 `Response`，构建就会失败。
 
-**保留期：三个月。** 这是 Analytics Engine 的固定窗口，不可配置，因此它是上限而非策略——没有任何设置能让它更长。
+**保留期：三个月。** 这是 Analytics Engine 的固定窗口，不可配置，因此它是上限而非策略——没有任何设置能让它更长。与只写的采集 Worker 分开，所有者运行一个受 Cloudflare Access 保护的私有统计页面，直接从 Analytics Engine 读取并只展示聚合图表（绝不显示安装 id），另有每日汇总任务把不含安装 id 的每日总数保存在我们自己的 Cloudflare 存储中、超过三个月，而原始行仍在三个月后过期。
 
 **可选 PostHog 数据处理方。** 第一方存储完成后，明确配置的采集服务可把已验证的 schema-v3 / notice-v5 批次及保留原有含义的 schema-v2 / consent-v4 批次发往 [PostHog 批量采集 API](https://posthog.com/docs/api/capture)。只允许 `https://us.i.posthog.com` 和 `https://eu.i.posthog.com`；v1 批次永不进入此路径。PostHog 接收相同的有限字段，以批次时间作为事件时间，以 `codewhale:<install_id>` 作为匿名 `distinct_id`；事件名分别为 `codewhale_install_or_upgrade`、`codewhale_session_start`、`codewhale_session_end`、`codewhale_panic`、`codewhale_product_usage` 或 `codewhale_operations_summary`。固定设置 `$process_person_profile = false`、`$geoip_disable = true`、`$ip = null`。不转发请求元数据、身份识别、自动采集、会话回放、广告或工作内容，不添加 SDK。全新的服务端请求不携带用户 cookie 或身份验证头，不跟随重定向，限时 1.5 秒，不重试、不记录日志；处理方失败不改变已成功的第一方响应。
 
@@ -304,7 +306,7 @@ PostHog 项目的保留期限和隐私设置是单独的部署配置，启用前
 
 ### 所有者回读的内容——观察到的活跃安装数
 
-从这些数据推导出的唯一产品指标是**观察到的活跃安装数（observed active installs）**：在一个 UTC 日内产生 `session_start` 事件的不同轮换匿名安装 id 的数量。这就是全部定义。它不是人数、不是账户数、也不是安装总数——id 按安装存在，每 90 天轮换，选择退出时被删除，因此任何由它推导出的数字都不可能是这些。
+从这些数据推导出的首要产品指标是**观察到的活跃安装数（observed active installs）**：在一个 UTC 日内产生 `session_start` 事件的不同轮换匿名安装 id 的数量。这就是该指标的全部定义。它不是人数、不是账户数、也不是安装总数——id 按安装存在，每 90 天轮换，选择退出时被删除，因此任何由它推导出的数字都不可能是这些。私有统计页还会绘制按版本、界面（surface）和操作系统（OS）划分的活跃安装数和会话数，聚合的回合数与工具调用数，按工具统计的工具调用数与错误数，按提供商和目录模型统计的模型回合与令牌，以及原生与网站漏斗；见 [`telemetry-stats/README.md`](../../telemetry-stats/README.md)。
 
 所有者的确切命令已签入仓库，因此例行查询是可审阅的代码，而不是从聊天里粘贴的 SQL：
 

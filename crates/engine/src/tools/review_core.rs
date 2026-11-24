@@ -757,20 +757,15 @@ pub(crate) async fn accounted_model_call(
         owner,
         origin,
     );
-    let observation = source.observe_route(&route)?;
-    source.admit_dispatch(&route).await?;
+    let observation = source.observation();
     let wire = observation.wire_observations.clone();
     let response =
         crate::llm_client::observe_request_retries(Some(observation), client.create_message(body))
             .await;
-    let record = source.response_record(&route, &response, &wire.drain())?;
-    if record.has_captured_origin() {
-        crate::cost_status::settle_runtime_usage_record(
-            crate::cost_status::scope_token(),
-            None,
-            &record,
-        )
-        .await?;
+    let wire = wire.drain();
+    let record = source.response_record(&route, &response, &wire);
+    if let Some(origin) = source.origin() {
+        crate::cost_status::record_runtime_usage_async(origin.scope(), Some(origin), &record).await;
     }
     Ok((response?, record))
 }
@@ -836,6 +831,8 @@ pub async fn run_review_core(
                 stream: Some(false),
                 temperature: None,
                 top_p: None,
+                safety_check: None,
+                title: None,
             },
             request.accounting_origin.clone(),
             request.accounting_owner,
@@ -1117,6 +1114,8 @@ async fn refute_claims(
                 stream: Some(false),
                 temperature: None,
                 top_p: None,
+                safety_check: None,
+                title: None,
             },
             request.accounting_origin.clone(),
             request.accounting_owner,
@@ -1343,10 +1342,8 @@ pub fn repository_tool_workspace(
     {
         return None;
     }
-    let mut status = codewhale_dependencies::Git::review_base(workspace).ok()?;
-    status
-        .current_dir(workspace)
-        .args(["status", "--porcelain"]);
+    let mut status = codewhale_dependencies::Git::status_command(workspace).ok()?;
+    status.arg("--porcelain");
     let status = status.output().ok()?;
     if !status.status.success() || !String::from_utf8_lossy(&status.stdout).trim().is_empty() {
         return None;
@@ -1421,6 +1418,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage: Usage::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         }
     }
 
@@ -1879,5 +1879,149 @@ mod tests {
         assert_eq!(normalize_review_severity("something else"), "concern");
         assert!(review_severity_rank("blocker") > review_severity_rank("concern"));
         assert!(review_severity_rank("concern") > review_severity_rank("nit"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repository_tool_workspace_runs_no_repository_configured_filter() {
+        use codewhale_dependencies::{ExternalTool, Git};
+        use std::os::unix::fs::PermissionsExt;
+
+        if !Git::available() {
+            return;
+        }
+        let outside = tempfile::tempdir().expect("outside");
+        let helper = outside.path().join("filter.sh");
+        std::fs::write(&helper, "#!/bin/sh\nprintf touched >> \"$1\"\ncat\n").expect("helper");
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let output = Git::output(args, dir).expect("git spawns");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        let init = |dir: &std::path::Path| {
+            std::fs::create_dir_all(dir).expect("mkdir");
+            git(dir, &["init", "-q"]);
+            git(dir, &["config", "user.email", "test@example.com"]);
+            git(dir, &["config", "user.name", "Test User"]);
+            git(dir, &["config", "commit.gpgsign", "false"]);
+        };
+        let age = |path: &std::path::Path| {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .and_then(|file| {
+                    file.set_modified(
+                        std::time::SystemTime::now() - std::time::Duration::from_secs(7200),
+                    )
+                })
+                .expect("age file");
+        };
+
+        for (case, driver) in [("clean", "clean"), ("process", "process")] {
+            for committed in [false, true] {
+                let work = tempfile::tempdir().expect("work");
+                let marker = outside.path().join(format!("{case}-{committed}"));
+                init(work.path());
+                std::fs::write(work.path().join(".gitattributes"), "a.md filter=poc\n")
+                    .expect("attrs");
+                std::fs::write(work.path().join("a.md"), "original\n").expect("a.md");
+                git(work.path(), &["add", "."]);
+                git(work.path(), &["commit", "-q", "-m", "init"]);
+                std::fs::write(work.path().join("a.md"), "changed!\n").expect("change");
+                if committed {
+                    git(work.path(), &["commit", "-q", "-am", "change"]);
+                }
+                let command = format!("{} {}", helper.display(), marker.display());
+                git(
+                    work.path(),
+                    &["config", &format!("filter.poc.{driver}"), &command],
+                );
+                age(&work.path().join("a.md"));
+
+                let control = Git::output(&["status", "--porcelain"], work.path()).expect("status");
+                assert!(control.status.code().is_some());
+                assert!(marker.exists(), "positive control: {case} {committed}");
+                std::fs::remove_file(&marker).expect("reset");
+
+                let tools = repository_tool_workspace(work.path(), None);
+                assert!(!marker.exists(), "{case} {committed}: filter ran");
+                assert_eq!(tools.is_some(), committed, "{case} {committed}");
+            }
+        }
+
+        let work = tempfile::tempdir().expect("work");
+        let marker = outside.path().join("nested");
+        let sub = work.path().join("sub");
+        init(work.path());
+        init(&sub);
+        std::fs::write(sub.join(".gitattributes"), "b.md filter=poc\n").expect("attrs");
+        std::fs::write(sub.join("b.md"), "two\n").expect("b.md");
+        git(&sub, &["add", "."]);
+        git(&sub, &["commit", "-q", "-m", "sub"]);
+        git(work.path(), &["add", "."]);
+        git(work.path(), &["commit", "-q", "-m", "top"]);
+        let command = format!("{} {}", helper.display(), marker.display());
+        git(&sub, &["config", "filter.poc.clean", &command]);
+        git(work.path(), &["config", "submodule.sub.ignore", "none"]);
+        age(&sub.join("b.md"));
+
+        let control = Git::output(&["status", "--porcelain"], work.path()).expect("status");
+        assert!(control.status.success());
+        assert!(marker.exists(), "positive control: nested filter");
+        std::fs::remove_file(&marker).expect("reset");
+
+        let tools = repository_tool_workspace(work.path(), None);
+        assert!(!marker.exists(), "nested filter ran");
+        assert!(tools.is_some());
+    }
+
+    #[tokio::test]
+    async fn review_succeeds_when_its_usage_cannot_be_settled() {
+        let _cost = crate::cost_status::test_scope();
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let broken_sessions_file = workspace.path().join("not-a-sessions-dir");
+        std::fs::write(&broken_sessions_file, b"file").expect("create regular file sentinel");
+
+        let client = ScriptedClient::new(vec![response(vec![ContentBlock::Text {
+            text: final_review(),
+            cache_control: None,
+        }])]);
+        let mut request = ReviewCoreRequest::new(DIFF, "Review with broken accounting.");
+        request.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+            crate::cost_status::scope_token(),
+            broken_sessions_file.clone(),
+            "review-unsettled-session".to_string(),
+        ));
+        let result = run_review_core(&client, "test-model", request)
+            .await
+            .expect("review without money cap must succeed when usage cannot be settled");
+        assert_eq!(result.outcome, ReviewCoreOutcome::Completed);
+        assert_eq!(client.seen.lock().expect("lock").len(), 1);
+
+        let capped_client = ScriptedClient::new(vec![response(vec![ContentBlock::Text {
+            text: final_review(),
+            cache_control: None,
+        }])]);
+        let mut capped_request = ReviewCoreRequest::new(DIFF, "Review with unquoted money cap.");
+        capped_request.money_cap_usd = Some(1.0);
+        capped_request.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+            crate::cost_status::scope_token(),
+            broken_sessions_file,
+            "review-capped-session".to_string(),
+        ));
+        let err = match run_review_core(&capped_client, "test-model", capped_request).await {
+            Ok(_) => panic!("money cap without a verified frozen USD quote must still refuse"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("review money cap requires a verified frozen USD quote before dispatch"),
+            "{err:#}"
+        );
+        assert_eq!(capped_client.seen.lock().expect("lock").len(), 0);
     }
 }

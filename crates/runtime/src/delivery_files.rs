@@ -4,6 +4,7 @@
 //! Moves never replace another entry. Unix cannot atomically compare a directory
 //! entry and rename it, so callers must recover/preserve the moved entry when
 //! post-move identity validation refuses it. Windows moves the opened object.
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{self, Read, Seek};
 use std::path::{Path, PathBuf};
@@ -19,22 +20,27 @@ struct Version {
     modified: SystemTime,
     #[cfg(unix)]
     changed: (i64, i64),
+    #[cfg(unix)]
+    nlink: u64,
 }
 
-fn version(file: &File) -> io::Result<Version> {
+fn version_with_max_links(file: &File, max_links: u64) -> io::Result<Version> {
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(invalid("delivery file is not regular"));
     }
     #[cfg(unix)]
-    {
+    let nlink = {
         use std::os::unix::fs::MetadataExt;
-        if metadata.nlink() != 1 {
+        let nlink = metadata.nlink();
+        if nlink == 0 || nlink > max_links {
             return Err(invalid("delivery file has multiple links"));
         }
-    }
+        nlink
+    };
     #[cfg(windows)]
     {
+        let _ = max_links;
         let identity = codewhale_util::path_identity::windows_file_identity(file)?;
         if identity.links != 1 || identity.attributes & 0x0000_0400 != 0 {
             return Err(invalid("delivery file is linked or a reparse point"));
@@ -50,6 +56,8 @@ fn version(file: &File) -> io::Result<Version> {
             use std::os::unix::fs::MetadataExt;
             (metadata.ctime(), metadata.ctime_nsec())
         },
+        #[cfg(unix)]
+        nlink,
     })
 }
 
@@ -85,13 +93,21 @@ fn hash_exact_length(reader: &mut impl Read, length: u64) -> io::Result<String> 
 }
 
 fn stable_hash(file: &mut File, maximum: Option<u64>) -> io::Result<(String, Version)> {
-    let before = version(file)?;
+    stable_hash_with_max_links(file, maximum, 1)
+}
+
+fn stable_hash_with_max_links(
+    file: &mut File,
+    maximum: Option<u64>,
+    max_links: u64,
+) -> io::Result<(String, Version)> {
+    let before = version_with_max_links(file, max_links)?;
     if maximum.is_some_and(|maximum| before.length > maximum) {
         return Err(invalid("delivery file exceeds captured size limit"));
     }
     file.rewind()?;
     let digest = hash_exact_length(file, before.length)?;
-    let after = version(file)?;
+    let after = version_with_max_links(file, max_links)?;
     if before != after {
         return Err(invalid("delivery file changed while reading"));
     }
@@ -121,10 +137,63 @@ impl GuardedFile {
         Self::open_with_limit(directory, name, Some(maximum))
     }
 
+    /// Open a closed set of command siblings, rejecting any hard link outside the opened group.
+    pub fn open_command_siblings(
+        directory: &Path,
+        names: &[&str],
+    ) -> io::Result<BTreeMap<String, Self>> {
+        let mut unique_names = BTreeSet::new();
+        for &name in names {
+            if Path::new(name).components().count() != 1 {
+                return Err(invalid("delivery filename must be one basename"));
+            }
+            unique_names.insert(name);
+        }
+        #[cfg(unix)]
+        let max_links = unique_names.len().max(1) as u64;
+        #[cfg(not(unix))]
+        let max_links = 1;
+        let mut opened = BTreeMap::new();
+        for name in unique_names {
+            if let Some(handle) =
+                Self::open_with_limit_and_max_links(directory, name, None, max_links)?
+            {
+                opened.insert(name.to_string(), handle);
+            }
+        }
+        #[cfg(unix)]
+        {
+            for handle in opened.values() {
+                let mut group_len = 0_u64;
+                for candidate in opened.values() {
+                    if same_file(&handle.file, &candidate.file)? {
+                        group_len += 1;
+                    }
+                }
+                if handle.version.nlink != group_len {
+                    return Err(invalid("delivery file has an unowned hard link"));
+                }
+            }
+            for handle in opened.values_mut() {
+                handle.verify()?;
+            }
+        }
+        Ok(opened)
+    }
+
     fn open_with_limit(
         directory: &Path,
         name: &str,
         maximum: Option<usize>,
+    ) -> io::Result<Option<Self>> {
+        Self::open_with_limit_and_max_links(directory, name, maximum, 1)
+    }
+
+    fn open_with_limit_and_max_links(
+        directory: &Path,
+        name: &str,
+        maximum: Option<usize>,
+        max_links: u64,
     ) -> io::Result<Option<Self>> {
         if Path::new(name).components().count() != 1 {
             return Err(invalid("delivery filename must be one basename"));
@@ -138,16 +207,20 @@ impl GuardedFile {
         #[cfg(not(windows))]
         let directory = directory.canonicalize()?;
         let location = WorkspaceFile::open_delivery(&directory, Path::new(name))?;
-        let mut file = match location.open_retained() {
+        let mut file = match location.open_retained_with_max_links(max_links) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
         };
-        let initial = version(&file)?;
+        let initial = version_with_max_links(&file, max_links)?;
         if maximum.is_some_and(|maximum| initial.length > maximum as u64) {
             return Err(invalid("delivery receipt exceeds size limit"));
         }
-        let (digest, version) = stable_hash(&mut file, maximum.map(|maximum| maximum as u64))?;
+        let (digest, version) = stable_hash_with_max_links(
+            &mut file,
+            maximum.map(|maximum| maximum as u64),
+            max_links,
+        )?;
         let result = Self {
             location,
             directory,
@@ -189,26 +262,93 @@ impl GuardedFile {
         Ok(result)
     }
 
+    fn expected_max_links(&self) -> u64 {
+        #[cfg(unix)]
+        {
+            self.version.nlink
+        }
+        #[cfg(not(unix))]
+        {
+            1
+        }
+    }
+
+    /// Return whether two guarded handles refer to the same underlying file object.
+    pub fn same_inode(&self, other: &Self) -> io::Result<bool> {
+        same_file(&self.file, &other.file)
+    }
+
     #[cfg(unix)]
     pub fn verify_owned(&mut self) -> io::Result<()> {
-        self.location.verify_delivery_owner(&self.file)?;
+        let max_links = self.expected_max_links();
+        self.location
+            .verify_delivery_owner_with_max_links(&self.file, max_links)?;
         self.verify()?;
-        self.location.verify_delivery_owner(&self.file)
+        self.location
+            .verify_delivery_owner_with_max_links(&self.file, max_links)
     }
 
     #[cfg(unix)]
     pub fn remove_checked(&mut self, unlinked: &mut bool) -> io::Result<()> {
+        self.remove_sibling_checked(0, false, unlinked)
+    }
+
+    /// Remove a guarded sibling command while enforcing exact pre- and post-unlink link counts.
+    #[cfg(unix)]
+    pub fn remove_sibling_checked(
+        &mut self,
+        expected_remaining_links: u64,
+        prior_sibling_unlinked: bool,
+        unlinked: &mut bool,
+    ) -> io::Result<()> {
         use std::os::unix::fs::MetadataExt;
         *unlinked = false;
+        if prior_sibling_unlinked {
+            let expected_current_links = expected_remaining_links
+                .checked_add(1)
+                .ok_or_else(|| invalid("invalid expected link count"))?;
+            if !self.matches_path_with_max_links(expected_current_links)? {
+                return Err(invalid("delivery pathname identity changed"));
+            }
+            self.location
+                .verify_delivery_owner_with_max_links(&self.file, expected_current_links)?;
+            let metadata = self.file.metadata()?;
+            if !metadata.is_file()
+                || metadata.len() != self.version.length
+                || metadata.modified()? != self.version.modified
+                || metadata.nlink() != expected_current_links
+            {
+                return Err(invalid("delivery file changed since capture"));
+            }
+            self.file.rewind()?;
+            let digest = hash_exact_length(&mut self.file, self.version.length)?;
+            if digest != self.digest {
+                return Err(invalid("delivery file changed since capture"));
+            }
+            let reanchored = version_with_max_links(&self.file, expected_current_links)?;
+            if reanchored.length != self.version.length
+                || reanchored.modified != self.version.modified
+                || reanchored.nlink != expected_current_links
+            {
+                return Err(invalid("delivery file changed since capture"));
+            }
+            self.version = reanchored;
+        } else if self.version.nlink != expected_remaining_links.saturating_add(1) {
+            return Err(invalid("delivery file link count changed since capture"));
+        }
         self.verify_owned()?;
+        let expected_links_before_unlink = self.version.nlink;
         let directory = tempfile::Builder::new()
             .prefix(".codewhale-uninstall-")
             .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700))
             .tempdir_in(&self.directory)?
             .keep();
         let destination = WorkspaceFile::open_delivery(&directory, Path::new(&self.name))?;
-        self.location
-            .move_opened_to_directory(&self.file, &destination)?;
+        self.location.move_opened_to_directory_with_max_links(
+            &self.file,
+            &destination,
+            expected_links_before_unlink,
+        )?;
         let previous_location = std::mem::replace(&mut self.location, destination);
         self.directory = directory.clone();
         let removed = (|| {
@@ -217,18 +357,24 @@ impl GuardedFile {
             if !self.matches_path()? {
                 return Err(invalid("retired uninstall entry has a different identity"));
             }
-            let (digest, version) = stable_hash(&mut self.file, Some(self.version.length))?;
+            let (digest, version) = stable_hash_with_max_links(
+                &mut self.file,
+                Some(self.version.length),
+                expected_links_before_unlink,
+            )?;
             if digest != self.digest
                 || version.length != self.version.length
                 || version.modified != self.version.modified
+                || version.nlink != expected_links_before_unlink
             {
                 return Err(invalid("delivery file changed during uninstall retirement"));
             }
             self.version = version;
             self.verify_owned()?;
-            self.location.unlink_opened(&self.file)?;
+            self.location
+                .unlink_opened_with_max_links(&self.file, expected_links_before_unlink)?;
             *unlinked = true;
-            if self.file.metadata()?.nlink() != 0 {
+            if self.file.metadata()?.nlink() != expected_remaining_links {
                 return Err(invalid("delivery file retained another link after unlink"));
             }
             self.location.sync_parent()
@@ -257,6 +403,22 @@ impl GuardedFile {
 
     #[cfg(windows)]
     pub fn remove_checked(&mut self, unlinked: &mut bool) -> io::Result<()> {
+        self.remove_sibling_checked(0, false, unlinked)
+    }
+
+    /// Windows binaries stay single-link; reject hard-linked sibling removal parameters.
+    #[cfg(windows)]
+    pub fn remove_sibling_checked(
+        &mut self,
+        expected_remaining_links: u64,
+        prior_sibling_unlinked: bool,
+        unlinked: &mut bool,
+    ) -> io::Result<()> {
+        if expected_remaining_links != 0 || prior_sibling_unlinked {
+            return Err(invalid(
+                "hard-linked sibling removal is unsupported on Windows",
+            ));
+        }
         *unlinked = false;
         self.verify()?;
         self.move_to_vacant(&Self::recovery_name())?;
@@ -282,21 +444,33 @@ impl GuardedFile {
     }
 
     fn matches_path(&self) -> io::Result<bool> {
-        if !same_file(&self.file, &self.location.identity_probe()?)? {
+        self.matches_path_with_max_links(self.expected_max_links())
+    }
+
+    fn matches_path_with_max_links(&self, max_links: u64) -> io::Result<bool> {
+        if !same_file(
+            &self.file,
+            &self.location.identity_probe_with_max_links(max_links)?,
+        )? {
             return Ok(false);
         }
         // An anchored Unix fd survives a renamed parent. Rewalk the original
         // captured absolute root without canonicalizing new links, so a new
         // directory at that pathname cannot inherit the installation receipt.
         let current = WorkspaceFile::open_delivery(&self.directory, Path::new(&self.name))?;
-        same_file(&self.file, &current.identity_probe()?)
+        same_file(
+            &self.file,
+            &current.identity_probe_with_max_links(max_links)?,
+        )
     }
 
     pub fn verify(&mut self) -> io::Result<()> {
         if !self.matches_path()? {
             return Err(invalid("delivery pathname identity changed"));
         }
-        let (digest, version) = stable_hash(&mut self.file, Some(self.version.length))?;
+        let max_links = self.expected_max_links();
+        let (digest, version) =
+            stable_hash_with_max_links(&mut self.file, Some(self.version.length), max_links)?;
         if digest != self.digest || version != self.version {
             return Err(invalid("delivery file changed since capture"));
         }
@@ -494,5 +668,109 @@ mod tests {
         assert!(std::fs::rename(&prefix, root.path().join("swapped")).is_err());
         file.move_to_vacant("backup").unwrap();
         assert_eq!(file.read_bounded(3).unwrap(), b"old");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_siblings_allow_owned_pair_and_reject_external_hard_links() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let primary = root.path().join("codewhale");
+        let alias = root.path().join("codew");
+        std::fs::write(&primary, b"release-bytes").unwrap();
+        std::fs::set_permissions(&primary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::hard_link(&primary, &alias).unwrap();
+
+        assert!(GuardedFile::open(root.path(), "codewhale").is_err());
+        assert!(GuardedFile::open_bounded(root.path(), "codewhale", 64).is_err());
+        assert!(GuardedFile::open_command_siblings(root.path(), &["codewhale"]).is_err());
+
+        let mut siblings =
+            GuardedFile::open_command_siblings(root.path(), &["codewhale", "codew"]).unwrap();
+        assert_eq!(siblings.len(), 2);
+        assert!(
+            siblings["codewhale"]
+                .same_inode(&siblings["codew"])
+                .unwrap()
+        );
+
+        let third = outside.path().join("external");
+        std::fs::hard_link(&primary, &third).unwrap();
+        assert!(GuardedFile::open_command_siblings(root.path(), &["codewhale", "codew"]).is_err());
+        assert!(siblings.get_mut("codew").unwrap().verify().is_err());
+        let mut unlinked = false;
+        assert!(
+            siblings
+                .get_mut("codew")
+                .unwrap()
+                .remove_sibling_checked(1, false, &mut unlinked)
+                .is_err()
+        );
+        assert!(!unlinked);
+        assert!(primary.exists());
+        assert!(alias.exists());
+
+        std::fs::remove_file(&third).unwrap();
+        let mut siblings =
+            GuardedFile::open_command_siblings(root.path(), &["codewhale", "codew"]).unwrap();
+        let mut unlinked_alias = false;
+        siblings
+            .get_mut("codew")
+            .unwrap()
+            .remove_sibling_checked(1, false, &mut unlinked_alias)
+            .unwrap();
+        assert!(unlinked_alias);
+        assert!(!alias.exists());
+        assert!(primary.exists());
+
+        let mut unlinked_primary = false;
+        siblings
+            .get_mut("codewhale")
+            .unwrap()
+            .remove_sibling_checked(0, true, &mut unlinked_primary)
+            .unwrap();
+        assert!(unlinked_primary);
+        assert!(!primary.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reanchored_sibling_refuses_newly_added_hard_link_before_final_unlink() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let primary = root.path().join("codewhale");
+        let alias = root.path().join("codew");
+        std::fs::write(&primary, b"release-bytes").unwrap();
+        std::fs::set_permissions(&primary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::hard_link(&primary, &alias).unwrap();
+
+        let mut siblings =
+            GuardedFile::open_command_siblings(root.path(), &["codewhale", "codew"]).unwrap();
+        let mut unlinked_alias = false;
+        siblings
+            .get_mut("codew")
+            .unwrap()
+            .remove_sibling_checked(1, false, &mut unlinked_alias)
+            .unwrap();
+        assert!(unlinked_alias);
+
+        let third = outside.path().join("raced-link");
+        std::fs::hard_link(&primary, &third).unwrap();
+        let mut unlinked_primary = false;
+        assert!(
+            siblings
+                .get_mut("codewhale")
+                .unwrap()
+                .remove_sibling_checked(0, true, &mut unlinked_primary)
+                .is_err()
+        );
+        assert!(!unlinked_primary);
+        assert!(primary.exists());
     }
 }

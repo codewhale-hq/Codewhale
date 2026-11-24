@@ -67,6 +67,8 @@ pub struct UpdatePlanArgs {
     pub risks_and_unknowns: Option<String>,
     #[serde(default)]
     pub handoff_packet: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replan_if: Vec<String>,
     #[serde(default)]
     pub plan: Vec<PlanItemArg>,
 }
@@ -122,6 +124,8 @@ pub struct PlanSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff_packet: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replan_if: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<PlanItemArg>,
 }
 
@@ -139,6 +143,7 @@ impl PlanSnapshot {
             && self.verification_plan.is_none()
             && self.risks_and_unknowns.is_none()
             && self.handoff_packet.is_none()
+            && self.replan_if.is_empty()
             && self.items.is_empty()
     }
 
@@ -182,6 +187,7 @@ impl PlanSnapshot {
             verification_plan: clean_optional(string_field(input, "verification_plan")),
             risks_and_unknowns: clean_optional(string_field(input, "risks_and_unknowns")),
             handoff_packet: clean_optional(string_field(input, "handoff_packet")),
+            replan_if: clean_list(string_vec_field(input, "replan_if")),
             items,
         }
     }
@@ -201,6 +207,7 @@ pub struct PlanState {
     verification_plan: Option<String>,
     risks_and_unknowns: Option<String>,
     handoff_packet: Option<String>,
+    replan_if: Vec<String>,
     steps: Vec<PlanStep>,
 }
 
@@ -217,6 +224,7 @@ impl PlanState {
         self.verification_plan = clean_optional(args.verification_plan);
         self.risks_and_unknowns = clean_optional(args.risks_and_unknowns);
         self.handoff_packet = clean_optional(args.handoff_packet);
+        self.replan_if = clean_list(args.replan_if);
 
         let now = Instant::now();
         let mut new_steps = Vec::new();
@@ -281,6 +289,7 @@ impl PlanState {
             verification_plan: self.verification_plan.clone(),
             risks_and_unknowns: self.risks_and_unknowns.clone(),
             handoff_packet: self.handoff_packet.clone(),
+            replan_if: self.replan_if.clone(),
             items: self
                 .steps
                 .iter()
@@ -309,6 +318,7 @@ impl PlanState {
             verification_plan: snapshot.verification_plan.clone(),
             risks_and_unknowns: snapshot.risks_and_unknowns.clone(),
             handoff_packet: snapshot.handoff_packet.clone(),
+            replan_if: snapshot.replan_if.clone(),
             plan: snapshot.items.clone(),
         });
         state
@@ -447,6 +457,11 @@ impl ToolSpec for UpdatePlanTool {
                     "type": "string",
                     "description": "Concise continuation notes for another agent or a later session"
                 },
+                "replan_if": {
+                    "type": "array",
+                    "description": "Conditions that invalidate the current plan and trigger replanning",
+                    "items": { "type": "string" }
+                },
                 "plan": {
                     "type": "array",
                     "description": "Legacy replay field; new work must use work_update",
@@ -510,6 +525,7 @@ impl ToolSpec for UpdatePlanTool {
             verification_plan: string_field(&input, "verification_plan"),
             risks_and_unknowns: string_field(&input, "risks_and_unknowns"),
             handoff_packet: string_field(&input, "handoff_packet"),
+            replan_if: string_vec_field(&input, "replan_if"),
             plan: plan_args,
         };
 
@@ -536,6 +552,7 @@ impl ToolSpec for UpdatePlanTool {
                 verification_plan: desired.verification_plan.clone(),
                 risks_and_unknowns: desired.risks_and_unknowns.clone(),
                 handoff_packet: desired.handoff_packet.clone(),
+                replan_if: desired.replan_if.clone(),
                 plan: desired.items.clone(),
             });
             state.snapshot()
@@ -813,6 +830,64 @@ mod tests {
         assert_eq!(
             snapshot.critical_files,
             vec!["crates/engine/src/tools/plan.rs"]
+        );
+    }
+
+    #[tokio::test]
+    async fn replan_if_round_trips_through_schema_state_serde_and_work_graph() {
+        let state = new_shared_plan_state();
+        let todos = crate::tools::todo::new_shared_todo_list();
+        let work = crate::work_graph::new_shared_work_runtime(todos, state.clone());
+        let tool = UpdatePlanTool::new(state.clone());
+
+        let schema = tool.input_schema();
+        assert_eq!(schema["properties"]["replan_if"]["type"], "array");
+        assert_eq!(schema["properties"]["replan_if"]["items"]["type"], "string");
+
+        let empty_json = serde_json::to_value(PlanSnapshot::default()).unwrap();
+        assert!(empty_json.get("replan_if").is_none());
+
+        let from_input = PlanSnapshot::from_tool_input(&json!({
+            "replan_if": ["  api schema changes  ", "   "]
+        }));
+        assert_eq!(from_input.replan_if, vec!["api schema changes"]);
+        assert!(!from_input.is_empty());
+
+        let args = UpdatePlanArgs {
+            replan_if: vec![" auth scope narrows ".to_string(), "".to_string()],
+            ..UpdatePlanArgs::default()
+        };
+        let mut isolated = PlanState::default();
+        isolated.update(args);
+        let isolated_snap = isolated.snapshot();
+        assert_eq!(isolated_snap.replan_if, vec!["auth scope narrows"]);
+        assert_eq!(
+            PlanState::from_snapshot(&isolated_snap).snapshot(),
+            isolated_snap
+        );
+
+        let mut context = ToolContext::new(std::env::temp_dir());
+        context.runtime.work = Some(work.clone());
+        let result = tool
+            .execute(
+                json!({
+                    "replan_if": ["  latency regresses above 1s  ", " "]
+                }),
+                &context,
+            )
+            .await
+            .expect("replan_if update_plan through work_graph should succeed");
+        assert!(result.content.contains("latency regresses above 1s"));
+
+        let captured = work
+            .capture(Some(&context.state_namespace))
+            .expect("capture")
+            .expect("graph state");
+        assert_eq!(captured.plan.replan_if, vec!["latency regresses above 1s"]);
+        let serialized = serde_json::to_value(&captured.plan).unwrap();
+        assert_eq!(
+            serialized["replan_if"],
+            json!(["latency regresses above 1s"])
         );
     }
 }

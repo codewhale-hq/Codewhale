@@ -5586,7 +5586,7 @@ mod progressive_tests {
             };
             for x in 0..area.width {
                 let cell = &buffer[(x, y)];
-                if cell.symbol().trim().is_empty() {
+                if cell.symbol().trim().is_empty() || matches!(cell.symbol(), "│" | "|") {
                     continue;
                 }
                 assert_eq!(

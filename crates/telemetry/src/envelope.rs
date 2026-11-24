@@ -16,6 +16,28 @@ use crate::event::{Arch, Libc, Os};
 /// from `install_id` is a user count.**
 pub const ROTATION_DAYS: i64 = 90;
 
+const MAX_METADATA_BYTES: u64 = 4096;
+
+fn read_bounded_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
+    use std::io::Read as _;
+    let file = std::fs::File::open(path).ok()?;
+    if file
+        .metadata()
+        .ok()
+        .is_some_and(|meta| meta.len() > MAX_METADATA_BYTES)
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_METADATA_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_METADATA_BYTES {
+        return None;
+    }
+    serde_json::from_slice(&bytes).ok()
+}
+
 /// The on-disk install identity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallId {
@@ -59,14 +81,12 @@ pub struct TelemetryState {
 /// always the safe direction — the cost is one rotation, and the docs already
 /// say no count derived from `install_id` is a user count.
 pub fn read_or_create_install_id(root: &Path) -> Result<InstallId> {
-    buffer::try_with_lock(root, || {
+    buffer::try_with_lock_in_turn(root, || {
         if buffer::tombstone_present(root) {
             anyhow::bail!("telemetry is disabled");
         }
         let path = buffer::install_id_path(root);
-        let existing = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|body| serde_json::from_str::<InstallId>(&body).ok())
+        let existing = read_bounded_json::<InstallId>(&path)
             .filter(|record| is_canonical_random_uuid(&record.install_id))
             .filter(|record| !is_expired(&record.rotated_at));
         if let Some(record) = existing {
@@ -114,15 +134,12 @@ fn is_expired(rotated_at: &str) -> bool {
 /// Read `state.json`, or a default when it is missing or unreadable.
 #[must_use]
 pub fn read_state(root: &Path) -> TelemetryState {
-    std::fs::read_to_string(buffer::state_path(root))
-        .ok()
-        .and_then(|body| serde_json::from_str::<TelemetryState>(&body).ok())
-        .unwrap_or_default()
+    read_bounded_json::<TelemetryState>(&buffer::state_path(root)).unwrap_or_default()
 }
 
 /// Write `state.json`.
 pub fn write_state(root: &Path, state: &TelemetryState) -> Result<()> {
-    buffer::try_with_lock(root, || {
+    buffer::try_with_lock_in_turn(root, || {
         if buffer::tombstone_present(root) {
             anyhow::bail!("telemetry is disabled");
         }
@@ -234,5 +251,48 @@ pub fn reduce_panic_site(file: &str, line: u32, column: u32) -> String {
         candidate
     } else {
         "<dep>".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oversized_install_id_file_is_ignored_and_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        buffer::ensure_dir(root).unwrap();
+        let injected = uuid::Uuid::new_v4().to_string();
+        let payload = serde_json::json!({
+            "schema_version": 1,
+            "install_id": injected,
+            "rotated_at": now_rfc3339(),
+        });
+        let padding = " ".repeat(MAX_METADATA_BYTES as usize + 64);
+        std::fs::write(buffer::install_id_path(root), format!("{padding}{payload}")).unwrap();
+
+        let record = read_or_create_install_id(root).unwrap();
+        assert_ne!(record.install_id, injected);
+        assert!(is_canonical_random_uuid(&record.install_id));
+    }
+
+    #[test]
+    fn oversized_state_file_returns_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        buffer::ensure_dir(root).unwrap();
+        let payload = serde_json::json!({
+            "schema_version": 1,
+            "last_version": "9.9.9",
+            "last_flush": now_rfc3339(),
+        });
+        let padding = " ".repeat(MAX_METADATA_BYTES as usize + 64);
+        std::fs::write(buffer::state_path(root), format!("{padding}{payload}")).unwrap();
+
+        let state = read_state(root);
+        assert_eq!(state.schema_version, 0);
+        assert!(state.last_version.is_none());
+        assert!(state.last_flush.is_none());
     }
 }

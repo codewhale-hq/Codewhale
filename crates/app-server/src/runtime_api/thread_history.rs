@@ -22,10 +22,20 @@ use codewhale_engine::runtime_threads::{
     RuntimeHistoryOperation, RuntimeHistoryWitness, manager::CreateThreadRequest,
     manager::RuntimeThreadManager, manager::ThreadListFilter,
 };
-use codewhale_engine::session_manager::{SavedSession, SessionManager};
+use codewhale_engine::session_manager::{
+    SavedSession, SessionManager, paths_equivalent, shell_quote_path,
+};
 use codewhale_runtime::session_tree::{
     SessionEntry, SessionEntryKind, SessionImportContainer, SessionJournal,
 };
+
+async fn paths_equivalent_async(lhs: &Path, rhs: &Path) -> bool {
+    let lhs = lhs.to_path_buf();
+    let rhs = rhs.to_path_buf();
+    history_owner_work(move || Ok(paths_equivalent(&lhs, &rhs)))
+        .await
+        .unwrap_or(false)
+}
 
 /// Validate every branch before traversing the active projection or creating a
 /// canonical record. The existing journal validator alone does not reject cycles
@@ -237,7 +247,7 @@ async fn import_into_owner(
     let target = if let Some(id) = request.target_runtime_thread_id.as_deref() {
         let thread = runtime.get_thread(id).await?;
         ensure!(
-            request.workspace == thread.workspace,
+            paths_equivalent_async(&request.workspace, &thread.workspace).await,
             "existing canonical target belongs to a different selected workspace"
         );
         let session = thread.session_id.ok_or_else(|| {
@@ -489,7 +499,7 @@ async fn import_into_owner(
                 ensure!(
                     observed.metadata.runtime_store.as_ref().is_none_or(
                         |binding| Some(binding) == session.metadata.runtime_store.as_ref()
-                    ) && observed.metadata.workspace == session.metadata.workspace,
+                    ) && paths_equivalent(&observed.metadata.workspace, &session.metadata.workspace),
                     "canonical target store binding changed before merge"
                 );
                 let publication = manager.publish_session(&session)?;
@@ -579,7 +589,7 @@ fn verify_import_checkpoint_under_lease(
     let observed = manager.load_session_snapshot_bounded(id, MAX_CANONICAL_HISTORY_BYTES)?;
     ensure!(
         observed.metadata.runtime_store.as_ref() == Some(binding)
-            && observed.metadata.workspace == thread.workspace,
+            && paths_equivalent(&observed.metadata.workspace, &thread.workspace),
         "committed history session binding changed; recovery required"
     );
     let checkpoint = thread
@@ -665,7 +675,7 @@ pub(super) async fn snapshot_in_runtime(
                 let document = manager
                     .load_session_snapshot_bounded(&session_id, MAX_CANONICAL_HISTORY_BYTES)?;
                 ensure!(
-                    document.metadata.workspace == workspace,
+                    paths_equivalent(&document.metadata.workspace, &workspace),
                     "saved history workspace differs from its held thread"
                 );
                 if let Some(saved_binding) = document.metadata.runtime_store.as_ref() {
@@ -948,7 +958,7 @@ fn verify_operation_checkpoint(
     let observed = manager.load_session_snapshot_bounded(id, MAX_CANONICAL_HISTORY_BYTES)?;
     ensure!(
         observed.metadata.runtime_store.as_ref() == Some(binding)
-            && observed.metadata.workspace == thread.workspace,
+            && paths_equivalent(&observed.metadata.workspace, &thread.workspace),
         "canonical operation document binding changed"
     );
     let checkpoint = thread
@@ -1007,7 +1017,7 @@ async fn settle_prepared_history_operation(
         .as_ref()
         .ok_or_else(|| anyhow!("prepared operation lacks its full graph witness"))?;
     ensure!(
-        witness.workspace == workspace,
+        paths_equivalent_async(&witness.workspace, workspace).await,
         "operation selected workspace changed"
     );
     let captured = Arc::clone(runtime);
@@ -1018,7 +1028,7 @@ async fn settle_prepared_history_operation(
     };
 
     ensure!(
-        thread.workspace == workspace,
+        paths_equivalent_async(&thread.workspace, workspace).await,
         "reserved target workspace changed"
     );
     let detail = runtime.get_thread_detail(&thread.id).await?;
@@ -1050,7 +1060,7 @@ async fn settle_prepared_history_operation(
         verification_runtime.verify_prepared_history_publication(&expected, &saved)?;
         ensure!(
             saved.metadata.runtime_store.as_ref() == Some(&binding)
-                && saved.metadata.workspace == selected_workspace,
+                && paths_equivalent(&saved.metadata.workspace, &selected_workspace),
             "reserved saved document binding changed"
         );
         if let Some(digest) = expected.session_goal_target_digest.as_ref() {
@@ -1154,7 +1164,7 @@ async fn mutate_in_owner(
             anyhow!("operation scope witness absent; recover the retained intent")
         })?;
         ensure!(
-            witness.workspace == request.workspace,
+            paths_equivalent_async(&witness.workspace, &request.workspace).await,
             "operation selected workspace changed"
         );
         let thread_id = operation.receipt.runtime_thread_id.clone();
@@ -1164,7 +1174,7 @@ async fn mutate_in_owner(
         if operation.committed {
             let thread = thread.ok_or_else(|| anyhow!("committed canonical target is missing"))?;
             ensure!(
-                thread.workspace == request.workspace,
+                paths_equivalent_async(&thread.workspace, &request.workspace).await,
                 "canonical operation workspace changed"
             );
             let manager_dir = sessions_dir.clone();
@@ -1211,13 +1221,12 @@ async fn mutate_in_owner(
                     .all(|(key, value)| encoded.get(key) == Some(value))),
                 "unsupported create-thread field"
             );
-            ensure!(
-                create
-                    .workspace
-                    .as_ref()
-                    .is_none_or(|workspace| workspace == &request.workspace),
-                "create configuration workspace differs from selected admission"
-            );
+            if let Some(workspace) = create.workspace.as_ref() {
+                ensure!(
+                    paths_equivalent_async(workspace, &request.workspace).await,
+                    "create configuration workspace differs from selected admission"
+                );
+            }
             None
         }
         CanonicalThreadMutation::Resume { source, .. }
@@ -1228,7 +1237,8 @@ async fn mutate_in_owner(
             } => {
                 let thread = runtime.get_thread(runtime_thread_id).await?;
                 ensure!(
-                    !is_resume || thread.workspace == request.workspace,
+                    !is_resume
+                        || paths_equivalent_async(&thread.workspace, &request.workspace).await,
                     "Resume source workspace differs from selected admission"
                 );
                 let detail = runtime.get_thread_detail(runtime_thread_id).await?;
@@ -1289,13 +1299,21 @@ async fn mutate_in_owner(
                         "protected saved document changed before admission"
                     );
                     ensure!(
-                        (!is_resume || observed.metadata.workspace == selected_workspace)
-                            && observed
-                                .metadata
-                                .runtime_store
-                                .as_ref()
-                                .is_none_or(|saved| saved == &binding),
+                        observed
+                            .metadata
+                            .runtime_store
+                            .as_ref()
+                            .is_none_or(|saved| saved == &binding),
                         "saved history belongs to another workspace or owner store"
+                    );
+                    ensure!(
+                        !is_resume || paths_equivalent(&observed.metadata.workspace, &selected_workspace),
+                        "saved history belongs to another workspace or owner store (session has {}, launch has {}); if the workspace moved or was renamed, run `codewhale sessions migrate --old-path {} --new-path {} --session {} --dry-run` to update it",
+                        observed.metadata.workspace.display(),
+                        selected_workspace.display(),
+                        shell_quote_path(&observed.metadata.workspace),
+                        shell_quote_path(&selected_workspace),
+                        observed.metadata.id,
                     );
                     Ok((observed, manager.load_session_goal(&id)?))
                 })
@@ -1320,8 +1338,14 @@ async fn mutate_in_owner(
                 );
                 if let Some(thread) = candidates.into_iter().next() {
                     ensure!(
-                        thread.workspace == observed.metadata.workspace,
-                        "saved history holder source workspace changed"
+                        paths_equivalent_async(&thread.workspace, &observed.metadata.workspace)
+                            .await,
+                        "saved history holder source workspace changed (thread has {}, session document has {}); if the workspace moved or was renamed, run `codewhale sessions migrate --old-path {} --new-path {} --session {} --dry-run` to update both",
+                        thread.workspace.display(),
+                        observed.metadata.workspace.display(),
+                        shell_quote_path(&thread.workspace),
+                        shell_quote_path(&observed.metadata.workspace),
+                        observed.metadata.id,
                     );
                     let detail = runtime.get_thread_detail(&thread.id).await?;
                     ensure!(
@@ -1443,11 +1467,8 @@ async fn mutate_in_owner(
             "source path does not name the protected selected session; opaque legacy source retained"
         );
     }
-    let updates = decode_history_overrides(
-        &options.overrides,
-        &runtime.read_config(),
-        &request.workspace,
-    )?;
+    let config = runtime.read_config().clone();
+    let updates = decode_history_overrides(&options.overrides, &config, &request.workspace).await?;
     if let Some(session) = source.as_mut() {
         append_offered_history(session, &options.offered_history, &request.operation_key)?;
     } else {
@@ -1588,6 +1609,7 @@ async fn mutate_in_owner(
         create.model_provider_id = thread.model_provider_id.clone();
         create.reasoning_effort = thread.reasoning_effort.clone();
         create.allowed_tools = thread.allowed_tools.clone();
+        create.disallowed_tools = thread.disallowed_tools.clone();
         create.mode = Some(thread.mode.clone());
         create.permission_posture = thread.permission_posture.clone();
         create.allow_shell = Some(thread.allow_shell);
@@ -1604,7 +1626,7 @@ async fn mutate_in_owner(
         match history_owner_work(move || lookup_runtime.history_operation_thread(&id)).await? {
             Some(thread) => {
                 ensure!(
-                    thread.workspace == request.workspace,
+                    paths_equivalent_async(&thread.workspace, &request.workspace).await,
                     "reserved target workspace changed"
                 );
                 thread
@@ -1866,10 +1888,12 @@ pub async fn lookup_thread_history_operation_in_runtime(
         return Ok(codewhale_protocol::CanonicalThreadOperationStatus::Absent);
     };
     ensure!(
-        operation
-            .journal_witness
-            .as_ref()
-            .is_some_and(|witness| witness.workspace == request.workspace),
+        match operation.journal_witness.as_ref() {
+            Some(witness) => {
+                paths_equivalent_async(&witness.workspace, &request.workspace).await
+            }
+            None => false,
+        },
         "operation belongs to another acknowledged workspace"
     );
     let association = operation.association.clone().ok_or_else(|| {
@@ -1892,7 +1916,10 @@ pub async fn lookup_thread_history_operation_in_runtime(
             .history_operation_thread(&operation.receipt.runtime_thread_id)?
             .ok_or_else(|| anyhow!("committed operation target is absent; recovery required"))?;
         ensure!(
-            thread.workspace == request.workspace,
+            codewhale_engine::session_manager::paths_equivalent(
+                &thread.workspace,
+                &request.workspace
+            ),
             "committed target belongs to another selected workspace"
         );
         verify_operation_checkpoint(&SessionManager::new(dir)?, &thread, &binding, &operation)?;
@@ -1951,10 +1978,12 @@ pub async fn recover_thread_history_operation_in_runtime(
             "retained operation action/source association differs; no recovery write admitted"
         );
         ensure!(
-            operation
-                .journal_witness
-                .as_ref()
-                .is_some_and(|witness| witness.workspace == request.operation.workspace),
+            match operation.journal_witness.as_ref() {
+                Some(witness) => {
+                    paths_equivalent_async(&witness.workspace, &request.operation.workspace).await
+                }
+                None => false,
+            },
             "operation belongs to another acknowledged workspace"
         );
         let committed = if operation.committed {
@@ -1966,7 +1995,10 @@ pub async fn recover_thread_history_operation_in_runtime(
                     .history_operation_thread(&expected.receipt.runtime_thread_id)?
                     .ok_or_else(|| anyhow!("committed operation target is absent"))?;
                 ensure!(
-                    thread.workspace == workspace,
+                    codewhale_engine::session_manager::paths_equivalent(
+                        &thread.workspace,
+                        &workspace
+                    ),
                     "operation target workspace changed"
                 );
                 verify_operation_checkpoint(
@@ -2064,7 +2096,7 @@ fn append_offered_history(
     Ok(())
 }
 
-fn decode_history_overrides(
+async fn decode_history_overrides(
     value: &serde_json::Value,
     config: &codewhale_runtime::config::Config,
     workspace: &Path,
@@ -2089,7 +2121,7 @@ fn decode_history_overrides(
             "cwd" | "workspace" => {
                 let selected: std::path::PathBuf = serde_json::from_value(value.clone())?;
                 ensure!(
-                    selected == workspace,
+                    paths_equivalent_async(&selected, workspace).await,
                     "history workspace override differs from selected owner scope"
                 );
             }
@@ -2245,8 +2277,8 @@ mod graph_tests {
         }
     }
 
-    #[test]
-    fn history_override_conflicts_refuse_every_insert_and_preserve_full_access_posture() {
+    #[tokio::test]
+    async fn history_override_conflicts_refuse_every_insert_and_preserve_full_access_posture() {
         let config = codewhale_runtime::config::Config::default();
         let workspace = std::path::PathBuf::from("/checked-workspace");
         for value in [
@@ -2255,7 +2287,11 @@ mod graph_tests {
             serde_json::json!({"config":{"system_prompt":"first"},"system_prompt":"second"}),
             serde_json::json!({"base_instructions":"first","system_prompt":"second"}),
         ] {
-            assert!(decode_history_overrides(&value, &config, &workspace).is_err());
+            assert!(
+                decode_history_overrides(&value, &config, &workspace)
+                    .await
+                    .is_err()
+            );
         }
         for policy in ["full-access", "never"] {
             let update = decode_history_overrides(
@@ -2263,6 +2299,7 @@ mod graph_tests {
                 &config,
                 &workspace,
             )
+            .await
             .unwrap()
             .unwrap();
             assert_eq!(update.permission_posture.as_deref(), Some("full_access"));
@@ -2273,6 +2310,7 @@ mod graph_tests {
                 &config,
                 &workspace,
             )
+            .await
             .is_err()
         );
     }

@@ -1,6 +1,34 @@
 # Changelog
 
-## Unreleased — 0.2.0
+## 0.2.1
+
+- The posture bar keeps the turn clock while a turn runs on a narrow row. Its
+  shed ladder drops the session clock, permission key, hint and counts first
+  (cap warning and mode still outrank the clock), and the right notice is
+  clipped against the permission chip plus the turn clock instead of covering
+  it.
+- Requires Codewhale Protocol 0.10.4.
+
+## 0.2.0
+
+- The Ocean column's waiting, approval and failure tints now ease off near the
+  surface where they would push `Hint` below 4.5:1 or `Dim` below 3:1, for a
+  ramp built with `OceanRamp::for_theme`; deeper rows keep the full warm tint.
+- Data displays stay honest at the edges. `data_number` no longer prints a
+  small value as `0` or `-0` (`0.0042`, `4.2e-7`) and rounds across a unit
+  (`999950` is `1M`, with a `T` tier). A `DataTrend` with more points than
+  dot columns draws each column from its lowest to its highest value, so a
+  spike is never dropped. A `DataBars` value above zero always draws at least
+  an eighth of a cell, and a narrow row cuts the label before the value.
+- Add data displays: `DataSparkline`, `DataBars` and `DataTrend` (a braille
+  line chart). The words carry every value; the ink draws in from a caller
+  progress (`MotionStep::drawn`) and is at its end state under reduced or
+  still motion. Bars glide from their previous values.
+- Add `DataDisplay`, the same displays as JSON an agent can send:
+  `DataDisplay::from_json` validates it (finite numbers, at most 1024 points
+  or 24 bars, labels up to 120 characters), `describe` says the same facts as
+  plain text, and `DATA_DISPLAY_SCHEMA` is its tool schema. Try
+  `cargo run --example data`.
 
 - Reexport the shared avatar contract from Codewhale Protocol. Rendering and
   artwork stay in this library. Protocol 0.10.3 registry proof must precede

@@ -466,7 +466,8 @@ async fn models_redirects_never_reach_another_server_from_any_consumer() {
             apply_request_failure(&mut health, Instant::now());
             apply_request_failure(&mut health, Instant::now());
         }
-        recovery.maybe_probe_recovery().await;
+        assert!(recovery.claim_recovery_probe().await);
+        recovery.run_recovery_probe().await;
         assert!(recovery.connection_health.lock().await.last_probe.is_some());
         assert!(
             verify_provider_api_key(ProviderKind::Anthropic, KEY, &server.uri())
@@ -1185,12 +1186,13 @@ async fn roster_envelope_with_empty_data_is_an_empty_listing_not_a_models_fallba
     )
     .await;
     let client = custom_mock_client_for_identity(&server, "relay-private");
-    assert_eq!(
+    assert!(
         client
             .fetch_catalog_delta()
             .await
-            .expect_err("an empty data roster is an empty listing"),
-        CatalogRefreshError::EmptyList
+            .expect("valid empty listing")
+            .offerings
+            .is_empty()
     );
 }
 

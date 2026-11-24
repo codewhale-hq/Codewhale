@@ -169,7 +169,7 @@ impl LiveTranscriptOverlay {
 
     /// Return the overlay to live-tail mode (used when backtrack is
     /// confirmed or canceled). Re-arms sticky-tail so streaming resumes.
-    #[allow(dead_code)] // exposed for callers that retain an overlay across a backtrack cancel; current UI just pops the view.
+    #[cfg(test)]
     pub fn set_tail_mode(&mut self) {
         self.mode = Mode::Tail;
         self.sticky_to_bottom.set(true);
@@ -177,7 +177,7 @@ impl LiveTranscriptOverlay {
     }
 
     /// For tests + UI: current mode.
-    #[allow(dead_code)] // currently consumed only by tests; kept public for symmetry with `set_*` setters.
+    #[cfg(test)]
     #[must_use]
     pub fn mode(&self) -> Mode {
         self.mode
@@ -1226,109 +1226,5 @@ mod tests {
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
         v.render(area, &mut buf);
-    }
-}
-
-#[cfg(test)]
-#[path = "live_transcript/transcript_legacy.rs"]
-mod transcript_legacy;
-
-#[cfg(test)]
-mod mounted_transcript_acceptance {
-    use super::*;
-    use codewhale_runtime::config::Config;
-    use std::path::PathBuf;
-
-    fn fixture() -> App {
-        let mut app = App::new(
-            crate::tui::test_support::test_tui_options(PathBuf::from(".")),
-            &Config::default(),
-        );
-        app.launch.visible = false;
-        app.low_motion = true;
-        app.push_history_cell(HistoryCell::User {
-            content: "Review the source".into(),
-        });
-        app.push_history_cell(HistoryCell::Assistant {
-            content: String::new(),
-            streaming: true,
-        });
-        app
-    }
-    #[test]
-    fn mounted_transcript_live_overlay_stream_resize_preview_and_links_match_frozen_painter() {
-        let (mut app, mut old_app) = (fixture(), fixture());
-        let mut current = LiveTranscriptOverlay::new();
-        let mut old = transcript_legacy::LiveTranscriptOverlay::new();
-        for (chunk, width, height) in [
-            ("First source", 80, 20),
-            (
-                "First source with [guide](https://example.test/source) and 鲸鱼",
-                40,
-                12,
-            ),
-            (
-                "First source with [guide](https://example.test/source)\n```rust\nlet x",
-                20,
-                9,
-            ),
-            (
-                "Final source with [guide](https://example.test/source)\n```rust\nlet x = 1;\n```",
-                80,
-                20,
-            ),
-        ] {
-            for app in [&mut app, &mut old_app] {
-                app.history[1] = HistoryCell::Assistant {
-                    content: chunk.into(),
-                    streaming: !chunk.starts_with("Final"),
-                };
-                app.bump_history_cell(1);
-            }
-            current.refresh_from_app(&mut app);
-            old.refresh_from_app(&mut old_app);
-            assert_eq!(current.snapshot_count(), old.frozen_snapshot_count());
-            for preview in [false, true] {
-                if preview {
-                    current.set_backtrack_preview(0);
-                    old.set_backtrack_preview(0);
-                } else {
-                    current.set_tail_mode();
-                    old.set_tail_mode();
-                }
-                assert_eq!(
-                    matches!(current.mode(), Mode::Tail),
-                    matches!(old.mode(), transcript_legacy::Mode::Tail)
-                );
-                let area = Rect::new(0, 0, width, height);
-                let mut actual = Buffer::empty(area);
-                let mut expected = actual.clone();
-                codewhale_tui_kit::osc8::set_frame_links(Vec::new());
-                old.render(area, &mut expected);
-                assert_eq!(old.scroll_offset(), old.frozen_metrics().0);
-                assert_eq!(old.is_sticky(), old.frozen_metrics().3);
-                let links =
-                    codewhale_tui_kit::osc8::FRAME_LINKS.with(|links| links.borrow().clone());
-                codewhale_tui_kit::osc8::set_frame_links(Vec::new());
-                current.render(area, &mut actual);
-                assert_eq!(
-                    actual, expected,
-                    "chunk={chunk:?} area={area:?} preview={preview}"
-                );
-                assert_eq!(
-                    codewhale_tui_kit::osc8::FRAME_LINKS.with(|links| links.borrow().clone()),
-                    links
-                );
-                assert_eq!(
-                    (
-                        current.scroll.get(),
-                        current.last_visible_height.get(),
-                        current.last_total_lines.get(),
-                        current.sticky_to_bottom.get()
-                    ),
-                    old.frozen_metrics()
-                );
-            }
-        }
     }
 }

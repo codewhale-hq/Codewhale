@@ -101,6 +101,7 @@ fn turn_op(content: &str, route: &ResolvedRuntimeRoute) -> Op {
         hook_executor: None,
         verbosity: None,
         provenance: UserInputProvenance::ExternalUser,
+        input_authorship: codewhale_engine::core::ops::TurnInputAuthorship::NotPerson,
         submission_id: None,
     })
 }

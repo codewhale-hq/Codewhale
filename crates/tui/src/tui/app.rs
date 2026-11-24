@@ -17,7 +17,7 @@ use codewhale_core::ContextReference;
 use codewhale_execpolicy::ApprovalMode;
 
 use crate::tui::active_cell::ActiveCell;
-use crate::tui::clipboard::{ClipboardContent, ClipboardHandler};
+use crate::tui::clipboard::ClipboardHandler;
 use crate::tui::history::{
     HistoryCell, TranscriptActionOwner, TranscriptFold, TranscriptRenderOptions,
 };
@@ -86,6 +86,28 @@ pub(crate) use types::{
     CacheReplayTarget, GoalControlIntent, PendingGoalControl, UnansweredSubmission,
     WORKFLOW_DRAFT_INSTRUCTION_PREFIX,
 };
+
+const ACCOUNT_PREFERENCES_NOTICE: &str = "account-preferences-notice";
+const AGENT_APPROVED_PLUGINS_NOTICE: &str = "agent-approved-plugins-notice";
+
+fn account_sign_in_marker(profile: Option<&str>) -> String {
+    use sha2::{Digest, Sha256};
+    let api_base = codewhale_engine::profile_constitution::runtime_account_api_base();
+    let session = codewhale_secrets::account::AccountSessionStore::new(
+        codewhale_secrets::Secrets::file_backed_read_only(),
+        profile,
+        &api_base,
+    )
+    .runtime_info_at(Utc::now())
+    .ok()
+    .and_then(|info| info.session_id)
+    .unwrap_or_default();
+    Sha256::digest(session.as_bytes())
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
 
 // === Types ===
 
@@ -528,7 +550,7 @@ impl AgentCurrentActivity {
 /// can enter the parent transcript/sidebar pass through this seam.
 pub(crate) fn bound_agent_activity_text(value: &str) -> String {
     let mut visible = String::with_capacity(value.len());
-    codewhale_tui_kit::osc8::strip_ansi_into(value, &mut visible);
+    codewhale_sanitize::sanitize::strip_ansi_into(value, &mut visible);
     let redacted = codewhale_config::persistence::redact_secrets(&visible);
     codewhale_app_server::exec_agent::summarize_tool_output(&redacted)
 }
@@ -610,6 +632,7 @@ pub struct AgentProgressMeta {
     /// and ordinary progress does not refresh that snapshot, so the quiet
     /// readout caps the engine's clock with this one.
     pub last_progress_at: Option<Instant>,
+    pub started_at: Option<Instant>,
 }
 
 /// Per-turn LSP repair-loop summary for the Turn Inspector (#4107).
@@ -659,12 +682,9 @@ pub enum LaunchRowId {
     ReturnToSession,
     Recent(String),
     SeeAll,
+    ShowRecent,
     /// Open the MCP manager from the status summary, including healthy servers.
     McpManager,
-    /// The MCP problems row: Enter/click types the remedy command into the
-    /// composer (`/mcp login <name>` or `/mcp`) instead of making the user
-    /// retype what the card printed (#6085).
-    McpRemedy,
 }
 
 /// How many recent sessions the startup card lists inline before the
@@ -698,6 +718,7 @@ pub struct LaunchState {
     /// must not say "no recent sessions yet" while `/resume` lists them;
     /// when they exist it shows the see-all row instead of the lie.
     pub has_scoped_sessions: bool,
+    pub recent_expanded: bool,
     /// Whether launch keys type into the pre-session composer. The composer
     /// is the launch screen's one focus owner, so this is `true` from first
     /// paint. The composer itself is the session `App`'s own
@@ -821,6 +842,7 @@ impl LaunchState {
             recent,
             total_workspace_sessions,
             has_scoped_sessions,
+            recent_expanded: false,
             composer_focus: true,
             row_hitboxes: Vec::new(),
             hovered_row: None,
@@ -851,6 +873,12 @@ impl LaunchState {
         self.has_scoped_sessions = any_scoped;
     }
 
+    pub fn expand_recent(&mut self) {
+        self.recent_expanded = true;
+        self.menu_selected = None;
+        self.hovered_row = None;
+    }
+
     /// Begin the card dissolve once (idempotent). The first keystroke or a
     /// launched command dissolves the launch card.
     pub fn dissolve_card(&mut self, now_ms: u128) {
@@ -869,6 +897,7 @@ impl LaunchState {
         self.menu_selected = None;
         self.hovered_row = None;
         self.status = None;
+        self.recent_expanded = false;
         self.refresh_recent();
     }
 
@@ -1021,6 +1050,9 @@ impl Default for ComposerState {
 /// Viewport/scroll state — fields related to transcript scrolling and caching.
 pub struct ViewportState {
     pub(crate) working_glow_visible: bool,
+    pub(crate) activity_sweep_visible: bool,
+    pub(crate) settle_flash_visible: bool,
+    pub(crate) detected_background: Option<ratatui::style::Color>,
     /// Per-draw copy of the owning backend's negotiated capability facts.
     /// Unavailable outside a backend draw; never redetect or infer depth.
     pub(crate) ocean_caps: Option<codewhale_ratatui::Caps>,
@@ -1097,6 +1129,9 @@ impl Default for ViewportState {
     fn default() -> Self {
         Self {
             working_glow_visible: false,
+            activity_sweep_visible: false,
+            settle_flash_visible: false,
+            detected_background: None,
             ocean_caps: None,
             ocean_semantic_surfaces: Vec::new(),
             transcript_scroll: TranscriptScroll::to_bottom(),
@@ -1184,10 +1219,6 @@ pub struct SessionState {
     pub subagent_usage_sources: HashSet<String>,
     pub accounted_usage_sources:
         std::collections::BTreeMap<String, codewhale_engine::cost_status::UsageSourceContribution>,
-    pub missing_usage_sources:
-        std::collections::BTreeMap<String, codewhale_engine::cost_status::MissingUsageCoverage>,
-    pub missing_usage_overflowed: bool,
-    pub in_flight_usage_sources: BTreeSet<String>,
     pub displayed_cost_high_water: f64,
     pub displayed_cost_high_water_cny: f64,
     pub last_prompt_tokens: Option<u32>,
@@ -1283,10 +1314,6 @@ pub struct SidebarHoverState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SidebarRowAction {
     Command(String),
-    /// Put a destructive command in the composer instead of executing it.
-    /// The user confirms with Enter or cancels by editing/clearing the draft.
-    #[allow(dead_code)] // destructive confirm path; mouse_ui already matches it (TUI-DOG-008)
-    PrefillCommand(String),
     /// Select the persistent Agents panel. This is deliberately a navigation
     /// action rather than a modal: the Subagents summary is a group door, so
     /// it should reveal the standing register instead of fabricating a detail
@@ -1366,9 +1393,6 @@ impl Default for SessionState {
             subagent_cost_cny: 0.0,
             subagent_usage_sources: HashSet::new(),
             accounted_usage_sources: Default::default(),
-            missing_usage_sources: std::collections::BTreeMap::new(),
-            missing_usage_overflowed: false,
-            in_flight_usage_sources: BTreeSet::new(),
             displayed_cost_high_water: 0.0,
             displayed_cost_high_water_cny: 0.0,
             last_prompt_tokens: None,
@@ -1691,6 +1715,9 @@ pub struct App {
     /// When the clipboard paste last ran, so a terminal that reports both the
     /// press and the release of Ctrl+V pastes once instead of twice.
     pub last_clipboard_paste: Option<Instant>,
+    /// A clipboard read still running off the UI thread.
+    pub(crate) pending_paste: Option<crate::tui::paste::PendingPaste>,
+    pub paste_shortcut_press_seen: bool,
     /// Whether the once-per-turn provider-wait incident (#3095) has already
     /// been logged for the current turn.
     pub provider_wait_incident_logged: bool,
@@ -1736,6 +1763,7 @@ pub struct App {
     pub plugin_reload_nudge_stamp: Option<codewhale_plugins::PluginCatalogStamp>,
     /// Last idle catalog fingerprint poll, so disk changes can surface between turns.
     pub last_plugin_catalog_poll: Option<Instant>,
+    pub mcp_config_watch: Option<crate::tui::plugin_suggestions::McpConfigWatch>,
     /// Live composer plugin CTA (debounce + one match, never auto-install).
     pub plugin_cta: crate::tui::plugin_suggestions::PluginCtaState,
     pub model: String,
@@ -1968,6 +1996,7 @@ pub struct App {
     /// grace of gentle motion the aquarium settles to a genuinely still
     /// scene instead of repainting an idle screen forever.
     pub ambient_idle_since: Option<Instant>,
+    pub ambient_life_held_ms: Option<u128>,
     /// Start of the underwater shell's one-shot successful-turn exhale.
     /// Kept separate from the ambient ocean clock so completion can settle
     /// once without restarting or repainting the transcript field.
@@ -2067,6 +2096,9 @@ pub struct App {
     pub tool_collapse_threshold: usize,
     /// Tool runs the user explicitly expanded. Stores original history indices.
     pub expanded_tool_runs: HashSet<usize>,
+    pub turn_work_durations: HashMap<usize, Duration>,
+    pub turn_durations_revision: u64,
+    pub active_turn_user_index: Option<usize>,
     /// Current dense tool-run collapse behavior.
     pub tool_collapse_mode: ToolCollapseMode,
     /// File-tree pane state. `None` when hidden; `Some` when visible.
@@ -2089,6 +2121,8 @@ pub struct App {
     pub agent_progress: HashMap<String, String>,
     /// Parent/depth metadata for live progress-only sub-agent rows.
     pub agent_progress_meta: HashMap<String, AgentProgressMeta>,
+    pub delegated_writes:
+        std::collections::BTreeMap<(String, u64), std::collections::BTreeSet<String>>,
     /// In-transcript sub-agent card index by `agent_id` (issue #128).
     /// Maps each live sub-agent to the `HistoryCell::SubAgent` it renders
     /// into, so successive mailbox envelopes mutate the same cell rather
@@ -2133,8 +2167,9 @@ pub struct App {
     /// boundary (`agent_id` → count), from the latest `AgentList` refresh.
     pub agent_queued_follow_ups: HashMap<String, usize>,
     /// Receipts-only roster of every agent that ran this session (#5479).
-    /// Refreshed wholesale on each `AgentList` event; shared by `/agents`,
-    /// the Agents register and the Price view.
+    /// Updated incrementally from session-scoped agent lifecycle events and
+    /// reconciled by `AgentList`; shared by `/agents`, the Agents register
+    /// and the Price view.
     pub agent_roster: Vec<codewhale_engine::agent_roster::AgentRosterRow>,
     /// Original conversation owner of the retained snapshot. A process boot
     /// marker or a worker's parent run is not a conversation identity.
@@ -2213,6 +2248,7 @@ pub struct App {
     pub yolo: bool,
     /// One-shot YOLO→Act+Bypass migration notice for this session (#0.8.68 M6).
     yolo_compat_notified: bool,
+    permission_receipt_deferred: bool,
     /// One-shot notice for a settings file that still names the retired
     /// Operate mode, so the mode change is explained instead of silent.
     operate_retired_notified: bool,
@@ -2239,6 +2275,10 @@ pub struct App {
     /// True only when an organization requirements file owns approval policy.
     /// Unlike a user-owned config key, this source cannot be edited in-app.
     approval_policy_requirements_managed: bool,
+    pub auto_review_disabled: bool,
+    pub auto_review_reviewer_model: Option<String>,
+    pub exec_policy_engine: codewhale_execpolicy::ExecPolicyEngine,
+    pub auto_review_broad_allow_warnings: Vec<String>,
     /// True when the interactive shell switch is user-owned (unset or root
     /// config.toml). Profile / env / managed / project owners stay in charge
     /// even when a YOLO entry point asks for Full Access.
@@ -2277,6 +2317,8 @@ pub struct App {
     pub undo_selection: bool,
     /// Current session ID for auto-save updates
     pub current_session_id: Option<String>,
+    pub(crate) conversation_mode: Option<String>,
+    pub(crate) conversation_mode_unavailable: Option<String>,
     pub(crate) session_write_receipt:
         Option<codewhale_engine::session_manager::SessionWriteReceipt>,
     pub(crate) session_write_owner: Option<codewhale_engine::session_manager::SessionWriteOwner>,
@@ -2366,6 +2408,8 @@ pub struct App {
     pub mcp_snapshot_generation_invalidated: bool,
     /// Enabled servers that have not settled in the current boot pass.
     pub mcp_connecting: Vec<String>,
+    pub mcp_announced_problems:
+        std::collections::BTreeMap<String, crate::tui::session_boot::McpServerBootState>,
     /// Number of MCP servers declared in the user's config at app boot.
     /// Used by the footer chip (#502) so a count is visible even before
     /// the user runs `/mcp` for the first time. `0` hides the chip.
@@ -2420,7 +2464,7 @@ pub struct App {
     /// when their tools complete.
     pub exploring_entries: HashMap<String, (usize, usize)>,
     /// Tool calls that should be ignored by the UI
-    pub ignored_tool_calls: HashSet<String>,
+    pub ignored_tool_calls: HashMap<String, serde_json::Value>,
     /// Last exec wait command shown (for duplicate suppression)
     pub last_exec_wait_command: Option<String>,
     /// Current streaming assistant cell
@@ -2448,6 +2492,7 @@ pub struct App {
     /// re-render per character. `None` means "no bump since the last
     /// finalize" so the first chunk of a block always renders immediately.
     pub thinking_revision_last_bump_at: Option<Instant>,
+    pub(crate) thinking_revision_owed: bool,
     /// Newline-gated streaming collector state.
     pub streaming_state: StreamingState,
     /// Live approximate output tokens for the current assistant stream.
@@ -2478,6 +2523,9 @@ pub struct App {
     /// id then `(tool_id, text)`, rendered under the matching tool card when
     /// that child is focused. Session-resident only.
     pub child_gate_receipts: std::collections::HashMap<String, Vec<(String, String)>>,
+    pub auto_review_blocked_receipts:
+        Vec<codewhale_engine::core::authority::auto_review::AutoReviewBlockedAction>,
+    pub pending_auto_review_retry: Option<String>,
     /// User messages queued while a turn is running
     pub queued_messages: VecDeque<QueuedMessage>,
     pub held_restored_queue: usize,
@@ -2781,6 +2829,10 @@ pub(crate) struct ToolRunCache {
     pub(crate) projection_builds: usize,
     pub(crate) history_len: usize,
     pub(crate) expanded_runs: HashSet<usize>,
+    pub(crate) open_tail: bool,
+    pub(crate) open_turn_user_index: Option<usize>,
+    pub(crate) echoed_queued_users: usize,
+    pub(crate) turn_durations_revision: u64,
     pub(crate) summaries: HashMap<usize, (HistoryCell, u64)>,
     pub(crate) hidden_indices: HashSet<usize>,
     pub(crate) superseded_todos: HashSet<usize>,
@@ -2850,6 +2902,10 @@ impl Default for ToolRunCache {
             projection_builds: 0,
             history_len: usize::MAX,
             expanded_runs: HashSet::new(),
+            open_tail: false,
+            open_turn_user_index: None,
+            echoed_queued_users: 0,
+            turn_durations_revision: u64::MAX,
             summaries: HashMap::new(),
             hidden_indices: HashSet::new(),
             superseded_todos: HashSet::new(),
@@ -2883,6 +2939,19 @@ fn default_composer_arrows_scroll_for_platform(use_mouse_capture: bool, _is_wind
 }
 
 impl App {
+    /// The durable task manager this host currently owns.
+    ///
+    /// This is the one slot every consumer reads. A session switch can adopt
+    /// another Runtime store, which replaces the manager; a handle captured at
+    /// launch would then describe a store this host no longer holds, and its
+    /// admission is closed. `None` means this host is between managers — after
+    /// a failed adoption, before exit — and callers must treat that as "no task
+    /// work is available right now" rather than as an error.
+    #[must_use]
+    pub fn task_manager(&self) -> Option<crate::task_manager::SharedTaskManager> {
+        self.runtime_services.task_manager.clone()
+    }
+
     /// Start or end an MCP boot prediction, stamping when it starts.
     ///
     /// Every writer of [`App::mcp_initializing`] goes through here so a
@@ -3508,8 +3577,7 @@ impl App {
         if previous_mode == mode && !self.yolo {
             return false;
         }
-        let permission_before = self.effective_permission_label();
-        let permission_pair_before = self.permission_pair();
+        let permission_before = self.permission_receipt_label();
 
         self.mode = mode;
         // Mode chip lives in the header — skip redundant status/toast copy.
@@ -3536,7 +3604,7 @@ impl App {
         self.approval_mode = policy.approval_mode;
         self.yolo = matches!(policy.approval_mode, ApprovalMode::Bypass);
 
-        self.finish_mode_change(previous_mode, &permission_before, permission_pair_before);
+        self.finish_mode_change(previous_mode, &permission_before);
         true
     }
 
@@ -3552,8 +3620,7 @@ impl App {
             return false;
         }
         let previous_mode = self.mode;
-        let permission_before = self.effective_permission_label();
-        let permission_pair_before = self.permission_pair();
+        let permission_before = self.permission_receipt_label();
         // Same baseline-refresh rule as a mode hop: the elevation must not
         // bleed into the restored Agent surface.
         if previous_mode.uses_agent_baseline() && !self.yolo {
@@ -3574,7 +3641,7 @@ impl App {
         self.approval_mode = ApprovalMode::Bypass;
         self.yolo = true;
         self.notify_yolo_compat_once();
-        self.finish_mode_change(previous_mode, &permission_before, permission_pair_before);
+        self.finish_mode_change(previous_mode, &permission_before);
         true
     }
 
@@ -3609,12 +3676,7 @@ impl App {
     /// id, workspace, model, and token total as every other event — it used
     /// to omit `DEEPSEEK_SESSION_ID` entirely, which made mode transitions
     /// uncorrelatable with the session they belonged to.
-    fn finish_mode_change(
-        &mut self,
-        previous_mode: AppMode,
-        permission_before: &str,
-        permission_pair_before: ApprovalMode,
-    ) {
+    fn finish_mode_change(&mut self, previous_mode: AppMode, permission_before: &str) {
         let context = self
             .base_hook_context()
             .with_mode(self.mode.hook_label())
@@ -3622,18 +3684,8 @@ impl App {
         if let Err(error) = self.submit_hooks(HookEvent::ModeChange, context) {
             self.surface_observer_hook_submission_failure(error);
         }
-        if self.permission_pair() != permission_pair_before {
-            self.record_permission_change(permission_before);
-        }
+        self.record_permission_change(permission_before);
         self.needs_redraw = true;
-    }
-
-    fn permission_pair(&self) -> ApprovalMode {
-        if self.mode == AppMode::Plan {
-            self.mode_prefs.agent_approval_mode
-        } else {
-            self.approval_mode
-        }
     }
 
     /// Apply a *user-facing* mode selection: change the live session mode and
@@ -3789,6 +3841,54 @@ impl App {
             StatusToastLevel::Info,
             Some(10_000),
         );
+    }
+
+    pub(crate) fn notify_account_preferences_not_loaded(&mut self) {
+        let sign_in = account_sign_in_marker(self.config_profile.as_deref());
+        self.notify_account_preferences_not_loaded_for(&sign_in);
+    }
+
+    fn notify_account_preferences_not_loaded_for(&mut self, sign_in: &str) {
+        let first_for_sign_in = Settings::transact_opt(|settings| {
+            if settings.account_preferences_notice_shown.as_deref() == Some(sign_in) {
+                return Ok(None);
+            }
+            settings.account_preferences_notice_shown = Some(sign_in.to_string());
+            Ok(Some(()))
+        });
+        if matches!(first_for_sign_in, Ok(None)) {
+            return;
+        }
+        let text = self
+            .tr(MessageId::AccountPreferencesNotLoaded)
+            .replace("{command}", "codewhale login");
+        self.push_status_toast_record(StatusToast::standing(
+            text,
+            StatusToastLevel::Warning,
+            ACCOUNT_PREFERENCES_NOTICE,
+        ));
+    }
+
+    pub(crate) fn dismiss_account_preferences_notice(&mut self) -> bool {
+        let before = self.status_toasts.len();
+        self.retire_event_notices(ACCOUNT_PREFERENCES_NOTICE);
+        self.status_toasts.len() != before
+    }
+
+    pub(crate) fn refresh_agent_approved_plugins_notice(&mut self) {
+        self.retire_event_notices(AGENT_APPROVED_PLUGINS_NOTICE);
+        let names = active_agent_approved_plugin_names(&self.plugin_registry);
+        if names.is_empty() {
+            return;
+        }
+        let text = self
+            .tr(MessageId::CmdPluginAuditSessionNotice)
+            .replace("{names}", &names.join(", "));
+        self.push_status_toast_record(StatusToast::standing(
+            text,
+            StatusToastLevel::Warning,
+            AGENT_APPROVED_PLUGINS_NOTICE,
+        ));
     }
 
     /// One-release migration notice for the Shift+Tab/Ctrl+T rebinding: users
@@ -3962,11 +4062,21 @@ impl App {
     #[must_use]
     pub fn permission_dial_next(&self) -> (AppMode, ApprovalMode) {
         if self.mode == AppMode::Plan {
-            return (AppMode::Agent, ApprovalMode::Auto);
+            return (
+                AppMode::Agent,
+                if self.auto_review_disabled {
+                    ApprovalMode::Bypass
+                } else {
+                    ApprovalMode::Auto
+                },
+            );
         }
         match self.approval_mode {
             ApprovalMode::AcceptEdits => (AppMode::Plan, ApprovalMode::AcceptEdits),
-            current => (AppMode::Agent, current.cycle_permission_next()),
+            current => (
+                AppMode::Agent,
+                current.cycle_permission_next_with_auto_review(self.auto_review_disabled),
+            ),
         }
     }
 
@@ -3977,6 +4087,10 @@ impl App {
         } else {
             self.approval_mode
         };
+        let was_auto = self.mode_prefs.agent_approval_mode == ApprovalMode::Auto
+            || self.approval_mode == ApprovalMode::Auto;
+        let permission_before = self.permission_receipt_label();
+        self.permission_receipt_deferred = true;
         let mut step = DialStep::default();
         if mode != self.mode {
             step.mode_changed = self.select_mode(mode) == SettingSelection::Changed;
@@ -3996,11 +4110,30 @@ impl App {
                 step.mode_changed = self.select_mode(AppMode::Plan) == SettingSelection::Changed;
             }
         }
+        self.permission_receipt_deferred = false;
+        self.record_permission_change(&permission_before);
+        if !was_auto
+            && (self.approval_mode == ApprovalMode::Auto
+                || self.mode_prefs.agent_approval_mode == ApprovalMode::Auto)
+            && self.has_suspended_broad_allows()
+        {
+            self.emit_auto_review_broad_allows_paused_note();
+        }
         step
     }
 
     /// Set the durable Agent permission posture.
     pub fn select_approval_posture(&mut self, next: ApprovalMode) -> bool {
+        if next == ApprovalMode::Auto && self.auto_review_disabled {
+            self.push_status_toast(
+                "Auto-Review is disabled by managed configuration (`auto_review.disabled = true`)"
+                    .to_string(),
+                StatusToastLevel::Warning,
+                Some(6_000),
+            );
+            self.needs_redraw = true;
+            return false;
+        }
         if self.approval_policy_locked() {
             self.push_status_toast(
                 "Permissions are controlled by config or managed requirements".to_string(),
@@ -4028,6 +4161,16 @@ impl App {
     /// adopt the TUI posture, so persist the next setting first, then remove
     /// the shadowing root key. Roll back the setting if that removal fails.
     pub fn select_root_approval_posture(&mut self, next: ApprovalMode) -> bool {
+        if next == ApprovalMode::Auto && self.auto_review_disabled {
+            self.push_status_toast(
+                "Auto-Review is disabled by managed configuration (`auto_review.disabled = true`)"
+                    .to_string(),
+                StatusToastLevel::Warning,
+                Some(6_000),
+            );
+            self.needs_redraw = true;
+            return false;
+        }
         if !self.approval_policy_root_editable {
             self.push_status_toast(
                 "Permissions are controlled by a non-editable policy source".to_string(),
@@ -4146,6 +4289,7 @@ impl App {
     }
 
     fn finish_approval_posture_change(&mut self, next: ApprovalMode) {
+        let was_auto = self.mode_prefs.agent_approval_mode == ApprovalMode::Auto;
         self.set_agent_approval_posture(next);
         self.needs_redraw = true;
         // In Plan the new posture is real but dormant, and the footer chip
@@ -4160,6 +4304,13 @@ impl App {
                 StatusToastLevel::Info,
                 Some(5_000),
             );
+        }
+        if !self.permission_receipt_deferred
+            && !was_auto
+            && next == ApprovalMode::Auto
+            && self.has_suspended_broad_allows()
+        {
+            self.emit_auto_review_broad_allows_paused_note();
         }
         // Footer permission chip is canonical — no status toast for the new
         // value, only the one-shot rebinding notice.
@@ -4205,22 +4356,95 @@ impl App {
         );
     }
 
+    #[must_use]
+    pub fn has_suspended_broad_allows(&self) -> bool {
+        !self
+            .exec_policy_engine
+            .suspended_broad_allow_descriptions()
+            .is_empty()
+            || !self.auto_review_broad_allow_warnings.is_empty()
+    }
+
+    fn emit_auto_review_broad_allows_paused_note(&mut self) {
+        let content = self
+            .tr(MessageId::AutoReceiptBroadAllowsPaused)
+            .into_owned();
+        self.add_message(HistoryCell::System { content });
+        self.needs_redraw = true;
+    }
+
     /// Host path for `/auto`: persist Auto-Review as the TUI permission
     /// posture without inventing a second runtime.
     pub fn apply_auto_review_posture(&mut self) -> Result<(), String> {
-        self.apply_agent_posture(ApprovalMode::Auto)
+        self.apply_agent_posture_with_note(ApprovalMode::Auto, false)
+    }
+
+    pub fn apply_cli_permission_mode(
+        &mut self,
+        permission_mode: Option<codewhale_engine::runtime_options::PermissionMode>,
+    ) {
+        let Some(permission_mode) = permission_mode else {
+            return;
+        };
+        match permission_mode {
+            codewhale_engine::runtime_options::PermissionMode::Plan => {
+                self.set_mode(AppMode::Plan);
+            }
+            other => {
+                if let Some(approval) = other.approval_mode() {
+                    if approval == ApprovalMode::Auto && self.auto_review_disabled {
+                        return;
+                    }
+                    if !self.approval_policy_requirements_managed
+                        && (!self.approval_policy_locked() || self.approval_policy_root_editable)
+                    {
+                        let was_auto = self.approval_mode == ApprovalMode::Auto;
+                        self.mode = AppMode::Agent;
+                        self.set_agent_approval_posture(approval);
+                        if !was_auto
+                            && self.approval_mode == ApprovalMode::Auto
+                            && self.has_suspended_broad_allows()
+                        {
+                            self.emit_auto_review_broad_allows_paused_note();
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Persist `next` as the TUI permission posture. Same write as Shift+Tab
     /// landing on it; Plan stays read-only and only the Act baseline moves.
     /// Shared by `/auto` and the Plan hand-off.
     pub fn apply_agent_posture(&mut self, next: ApprovalMode) -> Result<(), String> {
+        self.apply_agent_posture_with_note(next, true)
+    }
+
+    fn apply_agent_posture_with_note(
+        &mut self,
+        next: ApprovalMode,
+        emit_broad_allow_note: bool,
+    ) -> Result<(), String> {
+        if next == ApprovalMode::Auto && self.auto_review_disabled {
+            return Err(
+                "Auto-Review is disabled by managed configuration (`auto_review.disabled = true`)"
+                    .to_string(),
+            );
+        }
         if self.approval_policy_locked() {
             return Err("Permissions are controlled by config or managed requirements".to_string());
         }
+        let was_auto = self.agent_approval_baseline() == ApprovalMode::Auto;
         Self::persist_permission_posture(next)
             .map_err(|err| format!("could not save TUI posture ({err})"))?;
         self.set_agent_approval_posture(next);
+        if emit_broad_allow_note
+            && !was_auto
+            && next == ApprovalMode::Auto
+            && self.has_suspended_broad_allows()
+        {
+            self.emit_auto_review_broad_allows_paused_note();
+        }
         self.needs_redraw = true;
         Ok(())
     }
@@ -4236,7 +4460,7 @@ impl App {
     /// an independently enabled trust baseline in other posture transitions.
     /// Plan remains read-only.
     pub fn set_agent_approval_posture(&mut self, next: ApprovalMode) {
-        let permission_before = self.effective_permission_label();
+        let permission_before = self.permission_receipt_label();
         let trust_mode = if next == ApprovalMode::Bypass {
             true
         } else if self.mode_prefs.agent_approval_mode == ApprovalMode::Bypass {
@@ -4248,13 +4472,144 @@ impl App {
         self.record_permission_change(&permission_before);
     }
 
+    pub fn sync_auto_review_paused_posture(&mut self, next: ApprovalMode) {
+        let trust_mode = if next == ApprovalMode::Bypass {
+            true
+        } else if self.mode_prefs.agent_approval_mode == ApprovalMode::Bypass {
+            false
+        } else {
+            self.mode_prefs.agent_trust_mode
+        };
+        self.revoke_approvable_auto_review_receipts();
+        self.set_agent_runtime_baseline(self.mode_prefs.agent_allow_shell, trust_mode, next);
+        if !self.approval_policy_locked() {
+            let _ = Self::persist_permission_posture(next);
+        }
+        self.needs_redraw = true;
+    }
+
+    pub fn revoke_approvable_auto_review_receipts(&mut self) {
+        for entry in &mut self.auto_review_blocked_receipts {
+            if !entry.approved {
+                entry.approvable = false;
+            }
+        }
+        self.pending_auto_review_retry = None;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_auto_review_blocked_receipt(
+        &mut self,
+        receipt_id: Option<String>,
+        tool_id: String,
+        tool_name: String,
+        gate: String,
+        verdict: String,
+        rule: Option<String>,
+        reason: String,
+        call_digest: Option<String>,
+        action_summary: String,
+    ) {
+        self.record_auto_review_blocked_receipt_for_agent(
+            None,
+            receipt_id,
+            tool_id,
+            tool_name,
+            gate,
+            verdict,
+            rule,
+            reason,
+            call_digest,
+            action_summary,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_auto_review_blocked_receipt_for_agent(
+        &mut self,
+        agent_id: Option<String>,
+        receipt_id: Option<String>,
+        tool_id: String,
+        tool_name: String,
+        gate: String,
+        verdict: String,
+        rule: Option<String>,
+        reason: String,
+        call_digest: Option<String>,
+        action_summary: String,
+    ) {
+        let approvable = agent_id.is_none()
+            && receipt_id.as_deref().is_some_and(|id| !id.is_empty())
+            && call_digest
+                .as_deref()
+                .is_some_and(|digest| !digest.is_empty());
+        if let Some(ref id) = receipt_id
+            && !id.is_empty()
+            && self
+                .auto_review_blocked_receipts
+                .iter()
+                .any(|entry| entry.receipt_id == *id)
+        {
+            return;
+        }
+        if self.auto_review_blocked_receipts.len() >= 100 {
+            self.auto_review_blocked_receipts.remove(0);
+        }
+        self.auto_review_blocked_receipts.push(
+            codewhale_engine::core::authority::auto_review::AutoReviewBlockedAction {
+                receipt_id: receipt_id.unwrap_or_default(),
+                call_digest: call_digest.unwrap_or_default(),
+                tool_id,
+                tool_name,
+                action_summary,
+                rule,
+                reason,
+                gate,
+                verdict,
+                approved: false,
+                approvable,
+                agent_id,
+            },
+        );
+    }
+
+    pub fn mark_auto_review_receipt_approved(&mut self, target: &str) {
+        if target.is_empty() {
+            return;
+        }
+        for entry in &mut self.auto_review_blocked_receipts {
+            if entry.receipt_id == target || entry.call_digest == target {
+                entry.approved = true;
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn latest_approvable_auto_review_block(
+        &self,
+    ) -> Option<&codewhale_engine::core::authority::auto_review::AutoReviewBlockedAction> {
+        self.auto_review_blocked_receipts
+            .iter()
+            .rev()
+            .find(|entry| entry.approvable && !entry.approved && !entry.receipt_id.is_empty())
+    }
+
     #[must_use]
     pub(crate) fn effective_permission_label(&self) -> String {
         crate::tui::underwater::permission_label(self).into_owned()
     }
 
+    fn permission_receipt_label(&self) -> String {
+        crate::tui::underwater::dial_chip_for(self.ui_locale, self.mode, self.approval_mode)
+            .0
+            .into_owned()
+    }
+
     fn record_permission_change(&mut self, before: &str) {
-        let after = self.effective_permission_label();
+        if self.permission_receipt_deferred {
+            return;
+        }
+        let after = self.permission_receipt_label();
         if after == before {
             return;
         }
@@ -4674,18 +5029,7 @@ impl App {
         &mut self,
         pool: &codewhale_engine::cost_status::PendingBackgroundCost,
     ) -> bool {
-        let pool = codewhale_engine::cost_status::project_missing_usage_ledger(
-            &mut self.session.missing_usage_sources,
-            &mut self.session.missing_usage_overflowed,
-            &mut self.session.cost_unpriced_turns,
-            &mut self.session.cost_cny_unpriced_turns,
-            pool,
-        );
-        let runtime_usage_arrived =
-            !pool.usage_source_fingerprints.is_empty() || pool.missing_usage_overflowed;
-        self.session
-            .subagent_usage_sources
-            .extend(pool.usage_source_fingerprints.iter().cloned());
+        let runtime_usage_arrived = !pool.usage_source_fingerprints.is_empty();
         if pool.estimate.is_positive() {
             self.accrue_subagent_cost_estimate(pool.estimate);
         }
@@ -4706,27 +5050,22 @@ impl App {
             &mut self.session.subagent_cache_write_tokens,
             pool.cache_write_tokens,
         );
-        self.absorb_background_cost_coverage(&pool);
+        self.absorb_background_cost_coverage(pool);
         let mut source_arrived = false;
         for record in &pool.source_records {
             match self.absorb_usage_source(record) {
                 Ok(changed) => source_arrived |= changed,
                 Err(error) => {
-                    tracing::warn!(%error, "live usage source projection refused");
-                    self.session
-                        .cost_unpriced_reasons
-                        .insert("usage_correction_unverified".into());
-                    self.session
-                        .cost_cny_unpriced_reasons
-                        .insert("usage_correction_unverified".into());
-                    self.session.missing_usage_overflowed = true;
+                    tracing::warn!(%error, "live usage source projection skipped");
+                    self.mark_usage_uncertain("usage_correction_unverified");
                 }
             }
         }
+        self.session
+            .subagent_usage_sources
+            .extend(pool.usage_source_fingerprints.iter().cloned());
         codewhale_engine::cost_status::prune_settled_missing_reasons(
-            &self.session.missing_usage_sources,
-            self.session.missing_usage_overflowed,
-            &mut self.session.in_flight_usage_sources,
+            &self.session.accounted_usage_sources,
             self.session.cost_unpriced_turns,
             self.session.cost_cny_unpriced_turns,
             &mut self.session.cost_unpriced_reasons,
@@ -4742,9 +5081,6 @@ impl App {
     /// that no longer contains them (#4318).
     pub fn reset_cost_coverage(&mut self) {
         self.session.accounted_usage_sources.clear();
-        self.session.missing_usage_sources.clear();
-        self.session.missing_usage_overflowed = false;
-        self.session.in_flight_usage_sources.clear();
         self.session.cost_priced_turns = 0;
         self.session.cost_unpriced_turns = 0;
         self.session.cost_cny_priced_turns = 0;
@@ -4852,9 +5188,6 @@ impl App {
         // A session restored as legacy-unknown stays unknown when re-saved:
         // re-writing it as "recorded" would launder the missing evidence into an
         // apparently complete zero.
-        cost.missing_usage_sources = self.session.missing_usage_sources.clone();
-        cost.missing_usage_overflowed = self.session.missing_usage_overflowed;
-        cost.in_flight_usage_sources = self.session.in_flight_usage_sources.clone();
         cost.coverage_recorded = !self.session.cost_coverage_unknown_legacy;
         cost.accounted_usage_sources = self.session.accounted_usage_sources.clone();
     }
@@ -4880,9 +5213,6 @@ impl App {
         self.session.subagent_usage_sources =
             cost.usage_source_fingerprints.iter().cloned().collect();
         self.session.accounted_usage_sources = cost.accounted_usage_sources.clone();
-        self.session.missing_usage_sources = cost.missing_usage_sources.clone();
-        self.session.missing_usage_overflowed = cost.missing_usage_overflowed;
-        self.session.in_flight_usage_sources = cost.in_flight_usage_sources.clone();
         self.session.cost_priced_turns = cost.priced_turns;
         self.session.cost_unpriced_turns = cost.unpriced_turns;
         self.session.cost_cny_priced_turns = cost.cny_priced_turns;
@@ -4930,6 +5260,12 @@ impl App {
         &mut self,
         record: &codewhale_engine::cost_status::RuntimeUsageRecord,
     ) -> Result<bool, String> {
+        if codewhale_engine::cost_status::is_usage_source_retired(
+            codewhale_engine::cost_status::scope_token(),
+            &record.source_id,
+        ) {
+            return Ok(false);
+        }
         let key = codewhale_engine::cost_status::usage_source_fingerprint(&record.source_id);
         let previous = self.session.accounted_usage_sources.get(&key).cloned();
         let mut cost = codewhale_engine::session_manager::SessionCostSnapshot::default();
@@ -4940,26 +5276,10 @@ impl App {
         {
             return Ok(false);
         }
-        let source = self
-            .session_write_receipt
-            .as_ref()
-            .ok_or_else(|| "cost projection has no admitted session scope".to_string())?;
-        let Some((old, new)) = source
-            .project_usage_record(
-                codewhale_engine::cost_status::scope_token(),
-                record,
-                &mut cost,
-            )
-            .map_err(|error| error.to_string())?
-        else {
-            return Ok(false);
-        };
-        if old == 0
-            && new == 0
-            && previous
-                .as_ref()
-                .is_some_and(|previous| previous.record == *record)
-        {
+        let (old, new) = cost
+            .project_usage_record(record)
+            .map_err(|error| error.to_string())?;
+        if old == 0 && new == 0 && cost.accounted_usage_sources.get(&key) == previous.as_ref() {
             return Ok(false);
         }
         self.restore_cost_snapshot(&cost);
@@ -5139,27 +5459,30 @@ impl App {
     }
 
     /// Price is one number, everywhere (design §2.11 item 5): the session
-    /// cost as the footer chip, the price view, and the roster print it.
-    /// Money routes print the amount; subscription and local routes print the
-    /// same words the chip uses; a metered route that has not spent yet prints
-    /// `$0.00`; a session with no confirmed price says `unknown` rather than
-    /// inventing a zero.
-    #[must_use]
-    pub fn session_cost_label(&self) -> String {
-        let chip = self.cumulative_usage_chip();
-        if matches!(chip, codewhale_engine::route_billing::UsageChip::Hidden) {
-            return self
-                .format_cost_amount(self.displayed_session_cost_for_currency(self.cost_currency));
-        }
-        codewhale_engine::route_billing::format_usage_chip(&chip, self.ui_locale).unwrap_or_else(
-            || {
+    /// cost as the price view and status surface print it — money routes print
+    /// exact or estimated dollars (or `$0.00` before spending), while
+    /// subscription, local, and unpriced sessions say `unknown` rather than
+    /// printing plan names, `"local"`, or an invented zero.
+    pub(crate) fn status_cost_label(&self) -> Option<String> {
+        use codewhale_engine::route_billing::UsageChip;
+        match self.cumulative_usage_chip() {
+            UsageChip::Money(_) | UsageChip::Hidden => None,
+            UsageChip::PricedSubtotal { amount, .. } => Some(amount),
+            UsageChip::Allowance { .. } | UsageChip::Local | UsageChip::Unknown(_) => Some(
                 codewhale_localization::tr(
                     self.ui_locale,
                     codewhale_localization::MessageId::CmdCostUnknownValue,
                 )
-                .into_owned()
-            },
-        )
+                .into_owned(),
+            ),
+        }
+    }
+
+    #[must_use]
+    pub fn session_cost_label(&self) -> String {
+        self.status_cost_label().unwrap_or_else(|| {
+            self.format_cost_amount(self.displayed_session_cost_for_currency(self.cost_currency))
+        })
     }
 
     pub(crate) fn cost_display_currency(&self, currency: CostCurrency) -> CostCurrency {
@@ -5278,6 +5601,12 @@ impl App {
             .into_iter()
             .filter_map(remap)
             .collect();
+        self.turn_work_durations = std::mem::take(&mut self.turn_work_durations)
+            .into_iter()
+            .filter_map(|(idx, duration)| remap(idx).map(|idx| (idx, duration)))
+            .collect();
+        self.turn_durations_revision = self.turn_durations_revision.wrapping_add(1);
+        self.active_turn_user_index = self.active_turn_user_index.and_then(remap);
         self.collapsed_cell_map.clear();
         self.streaming_message_index = self.streaming_message_index.and_then(remap);
         self.streaming_source_receipt = None;
@@ -5305,7 +5634,7 @@ impl App {
     /// `true` for the `Agent N` counter placeholder assigned before a child's
     /// dispatch metadata arrives. Placeholders are the only label that may be
     /// upgraded once the child's identity is observed.
-    fn is_agent_counter_placeholder(label: &str) -> bool {
+    pub(crate) fn is_agent_counter_placeholder(label: &str) -> bool {
         label
             .strip_prefix("Agent ")
             .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
@@ -5324,6 +5653,12 @@ impl App {
                 self.agent_progress_meta
                     .get(agent_id)
                     .and_then(|meta| meta.display_name.clone())
+            })
+            .or_else(|| {
+                self.current_agent_roster()
+                    .iter()
+                    .find(|row| row.worker_id == agent_id)
+                    .map(|row| row.display_name.clone())
             })
             .map(|name| name.trim().to_string())
             .filter(|name| !name.is_empty() && name != agent_id)
@@ -5590,11 +5925,61 @@ impl App {
         id
     }
 
+    pub(crate) fn agent_preset(&self) -> Option<String> {
+        self.conversation_mode.clone()
+    }
+
+    pub(crate) fn conversation_mode_locked(&self) -> bool {
+        !self.api_messages.is_empty()
+            || self.is_loading
+            || !self.queued_messages.is_empty()
+            || self.queued_draft.is_some()
+            || self.pending_fresh_session.is_some()
+    }
+
+    pub(crate) fn install_conversation_mode(
+        &mut self,
+        stored: Option<String>,
+        unavailable: Option<String>,
+    ) {
+        self.conversation_mode = stored;
+        self.conversation_mode_unavailable = unavailable;
+        self.needs_redraw = true;
+    }
+
+    pub(crate) fn conversation_mode_label(&self) -> Option<String> {
+        crate::tui::conversation_mode::label(
+            self.ui_locale,
+            self.conversation_mode.as_deref(),
+            self.conversation_mode_unavailable.as_deref(),
+            None,
+        )
+    }
+
     pub(crate) fn set_current_session_id(&mut self, session_id: Option<String>) {
         if self.current_session_id != session_id {
             self.view_stack.remove_owned_evidence_pagers();
+            self.mcp_announced_problems.clear();
             self.session_write_receipt = None;
             self.session_write_owner = None;
+            self.subagent_cache.clear();
+            self.subagent_terminal_seen_at.clear();
+            self.subagent_cache_received_at = None;
+            self.agent_progress.clear();
+            self.agent_progress_meta.clear();
+            self.subagent_card_index.clear();
+            self.last_fanout_card_index = None;
+            self.pending_subagent_dispatch = None;
+            self.agent_activity_started_at = None;
+            self.agent_counter = 0;
+            self.agent_label_map.clear();
+            self.agent_focus = None;
+            self.agent_queued_follow_ups.clear();
+            self.agent_roster.clear();
+            self.agent_roster_session_id = None;
+            self.agent_roster_print_requested = false;
+            self.coordination_detail = None;
+            self.work_surface.reset_session_state(session_id.as_deref());
         }
         self.current_session_id = session_id;
     }
@@ -5611,6 +5996,7 @@ impl App {
         self.session_context_references.clear();
         self.session_artifacts.clear();
         self.session_turn_outcomes.clear();
+        self.delegated_writes.clear();
         self.prune_transcript_index_state(0);
         self.history_version = self.history_version.wrapping_add(1);
         self.needs_redraw = true;
@@ -5808,6 +6194,11 @@ impl App {
         self.collapsed_cells.retain(|idx| *idx < len);
         self.cell_folds.retain(|idx, _| *idx < len);
         self.expanded_tool_runs.retain(|idx| *idx < len);
+        self.turn_work_durations.retain(|idx, _| *idx < len);
+        self.turn_durations_revision = self.turn_durations_revision.wrapping_add(1);
+        if self.active_turn_user_index.is_some_and(|idx| idx >= len) {
+            self.active_turn_user_index = None;
+        }
         self.collapsed_cell_map.clear();
     }
 
@@ -5948,11 +6339,56 @@ impl App {
         self.api_messages_mut().clear();
         self.api_message_stamps.clear();
         self.session_turn_outcomes.clear();
+        self.delegated_writes.clear();
     }
 
     #[must_use]
     pub fn tool_collapse_active(&self) -> bool {
         self.tool_collapse_threshold > 0 && self.tool_collapse_mode.is_active(self.calm_mode)
+    }
+
+    #[must_use]
+    pub(crate) fn turn_fold_open_tail(&self) -> bool {
+        self.is_loading || self.active_cell.is_some()
+    }
+
+    #[must_use]
+    pub(crate) fn echoed_queued_user_count(&self) -> usize {
+        self.queued_messages
+            .iter()
+            .filter(|message| message.history_echoed && message.extension_command.is_none())
+            .count()
+    }
+
+    #[must_use]
+    pub(crate) fn turn_fold_projection(&self) -> crate::tui::history::TurnFoldProjection {
+        if !self.tool_collapse_active() {
+            return crate::tui::history::TurnFoldProjection::default();
+        }
+        let active_entries = self
+            .active_cell
+            .as_ref()
+            .map_or(&[][..], crate::tui::active_cell::ActiveCell::entries);
+        let superseded_todos =
+            crate::tui::history::superseded_todo_write_indices(&self.history, active_entries);
+        crate::tui::history::detect_turn_folds(
+            &self.history,
+            active_entries,
+            self.turn_fold_open_tail(),
+            self.active_turn_user_index,
+            self.echoed_queued_user_count(),
+            &superseded_todos,
+            &self.turn_work_durations,
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn folded_turn_at(&self, index: usize) -> Option<crate::tui::history::TurnFold> {
+        self.turn_fold_projection()
+            .turns
+            .into_iter()
+            .find(|turn| turn.host() == Some(index))
+            .filter(|turn| !self.expanded_tool_runs.contains(&turn.key))
     }
 
     #[must_use]
@@ -5967,6 +6403,14 @@ impl App {
         if index >= self.history.len().saturating_add(active_entries.len()) {
             return None;
         }
+        let folds = self.turn_fold_projection();
+        if folds.agents.contains(&index) {
+            return Some(index);
+        }
+        let turn = folds.turn_containing(index).map(|turn| turn.key);
+        if let Some(key) = turn.filter(|key| !self.expanded_tool_runs.contains(key)) {
+            return Some(key);
+        }
         crate::tui::history::detect_tool_runs_from_slices(
             &self.history,
             active_entries,
@@ -5975,6 +6419,20 @@ impl App {
         .into_iter()
         .find(|run| index >= run.start && index < run.start.saturating_add(run.count))
         .map(|run| run.start)
+        .or(turn)
+    }
+
+    #[must_use]
+    pub(crate) fn transcript_fold_header_at(&self, index: usize) -> bool {
+        let Some(key) = self.tool_run_start_for_history_index(index) else {
+            return false;
+        };
+        key == index
+            || self
+                .turn_fold_projection()
+                .turns
+                .iter()
+                .any(|turn| turn.key == key && turn.host() == Some(index))
     }
 
     pub fn toggle_tool_run_expansion_at(&mut self, index: usize) -> bool {
@@ -6288,17 +6746,6 @@ impl App {
                 *cell_index = cell_index.saturating_add(added);
             }
         }
-        self.active_tool_entry_completed_at =
-            std::mem::take(&mut self.active_tool_entry_completed_at)
-                .into_iter()
-                .map(|(index, at)| {
-                    if index >= boundary {
-                        (index.saturating_add(added), at)
-                    } else {
-                        (index, at)
-                    }
-                })
-                .collect();
     }
 
     pub fn cell_at_virtual_index_mut(&mut self, index: usize) -> Option<&mut HistoryCell> {
@@ -6847,7 +7294,7 @@ impl App {
     /// Ceiling on how far the ambient clock advances per sampled frame.
     /// Bursty draw schedules (fast token streams) slow the aquarium down
     /// instead of teleporting creatures across the gap.
-    pub const AMBIENT_MAX_STEP_MS: u128 = 160;
+    pub const AMBIENT_MAX_STEP_MS: u128 = 260;
     /// Gentle-motion grace before a fully idle aquarium settles still.
     pub const AMBIENT_IDLE_SETTLE_MS: u64 = 6_000;
 
@@ -6878,10 +7325,17 @@ impl App {
     pub fn ambient_idle_settled(&mut self, busy: bool, now: Instant) -> bool {
         if busy {
             self.ambient_idle_since = None;
+            self.ambient_life_held_ms = None;
             return false;
         }
         let since = *self.ambient_idle_since.get_or_insert(now);
-        now.duration_since(since) >= Duration::from_millis(Self::AMBIENT_IDLE_SETTLE_MS)
+        let settled =
+            now.duration_since(since) >= Duration::from_millis(Self::AMBIENT_IDLE_SETTLE_MS);
+        if settled {
+            self.ambient_life_held_ms
+                .get_or_insert(self.ambient_clock_ms);
+        }
+        settled
     }
 
     /// Resolve one motion policy for every surface that can request or paint
@@ -7699,7 +8153,7 @@ impl App {
 
     pub fn accepts_custom_model_ids(&self) -> bool {
         self.model_ids_passthrough
-            || codewhale_runtime::config::provider_passes_model_through(self.api_provider)
+            || codewhale_config::descriptors::provider_passes_model_through(self.api_provider)
     }
 
     pub(crate) fn apply_provider_switch_reasoning_effort(
@@ -8317,6 +8771,26 @@ impl App {
             .as_ref()
             .is_some_and(ProviderChain::is_fallback_active)
     }
+}
+
+fn active_agent_approved_plugin_names(registry: &codewhale_plugins::PluginRegistry) -> Vec<String> {
+    registry
+        .list()
+        .iter()
+        .filter(|plugin| {
+            plugin.active()
+                && matches!(
+                    plugin.approved_by,
+                    Some(codewhale_plugins::host_services::PluginApprover::Agent(_))
+                )
+        })
+        .map(|plugin| {
+            crate::commands::groups::plugins::render::escape_review_text(
+                plugin.name(),
+                crate::commands::groups::plugins::render::ReviewTextContext::Plain,
+            )
+        })
+        .collect()
 }
 
 pub fn media_attachment_reference(kind: &str, path: &Path, description: Option<&str>) -> String {

@@ -24,21 +24,26 @@ fn cold_process() {
     codewhale_engine::provider_lake::clear_live_snapshot();
 }
 
-fn persist_catalog(kind: ProviderKind, identity: &str, endpoint: &str, images: bool) {
-    let fingerprint = base_url_fingerprint(endpoint);
+fn persist_catalog(config: &Config, images: bool) -> Result<()> {
+    let identity = config
+        .active_provider_identity()
+        .map_err(anyhow::Error::msg)?;
+    let endpoint = config.base_url_for_route(&identity);
+    let fingerprint = base_url_fingerprint(&endpoint);
     let fetched_at = now_unix();
-    let ticket = codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
-        kind, identity, endpoint,
-    );
+    let ticket =
+        codewhale_engine::provider_catalog_live::begin_scoped_refresh(config, &identity, &endpoint)
+            .map_err(anyhow::Error::msg)?;
+    let provider = identity.key.as_str();
     assert_eq!(
         codewhale_engine::provider_catalog_live::record_success_if_current(
             &ticket,
             ProviderCatalogDelta {
-                provider: identity.into(),
+                provider: provider.into(),
                 base_url_fingerprint: fingerprint.clone(),
                 fetched_at,
                 offerings: vec![CatalogOffering {
-                    provider: identity.into(),
+                    provider: provider.into(),
                     wire_model_id: MODEL.into(),
                     endpoint_key: "chat".into(),
                     modalities: Some(ModelsDevModalities {
@@ -59,6 +64,7 @@ fn persist_catalog(kind: ProviderKind, identity: &str, endpoint: &str, images: b
         ),
         Some(CatalogStatus::Fresh)
     );
+    Ok(())
 }
 
 fn config_for(identity: &str, endpoint: &str) -> Config {
@@ -84,7 +90,7 @@ fn config_for(identity: &str, endpoint: &str) -> Config {
         route
     };
     route.base_url = Some(endpoint.into());
-    route.api_key = Some("synthetic-headless-catalog-key".into());
+    route.auth_mode = Some("none".into());
     route.model = Some(MODEL.into());
     config
 }
@@ -124,10 +130,10 @@ fn headless_startup_publishes_cold_endpoint_catalog_capabilities() -> Result<()>
     let _home = EnvVarGuard::set("CODEWHALE_HOME", home.path());
     let _reset = CatalogReset;
     cold_process();
-    persist_catalog(ProviderKind::Openrouter, "openrouter", FIRST_ENDPOINT, true);
+    let config = config_for("openrouter", FIRST_ENDPOINT);
+    persist_catalog(&config, true)?;
     cold_process();
 
-    let config = config_for("openrouter", FIRST_ENDPOINT);
     assert!(
         provider_models_for_api(
             &config,
@@ -157,13 +163,14 @@ async fn headless_reload_publishes_only_the_accepted_identity_and_endpoint() -> 
     let _home = EnvVarGuard::set("CODEWHALE_HOME", home.path());
     let _reset = CatalogReset;
     cold_process();
-    persist_catalog(ProviderKind::Custom, "vision-one", FIRST_ENDPOINT, true);
-    persist_catalog(ProviderKind::Custom, "vision-two", FIRST_ENDPOINT, false);
-    persist_catalog(ProviderKind::Custom, "vision-one", SECOND_ENDPOINT, false);
-    cold_process();
-
     let first = config_for("vision-one", FIRST_ENDPOINT);
     let second = config_for("vision-two", FIRST_ENDPOINT);
+    let moved = config_for("vision-one", SECOND_ENDPOINT);
+    persist_catalog(&first, true)?;
+    persist_catalog(&second, false)?;
+    persist_catalog(&moved, false)?;
+    cold_process();
+
     let manager = open_server_manager(&first, home.path())?;
     assert_eq!(image_capability(&first), CapabilityState::Supported);
     assert_eq!(image_capability(&second), CapabilityState::Unknown);
@@ -180,9 +187,7 @@ async fn headless_reload_publishes_only_the_accepted_identity_and_endpoint() -> 
         image_capability(&manager.read_config()),
         CapabilityState::Unknown
     );
-    manager
-        .reload_config(config_for("vision-one", SECOND_ENDPOINT))
-        .await?;
+    manager.reload_config(moved).await?;
     assert_eq!(
         image_capability(&manager.read_config()),
         CapabilityState::Unsupported

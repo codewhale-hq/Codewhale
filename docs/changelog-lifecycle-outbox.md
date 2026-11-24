@@ -24,9 +24,8 @@ PR). Feature-complete against the v0.9.9 baseline (`6f3850c3d`).
   raw tool args, environment, or transcript text — with free-form fields
   capped at the notification limits (headline ≤ 80, detail ≤ 120,
   preview ≤ 200 chars) and stripped of control bytes.
-- **Webhook**: `WebhookHookSink` (previously dead code with no config
-  surface) now supports an optional bearer token and is wired to outbox
-  events when `webhook_url` is set — POST `{"at", "event"}`. Delivery is
+- **Webhook**: `WebhookHookSink` supports an optional bearer token and is
+  wired to outbox events when `webhook_url` is set — POST `{"at", "event"}`. Delivery is
   best-effort: failures are logged and dropped, never retried into the
   agent loop, and a failing webhook never blocks the local append.
 

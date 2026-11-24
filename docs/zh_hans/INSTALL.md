@@ -28,7 +28,7 @@ cargo build --release --locked -p codewhale-cli
 target/release/codewhale --version
 ```
 
-构建前置条件见下文 Cargo 章节；使用仓库选定的 stable Rust，最低声明版本
+构建前置条件见下文 Cargo 章节；使用仓库固定的 Rust 1.100.0，最低声明版本
 为 1.89。首次构建可能耗时较长。Windows 的可执行文件为
 `target/release/codewhale.exe`，并需要 MSVC 工具链。开发构建不等于已签名发布包。
 
@@ -133,9 +133,9 @@ curl -fsSL https://codewhale.net/install.sh | sh
   时，两个命令名会复用同一次下载；摘要不同时才会单独下载并校验
   `codew-<platform>`。只要有一个摘要不匹配，就会在安装任何东西之前停止
   （`codewhale install: checksum mismatch for …`）。
-* 使用校验过的发布内容分别安装 `~/.local/bin/codewhale` 和
-  `~/.local/bin/codew`。当两个清单摘要相同时，下载暂存阶段尽量使用硬链接，
-  失败时使用临时副本。
+* 先安装 `~/.local/bin/codewhale`，然后在两者字节一致且文件系统支持硬链接时，
+  将 `~/.local/bin/codew` 安装为指向 `~/.local/bin/codewhale` 的硬链接（不支
+  持或失败时退回单独副本），确保更新后两者不会停留在不同版本。
 * **从不使用 sudo。** 当安装目录不在 `PATH` 上时，它会向你的 shell 配置文件追加一个带标记的三行块（见[把它加入 PATH](#把它加入-path)），原样打印它加了什么，并可用 `--no-modify-path` 跳过。它拒绝安装到系统或包管理器目录（`/usr/bin`、`~/.cargo/bin`、Homebrew 与 MacPorts 的 bin 目录、`node_modules`、`/nix/store` 等）、你的主目录或 `/`，以及其他用户或用户组可写的目录（你自己的目录可用 `chmod go-w <目录>` 修复）；也拒绝覆盖一个*不同的*已有 `codewhale`。
 
 预期输出：
@@ -174,7 +174,7 @@ PATH 代码块始终是安装器打印的最后内容。如果你的 PATH 已经
 在 macOS 26.1、Apple silicon（`macos-arm64`）上，用全新的 `HOME` 重新检查过：
 
 * 安装器打印了 `Installing Codewhale for macos-arm64`，用系统自带工具校验了校验和，并在 4.3 秒内装好了 `codewhale` 和 `codew`（各 64 MiB，Mach-O arm64）。两者都报告 `codewhale 0.10.0 (1be1a703b975)`。运行时没有弹出 Gatekeeper 提示。
-* 当 `PATH` 上没有 Node 时，它还会打印 `Computer Use is included and needs Node.js 20 or newer on PATH.`。核心 TUI 没有 Node 也能用，但在 `PATH` 上有 Node 之前，Computer Use 和 JavaScript 执行工具（`js_execution`）不可用。
+* 核心 TUI 没有 Node 也能用；JavaScript 执行工具（`js_execution`）需要 `PATH` 上有 Node。
 * `codewhale doctor` 的行为与 Linux 相同（退出码 0；没有密钥时输出 `All checks complete!`；文件型密钥存储位于 `~/.codewhale/secrets/`），只是它会报告 `✓ sandbox available: macos-seatbelt`。
 
 ### 把它加入 PATH
@@ -303,7 +303,7 @@ cd codewhale-linux-x64 && ./install.sh               # -> ~/.local/bin; PREFIX=/
 
 ## 4. npm
 
-**前置条件：** Node.js 18+ 和 npm，并且有一个**你能写入的全局 prefix**。npm 安装的是注册表上最新已发布的版本，绝不会是未发布的源码候选版。
+**前置条件：** Node.js 22+ 和 npm，并且有一个**你能写入的全局 prefix**。在 Node.js 18 或 20 上，安装会停止并提示你升级 Node.js。npm 安装的是注册表上最新已发布的版本，绝不会是未发布的源码候选版。
 
 ```bash
 npm install -g codewhale
@@ -404,15 +404,15 @@ cargo install --path crates/cli --locked      # installs ~/.cargo/bin/codewhale
 
 需要知道的事（实际观察到的）：
 
-* 仓库里有 `rust-toolchain.toml`（`channel = "stable"`）。在检出目录里运行的第一条 `cargo` 命令，无论你的默认工具链是什么，都会**悄悄下载最新的 stable 工具链**（约 250 MB）。
-* workspace 把所有编译器警告都当作错误。用 Rust 1.89 时，构建会在大约 11 分钟后**失败**，在 `codewhale-tui` 中出现 8 个 `error: this lint expectation is unfulfilled`。请使用仓库选定的 stable 工具链，不要传入更旧的 `+toolchain`。
+* 仓库里有 `rust-toolchain.toml`（`channel = "1.100.0"`）。使用 rustup 时，如果本机没有 Rust 1.100.0，在检出目录里运行的第一条 `cargo` 命令，无论你的默认工具链是什么，都会**悄悄下载 Rust 1.100.0**（约 250 MB）。
+* workspace 把所有编译器警告都当作错误。声明的最低版本是 Rust 1.89，CI 的 MSRV 任务会检查它；但发布二进制和仓库自身的检查使用 1.100.0。不使用 rustup 时，请使用 1.89 或更新的 rustc。
 * workspace 的 release profile 使用 thin LTO。在 4 vCPU / 15 GB 的虚拟机上，仅 `codewhale-tui` 这一个 crate 就编译了一个多小时，内存峰值 6–8 GB。请准备 16 GB 或更多内存，并预期这是迄今最慢的安装路径。`target/` 增长超过了 1.2 GB。
 
-测试结果：用仓库选定的 stable Rust（1.98.1）**可行**。
+测试结果：用 Rust 1.98.1（测量时仓库选定的版本）**可行**。
 * `Finished release profile … in 83m 12s`。其间大部分时间有一个 Nix 构建在争抢 CPU 和内存，所以请把它当作上限。
 * `target/` 最终达到 **3.1 GB**。之后用 `cargo clean` 删除。
 * 该二进制报告 `codewhale 0.10.0 (dev)`，`exec` 可用。
-* Cargo 会打印 `warning: default toolchain implicitly overridden with stable-x86_64-unknown-linux-gnu by rustup toolchain file`，这是无害的。
+* Cargo 会打印 `warning: default toolchain implicitly overridden with 1.100.0-x86_64-unknown-linux-gnu by rustup toolchain file`，这是无害的。
 * **Cargo 构建不提供 `codew`。**
 
 **升级：** 重新运行同样的 `cargo install … --force`（对 crates.io 可以加 `--version X.Y.Z`）。`codewhale update` 会拒绝处理 Cargo 安装。**卸载：** `cargo uninstall codewhale-cli`，然后见 §12。
@@ -440,7 +440,7 @@ Run `brew trust --formula hmbown/deepseek-tui/codewhale` or `brew trust hmbown/d
 
 先运行 `brew trust hmbown/deepseek-tui`，或者使用上面的完整名称。
 
-用 Homebrew 7.0.6 对照 v0.10.0 的 tap formula 测试过：安装用了 73 秒。tap formula 跟踪最新发布并下载官方发布二进制，所以不需要编译。它**同时**提供 `codewhale` 和 `codew`。`Hmbown/deepseek-tui` 这个 tap 的 formula 还依赖 `node`，在 Linux 上拉了 31 个 bottle（约 560 MB）。这个 `node` 依赖只属于该 tap formula。核心 TUI 没有 Node 也能运行；Computer Use 和 JS 执行工具在 PATH 上有 Node 时会使用它。
+用 Homebrew 7.0.6 对照 v0.10.0 的 tap formula 测试过：安装用了 73 秒。tap formula 跟踪最新发布并下载官方发布二进制，所以不需要编译。它**同时**提供 `codewhale` 和 `codew`。`Hmbown/deepseek-tui` 这个 tap 的 formula 还依赖 `node`，在 Linux 上拉了 31 个 bottle（约 560 MB）。这个 `node` 依赖只属于该 tap formula。核心 TUI 没有 Node 也能运行；JS 执行工具在 PATH 上有 Node 时会使用它。
 
 * **升级：** `brew upgrade codewhale`。（`codewhale update` 会拒绝，并建议迁移。）
 * **卸载：** `brew uninstall codewhale && brew untap Hmbown/deepseek-tui`。这也会自动移除该 tap 的 node 依赖以及它拉进来的其他东西。Homebrew 的下载缓存（`~/.cache/Homebrew`，约 330 MB）会保留，直到运行 `brew cleanup --prune=all`。
@@ -1096,7 +1096,7 @@ codewhale --version
 codewhale doctor
 ```
 
-`rquickjs` 的 FreeBSD 绑定在构建时通过 `bindgen` 生成（见 `1582ba965`/`5eb0385e8`）。目前还没有单独的 `pkg install codewhale` 端口——原生端口作为 #1097 的后续工作，记录在 `packaging/freebsd/` 之下（欢迎贡献）。请在 release 分支上用 `cargo check --target x86_64-unknown-freebsd -p codewhale-cli --locked` 验证；7×1 发布矩阵（Linux musl x64/arm64、Android arm64、macOS x64/arm64、Windows x64/arm64）仍是 7 个目标——FreeBSD 是源码构建目标，不是预编译资源。
+`rquickjs` 的 FreeBSD 绑定在构建时通过 `bindgen` 生成（见 `1582ba965`/`5eb0385e8`）。目前还没有单独的 `pkg install codewhale` 端口——原生端口作为 #1097 的后续工作，记录在 `packaging/freebsd/` 之下（欢迎贡献）。请在 release 分支上用 `cargo check --target x86_64-unknown-freebsd -p codewhale-cli --locked` 验证；8×1 发布矩阵（Linux musl x64/arm64、Android arm64、macOS x64/arm64、Windows x64/arm64、OpenHarmony arm64）仍是 8 个目标——FreeBSD 是源码构建目标，不是预编译资源。
 
 #### 从 x64 交叉编译到 ARM64 Linux
 

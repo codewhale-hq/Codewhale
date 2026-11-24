@@ -14,6 +14,9 @@ from pathlib import Path
 from typing import Any
 
 
+INDEPENDENT_VERSION_CRATES = {"codewhale-ratatui"}
+
+
 class ValidationError(Exception):
     """A release-order or Cargo metadata contract violation."""
 
@@ -80,7 +83,7 @@ def workspace_packages(metadata: dict[str, Any]) -> list[dict[str, Any]]:
 
 def validate_order(
     packages: list[dict[str, Any]], ordered_crates: list[str]
-) -> tuple[str, dict[str, bool]]:
+) -> tuple[str, dict[str, bool], dict[str, str]]:
     duplicate_crates = sorted(
         {name for name in ordered_crates if ordered_crates.count(name) > 1}
     )
@@ -95,7 +98,21 @@ def validate_order(
     if len(set(names)) != len(names):
         raise ValidationError("Cargo metadata contains duplicate workspace package names")
 
-    versions = sorted({package.get("version") for package in packages})
+    independent_versions = {
+        package["name"]: package.get("version")
+        for package in packages
+        if package["name"] in INDEPENDENT_VERSION_CRATES
+    }
+    for name, own_version in independent_versions.items():
+        if not isinstance(own_version, str) or not own_version:
+            raise ValidationError(f"{name} has no version")
+    versions = sorted(
+        {
+            package.get("version")
+            for package in packages
+            if package["name"] not in INDEPENDENT_VERSION_CRATES
+        }
+    )
     if len(versions) != 1 or not isinstance(versions[0], str) or not versions[0]:
         rendered = ", ".join(str(version) for version in versions)
         raise ValidationError(f"workspace packages have mixed versions: {rendered}")
@@ -171,7 +188,7 @@ def validate_order(
         )
         raise ValidationError("\n".join(lines))
 
-    return versions[0], has_workspace_dependencies
+    return versions[0], has_workspace_dependencies, independent_versions
 
 
 def main() -> int:
@@ -179,12 +196,14 @@ def main() -> int:
     try:
         metadata = load_metadata(args.metadata_file)
         packages = workspace_packages(metadata)
-        version, dependency_flags = validate_order(packages, args.crates)
+        version, dependency_flags, independent_versions = validate_order(packages, args.crates)
     except ValidationError as error:
         print(error, file=sys.stderr)
         return 1
 
     print(f"version\t{version}\t")
+    for name in sorted(independent_versions):
+        print(f"own-version\t{name}\t{independent_versions[name]}")
     build_directory = metadata.get("build_directory") or metadata.get("target_directory")
     if isinstance(build_directory, str) and build_directory:
         print(f"build-dir\t{build_directory}\t")

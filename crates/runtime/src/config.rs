@@ -242,50 +242,6 @@ pub fn deepseek_alias_deprecation(model_lower: &str) -> Option<ModelAliasDepreca
     }
 }
 
-/// Canonicalize compact DeepSeek model aliases to stable IDs.
-///
-/// Already-valid model IDs pass through unchanged. The compact `v4pro`
-/// spelling is rewritten to its hyphenated form, and the Flash and retired
-/// vision shorthands select `deepseek-flash`.
-#[must_use]
-pub fn canonical_model_name(model: &str) -> Option<&'static str> {
-    codewhale_config::catalog::reviewed::compatibility_alias(
-        "canonical_model_name",
-        &model.trim().to_ascii_lowercase(),
-    )
-}
-
-/// Normalize a configured/runtime model name.
-///
-/// Trims whitespace, preserves caller-provided case for already-valid model
-/// IDs, and only canonicalizes compact aliases like `deepseek-v4pro`.
-/// Non-DeepSeek or malformed names return `None`; DeepSeek's `/v1/models`
-/// endpoint is the authority on valid model IDs.
-#[must_use]
-pub fn normalize_model_name(model: &str) -> Option<String> {
-    let trimmed = model.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if let Some(canonical) = canonical_model_name(trimmed) {
-        return Some(canonical.to_string());
-    }
-
-    let normalized = trimmed.to_ascii_lowercase();
-    if !normalized.starts_with("deepseek") && !normalized.contains("/deepseek") {
-        return None;
-    }
-
-    if trimmed
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':' | '/'))
-    {
-        return Some(trimmed.to_string());
-    }
-
-    None
-}
-
 #[must_use]
 pub fn normalize_custom_model_id(model: &str) -> Option<String> {
     let trimmed = model.trim();
@@ -296,45 +252,6 @@ pub fn normalize_custom_model_id(model: &str) -> Option<String> {
     }
 }
 
-/// Validate a user-requested model id against the active provider (#3018).
-///
-/// DeepSeek providers use the strict `normalize_model_name` gate (the official
-/// API only accepts DeepSeek IDs). OpenCode Go uses its documented model-scoped
-/// protocol roster. Other providers pass any non-empty,
-/// non-control-character string through — the provider API is the authority.
-#[must_use]
-pub fn requested_model_for_provider(provider: ProviderKind, model: &str) -> Option<String> {
-    match provider {
-        ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic => normalize_model_name(model),
-        ProviderKind::OpencodeGo => opencode_go_model_id(model).map(str::to_string),
-        _ => normalize_custom_model_id(model),
-    }
-}
-
-/// Reject a provider/model tuple that we can be confident is invalid *before*
-/// it reaches the network (#3227).
-///
-/// The route-isolation bug paired a model picked under one provider with a
-/// different provider's route (model chip `deepseek-v4-pro`, provider badge
-/// `Z.ai`), producing a `400 Unknown Model` from the upstream. This guard
-/// catches that locally and names the incompatible pair instead.
-///
-/// We only reject tuples that are *known* to be wrong so legitimate custom
-/// routing (self-hosted endpoints, OpenAI-compatible aggregators that proxy
-/// DeepSeek weights, etc.) keeps working:
-///
-/// 1. A DeepSeek-native provider (`deepseek` / `deepseek-cn`) accepts only
-///    DeepSeek model IDs or `auto` — same gate as [`normalize_model_name`].
-/// 2. A non-DeepSeek *native* provider (e.g. Z.ai, which serves GLM) must not
-///    be handed a DeepSeek-only model ID. This reuses the same
-///    "foreign to a direct provider" classification the model resolver uses,
-///    so DeepSeek aggregators (NVIDIA NIM, OpenRouter, Fireworks, …) stay
-///    permissive.
-/// 3. OpenCode Go accepts models with a documented Chat, Responses, or
-///    Messages protocol; unknown wire contracts are rejected.
-///
-/// Returns `Ok(())` for any tuple we cannot confidently reject (the provider
-/// API remains the final authority for those).
 pub fn validate_route(provider: ProviderKind, model: &str) -> Result<(), String> {
     let trimmed = model.trim();
     if trimmed.is_empty() {
@@ -359,14 +276,12 @@ pub fn validate_route(provider: ProviderKind, model: &str) -> Result<(), String>
         };
     }
 
-    // Providers whose model id is passed through verbatim (OpenAI-compatible,
-    // Ollama tags, custom base URLs, …) are validated by the upstream service.
-    if provider_passes_model_through(provider) {
+    if codewhale_config::descriptors::provider_passes_model_through(provider) {
         return Ok(());
     }
 
     if matches!(provider, ProviderKind::Deepseek) {
-        if normalize_model_name(trimmed).is_some() {
+        if codewhale_config::route::resolve_model(ProviderKind::Deepseek, trimmed, None).is_ok() {
             return Ok(());
         }
         return Err(format!(
@@ -377,8 +292,6 @@ pub fn validate_route(provider: ProviderKind, model: &str) -> Result<(), String>
         ));
     }
 
-    // A non-DeepSeek native provider was handed a DeepSeek-only model id: this
-    // is the exact contamination from #3227 (Z.ai + deepseek-v4-pro).
     if root_deepseek_model_is_foreign_to_direct_provider(provider, trimmed) {
         return Err(format!(
             "Model '{trimmed}' is a DeepSeek model and is not compatible with provider '{}'. \
@@ -390,235 +303,12 @@ pub fn validate_route(provider: ProviderKind, model: &str) -> Result<(), String>
     Ok(())
 }
 
-use codewhale_models::canonical_official_deepseek_model_id;
-
-/// Resolve model names accepted by DeepSeek's first-party endpoints.
-///
-/// The legacy aliases are intentionally handled only in this direct-provider
-/// layer. Aggregators and custom endpoints own their model namespaces; for
-/// example, Wanjie Ark still documents `deepseek-reasoner` as its native id.
-fn canonical_direct_deepseek_model_id(model: &str) -> Option<&'static str> {
-    codewhale_config::catalog::reviewed::compatibility_alias(
-        "canonical_direct_deepseek_model_id",
-        &model.trim().to_ascii_lowercase(),
-    )
-    .or_else(|| canonical_official_deepseek_model_id(model))
-}
-
 fn legacy_deepseek_alias_reasoning_effort(model: &str) -> Option<&'static str> {
-    codewhale_config::catalog::reviewed::compatibility_alias(
-        "legacy_deepseek_alias_reasoning_effort",
-        &model.trim().to_ascii_lowercase(),
-    )
-}
-
-fn canonical_openrouter_recent_model_id(model: &str) -> Option<&'static str> {
-    codewhale_config::catalog::reviewed::compatibility_alias(
-        "canonical_openrouter_recent_model_id",
-        &model.trim().to_ascii_lowercase().replace(['_', ' '], "-"),
-    )
+    codewhale_config::legacy_deepseek_alias_reasoning_effort(model)
 }
 
 pub fn opencode_go_model_id(model: &str) -> Option<&'static str> {
     codewhale_config::opencode_go_model_id(model)
-}
-
-pub fn canonical_xiaomi_mimo_model_id(model: &str) -> Option<&'static str> {
-    codewhale_config::catalog::reviewed::compatibility_alias(
-        "canonical_xiaomi_mimo_model_id",
-        &model.trim().to_ascii_lowercase().replace(['_', ' '], "-"),
-    )
-}
-
-fn canonical_arcee_model_id(model: &str) -> Option<&'static str> {
-    codewhale_config::catalog::reviewed::compatibility_alias(
-        "canonical_arcee_model_id",
-        &model.trim().to_ascii_lowercase().replace(['_', ' '], "-"),
-    )
-}
-
-fn canonical_moonshot_model_id(model: &str) -> Option<&'static str> {
-    codewhale_config::catalog::reviewed::compatibility_alias(
-        "canonical_moonshot_model_id",
-        &model.trim().to_ascii_lowercase().replace(['_', ' '], "-"),
-    )
-}
-
-fn canonical_zai_model_id(model: &str) -> Option<&'static str> {
-    codewhale_config::catalog::reviewed::compatibility_alias(
-        "canonical_zai_model_id",
-        &model.trim().to_ascii_lowercase().replace(['_', ' '], "-"),
-    )
-}
-
-fn canonical_minimax_model_id(model: &str) -> Option<&'static str> {
-    codewhale_config::catalog::reviewed::compatibility_alias(
-        "canonical_minimax_model_id",
-        &model.trim().to_ascii_lowercase().replace(['_', ' '], "-"),
-    )
-}
-
-/// Resolve a user-entered model id to the canonical family id a provider
-/// understands, without any wire-id translation.
-///
-/// Most provider-owned families (GLM via Z.ai/Zhipu, Kimi, Xiaomi MiMo,
-/// MiniMax, Arcee, OpenRouter slugs, …) resolve through the same "apply the
-/// family's canonical map, else pass the input through" path. OpenCode Go is
-/// deliberately stricter because one provider roster spans two incompatible
-/// wire protocols; only its Chat Completions rows may resolve here.
-///
-/// This is the canonicalization half of what [`normalize_model_name_for_provider`]
-/// used to fuse together. Wire-id translation (e.g. `deepseek-v4-pro` → an
-/// aggregator's `accounts/…/deepseek-v4-pro` slug) belongs to the route
-/// resolver at request time, not to a name typed into `/provider`, so it is
-/// deliberately kept out of here.
-///
-/// Returns `None` for empty or control-character input and for ids outside the
-/// OpenCode Go documented protocol roster. Other provider ids pass through so a
-/// custom/self-hosted endpoint is never wrongly rejected.
-#[must_use]
-pub fn canonical_model_id_for_provider(provider: ProviderKind, model: &str) -> Option<String> {
-    let trimmed = model.trim();
-    if trimmed.is_empty() || trimmed.chars().any(char::is_control) {
-        return None;
-    }
-
-    // Go resolves aliases only within its documented protocol roster.
-    if provider == ProviderKind::OpencodeGo {
-        return opencode_go_model_id(trimmed).map(str::to_string);
-    }
-
-    // Provider-owned model families resolve through their own canonical map,
-    // which defines the authoritative casing (`glm-5.1` → `GLM-5.1`,
-    // `minimax-m2.7` → `MiniMax-M2.7`). Each map recognizes only *its own*
-    // aliases, so an unknown id falls through to passthrough — no family acts
-    // as a gate against any other.
-    let family_canonical: Option<&'static str> = match provider {
-        ProviderKind::Openrouter => canonical_openrouter_recent_model_id(trimmed),
-        ProviderKind::XiaomiMimo => canonical_xiaomi_mimo_model_id(trimmed),
-        ProviderKind::Arcee => canonical_arcee_model_id(trimmed),
-        ProviderKind::Moonshot => canonical_moonshot_model_id(trimmed),
-        ProviderKind::Zai => canonical_zai_model_id(trimmed),
-        ProviderKind::Minimax | ProviderKind::MinimaxAnthropic => {
-            canonical_minimax_model_id(trimmed)
-        }
-        _ => None,
-    };
-    if let Some(canonical) = family_canonical {
-        return Some(canonical.to_string());
-    }
-
-    // The official DeepSeek API is the one legitimate per-family gate: it serves
-    // only its own ids (and 400s anything else), so reject an id it does not
-    // recognize. Compact aliases are rewritten (deepseek-v4pro → deepseek-v4-pro)
-    // and the caller's casing is kept for an already-valid id (`DeepSeek-V4-Flash`
-    // stays as-is). Custom/self-hosted DeepSeek endpoints take the
-    // accepts-custom-model-ids path, so they never reach this gate.
-    if matches!(
-        provider,
-        ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
-    ) {
-        let normalized = normalize_model_name(trimmed)?;
-        if let Some(canonical) = canonical_direct_deepseek_model_id(&normalized) {
-            if canonical.eq_ignore_ascii_case(&normalized)
-                || normalized.to_ascii_lowercase() == canonical
-            {
-                return Some(normalized);
-            }
-            return Some(canonical.to_string());
-        }
-        return Some(normalized);
-    }
-
-    // Aggregators that host DeepSeek (NIM, Novita, Fireworks, SiliconFlow, SGLang,
-    // vLLM, DeepInfra, Wanjie Ark, Volcengine) canonicalize recognized DeepSeek
-    // ids but pass everything else through — they serve more than DeepSeek, so
-    // the upstream API stays the authority. A name is never rejected here.
-    if matches!(
-        provider,
-        ProviderKind::NvidiaNim
-            | ProviderKind::Novita
-            | ProviderKind::Fireworks
-            | ProviderKind::Siliconflow
-            | ProviderKind::SiliconflowCN
-            | ProviderKind::Sglang
-            | ProviderKind::Vllm
-            | ProviderKind::Deepinfra
-            | ProviderKind::WanjieArk
-            | ProviderKind::Volcengine
-    ) && let Some(canonical) = canonical_official_deepseek_model_id(
-        &normalize_model_name(trimmed).unwrap_or_else(|| trimmed.to_string()),
-    ) {
-        return Some(canonical.to_string());
-    }
-
-    // Everything else (HuggingFace, OpenAI-compatible, Qianfan, StepFun, Codex,
-    // Anthropic) owns no canonical map — the id the user typed is authoritative.
-    Some(trimmed.to_string())
-}
-
-/// Normalize a model selected through the TUI for the active provider, applying
-/// the provider's wire-slug translation on top of the canonical family id.
-///
-/// This is the wire-id half of the split (canonicalization lives in
-/// [`canonical_model_id_for_provider`]). Used by config-file normalization,
-/// where vendor-prefixed ids (e.g. `deepseek-ai/DeepSeek-V4-Pro` on SiliconFlow)
-/// are the stored form. `/provider` deliberately uses the canonical half instead.
-#[must_use]
-pub fn normalize_model_name_for_provider(provider: ProviderKind, model: &str) -> Option<String> {
-    let canonical = canonical_model_id_for_provider(provider, model)?;
-    // Translate the canonical family id to the provider's wire slug when the
-    // provider's API uses vendor-prefixed ids (Together, Siliconflow, NIM, …).
-    // `model_for_provider` is a no-op for providers without a wire-slug map, so
-    // this is one uniform layer over the equal-treatment canonical resolver.
-    Some(model_for_provider(provider, canonical))
-}
-
-#[must_use]
-pub fn wire_model_for_provider(provider: ProviderKind, model: &str) -> String {
-    let trimmed = model.trim();
-    if trimmed.is_empty() {
-        return trimmed.to_string();
-    }
-    if provider == ProviderKind::OpencodeGo {
-        // Keep an unknown ID unchanged so validation can reject it by name.
-        return opencode_go_model_id(trimmed)
-            .map(str::to_string)
-            .unwrap_or_else(|| trimmed.to_string());
-    }
-    if matches!(provider, ProviderKind::XiaomiMimo) {
-        return normalize_model_name_for_provider(provider, trimmed)
-            .unwrap_or_else(|| trimmed.to_string());
-    }
-    if provider_passes_model_through(provider) {
-        return trimmed.to_string();
-    }
-    normalize_model_name_for_provider(provider, trimmed).unwrap_or_else(|| trimmed.to_string())
-}
-
-/// Resolve the final request model while respecting custom endpoint
-/// namespaces. Provider-only normalization cannot distinguish DeepSeek's
-/// first-party API from a self-hosted OpenAI-compatible endpoint configured
-/// under the legacy `deepseek` provider name, so actual HTTP clients use this
-/// route-aware boundary.
-#[must_use]
-pub fn wire_model_for_provider_route(
-    provider: ProviderKind,
-    base_url: &str,
-    model: &str,
-) -> String {
-    let trimmed = model.trim();
-    if trimmed.is_empty() {
-        return trimmed.to_string();
-    }
-    // A custom endpoint still uses the documented Go model and wire contract.
-    if provider == ProviderKind::OpencodeGo {
-        return wire_model_for_provider(provider, trimmed);
-    }
-    if base_url_is_custom_for_provider(provider, base_url) {
-        return trimmed.to_string();
-    }
-    wire_model_for_provider(provider, trimmed)
 }
 
 /// Reconcile a remembered `/model` pick with the model the config file names.
@@ -658,7 +348,9 @@ pub fn legacy_deepseek_alias_effort_for_route(
         return None;
     }
     let effort = legacy_deepseek_alias_reasoning_effort(model)?;
-    (wire_model_for_provider_route(provider, base_url, model) != model.trim()).then_some(effort)
+    codewhale_config::route::resolve_model(provider, model, Some(base_url))
+        .is_ok_and(|resolved| resolved.wire_id != model.trim())
+        .then_some(effort)
 }
 
 /// Reviewed per-provider model id projection used **only as a compatibility
@@ -807,6 +499,7 @@ where
 #[serde(deny_unknown_fields)]
 pub struct StreamConfig {
     pub open_timeout_secs: Option<u64>,
+    pub open_retries: Option<u32>,
     pub chunk_timeout_secs: Option<u64>,
     pub force_http1: Option<bool>,
     pub max_resumes: Option<u32>,
@@ -824,6 +517,17 @@ pub struct StreamConfig {
 }
 
 /// UI configuration loaded from config files.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RouteProvenance {
+    pub provider_from_saved_selection: bool,
+    pub model_from_saved_selection: bool,
+    pub provider_from_profile: bool,
+    pub model_from_profile: bool,
+    pub provider_from_env: bool,
+    pub provider_from_managed: bool,
+    pub model_from_managed: bool,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TuiConfig {
     pub alternate_screen: Option<String>,
@@ -863,8 +567,8 @@ pub struct TuiConfig {
     /// stream error; omitted/zero defaults to5 and other values clamp to1..=50.
     pub stream_max_errors: Option<u32>,
     /// #6700: wait for SSE response headers, in seconds. Omitted or `0`
-    /// fall back to `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`, then 45; values
-    /// clamp to `5..=300`.
+    /// fall back to `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`, then 180; values
+    /// clamp to `5..=600`.
     pub stream_open_timeout_secs: Option<u64>,
     /// #6700: TCP/TLS connect timeout for the model HTTP client, in seconds.
     /// Omitted or `0` resolve to the default (30); values clamp to `1..=300`.
@@ -1119,6 +823,9 @@ pub struct ToolsConfig {
     /// are clamped to `1..=86_400` (24h) with a warning.
     #[serde(default)]
     pub task_human_wait_cap_seconds: Option<u64>,
+
+    #[serde(default)]
+    pub max_parallel_shell_exec: Option<usize>,
 }
 
 /// Persistent-goal loop controls (`[goal]` table in config.toml, #5052).
@@ -2366,7 +2073,7 @@ pub struct Config {
     /// Runtime API server tuning (`codewhale serve --http`). Currently only
     /// hosts the CORS allow-list extension (whalescale#255 / #561). When the
     /// table is absent, the daemon ships with localhost:3000 / localhost:1420
-    /// / tauri://localhost as the only allowed dev origins.
+    /// as the only allowed dev origins.
     #[serde(default)]
     pub runtime_api: Option<RuntimeApiConfig>,
 
@@ -2408,6 +2115,12 @@ pub struct Config {
     /// defaults, including when it equals the previously saved model.
     #[serde(skip)]
     pub environment_model_applied: bool,
+
+    #[serde(skip)]
+    pub project_model: Option<String>,
+
+    #[serde(skip)]
+    pub route_provenance: RouteProvenance,
 
     /// Atomic migration receipt: provider/model selections now belong to this
     /// config document. Settings route fields are legacy inputs only.
@@ -2532,9 +2245,17 @@ impl BaseUrlEnvReceipt {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct AutoReviewConfig {
     #[serde(default)]
+    pub disabled: bool,
+    #[serde(default)]
+    pub review_all_shell: bool,
+    #[serde(default)]
+    pub reviewer_model: Option<String>,
+    #[serde(default)]
     pub allow: Vec<AutoReviewRuleConfig>,
     #[serde(default)]
     pub block: Vec<AutoReviewRuleConfig>,
+    #[serde(default)]
+    pub environment: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -2551,10 +2272,41 @@ pub struct AutoReviewRuleConfig {
 
 impl AutoReviewConfig {
     fn validate(&self) -> Result<()> {
+        if let Some(reviewer_model) = self.reviewer_model.as_deref() {
+            validate_auto_review_reviewer_model(reviewer_model)?;
+        }
         validate_auto_review_rules("allow", &self.allow)?;
         validate_auto_review_rules("block", &self.block)?;
+        validate_auto_review_environment(&self.environment)?;
         Ok(())
     }
+}
+
+pub fn validate_auto_review_environment(entries: &[String]) -> Result<()> {
+    for (index, entry) in entries.iter().enumerate() {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() || entry.chars().any(char::is_control) {
+            anyhow::bail!(
+                "Invalid auto_review.environment[{index}]: expected a non-empty entry without control characters."
+            );
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_auto_review_reviewer_model(raw: &str) -> Result<()> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || raw != trimmed
+        || trimmed
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control())
+    {
+        anyhow::bail!(
+            "Invalid auto_review.reviewer_model: expected a non-empty model identifier without whitespace or control characters."
+        );
+    }
+    Ok(())
 }
 
 impl AutoReviewRuleConfig {
@@ -2670,8 +2422,7 @@ pub struct VisionModelConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct RuntimeApiConfig {
     /// Additional CORS origins to allow on top of the built-in defaults
-    /// (`http://localhost:{3000,1420}`, `http://127.0.0.1:{3000,1420}`,
-    /// `tauri://localhost`). Useful when developing a UI against a non-default
+    /// (`http://localhost:{3000,1420}`, `http://127.0.0.1:{3000,1420}`). Useful when developing a UI against a non-default
     /// dev server port (e.g. Vite's default `:5173`).
     ///
     /// Resolution order (highest priority first): `--cors-origin` CLI flag,
@@ -2706,6 +2457,8 @@ pub struct SkillsConfig {
     /// Otherwise the flat root is visible only to compatible audit.
     #[serde(default)]
     pub flat_workspace_root: Option<bool>,
+    #[serde(skip)]
+    pub creator_skills: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq, Hash, Serialize)]
@@ -3952,7 +3705,9 @@ impl Config {
                 if let Some(msg) = warn_on_misplaced_top_level_keys(&contents) {
                     tracing::warn!("{msg}");
                 }
-                reject_unmanaged_tool_launcher(&contents, path)?;
+                if let Ok(document) = toml::from_str::<toml::Value>(&contents) {
+                    codewhale_config::reject_unmanaged_tool_launcher(&document, path)?;
+                }
                 parsed
             } else {
                 apply_profile(ConfigFile::default(), profile)?;
@@ -4031,6 +3786,7 @@ impl Config {
             if self.scope_to_provider_identity(&identity).is_err() {
                 return false;
             }
+            self.route_provenance.provider_from_saved_selection = true;
         }
         let mut choices = settings.provider_models.clone().unwrap_or_default();
         if let Some(model) = settings.default_model.as_ref() {
@@ -4104,9 +3860,13 @@ impl Config {
                 self.set_provider_model_override(&identity, Some(model))
                     .unwrap();
             }
-            active_changed |= self
+            let is_active = self
                 .active_provider_identity()
                 .is_ok_and(|active| active == identity);
+            if is_active {
+                self.route_provenance.model_from_saved_selection = true;
+            }
+            active_changed |= is_active;
         }
         active_changed
     }
@@ -4188,22 +3948,12 @@ impl Config {
                 }
             }
         }
-        // Validate the model against the *active provider's* name space, not
-        // against DeepSeek's. `canonical_model_id_for_provider` is the
-        // equal-treatment resolver: it applies each family's own canonical map
-        // (GLM via Z.ai, Kimi, MiniMax, …) and passes unknown ids through, so
-        // it rejects only what the provider genuinely cannot serve. Validating
-        // with the DeepSeek-only `normalize_model_name` bricked every config
-        // whose provider owns a non-DeepSeek family — including ones our own
-        // setup wizard writes (`provider = "zai"`, `GLM-5.2`). (#4829)
-        // Provider-scoped choices own the active route. A retained root
-        // fallback can belong to a different provider after a saved switch.
         let configured_model = self
             .provider_config_string_with_runtime_fallback(&identity, |entry| entry.model.clone())
             .or_else(|| self.default_text_model.clone());
         if let Some(model) = configured_model.as_deref()
             && !model.trim().eq_ignore_ascii_case("auto")
-            && !provider_passes_model_through(active_provider)
+            && !codewhale_config::descriptors::provider_passes_model_through(active_provider)
             && !self.active_provider_preserves_custom_base_url_model()
             && configured_model_for_route(
                 self,
@@ -4213,7 +3963,7 @@ impl Config {
                 model,
             )
             .is_none()
-            && canonical_model_id_for_provider(active_provider, model).is_none()
+            && codewhale_config::route::resolve_model(active_provider, model, None).is_err()
         {
             let provider = active_provider;
             let known = model_completion_names_for_provider(provider);
@@ -4261,7 +4011,7 @@ impl Config {
                     Some((last, rest)) => format!("{}, or {last}", rest.join(", ")),
                     None => String::new(),
                 };
-                let displayed_value = codewhale_secrets::redact::redact_secrets(value);
+                let displayed_value = codewhale_sanitize::redact::redact_secrets(value);
                 return Err(SafeConfigDiagnostic::invalid_value(
                     key,
                     &displayed_value,
@@ -4292,6 +4042,17 @@ impl Config {
         }
         if let Some(auto_review) = &self.auto_review {
             auto_review.validate()?;
+            if auto_review.disabled
+                && self
+                    .approval_policy
+                    .as_deref()
+                    .and_then(codewhale_execpolicy::ApprovalMode::from_config_value)
+                    == Some(codewhale_execpolicy::ApprovalMode::Auto)
+            {
+                anyhow::bail!(
+                    "approval_policy = \"auto\" is disabled by managed configuration (`auto_review.disabled = true`)"
+                );
+            }
         }
         if let Some(providers) = &self.providers {
             providers.validate()?;
@@ -5415,151 +5176,75 @@ impl Config {
         (scoped.default_model() == value).then(|| (outgoing, value.to_string()))
     }
 
+    fn select_configured_model(
+        &self,
+        identity: &ProviderIdentity,
+    ) -> codewhale_config::ConfiguredModelSelection {
+        let provider = identity.provider;
+        let base_url = self.base_url_for_route(identity);
+        let auth_mode = self.auth_mode_for_provider(identity);
+        let provider_model = self
+            .provider_config_string_with_runtime_fallback(identity, |entry| entry.model.clone());
+        let codex_preferred = || {
+            crate::codex_model_roster::cached_roster_for(self)
+                .preferred_model_id()
+                .map(str::to_owned)
+        };
+        let descriptor_default = Some(identity.compatibility().map_or("", |row| row.default_model));
+        codewhale_config::resolve_configured_model(&codewhale_config::ConfiguredModelInputs {
+            provider,
+            provider_identity: identity.key.as_str(),
+            base_url: &base_url,
+            auth_mode: auth_mode.as_deref(),
+            cli_model: None,
+            env_model: None,
+            provider_model: provider_model.as_deref(),
+            default_text_model: self.default_text_model.as_deref(),
+            legacy_root_model: self.legacy_model.as_deref(),
+            custom_models: self.custom_models.as_deref(),
+            codex_preferred_model: (provider == ProviderKind::OpenaiCodex)
+                .then_some(&codex_preferred as &dyn Fn() -> Option<String>),
+            descriptor_default,
+        })
+    }
+
     #[must_use]
     pub fn default_model(&self) -> String {
         let Ok(identity) = self.active_provider_identity() else {
             return String::new();
         };
-        let provider = identity.provider;
-        if self.default_text_model.is_none() && self.legacy_model.is_some() {
-            let mut config = self.clone();
-            config.default_text_model.clone_from(&self.legacy_model);
-            return config.default_model();
-        }
+        self.select_configured_model(&identity)
+            .resolved
+            .map_or_else(|_| String::new(), |resolved| resolved.wire_id)
+    }
 
-        let declared = |model: &str| {
-            configured_model_for_route(
-                self,
-                provider,
-                identity.key.as_str(),
-                &self.active_route_base_url(),
-                model,
+    #[must_use]
+    pub fn default_model_uses_root_default_text_model(&self) -> bool {
+        let Ok(identity) = self.active_provider_identity() else {
+            return false;
+        };
+        let selection = self.select_configured_model(&identity);
+        selection.resolved.is_ok()
+            && matches!(
+                selection.source,
+                codewhale_config::ModelSource::RootDefaultTextModel
+                    | codewhale_config::ModelSource::RootModel
             )
-            .is_some()
-        };
-        if let Some(model) = self
-            .provider_config_string_with_runtime_fallback(&identity, |entry| entry.model.clone())
-        {
-            let model = model.trim();
-            // Automatic selection is a saved choice on every route, including
-            // DeepSeek. Resolve it before provider model-name normalization.
-            if model.eq_ignore_ascii_case("auto") {
-                return "auto".to_string();
-            }
-            if declared(model)
-                || provider_passes_model_through(provider)
-                || self.active_provider_preserves_custom_base_url_model()
-            {
-                return model.to_string();
-            }
-            if let Some(normalized) = normalize_model_for_provider(provider, model) {
-                return normalized;
-            }
-            // An explicit provider-scoped model that is not a recognized
-            // DeepSeek alias is a deliberate custom choice for a non-DeepSeek
-            // provider (e.g. `MiniMax-M2.7` on an OpenAI-compatible endpoint).
-            // It must pass through verbatim rather than fall back to a
-            // DeepSeek/provider default (issue #1714).
-            if !matches!(provider, ProviderKind::Deepseek) && !model.is_empty() {
-                return model.to_string();
-            }
-        }
-        if let Some(model) = self
-            .default_text_model
-            .as_deref()
-            .filter(|model| declared(model))
-        {
-            return model.to_string();
-        }
-        let moonshot_config = (provider == ProviderKind::Moonshot)
-            .then(|| self.provider_config())
-            .flatten();
-        let moonshot_uses_kimi_code = moonshot_config.is_some_and(|config| {
-            provider_config_uses_kimi_imported_token(config)
-                || config
-                    .base_url
-                    .as_deref()
-                    .is_some_and(moonshot_base_url_uses_kimi_code)
-        });
-        if moonshot_uses_kimi_code {
-            return DEFAULT_KIMI_CODE_MODEL.to_string();
-        }
-        if let Some(model) = self.default_text_model.as_deref()
-            && model.trim().eq_ignore_ascii_case("auto")
-        {
-            return "auto".to_string();
-        }
-        // A root DeepSeek-family default must not leak onto a vendor-locked
-        // official endpoint that can never serve it (the provider then
-        // rejects every request, e.g. `deepseek-v4-pro` on api.x.ai). Custom
-        // base URLs keep full pass-through: a compatible proxy may
-        // legitimately serve any model id.
-        let foreign_root_default = |model: &str| {
-            !self.active_provider_preserves_custom_base_url_model()
-                && matches!(
-                    provider,
-                    ProviderKind::Xai | ProviderKind::Openai | ProviderKind::Moonshot
-                )
-                && normalize_model_name(model).is_some()
-        };
-        // Xiaomi MiMo: honour a root `default_text_model` that names a MiMo id
-        // (canonical aliases or a custom account id). Do not silently drop it
-        // for the provider seed default.
-        if provider == ProviderKind::XiaomiMimo
-            && let Some(model) = self.default_text_model.as_deref()
-        {
-            if let Some(canonical) = canonical_xiaomi_mimo_model_id(model) {
-                return canonical.to_string();
-            }
-            // Non-empty root value that is not a known foreign DeepSeek id is
-            // a deliberate custom MiMo choice — apply it. A stale DeepSeek id
-            // still falls through to the provider default below rather than
-            // being forwarded to Xiaomi's endpoint.
-            let trimmed = model.trim();
-            if !trimmed.is_empty() && normalize_model_name(trimmed).is_none() {
-                return trimmed.to_string();
-            }
-        }
-        if let Some(model) = self.default_text_model.as_deref()
-            && (provider_passes_model_through(provider)
-                || self.active_provider_preserves_custom_base_url_model())
-            && !foreign_root_default(model)
-            // Xiaomi was handled above so a stale DeepSeek root id does not
-            // pass through merely because the provider is pass-through.
-            && provider != ProviderKind::XiaomiMimo
-        {
-            return model.trim().to_string();
-        }
-        if let Some(model) = self.default_text_model.as_deref()
-            && provider != ProviderKind::XiaomiMimo
-            && !root_deepseek_model_is_foreign_to_direct_provider(provider, model)
-            && let Some(normalized) = normalize_model_name_for_provider(provider, model)
-            // A wire-slug translation (e.g. the Moonshot map) resolves the
-            // foreign default to a native model; an identity result does not.
-            && (!foreign_root_default(model) || !normalized.eq_ignore_ascii_case(model.trim()))
-        {
-            return normalized;
-        }
+    }
 
-        if let Some((model, _)) = codewhale_config::cloud_facts::cloud_default_model_for_route(
-            provider,
-            &self.base_url_for_route(&identity),
-        ) {
-            return model;
+    #[must_use]
+    pub fn configured_model_error(&self) -> Option<String> {
+        let identity = self.active_provider_identity().ok()?;
+        let selection = self.select_configured_model(&identity);
+        match selection.resolved {
+            Ok(_) => None,
+            Err(_) if !selection.source.is_explicit() && selection.raw.is_empty() => None,
+            Err(error) => Some(codewhale_config::format_configured_model_error(
+                identity.key.as_str(),
+                &selection.raw,
+                &error,
+            )),
         }
-
-        // The account roster still owns a live Codex preference. All static
-        // seeds come from the shared descriptor; no provider default table here.
-        if provider == ProviderKind::OpenaiCodex
-            && let Some(preferred) =
-                crate::codex_model_roster::cached_roster_for(self).preferred_model_id()
-        {
-            return preferred.to_string();
-        }
-        identity
-            .compatibility()
-            .map_or("", |row| row.default_model)
-            .to_string()
     }
 
     /// Return the configured API base URL (normalized) for the selected route.
@@ -5790,7 +5475,8 @@ impl Config {
     /// longer risks attributing the session's endpoint to another provider.
     pub fn model_ids_pass_through_for_provider(&self, identity: &ProviderIdentity) -> bool {
         let provider = identity.provider;
-        provider_passes_model_through(provider) || self.provider_uses_custom_endpoint(identity)
+        codewhale_config::descriptors::provider_passes_model_through(provider)
+            || self.provider_uses_custom_endpoint(identity)
     }
 
     pub fn model_ids_pass_through(&self) -> bool {
@@ -6028,6 +5714,11 @@ impl Config {
     }
 
     pub fn account_model_api_key(&self, identity: &ProviderIdentity) -> Option<String> {
+        self.account_model_key_and_owner(identity)
+            .map(|(key, _)| key)
+    }
+
+    fn account_model_key_and_owner(&self, identity: &ProviderIdentity) -> Option<(String, String)> {
         let provider = identity.provider;
         // Exact endpoint binding, including path. A custom Codewhale route
         // must never inherit the account's credential, even on the same host.
@@ -6094,12 +5785,13 @@ impl Config {
             && account.account_id.as_deref() == Some(cached.account_id.as_str())
             && account.session_id.as_deref() == Some(cached.session_id.as_str())
         {
-            return Some(cached.credential);
+            return Some((cached.credential, cached.account_id));
         }
         let access = access.filter(|access| access.expires_at > now.timestamp())?;
+        let owner = account.account_id?;
         (account.state == codewhale_secrets::account::AccountSessionState::Authenticated
             && account.session_id.as_deref() == Some(access.session_id.as_str()))
-        .then(|| access.credential.expose_secret().to_string())
+        .then(|| (access.credential.expose_secret().to_string(), owner))
     }
 
     /// Prove a current health-cache credential generation without commands,
@@ -6205,32 +5897,19 @@ impl Config {
         self.active_route_api_key_with_secret_store_mode(false)
     }
 
-    /// [`Self::active_route_api_key_with_source`], plus — only when the
-    /// resolver's xAI OAuth step produced the key — the account label of
-    /// that same credential (`Some(None)`: its ID token names no email).
-    /// Plan-limit guidance must name the account that sends the request, and
-    /// this reads it without opening the credential a second time.
-    pub fn active_route_api_key_with_xai_sign_in(
-        &self,
-    ) -> Result<(ResolvedApiKey, Option<XaiSignInLabel>)> {
-        if let Some(credentials) = self.xai_oauth_route_credentials() {
-            let credentials = credentials?;
-            return Ok((
-                (
-                    codewhale_secrets::normalize_api_key(&credentials.access_token),
-                    XAI_OAUTH_KEY_SOURCE.to_string(),
-                ),
-                Some(credentials.account_label),
-            ));
-        }
-        Ok((self.active_route_api_key_with_source()?, None))
+    pub fn active_route_api_key_with_owner(&self) -> Result<(ResolvedApiKey, Option<String>)> {
+        let mut owner = None;
+        let key = self.active_route_api_key_with_owner_and_mode(false, &mut owner)?;
+        Ok((key, owner))
     }
 
     /// The resolver's xAI OAuth step: `Some` when the active route is xAI on
     /// the official endpoint with `auth_mode = "oauth"` and a usable sign-in
     /// exists (configured owned generation, legacy owned file, or consented
     /// Grok CLI import), holding that sign-in's credentials.
-    fn xai_oauth_route_credentials(&self) -> Option<Result<crate::oauth::OwnedOAuthCredentials>> {
+    pub fn xai_oauth_route_credentials(
+        &self,
+    ) -> Option<Result<crate::oauth::OwnedOAuthCredentials>> {
         let identity = self.active_provider_identity().ok()?;
         if self.required_account_model_owner.is_some()
             || self.session_provider_keys_only
@@ -6266,7 +5945,15 @@ impl Config {
         &self,
         read_only: bool,
     ) -> Result<(String, String)> {
-        self.resolve_active_route_api_key(read_only)
+        self.active_route_api_key_with_owner_and_mode(read_only, &mut None)
+    }
+
+    fn active_route_api_key_with_owner_and_mode(
+        &self,
+        read_only: bool,
+        account_owner: &mut Option<String>,
+    ) -> Result<ResolvedApiKey> {
+        self.resolve_active_route_api_key(read_only, account_owner)
             .map(|(key, source)| (codewhale_secrets::normalize_api_key(&key), source))
     }
 
@@ -6312,15 +5999,22 @@ impl Config {
     /// The active route's key and a display label for where it came from
     /// (#6528). Callers go through [`Self::active_route_api_key_with_source`],
     /// which normalizes the key.
-    fn resolve_active_route_api_key(&self, read_only: bool) -> Result<(String, String)> {
+    fn resolve_active_route_api_key(
+        &self,
+        read_only: bool,
+        account_owner: &mut Option<String>,
+    ) -> Result<ResolvedApiKey> {
         let identity = self
             .active_provider_identity()
             .map_err(anyhow::Error::msg)?;
         self.verify_provider_identity(&identity)
             .map_err(anyhow::Error::msg)?;
         if self.required_account_model_owner.is_some() {
-            return self.account_model_api_key(&identity)
-                .map(|key| (key, "Codewhale account".to_string()))
+            return self.account_model_key_and_owner(&identity)
+                .map(|(key, owner)| {
+                    *account_owner = Some(owner);
+                    (key, "Codewhale account".to_string())
+                })
                 .context("The selected account model access is unavailable; no credential fallback is allowed");
         }
         if let Some(key) = self.session_provider_api_key(&identity) {
@@ -6372,6 +6066,18 @@ impl Config {
             return Ok((String::new(), "host-managed plugin OAuth".to_string()));
         }
 
+        if codewhale_config::credentials::auth_mode_is_claude_org(auth_mode.as_deref()) {
+            anyhow::ensure!(
+                provider == ProviderKind::Anthropic
+                    && !self.provider_uses_custom_endpoint(&identity),
+                "auth_mode = \"claude-org\" works only for the anthropic provider on its official endpoint; remove base_url or the auth_mode from [providers.{}]",
+                identity.key.as_str()
+            );
+            return Ok((
+                String::new(),
+                codewhale_config::credentials::CLAUDE_ORG_KEY_SOURCE.to_string(),
+            ));
+        }
         if auth_mode_disables_api_key(auth_mode.as_deref()) {
             return Ok(keyless());
         }
@@ -6421,8 +6127,7 @@ impl Config {
         // xAI OAuth prefers Codewhale-owned device-login storage. An existing
         // Grok CLI file is considered only with provider/path-scoped read-only
         // consent. Activated by [providers.xai] auth_mode = "oauth". No
-        // earlier step applies to xAI, which
-        // `active_route_api_key_with_xai_sign_in` relies on.
+        // earlier step applies to xAI.
         if let Some(credentials) = self.xai_oauth_route_credentials() {
             return credentials
                 .map(|credentials| (credentials.access_token, XAI_OAUTH_KEY_SOURCE.to_string()));
@@ -6566,7 +6271,8 @@ impl Config {
 
         // Account auth is a reversible fallback, never an overwrite of an
         // environment, config-file, or durable provider credential.
-        if let Some(key) = self.account_model_api_key(&identity) {
+        if let Some((key, owner)) = self.account_model_key_and_owner(&identity) {
+            *account_owner = Some(owner);
             return Ok((key, "Codewhale account".to_string()));
         }
 
@@ -6850,6 +6556,33 @@ impl Config {
             .filter(|s| !s.is_empty())
             .map(expand_path)
             .collect()
+    }
+
+    #[must_use]
+    pub fn auto_review_disabled(&self) -> bool {
+        self.auto_review.as_ref().is_some_and(|cfg| cfg.disabled)
+    }
+
+    #[must_use]
+    pub fn auto_review_review_all_shell(&self) -> bool {
+        self.auto_review
+            .as_ref()
+            .is_some_and(|cfg| cfg.review_all_shell)
+    }
+
+    pub fn auto_review_reviewer_model(&self) -> Option<&str> {
+        self.auto_review
+            .as_ref()
+            .and_then(|cfg| cfg.reviewer_model.as_deref())
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+    }
+
+    #[must_use]
+    pub fn auto_review_environment(&self) -> &[String] {
+        self.auto_review
+            .as_ref()
+            .map_or(&[], |cfg| cfg.environment.as_slice())
     }
 
     /// Whether the user-memory feature is enabled. The default is **off**
@@ -7421,6 +7154,7 @@ impl Config {
             stream
                 .and_then(|cfg| cfg.max_stream_errors)
                 .or_else(|| tui.and_then(|cfg| cfg.stream_max_errors)),
+            stream.and_then(|cfg| cfg.open_retries),
         )
     }
 
@@ -7505,6 +7239,7 @@ impl Config {
         let limits = self.stream_retry_limits();
         StreamConfig {
             open_timeout_secs: Some(self.stream_open_timeout().as_secs()),
+            open_retries: Some(limits.open_retries),
             chunk_timeout_secs: Some(self.stream_chunk_timeout_secs()),
             force_http1: Some(self.force_http1()),
             max_resumes: Some(limits.max_resumes),
@@ -7837,7 +7572,7 @@ fn root_deepseek_model_is_foreign_to_direct_provider(provider: ProviderKind, mod
     if matches!(
         provider,
         ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
-    ) || provider_passes_model_through(provider)
+    ) || codewhale_config::descriptors::provider_passes_model_through(provider)
     {
         return false;
     }
@@ -7858,10 +7593,14 @@ fn root_deepseek_model_is_foreign_to_direct_provider(provider: ProviderKind, mod
             | ProviderKind::Atlascloud
             | ProviderKind::OpencodeGo
             | ProviderKind::WanjieArk
+            | ProviderKind::Huggingface
+            | ProviderKind::XiaomiMimo
+            | ProviderKind::Moonshot
     ) {
         return false;
     }
-    normalize_model_name(model).is_some()
+    codewhale_config::route::resolve_model(ProviderKind::Deepseek, model, None)
+        .is_ok_and(|resolved| !resolved.is_auto)
 }
 
 // === Defaults ===
@@ -7992,29 +7731,44 @@ pub fn set_workspace_trust(workspace: &Path, trusted: bool) -> Result<PathBuf> {
     Ok(config_path)
 }
 
-/// Project hook approval lives only in user-owned config, never in the repo.
-pub fn hook_receipt_for_workspace(workspace: &Path) -> Option<String> {
+/// Project file approvals live only in user-owned config, never in the repo.
+pub const HOOKS_RECEIPT_KEY: &str = "hooks_sha256";
+pub const MCP_RECEIPT_KEY: &str = "mcp_sha256";
+
+pub fn project_receipt_for_workspace(workspace: &Path, key: &str) -> Option<String> {
     let raw = fs::read_to_string(default_config_path().ok()?).ok()?;
     let doc = toml::from_str::<toml::Value>(&raw).ok()?;
     doc.get("projects")?
         .get(workspace_config_key(workspace))?
-        .get("hooks_sha256")?
+        .get(key)?
         .as_str()
         .map(str::to_owned)
 }
 
-pub fn save_workspace_hook_receipt(workspace: &Path, digest: &str) -> Result<PathBuf> {
+pub fn save_workspace_project_receipt(
+    workspace: &Path,
+    key: &str,
+    digest: &str,
+) -> Result<PathBuf> {
     let config_path = try_default_config_path()?;
     ensure_parent_dir(&config_path)?;
     let project_key = workspace_config_key(workspace);
     crate::config_persistence::mutate_config_document(&config_path, |doc| {
         crate::config_persistence::set_document_value(
             doc,
-            &["projects", project_key.as_str(), "hooks_sha256"],
+            &["projects", project_key.as_str(), key],
             digest,
         )
     })?;
     Ok(config_path)
+}
+
+pub fn hook_receipt_for_workspace(workspace: &Path) -> Option<String> {
+    project_receipt_for_workspace(workspace, HOOKS_RECEIPT_KEY)
+}
+
+pub fn save_workspace_hook_receipt(workspace: &Path, digest: &str) -> Result<PathBuf> {
+    save_workspace_project_receipt(workspace, HOOKS_RECEIPT_KEY, digest)
 }
 
 fn workspace_trust_level_from_doc<'a>(doc: &'a toml::Value, workspace: &Path) -> Option<&'a str> {
@@ -8252,6 +8006,9 @@ fn apply_env_overrides(config: &mut Config, policy: ConfigEnvironmentPolicy) {
 fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPolicy) {
     if let Ok(value) = codewhale_env_var("CODEWHALE_PROVIDER", "DEEPSEEK_PROVIDER") {
         config.provider = Some(value);
+        config.route_provenance.provider_from_env = true;
+        config.route_provenance.provider_from_saved_selection = false;
+        config.route_provenance.provider_from_profile = false;
     }
     let Ok(identity) = config.active_provider_identity() else {
         return;
@@ -9005,16 +8762,13 @@ fn normalize_model_config(config: &mut Config) {
             .map(str::to_ascii_lowercase)
             .filter(|model| deepseek_alias_deprecation(model).is_some())
             .filter(|model| {
-                wire_model_for_provider_route(provider, &base_url, model) != model.as_str()
+                codewhale_config::route::resolve_model(provider, model, Some(&base_url))
+                    .is_ok_and(|resolved| resolved.wire_id != model.as_str())
             })
     } else {
         None
     };
 
-    // Preserve the behavioral half of DeepSeek's retired aliases while
-    // migrating their model id to V4 Flash. An explicit reasoning setting is
-    // authoritative; this compatibility default only fills an omitted value.
-    // Custom endpoints retain both their model id and their own semantics.
     if config.reasoning_effort.is_none() {
         let alias_effort = config
             .migrated_deepseek_model_alias
@@ -9028,27 +8782,29 @@ fn normalize_model_config(config: &mut Config) {
 
     if let Some(model) = config.default_text_model.as_deref()
         && !is_declared(identity.key.as_str(), model)
-        && !provider_passes_model_through(provider)
+        && !codewhale_config::descriptors::provider_passes_model_through(provider)
         && !config.active_provider_preserves_custom_base_url_model()
-        && let Some(normalized) = normalize_model_for_provider(provider, model)
+        && let Ok(resolved) = codewhale_config::route::resolve_model(provider, model, None)
     {
-        config.default_text_model = Some(normalized);
+        config.default_text_model = Some(resolved.wire_id);
     }
 
     if let Some(providers) = config.providers.as_mut() {
         if let Some(model) = providers.deepseek.model.as_deref()
             && !provider_entry_uses_custom_base_url(ProviderKind::Deepseek, &providers.deepseek)
             && !is_declared(ProviderKind::Deepseek.as_str(), model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::Deepseek, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::Deepseek, model, None)
         {
-            providers.deepseek.model = Some(normalized);
+            providers.deepseek.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.deepseek_cn.model.as_deref()
             && !provider_entry_uses_custom_base_url(ProviderKind::Deepseek, &providers.deepseek_cn)
             && !is_declared(codewhale_config::descriptors::LEGACY_DEEPSEEK_CN.id, model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::Deepseek, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::Deepseek, model, None)
         {
-            providers.deepseek_cn.model = Some(normalized);
+            providers.deepseek_cn.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.deepseek_anthropic.model.as_deref()
             && !provider_entry_uses_custom_base_url(
@@ -9056,38 +8812,42 @@ fn normalize_model_config(config: &mut Config) {
                 &providers.deepseek_anthropic,
             )
             && !is_declared(ProviderKind::DeepseekAnthropic.as_str(), model)
-            && let Some(normalized) =
-                normalize_model_for_provider(ProviderKind::DeepseekAnthropic, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::DeepseekAnthropic, model, None)
         {
-            providers.deepseek_anthropic.model = Some(normalized);
+            providers.deepseek_anthropic.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.nvidia_nim.model.as_deref()
             && !provider_entry_uses_custom_base_url(ProviderKind::NvidiaNim, &providers.nvidia_nim)
             && !is_declared(ProviderKind::NvidiaNim.as_str(), model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::NvidiaNim, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::NvidiaNim, model, None)
         {
-            providers.nvidia_nim.model = Some(normalized);
+            providers.nvidia_nim.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.openrouter.model.as_deref()
             && !provider_entry_uses_custom_base_url(ProviderKind::Openrouter, &providers.openrouter)
             && !is_declared(ProviderKind::Openrouter.as_str(), model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::Openrouter, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::Openrouter, model, None)
         {
-            providers.openrouter.model = Some(normalized);
+            providers.openrouter.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.novita.model.as_deref()
             && !provider_entry_uses_custom_base_url(ProviderKind::Novita, &providers.novita)
             && !is_declared(ProviderKind::Novita.as_str(), model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::Novita, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::Novita, model, None)
         {
-            providers.novita.model = Some(normalized);
+            providers.novita.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.fireworks.model.as_deref()
             && !provider_entry_uses_custom_base_url(ProviderKind::Fireworks, &providers.fireworks)
             && !is_declared(ProviderKind::Fireworks.as_str(), model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::Fireworks, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::Fireworks, model, None)
         {
-            providers.fireworks.model = Some(normalized);
+            providers.fireworks.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.siliconflow.model.as_deref()
             && !provider_entry_uses_custom_base_url(
@@ -9095,9 +8855,10 @@ fn normalize_model_config(config: &mut Config) {
                 &providers.siliconflow,
             )
             && !is_declared(ProviderKind::Siliconflow.as_str(), model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::Siliconflow, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::Siliconflow, model, None)
         {
-            providers.siliconflow.model = Some(normalized);
+            providers.siliconflow.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.siliconflow_cn.model.as_deref()
             && !provider_entry_uses_custom_base_url(
@@ -9105,38 +8866,42 @@ fn normalize_model_config(config: &mut Config) {
                 &providers.siliconflow_cn,
             )
             && !is_declared(ProviderKind::SiliconflowCN.as_str(), model)
-            && let Some(normalized) =
-                normalize_model_for_provider(ProviderKind::SiliconflowCN, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::SiliconflowCN, model, None)
         {
-            providers.siliconflow_cn.model = Some(normalized);
+            providers.siliconflow_cn.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.moonshot.model.as_deref()
             && !provider_entry_uses_custom_base_url(ProviderKind::Moonshot, &providers.moonshot)
             && !is_declared(ProviderKind::Moonshot.as_str(), model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::Moonshot, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::Moonshot, model, None)
         {
-            providers.moonshot.model = Some(normalized);
+            providers.moonshot.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.sglang.model.as_deref()
             && !provider_entry_uses_custom_base_url(ProviderKind::Sglang, &providers.sglang)
             && !is_declared(ProviderKind::Sglang.as_str(), model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::Sglang, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::Sglang, model, None)
         {
-            providers.sglang.model = Some(normalized);
+            providers.sglang.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.vllm.model.as_deref()
             && !provider_entry_uses_custom_base_url(ProviderKind::Vllm, &providers.vllm)
             && !is_declared(ProviderKind::Vllm.as_str(), model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::Vllm, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::Vllm, model, None)
         {
-            providers.vllm.model = Some(normalized);
+            providers.vllm.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.deepinfra.model.as_deref()
             && !provider_entry_uses_custom_base_url(ProviderKind::Deepinfra, &providers.deepinfra)
             && !is_declared(ProviderKind::Deepinfra.as_str(), model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::Deepinfra, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::Deepinfra, model, None)
         {
-            providers.deepinfra.model = Some(normalized);
+            providers.deepinfra.model = Some(resolved.wire_id);
         }
     }
 }
@@ -9144,55 +8909,6 @@ fn normalize_model_config(config: &mut Config) {
 #[cfg(any(test, feature = "test-support"))]
 pub fn normalize_model_config_for_test(config: &mut Config) {
     normalize_model_config(config);
-}
-
-fn normalize_model_for_provider(provider: ProviderKind, model: &str) -> Option<String> {
-    if matches!(provider, ProviderKind::XiaomiMimo)
-        && let Some(canonical) = canonical_xiaomi_mimo_model_id(model)
-    {
-        return Some(canonical.to_string());
-    }
-    if provider_passes_model_through(provider) {
-        return None;
-    }
-    normalize_model_name_for_provider(provider, model)
-}
-
-pub fn provider_passes_model_through(provider: ProviderKind) -> bool {
-    matches!(
-        provider,
-        ProviderKind::Openai
-            | ProviderKind::Atlascloud
-            | ProviderKind::WanjieArk
-            | ProviderKind::Volcengine
-            | ProviderKind::XiaomiMimo
-            | ProviderKind::Moonshot
-            | ProviderKind::Qianfan
-            | ProviderKind::Openmodel
-            | ProviderKind::Ollama
-            | ProviderKind::OllamaCloud
-            | ProviderKind::Huggingface
-            | ProviderKind::Modelscope
-            | ProviderKind::Meta
-            | ProviderKind::Xai
-            | ProviderKind::Telecomjs
-            | ProviderKind::Edenai
-            | ProviderKind::Zenmux
-            | ProviderKind::Csdn
-            // Concentrate ids are gateway-owned (plain, `provider/model`, or the
-            // gateway's own `auto`); the resolver strips only `concentrate/`.
-            | ProviderKind::Concentrate
-            // Codewhale API ids are `provider/model` exactly as the account
-            // catalog returns them; never normalize or rewrite them.
-            | ProviderKind::Codewhale
-            | ProviderKind::ModelstudioTokenPlan
-            | ProviderKind::ModelstudioTokenPlanAnthropic
-            | ProviderKind::ModelstudioCodingPlan
-            | ProviderKind::ModelstudioCodingPlanAnthropic
-            // Custom OpenAI-compatible endpoints preserve user-supplied model
-            // ids verbatim (#1519); never normalize/rewrite them.
-            | ProviderKind::Custom
-    )
 }
 
 fn provider_entry_uses_custom_base_url(provider: ProviderKind, entry: &ProviderConfig) -> bool {
@@ -9346,13 +9062,6 @@ pub fn provider_route_is_keyless_self_hosted(provider: ProviderKind, base_url: &
         provider,
         ProviderKind::Ollama | ProviderKind::Sglang | ProviderKind::Vllm
     )
-}
-
-fn moonshot_base_url_uses_kimi_code(base_url: &str) -> bool {
-    let normalized = normalize_base_url(base_url).to_ascii_lowercase();
-    normalized == DEFAULT_KIMI_CODE_BASE_URL
-        || normalized == "https://api.kimi.com/coding"
-        || normalized.starts_with("https://api.kimi.com/coding/")
 }
 
 /// The Kimi Code API endpoint, normalized only for insignificant trailing
@@ -9630,7 +9339,7 @@ impl SafeConfigDiagnostic {
             Self::KimiCodeClaudeAlias => self.to_string(),
             Self::InvalidValue { shareable, .. } => shareable.clone(),
         };
-        codewhale_secrets::redact::redact_secrets(&text)
+        codewhale_sanitize::redact::redact_secrets(&text)
     }
 
     pub fn fix(&self) -> Option<&str> {
@@ -9907,75 +9616,6 @@ pub fn base_url_uses_local_host(base_url: &str) -> bool {
         .is_ok_and(|addr| addr.is_loopback() || addr.is_unspecified())
 }
 
-fn model_for_provider(provider: ProviderKind, normalized: String) -> String {
-    let lowered = normalized.to_ascii_lowercase();
-    match (provider, lowered.as_str()) {
-        (ProviderKind::NvidiaNim, "deepseek-v4-pro") => DEFAULT_NVIDIA_NIM_MODEL.to_string(),
-        (ProviderKind::NvidiaNim, "deepseek-flash" | "deepseek-v4-flash") => {
-            DEFAULT_NVIDIA_NIM_FLASH_MODEL.to_string()
-        }
-        (ProviderKind::Openrouter, "deepseek-v4-pro") => DEFAULT_OPENROUTER_MODEL.to_string(),
-        (ProviderKind::Openrouter, "deepseek-flash" | "deepseek-v4-flash") => {
-            DEFAULT_OPENROUTER_FLASH_MODEL.to_string()
-        }
-        (ProviderKind::Novita, "deepseek-v4-pro") => DEFAULT_NOVITA_MODEL.to_string(),
-        (ProviderKind::Novita, "deepseek-flash" | "deepseek-v4-flash") => {
-            DEFAULT_NOVITA_FLASH_MODEL.to_string()
-        }
-        (ProviderKind::Fireworks, "deepseek-v4-pro") => DEFAULT_FIREWORKS_MODEL.to_string(),
-        (ProviderKind::Fireworks, "deepseek-flash") => "deepseek-v4-flash".to_string(),
-        (
-            ProviderKind::Siliconflow | ProviderKind::SiliconflowCN,
-            "deepseek-v4-pro" | "deepseek-reasoner" | "deepseek-r1",
-        ) => DEFAULT_SILICONFLOW_MODEL.to_string(),
-        (
-            ProviderKind::Siliconflow | ProviderKind::SiliconflowCN,
-            "deepseek-flash" | "deepseek-v4-flash" | "deepseek-chat" | "deepseek-v3",
-        ) => DEFAULT_SILICONFLOW_FLASH_MODEL.to_string(),
-        (ProviderKind::Sglang, "deepseek-v4-pro") => DEFAULT_SGLANG_MODEL.to_string(),
-        (ProviderKind::Sglang, "deepseek-flash" | "deepseek-v4-flash") => {
-            DEFAULT_SGLANG_FLASH_MODEL.to_string()
-        }
-        (ProviderKind::Vllm, "deepseek-v4-pro") => DEFAULT_VLLM_MODEL.to_string(),
-        (ProviderKind::Vllm, "deepseek-flash" | "deepseek-v4-flash") => {
-            DEFAULT_VLLM_FLASH_MODEL.to_string()
-        }
-        (ProviderKind::Deepinfra, "deepseek-v4-pro" | "deepseek-v4pro") => {
-            DEFAULT_DEEPINFRA_MODEL.to_string()
-        }
-        (
-            ProviderKind::Deepinfra,
-            "deepseek-flash" | "deepseek-v4-flash" | "deepseek-chat" | "deepseek-reasoner",
-        ) => DEFAULT_DEEPINFRA_FLASH_MODEL.to_string(),
-        (ProviderKind::Together, "deepseek-v4-pro" | "deepseek-v4pro") => {
-            DEFAULT_TOGETHER_MODEL.to_string()
-        }
-        (
-            ProviderKind::Together,
-            "deepseek-flash" | "deepseek-v4-flash" | "deepseek-v4flash" | "deepseek-chat"
-            | "deepseek-reasoner",
-        ) => DEFAULT_TOGETHER_FLASH_MODEL.to_string(),
-        (ProviderKind::Together, "inkling" | "together-inkling" | "thinkingmachines/inkling") => {
-            TOGETHER_INKLING_MODEL.to_string()
-        }
-        (
-            ProviderKind::Moonshot,
-            "kimi"
-            | "kimi-k2"
-            | "kimi-k2.7"
-            | "kimi-k2-7"
-            | "kimi-k2.7-code"
-            | "kimi-k2-7-code"
-            | "kimi-code"
-            | "moonshot-kimi-k2.7-code",
-        ) => DEFAULT_MOONSHOT_MODEL.to_string(),
-        (ProviderKind::Moonshot, "kimi-k2.6" | "kimi-k2-6" | "moonshot-kimi-k2.6") => {
-            MOONSHOT_KIMI_K2_6_MODEL.to_string()
-        }
-        _ => normalized,
-    }
-}
-
 pub fn normalize_base_url(base: &str) -> String {
     let trimmed = base.trim_end_matches('/');
     let deepseek_domains = ["api.deepseek.com", "api.deepseeki.com"];
@@ -10041,6 +9681,17 @@ fn apply_profile(config: ConfigFile, profile: Option<&str>) -> Result<Config> {
             Some(override_cfg) => {
                 let mut merged = merge_config(*config.base, override_cfg.clone());
                 apply_layer_root_model(&mut merged, override_cfg);
+                merged.route_provenance.provider_from_profile = override_cfg.provider.is_some();
+                let merged_identity = merged.active_provider_identity().ok();
+                merged.route_provenance.model_from_profile =
+                    override_cfg.default_text_model.is_some()
+                        || override_cfg.legacy_model.is_some()
+                        || merged_identity.as_ref().is_some_and(|id| {
+                            override_cfg
+                                .provider_config_for(id)
+                                .and_then(|entry| entry.model.as_deref())
+                                .is_some()
+                        });
                 Ok(merged)
             }
             None => {
@@ -10103,6 +9754,8 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
             .or(base.route_preferences_version),
         environment_model_applied: override_cfg.environment_model_applied
             || base.environment_model_applied,
+        project_model: override_cfg.project_model.or(base.project_model),
+        route_provenance: base.route_provenance,
         auth_mode: override_cfg.auth_mode.or(base.auth_mode),
         reasoning_effort: override_cfg.reasoning_effort.or(base.reasoning_effort),
         reasoning_effort_inferred_from_legacy_alias: override_cfg
@@ -10194,6 +9847,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         stream: match (base.stream, override_cfg.stream) {
             (Some(base), Some(over)) => Some(StreamConfig {
                 open_timeout_secs: over.open_timeout_secs.or(base.open_timeout_secs),
+                open_retries: over.open_retries.or(base.open_retries),
                 chunk_timeout_secs: over.chunk_timeout_secs.or(base.chunk_timeout_secs),
                 force_http1: over.force_http1.or(base.force_http1),
                 max_resumes: over.max_resumes.or(base.max_resumes),
@@ -10340,6 +9994,7 @@ fn merge_skills_config(
             flat_workspace_root: override_cfg
                 .flat_workspace_root
                 .or(base.flat_workspace_root),
+            creator_skills: false,
         }),
     }
 }
@@ -10723,14 +10378,24 @@ fn apply_managed_overrides(config: &mut Config) -> Result<()> {
     let merged_route = merged
         .active_provider_identity()
         .map_err(|error| managed_route_error(&merged, &path, error))?;
-    if managed.provider.is_some()
-        || managed.default_text_model.is_some()
+    if managed.provider.is_some() {
+        merged.route_provenance.provider_from_managed = true;
+        merged.route_provenance.provider_from_env = false;
+        merged.route_provenance.provider_from_saved_selection = false;
+        merged.route_provenance.provider_from_profile = false;
+    }
+    if managed.default_text_model.is_some()
         || managed.legacy_model.is_some()
         || managed
             .provider_config_for(&merged_route)
             .and_then(|entry| entry.model.as_ref())
             .is_some()
     {
+        merged.route_provenance.model_from_managed = true;
+        merged.route_provenance.model_from_saved_selection = false;
+        merged.route_provenance.model_from_profile = false;
+        merged.remembered_selection_scope = Some(false);
+    } else if managed.provider.is_some() {
         merged.remembered_selection_scope = Some(false);
     }
     if prior_route != merged_route || config_defines_base_url_for_effective_route(&managed, &merged)
@@ -10789,41 +10454,13 @@ fn apply_managed_overrides(config: &mut Config) -> Result<()> {
     Ok(())
 }
 
-fn tool_launcher_layer_error(path: &Path) -> anyhow::Error {
-    anyhow::anyhow!(
-        "`tool_launcher` in {} is not accepted: it is read only from the managed configuration (CODEWHALE_MANAGED_CONFIG_PATH, or the default managed path), in a file the Engine cannot write",
-        codewhale_config::quote_os_path(path)
-    )
-}
-
-fn tool_launcher_in_profiles(document: &toml::Value) -> bool {
-    document
-        .get("profiles")
-        .and_then(toml::Value::as_table)
-        .is_some_and(|profiles| {
-            profiles
-                .values()
-                .any(|profile| profile.get("tool_launcher").is_some())
-        })
-}
-
-fn reject_unmanaged_tool_launcher(raw: &str, path: &Path) -> Result<()> {
-    let Ok(document) = toml::from_str::<toml::Value>(raw) else {
-        return Ok(());
-    };
-    if document.get("tool_launcher").is_some() || tool_launcher_in_profiles(&document) {
-        return Err(tool_launcher_layer_error(path));
-    }
-    Ok(())
-}
-
 fn managed_tool_launcher(path: &Path) -> Result<Option<Vec<String>>> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("Failed to read config file: {}", path.display()))?;
     let Ok(document) = toml::from_str::<toml::Value>(&raw) else {
         return Ok(None);
     };
-    if tool_launcher_in_profiles(&document) {
+    if codewhale_config::tool_launcher_in_profiles(&document) {
         anyhow::bail!(
             "`tool_launcher` in {} belongs at the top level of the managed configuration, not in a profile",
             codewhale_config::quote_os_path(path)
@@ -11238,7 +10875,7 @@ impl SavedCredential {
 /// the ambient scoping, and callers that pass an explicit config path never
 /// consult this resolver; a per-workspace destination stays possible only as
 /// that kind of explicit opt-in.
-fn credential_config_path() -> anyhow::Result<PathBuf> {
+pub fn credential_config_path() -> anyhow::Result<PathBuf> {
     let resolved = try_default_config_path()?;
     if !codewhale_config::config_path_is_workspace_scoped(&resolved) {
         return Ok(resolved);
@@ -11661,10 +11298,6 @@ fn user_global_config_api_key(identity: &ProviderIdentity) -> Option<String> {
 
 /// `(key, source label)` as the active-route resolver returns it.
 pub type ResolvedApiKey = (String, String);
-
-/// Account label of the xAI sign-in that minted a key; `None` when its ID
-/// token names no email.
-pub type XaiSignInLabel = Option<String>;
 
 /// Key-source label the resolver gives a key minted by xAI OAuth (owned
 /// sign-in or consented Grok CLI import), named in authentication errors.
@@ -12324,14 +11957,24 @@ pub fn provider_env_api_key_var(provider: ProviderKind) -> Option<&'static str> 
 /// The provider's ambient env key and the variable that supplied it,
 /// normalized with [`codewhale_secrets::normalize_api_key`] (#6528).
 fn provider_env_api_key_named(provider: ProviderKind) -> Option<(&'static str, String)> {
-    let names = provider.provider().env_vars();
-    names.iter().find_map(|name| {
-        std::env::var(name)
-            .ok()
-            .map(|value| codewhale_secrets::normalize_api_key(&value))
-            .filter(|value| !value.is_empty())
-            .map(|value| (*name, value))
-    })
+    let read = || {
+        let names = provider.provider().env_vars();
+        names.iter().find_map(|name| {
+            std::env::var(name)
+                .ok()
+                .map(|value| codewhale_secrets::normalize_api_key(&value))
+                .filter(|value| !value.is_empty())
+                .map(|value| (*name, value))
+        })
+    };
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        codewhale_util::test_env_lock::with_test_env_lock(read)
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        read()
+    }
 }
 
 /// Canonical durable-credential slot shared with the CLI dispatcher.
@@ -12537,13 +12180,23 @@ pub fn explicit_launch_provider_override() -> Option<String> {
 }
 
 pub fn explicit_cli_api_key_override() -> Option<String> {
-    (cli_api_key_source().as_deref() == Some("cli"))
-        .then(|| {
-            std::env::var(codewhale_config::CLI_API_KEY_ENV)
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        })
-        .flatten()
+    let read = || {
+        (cli_api_key_source().as_deref() == Some("cli"))
+            .then(|| {
+                std::env::var(codewhale_config::CLI_API_KEY_ENV)
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+            })
+            .flatten()
+    };
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        codewhale_util::test_env_lock::with_test_env_lock(read)
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        read()
+    }
 }
 
 pub fn cli_api_key_source() -> Option<String> {
@@ -12832,6 +12485,9 @@ fn clear_active_provider_api_key_under_lock(provider: &str) -> Result<()> {
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod model_resolution_golden;
+
 /// #5045 regression coverage: credential writes must never land in a
 /// workspace-scoped `.codewhale/config.toml`.
 #[cfg(test)]
@@ -12936,6 +12592,264 @@ mod credential_scope_tests {
             !project.contains("workspace-rescope-openrouter-key"),
             "credential leaked into workspace config: {project}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn managed_auto_review_disabled_replaces_user_table_and_refuses_auto_policy() -> Result<()> {
+        let _lock = lock_test_env();
+        let temp = tempfile::tempdir()?;
+        let home = temp.path().join("home");
+        fs::create_dir_all(&home)?;
+        let _home = EnvVarGuard::set("CODEWHALE_HOME", home.as_os_str());
+        let user_config = home.join("config.toml");
+        let managed_config = temp.path().join("managed.toml");
+        let _managed =
+            EnvVarGuard::set("CODEWHALE_MANAGED_CONFIG_PATH", managed_config.as_os_str());
+        let _policy = EnvVarGuard::remove("CODEWHALE_APPROVAL_POLICY");
+        let _legacy_policy = EnvVarGuard::remove("DEEPSEEK_APPROVAL_POLICY");
+
+        fs::write(
+            &user_config,
+            r#"
+[[auto_review.allow]]
+tool = "read"
+reason = "user allow"
+"#,
+        )?;
+        fs::write(
+            &managed_config,
+            r#"
+[auto_review]
+disabled = true
+"#,
+        )?;
+
+        let loaded = Config::load(Some(user_config.clone()), None)?;
+        assert!(loaded.auto_review_disabled());
+        assert!(
+            loaded
+                .auto_review
+                .as_ref()
+                .is_some_and(|cfg| cfg.allow.is_empty() && cfg.block.is_empty()),
+            "managed [auto_review] table must replace the user table"
+        );
+
+        fs::write(&user_config, "approval_policy = \"auto\"\n")?;
+        let file_err = Config::load(Some(user_config.clone()), None)
+            .expect_err("approval_policy = auto must fail when auto_review.disabled = true");
+        assert!(
+            file_err.to_string().contains("auto_review.disabled = true"),
+            "unexpected error for config approval_policy: {file_err:#}"
+        );
+
+        fs::write(&user_config, "")?;
+        let _env_policy = EnvVarGuard::set("CODEWHALE_APPROVAL_POLICY", "auto");
+        let env_err = Config::load(Some(user_config), None).expect_err(
+            "CODEWHALE_APPROVAL_POLICY=auto must fail when auto_review.disabled = true",
+        );
+        assert!(
+            env_err.to_string().contains("auto_review.disabled = true"),
+            "unexpected error for CODEWHALE_APPROVAL_POLICY: {env_err:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn auto_review_reviewer_model_parses_validates_merges_and_ignores_subagents() -> Result<()> {
+        let _lock = lock_test_env();
+        let temp = tempfile::tempdir()?;
+        let home = temp.path().join("home");
+        fs::create_dir_all(&home)?;
+        let _home = EnvVarGuard::set("CODEWHALE_HOME", home.as_os_str());
+        let _managed = EnvVarGuard::remove("CODEWHALE_MANAGED_CONFIG_PATH");
+        let user_config = home.join("config.toml");
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+reviewer_model = "claude-sonnet-5-5"
+
+[subagents]
+reviewer_model = "subagent-only-model"
+"#,
+        )?;
+        let loaded = Config::load(Some(user_config.clone()), None)?;
+        assert_eq!(
+            loaded.auto_review_reviewer_model(),
+            Some("claude-sonnet-5-5")
+        );
+
+        fs::write(
+            &user_config,
+            r#"
+[subagents]
+reviewer_model = "subagent-only-model"
+"#,
+        )?;
+        let without_ar_model = Config::load(Some(user_config.clone()), None)?;
+        assert_eq!(without_ar_model.auto_review_reviewer_model(), None);
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+reviewer_model = "  "
+"#,
+        )?;
+        let empty_err = Config::load(Some(user_config.clone()), None)
+            .expect_err("blank auto_review.reviewer_model must fail validation");
+        assert!(
+            empty_err.to_string().contains("reviewer_model"),
+            "{empty_err:#}"
+        );
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+reviewer_model = "bad model\nid"
+"#,
+        )?;
+        let ws_err = Config::load(Some(user_config.clone()), None)
+            .expect_err("whitespace in auto_review.reviewer_model must fail validation");
+        assert!(ws_err.to_string().contains("reviewer_model"), "{ws_err:#}");
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+reviewer_model = "gpt-5.5"
+
+[profiles.fast]
+[profiles.fast.auto_review]
+reviewer_model = "gpt-5.6"
+"#,
+        )?;
+        let profiled = Config::load(Some(user_config.clone()), Some("fast"))?;
+        assert_eq!(profiled.auto_review_reviewer_model(), Some("gpt-5.6"));
+
+        let managed_config = temp.path().join("managed.toml");
+        let _managed_set =
+            EnvVarGuard::set("CODEWHALE_MANAGED_CONFIG_PATH", managed_config.as_os_str());
+        fs::write(
+            &managed_config,
+            r#"
+[auto_review]
+reviewer_model = "managed-reviewer"
+"#,
+        )?;
+        let managed_loaded = Config::load(Some(user_config.clone()), Some("fast"))?;
+        assert_eq!(
+            managed_loaded.auto_review_reviewer_model(),
+            Some("managed-reviewer")
+        );
+        drop(_managed_set);
+        let _ = fs::remove_file(&managed_config);
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+environment = [
+    "trusted git remote: origin = https://github.com/org/repo",
+    "trusted staging host: https://staging.example.internal",
+]
+"#,
+        )?;
+        let env_loaded = Config::load(Some(user_config.clone()), None)?;
+        assert_eq!(
+            env_loaded.auto_review_environment(),
+            &[
+                "trusted git remote: origin = https://github.com/org/repo".to_string(),
+                "trusted staging host: https://staging.example.internal".to_string(),
+            ]
+        );
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+environment = ["   "]
+"#,
+        )?;
+        let blank_env_err = Config::load(Some(user_config.clone()), None)
+            .expect_err("blank auto_review.environment entry must fail validation");
+        assert!(
+            blank_env_err
+                .to_string()
+                .contains("auto_review.environment"),
+            "{blank_env_err:#}"
+        );
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+environment = ["bad\nline"]
+"#,
+        )?;
+        let control_env_err = Config::load(Some(user_config.clone()), None)
+            .expect_err("control chars in auto_review.environment must fail validation");
+        assert!(
+            control_env_err
+                .to_string()
+                .contains("auto_review.environment"),
+            "{control_env_err:#}"
+        );
+
+        fs::write(
+            &user_config,
+            r#"
+[auto_review]
+environment = ["user remote: github.com/acme/repo"]
+"#,
+        )?;
+        let _managed_env_set =
+            EnvVarGuard::set("CODEWHALE_MANAGED_CONFIG_PATH", managed_config.as_os_str());
+        fs::write(
+            &managed_config,
+            r#"
+[auto_review]
+environment = ["managed remote: github.internal/corp/repo"]
+"#,
+        )?;
+        let managed_env = Config::load(Some(user_config), None)?;
+        assert_eq!(
+            managed_env.auto_review_environment(),
+            &["managed remote: github.internal/corp/repo".to_string()]
+        );
+
+        let review_shell_dir = tempfile::tempdir()?;
+        let review_shell_user = review_shell_dir.path().join("config.toml");
+        let review_shell_managed = review_shell_dir.path().join("managed.toml");
+        let _managed_unset = EnvVarGuard::remove("CODEWHALE_MANAGED_CONFIG_PATH");
+        fs::write(
+            &review_shell_user,
+            r#"
+[auto_review]
+review_all_shell = true
+"#,
+        )?;
+        let default_cfg = Config::default();
+        assert!(!default_cfg.auto_review_review_all_shell());
+        let loaded_review_shell = Config::load(Some(review_shell_user.clone()), None)?;
+        assert!(loaded_review_shell.auto_review_review_all_shell());
+
+        let _managed_override = EnvVarGuard::set(
+            "CODEWHALE_MANAGED_CONFIG_PATH",
+            review_shell_managed.as_os_str(),
+        );
+        fs::write(
+            &review_shell_managed,
+            r#"
+[auto_review]
+review_all_shell = false
+"#,
+        )?;
+        let managed_override_cfg = Config::load(Some(review_shell_user), None)?;
+        assert!(!managed_override_cfg.auto_review_review_all_shell());
         Ok(())
     }
 }

@@ -51,6 +51,7 @@ struct TurnLoopProgress {
     empty_stop_retries: u32,
     reasoning_only_nudge: Option<String>,
     stream_retry_budget: StreamRetryBudget,
+    stream_open_timeout_retry_budget: StreamRetryBudget,
     image_omission_notified: bool,
     child_request_retries: crate::tools::subagent::engine::ChildRequestRetries,
 }
@@ -74,7 +75,7 @@ pub(super) struct PendingProviderRequestReceipt {
     pub(super) request_id: String,
     pub(super) accounting_source: crate::cost_status::NativeUsageSource,
     pub(super) accounting_scope: crate::cost_status::CostScopeToken,
-    pub(super) accounting_owner: Option<String>,
+    pub(super) accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
     pub(super) route: crate::cost_status::EffectiveRouteEnvelope,
     pub(super) primary: bool,
     pub(super) accounting_owned_elsewhere: bool,
@@ -128,8 +129,9 @@ enum ToolCallSource {
     /// Issued by an `execute_tools` program through its nested-call gate.
     CodeMode,
     /// Issued by an extension tool through its `core/call` gate. Planned
-    /// exactly like the others, then its approval is raised to an extension's
-    /// (`extension_host::core_call::origin_approval`).
+    /// through the same gates as a model call; under Auto-Review its held
+    /// calls go to the reviewer, and in other postures its approval is raised
+    /// through `extension_host::core_call::origin_approval`.
     Extension,
 }
 
@@ -160,11 +162,13 @@ struct StreamOutcome {
     /// blocks are parked here instead of being overwritten by the next one.
     /// Redacted thinking blocks park here the moment they arrive.
     completed_thinking: Vec<ContentBlock>,
+    server_blocks: Vec<ContentBlock>,
     tool_uses: Vec<ToolUseState>,
     usage: Usage,
     usage_reported: bool,
     accounting: Option<crate::cost_status::RuntimeUsageRecord>,
     stop_reason: Option<String>,
+    refusal_text: Option<String>,
     pending_message_complete: bool,
     last_text_index: Option<usize>,
     stream_errors: u32,
@@ -494,10 +498,10 @@ fn approval_intent_summary(text: &str) -> Option<String> {
 
 /// Tell the model how to proceed after a deterministic Auto-Review denial.
 /// Keeping the original reason first preserves the audit trail.
-pub(super) fn auto_review_block_tool_error(reason: &str) -> ToolError {
-    ToolError::permission_denied(format!(
-        "{reason}. This block is automatic - do not work around it; take a safer approach inside the current permissions, or stop and tell the user."
-    ))
+pub(super) fn auto_review_block_tool_error(reason: &str, rule: Option<&str>) -> ToolError {
+    ToolError::permission_denied(
+        crate::core::authority::auto_review::format_auto_review_block_message(reason, rule),
+    )
 }
 
 pub(super) fn registered_tool_approval_required(
@@ -564,14 +568,17 @@ pub(super) fn call_forces_prompt(
         || crate::tools::approval_cache::computer_use_user_gate(tool_name, input).is_some()
 }
 
-/// Repo-law `ask` rules require a human decision. Only Ask and Accept Edits
-/// can open that decision; every autonomous or no-prompt posture must fail
-/// closed.
+/// Repo-law `ask` rules require a human decision. Ask, Accept Edits, and
+/// interactive Auto-Review with an attached owner can open that decision;
+/// every autonomous or unattended posture fails closed.
 pub(super) fn repo_law_must_block_without_prompt(
     approval_mode: ApprovalMode,
     auto_approve: bool,
+    owner_present: bool,
 ) -> bool {
-    auto_approve || !approval_mode.is_ask_family()
+    auto_approve
+        || !(approval_mode.is_ask_family()
+            || (approval_mode == ApprovalMode::Auto && owner_present))
 }
 
 pub(super) fn requested_sandbox_escalation(
@@ -714,6 +721,7 @@ fn merge_stream_usage(total: &mut Usage, update: Usage) {
         &mut total.reasoning_replay_tokens,
         update.reasoning_replay_tokens,
     );
+    max_optional(&mut total.safety_tokens, update.safety_tokens);
     if let Some(update) = update.server_tool_use {
         let current = total.server_tool_use.get_or_insert_default();
         max_optional(
@@ -724,6 +732,11 @@ fn merge_stream_usage(total: &mut Usage, update: Usage) {
             &mut current.tool_search_requests,
             update.tool_search_requests,
         );
+        max_optional(&mut current.web_search_requests, update.web_search_requests);
+        max_optional(&mut current.web_fetch_requests, update.web_fetch_requests);
+        max_optional(&mut current.tool_search, update.tool_search);
+        max_optional(&mut current.tool_fetch, update.tool_fetch);
+        max_optional(&mut current.tool_image_search, update.tool_image_search);
     }
 }
 
@@ -808,7 +821,7 @@ pub(super) fn replace_runtime_mcp_tools(
     refreshed.sort_by(|a, b| a.name.cmp(&b.name));
     for tool in refreshed {
         let stays_active = previously_active.contains(&tool.name)
-            || always_load.contains(&tool.name)
+            || super::tool_catalog::always_load_matches(always_load, &tool.name)
             || !tool.defer_loading.unwrap_or(false);
         if stays_active {
             active_tool_names.insert(tool.name.clone());
@@ -822,6 +835,32 @@ pub(super) fn replace_runtime_mcp_tools(
         *tool_catalog = catalog_before;
     }
     changed
+}
+
+pub(super) fn extract_verified_plugin_change(
+    tool_name: &str,
+    result: &Result<crate::tools::spec::ToolResult, crate::tools::spec::ToolError>,
+) -> Option<crate::extension_host::core_call::PluginChangeMark> {
+    if tool_name != crate::extension_host::creator_policy::PLUGIN_MANAGER_TOOL_NAME {
+        return None;
+    }
+    let metadata = match result {
+        Ok(output) => output.metadata.as_ref()?,
+        Err(crate::tools::spec::ToolError::ExecutionFailed {
+            metadata: Some(metadata),
+            ..
+        }) => metadata,
+        Err(_) => return None,
+    };
+    if metadata
+        .pointer("/extension/plugin_id")
+        .and_then(serde_json::Value::as_str)
+        != Some(crate::extension_host::creator_policy::CREATOR_PLUGIN_ID)
+    {
+        return None;
+    }
+    let mark = metadata.get("plugin_change")?;
+    serde_json::from_value(mark.clone()).ok()
 }
 
 /// Whether model-written Python may run on this turn at all: `code_execution`
@@ -840,8 +879,8 @@ fn code_execution_offered(
 }
 
 impl Engine {
-    /// Inline ```repl blocks run model-written Python in the session kernel,
-    /// so they are admitted exactly like a `code_execution` call carrying
+    /// A recursive RLM round runs model-written Python in a child kernel,
+    /// so it is admitted exactly like a `code_execution` call carrying
     /// the same code: planned by `plan_tool_calls` (mode, allow/deny lists,
     /// before-tool hooks, Auto-Review floor and reviewer, repo law, the
     /// registry approval) and, when the plan still needs it, approved through
@@ -851,8 +890,8 @@ impl Engine {
     async fn repl_fence_blocked_reason(
         &mut self,
         blocks: &[codewhale_repl::ReplBlock],
-        // What the approval card says would run, e.g. "the reply's ```repl
-        // block(s) in the session REPL kernel".
+        // What the approval card says would run, e.g. "a recursive RLM
+        // round's Python in a child kernel".
         what_runs: &str,
         approval_id: &str,
         client: &dyn crate::core::model_client::ModelClient,
@@ -894,6 +933,7 @@ impl Engine {
                 mode,
                 fleet_denial_guard,
                 ToolCallSource::CodeMode,
+                None,
             )
             .await;
         let Some(plan) = plans.into_iter().next() else {
@@ -927,7 +967,7 @@ impl Engine {
                 approval_grouping_key: approval_grouping_key.0,
                 input: plan.input,
                 description: format!(
-                    "Run {what_runs} (a local subprocess, not OS-sandboxed): {}",
+                    "Run {what_runs} (a local subprocess under this session's sandbox policy): {}",
                     plan.approval_description
                 ),
                 intent_summary: None,
@@ -955,9 +995,9 @@ impl Engine {
                 Ok(ApprovalResult::TimedOut) => {
                     Some("the approval request timed out before anyone answered".to_string())
                 }
-                Ok(ApprovalResult::RetryWithPolicy(_)) => {
-                    Some("inline REPL blocks cannot run under a changed sandbox policy".to_string())
-                }
+                Ok(ApprovalResult::RetryWithPolicy(_)) => Some(
+                    "recursive RLM rounds cannot run under a changed sandbox policy".to_string(),
+                ),
                 Err(error) => Some(error.to_string()),
             };
             if let Some(refusal) = refusal {
@@ -1027,8 +1067,6 @@ impl Engine {
         catalog: &mut Vec<Tool>,
         active: &mut std::collections::HashSet<String>,
     ) {
-        // A pending ordinary connection keeps its own catalog authority. An
-        // ACP turn cannot drain or import it; the next ordinary turn can.
         if self.is_acp_turn() {
             return;
         }
@@ -1042,12 +1080,12 @@ impl Engine {
         policy: &ToolSurfacePolicy,
         catalog: &mut Vec<Tool>,
         active: &mut std::collections::HashSet<String>,
-    ) {
+    ) -> bool {
         if !self.config.features.enabled(Feature::Mcp) {
-            return;
+            return false;
         }
         let Some(pool) = self.mcp_pool.as_ref() else {
-            return;
+            return false;
         };
         let (universe, mut refreshed) = {
             let pool = pool.lock().await;
@@ -1057,23 +1095,27 @@ impl Engine {
         // A config/authority change during handshake can remove a server;
         // `replace_runtime_mcp_tools` owns every MCP name already in the
         // catalog, so its previous names leave this turn's catalog too.
-        refreshed.retain(|tool| {
-            policy.passes_allow_list(&tool.name)
-                && !policy.denies_tool(&tool.name)
-                && (self.child_host.is_none() || policy.registry.contains(&tool.name))
-        });
-        if replace_runtime_mcp_tools(
+        if let Some(child) = &self.child_host {
+            refreshed = child
+                .authority
+                .connected_mcp_tools_for_model(&policy.registry, refreshed);
+        }
+        refreshed.retain(|tool| policy.allows_tool(&tool.name));
+        let always_load = self.effective_tools_always_load();
+        let changed = replace_runtime_mcp_tools(
             catalog,
             active,
             &universe,
             refreshed,
             self.current_mode,
-            &self.config.tools_always_load,
+            &always_load,
             self.turn_tool_surface_budget
                 .unwrap_or(crate::model_profile::ToolSurfaceBudget::Standard),
-        ) {
+        );
+        if changed {
             self.session.pending_prefix_change_reason = Some("mcp-session-boot".to_string());
         }
+        changed
     }
 
     /// A gated MCP-focused search is explicit discovery of already configured
@@ -1193,22 +1235,24 @@ impl Engine {
         completions
             .into_iter()
             .map(|mut completion| {
-                let tool_call_id =
-                    format!("background-shell-completion-{}", completion.event.task_id);
-                let artifact_id =
-                    codewhale_runtime::artifacts::artifact_id_for_tool_call(&tool_call_id);
-                let bytes = completion.artifact_bytes();
-                match codewhale_runtime::artifacts::write_session_artifact_immutable(
-                    &self.session.id,
-                    &artifact_id,
-                    &bytes,
-                ) {
-                    Ok(_) => completion.event.evidence_ref = Some(artifact_id),
-                    Err(error) => tracing::warn!(
-                        task_id = %completion.event.task_id,
-                        %error,
-                        "background shell completion evidence could not be retained"
-                    ),
+                if completion.needs_evidence_artifact() {
+                    let tool_call_id =
+                        format!("background-shell-completion-{}", completion.event.task_id);
+                    let artifact_id =
+                        codewhale_runtime::artifacts::artifact_id_for_tool_call(&tool_call_id);
+                    let bytes = completion.artifact_bytes();
+                    match codewhale_runtime::artifacts::write_session_artifact_immutable(
+                        &self.session.id,
+                        &artifact_id,
+                        &bytes,
+                    ) {
+                        Ok(_) => completion.event.evidence_ref = Some(artifact_id),
+                        Err(error) => tracing::warn!(
+                            task_id = %completion.event.task_id,
+                            %error,
+                            "background shell completion evidence could not be retained"
+                        ),
+                    }
                 }
                 completion.event
             })
@@ -1361,20 +1405,165 @@ impl Engine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn record_auto_review_block(
+        &self,
+        in_auto_mode: bool,
+        owner_present: bool,
+        is_child_host: bool,
+        allow_retry_receipt: bool,
+        tool_id: &str,
+        tool_name: &str,
+        tool_input: &Value,
+        rule: Option<&str>,
+        reason: &str,
+        gate: &str,
+        verdict: &str,
+    ) -> crate::core::authority::auto_review::RecordedAutoReviewBlock {
+        let recorded = self.auto_review_state.lock().record_block(
+            in_auto_mode,
+            owner_present,
+            is_child_host,
+            allow_retry_receipt,
+            tool_id,
+            tool_name,
+            tool_input,
+            rule,
+            reason,
+            gate,
+            verdict,
+        );
+        if in_auto_mode
+            && is_child_host
+            && let Some(child_host) = self.child_host.as_ref()
+            && let Some(parent_state) = child_host
+                .authority
+                .runtime
+                .parent_auto_review_state
+                .as_ref()
+        {
+            parent_state.lock().record_child_block(
+                &child_host.authority.owner_agent_id,
+                tool_id,
+                tool_name,
+                tool_input,
+                &recorded.action_summary,
+                rule,
+                reason,
+                gate,
+                verdict,
+            );
+        }
+        recorded
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn consult_auto_review_guardian(
         &self,
         client: &dyn crate::core::model_client::ModelClient,
         context: &crate::core::authority::auto_review::AutoReviewContext<'_>,
         tool_input: &Value,
         held_reason: &str,
+        soft_rule: Option<&str>,
         tool_id: &str,
         turn: &mut TurnContext,
-    ) -> Result<(), ToolError> {
-        let context_text = crate::core::authority::auto_review::build_reviewer_context(
-            context,
-            held_reason,
-            tool_input,
+        in_auto_mode: bool,
+        allow_retry_receipt: bool,
+        person_approved_retry: bool,
+        can_fallback_to_person: bool,
+    ) -> Result<
+        Option<&'static str>,
+        Box<(
+            ToolError,
+            crate::core::authority::auto_review::AutoReviewOutcomeEffect,
+        )>,
+    > {
+        use crate::core::authority::auto_review::AutoReviewOutcomeEffect;
+        let reviewer_model = super::reviewer::resolve_reviewer_model(
+            self.config.auto_review_policy.reviewer_model.as_deref(),
+            client,
         );
+        let context_text =
+            match crate::core::authority::auto_review::build_reviewer_context_for_retry(
+                context,
+                held_reason,
+                tool_input,
+                person_approved_retry,
+            ) {
+                Ok(text) => text,
+                Err(reason) => {
+                    let outcome = super::reviewer::ReviewerOutcome::Failed {
+                        kind: super::reviewer::ReviewerFailureKind::OverBudget,
+                        reason: reason.to_string(),
+                    };
+                    let decision = outcome.audit_decision();
+                    let risk = outcome.audit_risk();
+                    let fallback_kind = outcome.failure_prompt_kind();
+                    if can_fallback_to_person {
+                        emit_tool_audit(json!({
+                            "event": "tool.auto_review",
+                            "gate": "guardian",
+                            "tool_id": tool_id,
+                            "reviewer_model": reviewer_model.as_str(),
+                            "decision": decision,
+                            "attempts": 0,
+                            "fallback": "prompt",
+                            "risk": risk,
+                            "reason": reason,
+                        }))
+                        .await;
+                        return Ok(fallback_kind);
+                    }
+                    let is_child_host = self.child_host.is_some();
+                    let owner_present = self.current_turn_authority().owner_present();
+                    let recorded = self.record_auto_review_block(
+                        in_auto_mode,
+                        owner_present,
+                        is_child_host,
+                        allow_retry_receipt,
+                        tool_id,
+                        context.tool_name.as_ref(),
+                        tool_input,
+                        Some("guardian-unavailable"),
+                        reason,
+                        "auto_review_guardian",
+                        "unavailable",
+                    );
+                    let result = outcome.into_tool_result(context.tool_name.as_ref());
+                    emit_tool_audit(json!({
+                    "event": "tool.auto_review",
+                    "gate": "guardian",
+                    "tool_id": tool_id,
+                    "reviewer_model": reviewer_model.as_str(),
+                    "decision": decision,
+                    "attempts": 0,
+                    "fallback": "deny",
+                    "risk": risk,
+                    "reason": result.as_ref().map_or_else(|error| error.to_string(), Clone::clone),
+                }))
+                .await;
+                    let _ = self
+                        .send_event(Event::ToolGateDecision {
+                            agent_id: None,
+                            tool_id: tool_id.to_string(),
+                            tool_name: context.tool_name.to_string(),
+                            gate: crate::core::events::ToolGate::AutoReviewGuardian,
+                            decision: crate::core::events::ToolGateVerdict::Unavailable,
+                            risk: None,
+                            reviewer_model: Some(reviewer_model),
+                            reason: crate::core::events::bounded_gate_reason(reason),
+                            rule: Some("guardian-unavailable".to_string()),
+                            receipt_id: recorded.receipt_id,
+                            call_digest: recorded.call_digest,
+                            action_summary: (!recorded.action_summary.is_empty())
+                                .then_some(recorded.action_summary),
+                        })
+                        .await;
+                    return result
+                        .map(|_| None)
+                        .map_err(|error| Box::new((error, recorded.effect)));
+                }
+            };
         let _ = self
             .send_event(Event::status(format!(
                 "Auto-Review checking '{}'",
@@ -1385,52 +1574,33 @@ impl Engine {
             .child_host
             .as_ref()
             .map(|child| child.authority.clone());
-        let cost_scope = child_accounting
-            .as_ref()
-            .map_or_else(crate::cost_status::scope_token, |child| {
-                child.accounting_origin().0
-            });
-        let review_route = client.effective_route_envelope(client.model(), chrono::Utc::now());
+        let review_route = client.effective_route_envelope(&reviewer_model, chrono::Utc::now());
         let origin = if let Some(child) = child_accounting.as_ref() {
             child.usage_origin()
         } else {
-            self.config
-                .compaction
-                .runtime_cost_owner
-                .as_deref()
-                .map(|owner| crate::cost_status::NativeUsageOrigin::runtime(cost_scope, owner))
-                .transpose()
-                .map_err(|error| {
-                    ToolError::execution_failed(format!(
-                        "review accounting admission failed: {error}"
-                    ))
-                })?
-                .or_else(|| self.config.runtime_services.accounting_origin.clone())
+            self.turn_accounting_origin()
         };
+        let cost_scope = origin.as_ref().map_or_else(
+            crate::cost_status::scope_token,
+            crate::cost_status::NativeUsageOrigin::scope,
+        );
         let source = crate::cost_status::NativeUsageSource::capture_with_origin(
             format!("auto-review:{}:{tool_id}", turn.id),
             crate::cost_status::UsageSpendOwner::Auxiliary,
             origin,
         );
-        let observation = source
-            .observe_route(&review_route)
-            .map_err(|error| ToolError::execution_failed(error.to_string()))?;
-        if let Some(record) = source
-            .admit_dispatch(&review_route)
-            .await
-            .map_err(|error| ToolError::execution_failed(error.to_string()))?
-            && let Some(child) = child_accounting.as_ref()
-        {
-            child
-                .project_settled_response(&record)
-                .await
-                .map_err(|error| ToolError::execution_failed(error.to_string()))?;
-        }
+        let observation = source.observation();
         let wire = observation.wire_observations.clone();
         let started = Instant::now();
         let review = crate::llm_client::observe_request_retries(
             Some(observation),
-            super::reviewer::consult_reviewer(client, &context_text, &self.cancel_token),
+            super::reviewer::consult_reviewer_with_model_and_retry(
+                client,
+                self.config.auto_review_policy.reviewer_model.as_deref(),
+                &context_text,
+                &self.cancel_token,
+                person_approved_retry,
+            ),
         )
         .await;
         let wire = wire.drain();
@@ -1438,34 +1608,24 @@ impl Engine {
         let usage = review.usage.as_ref().unwrap_or(&empty);
         let has_response = review.usage.is_some();
         let coverage = wire.usage_coverage(usage_has_reported_data(usage), has_response);
-        let record = source
-            .prepare_observed(
-                &review_route,
-                usage,
-                coverage,
-                if has_response {
-                    crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
-                } else {
-                    crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
-                },
-                &wire,
-            )
-            .map_err(|error| ToolError::execution_failed(error.to_string()))?;
+        let record = source.prepare_record(
+            &review_route,
+            usage,
+            coverage,
+            if has_response {
+                crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
+            } else {
+                crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+            },
+            &wire,
+        );
         if let Some(child) = child_accounting.as_ref() {
-            child
-                .settle_response(&record)
-                .await
-                .map_err(|error| ToolError::execution_failed(error.to_string()))?;
+            if let Err(error) = child.settle_response(&record).await {
+                tracing::warn!(%error, "auto-review child usage settlement failed; continuing");
+            }
         } else {
-            crate::cost_status::settle_runtime_usage_record(
-                cost_scope,
-                self.config.compaction.runtime_cost_owner.as_deref(),
-                &record,
-            )
-            .await
-            .map_err(|error| {
-                ToolError::execution_failed(format!("review usage remains unacknowledged: {error}"))
-            })?;
+            crate::cost_status::record_runtime_usage_async(cost_scope, source.origin(), &record)
+                .await;
         }
         if let Some(usage) = &review.usage {
             turn.add_usage(usage);
@@ -1481,43 +1641,128 @@ impl Engine {
                     .await;
             }
         }
-        match &review.outcome {
-            super::reviewer::ReviewerOutcome::Allow { .. } => {
-                turn.auto_review_denials.record(false)
-            }
-            super::reviewer::ReviewerOutcome::Deny { .. } => turn.auto_review_denials.record(true),
-            super::reviewer::ReviewerOutcome::Unavailable { .. }
-            | super::reviewer::ReviewerOutcome::Cancelled => {}
-        }
         let decision = review.outcome.audit_decision();
         let risk = review.outcome.audit_risk();
-        // The transcript receipt names the verdict a person never saw a
-        // prompt for. Cancellation is not a decision and gets no receipt.
-        let receipt = match &review.outcome {
-            super::reviewer::ReviewerOutcome::Allow { reason, .. } => Some((
-                crate::core::events::ToolGateVerdict::Allowed,
-                reason.clone(),
-            )),
-            super::reviewer::ReviewerOutcome::Deny { reason, .. } => {
-                Some((crate::core::events::ToolGateVerdict::Denied, reason.clone()))
-            }
-            super::reviewer::ReviewerOutcome::Unavailable { reason } => Some((
-                crate::core::events::ToolGateVerdict::Unavailable,
-                reason.clone(),
-            )),
-            super::reviewer::ReviewerOutcome::Cancelled => None,
+        let attempts = review.attempts;
+        let fallback_prompt_kind = if can_fallback_to_person {
+            review.outcome.failure_prompt_kind()
+        } else {
+            None
         };
-        let result = review.outcome.into_tool_result(context.tool_name.as_ref());
+        let fallback_audit = if fallback_prompt_kind.is_some() {
+            Some("prompt")
+        } else if review.outcome.failure_reason().is_some() {
+            Some("deny")
+        } else {
+            None
+        };
+        let is_child_host = self.child_host.is_some();
+        let owner_present = self.current_turn_authority().owner_present();
+        let (receipt, effect) = match &review.outcome {
+            super::reviewer::ReviewerOutcome::Allow { reason, .. } => {
+                self.auto_review_state.lock().record_allow();
+                (
+                    Some((
+                        crate::core::events::ToolGateVerdict::Allowed,
+                        reason.clone(),
+                        None,
+                        None,
+                        None,
+                        None,
+                    )),
+                    AutoReviewOutcomeEffect::Continue,
+                )
+            }
+            super::reviewer::ReviewerOutcome::Deny { reason, .. } => {
+                let effective_rule = soft_rule.unwrap_or("guardian");
+                let recorded = self.record_auto_review_block(
+                    in_auto_mode,
+                    owner_present,
+                    is_child_host,
+                    allow_retry_receipt,
+                    tool_id,
+                    context.tool_name.as_ref(),
+                    tool_input,
+                    Some(effective_rule),
+                    reason,
+                    "auto_review_guardian",
+                    "denied",
+                );
+                (
+                    Some((
+                        crate::core::events::ToolGateVerdict::Denied,
+                        reason.clone(),
+                        Some(effective_rule.to_string()),
+                        recorded.receipt_id,
+                        recorded.call_digest,
+                        (!recorded.action_summary.is_empty()).then_some(recorded.action_summary),
+                    )),
+                    recorded.effect,
+                )
+            }
+            super::reviewer::ReviewerOutcome::TimedOut { reason }
+            | super::reviewer::ReviewerOutcome::Failed { reason, .. } => {
+                let verdict = crate::core::events::ToolGateVerdict::Unavailable;
+                if fallback_prompt_kind.is_some() {
+                    (None, AutoReviewOutcomeEffect::Continue)
+                } else {
+                    let recorded = self.record_auto_review_block(
+                        in_auto_mode,
+                        owner_present,
+                        is_child_host,
+                        allow_retry_receipt,
+                        tool_id,
+                        context.tool_name.as_ref(),
+                        tool_input,
+                        Some("guardian-unavailable"),
+                        reason,
+                        "auto_review_guardian",
+                        verdict.as_str(),
+                    );
+                    (
+                        Some((
+                            verdict,
+                            reason.clone(),
+                            Some("guardian-unavailable".to_string()),
+                            recorded.receipt_id,
+                            recorded.call_digest,
+                            (!recorded.action_summary.is_empty())
+                                .then_some(recorded.action_summary),
+                        )),
+                        recorded.effect,
+                    )
+                }
+            }
+            super::reviewer::ReviewerOutcome::Cancelled => {
+                (None, AutoReviewOutcomeEffect::Continue)
+            }
+        };
+        let result = if fallback_prompt_kind.is_some() {
+            Ok(review
+                .outcome
+                .failure_reason()
+                .unwrap_or_default()
+                .to_string())
+        } else {
+            review.outcome.into_tool_result_with_rule(
+                context.tool_name.as_ref(),
+                Some(soft_rule.unwrap_or("guardian")),
+            )
+        };
         emit_tool_audit(json!({
             "event": "tool.auto_review",
             "gate": "guardian",
             "tool_id": tool_id,
+            "rule_id": soft_rule,
+            "reviewer_model": review.reviewer_model.as_str(),
             "decision": decision,
+            "attempts": attempts,
+            "fallback": fallback_audit,
             "risk": risk,
             "reason": result.as_ref().map_or_else(|error| error.to_string(), Clone::clone),
         }))
         .await;
-        if let Some((verdict, reason)) = receipt {
+        if let Some((verdict, reason, rule, receipt_id, call_digest, action_summary)) = receipt {
             let _ = self
                 .send_event(Event::ToolGateDecision {
                     agent_id: None,
@@ -1526,11 +1771,18 @@ impl Engine {
                     gate: crate::core::events::ToolGate::AutoReviewGuardian,
                     decision: verdict,
                     risk: risk.map(str::to_string),
+                    reviewer_model: Some(review.reviewer_model),
                     reason: crate::core::events::bounded_gate_reason(&reason),
+                    rule,
+                    receipt_id,
+                    call_digest,
+                    action_summary,
                 })
                 .await;
         }
-        result.map(|_| ())
+        result
+            .map(|_| fallback_prompt_kind)
+            .map_err(|error| Box::new((error, effect)))
     }
 
     pub(super) async fn run_turn(
@@ -1618,6 +1870,57 @@ impl Engine {
                 .names()
                 .map(str::to_string),
         );
+        if self
+            .config
+            .goal_state
+            .lock()
+            .is_ok_and(|goal| goal.is_active())
+        {
+            let _ = super::tool_catalog::activate_goal_followup_tools(
+                &tool_catalog,
+                &mut active_tool_names,
+                &mut self.session.tool_activation_cache,
+                &mut |names| {
+                    super::tool_catalog::measure_deferred_tools(
+                        client.as_ref(),
+                        &self.session.model,
+                        self.session.reasoning_effort.as_deref(),
+                        tool_policy.strict_tool_mode,
+                        &tool_catalog,
+                        names,
+                    )
+                },
+            );
+        }
+        let has_active_background_shells = self
+            .shell_manager
+            .lock()
+            .map(|mut manager| {
+                manager
+                    .list_jobs_for_session(&self.session.id)
+                    .into_iter()
+                    .any(|job| {
+                        !job.stale && job.status == crate::tools::shell::ShellStatus::Running
+                    })
+            })
+            .unwrap_or(false);
+        if has_active_background_shells {
+            let _ = super::tool_catalog::activate_background_shell_tools(
+                &tool_catalog,
+                &mut active_tool_names,
+                &mut self.session.tool_activation_cache,
+                &mut |names| {
+                    super::tool_catalog::measure_deferred_tools(
+                        client.as_ref(),
+                        &self.session.model,
+                        self.session.reasoning_effort.as_deref(),
+                        tool_policy.strict_tool_mode,
+                        &tool_catalog,
+                        names,
+                    )
+                },
+            );
+        }
         // This is a fresh admitted turn, whose permitted outbound tools may
         // differ from the previous turn (ACP narrowing or a child report).
         // Declare only that actual boundary change; the request-time C5 guard
@@ -1685,13 +1988,16 @@ impl Engine {
         // status receipt with its exact text (C02-04, "model-visible means
         // logged"): the runtime event log can reconstruct the request.
         let reasoning_only_nudge: Option<String> = None;
-        // Outer stream-open retry budget: only a typed transient connection
-        // failure proven to precede dispatch can spend it. An opened stream
+        // Outer stream-open retry budgets: a typed transient connection
+        // failure proven to precede dispatch spends the first, a typed
+        // response-header timeout spends the second. An opened stream
         // never reissues its request automatically.
-        // `StreamRetryBudget` enforces that bound in mechanism —
+        // `StreamRetryBudget` enforces each bound in mechanism —
         // `authorize()` is the only way to spend a resume.
         let stream_retry_budget =
             StreamRetryBudget::with_limit(self.config.stream_retry_limits.max_resumes);
+        let stream_open_timeout_retry_budget =
+            StreamRetryBudget::with_limit(self.config.stream_retry_limits.open_retries);
         // The user hears about images the route cannot see once per turn,
         // not once per step and not for images replayed from history.
         let image_omission_notified = false;
@@ -1715,6 +2021,7 @@ impl Engine {
             empty_stop_retries,
             reasoning_only_nudge,
             stream_retry_budget,
+            stream_open_timeout_retry_budget,
             image_omission_notified,
             child_request_retries: Default::default(),
         };
@@ -1753,7 +2060,7 @@ impl Engine {
                 }
             };
             let response = match self
-                .continue_model_step(turn, &tool_policy, &mut progress, &client, response)
+                .continue_model_step(turn, &tool_policy, &mut progress, response)
                 .await
             {
                 PhaseResult::Ready(value) => value,
@@ -1766,7 +2073,7 @@ impl Engine {
                 }
             };
             match self
-                .run_tool_batch_phase(turn, &tool_policy, &mut progress, &client, response)
+                .run_tool_batch_phase(turn, &mut tool_policy, &mut progress, &client, response)
                 .await
             {
                 PhaseResult::Ready(()) => {}
@@ -1857,6 +2164,7 @@ impl Engine {
         mode: AppMode,
         fleet_denial_guard: Option<&FleetDenialGuard>,
         source: ToolCallSource,
+        extension_caller: Option<&crate::tools::codemode::ExtensionCaller>,
     ) -> PlannedToolCalls {
         let _timing = codewhale_runtime::logging::PhaseTimer::start("tool_planning");
         // Definitions and services remain captured, while preparation reads
@@ -1880,11 +2188,11 @@ impl Engine {
         // Resolve the batch's effective policy once. Ordinary approval
         // preserves it; an explicit sandbox escalation can replace it for
         // only the exact call that receives separate user approval.
-        let batch_approval_mode = crate::core::authority::agent_approval_mode_for_turn(
+        let mut batch_approval_mode = crate::core::authority::agent_approval_mode_for_turn(
             self.session.auto_approve,
             self.session.approval_mode,
         );
-        let batch_sandbox_policy = crate::core::authority::sandbox_policy_for_turn(
+        let mut batch_sandbox_policy = crate::core::authority::sandbox_policy_for_turn(
             self.current_mode,
             batch_approval_mode,
             self.api_config.sandbox_mode.as_deref(),
@@ -1893,7 +2201,7 @@ impl Engine {
                 self.api_config.sandbox_network_access,
             ),
         );
-        let batch_sandbox_read_only = matches!(
+        let mut batch_sandbox_read_only = matches!(
             &batch_sandbox_policy,
             codewhale_sandbox::SandboxPolicy::ReadOnly { .. }
         );
@@ -1928,6 +2236,8 @@ impl Engine {
             let mut resources = vec![ResourceClaim::GlobalExclusive];
             let mut blocked_error: Option<ToolError> = None;
             let mut guard_result: Option<ToolResult> = None;
+            let mut creator_gate: Option<crate::extension_host::creator_policy::CreatorGatePlan> =
+                None;
             // #3026: set by a hook `ask` decision; applied AFTER the
             // registry-based approval computation below so it cannot be
             // clobbered by it.
@@ -1961,7 +2271,8 @@ impl Engine {
             }
 
             if blocked_error.is_none()
-                && let Some(stop) = turn.auto_review_denials.stop()
+                && batch_approval_mode == ApprovalMode::Auto
+                && let Some(stop) = self.auto_review_stop_reason()
             {
                 blocked_error = Some(ToolError::permission_denied(format!(
                     "{stop} This call was not run."
@@ -2042,6 +2353,25 @@ impl Engine {
                     &tool_name,
                     tool_catalog,
                 )));
+            }
+
+            if blocked_error.is_none()
+                && let Some(child) = self.child_host.as_ref()
+                && !registry_has_spec
+                && McpPool::is_mcp_tool(&tool_name)
+                && (child.authority.grant.desktop
+                    || !crate::tools::subagent::is_machine_control_tool(&tool_name))
+            {
+                let reason = match self.mcp_pool.as_ref() {
+                    Some(pool) => pool
+                        .lock()
+                        .await
+                        .subagent_unavailable_tool_reason(&tool_name),
+                    None => format!(
+                        "MCP tool '{tool_name}' is unavailable to this sub-agent: the parent session has no MCP servers available to share."
+                    ),
+                };
+                blocked_error = Some(ToolError::not_available(reason));
             }
 
             if blocked_error.is_none()
@@ -2136,6 +2466,18 @@ impl Engine {
                 )));
             }
 
+            let registered_spec = tool_registry.and_then(|registry| registry.get(&tool_name));
+            let direct_extension_caller = (source == ToolCallSource::Model)
+                .then(|| {
+                    registered_spec
+                        .as_ref()
+                        .and_then(|spec| spec.extension_caller())
+                })
+                .flatten();
+            let preserve_extension_approval_for_auto_review = batch_approval_mode
+                == ApprovalMode::Auto
+                && (source == ToolCallSource::Extension || direct_extension_caller.is_some());
+
             let mut mcp_always_binding = None;
             if let Some(mut prepared) = prepared_policy {
                 if source == ToolCallSource::Model
@@ -2173,6 +2515,7 @@ impl Engine {
                 // law) can still force a prompt; none of them is weakened.
                 if approval_required
                     && !approval_force_prompt
+                    && !preserve_extension_approval_for_auto_review
                     && !self.is_acp_turn()
                     && workspace_write_carve_out_applies(
                         mode,
@@ -2240,6 +2583,7 @@ impl Engine {
                                 crate::tools::subagent::engine::ChildAuthority::typed_error(error),
                             );
                         } else if !approval_force_prompt
+                            && !preserve_extension_approval_for_auto_review
                             && child
                                 .authority
                                 .delegated_call(registry, &tool_name, &tool_input)
@@ -2271,53 +2615,233 @@ impl Engine {
                 )));
             }
 
-            // #3026: a hook `ask` decision forces the approval prompt even
-            // for tools the registry would auto-run. Must stay after the
-            // registry-based computation above, which assigns rather than
-            // ORs `approval_required`.
-            if hook_requires_approval && !self.session.auto_approve {
-                approval_required = true;
-                approval_force_prompt = true;
+            let owner_can_prompt = self.current_turn_authority().owner_present()
+                && !detached_start
+                && self
+                    .child_host
+                    .as_ref()
+                    .is_none_or(|child| child.authority.runtime.parent_can_prompt);
+
+            let is_creator_changing = tool_registry
+                .and_then(|registry| registry.get(&tool_name))
+                .as_deref()
+                .is_some_and(|spec| {
+                    crate::extension_host::creator_policy::is_creator_changing_spec_call(
+                        spec,
+                        &tool_input,
+                    )
+                });
+            if is_creator_changing {
+                let is_subagent = self.child_host.is_some()
+                    || tool_registry
+                        .is_some_and(|registry| registry.context().owner_agent_id.is_some());
+                if blocked_error.is_none() && is_subagent {
+                    blocked_error = Some(ToolError::permission_denied(
+                        "Subagents cannot change plugins or plugin state; ask the root agent or user."
+                            .to_string(),
+                    ));
+                }
+                if blocked_error.is_none() && source != ToolCallSource::Model {
+                    blocked_error = Some(ToolError::permission_denied(
+                        "plugin_manager changes are only allowed as direct tool calls.".to_string(),
+                    ));
+                }
+                if blocked_error.is_none() && mode == AppMode::Plan {
+                    blocked_error = Some(ToolError::permission_denied(format!(
+                        "'{tool_name}' changes plugin state and is not available in Plan mode: Plan has no write-capable plugin actions (read-only list_* actions remain available). The user can change modes with /mode."
+                    )));
+                }
+                if blocked_error.is_none() && batch_sandbox_read_only {
+                    blocked_error = Some(ToolError::permission_denied(format!(
+                        "'{tool_name}' changes plugin state and is not permitted while sandbox_mode is read-only."
+                    )));
+                }
+                if blocked_error.is_none() && batch_approval_mode == ApprovalMode::Never {
+                    blocked_error = Some(ToolError::permission_denied(
+                        "Changing plugins is not permitted in Never approval mode.".to_string(),
+                    ));
+                }
+                if blocked_error.is_none()
+                    && self.current_turn_authority().run_origin() == RunOrigin::Background
+                {
+                    blocked_error = Some(ToolError::permission_denied(
+                        "Changing plugins is not permitted in background runs.".to_string(),
+                    ));
+                }
+                if blocked_error.is_none() {
+                    if let Some(gate_context) = self.live_tool_context(tool_registry) {
+                        let can_prompt_outside_scope =
+                            matches!(
+                                batch_approval_mode,
+                                ApprovalMode::Suggest
+                                    | ApprovalMode::AcceptEdits
+                                    | ApprovalMode::Bypass
+                            ) || (batch_approval_mode == ApprovalMode::Auto && owner_can_prompt);
+                        match crate::extension_host::creator_policy::plan_change_for_turn_async(
+                            &gate_context,
+                            &tool_input,
+                            can_prompt_outside_scope,
+                            self.applied_runtime_authority().allow_shell(),
+                            &self.cancel_token,
+                        )
+                        .await
+                        {
+                            Ok(plan) => {
+                                approval_description = plan.card_description.clone();
+                                let requires_human_card = !plan.in_agent_scope
+                                    || plan.unseen_network_fetch
+                                    || !matches!(
+                                        batch_approval_mode,
+                                        ApprovalMode::Bypass | ApprovalMode::Auto
+                                    );
+                                if requires_human_card {
+                                    if !plan.in_agent_scope || plan.unseen_network_fetch {
+                                        if !(matches!(
+                                            batch_approval_mode,
+                                            ApprovalMode::Suggest
+                                                | ApprovalMode::AcceptEdits
+                                                | ApprovalMode::Bypass
+                                        ) || (batch_approval_mode == ApprovalMode::Auto
+                                            && owner_can_prompt))
+                                        {
+                                            approval_required = false;
+                                            approval_force_prompt = false;
+                                            blocked_error = Some(ToolError::permission_denied(
+                                                plan.outside_scope_reason.clone().unwrap_or_else(
+                                                    || {
+                                                        format!(
+                                                            "This plugin {} is outside agent scope and requires a person's confirmation, and the current {} posture has no one to ask.",
+                                                            plan.action.as_str(),
+                                                            batch_approval_mode
+                                                                .permission_chip_label()
+                                                        )
+                                                    },
+                                                ),
+                                            ));
+                                        } else {
+                                            approval_required = true;
+                                            approval_force_prompt = true;
+                                        }
+                                    } else {
+                                        approval_required = true;
+                                        approval_force_prompt = true;
+                                    }
+                                }
+                                creator_gate = Some(plan);
+                            }
+                            Err(error) => {
+                                blocked_error = Some(error);
+                            }
+                        }
+                    } else {
+                        blocked_error = Some(ToolError::not_available(
+                            "plugin_manager requires an effective tool context".to_string(),
+                        ));
+                    }
+                }
             }
 
+            if blocked_error.is_none()
+                && batch_approval_mode == ApprovalMode::Auto
+                && approval_force_prompt
+                && !owner_can_prompt
+                && crate::tools::approval_cache::computer_use_user_gate(&tool_name, &tool_input)
+                    .is_none()
+            {
+                approval_required = false;
+                approval_force_prompt = false;
+                blocked_error = Some(ToolError::permission_denied(format!(
+                    "Tool '{tool_name}' requires user confirmation in Auto-Review, and there is no interactive owner surface to ask."
+                )));
+            }
+
+            if hook_requires_approval && !self.session.auto_approve {
+                if batch_approval_mode == ApprovalMode::Auto && !owner_can_prompt {
+                    approval_required = false;
+                    approval_force_prompt = false;
+                    if blocked_error.is_none() {
+                        blocked_error = Some(ToolError::permission_denied(format!(
+                            "Tool '{tool_name}' blocked in Auto-Review: tool_call_before hook requires approval, and there is no interactive owner surface to ask."
+                        )));
+                    }
+                } else {
+                    approval_required = true;
+                    approval_force_prompt = true;
+                }
+            }
+
+            let is_extension_invocation = source == ToolCallSource::Extension
+                || direct_extension_caller.is_some()
+                || preserve_extension_approval_for_auto_review
+                || registered_spec
+                    .as_deref()
+                    .is_some_and(|spec| spec.approval_scope().is_some());
+            let mut typed_narrow_allow = false;
             if blocked_error.is_none() {
-                let ask_rule_decision = exec_shell_ask_rule_decision(
+                let ask_rule_eval = exec_shell_ask_rule_evaluation(
                     &self.config,
                     &tool_name,
                     &tool_input,
                     &self.session.workspace,
-                    self.session.approval_mode,
+                    batch_approval_mode,
                 )
                 .or_else(|| {
-                    file_tool_ask_rule_decision(
+                    file_tool_ask_rule_evaluation(
                         &self.config,
                         &tool_name,
                         &tool_input,
                         &self.session.workspace,
-                        self.session.approval_mode,
+                        batch_approval_mode,
+                    )
+                })
+                .or_else(|| {
+                    other_tool_ask_rule_evaluation(
+                        &self.config,
+                        &tool_name,
+                        &tool_input,
+                        &self.session.workspace,
+                        batch_approval_mode,
                     )
                 });
-                if let Some(decision) = ask_rule_decision {
+                if let Some(ask_rule_eval) = ask_rule_eval
+                    && let Some(decision) = ask_rule_eval.decision
+                {
                     match decision {
                         ToolAskRuleDecision::Allow => {
-                            // Remembered grants bypass ordinary registry
-                            // approval only. Hook asks and non-bypassable
-                            // tool requirements remain monotonic, while
-                            // auto-review and repo-law floors below can
-                            // still force review or block.
-                            if !hook_requires_approval && !approval_force_prompt {
+                            if batch_approval_mode == ApprovalMode::Auto {
+                                if ask_rule_eval.typed_narrow_allow
+                                    && !hook_requires_approval
+                                    && !approval_force_prompt
+                                    && !preserve_extension_approval_for_auto_review
+                                    && !is_extension_invocation
+                                {
+                                    typed_narrow_allow = true;
+                                }
+                            } else if !hook_requires_approval
+                                && !approval_force_prompt
+                                && !preserve_extension_approval_for_auto_review
+                                && !is_creator_changing
+                            {
                                 approval_required = false;
                             }
                         }
                         ToolAskRuleDecision::Prompt(reason) => {
-                            // #3790: the mode is the sole authority — a typed
-                            // ask-rule prompts in Agent/Plan but never in YOLO
-                            // (auto_approve). A typed deny rule still blocks
-                            // hard, in every mode.
                             if !self.session.auto_approve {
-                                approval_required = true;
-                                approval_description = reason;
-                                approval_force_prompt = true;
+                                if batch_approval_mode == ApprovalMode::Auto && !owner_can_prompt {
+                                    approval_required = false;
+                                    approval_force_prompt = false;
+                                    blocked_error = Some(ToolError::permission_denied(reason));
+                                } else {
+                                    approval_required = true;
+                                    if is_creator_changing {
+                                        approval_description = format!(
+                                            "{approval_description}\nAdditional policy hold: {reason}"
+                                        );
+                                    } else {
+                                        approval_description = reason;
+                                    }
+                                    approval_force_prompt = true;
+                                }
                             }
                         }
                         ToolAskRuleDecision::Block(reason) => {
@@ -2329,29 +2853,88 @@ impl Engine {
                 }
             }
 
+            let repo_law_decision = if blocked_error.is_none() {
+                crate::repo_law::repo_law_plan_decision(
+                    &self.session.workspace,
+                    &tool_name,
+                    &tool_input,
+                )
+            } else {
+                None
+            };
+            let repo_law_blocks_now = matches!(
+                repo_law_decision,
+                Some(crate::repo_law::RepoLawPlanDecision::Block(_))
+            ) || (matches!(
+                repo_law_decision,
+                Some(crate::repo_law::RepoLawPlanDecision::ForcePrompt(_))
+            ) && repo_law_must_block_without_prompt(
+                batch_approval_mode,
+                self.session.auto_approve,
+                owner_can_prompt,
+            ));
+            let repo_law_forces_prompt = matches!(
+                repo_law_decision,
+                Some(crate::repo_law::RepoLawPlanDecision::ForcePrompt(_))
+            ) && !repo_law_blocks_now;
+
+            let mut grants_outside_workspace_read = false;
             if blocked_error.is_none() {
+                let outside_workspace_read_approved = self
+                    .auto_review_state
+                    .lock()
+                    .outside_workspace_read_approved();
                 let review_context =
-                    crate::core::authority::auto_review::AutoReviewContext::from_tool_call_async(
+                    crate::core::authority::auto_review::AutoReviewContext::from_turn_authority_with_options_async(
                         &tool_name,
                         &tool_input,
-                        if self.is_acp_turn() {
-                            RunOrigin::Headless
-                        } else if self.child_host.as_ref().is_some_and(|child| {
-                            !child.authority.runtime.has_foreground_ownership()
-                        }) {
-                            // A detached child's caller remains background even
-                            // for a synchronous tool.
-                            RunOrigin::Background
-                        } else {
-                            auto_review_run_origin_for_plan(detached_start)
-                        },
-                        self.session.approval_mode,
+                        &self.current_turn_authority(),
+                        detached_start,
                         Some(&self.session.workspace),
+                        self.session.person_messages(),
+                        self.session.approved_plan().map(str::to_string),
+                        turn.recent_actions.clone(),
+                        Some(self.session.pinned_project_instructions.clone()),
+                        self.config.auto_review_policy.formatted_environment(),
+                        self.config.snapshots_enabled,
+                        outside_workspace_read_approved,
+                        owner_can_prompt,
                     )
                     .await;
+                let effective_extension_caller =
+                    extension_caller.or(direct_extension_caller.as_ref());
+                let extension_held = if source == ToolCallSource::Extension {
+                    crate::extension_host::core_call::auto_review_held(
+                        &tool_name,
+                        &tool_input,
+                        approval_required,
+                        registered_spec.as_deref(),
+                    )
+                } else {
+                    direct_extension_caller.is_some() && approval_required && !is_creator_changing
+                };
+                let review_context = review_context.map(|review_context| {
+                    let review_context = review_context.with_typed_narrow_allow(typed_narrow_allow);
+                    if let Some(caller) = effective_extension_caller {
+                        review_context.with_extension_origin(
+                            crate::core::authority::auto_review::ExtensionReviewOrigin {
+                                origin: caller.origin.clone(),
+                                tool: caller.tool.clone(),
+                                plugin_id: caller.plugin_id().map(str::to_string),
+                                nested_call: source == ToolCallSource::Extension,
+                                held: extension_held,
+                            },
+                        )
+                    } else {
+                        review_context
+                    }
+                });
                 match review_context {
                     Err(error) => blocked_error = Some(error),
-                    Ok(review_context) => {
+                    Ok(mut review_context) => {
+                        review_context.creator_review = creator_gate
+                            .as_ref()
+                            .and_then(|gate| gate.auto_review_summary.clone());
                         let (decision, audit_event) = auto_review_plan_decision_for_context(
                             &self.config.auto_review_policy,
                             &review_context,
@@ -2363,25 +2946,112 @@ impl Engine {
                             "auto_review": audit_event,
                         }))
                         .await;
+                        let extension_forces_prompt = batch_approval_mode != ApprovalMode::Auto
+                            && source == ToolCallSource::Extension
+                            && matches!(
+                                crate::extension_host::core_call::origin_approval(
+                                    &tool_name,
+                                    &tool_input,
+                                    approval_required,
+                                    registered_spec.as_deref(),
+                                ),
+                                crate::extension_host::core_call::OriginApproval::ForcePrompt
+                            );
+                        let creator_outside_scope = creator_gate
+                            .as_ref()
+                            .is_some_and(|gate| !gate.in_agent_scope || gate.unseen_network_fetch);
+                        let forced_human_prompt = approval_force_prompt
+                            || crate::tools::approval_cache::computer_use_user_gate(
+                                &tool_name,
+                                &tool_input,
+                            )
+                            .is_some()
+                            || creator_outside_scope
+                            || extension_forces_prompt;
+                        let hard_auto_review_block = audit_event
+                            .get("decision")
+                            .and_then(serde_json::Value::as_str)
+                            == Some("block");
+                        let registered_tool =
+                            tool_registry.and_then(|registry| registry.get(&tool_name));
+                        let is_extension_call = source == ToolCallSource::Extension
+                            || effective_extension_caller.is_some()
+                            || registered_tool
+                                .as_deref()
+                                .is_some_and(|spec| spec.approval_scope().is_some());
+                        let allow_retry_receipt = batch_approval_mode == ApprovalMode::Auto
+                            && self.child_host.is_none()
+                            && !is_extension_call;
+                        let person_approved_retry = if allow_retry_receipt {
+                            self.auto_review_state
+                                .lock()
+                                .take_retry_grant(&tool_name, &tool_input)
+                                .is_some()
+                        } else {
+                            false
+                        };
+                        let mut pending_pause_reason = None;
                         match decision {
                             AutoReviewPlanDecision::NoChange => {}
                             AutoReviewPlanDecision::Allow => {
-                                if !hook_requires_approval && !approval_force_prompt {
+                                if !hook_requires_approval
+                                    && !approval_force_prompt
+                                    && (!preserve_extension_approval_for_auto_review
+                                        || is_creator_changing)
+                                {
                                     approval_required = false;
                                 }
                             }
-                            AutoReviewPlanDecision::ForcePrompt(reason) => {
-                                // The built-in safety floor holds outside Full
-                                // Access. Ask surfaces the hold as a real
-                                // decision; the non-interactive postures turn
-                                // this disposition into a hard block below.
+                            AutoReviewPlanDecision::ForcePrompt(reason)
+                                if batch_approval_mode != ApprovalMode::Auto
+                                    || owner_can_prompt =>
+                            {
                                 approval_required = true;
-                                approval_description = reason;
+                                if is_creator_changing {
+                                    approval_description = format!(
+                                        "{approval_description}\nAdditional policy hold: {reason}"
+                                    );
+                                } else {
+                                    approval_description = reason;
+                                }
                                 approval_force_prompt = true;
+                                grants_outside_workspace_read =
+                                    audit_event.get("rule_id").and_then(Value::as_str)
+                                        == Some("outside_workspace_shell_read");
                             }
-                            AutoReviewPlanDecision::Block(reason) => {
+                            AutoReviewPlanDecision::Block(reason)
+                                if batch_approval_mode == ApprovalMode::Auto
+                                    && owner_can_prompt
+                                    && forced_human_prompt
+                                    && !hard_auto_review_block =>
+                            {
+                                approval_required = true;
+                                approval_force_prompt = true;
+                                if approval_description == "Tool execution requires approval" {
+                                    approval_description = reason;
+                                }
+                            }
+                            AutoReviewPlanDecision::ForcePrompt(reason)
+                            | AutoReviewPlanDecision::Block(reason) => {
                                 approval_required = false;
                                 approval_force_prompt = false;
+                                let rule =
+                                    crate::core::authority::auto_review::deterministic_rule_label(
+                                        &audit_event,
+                                    );
+                                let recorded = self.record_auto_review_block(
+                                    batch_approval_mode == ApprovalMode::Auto,
+                                    self.current_turn_authority().owner_present(),
+                                    self.child_host.is_some(),
+                                    allow_retry_receipt,
+                                    &tool_id,
+                                    &tool_name,
+                                    &tool_input,
+                                    rule.as_deref(),
+                                    &reason,
+                                    "auto_review_deterministic",
+                                    "denied",
+                                );
                                 let _ = self
                                     .send_event(Event::ToolGateDecision {
                                         agent_id: None,
@@ -2391,10 +3061,23 @@ impl Engine {
                                             crate::core::events::ToolGate::AutoReviewDeterministic,
                                         decision: crate::core::events::ToolGateVerdict::Denied,
                                         risk: None,
+                                        reviewer_model: None,
                                         reason: crate::core::events::bounded_gate_reason(&reason),
+                                        rule: rule.clone(),
+                                        receipt_id: recorded.receipt_id,
+                                        call_digest: recorded.call_digest,
+                                        action_summary: (!recorded.action_summary.is_empty())
+                                            .then_some(recorded.action_summary),
                                     })
                                     .await;
-                                blocked_error = Some(auto_review_block_tool_error(&reason));
+                                blocked_error =
+                                    Some(auto_review_block_tool_error(&reason, rule.as_deref()));
+                                if let crate::core::authority::auto_review::AutoReviewOutcomeEffect::PauseToAsk {
+                                    reason: pause_reason,
+                                } = recorded.effect
+                                {
+                                    pending_pause_reason = Some(pause_reason);
+                                }
                             }
                             AutoReviewPlanDecision::ConsultReviewer(held_reason)
                                 if self.is_acp_turn() =>
@@ -2405,23 +3088,88 @@ impl Engine {
                                 approval_required = false;
                                 approval_force_prompt = false;
                             }
+                            AutoReviewPlanDecision::ConsultReviewer(_)
+                                if batch_approval_mode == ApprovalMode::Auto
+                                    && (forced_human_prompt
+                                        || repo_law_forces_prompt
+                                        || repo_law_blocks_now) =>
+                            {
+                                if owner_can_prompt
+                                    && (forced_human_prompt || repo_law_forces_prompt)
+                                {
+                                    approval_required = true;
+                                    approval_force_prompt = true;
+                                }
+                            }
                             AutoReviewPlanDecision::ConsultReviewer(held_reason) => {
-                                if let Err(error) = self
+                                let soft_rule = audit_event
+                                    .get("rule_id")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::trim)
+                                    .filter(|id| !id.is_empty());
+                                let can_fallback_to_person =
+                                    owner_can_prompt && self.child_host.is_none();
+                                match self
                                     .consult_auto_review_guardian(
                                         client,
                                         &review_context,
                                         &tool_input,
                                         &held_reason,
+                                        soft_rule,
                                         &tool_id,
                                         turn,
+                                        batch_approval_mode == ApprovalMode::Auto,
+                                        allow_retry_receipt,
+                                        person_approved_retry,
+                                        can_fallback_to_person,
                                     )
                                     .await
                                 {
-                                    blocked_error = Some(error);
-                                } else if !hook_requires_approval && !approval_force_prompt {
-                                    approval_required = false;
+                                    Err(failure) => {
+                                        let (error, effect) = *failure;
+                                        blocked_error = Some(error);
+                                        if let crate::core::authority::auto_review::AutoReviewOutcomeEffect::PauseToAsk {
+                                            reason: pause_reason,
+                                        } = effect
+                                        {
+                                            pending_pause_reason = Some(pause_reason);
+                                        }
+                                    }
+                                    Ok(Some(kind)) => {
+                                        approval_required = true;
+                                        approval_force_prompt = true;
+                                        approval_description = format!(
+                                            "Auto-Review could not finish ({kind}); please decide."
+                                        );
+                                    }
+                                    Ok(None) => {
+                                        if !hook_requires_approval && !approval_force_prompt {
+                                            approval_required = false;
+                                        }
+                                    }
                                 }
                             }
+                        }
+                        if let Some(pause_reason) = pending_pause_reason {
+                            self.pause_auto_review_to_ask(&pause_reason).await;
+                            batch_approval_mode =
+                                crate::core::authority::agent_approval_mode_for_turn(
+                                    self.session.auto_approve,
+                                    self.session.approval_mode,
+                                );
+                            batch_sandbox_policy = crate::core::authority::sandbox_policy_for_turn(
+                                self.current_mode,
+                                batch_approval_mode,
+                                self.api_config.sandbox_mode.as_deref(),
+                                &self.session.workspace,
+                                crate::core::authority::SandboxNetworkAccess::from_config(
+                                    self.api_config.sandbox_network_access,
+                                ),
+                            );
+                            batch_sandbox_read_only = matches!(
+                                &batch_sandbox_policy,
+                                codewhale_sandbox::SandboxPolicy::ReadOnly { .. }
+                            );
                         }
                     }
                 }
@@ -2432,11 +3180,7 @@ impl Engine {
             // bypassable by mode — it can only add holds, never remove
             // one, so this cannot weaken any gate above.
             if blocked_error.is_none()
-                && let Some(decision) = crate::repo_law::repo_law_plan_decision(
-                    &self.session.workspace,
-                    &tool_name,
-                    &tool_input,
-                )
+                && let Some(decision) = repo_law_decision
             {
                 emit_tool_audit(json!({
                     "event": "tool.repo_law_decision",
@@ -2454,18 +3198,25 @@ impl Engine {
                 match decision {
                     crate::repo_law::RepoLawPlanDecision::ForcePrompt(reason) => {
                         if repo_law_must_block_without_prompt(
-                            self.session.approval_mode,
+                            batch_approval_mode,
                             self.session.auto_approve,
+                            owner_can_prompt,
                         ) {
                             approval_required = false;
                             approval_force_prompt = false;
                             blocked_error = Some(ToolError::permission_denied(format!(
                                 "Repository law blocked tool '{tool_name}' in {}: {reason}. Switch to Ask to review this protected change.",
-                                self.session.approval_mode.permission_chip_label(),
+                                batch_approval_mode.permission_chip_label(),
                             )));
                         } else {
                             approval_required = true;
-                            approval_description = reason;
+                            if is_creator_changing {
+                                approval_description = format!(
+                                    "{approval_description}\nAdditional repository policy hold: {reason}"
+                                );
+                            } else {
+                                approval_description = reason;
+                            }
                             approval_force_prompt = true;
                         }
                     }
@@ -2567,8 +3318,6 @@ impl Engine {
 
             // Consent is an exact human decision, never a standing grant or
             // autonomous approval. Keep existing hard blocks authoritative.
-            // Ask and Full Access both have a person at the card; Auto-Review
-            // and Never do not, and keep failing closed.
             if blocked_error.is_none()
                 && crate::tools::approval_cache::computer_use_user_gate(&tool_name, &tool_input)
                     .is_some()
@@ -2576,7 +3325,8 @@ impl Engine {
                 if matches!(
                     batch_approval_mode,
                     ApprovalMode::Suggest | ApprovalMode::AcceptEdits | ApprovalMode::Bypass
-                ) {
+                ) || (batch_approval_mode == ApprovalMode::Auto && owner_can_prompt)
+                {
                     approval_required = true;
                     approval_force_prompt = true;
                 } else {
@@ -2612,11 +3362,15 @@ impl Engine {
                 );
             }
 
-            // An extension's call needs more than the model's would: approval
-            // unless the tool is a read-only workspace one, and a prompt no
-            // grant or posture may satisfy for shell and network. Only ever
-            // raised, after every gate above has had its say.
-            if source == ToolCallSource::Extension && blocked_error.is_none() {
+            // An extension's call needs more than the model's would outside
+            // Auto-Review: approval unless the tool is a read-only workspace
+            // one, and a prompt no grant or non-Auto-Review posture may
+            // satisfy for shell and network (Auto-Review routes held calls
+            // through its reviewer above).
+            if source == ToolCallSource::Extension
+                && blocked_error.is_none()
+                && batch_approval_mode != ApprovalMode::Auto
+            {
                 match crate::extension_host::core_call::origin_approval(
                     &tool_name,
                     &tool_input,
@@ -2630,8 +3384,16 @@ impl Engine {
                         approval_required = true;
                     }
                     crate::extension_host::core_call::OriginApproval::ForcePrompt => {
-                        approval_required = true;
-                        approval_force_prompt = true;
+                        if batch_approval_mode == ApprovalMode::Auto && !owner_can_prompt {
+                            approval_required = false;
+                            approval_force_prompt = false;
+                            blocked_error = Some(ToolError::permission_denied(format!(
+                                "Extension call '{tool_name}' requires user confirmation in Auto-Review, and there is no interactive owner surface to ask."
+                            )));
+                        } else {
+                            approval_required = true;
+                            approval_force_prompt = true;
+                        }
                     }
                 }
             }
@@ -2662,6 +3424,8 @@ impl Engine {
                 resources,
                 blocked_error,
                 guard_result,
+                grants_outside_workspace_read,
+                creator_gate,
             });
         }
         let cache = &mut self.session.tool_activation_cache;
@@ -2670,34 +3434,38 @@ impl Engine {
                 cache.record_use(&plan.name);
             }
         }
-        let activation = cache.activate_measured(
-            tool_catalog,
-            &deferred_tools_hydrated_in_order,
-            &mut |names| {
-                super::tool_catalog::measure_deferred_tools(
-                    client,
-                    &self.session.model,
-                    self.session.reasoning_effort.as_deref(),
-                    tool_policy.strict_tool_mode,
-                    tool_catalog,
-                    names,
-                )
-            },
-        );
-        let activation = match activation {
-            Ok(activation) => activation,
-            Err(error) => {
-                for plan in &mut plans {
-                    if deferred_tools_hydrated_in_order.contains(&plan.name)
-                        && plan.guard_result.is_some()
-                        && plan.blocked_error.is_none()
-                    {
-                        tool_call_budget.refund();
-                        plan.guard_result = None;
-                        plan.blocked_error = Some(error.clone());
+        let active_before_hydration = active_tool_names.clone();
+        let activation = if deferred_tools_hydrated_in_order.is_empty() {
+            Default::default()
+        } else {
+            match cache.activate_measured(
+                tool_catalog,
+                &deferred_tools_hydrated_in_order,
+                &mut |names| {
+                    super::tool_catalog::measure_deferred_tools(
+                        client,
+                        &self.session.model,
+                        self.session.reasoning_effort.as_deref(),
+                        tool_policy.strict_tool_mode,
+                        tool_catalog,
+                        names,
+                    )
+                },
+            ) {
+                Ok(activation) => activation,
+                Err(error) => {
+                    for plan in &mut plans {
+                        if deferred_tools_hydrated_in_order.contains(&plan.name)
+                            && plan.guard_result.is_some()
+                            && plan.blocked_error.is_none()
+                        {
+                            tool_call_budget.refund();
+                            plan.guard_result = None;
+                            plan.blocked_error = Some(error.clone());
+                        }
                     }
+                    Default::default()
                 }
-                Default::default()
             }
         };
         for plan in &mut plans {
@@ -2721,12 +3489,12 @@ impl Engine {
             active_tool_names,
             activation.evicted.iter().cloned(),
         );
+        active_tool_names.extend(activation.admitted.iter().cloned());
         // Admitting or evicting deferred tools changes the request-visible
         // tool catalog for the rest of this turn. That is a legitimate,
         // nameable header change — declare it so the prefix pin re-pins under
         // `change:tool_surface` instead of tripping the C5 drift guard.
-        if !activation.admitted.is_empty() || !activation.evicted.is_empty() {
-            active_tool_names.extend(activation.admitted.iter().cloned());
+        if *active_tool_names != active_before_hydration {
             self.session.pending_prefix_change_reason = Some("tool_surface".to_string());
         }
         PlannedToolCalls {
@@ -2744,6 +3512,84 @@ impl Engine {
     /// model-visible tool-result messages; those are handled by the result phase.
     /// The optional outcome slots retain the existing index-based collector shape.
     #[allow(clippy::too_many_arguments)] // phase fns mirror the turn pipeline shape
+    async fn execute_tool_search_plan(
+        &mut self,
+        plan: ToolExecutionPlan,
+        nested_gate_env: &mut NestedGateEnv<'_>,
+        tool_catalog: &mut Vec<codewhale_models::Tool>,
+        active_tool_names: &mut std::collections::HashSet<String>,
+    ) -> ToolExecOutcome {
+        let started_at = Instant::now();
+        let activity_tx = self.tx_event.clone();
+        let activity = super::tool_execution::OperationSpanGuard::start(
+            &activity_tx,
+            &plan.id,
+            codewhale_protocol::engine_owner::OwnerActivityKind::Searching,
+            Some(crate::tools::activity::action_id(&plan.name, &plan.input)),
+            Some(self.cancel_token.clone()),
+        )
+        .await;
+        let active_before_search = active_tool_names.clone();
+        let discovery = self
+            .discover_mcp_for_tool_search(
+                (&plan.name, &plan.input),
+                nested_gate_env.tool_policy,
+                tool_catalog,
+                active_tool_names,
+                None,
+            )
+            .await;
+        let result = discovery.and_then(|()| {
+            super::tool_catalog::execute_tool_search_measured(
+                &plan.name,
+                &plan.input,
+                tool_catalog,
+                active_tool_names,
+                &mut self.session.tool_activation_cache,
+                &mut |names| {
+                    super::tool_catalog::measure_deferred_tools(
+                        nested_gate_env.client,
+                        &self.session.model,
+                        self.session.reasoning_effort.as_deref(),
+                        nested_gate_env.tool_policy.strict_tool_mode,
+                        tool_catalog,
+                        names,
+                    )
+                },
+            )
+        });
+        activity
+            .complete(crate::tools::activity::operation_outcome(
+                &result.clone().map(RichToolResult::plain),
+                self.cancel_token.is_cancelled(),
+            ))
+            .await;
+        if *active_tool_names != active_before_search {
+            self.session.pending_prefix_change_reason = Some("tool_surface".to_string());
+        }
+
+        let _ = self
+            .send_event(Event::ToolCallComplete {
+                model_call: plan.model_call.clone(),
+                id: plan.id.clone(),
+                name: plan.name.clone(),
+                result: result.clone(),
+            })
+            .await;
+
+        ToolExecOutcome {
+            model_call: plan.model_call,
+            index: plan.index,
+            id: plan.id,
+            name: plan.name,
+            input: plan.input,
+            started_at,
+            terminal: ToolExecutionOutcome::from_legacy(result),
+            content_blocks: Vec::new(),
+            original_content_digest: None,
+        }
+    }
+
     async fn execute_planned_tools(
         &mut self,
         plans: Vec<ToolExecutionPlan>,
@@ -2936,7 +3782,21 @@ impl Engine {
                     })
                     .collect();
                 let mut tool_tasks = FuturesUnordered::new();
-                let shell_permits = Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_SHELL_EXEC));
+                let mut deferred_tool_searches = Vec::new();
+                let shell_permits = Arc::new(tokio::sync::Semaphore::new(
+                    resolve_max_parallel_shell_exec(
+                        self.config
+                            .tools
+                            .as_ref()
+                            .and_then(|tools| tools.max_parallel_shell_exec)
+                            .or_else(|| {
+                                self.api_config
+                                    .tools
+                                    .as_ref()
+                                    .and_then(|tools| tools.max_parallel_shell_exec)
+                            }),
+                    ),
+                ));
                 for plan in plans {
                     if let Some(result) = plan.guard_result.clone() {
                         let result = Ok(result);
@@ -2981,6 +3841,10 @@ impl Engine {
                             content_blocks: Vec::new(),
                             original_content_digest: None,
                         });
+                        continue;
+                    }
+                    if is_tool_search_tool(&plan.name) {
+                        deferred_tool_searches.push(plan);
                         continue;
                     }
                     let registry = tool_registry;
@@ -3137,6 +4001,24 @@ impl Engine {
                 // completed results finish guarded projection in the same
                 // FuturesUnordered authority before cancelled fallbacks settle.
                 drop(tool_tasks);
+                if !deferred_tool_searches.is_empty() {
+                    if self.cancel_token.is_cancelled() {
+                        parallel_cancelled = true;
+                    } else {
+                        for plan in deferred_tool_searches {
+                            let index = plan.index;
+                            let outcome = self
+                                .execute_tool_search_plan(
+                                    plan,
+                                    nested_gate_env,
+                                    tool_catalog,
+                                    active_tool_names,
+                                )
+                                .await;
+                            outcomes[index] = Some(outcome);
+                        }
+                    }
+                }
                 if parallel_cancelled {
                     for (index, model_call, id, name, input) in parallel_plan_receipts {
                         if outcomes[index].is_some() {
@@ -3223,80 +4105,16 @@ impl Engine {
                     }
 
                     if is_tool_search_tool(&tool_name) {
-                        let started_at = Instant::now();
-                        let activity_tx = self.tx_event.clone();
-                        let activity = super::tool_execution::OperationSpanGuard::start(
-                            &activity_tx,
-                            &tool_id,
-                            codewhale_protocol::engine_owner::OwnerActivityKind::Searching,
-                            Some(crate::tools::activity::action_id(&tool_name, &tool_input)),
-                            Some(self.cancel_token.clone()),
-                        )
-                        .await;
-                        // Tool-search activation changes the request-visible
-                        // catalog for the rest of the turn; declare it so the
-                        // next request re-pins under `change:tool_surface`
-                        // instead of tripping the C5 drift guard.
-                        let active_before_search = active_tool_names.clone();
-                        let discovery = self
-                            .discover_mcp_for_tool_search(
-                                (&tool_name, &tool_input),
-                                nested_gate_env.tool_policy,
+                        let index = plan.index;
+                        let outcome = self
+                            .execute_tool_search_plan(
+                                plan,
+                                nested_gate_env,
                                 tool_catalog,
                                 active_tool_names,
-                                None,
                             )
                             .await;
-                        let result = discovery.and_then(|()| {
-                            super::tool_catalog::execute_tool_search_measured(
-                                &tool_name,
-                                &tool_input,
-                                tool_catalog,
-                                active_tool_names,
-                                &mut self.session.tool_activation_cache,
-                                &mut |names| {
-                                    super::tool_catalog::measure_deferred_tools(
-                                        nested_gate_env.client,
-                                        &self.session.model,
-                                        self.session.reasoning_effort.as_deref(),
-                                        nested_gate_env.tool_policy.strict_tool_mode,
-                                        tool_catalog,
-                                        names,
-                                    )
-                                },
-                            )
-                        });
-                        activity
-                            .complete(crate::tools::activity::operation_outcome(
-                                &result.clone().map(RichToolResult::plain),
-                                self.cancel_token.is_cancelled(),
-                            ))
-                            .await;
-                        if *active_tool_names != active_before_search {
-                            self.session.pending_prefix_change_reason =
-                                Some("tool_surface".to_string());
-                        }
-
-                        let _ = self
-                            .send_event(Event::ToolCallComplete {
-                                model_call: plan.model_call.clone(),
-                                id: tool_id.clone(),
-                                name: tool_name.clone(),
-                                result: result.clone(),
-                            })
-                            .await;
-
-                        outcomes[plan.index] = Some(ToolExecOutcome {
-                            model_call: plan.model_call.clone(),
-                            index: plan.index,
-                            id: tool_id,
-                            name: tool_name,
-                            input: tool_input,
-                            started_at,
-                            terminal: ToolExecutionOutcome::from_legacy(result),
-                            content_blocks: Vec::new(),
-                            original_content_digest: None,
-                        });
+                        outcomes[index] = Some(outcome);
                         continue;
                     }
 
@@ -3436,6 +4254,11 @@ impl Engine {
                             .await
                         {
                             Ok(ApprovalResult::Approved(by)) => {
+                                if plan.grants_outside_workspace_read {
+                                    self.auto_review_state
+                                        .lock()
+                                        .mark_outside_workspace_read_approved();
+                                }
                                 let decision = if model_requested_policy.is_some() {
                                     "approved_with_requested_policy"
                                 } else {
@@ -3449,7 +4272,19 @@ impl Engine {
                                     "policy": model_requested_policy.as_ref().map(|policy| format!("{policy:?}")),
                                     "caller": caller_type_for_tool_use(tool_caller.as_ref()),
                                 })).await;
-                                if let Some(policy) = model_requested_policy {
+                                if plan.creator_gate.is_some()
+                                    && by != crate::approval_log::ApprovalDecider::User
+                                {
+                                    nested_gate_env.tool_call_budget.refund();
+                                    (
+                                        Some(Err(ToolError::permission_denied(
+                                            "Changing plugins requires a person's explicit approval on the card; remembered grants or automatic posture cannot stand in."
+                                                .to_string(),
+                                        ))),
+                                        None,
+                                        None,
+                                    )
+                                } else if let Some(policy) = model_requested_policy {
                                     let elevated_context = Some(
                                         batch_tool_context
                                             .clone()
@@ -3636,6 +4471,61 @@ impl Engine {
                                         .to_string(),
                                 ))
                             });
+                        }
+                    }
+
+                    let mut context_override = context_override;
+                    if result_override.is_none()
+                        && let Some(gate_plan) = plan.creator_gate.as_ref()
+                    {
+                        let live_authority = self.applied_runtime_authority();
+                        let decider = match approval_stamp {
+                            Some(ToolApprovalStamp::ApprovedByUser)
+                                if !live_authority.is_read_only_sandbox()
+                                    && live_authority.approval_mode() != ApprovalMode::Never =>
+                            {
+                                Ok(crate::extension_host::creator_policy::CreatorDecider::Person)
+                            }
+                            None if live_authority.mode() == AppMode::Agent
+                                && !live_authority.is_read_only_sandbox()
+                                && live_authority.approval_mode() == ApprovalMode::Bypass =>
+                            {
+                                Ok(crate::extension_host::creator_policy::CreatorDecider::Agent(
+                                    codewhale_plugins::host_services::AgentPosture::FullAccess,
+                                ))
+                            }
+                            None if live_authority.mode() == AppMode::Agent
+                                && !live_authority.is_read_only_sandbox()
+                                && live_authority.approval_mode() == ApprovalMode::Auto =>
+                            {
+                                Ok(crate::extension_host::creator_policy::CreatorDecider::Agent(
+                                    codewhale_plugins::host_services::AgentPosture::AutoReview,
+                                ))
+                            }
+                            _ => Err(ToolError::permission_denied(
+                                "Permissions changed or did not authorize this plugin change; retry with the current permissions."
+                                    .to_string(),
+                            )),
+                        };
+                        match decider
+                            .and_then(|decider| gate_plan.build_carrier(decider, live_authority))
+                        {
+                            Ok(carrier) => {
+                                if let Some(context) = context_override
+                                    .take()
+                                    .or_else(|| batch_tool_context.clone())
+                                {
+                                    context_override = Some(context.with_creator_decision(carrier));
+                                } else {
+                                    result_override = Some(Err(ToolError::not_available(
+                                        "plugin_manager requires an effective tool context"
+                                            .to_string(),
+                                    )));
+                                }
+                            }
+                            Err(err) => {
+                                result_override = Some(Err(err));
+                            }
                         }
                     }
 
@@ -4232,6 +5122,7 @@ impl Engine {
                 mode,
                 nested_gate_env.fleet_denial_guard,
                 source,
+                extension,
             )
             .await;
         let Some(plan) = plans.into_iter().next() else {
@@ -4243,6 +5134,15 @@ impl Engine {
         if let Some(error) = plan.blocked_error {
             return NestedCallVerdict::Refused {
                 error,
+                decision: NestedDecision::Refused,
+            };
+        }
+        if plan.creator_gate.is_some() {
+            nested_gate_env.tool_call_budget.refund();
+            return NestedCallVerdict::Refused {
+                error: ToolError::permission_denied(
+                    "plugin_manager changes are only allowed as direct tool calls.".to_string(),
+                ),
                 decision: NestedDecision::Refused,
             };
         }
@@ -4518,17 +5418,152 @@ impl Engine {
     /// updates the working set, runs post-edit LSP diagnostics, appends success or
     /// error tool-result messages, and refreshes goal state. Its output is these
     /// side effects; it never plans or executes another tool call.
+    async fn replace_runtime_plugin_tools(
+        &mut self,
+        tool_policy: &mut ToolSurfacePolicy,
+        tool_catalog: &mut Vec<codewhale_models::Tool>,
+        active_tool_names: &mut std::collections::HashSet<String>,
+    ) -> bool {
+        let Some(attachment) = self.extension_host.as_ref() else {
+            return false;
+        };
+        let catalog_before = tool_catalog.clone();
+        let active_before = active_tool_names.clone();
+        let fresh_plugins = attachment.plugin_view();
+        self.plugin_registry = Arc::clone(&fresh_plugins);
+        self.config.plugin_registry = Some(Arc::clone(&fresh_plugins));
+        tool_policy
+            .registry
+            .set_plugin_registry(Some(Arc::clone(&fresh_plugins)));
+        let previous_names = std::mem::take(&mut tool_policy.extension_tool_names);
+        let previously_active: std::collections::HashSet<String> = previous_names
+            .iter()
+            .filter(|name| active_tool_names.contains(*name))
+            .cloned()
+            .collect();
+        let prior_defer: std::collections::HashMap<String, Option<bool>> = tool_catalog
+            .iter()
+            .filter(|tool| previous_names.contains(&tool.name))
+            .map(|tool| (tool.name.clone(), tool.defer_loading))
+            .collect();
+        for name in &previous_names {
+            tool_policy.registry.remove_tool(name);
+            active_tool_names.remove(name);
+        }
+        tool_catalog.retain(|tool| !previous_names.contains(&tool.name));
+
+        let next_names: std::collections::HashSet<String> =
+            if self.config.features.enabled(Feature::ExtensionHost) {
+                attachment
+                    .install_tools(&mut tool_policy.registry)
+                    .into_iter()
+                    .collect()
+            } else {
+                std::collections::HashSet::new()
+            };
+
+        if let Some(pool) = self.mcp_pool.as_ref().cloned() {
+            let current_network = self.current_network_decider();
+            let rebound = {
+                let mut pool = pool.lock().await;
+                pool.set_network_policy(current_network);
+                pool.bind_caller_plugins(Arc::clone(&fresh_plugins)).is_ok()
+            };
+            if rebound {
+                self.refresh_current_mcp_catalog(tool_policy, tool_catalog, active_tool_names)
+                    .await;
+                if let Some(previous) = self.mcp_boot_task.take() {
+                    previous.abort();
+                }
+                self.mcp_boot_in_flight = false;
+                self.mcp_boot_generation = None;
+                let _ = self
+                    .start_mcp_session_boot(super::McpConnectRefresh::IfChanged)
+                    .await;
+            }
+        }
+
+        let removed_only: std::collections::HashSet<String> =
+            previous_names.difference(&next_names).cloned().collect();
+        self.session
+            .tool_activation_cache
+            .remove_names(&removed_only);
+        tool_policy.extension_tool_names = next_names;
+
+        let always_load = self.effective_tools_always_load();
+        let candidate_tools = self.child_host.as_ref().map_or_else(
+            || tool_policy.registry.to_api_tools(),
+            |child| {
+                child
+                    .authority
+                    .tools_for_model(&tool_policy.registry, &child.authority.agent_type)
+            },
+        );
+        let mut refreshed: Vec<codewhale_models::Tool> = candidate_tools
+            .into_iter()
+            .filter(|tool| {
+                (tool_policy.extension_tool_names.contains(&tool.name)
+                    || matches!(
+                        tool.name.as_str(),
+                        crate::extension_host::dsh_broker::ACT_TOOL
+                            | crate::extension_host::dsh_network::SEND_TOOL
+                    ))
+                    && tool_policy.allows_tool(&tool.name)
+                    && !tool_catalog
+                        .iter()
+                        .any(|existing| existing.name == tool.name)
+            })
+            .collect();
+        refreshed.sort_by(|a, b| a.name.cmp(&b.name));
+        for mut tool in refreshed {
+            if tool_policy.extension_tool_names.contains(&tool.name) {
+                if !previous_names.contains(&tool.name) {
+                    tool.defer_loading = Some(false);
+                    active_tool_names.insert(tool.name.clone());
+                } else {
+                    let defer = prior_defer
+                        .get(&tool.name)
+                        .copied()
+                        .flatten()
+                        .unwrap_or(false);
+                    tool.defer_loading = Some(defer);
+                    if previously_active.contains(&tool.name) || !defer {
+                        active_tool_names.insert(tool.name.clone());
+                    }
+                }
+            } else {
+                let defer =
+                    super::tool_catalog::should_default_defer_tool(&tool.name, &always_load);
+                tool.defer_loading = Some(defer);
+                if !defer {
+                    active_tool_names.insert(tool.name.clone());
+                }
+            }
+            tool_catalog.push(tool);
+        }
+
+        let changed = *tool_catalog != catalog_before || *active_tool_names != active_before;
+        if changed {
+            super::tool_catalog::configure_composition_entry(tool_catalog, None, &[]);
+        } else {
+            *tool_catalog = catalog_before;
+        }
+        changed
+    }
+
     async fn process_tool_results(
         &mut self,
         client: &dyn crate::core::model_client::ModelClient,
-        strict_tool_mode: bool,
+        tool_policy: &mut ToolSurfacePolicy,
         outcomes: Vec<Option<ToolExecOutcome>>,
         turn: &mut TurnContext,
         tool_catalog: &mut Vec<codewhale_models::Tool>,
         active_tool_names: &mut std::collections::HashSet<String>,
         hook_contexts: &std::collections::HashMap<String, String>,
         mut fleet_denial_guard: Option<&mut FleetDenialGuard>,
+        mode: AppMode,
     ) -> FleetDenialAction {
+        let strict_tool_mode = tool_policy.strict_tool_mode;
         let mut denial_batch = FleetDenialBatch::default();
         let active_tool_names_before = active_tool_names.clone();
         let tool_catalog_len_before = tool_catalog.len();
@@ -4546,6 +5581,27 @@ impl Engine {
             let routed_duration_ms =
                 u64::try_from(outcome.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
             let result = outcome.terminal.into_legacy_result();
+            if let Some(extension_host) = self.extension_host.as_ref().filter(|_| {
+                self.config
+                    .features
+                    .enabled(codewhale_runtime::features::Feature::ExtensionHost)
+            }) {
+                let is_error = result.as_ref().map_or(true, |output| !output.success);
+                extension_host.spawn_tool_after_hooks(
+                    crate::extension_host::protocol::HookCallPayload {
+                        name: outcome.name.clone(),
+                        call_id: outcome.id.clone(),
+                        input: serde_json::json!({
+                            "is_error": is_error,
+                            "duration_ms": routed_duration_ms,
+                        }),
+                        mode: format!("{mode:?}"),
+                        workspace: self.session.workspace.to_string_lossy().into_owned(),
+                        model: self.config.model.clone(),
+                    },
+                );
+            }
+            let plugin_change = extract_verified_plugin_change(&outcome.name, &result);
             if let Some(guard) = fleet_denial_guard.as_deref_mut() {
                 guard.observe(
                     &mut denial_batch,
@@ -4600,6 +5656,65 @@ impl Engine {
                             output.content.push_str(&format!("\nDeferred retrieval schema unavailable: {error}. The evidence is retained; tool_search can rediscover the recovery tool."));
                             false
                         });
+                    if (outcome.name == "create_goal" && output.success)
+                        || (goal_tool_ran
+                            && self
+                                .config
+                                .goal_state
+                                .lock()
+                                .is_ok_and(|goal| goal.is_active()))
+                    {
+                        tool_surface_changed |= super::tool_catalog::activate_goal_followup_tools(
+                            tool_catalog,
+                            active_tool_names,
+                            &mut self.session.tool_activation_cache,
+                            &mut |names| {
+                                super::tool_catalog::measure_deferred_tools(
+                                    client,
+                                    &self.session.model,
+                                    self.session.reasoning_effort.as_deref(),
+                                    strict_tool_mode,
+                                    tool_catalog,
+                                    names,
+                                )
+                            },
+                        )
+                        .unwrap_or(false);
+                    }
+                    if super::tool_catalog::is_shell_tool_name(&outcome.name)
+                        && self
+                            .shell_manager
+                            .lock()
+                            .map(|mut manager| {
+                                manager
+                                    .list_jobs_for_session(&self.session.id)
+                                    .into_iter()
+                                    .any(|job| {
+                                        !job.stale
+                                            && job.status
+                                                == crate::tools::shell::ShellStatus::Running
+                                    })
+                            })
+                            .unwrap_or(false)
+                    {
+                        tool_surface_changed |=
+                            super::tool_catalog::activate_background_shell_tools(
+                                tool_catalog,
+                                active_tool_names,
+                                &mut self.session.tool_activation_cache,
+                                &mut |names| {
+                                    super::tool_catalog::measure_deferred_tools(
+                                        client,
+                                        &self.session.model,
+                                        self.session.reasoning_effort.as_deref(),
+                                        strict_tool_mode,
+                                        tool_catalog,
+                                        names,
+                                    )
+                                },
+                            )
+                            .unwrap_or(false);
+                    }
                     // A runtime MCP connection change — a completed login OR
                     // a live 401 that dropped one — rewrites the callable
                     // tool surface. Replace the pool's whole slice before
@@ -4612,24 +5727,14 @@ impl Engine {
                         .and_then(|metadata| metadata.get("mcp_catalog_changed"))
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false);
-                    if mcp_catalog_changed && let Some(pool) = self.mcp_pool.as_ref().cloned() {
-                        let (universe, refreshed) = {
-                            let pool = pool.lock().await;
-                            let refreshed = pool.to_api_tools();
-                            (pool.model_tool_names(&refreshed), refreshed)
-                        };
-                        let surface_budget = self
-                            .turn_tool_surface_budget
-                            .unwrap_or(crate::model_profile::ToolSurfaceBudget::Standard);
-                        tool_surface_changed |= replace_runtime_mcp_tools(
-                            tool_catalog,
-                            active_tool_names,
-                            &universe,
-                            refreshed,
-                            self.current_mode,
-                            &self.config.tools_always_load,
-                            surface_budget,
-                        );
+                    if mcp_catalog_changed {
+                        tool_surface_changed |= self
+                            .refresh_current_mcp_catalog(
+                                tool_policy,
+                                tool_catalog,
+                                active_tool_names,
+                            )
+                            .await;
                     }
                     // Any of the legitimate mid-turn tool-surface changes above
                     // re-pin the header under a declared `change:tool_surface`
@@ -4663,12 +5768,60 @@ impl Engine {
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(true);
                     if tool_was_executed {
+                        if let Some(child_host) = self.child_host.as_ref() {
+                            child_host.record_executed_action(&tool_name_for_ws, &tool_input);
+                        }
                         self.session.working_set.observe_tool_call(
                             &tool_name_for_ws,
                             &tool_input,
-                            Some(&output_for_context),
+                            output.success.then_some(output_for_context.as_str()),
                             &self.session.workspace,
                         );
+                        let category = crate::core::authority::get_tool_category_for_call(
+                            &tool_name_for_ws,
+                            &tool_input,
+                        );
+                        let action_kind =
+                            crate::core::authority::auto_review::ToolActionKind::from_tool_call(
+                                &tool_name_for_ws,
+                                &tool_input,
+                                category,
+                                Some(&self.session.workspace),
+                            );
+                        if action_kind != crate::core::authority::auto_review::ToolActionKind::Read
+                        {
+                            let redacted_input =
+                                codewhale_sanitize::redact::redact_json_model_bound_secrets(
+                                    &tool_input,
+                                );
+                            let raw_summary = if let Some(cmd) = redacted_input
+                                .get("command")
+                                .or_else(|| redacted_input.get("cmd"))
+                                .and_then(serde_json::Value::as_str)
+                            {
+                                cmd.to_string()
+                            } else if let Some(path) = redacted_input
+                                .get("path")
+                                .or_else(|| redacted_input.get("file_path"))
+                                .and_then(serde_json::Value::as_str)
+                            {
+                                path.to_string()
+                            } else {
+                                serde_json::to_string(&redacted_input).unwrap_or_default()
+                            };
+                            let summary = self.redact_tool_output_for_transcript(&summarize_text(
+                                &raw_summary,
+                                240,
+                            ));
+                            if turn.recent_actions.len() >= 20 {
+                                turn.recent_actions.remove(0);
+                            }
+                            turn.recent_actions
+                                .push(crate::core::turn::RecentReviewAction {
+                                    tool_name: tool_name_for_ws.clone(),
+                                    summary,
+                                });
+                        }
                     }
 
                     // #136: post-edit LSP diagnostics hook. We only run
@@ -4734,7 +5887,7 @@ impl Engine {
                     self.session.working_set.observe_tool_call(
                         &tool_name_for_ws,
                         &tool_input,
-                        Some(&error),
+                        None,
                         &self.session.workspace,
                     );
                     if let Some(model_call) = outcome.model_call {
@@ -4751,6 +5904,39 @@ impl Engine {
                         .await;
                     }
                 }
+            }
+            if let Some(mut mark) = plugin_change {
+                let before_tools = tool_policy.extension_tool_names.clone();
+                let surface_mutated = self
+                    .replace_runtime_plugin_tools(tool_policy, tool_catalog, active_tool_names)
+                    .await;
+                if surface_mutated {
+                    self.session.pending_prefix_change_reason = Some("tool_surface".to_string());
+                }
+                let mut added: Vec<String> = tool_policy
+                    .extension_tool_names
+                    .difference(&before_tools)
+                    .cloned()
+                    .collect();
+                added.sort();
+                let mut removed: Vec<String> = before_tools
+                    .difference(&tool_policy.extension_tool_names)
+                    .cloned()
+                    .collect();
+                removed.sort();
+                mark.tools_added = added;
+                mark.tools_removed = removed;
+                let _ = self
+                    .send_event(Event::PluginChanged {
+                        plugin: mark.plugin,
+                        action: mark.action,
+                        content_hash: mark.content_hash,
+                        decided_by: mark.decided_by,
+                        services: mark.services,
+                        tools_added: mark.tools_added,
+                        tools_removed: mark.tools_removed,
+                    })
+                    .await;
             }
         }
 
@@ -4825,52 +6011,40 @@ impl Engine {
                 _ => crate::llm_client::ProviderUsageCoverage::Missing,
             }
         };
-        let mut accounting_record = None;
-        let accounting_error = if pending.primary && !pending.accounting_owned_elsewhere {
+        let mut accounting_error: Option<String> = None;
+        let accounting_record = if pending.primary && !pending.accounting_owned_elsewhere {
             let reason = if matches!(outcome, "completed" | "review_response") {
                 crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
             } else {
                 crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
             };
-            let prepared = pending.accounting_source.prepare_observed(
+            let record = pending.accounting_source.prepare_record(
                 &pending.route,
                 usage.unwrap_or(&Usage::default()),
                 coverage,
                 reason,
                 &wire,
             );
-            match prepared {
-                Ok(record) => {
-                    accounting_record = Some(record.clone());
-                    match crate::cost_status::settle_runtime_usage_record(
-                        pending.accounting_scope,
-                        pending.accounting_owner.as_deref(),
-                        &record,
-                    )
-                    .await
-                    {
-                        Ok(()) => None,
-                        Err(error) => Some(error.to_string()),
-                    }
+            match crate::cost_status::try_record_runtime_usage_async(
+                pending.accounting_scope,
+                pending.accounting_origin.as_ref(),
+                &record,
+            )
+            .await
+            {
+                Ok(()) => Some(record),
+                Err(error) => {
+                    accounting_error = Some(error.to_string());
+                    None
                 }
-                Err(error) => Some(error.to_string()),
             }
         } else {
             None
         };
-        if let Some(error) = accounting_error.as_ref() {
-            tracing::error!(%error, "provider usage has no durable acknowledgement");
-            let _ = self
-                .send_event(Event::status(format!(
-                    "Provider usage settlement is uncertain: {error}"
-                )))
-                .await;
-        }
-        let failed = accounting_error.clone();
         let _ = self.send_event(Event::ProviderRequestReceipt {
             receipt: json!({
                 "source_accounting": pending.primary,
-                "accounting_error": accounting_error,
+                "accounting_error": accounting_error.as_deref(),
                 "session_id": self.session.id,
                 "turn_id": pending.turn_id,
                 "request_index": pending.request_index,
@@ -4894,10 +6068,10 @@ impl Engine {
                 "cache_attribution": "Local prefix changes and wire schema measurements are context for reported usage, not proof that eviction caused a miss or that unreported retries were free.",
             }),
         }).await;
-        match failed {
-            Some(error) => Err(error),
-            None => Ok(accounting_record),
+        if let Some(error) = accounting_error {
+            return Err(error);
         }
+        Ok(accounting_record)
     }
 
     async fn process_stream(
@@ -4925,7 +6099,10 @@ impl Engine {
         // it arrives. Anthropic replays the whole sequence unmodified, so a
         // later block must never overwrite an earlier one.
         let mut completed_thinking: Vec<ContentBlock> = Vec::new();
+        let mut server_blocks: Vec<(u32, ContentBlock)> = Vec::new();
         let mut tool_uses: Vec<ToolUseState> = Vec::new();
+        let mut conversation_title: Option<String> = None;
+        let mut refusal_text = String::new();
         let mut usage = Usage {
             input_tokens: 0,
             output_tokens: 0,
@@ -5140,6 +6317,17 @@ impl Engine {
                     usage_reported |= reported;
                     attempt_usage_reported |= reported;
                     merge_stream_usage(&mut usage, message.usage);
+                    if let Some(title) = message.title.filter(|t| !t.trim().is_empty())
+                        && conversation_title.as_deref() != Some(title.as_str())
+                    {
+                        conversation_title = Some(title.clone());
+                        let _ = self
+                            .send_stream_event(Event::ConversationTitle { title })
+                            .await;
+                    }
+                    if let Some(refusal) = message.refusal.filter(|r| !r.is_empty()) {
+                        refusal_text.push_str(&refusal);
+                    }
                 }
                 StreamEvent::ContentBlockStart {
                     index,
@@ -5269,22 +6457,103 @@ impl Engine {
                             input_parse_error: None,
                         });
                     }
-                    ContentBlockStart::ServerToolUse { id, name, input } => {
-                        codewhale_runtime::logging::info(format!(
-                            "Server tool '{name}' block start. Initial input: {input:?}"
+                    ContentBlockStart::ServerToolUse {
+                        id,
+                        name,
+                        input,
+                        kind,
+                        caller,
+                    } => {
+                        if matches!(
+                            name.as_str(),
+                            crate::client::DEEPSEEK_WEB_SEARCH_TOOL
+                                | crate::client::DEEPSEEK_READ_URL_TOOL
+                        ) {
+                            current_block_kind = None;
+                            server_blocks.push((
+                                index,
+                                ContentBlock::ServerToolUse {
+                                    id,
+                                    name,
+                                    input,
+                                    kind,
+                                    caller,
+                                },
+                            ));
+                        } else {
+                            codewhale_runtime::logging::info(format!(
+                                "Server tool '{name}' block start. Initial input: {input:?}"
+                            ));
+                            current_block_kind = Some(ContentBlockKind::ToolUse);
+                            current_tool_indices.insert(index, tool_uses.len());
+                            tool_uses.push(ToolUseState {
+                                execution_id: self.new_tool_execution_id(),
+                                id,
+                                name,
+                                input,
+                                caller,
+                                thought_signature: None,
+                                input_buffer: String::new(),
+                                input_parse_error: None,
+                            });
+                        }
+                    }
+                    ContentBlockStart::WebSearchToolResult {
+                        tool_use_id,
+                        content,
+                        kind,
+                    } => {
+                        current_block_kind = None;
+                        server_blocks.push((
+                            index,
+                            ContentBlock::WebSearchToolResult {
+                                tool_use_id,
+                                content,
+                                kind,
+                            },
                         ));
-                        current_block_kind = Some(ContentBlockKind::ToolUse);
-                        current_tool_indices.insert(index, tool_uses.len());
-                        tool_uses.push(ToolUseState {
-                            execution_id: self.new_tool_execution_id(),
-                            id,
-                            name,
-                            input,
-                            caller: None,
-                            thought_signature: None,
-                            input_buffer: String::new(),
-                            input_parse_error: None,
-                        });
+                    }
+                    ContentBlockStart::WebFetchToolResult {
+                        tool_use_id,
+                        content,
+                        kind,
+                        signature,
+                    } => {
+                        current_block_kind = None;
+                        server_blocks.push((
+                            index,
+                            ContentBlock::WebFetchToolResult {
+                                tool_use_id,
+                                content,
+                                kind,
+                                signature,
+                            },
+                        ));
+                    }
+                    ContentBlockStart::WebSearchCall {
+                        id,
+                        status,
+                        kind,
+                        action,
+                    } => {
+                        current_block_kind = None;
+                        server_blocks.push((
+                            index,
+                            ContentBlock::WebSearchCall {
+                                id,
+                                status,
+                                kind,
+                                action,
+                                sources: None,
+                                page: None,
+                                signature: None,
+                                error: None,
+                            },
+                        ));
+                    }
+                    ContentBlockStart::ServerToolCalls { steps } => {
+                        current_block_kind = None;
+                        server_blocks.push((index, ContentBlock::ServerToolCalls { steps }));
                     }
                 },
                 StreamEvent::ContentBlockDelta { index, delta } => match delta {
@@ -5357,6 +6626,81 @@ impl Engine {
                             // unconditionally overwrote (#6213 T4).
                         }
                     }
+                    Delta::ThoughtSignatureDelta { thought_signature } => {
+                        if let Some(&tool_idx) = current_tool_indices.get(&index)
+                            && let Some(tool_state) = tool_uses.get_mut(tool_idx)
+                            && !thought_signature.is_empty()
+                        {
+                            tool_state.thought_signature = Some(thought_signature);
+                        }
+                    }
+                    Delta::ToolCallIdDelta { id } => {
+                        if let Some(&tool_idx) = current_tool_indices.get(&index)
+                            && let Some(tool_state) = tool_uses.get_mut(tool_idx)
+                        {
+                            tool_state.id = id;
+                        }
+                    }
+                    Delta::CitationsDelta { .. } => {}
+                    Delta::RefusalDelta { refusal } => {
+                        refusal_text.push_str(&refusal);
+                    }
+                    Delta::WebSearchCallDelta {
+                        status,
+                        kind,
+                        action,
+                        sources,
+                        page,
+                        signature,
+                        error,
+                    } => {
+                        if let Some((
+                            _,
+                            ContentBlock::WebSearchCall {
+                                status: existing_status,
+                                kind: existing_kind,
+                                action: existing_action,
+                                sources: existing_sources,
+                                page: existing_page,
+                                signature: existing_signature,
+                                error: existing_error,
+                                ..
+                            },
+                        )) = server_blocks.iter_mut().rev().find(|(idx, blk)| {
+                            *idx == index && matches!(blk, ContentBlock::WebSearchCall { .. })
+                        }) {
+                            if let Some(status) = status {
+                                *existing_status = status;
+                            }
+                            if kind.is_some() {
+                                *existing_kind = kind;
+                            }
+                            if action.is_some() {
+                                *existing_action = action;
+                            }
+                            if sources.is_some() {
+                                *existing_sources = sources;
+                            }
+                            if page.is_some() {
+                                *existing_page = page;
+                            }
+                            if signature.is_some() {
+                                *existing_signature = signature;
+                            }
+                            if error.is_some() {
+                                *existing_error = error;
+                            }
+                        }
+                    }
+                    Delta::ServerToolCallsDelta { steps } => {
+                        if let Some((_, ContentBlock::ServerToolCalls { steps: existing })) =
+                            server_blocks.iter_mut().rev().find(|(idx, blk)| {
+                                *idx == index && matches!(blk, ContentBlock::ServerToolCalls { .. })
+                            })
+                        {
+                            *existing = steps;
+                        }
+                    }
                 },
                 StreamEvent::ContentBlockStop { index } => {
                     let stopped_kind = current_block_kind.take();
@@ -5417,6 +6761,17 @@ impl Engine {
                 } => {
                     if let Some(reason) = delta.stop_reason {
                         stop_reason = Some(reason);
+                    }
+                    if let Some(title) = delta.title.filter(|t| !t.trim().is_empty())
+                        && conversation_title.as_deref() != Some(title.as_str())
+                    {
+                        conversation_title = Some(title.clone());
+                        let _ = self
+                            .send_stream_event(Event::ConversationTitle { title })
+                            .await;
+                    }
+                    if let Some(refusal) = delta.refusal.filter(|r| !r.is_empty()) {
+                        refusal_text.push_str(&refusal);
                     }
                     if let Some(u) = delta_usage {
                         let reported = usage_has_reported_data(&u);
@@ -5507,11 +6862,13 @@ impl Engine {
             current_thinking_signature,
             current_thinking_state,
             completed_thinking,
+            server_blocks: server_blocks.into_iter().map(|(_, block)| block).collect(),
             tool_uses,
             usage,
             usage_reported,
             accounting,
             stop_reason,
+            refusal_text: (!refusal_text.trim().is_empty()).then_some(refusal_text),
             pending_message_complete,
             last_text_index,
             stream_errors,
@@ -5747,29 +7104,6 @@ impl Engine {
         self.session.messages.clone().into()
     }
 
-    /// The persistent working kernel gets the full durable transcript as data,
-    /// not as another prompt. Python helpers can search and chunk it without
-    /// reinflating the model's visible context, while ordinary variables stay
-    /// in the same kernel across steps and user turns.
-    fn repl_kernel_context(&self) -> String {
-        let payload = serde_json::json!({
-            "schema": "codewhale.persistent_kernel_context.v1",
-            "session": {
-                "id": self.session.id,
-                "workspace": self.session.workspace,
-                "model": self.session.model,
-                "message_count": self.session.messages.len(),
-            },
-            "messages": self.messages_with_turn_metadata(),
-        });
-        serde_json::to_string_pretty(&payload).unwrap_or_else(|error| {
-            format!(
-                "{{\"schema\":\"codewhale.persistent_kernel_context.v1\",\"serialization_error\":{}}}",
-                serde_json::Value::String(error.to_string())
-            )
-        })
-    }
-
     /// This session's authoritative To-do state (#3983).
     ///
     /// Read at explicit seams only — forking a sub-agent, `/relay`, the UI.
@@ -5918,6 +7252,11 @@ fn awaiting_model_bound(config: &EngineConfig) -> Duration {
     .saturating_add(super::turn_heartbeat::STALL_BOUND_GRACE)
 }
 
+fn first_stream_event_timeout(config: &EngineConfig) -> Duration {
+    crate::client::stream_first_byte_timeout(config.stream_chunk_timeout)
+        .min(stream_chunk_timeout_budget(config).1)
+}
+
 /// Whether a per-tool pre-execution snapshot should be taken before running
 /// `tool_name` (#384).
 ///
@@ -5968,7 +7307,9 @@ fn mode_blocks_write_capable_tool(
         && (matches!(
             canonical_action_alias(tool_name, input),
             "write_file" | "edit_file" | "apply_patch"
-        ) || (McpPool::is_mcp_tool(tool_name) && !read_only))
+        ) || ((McpPool::is_mcp_tool(tool_name)
+            || crate::extension_host::dsh_broker::is_gate_tool(tool_name))
+            && !read_only))
 }
 
 /// Synthesize the tool result recorded for a tool call that never executed
@@ -6644,14 +7985,25 @@ fn stream_event_has_actionable_content(event: &StreamEvent) -> bool {
             // A redacted thinking block is provider-owned encrypted content —
             // its arrival is actionable reasoning output even without text.
             ContentBlockStart::RedactedThinking { .. } => true,
-            ContentBlockStart::ToolUse { .. } | ContentBlockStart::ServerToolUse { .. } => true,
+            ContentBlockStart::ToolUse { .. }
+            | ContentBlockStart::ServerToolUse { .. }
+            | ContentBlockStart::WebSearchToolResult { .. }
+            | ContentBlockStart::WebFetchToolResult { .. }
+            | ContentBlockStart::WebSearchCall { .. }
+            | ContentBlockStart::ServerToolCalls { .. } => true,
         },
         StreamEvent::ContentBlockDelta { delta, .. } => match delta {
             Delta::TextDelta { text } => !text.is_empty(),
             Delta::ThinkingDelta { thinking } => !thinking.is_empty(),
             Delta::InputJsonDelta { partial_json } => !partial_json.is_empty(),
+            Delta::ToolCallIdDelta { .. } => false,
             Delta::SignatureDelta { signature } => !signature.is_empty(),
-            Delta::ReasoningStateDelta { .. } => true,
+            Delta::ThoughtSignatureDelta { thought_signature } => !thought_signature.is_empty(),
+            Delta::ReasoningStateDelta { .. }
+            | Delta::CitationsDelta { .. }
+            | Delta::WebSearchCallDelta { .. }
+            | Delta::ServerToolCallsDelta { .. } => true,
+            Delta::RefusalDelta { refusal } => !refusal.is_empty(),
         },
         StreamEvent::ToolProjectionWarning { .. }
         | StreamEvent::MessageStart { .. }
@@ -6682,16 +8034,63 @@ fn stream_event_content_bytes(event: &StreamEvent) -> usize {
             ContentBlockStart::ToolUse {
                 id, name, input, ..
             }
-            | ContentBlockStart::ServerToolUse { id, name, input } => {
-                id.len() + name.len() + initial_input_bytes(input)
+            | ContentBlockStart::ServerToolUse {
+                id, name, input, ..
+            } => id.len() + name.len() + initial_input_bytes(input),
+            ContentBlockStart::WebSearchToolResult {
+                tool_use_id,
+                content,
+                ..
+            }
+            | ContentBlockStart::WebFetchToolResult {
+                tool_use_id,
+                content,
+                ..
+            } => tool_use_id.len() + content.to_string().len(),
+            ContentBlockStart::WebSearchCall {
+                id,
+                status,
+                kind,
+                action,
+            } => {
+                id.len()
+                    + status.len()
+                    + kind.as_ref().map_or(0, String::len)
+                    + action.as_ref().map_or(0, |v| v.to_string().len())
+            }
+            ContentBlockStart::ServerToolCalls { steps } => {
+                steps.iter().map(|s| s.to_string().len()).sum()
             }
         },
         StreamEvent::ContentBlockDelta { delta, .. } => match delta {
             Delta::TextDelta { text } => text.len(),
             Delta::ThinkingDelta { thinking } => thinking.len(),
             Delta::InputJsonDelta { partial_json } => partial_json.len(),
+            Delta::ToolCallIdDelta { id } => id.len(),
             Delta::SignatureDelta { signature } => signature.len(),
-            Delta::ReasoningStateDelta { .. } => 0,
+            Delta::ThoughtSignatureDelta { thought_signature } => thought_signature.len(),
+            Delta::RefusalDelta { refusal } => refusal.len(),
+            Delta::WebSearchCallDelta {
+                status,
+                kind,
+                action,
+                sources,
+                page,
+                signature,
+                error,
+            } => {
+                status.as_ref().map_or(0, String::len)
+                    + kind.as_ref().map_or(0, String::len)
+                    + action.as_ref().map_or(0, |v| v.to_string().len())
+                    + sources.as_ref().map_or(0, |v| v.to_string().len())
+                    + page.as_ref().map_or(0, |v| v.to_string().len())
+                    + signature.as_ref().map_or(0, String::len)
+                    + error.as_ref().map_or(0, |v| v.to_string().len())
+            }
+            Delta::ServerToolCallsDelta { steps } => {
+                steps.iter().map(|s| s.to_string().len()).sum()
+            }
+            Delta::ReasoningStateDelta { .. } | Delta::CitationsDelta { .. } => 0,
         },
         _ => 0,
     }
@@ -6810,6 +8209,49 @@ mod tests {
             tool_choice: None,
             reasoning_effort: None,
         })
+    }
+
+    #[tokio::test]
+    async fn late_thought_signature_is_retained_on_the_target_tool() {
+        use crate::llm_client::mock::canned;
+
+        let tmp = tempdir().unwrap();
+        let (mut engine, _, _rx) = stream_backpressure_fixture(tmp.path(), 16);
+        let starts = (0..2).map(|index| {
+            Ok(StreamEvent::ContentBlockStart {
+                index,
+                content_block: ContentBlockStart::ToolUse {
+                    id: format!("call_{index}"),
+                    name: "read_file".into(),
+                    input: json!({}),
+                    caller: None,
+                    thought_signature: None,
+                },
+            })
+        });
+        let stream = futures_util::stream::iter(starts.chain([
+            Ok(StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: Delta::ThoughtSignatureDelta {
+                    thought_signature: "first_signature".into(),
+                },
+            }),
+            Ok(canned::message_stop()),
+        ]));
+        let outcome = engine
+            .process_stream(
+                Box::pin(stream),
+                &stream_backpressure_request(),
+                Instant::now(),
+                None,
+            )
+            .await;
+        assert_eq!(outcome.tool_uses.len(), 2);
+        assert_eq!(
+            outcome.tool_uses[0].thought_signature.as_deref(),
+            Some("first_signature")
+        );
+        assert!(outcome.tool_uses[1].thought_signature.is_none());
     }
 
     #[tokio::test]
@@ -7057,6 +8499,8 @@ mod tests {
                             id: format!("call_{index}"),
                             name: "web_search".into(),
                             input: json!({}),
+                            kind: None,
+                            caller: None,
                         }
                     } else {
                         ContentBlockStart::ToolUse {
@@ -7651,6 +9095,197 @@ mod tests {
             }),
             3
         );
+    }
+
+    #[test]
+    fn server_tool_deltas_count_payload_bytes_for_stream_cap() {
+        let big_sources =
+            serde_json::json!([{"url": "https://example.com", "body": "x".repeat(4096)}]);
+        let web_bytes = stream_event_content_bytes(&StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: codewhale_models::Delta::WebSearchCallDelta {
+                status: Some("completed".to_string()),
+                kind: None,
+                action: None,
+                sources: Some(big_sources),
+                page: None,
+                signature: None,
+                error: None,
+            },
+        });
+        assert!(web_bytes > 4096, "web search delta bytes={web_bytes}");
+
+        let steps = vec![serde_json::json!({"tool": "search", "output": "y".repeat(2048)})];
+        let step_bytes = stream_event_content_bytes(&StreamEvent::ContentBlockDelta {
+            index: 1,
+            delta: codewhale_models::Delta::ServerToolCallsDelta { steps },
+        });
+        assert!(step_bytes > 2048, "server tool delta bytes={step_bytes}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn server_tool_deltas_trip_stream_content_cap_overflow() {
+        use crate::llm_client::mock::canned;
+
+        let tmp = tempdir().unwrap();
+        let _home = crate::test_support::SealedHome::at(tmp.path());
+        let (mut engine, _model, mut rx) = stream_backpressure_fixture(tmp.path(), 16);
+        engine.config.stream_max_content_bytes = 64;
+        let request = stream_backpressure_request();
+
+        let web_stream: Vec<anyhow::Result<StreamEvent>> = vec![
+            Ok(StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStart::WebSearchCall {
+                    id: "ws-1".into(),
+                    status: "searching".into(),
+                    kind: None,
+                    action: None,
+                },
+            }),
+            Ok(StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: Delta::WebSearchCallDelta {
+                    status: Some("completed".into()),
+                    kind: None,
+                    action: None,
+                    sources: Some(json!([{ "body": "x".repeat(256) }])),
+                    page: None,
+                    signature: None,
+                    error: None,
+                },
+            }),
+            Ok(canned::message_stop()),
+        ];
+        let web_outcome = engine
+            .process_stream(
+                Box::pin(futures_util::stream::iter(web_stream)),
+                &request,
+                Instant::now(),
+                None,
+            )
+            .await;
+        assert!(
+            web_outcome
+                .stream_error
+                .as_deref()
+                .is_some_and(|message| message.contains("maximum content size")),
+            "expected stream overflow error, got {:?}",
+            web_outcome.stream_error
+        );
+        assert!(
+            std::iter::from_fn(|| rx.try_recv().ok()).any(|event| matches!(
+                event,
+                Event::Error { envelope, .. } if envelope.code == "stream_overflow"
+            )),
+            "expected stream_overflow event for WebSearchCallDelta"
+        );
+        assert!(matches!(
+            web_outcome.server_blocks.as_slice(),
+            [ContentBlock::WebSearchCall { sources: None, .. }]
+        ));
+
+        let (mut engine, _model, mut rx) = stream_backpressure_fixture(tmp.path(), 16);
+        engine.config.stream_max_content_bytes = 64;
+        let tool_stream: Vec<anyhow::Result<StreamEvent>> = vec![
+            Ok(StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStart::ServerToolCalls { steps: Vec::new() },
+            }),
+            Ok(StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: Delta::ServerToolCallsDelta {
+                    steps: vec![json!({ "output": "y".repeat(256) })],
+                },
+            }),
+            Ok(canned::message_stop()),
+        ];
+        let tool_outcome = engine
+            .process_stream(
+                Box::pin(futures_util::stream::iter(tool_stream)),
+                &request,
+                Instant::now(),
+                None,
+            )
+            .await;
+        assert!(
+            tool_outcome
+                .stream_error
+                .as_deref()
+                .is_some_and(|message| message.contains("maximum content size")),
+            "expected stream overflow error, got {:?}",
+            tool_outcome.stream_error
+        );
+        assert!(
+            std::iter::from_fn(|| rx.try_recv().ok()).any(|event| matches!(
+                event,
+                Event::Error { envelope, .. } if envelope.code == "stream_overflow"
+            )),
+            "expected stream_overflow event for ServerToolCallsDelta"
+        );
+        assert!(matches!(
+            tool_outcome.server_blocks.as_slice(),
+            [ContentBlock::ServerToolCalls { steps }] if steps.is_empty()
+        ));
+    }
+
+    #[tokio::test]
+    async fn provider_request_receipt_records_accounting_error_when_owner_work_fails() {
+        let tmp = tempdir().unwrap();
+        let _home = crate::test_support::SealedHome::at(tmp.path());
+        let (engine, model, mut rx) = stream_backpressure_fixture(tmp.path(), 16);
+        let retry_observation = engine.request_retry_observation();
+        let route = crate::core::model_client::ModelClient::effective_route_envelope(
+            model.as_ref(),
+            "test-model",
+            chrono::Utc::now(),
+        );
+        let accounting_source = crate::cost_status::NativeUsageSource::capture_with_origin(
+            retry_observation.request_id.clone(),
+            crate::cost_status::UsageSpendOwner::Primary,
+            None,
+        );
+        let mut pending = Some(PendingProviderRequestReceipt {
+            request_id: retry_observation.request_id.clone(),
+            accounting_source,
+            accounting_scope: crate::cost_status::scope_token(),
+            accounting_origin: None,
+            route,
+            primary: true,
+            accounting_owned_elsewhere: false,
+            invoked: true,
+            turn_id: "turn-accounting-err".to_string(),
+            request_index: 1,
+            prefix_check: json!({ "outcome": "stable" }),
+            reused_preparation: false,
+            wire: retry_observation.wire_observations.clone(),
+            transport_retries: retry_observation.retries.clone(),
+            started_at: Instant::now(),
+        });
+        let usage = Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            ..Usage::default()
+        };
+
+        let result = crate::cost_status::with_test_runtime_usage_error(
+            "blocking work is queued behind busy runtime owner",
+            engine.settle_provider_request_receipt(&mut pending, Some(&usage), "completed"),
+        )
+        .await;
+
+        let err = result.expect_err("failed usage settlement must return Err");
+        assert!(
+            err.contains("blocking work is queued"),
+            "unexpected settlement error: {err}"
+        );
+        let event = rx
+            .try_recv()
+            .expect("ProviderRequestReceipt must still be emitted");
+        let Event::ProviderRequestReceipt { receipt } = event else {
+            panic!("expected ProviderRequestReceipt, got {event:?}");
+        };
+        assert_eq!(receipt["accounting_error"].as_str(), Some(err.as_str()));
     }
 
     /// Regression test for the OpenAI streaming batch tool_calls bug.
@@ -8852,7 +10487,17 @@ impl Engine {
         surface: &mut child_host::ChildSurfaceProbe,
         call: child_host::ChildProbeCall,
     ) -> Result<RichToolResult> {
+        let client = self
+            .model_client
+            .clone()
+            .ok_or_else(|| anyhow!("captured child client unavailable"))?;
         let control = self.begin_turn_control_for_provenance(UserInputProvenance::Runtime);
+        let previous = std::mem::replace(&mut self.turn_narrowing, control.narrowing);
+        let (turn_run_origin, turn_owner_present) =
+            self.mint_turn_origin(control.origin, UserInputProvenance::Runtime);
+        let previous_origin = std::mem::replace(&mut self.turn_run_origin, turn_run_origin);
+        let previous_owner_present =
+            std::mem::replace(&mut self.turn_owner_present, turn_owner_present);
         let mut turn = TurnContext::new(1);
         let mut uses = [ToolUseState {
             execution_id: call.execution_id,
@@ -8864,11 +10509,7 @@ impl Engine {
             input_buffer: String::new(),
             input_parse_error: None,
         }];
-        let client = self
-            .model_client
-            .clone()
-            .ok_or_else(|| anyhow!("captured child client unavailable"))?;
-        let policy = &surface.policy;
+        let policy = &mut surface.policy;
         self.session.tool_activation_cache = surface.cache.clone();
         let mut catalog = policy.catalog.clone();
         let mut active = policy.active_names.clone();
@@ -8886,6 +10527,7 @@ impl Engine {
                 AppMode::Agent,
                 None,
                 ToolCallSource::Model,
+                None,
             )
             .await;
         let mut mode = AppMode::Agent;
@@ -8913,35 +10555,36 @@ impl Engine {
                 &mut gate,
             )
             .await;
-        let answer = outcomes
-            .iter()
-            .flatten()
-            .next()
-            .ok_or_else(|| anyhow!("Core did not produce a terminal tool result"))?;
-        let answer = answer
-            .terminal
-            .legacy_result()
-            .map(|result| RichToolResult {
+        let answer = if let Some(entry) = outcomes.iter().flatten().next() {
+            let answer = entry.terminal.legacy_result().map(|result| RichToolResult {
                 result,
-                content_blocks: answer.content_blocks.clone(),
+                content_blocks: entry.content_blocks.clone(),
             });
-        // Finish through the same result owner as run_tool_batch_phase so
-        // result dependencies are observed once.
-        self.process_tool_results(
-            gate.client,
-            gate.tool_policy.strict_tool_mode,
-            outcomes,
-            gate.turn,
-            &mut catalog,
-            &mut active,
-            &planned.hook_contexts,
-            None,
-        )
-        .await;
-        surface.cache = self.session.tool_activation_cache.clone();
-        surface.policy.catalog = catalog;
-        surface.policy.active_names = active;
+            // Finish through the same result owner as run_tool_batch_phase so
+            // result dependencies are observed once.
+            self.process_tool_results(
+                client.as_ref(),
+                policy,
+                outcomes,
+                &mut turn,
+                &mut catalog,
+                &mut active,
+                &planned.hook_contexts,
+                None,
+                mode,
+            )
+            .await;
+            surface.cache = self.session.tool_activation_cache.clone();
+            surface.policy.catalog = catalog;
+            surface.policy.active_names = active;
+            answer.map_err(anyhow::Error::new)
+        } else {
+            Err(anyhow!("Core did not produce a terminal tool result"))
+        };
+        self.turn_owner_present = previous_owner_present;
+        self.turn_run_origin = previous_origin;
+        self.turn_narrowing = previous;
         drop(control);
-        answer.map_err(anyhow::Error::new)
+        answer
     }
 }

@@ -411,7 +411,7 @@ impl WriterState {
         append_result
     }
 
-    /// Append complete JSONL lines, mirroring [`crate::JsonlHookSink`]:
+    /// Append complete JSONL lines:
     /// lazy parent directories, append mode, flush before returning. The
     /// writer task is the only appender for this outbox, so no extra lock is
     /// needed here; the queue already serializes. The whole batch shares one
@@ -630,8 +630,11 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         outbox.emit(event("turn_end", "turn.completed"));
 
-        for _ in 0..100 {
-            if read_lines(&path).await.len() >= 2 {
+        for _ in 0..300 {
+            let appended = tokio::fs::read_to_string(&path)
+                .await
+                .is_ok_and(|text| text.lines().count() >= 2);
+            if appended {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;

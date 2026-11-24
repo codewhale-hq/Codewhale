@@ -694,7 +694,10 @@ fn macos_display_notification(payload: &NotificationPayload) -> DeliveryOutcome 
                 subtitle,
             ];
 
-            match std::process::Command::new("osascript").args(&args).output() {
+            match std::process::Command::new("/usr/bin/osascript")
+                .args(&args)
+                .output()
+            {
                 Ok(output) if !output.status.success() => {
                     tracing::warn!("osascript notification failed");
                 }
@@ -891,7 +894,12 @@ pub fn latest_assistant_text(messages: &[Message]) -> Option<String> {
                     | ContentBlock::ToolResult { .. }
                     | ContentBlock::ServerToolUse { .. }
                     | ContentBlock::ToolSearchToolResult { .. }
-                    | ContentBlock::CodeExecutionToolResult { .. } => None,
+                    | ContentBlock::CodeExecutionToolResult { .. }
+                    | ContentBlock::WebSearchToolResult { .. }
+                    | ContentBlock::WebFetchToolResult { .. }
+                    | ContentBlock::WebSearchCall { .. }
+                    | ContentBlock::ServerToolCalls { .. }
+                    | ContentBlock::File { .. } => None,
                     ContentBlock::ImageUrl { .. } => None,
                 })
                 .collect::<Vec<_>>()
@@ -906,7 +914,7 @@ pub fn latest_assistant_text(messages: &[Message]) -> Option<String> {
 pub fn text_summary(text: &str) -> Option<String> {
     const MAX_CHARS: usize = 360;
 
-    let sanitized = codewhale_secrets::sanitize::sanitize_stream_chunk(text);
+    let sanitized = codewhale_sanitize::sanitize::sanitize_stream_chunk(text);
     let collapsed = sanitized
         .lines()
         .map(str::trim)

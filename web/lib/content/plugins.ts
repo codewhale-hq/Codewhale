@@ -78,6 +78,19 @@ export const PLUGINS_COPY = {
   ],
 
   kindsTitle: { en: "What a plugin can add", zh: "插件能添加什么" },
+  desktopTitle: { en: "Browse plugins in the desktop app", zh: "在桌面应用中浏览插件" },
+  desktopLead: {
+    en: "The desktop app is in development with no download yet. Its Discover tab lists the plugins Codewhale maintains in the open.",
+    zh: "桌面应用仍在开发中，暂无下载。它的“发现”页列出了 Codewhale 公开维护的插件。",
+  },
+  desktopAlt: {
+    en: "The desktop app's Plugins Discover catalog under First-party Codewhale extensions, showing cards for Codewhale for Chrome, Cloudflare, Cloudflare Docs, Codewhale Skills, Computer Use, Design Review, GitHub Workflow, Hello Extension (sample) and Linear Workflow, each with an Install button.",
+    zh: "桌面应用的插件“发现”目录中的官方 Codewhale 扩展列表，展示 Codewhale for Chrome、Cloudflare、Cloudflare Docs、Codewhale Skills、Computer Use、Design Review、GitHub Workflow、Hello Extension (sample) 和 Linear Workflow 等卡片，每张都有安装按钮。",
+  },
+  desktopCaption: {
+    en: "A capture of the desktop development build with a real engine.",
+    zh: "桌面开发版本连接真实引擎时的截图。",
+  },
   originBefore: { en: "The idea comes from ", zh: "这个想法来自 " },
   originName: { en: "DeepSeek Harness", zh: "DeepSeek Harness" },
   originAfter: {

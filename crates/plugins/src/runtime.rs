@@ -61,6 +61,68 @@ pub fn native_entry_problem(path: &Path, is_regular_file: bool) -> Option<&'stat
     (!is_module || !is_regular_file).then_some(RULE)
 }
 
+#[must_use]
+pub async fn component_file_names(
+    paths: &[PathBuf],
+    extension: Option<&str>,
+    lowercase: bool,
+    limit: usize,
+) -> (Vec<String>, bool) {
+    fn add(
+        names: &mut std::collections::BTreeSet<String>,
+        path: &Path,
+        extension: Option<&str>,
+        lowercase: bool,
+    ) {
+        if let Some(wanted) = extension
+            && path.extension().and_then(|value| value.to_str()) != Some(wanted)
+        {
+            return;
+        }
+        if let Some(stem) = path.file_stem().and_then(|value| value.to_str()) {
+            names.insert(if lowercase {
+                stem.to_lowercase()
+            } else {
+                stem.to_string()
+            });
+        }
+    }
+
+    let mut names = std::collections::BTreeSet::new();
+    let mut cut = false;
+    for path in paths {
+        let Ok(meta) = tokio::fs::symlink_metadata(path).await else {
+            continue;
+        };
+        if meta.is_file() {
+            add(&mut names, path, extension, lowercase);
+        } else if meta.is_dir()
+            && let Ok(mut entries) = tokio::fs::read_dir(path).await
+        {
+            let mut seen = 0;
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                if seen >= limit {
+                    cut = true;
+                    break;
+                }
+                seen += 1;
+                if entry.file_type().await.is_ok_and(|kind| kind.is_file()) {
+                    add(&mut names, &entry.path(), extension, lowercase);
+                }
+            }
+        }
+        if names.len() >= limit {
+            cut = true;
+            break;
+        }
+    }
+    if names.iter().any(|name| name.chars().any(char::is_control)) {
+        cut = true;
+        names.retain(|name| !name.chars().any(char::is_control));
+    }
+    (names.into_iter().take(limit).collect(), cut)
+}
+
 fn scope_precedence(scope: PluginScope) -> u8 {
     match scope {
         PluginScope::Workspace => 0,

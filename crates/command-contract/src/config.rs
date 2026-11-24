@@ -288,13 +288,11 @@ pub trait CommandConfigContext {
 pub enum CommandPetControl {
     Sound,
     Browser,
-    Window,
     Select,
     FocusAgents,
-    /// Body style and/or text language for `/pet style|language`.
+    /// Body style for `/pet style`.
     Appearance {
-        body: Option<CommandPetBodyStyle>,
-        language: Option<CommandPetTextLanguage>,
+        body: CommandPetBodyStyle,
     },
 }
 
@@ -320,42 +318,6 @@ impl CommandPetBodyStyle {
         match value {
             "smooth" => Some(Self::Smooth),
             "pixel" => Some(Self::Pixel),
-            _ => None,
-        }
-    }
-}
-
-/// Portable pet text language for `/pet language`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandPetTextLanguage {
-    Auto,
-    En,
-    ZhHans,
-    ZhHant,
-    Ja,
-}
-
-impl CommandPetTextLanguage {
-    /// Canonical `pet_watch` token.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::En => "en",
-            Self::ZhHans => "zh-hans",
-            Self::ZhHant => "zh-hant",
-            Self::Ja => "ja",
-        }
-    }
-
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "auto" => Some(Self::Auto),
-            "en" => Some(Self::En),
-            "zh-hans" => Some(Self::ZhHans),
-            "zh-hant" => Some(Self::ZhHant),
-            "ja" => Some(Self::Ja),
             _ => None,
         }
     }
@@ -520,6 +482,7 @@ pub enum CommandSearchProvider {
     Sofya,
     Serply,
     DeepSeek,
+    SearchApi,
 }
 
 /// Operator-notification delivery method.
@@ -614,7 +577,7 @@ pub enum CommandSourceStatus {
     Found,
     NotFound,
     Oversize(u64),
-    InvalidJson,
+    InvalidJson(String),
     Unreadable(String),
 }
 
@@ -631,7 +594,7 @@ impl CommandSourceStatus {
             Self::Oversize(bytes) => {
                 format!("skipped, too large ({bytes} bytes): {display_path}")
             }
-            Self::InvalidJson => format!("invalid JSON: {display_path}"),
+            Self::InvalidJson(error) => format!("invalid JSON: {display_path} ({error})"),
             Self::Unreadable(error) => format!("unreadable: {display_path} ({error})"),
         }
     }

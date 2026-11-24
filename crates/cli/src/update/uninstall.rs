@@ -32,19 +32,16 @@ impl CommandReceipt {
         receipt.verify_owned()?;
         let bytes = receipt.read_bounded(MAX_RECEIPT)?;
         let text = std::str::from_utf8(&bytes).context("command receipt is not UTF-8")?;
-        let hashes = parse_checksum_manifest(text)?;
-        if hashes.is_empty()
-            || hashes.len() > COMMANDS.len()
-            || text.lines().count() != hashes.len()
-            || hashes.keys().any(|name| !COMMANDS.contains(&name.as_str()))
-        {
-            bail!(
+        let hashes = installs::parse_command_receipt(text).with_context(|| {
+            format!(
                 "Invalid command ownership receipt {}; no files were changed",
                 directory.join(RECEIPT).display()
-            );
-        }
+            )
+        })?;
+        let names: Vec<&str> = hashes.keys().map(String::as_str).collect();
+        let mut files = GuardedFile::open_command_siblings(&directory, &names)?;
         for (name, digest) in &hashes {
-            if let Some(mut file) = GuardedFile::open(&directory, name)? {
+            if let Some(mut file) = files.remove(name) {
                 file.verify_owned()?;
                 if file.sha256() != digest.as_str() && Some(file.sha256()) != updated {
                     bail!(
@@ -62,11 +59,17 @@ impl CommandReceipt {
     }
 
     pub(super) fn renew(&mut self, verified: &[u8]) -> Result<()> {
+        self.renew_in(verified, codewhale_config::codewhale_home())
+    }
+
+    pub(super) fn renew_in(&mut self, verified: &[u8], home: Result<PathBuf>) -> Result<()> {
         self.receipt.verify_owned()?;
         let new_hash = sha256_hex(verified);
         let mut text = String::new();
+        let names: Vec<&str> = self.hashes.keys().map(String::as_str).collect();
+        let mut files = GuardedFile::open_command_siblings(&self.directory, &names)?;
         for (name, old_hash) in &self.hashes {
-            if let Some(mut file) = GuardedFile::open(&self.directory, name)? {
+            if let Some(mut file) = files.remove(name) {
                 if file.sha256() != old_hash.as_str() && file.sha256() != new_hash.as_str() {
                     bail!(
                         "Cannot renew ownership of modified command {}",
@@ -102,7 +105,7 @@ impl CommandReceipt {
             );
         }
         let retired = self.directory.join(&backup);
-        match codewhale_config::codewhale_home()
+        match home
             .and_then(|home| installs::RecoveryBatch::open(&home))
             .and_then(|mut batch| {
                 let moved = batch.move_in(&retired)?;
@@ -237,21 +240,90 @@ fn remove(yes: bool) -> Result<bool> {
     if ownership.hashes.get(&primary_name) != Some(&identity.file_hash) {
         bail!("The receipt does not own the selected executable; nothing was removed");
     }
+    remove_receipted_ownership(&identity, ownership, &primary_name, yes)
+}
+
+struct RemovalEntry {
+    file: GuardedFile,
+    is_command: bool,
+    inode_group: Option<usize>,
+}
+
+struct InodeGroupState {
+    remaining: usize,
+    prior_unlinked: bool,
+}
+
+fn assign_command_inode_groups(entries: &mut [RemovalEntry]) -> Result<Vec<InodeGroupState>> {
+    let mut groups: Vec<InodeGroupState> = Vec::new();
+    let mut exemplars: Vec<usize> = Vec::new();
+    for index in 0..entries.len() {
+        if !entries[index].is_command {
+            continue;
+        }
+        let mut matched = None;
+        for (group_id, &exemplar_idx) in exemplars.iter().enumerate() {
+            if entries[index]
+                .file
+                .same_inode(&entries[exemplar_idx].file)?
+            {
+                matched = Some(group_id);
+                break;
+            }
+        }
+        if let Some(group_id) = matched {
+            entries[index].inode_group = Some(group_id);
+            groups[group_id].remaining += 1;
+        } else {
+            let group_id = groups.len();
+            exemplars.push(index);
+            groups.push(InodeGroupState {
+                remaining: 1,
+                prior_unlinked: false,
+            });
+            entries[index].inode_group = Some(group_id);
+        }
+    }
+    Ok(groups)
+}
+
+fn remove_receipted_ownership(
+    identity: &UpdateExecutableIdentity,
+    ownership: CommandReceipt,
+    primary_name: &str,
+    yes: bool,
+) -> Result<bool> {
+    remove_receipted_ownership_with_options(identity, ownership, primary_name, yes, true)
+}
+
+fn remove_receipted_ownership_with_options(
+    identity: &UpdateExecutableIdentity,
+    ownership: CommandReceipt,
+    primary_name: &str,
+    yes: bool,
+    clean_shell: bool,
+) -> Result<bool> {
     let directory = ownership.directory.clone();
-    let mut files = Vec::new();
+    let names: Vec<&str> = ownership.hashes.keys().map(String::as_str).collect();
+    let mut sibling_files = GuardedFile::open_command_siblings(&directory, &names)?;
+    let mut entries = Vec::new();
     let mut primary = None;
     for name in ownership.hashes.keys() {
-        if let Some(file) = GuardedFile::open(&directory, name)? {
+        if let Some(file) = sibling_files.remove(name) {
             if ownership.hashes.get(name).map(String::as_str) != Some(file.sha256()) {
                 bail!(
                     "Command changed during uninstall preflight; preserved {}",
                     directory.join(name).display()
                 );
             }
-            if name == &primary_name {
+            if name == primary_name {
                 primary = Some(file);
             } else {
-                files.push(file);
+                entries.push(RemovalEntry {
+                    file,
+                    is_command: true,
+                    inode_group: None,
+                });
             }
         }
     }
@@ -262,21 +334,40 @@ fn remove(yes: bool) -> Result<bool> {
     if companions.is_empty() {
         println!("Any unreceipted compiled-host files are preserved.");
     }
-    files.extend(companions);
+    for companion in companions {
+        entries.push(RemovalEntry {
+            file: companion,
+            is_command: false,
+            inode_group: None,
+        });
+    }
     let mut receipt = ownership.receipt;
     let receipt_bytes = receipt.read_bounded(MAX_RECEIPT)?;
-    files.push(receipt);
-    files.push(primary.context("selected executable disappeared during preflight")?);
-    for file in &mut files {
-        file.verify_owned()?;
+    entries.push(RemovalEntry {
+        file: receipt,
+        is_command: false,
+        inode_group: None,
+    });
+    entries.push(RemovalEntry {
+        file: primary.context("selected executable disappeared during preflight")?,
+        is_command: true,
+        inode_group: None,
+    });
+    let mut groups = assign_command_inode_groups(&mut entries)?;
+    for entry in &mut entries {
+        entry.file.verify_owned()?;
         println!(
             "{} {}",
             if yes { "Remove" } else { "Would remove" },
-            directory.join(file.name()).display()
+            directory.join(entry.file.name()).display()
         );
     }
-    let shell = ShellIntegration::plan(&directory, &identity.path, yes);
-    validate_primary_update_identity(&identity)?;
+    let shell = if clean_shell {
+        ShellIntegration::plan(&directory, &identity.path, yes)
+    } else {
+        ShellIntegration::default()
+    };
+    validate_primary_update_identity(identity)?;
     if !yes {
         println!(
             "No files were changed. Run this executable again with uninstall --yes to remove only this plan."
@@ -297,15 +388,37 @@ fn remove(yes: bool) -> Result<bool> {
         })?;
     }
     let mut removed = Vec::new();
-    for file in &mut files {
-        let name = file.name().to_string();
+    for entry in &mut entries {
+        let name = entry.file.name().to_string();
         let mut unlinked = false;
-        let outcome = validate_primary_update_identity(&identity)
-            .and_then(|()| file.remove_checked(&mut unlinked).map_err(Into::into));
+        let outcome = validate_primary_update_identity(identity).and_then(|()| {
+            if let Some(gid) = entry.inode_group {
+                let group = &mut groups[gid];
+                let expected_remaining = group
+                    .remaining
+                    .checked_sub(1)
+                    .context("command inode group link count underflow")?;
+                let result = entry
+                    .file
+                    .remove_sibling_checked(
+                        expected_remaining as u64,
+                        group.prior_unlinked,
+                        &mut unlinked,
+                    )
+                    .map_err(Into::into);
+                if unlinked {
+                    group.remaining -= 1;
+                    group.prior_unlinked = true;
+                }
+                result
+            } else {
+                entry.file.remove_checked(&mut unlinked).map_err(Into::into)
+            }
+        });
         #[cfg(windows)]
         let outcome = match outcome {
             Err(error) if unlinked && name == primary_name => {
-                let retired = directory.join(file.name());
+                let retired = directory.join(entry.file.name());
                 delete_after_exit(&retired)
                     .map(|()| {
                         println!(
@@ -327,7 +440,7 @@ fn remove(yes: bool) -> Result<bool> {
         }
         if let Err(error) = outcome {
             if removed.iter().any(|name| name == RECEIPT)
-                && !removed.iter().any(|name| name == &primary_name)
+                && !removed.iter().any(|name| name == primary_name)
             {
                 let restore = (|| {
                     let mut staged = GuardedFile::stage(&directory, &receipt_bytes, false)?;
@@ -965,5 +1078,87 @@ fn report_path_copies(selected: Option<&Path>) {
     println!("Other Codewhale copies on this machine (not changed by uninstall):");
     for line in lines {
         println!("  {line}");
+    }
+}
+
+#[cfg(all(test, unix, not(target_os = "android")))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn write_exec(path: &Path, bytes: &[u8]) {
+        std::fs::write(path, bytes).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn uninstall_removes_hard_linked_receipted_siblings_and_receipt() {
+        for invoked_name in ["codewhale", "codew"] {
+            let dir = tempfile::TempDir::new().unwrap();
+            let bin_dir = dir.path().join("bin");
+            std::fs::create_dir(&bin_dir).unwrap();
+            std::fs::set_permissions(&bin_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+            let bytes = b"uninstall-binary";
+            let hash = crate::hashing::sha256_hex(bytes);
+            let primary = bin_dir.join("codewhale");
+            let sibling = bin_dir.join("codew");
+            write_exec(&primary, bytes);
+            std::fs::hard_link(&primary, &sibling).unwrap();
+            let receipt_path = bin_dir.join(RECEIPT);
+            std::fs::write(&receipt_path, format!("{hash}  codewhale\n{hash}  codew\n")).unwrap();
+            std::fs::set_permissions(&receipt_path, std::fs::Permissions::from_mode(0o644))
+                .unwrap();
+
+            let invoked = bin_dir.join(invoked_name);
+            let ownership = CommandReceipt::capture(&invoked)
+                .unwrap()
+                .expect("receipted pair should capture");
+            let identity = UpdateExecutableIdentity {
+                path: invoked,
+                file_hash: hash,
+            };
+            let removed = remove_receipted_ownership_with_options(
+                &identity,
+                ownership,
+                invoked_name,
+                true,
+                false,
+            )
+            .unwrap();
+            assert!(removed);
+            assert!(!primary.exists());
+            assert!(!sibling.exists());
+            assert!(!receipt_path.exists());
+        }
+    }
+
+    #[test]
+    fn receipt_capture_fails_closed_on_external_or_unreceipted_hard_link() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let bin_dir = dir.path().join("bin");
+        std::fs::create_dir(&bin_dir).unwrap();
+        std::fs::set_permissions(&bin_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let bytes = b"uninstall-binary";
+        let hash = crate::hashing::sha256_hex(bytes);
+        let primary = bin_dir.join("codewhale");
+        let sibling = bin_dir.join("codew");
+        let foreign = dir.path().join("foreign-link");
+        write_exec(&primary, bytes);
+        std::fs::hard_link(&primary, &sibling).unwrap();
+        std::fs::hard_link(&primary, &foreign).unwrap();
+
+        let receipt_path = bin_dir.join(RECEIPT);
+        std::fs::write(&receipt_path, format!("{hash}  codewhale\n{hash}  codew\n")).unwrap();
+        std::fs::set_permissions(&receipt_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(CommandReceipt::capture(&primary).is_err());
+
+        std::fs::remove_file(&foreign).unwrap();
+        std::fs::write(&receipt_path, format!("{hash}  codewhale\n")).unwrap();
+        assert!(CommandReceipt::capture(&primary).is_err());
+        assert!(primary.exists());
+        assert!(sibling.exists());
+        assert!(receipt_path.exists());
     }
 }

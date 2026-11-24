@@ -1,4 +1,4 @@
-//! Acceptance of the adopted mounted composer against its frozen painter.
+//! Acceptance of the mounted composer.
 use super::*;
 use codewhale_runtime::config::Config;
 use std::path::PathBuf;
@@ -16,7 +16,7 @@ fn app() -> App {
     app
 }
 #[test]
-fn mounted_kit_exact_buffer_caret_height_and_menu_facts_match_legacy() {
+fn mounted_kit_menu_hitboxes_match_plan_and_stay_inside_the_composer() {
     for &locale in Locale::shipped() {
         for case in 0..8 {
             let mut app = app();
@@ -79,37 +79,11 @@ fn mounted_kit_exact_buffer_caret_height_and_menu_facts_match_legacy() {
                                 cell.set_symbol("~")
                                     .set_style(Style::default().bg(Color::Rgb(11, 23, 37)));
                             }
-                            let mut expected = actual.clone();
-                            let legacy =
-                                legacy_composer::ComposerWidget::new(&app, 12, &slash, &mentions);
                             let widget = ComposerWidget::new(&app, 12, &slash, &mentions);
-                            assert_eq!(widget.desired_height(width), legacy.desired_height(width));
-                            assert_eq!(widget.cursor_pos(area), legacy.cursor_pos(area));
-                            assert_eq!(
-                                active_composer_submit_rect(&app, area),
-                                legacy_composer::active_composer_submit_rect(&app, area)
-                            );
-                            assert_eq!(
-                                wrap_input_lines_for_mouse(&app.input, usize::from(width)),
-                                legacy_composer::wrap_input_lines_for_mouse(
-                                    &app.input,
-                                    usize::from(width)
-                                )
-                            );
-                            legacy.render(area, &mut expected);
-                            let old_boxes = app.viewport.last_slash_menu_hitboxes.borrow().clone();
                             widget.render(area, &mut actual);
-                            assert_eq!(
-                                actual, expected,
-                                "locale={locale:?} case={case} density={density:?} enclosed={enclosed} area={area:?}"
-                            );
                             let plan = widget.plan(area);
                             let boxes = app.viewport.last_slash_menu_hitboxes.borrow().clone();
                             assert_eq!(boxes, plan.menu_rects);
-                            // Full wrapped option rows intentionally replace old one-row targets.
-                            if boxes.iter().all(|(_, rect)| rect.height == 1) {
-                                assert_eq!(boxes, old_boxes);
-                            }
                             for (_, rect) in boxes {
                                 assert_eq!(rect.intersection(plan.geometry.inner), rect);
                             }

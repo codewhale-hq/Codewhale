@@ -15,8 +15,6 @@ const HEIGHT: u16 = 6;
 pub(super) const DURATION_MS: u128 = 2_400;
 const FPS: u128 = 30;
 const FRAMES: usize = (DURATION_MS * FPS / 1_000) as usize;
-#[cfg(test)]
-pub(super) const MAX_MARKS: u32 = 3 * WIDTH as u32 * HEIGHT as u32;
 
 struct CameoFrame {
     buffer: Buffer,
@@ -116,7 +114,7 @@ pub(super) fn paint(
             stats.marks_skipped_text += frame.marks;
             continue;
         }
-        let glow = (0.65 + 0.35 * (progress * std::f64::consts::PI).sin()) as f32;
+        let glow = (0.36 + 0.24 * (progress * std::f64::consts::PI).sin()) as f32;
         for (i, source) in marks() {
             let point = (area.x + x + i as u16 % WIDTH, area.y + y + i as u16 / WIDTH);
             let Some(cell) = buf.cell_mut(point) else {

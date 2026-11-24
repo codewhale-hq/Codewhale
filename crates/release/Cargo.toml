@@ -13,7 +13,7 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 base64 = "0.23.1"
-codewhale-sanitize = { path = "../sanitize", version = "0.10.3" }
+codewhale-sanitize = { path = "../sanitize", version = "0.10.4" }
 reqwest = { workspace = true, features = ["blocking"] }
 ring = "0.17.14"
 rustls.workspace = true
@@ -26,3 +26,7 @@ toml.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 webpki-roots = "1"
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true

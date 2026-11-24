@@ -18,24 +18,36 @@ pub mod catalog_patch;
 pub mod keys;
 pub mod overlay;
 pub mod provenance;
+pub mod registry;
 pub mod scope;
 pub mod types;
 pub mod verify;
 
 pub use keys::{
-    DOMAIN, ENVELOPE_VERSION, KeyStatus, MAX_ENVELOPE_BYTES, MAX_PAYLOAD_BYTES,
+    AUTOMATION_CHANNEL_SUFFIX, AUTOMATION_MAX_MODELS, AUTOMATION_MAX_VALIDITY_SECS, DOMAIN,
+    ENVELOPE_VERSION, KeyRole, KeyStatus, MAX_ENVELOPE_BYTES, MAX_PAYLOAD_BYTES,
     SUPPORTED_SCHEMA_VERSION, TRUSTED_KEYS, TrustedKey,
 };
 pub use overlay::{
     DefaultSource, cloud_default_base_url, cloud_default_model, cloud_default_model_for_route,
+    pulled_registry, pulled_registry_at,
 };
 pub use provenance::{CloudFactsState, CloudFactsStatus, FactsOrigin};
+pub use registry::{
+    AdmittedRegistry, BuiltinNames, CompiledNamingRules, CompiledRegistry, PulledProvider,
+    REGISTRY_CHANNEL, REGISTRY_SCHEMA, Registry, VerifiedRegistry, admit_registry,
+    verify_registry_envelope,
+};
 pub use scope::{ScopedFacts, scoped_view};
 pub use types::{
     Announcement, AnnouncementLevel, CloudFacts, ModelFact, ModelOp, PricingFact,
     ProviderDefaultFact, ReleaseFact, Surface,
 };
-pub use verify::{Envelope, FactsRejection, VerifiedFacts, verify_envelope};
+pub use verify::{
+    Envelope, FactsRejection, MAX_AUTOMATION_WINDOW_SECS, VerifiedFacts,
+    automation_scope_violation, automation_window_violation, check_automation_window,
+    verify_envelope,
+};
 
 /// Whether any pinned key can authenticate a release. With none, the layer is
 /// inert regardless of the feature flag.

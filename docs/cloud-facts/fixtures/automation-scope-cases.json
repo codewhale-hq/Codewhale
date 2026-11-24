@@ -1,0 +1,1887 @@
+{
+ "_meta": {
+  "purpose": "Cases every implementation of the automation key scope must judge the same way: crates/config/src/cloud_facts/verify.rs, web/lib/cloud-facts.ts and web/scripts/facts-publish.mjs. Each test signs `payload` with an ephemeral automation key and verifies it for `channel` at `now`. `out_of_scope` is null when it must be accepted, otherwise a substring of the Rust rejection reason."
+ },
+ "now": 1790000000,
+ "cases": [
+  {
+   "name": "in scope",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "New Model"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": null
+  },
+  {
+   "name": "minimal sections omitted",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "New Model"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ]
+   },
+   "out_of_scope": null
+  },
+  {
+   "name": "on the founder channel",
+   "channel": "stable",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "New Model"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": "channel"
+  },
+  {
+   "name": "default model",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "New Model"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {
+     "deepseek": {
+      "default_model": "x"
+     }
+    },
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": "provider defaults"
+  },
+  {
+   "name": "base url",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "New Model"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {
+     "deepseek": {
+      "base_url": "https://evil.example/v1"
+     }
+    },
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": "provider defaults"
+  },
+  {
+   "name": "release facts",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "New Model"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {},
+    "release": {
+     "latest": "9.9.9"
+    },
+    "announcements": []
+   },
+   "out_of_scope": "release facts"
+  },
+  {
+   "name": "announcement",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "New Model"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": [
+     {
+      "id": "a",
+      "text": "hello"
+     }
+    ]
+   },
+   "out_of_scope": "announcements"
+  },
+  {
+   "name": "unknown top-level field",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "New Model"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": [],
+    "future_section": {
+     "anything": true
+    }
+   },
+   "out_of_scope": "field"
+  },
+  {
+   "name": "hide",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "New Model",
+      "op": "hide"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": "upsert or deprecation"
+  },
+  {
+   "name": "unknown model field",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "New Model",
+      "base_url": "https://evil.example/v1"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": "field"
+  },
+  {
+   "name": "price",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "New Model",
+      "pricing": {
+       "input_per_m": 0,
+       "output_per_m": 0
+      }
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": "field"
+  },
+  {
+   "name": "unlisted attestation",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "New Model",
+      "allow_unlisted": true
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": "field"
+  },
+  {
+   "name": "reasoning options",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "New Model",
+      "reasoning_options": [
+       {
+        "anything": 1
+       }
+      ]
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": "field"
+  },
+  {
+   "name": "control character in name",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "Fast \u001b[31mfree"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": "text"
+  },
+  {
+   "name": "oversized name",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": "text"
+  },
+  {
+   "name": "tiny context window",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "New Model"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": "limit"
+  },
+  {
+   "name": "absurd context window",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "New Model"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": "limit"
+  },
+  {
+   "name": "output above context",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 100000,
+      "max_output": 200000,
+      "reasoning": true,
+      "display_name": "New Model"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": "limit"
+  },
+  {
+   "name": "no expiry",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "New Model"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": "not_after"
+  },
+  {
+   "name": "validity one second too long",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:21Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "New Model"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": "validity"
+  },
+  {
+   "name": "fractional timestamp",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20.999Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "New Model"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": "timestamp"
+  },
+  {
+   "name": "version ahead of publication",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913601,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "New Model"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": "facts_version"
+  },
+  {
+   "name": "version at the integer limit",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 9007199254740991,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "reasoning": true,
+      "display_name": "New Model"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/old-model",
+      "op": "deprecate",
+      "deprecated_at": "2026-09-01",
+      "replacement": "vendor/new-model",
+      "note": "Retired upstream."
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": "facts_version"
+  },
+  {
+   "name": "too many models",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/m0"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m1"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m2"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m3"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m4"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m5"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m6"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m7"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m8"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m9"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m10"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m11"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m12"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m13"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m14"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m15"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m16"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m17"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m18"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m19"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m20"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m21"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m22"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m23"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m24"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m25"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m26"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m27"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m28"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m29"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m30"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m31"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m32"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m33"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m34"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m35"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m36"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m37"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m38"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m39"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m40"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m41"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m42"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m43"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m44"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m45"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m46"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m47"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m48"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m49"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m50"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m51"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m52"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m53"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m54"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m55"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m56"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m57"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m58"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m59"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m60"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m61"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m62"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m63"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m64"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m65"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m66"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m67"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m68"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m69"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m70"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m71"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m72"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m73"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m74"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m75"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m76"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m77"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m78"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m79"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m80"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m81"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m82"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m83"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m84"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m85"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m86"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m87"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m88"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m89"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m90"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m91"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m92"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m93"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m94"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m95"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m96"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m97"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m98"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m99"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m100"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m101"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m102"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m103"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m104"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m105"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m106"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m107"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m108"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m109"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m110"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m111"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m112"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m113"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m114"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m115"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m116"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m117"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m118"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m119"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m120"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m121"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m122"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m123"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m124"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m125"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m126"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m127"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m128"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m129"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m130"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m131"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m132"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m133"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m134"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m135"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m136"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m137"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m138"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m139"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m140"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m141"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m142"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m143"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m144"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m145"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m146"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m147"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m148"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m149"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m150"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m151"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m152"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m153"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m154"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m155"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m156"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m157"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m158"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m159"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m160"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m161"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m162"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m163"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m164"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m165"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m166"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m167"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m168"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m169"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m170"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m171"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m172"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m173"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m174"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m175"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m176"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m177"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m178"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m179"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m180"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m181"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m182"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m183"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m184"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m185"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m186"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m187"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m188"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m189"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m190"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m191"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m192"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m193"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m194"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m195"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m196"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m197"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m198"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m199"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m200"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m201"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m202"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m203"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m204"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m205"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m206"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m207"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m208"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m209"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m210"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m211"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m212"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m213"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m214"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m215"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m216"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m217"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m218"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m219"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m220"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m221"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m222"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m223"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m224"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m225"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m226"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m227"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m228"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m229"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m230"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m231"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m232"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m233"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m234"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m235"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m236"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m237"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m238"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m239"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m240"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m241"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m242"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m243"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m244"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m245"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m246"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m247"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m248"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m249"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m250"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m251"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m252"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m253"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m254"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m255"
+     },
+     {
+      "provider": "openrouter",
+      "id": "vendor/m256"
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": "models"
+  },
+  {
+   "name": "null model field",
+   "channel": "stable-models",
+   "payload": {
+    "schema_version": 1,
+    "channel": "stable-models",
+    "facts_version": 1789913600,
+    "published_at": "2026-09-20T14:13:20Z",
+    "not_after": "2026-09-27T14:13:20Z",
+    "applies_to": "*",
+    "models": [
+     {
+      "provider": "openrouter",
+      "id": "vendor/new-model",
+      "context_window": 1000000,
+      "max_output": 65536,
+      "note": null
+     }
+    ],
+    "provider_defaults": {},
+    "release": null,
+    "announcements": []
+   },
+   "out_of_scope": "null"
+  }
+ ]
+}

@@ -6,7 +6,7 @@ use ring::signature::KeyPair as _;
 use serde_json::{Value, json};
 
 use super::catalog_patch::apply_model_patches;
-use super::keys::{KeyStatus, TrustedKey};
+use super::keys::{AUTOMATION_MAX_VALIDITY_SECS, KeyRole, KeyStatus, TrustedKey};
 use super::overlay;
 use super::provenance::{CloudFactsState, CloudFactsStatus, FactsOrigin};
 use super::scope::{base_url_allowed, scoped_view};
@@ -31,6 +31,7 @@ fn test_only_key(status: KeyStatus) -> TrustedKey {
         key_id: "cwf-test-only",
         public_key,
         status,
+        role: KeyRole::Founder,
     }
 }
 
@@ -59,6 +60,14 @@ impl Signer {
             key_id: self.key_id,
             public_key,
             status,
+            role: KeyRole::Founder,
+        }
+    }
+
+    fn automation(&self) -> TrustedKey {
+        TrustedKey {
+            role: KeyRole::Automation,
+            ..self.trusted(KeyStatus::Active)
         }
     }
 
@@ -514,7 +523,7 @@ fn catalog_layer_15_patches_sit_between_models_dev_and_provider_live() {
 /// mid-sequence invalidates that test's ticket. Every overlay test holds this.
 static OVERLAY_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn overlay_test_guard() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn overlay_test_guard() -> std::sync::MutexGuard<'static, ()> {
     OVERLAY_TESTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -651,6 +660,7 @@ fn signed_envelope_rejects_metadata_digest_future_and_malformed_times() {
         ("published_at", json!("2099-01-01T00:00:00Z")),
         ("not_after", json!("2026-02-30T00:00:00Z")),
         ("not_after", json!("2026-01-01T00:00:00Z")),
+        ("not_after", json!("2026-08-30T00:00:00Z")),
     ] {
         let mut bad = payload("stable", 5, "*");
         bad[field] = value;
@@ -1257,4 +1267,142 @@ fn cloud_route_identity_preserves_legacy_wire_endpoint_boundaries() {
         Some(anthropic)
     );
     assert!(!scoped.provider_defaults.contains_key("minimax"));
+}
+
+const AUTOMATION_CASES: &str =
+    include_str!("../../../../docs/cloud-facts/fixtures/automation-scope-cases.json");
+
+fn automation_cases() -> (u64, Vec<Value>) {
+    let fixture: Value = serde_json::from_str(AUTOMATION_CASES).expect("fixture json");
+    (
+        fixture["now"].as_u64().expect("now"),
+        fixture["cases"].as_array().expect("cases").clone(),
+    )
+}
+
+#[test]
+fn automation_scope_cases_are_judged_as_the_shared_fixture_says() {
+    let signer = Signer::new("cwf-auto");
+    let (now, cases) = automation_cases();
+    assert_eq!(cases.len(), 25);
+    for case in cases {
+        let name = case["name"].as_str().unwrap();
+        let channel = case["channel"].as_str().unwrap();
+        let bytes = serde_json::to_vec(&signer.envelope(&case["payload"])).unwrap();
+        let check =
+            |keys: &[TrustedKey]| verify_envelope(&bytes, channel, &v("0.9.11"), None, keys, now);
+        match (case["out_of_scope"].as_str(), check(&[signer.automation()])) {
+            (None, Ok(verified)) => {
+                assert_eq!(verified.key_id, "cwf-auto", "{name}");
+                assert!(!verified.stale, "{name}");
+            }
+            (Some(expected), Err(FactsRejection::OutOfScope(reason))) => {
+                assert!(reason.contains(expected), "{name}: got {reason}");
+            }
+            (expected, other) => panic!("{name}: expected {expected:?}, got {other:?}"),
+        }
+        assert!(
+            check(&[signer.trusted(KeyStatus::Active)]).is_ok(),
+            "{name}: a founder key is not bound by the automation scope"
+        );
+    }
+}
+
+#[test]
+fn a_founder_signature_lifts_the_automation_scope_in_either_order() {
+    let auto = Signer::new("cwf-auto");
+    let founder = Signer::new("cwf-founder");
+    let (now, cases) = automation_cases();
+    let case = cases
+        .iter()
+        .find(|case| case["name"] == "default model")
+        .unwrap();
+    let bytes = serde_json::to_vec(&case["payload"]).unwrap();
+    let keys = [auto.automation(), founder.trusted(KeyStatus::Active)];
+    let check = |env: &Value| {
+        verify_envelope(
+            &serde_json::to_vec(env).unwrap(),
+            "stable-models",
+            &v("0.9.11"),
+            None,
+            &keys,
+            now,
+        )
+    };
+
+    let mut auto_first = auto.envelope(&case["payload"]);
+    auto_first["sigs"] = json!([{ "key_id": "cwf-founder", "sig_b64": founder.sign(&bytes) }]);
+    assert_eq!(check(&auto_first).unwrap().key_id, "cwf-founder");
+
+    let mut founder_first = founder.envelope(&case["payload"]);
+    founder_first["sigs"] = json!([{ "key_id": "cwf-auto", "sig_b64": auto.sign(&bytes) }]);
+    assert_eq!(check(&founder_first).unwrap().key_id, "cwf-founder");
+
+    let mut forged = auto.envelope(&case["payload"]);
+    forged["sigs"] = json!([{ "key_id": "cwf-founder", "sig_b64": auto.sign(&bytes) }]);
+    assert!(matches!(check(&forged), Err(FactsRejection::OutOfScope(_))));
+
+    let retired = [auto.automation(), founder.trusted(KeyStatus::Retired)];
+    assert!(matches!(
+        verify_envelope(
+            &serde_json::to_vec(&auto_first).unwrap(),
+            "stable-models",
+            &v("0.9.11"),
+            None,
+            &retired,
+            now
+        ),
+        Err(FactsRejection::OutOfScope(_))
+    ));
+}
+
+#[test]
+fn an_automation_key_cannot_raise_the_founder_channel_floor() {
+    let auto = Signer::new("cwf-auto");
+    let (now, cases) = automation_cases();
+    let mut payload = cases[0]["payload"].clone();
+    payload["channel"] = json!("stable");
+    let bytes = serde_json::to_vec(&auto.envelope(&payload)).unwrap();
+    let rejected = verify_envelope(
+        &bytes,
+        "stable",
+        &v("0.9.11"),
+        None,
+        &[auto.automation()],
+        now,
+    );
+    assert!(
+        matches!(rejected, Err(FactsRejection::OutOfScope(reason)) if reason.contains("channel"))
+    );
+}
+
+#[test]
+fn automation_limits_and_the_empty_production_roster() {
+    assert_eq!(AUTOMATION_MAX_VALIDITY_SECS, 604_800);
+    assert_eq!(super::AUTOMATION_CHANNEL_SUFFIX, "-models");
+    assert_eq!(super::AUTOMATION_MAX_MODELS, 256);
+    assert!(
+        super::TRUSTED_KEYS
+            .iter()
+            .all(|key| key.role == KeyRole::Founder)
+    );
+    let auto = Signer::new("cwf-auto");
+    let dup = TrustedKey {
+        key_id: "cwf-founder-alias",
+        role: KeyRole::Founder,
+        ..auto.automation()
+    };
+    let (now, cases) = automation_cases();
+    let bytes = serde_json::to_vec(&auto.envelope(&cases[0]["payload"])).unwrap();
+    assert!(matches!(
+        verify_envelope(
+            &bytes,
+            "stable-models",
+            &v("0.9.11"),
+            None,
+            &[auto.automation(), dup],
+            now
+        ),
+        Err(FactsRejection::UnknownKey { .. })
+    ));
 }

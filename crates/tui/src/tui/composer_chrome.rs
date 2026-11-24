@@ -8,21 +8,6 @@ fn density(value: ComposerDensity) -> NativeComposerDensity {
         ComposerDensity::Spacious => NativeComposerDensity::Spacious,
     }
 }
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ComposerChrome {
-    pub border_rows: u16,
-    pub max_total_rows: u16,
-}
-#[cfg(test)]
-impl ComposerChrome {
-    pub fn for_density(value: ComposerDensity, panel: bool) -> Self {
-        Self {
-            border_rows: if panel { 2 } else { 1 },
-            max_total_rows: density(value).max_rows(),
-        }
-    }
-}
 pub fn desired_height(
     rows: usize,
     menus: usize,
@@ -34,11 +19,6 @@ pub fn desired_height(
 }
 #[cfg(test)]
 pub use codewhale_ratatui::native_composer_top_padding as top_padding;
-#[cfg(test)]
-#[path = "composer_chrome_legacy.rs"]
-mod legacy;
-#[cfg(test)]
-pub use legacy::{render_tideline_composer_submit, tideline_composer_geometry};
 
 #[cfg(test)]
 mod tests {

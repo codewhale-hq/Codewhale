@@ -1,4 +1,7 @@
-const DRY = typeof DRY_RUN !== "undefined" && DRY_RUN;
+const DRY = typeof APPLY_FOUNDATIONS === "undefined" || APPLY_FOUNDATIONS !== true;
+const page = figma.root.children.find(node => node.id === '229:3');
+if (!page) throw Error('Inspect the existing Foundations page before synchronization');
+await figma.setCurrentPageAsync(page);
 const rgba = (v) => {
   const n = parseInt(v.hex, 16);
   return { r: ((n >> 16) & 255) / 255, g: ((n >> 8) & 255) / 255, b: (n & 255) / 255, a: v.alpha };
@@ -75,4 +78,8 @@ for (const wanted of PAYLOAD.textStyles) {
   style.fontSize = wanted.size;
   style.lineHeight = { unit: "PIXELS", value: wanted.line };
 }
+report.collectionIds = (await figma.variables.getLocalVariableCollectionsAsync()).map(value => value.id);
+report.variableIds = (await figma.variables.getLocalVariablesAsync()).map(value => value.id);
+report.textStyleIds = (await figma.getLocalTextStylesAsync()).map(value => value.id);
+report.pageId = page.id;
 return report;

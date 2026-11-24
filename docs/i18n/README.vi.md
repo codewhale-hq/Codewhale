@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fd76d718e3a2 -->
+<!-- source: README.md sha256:8f9ce64ce19c -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ Lệnh này cài bản phát hành mới nhất trên macOS hoặc Linux và kh�
 
 <sub>Bản dịch này là bản nháp do máy dịch và chưa được người bản ngữ xem lại.</sub>
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="Codewhale trong terminal sau một nhiệm vụ demo. Nó báo đã thêm cờ --json vào export.py, cả 3 bài kiểm thử cục bộ đều đạt và bài review được ủy quyền không tìm thấy vấn đề. Danh sách nhiệm vụ bên dưới có ba bước đã hoàn thành, và dòng trạng thái hiển thị Full Access cùng nhà cung cấp cục bộ website-demo.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale trong terminal sau một tác vụ thật với deepseek-flash. Nó đã chạy python3 -m unittest -v test_ls.py, 2 bài kiểm thử đạt, và cho biết đã thêm tùy chọn --json vào ls.py. Dòng trạng thái hiển thị accept edits và deepseek-flash.">
 
-<sub>Một bản dựng phát triển của 0.10.3, phiên bản chưa phát hành, với mô hình kiểm thử theo kịch bản, chạy ở Full Access trong một workspace dùng một lần. Phần chỉnh sửa, ba bài kiểm thử và một lần review của sub-agent đều chạy thật.</sub>
+<sub>Một phiên làm việc thật trên bản dựng phát triển của 0.10.3: deepseek-flash qua API của DeepSeek đã viết thay đổi, và bạn cho phép chạy kiểm thử một lần.</sub>
 
 </div>
 
@@ -77,9 +77,9 @@ Hơn 40 nhà cung cấp được tích hợp sẵn, gồm Anthropic, OpenAI, Dee
 
 `/goal` đặt một mục tiêu kéo dài qua nhiều lượt. Codewhale có thể chia việc cho các [sub-agent](../SUBAGENTS.md), chạy một [Fleet](../FLEET.md) gồm các agent với vai trò và mô hình riêng, hoặc làm theo một [quy trình làm việc](../WORKFLOW_AUTHORING.md) được commit trong kho.
 
-### Tiện ích mở rộng
+### Plugin
 
-Kết nối [máy chủ MCP](../MCP.md), thêm [kỹ năng](../SKILLS.md) và [plugin](../PLUGINS.md), và chạy [hook](../HOOKS.md) trên các sự kiện phiên và công cụ. Chế độ mã (thử nghiệm, bật mặc định) cho phép mô hình viết một chương trình `execute_tools` gọi nhiều công cụ MCP và plugin; mỗi lời gọi vẫn tuân theo quy tắc phê duyệt của bạn và giữ biên nhận. Plugin Computer Use đi kèm v0.10.2 (thử nghiệm, chỉ macOS) có thể quan sát và điều khiển các ứng dụng khác, và nó luôn tắt cho đến khi bạn xem lại quyền truy cập và bật nó ([hướng dẫn](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/crates/tui/plugins/computer-use/README.md)). Sắp có trong 0.10.3: plugin này được [phát hành riêng](https://github.com/codewhale-hq/codewhale-cu-plugin).
+Kết nối [máy chủ MCP](../MCP.md), thêm [kỹ năng](../SKILLS.md) và [plugin](../PLUGINS.md), và chạy [hook](../HOOKS.md) trên các sự kiện phiên và công cụ. Chế độ mã (thử nghiệm, bật mặc định) cho phép mô hình viết một chương trình `execute_tools` gọi nhiều công cụ MCP và plugin; mỗi lời gọi vẫn tuân theo quy tắc phê duyệt của bạn và giữ biên nhận. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) là một plugin riêng được phát hành độc lập (thử nghiệm, chỉ macOS) và luôn tắt cho đến khi bạn xem lại quyền truy cập và bật nó.
 
 ### Các cách chạy
 
@@ -96,11 +96,9 @@ Kết nối [máy chủ MCP](../MCP.md), thêm [kỹ năng](../SKILLS.md) và [p
 
 ## Cách nó giữ an toàn
 
-Hai công tắc quyết định Codewhale được tự làm bao nhiêu. Khi ô nhập trống, `Tab` đổi chế độ: **Plan** chỉ đọc và tìm kiếm, không thay đổi gì, **Work** chỉnh sửa tệp và chạy lệnh, còn **Operate** có cùng quyền như Work và tiếp tục cho đến khi mục tiêu được xác minh hoặc cần đến bạn. `Shift+Tab` đổi quyền. **Ask**, mặc định, áp dụng chỉnh sửa tệp trong kho mà không hỏi và hỏi trước các lệnh shell không chỉ đọc. **Auto-Review** để các quy tắc và một mô hình duyệt phê duyệt các lệnh gọi thông thường và từ chối lệnh rủi ro cao; chuyển sang Ask để tự phê duyệt chúng. **Full Access** không bao giờ hỏi và tắt sandbox của Codewhale, dù quy tắc của kho và chính sách quản lý vẫn áp dụng. [Hướng dẫn v0.10.2](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md) có chi tiết.
+Một núm xoay quyết định Codewhale được tự làm bao nhiêu. `Shift+Tab` chuyển lần lượt: **Ask → Accept Edits → Plan → Auto-Review → Full Access**. **Accept Edits**, mặc định, áp dụng chỉnh sửa tệp bên trong kho git mà không hỏi và hỏi trước các lệnh. **Ask** hỏi trước mọi chỉnh sửa tệp và mọi lệnh. **Plan** chỉ đọc và tìm kiếm, không thay đổi gì. **Auto-Review** để các quy tắc và một mô hình duyệt phê duyệt các lệnh gọi thông thường và từ chối lệnh rủi ro cao; chuyển sang Ask để tự phê duyệt chúng. **Full Access** không bao giờ hỏi và tắt sandbox của Codewhale, dù quy tắc của kho và chính sách quản lý vẫn áp dụng. `Tab` chỉ dùng để tự hoàn thành và không bao giờ đổi chế độ, còn Operate đã bị loại bỏ. [Hướng dẫn chế độ](../MODES.md) có chi tiết.
 
-Sắp có trong 0.10.3: `Shift+Tab` trở thành một núm xoay qua Ask, Accept Edits, Plan, Auto-Review và Full Access, `Tab` không còn đổi chế độ, và Operate bị loại bỏ. Ask sẽ hỏi trước cả mỗi chỉnh sửa tệp, còn mặc định mới, Accept Edits, sẽ áp dụng chỉnh sửa trong kho git và vẫn hỏi trước các lệnh. [Hướng dẫn hiện tại](../MODES.md) mô tả điều này.
-
-Ở Ask và Auto-Review, lệnh chạy trong sandbox của hệ điều hành nếu hệ thống có: Seatbelt trên macOS, và bubblewrap trên Linux khi đã cài. Windows chưa có sandbox hệ điều hành, và Full Access tắt sandbox. Bên trong sandbox, lệnh shell và phiên terminal không thể đọc các kho thông tin xác thực như `~/.ssh`, `~/.aws` và tệp `.env`. `/preview-request` hiển thị bản xem trước đã che thông tin nhạy cảm của yêu cầu tiếp theo mà không gửi nó.
+Ở Ask, Accept Edits và Auto-Review, lệnh chạy trong sandbox của hệ điều hành nếu hệ thống có: Seatbelt trên macOS, và bubblewrap trên Linux khi đã cài. Windows chưa có sandbox hệ điều hành, và Full Access tắt sandbox. Bên trong sandbox, lệnh shell và phiên terminal không thể đọc các kho thông tin xác thực như `~/.ssh`, `~/.aws` và tệp `.env`. `/preview-request` hiển thị bản xem trước đã che thông tin nhạy cảm của yêu cầu tiếp theo mà không gửi nó.
 
 Bạn không cần tài khoản, và khóa bạn thêm bằng `/provider` ở lại trên máy của bạn. Với khóa API của riêng bạn, bạn trả tiền trực tiếp cho nhà cung cấp, còn mô hình cục bộ không cần khóa. Chân trang và `/cost` cho biết một phiên đã tốn bao nhiêu khi biết giá, và giá chưa biết được hiển thị là chưa biết, không bao giờ là miễn phí.
 

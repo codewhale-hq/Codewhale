@@ -82,13 +82,7 @@ pub fn build_approval_key(tool_name: &str, input: &serde_json::Value) -> Approva
         | "exec_shell_wait"
         | "exec_shell_interact"
         | "exec_wait"
-        | "exec_interact" => {
-            let mut execution_input = input.clone();
-            if let Some(fields) = execution_input.as_object_mut() {
-                fields.remove("description");
-            }
-            format!("shell:{tool_name}:{}", hash_json_value(&execution_input))
-        }
+        | "exec_interact" => exact_shell_call_key(tool_name, input),
         "fetch_url" | "web.fetch" | "web_fetch" => {
             let host = parse_host(input);
             format!("net:{host}")
@@ -112,6 +106,9 @@ pub fn build_approval_grouping_key(tool_name: &str, input: &serde_json::Value) -
         "apply_patch" => {
             let paths_hash = hash_patch_paths(input);
             format!("patch:{paths_hash}")
+        }
+        "exec_shell" | "task_shell_start" if shell_call_carries_stdin(input) => {
+            exact_shell_call_key(tool_name, input)
         }
         "exec_shell" | "task_shell_start" => shell_command_grant_scope(input),
         // Interact and wait calls carry no command, only input for a live
@@ -149,6 +146,17 @@ pub fn build_approval_grouping_key(tool_name: &str, input: &serde_json::Value) -
     ApprovalKey(fingerprint)
 }
 
+/// Prefix on approval keys minted for human-confirmed `plugin_manager` changes.
+pub const CREATOR_HUMAN_APPROVAL_KEY_PREFIX: &str = "creator-human:";
+
+/// Whether a Rust-minted approval key bypasses Full Access's policy-hold auto-denial
+/// so a person still answers on the approval card.
+#[must_use]
+pub fn forces_full_access_prompt_for_key(approval_key: &str) -> bool {
+    approval_key.starts_with("extcall:ext:")
+        || approval_key.starts_with(CREATOR_HUMAN_APPROVAL_KEY_PREFIX)
+}
+
 /// Exact and grouping keys for one call, as the engine puts them on an
 /// approval request. A tool with an [`approval_scope`] (extension tools) is
 /// keyed `<scope>:<tool_name>:<hash of input>` for both, so its grants are
@@ -164,12 +172,28 @@ pub fn approval_keys_for_call(
     tool_name: &str,
     input: &serde_json::Value,
 ) -> (ApprovalKey, ApprovalKey) {
-    let scope = registry
-        .and_then(|registry| registry.get(tool_name))
-        .and_then(|tool| tool.approval_scope());
+    let tool = registry.and_then(|registry| registry.get(tool_name));
+    let creator_changing = tool.as_deref().is_some_and(|spec| {
+        crate::extension_host::creator_policy::is_creator_changing_spec_call(spec, input)
+    });
+    let scope = tool.and_then(|tool| tool.approval_scope());
     let keys = match scope {
+        Some(scope) if creator_changing => {
+            let key = ApprovalKey(format!(
+                "{CREATOR_HUMAN_APPROVAL_KEY_PREFIX}{scope}:{tool_name}:{}",
+                hash_json_value(input)
+            ));
+            (key.clone(), key)
+        }
         Some(scope) => {
             let key = ApprovalKey(format!("{scope}:{tool_name}:{}", hash_json_value(input)));
+            (key.clone(), key)
+        }
+        None if creator_changing => {
+            let key = ApprovalKey(format!(
+                "{CREATOR_HUMAN_APPROVAL_KEY_PREFIX}{tool_name}:{}",
+                hash_json_value(input)
+            ));
             (key.clone(), key)
         }
         None => (
@@ -445,6 +469,20 @@ pub fn computer_use_batch_hidden_gate(tool_name: &str, input: &Value) -> Option<
                 .unwrap_or(&Value::Null);
             computer_use_user_gate(&format!("mcp_{inner}"), arguments).map(|_| inner.to_string())
         })
+}
+
+fn exact_shell_call_key(tool_name: &str, input: &serde_json::Value) -> String {
+    let mut execution_input = input.clone();
+    if let Some(fields) = execution_input.as_object_mut() {
+        fields.remove("description");
+    }
+    format!("shell:{tool_name}:{}", hash_json_value(&execution_input))
+}
+
+fn shell_call_carries_stdin(input: &serde_json::Value) -> bool {
+    ["stdin", "input", "data"]
+        .iter()
+        .any(|key| input.get(*key).is_some_and(|value| !value.is_null()))
 }
 
 /// The session-grant scope for a shell command.
@@ -1019,6 +1057,50 @@ mod tests {
                 build_approval_grouping_key(tool, &json!({"task_id": "t1", "input": "y\n"}))
             );
         }
+    }
+
+    #[test]
+    fn shell_run_grant_does_not_cover_a_different_stdin() {
+        for tool in ["Bash", "bash", "exec_shell", "task_shell_start"] {
+            let plain = json!({"command": "python3 -"});
+            let hello = json!({"command": "python3 -", "stdin": "print(1)"});
+            let other = json!({"command": "python3 -", "stdin": "print(2)"});
+            let granted = build_approval_grouping_key(tool, &plain);
+            let with_stdin = build_approval_grouping_key(tool, &hello);
+            assert_ne!(granted, with_stdin, "{tool}: stdin is part of what runs");
+            assert_ne!(
+                with_stdin,
+                build_approval_grouping_key(tool, &other),
+                "{tool}: different stdin must not share a grant"
+            );
+            assert_eq!(
+                with_stdin,
+                build_approval_grouping_key(tool, &hello),
+                "{tool}: the same call keeps its grant"
+            );
+            for alias in ["input", "data"] {
+                let aliased = json!({"command": "python3 -", alias: "print(2)"});
+                assert_ne!(
+                    granted,
+                    build_approval_grouping_key(tool, &aliased),
+                    "{tool}: `{alias}` carries stdin too"
+                );
+                assert_ne!(
+                    with_stdin,
+                    build_approval_grouping_key(tool, &aliased),
+                    "{tool}: `{alias}` input is not the `stdin` input of another call"
+                );
+            }
+            assert_eq!(
+                granted,
+                build_approval_grouping_key(tool, &json!({"command": "python3 -", "stdin": null})),
+                "{tool}: a null stdin is no stdin"
+            );
+        }
+        let family_plain = build_approval_grouping_key("Bash", &json!({"command": "git status"}));
+        let family_stdin =
+            build_approval_grouping_key("Bash", &json!({"command": "git status", "stdin": "x"}));
+        assert_ne!(family_plain, family_stdin);
     }
 
     #[test]

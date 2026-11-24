@@ -10,9 +10,13 @@ rewrite them. Every locale carries the same words through the dictionary spine
 
 ## The subhead
 
-Codewhale is becoming the open environment where you build software with many
-agents, on any model, on your own computer and in the cloud. It starts today in
-your terminal and your browser, open source and yours to read.
+Codewhale is an open-source coding agent for your terminal, written in Rust. It
+works with any model, can split one task across several agents, and every line
+of it is yours to read.
+
+This is the plain sentence the founder chose under the line (home page version
+B, CURRENT_DECISIONS §153 and §156). Where Codewhale is going is said lower on
+the page, in section 4 and the map.
 
 The line under the install box reads "Version {version} is released, and it
 needs no account." The version comes from the published release.

@@ -84,6 +84,7 @@ pub enum CredentialSource {
     UserGlobalConfig,
     /// An expiring, process-only Codewhale account auth transform.
     AccountSession,
+    ClaudeOrgLink,
     SessionKey,
     /// Nothing had a credential. `probed` is in precedence order.
     Missing {
@@ -115,6 +116,9 @@ impl CredentialSource {
             }
             Self::OAuth { flow, .. } => Cow::Owned(format!("{flow} OAuth")),
             Self::AccountSession => Cow::Borrowed("Codewhale account"),
+            Self::ClaudeOrgLink => {
+                Cow::Borrowed(codewhale_config::credentials::CLAUDE_ORG_KEY_SOURCE)
+            }
             Self::SessionKey => Cow::Borrowed("session key"),
             Self::UserGlobalConfig => Cow::Borrowed("~/.codewhale/config.toml api_key"),
             Self::Missing { .. } => Cow::Borrowed("not found"),

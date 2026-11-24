@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fd76d718e3a2 -->
+<!-- source: README.md sha256:8f9ce64ce19c -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ Perintah ini memasang rilis terbaru di macOS atau Linux, dan tidak memerlukan ak
 
 <sub>Terjemahan ini adalah draf mesin yang belum ditinjau oleh penutur asli.</sub>
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="Codewhale di terminal setelah tugas demo. Ia melaporkan telah menambahkan flag --json ke export.py, ketiga tes lokal lulus, dan tinjauan yang didelegasikan tidak menemukan masalah. Daftar tugas di bawahnya menampilkan tiga langkah selesai, dan baris status menampilkan Full Access serta penyedia lokal website-demo.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale di terminal setelah tugas nyata dengan deepseek-flash. Ia menjalankan python3 -m unittest -v test_ls.py, 2 tes lulus, dan melaporkan bahwa ia menambahkan opsi --json ke ls.py. Baris status menampilkan accept edits dan deepseek-flash.">
 
-<sub>Build pengembangan 0.10.3, yang belum dirilis, dengan model uji berskrip, dalam Full Access di dalam ruang kerja sekali pakai. Pengeditan, tiga tes, dan tinjauan oleh sub-agen benar-benar dijalankan.</sub>
+<sub>Sesi nyata pada build pengembangan 0.10.3: deepseek-flash melalui API DeepSeek menulis perubahannya, dan Anda mengizinkan tes dijalankan satu kali.</sub>
 
 </div>
 
@@ -77,9 +77,9 @@ Lebih dari 40 penyedia sudah terpasang, termasuk Anthropic, OpenAI, DeepSeek, Go
 
 `/goal` menetapkan sasaran yang berlanjut lintas giliran. Codewhale dapat membagi pekerjaan ke [sub-agen](../SUBAGENTS.md), menjalankan [Fleet](../FLEET.md) agen dengan peran dan model masing-masing, atau mengikuti [alur kerja](../WORKFLOW_AUTHORING.md) yang disimpan di repositori.
 
-### Ekstensi
+### Plugin
 
-Hubungkan [server MCP](../MCP.md), tambahkan [skill](../SKILLS.md) dan [plugin](../PLUGINS.md), dan jalankan [hook](../HOOKS.md) pada peristiwa sesi dan alat. Mode kode (eksperimental, aktif secara bawaan) memungkinkan model menulis satu program `execute_tools` yang memanggil beberapa alat MCP dan plugin; setiap panggilan tetap mengikuti aturan persetujuan Anda dan menyimpan tanda terimanya. Plugin Computer Use yang dibundel dengan v0.10.2 (eksperimental, hanya macOS) dapat mengamati dan mengoperasikan aplikasi lain, dan tetap mati sampai Anda meninjau aksesnya dan mengaktifkannya ([panduan](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/crates/tui/plugins/computer-use/README.md)). Hadir di 0.10.3: plugin ini [dirilis terpisah](https://github.com/codewhale-hq/codewhale-cu-plugin).
+Hubungkan [server MCP](../MCP.md), tambahkan [skill](../SKILLS.md) dan [plugin](../PLUGINS.md), dan jalankan [hook](../HOOKS.md) pada peristiwa sesi dan alat. Mode kode (eksperimental, aktif secara bawaan) memungkinkan model menulis satu program `execute_tools` yang memanggil beberapa alat MCP dan plugin; setiap panggilan tetap mengikuti aturan persetujuan Anda dan menyimpan tanda terimanya. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) adalah plugin terpisah yang dirilis sendiri (eksperimental, hanya macOS), dan tetap mati sampai Anda meninjau aksesnya dan mengaktifkannya.
 
 ### Cara menjalankannya
 
@@ -96,11 +96,9 @@ Aplikasi terminal, `exec`, `web`, dan Runtime API memakai satu mesin yang sama (
 
 ## Cara ia tetap aman
 
-Dua sakelar menentukan seberapa banyak Codewhale boleh bertindak sendiri. Saat kolom input kosong, `Tab` mengganti mode: **Plan** membaca dan mencari tanpa mengubah apa pun, **Work** mengedit file dan menjalankan perintah, dan **Operate** punya akses yang sama dengan Work dan terus bekerja sampai tujuan terverifikasi atau ia membutuhkan Anda. `Shift+Tab` mengganti izin. **Ask**, bawaannya, menerapkan suntingan file di repositori Anda tanpa bertanya dan bertanya sebelum perintah shell yang tidak hanya membaca. **Auto-Review** membiarkan aturan dan model peninjau menyetujui panggilan rutin dan menolak yang berisiko tinggi; beralih ke Ask untuk menyetujuinya sendiri. **Full Access** tidak pernah bertanya dan mematikan sandbox Codewhale, meskipun aturan repositori dan kebijakan terkelola tetap berlaku. [Panduan v0.10.2](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md) berisi detailnya.
+Satu tombol putar menentukan seberapa banyak Codewhale boleh bertindak sendiri. `Shift+Tab` memutarnya berurutan: **Ask → Accept Edits → Plan → Auto-Review → Full Access**. **Accept Edits**, bawaannya, menerapkan suntingan file di dalam repositori git tanpa bertanya dan bertanya sebelum perintah. **Ask** bertanya sebelum setiap suntingan file dan setiap perintah. **Plan** membaca dan mencari tanpa mengubah apa pun. **Auto-Review** membiarkan aturan dan model peninjau menyetujui panggilan rutin dan menolak yang berisiko tinggi; beralih ke Ask untuk menyetujuinya sendiri. **Full Access** tidak pernah bertanya dan mematikan sandbox Codewhale, meskipun aturan repositori dan kebijakan terkelola tetap berlaku. `Tab` hanya untuk melengkapi dan tidak pernah mengganti mode, dan Operate sudah dihapus. [Panduan mode](../MODES.md) berisi detailnya.
 
-Hadir di 0.10.3: `Shift+Tab` menjadi satu tombol putar melalui Ask, Accept Edits, Plan, Auto-Review dan Full Access, `Tab` tidak lagi mengganti mode, dan Operate dihapus. Ask akan bertanya juga sebelum setiap suntingan file, dan bawaan baru, Accept Edits, akan menerapkan suntingan di dalam repositori git dan tetap bertanya sebelum perintah. [Panduan saat ini](../MODES.md) menjelaskannya.
-
-Di Ask dan Auto-Review, perintah berjalan di sandbox sistem operasi jika sistemnya punya: Seatbelt di macOS, dan bubblewrap di Linux jika terpasang. Windows belum punya sandbox sistem operasi, dan Full Access mematikan sandbox. Di dalam sandbox, perintah shell dan sesi terminal tidak dapat membaca penyimpanan kredensial seperti `~/.ssh`, `~/.aws`, dan file `.env`. `/preview-request` menampilkan pratinjau permintaan berikutnya dengan data sensitif disamarkan, tanpa mengirimkannya.
+Di Ask, Accept Edits, dan Auto-Review, perintah berjalan di sandbox sistem operasi jika sistemnya punya: Seatbelt di macOS, dan bubblewrap di Linux jika terpasang. Windows belum punya sandbox sistem operasi, dan Full Access mematikan sandbox. Di dalam sandbox, perintah shell dan sesi terminal tidak dapat membaca penyimpanan kredensial seperti `~/.ssh`, `~/.aws`, dan file `.env`. `/preview-request` menampilkan pratinjau permintaan berikutnya dengan data sensitif disamarkan, tanpa mengirimkannya.
 
 Anda tidak memerlukan akun, dan kunci yang Anda tambahkan dengan `/provider` tetap di mesin Anda. Dengan kunci API sendiri, Anda membayar penyedia secara langsung, dan model lokal tidak memerlukan kunci. Footer dan `/cost` menampilkan biaya sebuah sesi jika harganya diketahui, dan harga yang tidak diketahui ditampilkan sebagai tidak diketahui, tidak pernah sebagai gratis.
 

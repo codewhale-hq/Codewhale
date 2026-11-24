@@ -154,17 +154,11 @@ impl RlmUsageAccumulator {
         {
             return;
         }
-        match record.permits_replacement(slot.completed.then_some(&slot.record)) {
-            Ok(true) => {
-                slot.record = record.clone();
-                slot.completed = true;
-            }
-            Ok(false) => return,
-            Err(error) => {
-                tracing::warn!(%error, "RLM source projection refused its predecessor");
-                return;
-            }
+        if !record.supersedes(slot.completed.then_some(&slot.record)) {
+            return;
         }
+        slot.record = record.clone();
+        slot.completed = true;
         let mut usage = Usage::default();
         for slot in state.records.iter().flatten().filter(|slot| slot.completed) {
             crate::core::turn::add_usage_to(&mut usage, &slot.record.usage.usage);
@@ -373,6 +367,7 @@ impl<'call> RlmBridge<'call> {
             .dispatch(crate::core::engine::rlm_host::RlmInvocation {
                 prompt,
                 mode,
+                prompt_policy: crate::core::engine::rlm_host::RlmPromptPolicy::Session,
                 max_tokens,
                 task_instructions: system,
                 deadline: self.deadline,
@@ -408,18 +403,18 @@ impl<'call> RlmBridge<'call> {
         prompts: Vec<String>,
         _model: Option<String>,
         dependency_mode: Option<String>,
-    ) -> BatchResp {
+    ) -> RpcResponse {
         if let Some(resp) = batch_guard(prompts.len(), dependency_mode.as_deref()) {
             return resp;
         }
-        BatchResp {
+        RpcResponse::Batch(BatchResp {
             results: join_all(
                 prompts
                     .into_iter()
                     .map(|prompt| self.dispatch_llm(prompt, None, None, None)),
             )
             .await,
-        }
+        })
     }
 
     pub async fn dispatch_rlm(&self, prompt: String, _model: Option<String>) -> SingleResp {
@@ -442,18 +437,18 @@ impl<'call> RlmBridge<'call> {
         prompts: Vec<String>,
         _model: Option<String>,
         dependency_mode: Option<String>,
-    ) -> BatchResp {
+    ) -> RpcResponse {
         if let Some(resp) = batch_guard(prompts.len(), dependency_mode.as_deref()) {
             return resp;
         }
-        BatchResp {
+        RpcResponse::Batch(BatchResp {
             results: join_all(
                 prompts
                     .into_iter()
                     .map(|prompt| self.dispatch_rlm(prompt, None)),
             )
             .await,
-        }
+        })
     }
 }
 
@@ -473,19 +468,15 @@ pub fn nested_rlm_status_line(event: crate::core::events::Event, depth: u32) -> 
 /// `core::events::status_visibility` classifies these as internal receipts.
 pub const NESTED_RLM_STATUS_PREFIX: &str = "sub-RLM (depth ";
 
-fn batch_guard(prompt_count: usize, dependency_mode: Option<&str>) -> Option<BatchResp> {
+fn batch_guard(prompt_count: usize, dependency_mode: Option<&str>) -> Option<RpcResponse> {
     if prompt_count == 0 {
-        return Some(BatchResp { results: vec![] });
+        return Some(RpcResponse::Batch(BatchResp { results: vec![] }));
     }
     if prompt_count > MAX_BATCH {
-        return Some(BatchResp {
-            results: (0..prompt_count)
-                .map(|_| SingleResp {
-                    text: String::new(),
-                    error: Some(format!("batch too large: {prompt_count} > {MAX_BATCH}")),
-                })
-                .collect(),
-        });
+        return Some(RpcResponse::Single(SingleResp {
+            text: String::new(),
+            error: Some(format!("batch too large: {prompt_count} > {MAX_BATCH}")),
+        }));
     }
     let mode = dependency_mode
         .unwrap_or_default()
@@ -496,17 +487,13 @@ fn batch_guard(prompt_count: usize, dependency_mode: Option<&str>) -> Option<Bat
         mode.as_str(),
         "independent" | "parallel_safe" | "map_reduce"
     ) {
-        return Some(BatchResp {
-            results: (0..prompt_count)
-                .map(|_| SingleResp {
-                    text: String::new(),
-                    error: Some(
-                        "batch requires dependency_mode='independent'; use sub_query_sequence or sequential sub_query calls for dependent work"
-                            .to_string(),
-                    ),
-                })
-                .collect(),
-        });
+        return Some(RpcResponse::Single(SingleResp {
+            text: String::new(),
+            error: Some(
+                "batch requires dependency_mode='independent'; use sub_query_sequence or sequential sub_query calls for dependent work"
+                    .to_string(),
+            ),
+        }));
     }
     None
 }
@@ -531,10 +518,10 @@ impl RpcDispatcher for RlmBridge<'_> {
                     model,
                     dependency_mode,
                     safety_note: _,
-                } => RpcResponse::Batch(
+                } => {
                     self.dispatch_llm_batch(prompts, model, dependency_mode)
-                        .await,
-                ),
+                        .await
+                }
                 RpcRequest::Rlm { prompt, model } => {
                     RpcResponse::Single(self.dispatch_rlm(prompt, model).await)
                 }
@@ -543,10 +530,10 @@ impl RpcDispatcher for RlmBridge<'_> {
                     model,
                     dependency_mode,
                     safety_note: _,
-                } => RpcResponse::Batch(
+                } => {
                     self.dispatch_rlm_batch(prompts, model, dependency_mode)
-                        .await,
-                ),
+                        .await
+                }
             }
         })
     }
@@ -576,6 +563,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage,
+            title: None,
+            stop_details: None,
+            refusal: None,
         }
     }
 
@@ -698,43 +688,94 @@ mod tests {
     #[test]
     fn batch_guard_returns_empty_response_for_empty_batches() {
         let response = batch_guard(0, None).expect("empty batch should be handled");
-        assert!(response.results.is_empty());
+        match response {
+            RpcResponse::Batch(batch) => assert!(batch.results.is_empty()),
+            other => panic!("expected empty batch response, got {other:?}"),
+        }
     }
 
     #[test]
-    fn batch_guard_returns_one_error_per_oversized_prompt() {
-        let response = batch_guard(MAX_BATCH + 2, Some("independent"))
-            .expect("oversized batch should be handled");
-        assert_eq!(response.results.len(), MAX_BATCH + 2);
-        assert!(response.results.iter().all(|result| {
-            result.text.is_empty()
-                && result
-                    .error
-                    .as_deref()
-                    .is_some_and(|err| err.contains("batch too large"))
-        }));
+    fn batch_guard_returns_bounded_single_error_for_oversized_batch() {
+        for prompt_count in [MAX_BATCH + 2, 100_000] {
+            let response = batch_guard(prompt_count, Some("independent"))
+                .expect("oversized batch should be handled");
+            match response {
+                RpcResponse::Single(single) => {
+                    assert!(single.text.is_empty());
+                    assert_eq!(
+                        single.error.as_deref(),
+                        Some(format!("batch too large: {prompt_count} > {MAX_BATCH}").as_str())
+                    );
+                }
+                other => panic!("expected bounded single error response, got {other:?}"),
+            }
+        }
     }
 
     #[test]
     fn batch_guard_requires_explicit_independence_for_parallel_work() {
         let response = batch_guard(2, None).expect("missing dependency mode should be handled");
-        assert_eq!(response.results.len(), 2);
-        assert!(response.results.iter().all(|result| {
-            result.text.is_empty()
-                && result
-                    .error
-                    .as_deref()
-                    .is_some_and(|err| err.contains("dependency_mode='independent'"))
-        }));
+        match response {
+            RpcResponse::Single(single) => {
+                assert!(single.text.is_empty());
+                assert!(
+                    single
+                        .error
+                        .as_deref()
+                        .is_some_and(|err| err.contains("dependency_mode='independent'"))
+                );
+            }
+            other => panic!("expected bounded single error response, got {other:?}"),
+        }
 
         let response = batch_guard(2, Some("sequential"))
             .expect("dependent dependency mode should be handled");
-        assert!(response.results.iter().all(|result| {
-            result
-                .error
-                .as_deref()
-                .is_some_and(|err| err.contains("sub_query_sequence"))
-        }));
+        match response {
+            RpcResponse::Single(single) => {
+                assert!(
+                    single
+                        .error
+                        .as_deref()
+                        .is_some_and(|err| err.contains("sub_query_sequence"))
+                );
+            }
+            other => panic!("expected bounded single error response, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_batch_guard_surfaces_batch_too_large_text_in_python_repl() {
+        let mock = Arc::new(MockLlmClient::new(Vec::new()));
+        let bridge = bridge_for(Arc::clone(&mock), 1);
+        let mut rt = codewhale_repl::PythonRuntime::unconfined(&std::env::temp_dir())
+            .await
+            .expect("spawn python runtime");
+        let round = rt
+            .run(
+                "llm_out = llm_query_batched(['p'] * 20, dependency_mode='independent')\n\
+                 rlm_out = rlm_query_batched(['p'] * 20, dependency_mode='independent')\n\
+                 print('LLM:', len(llm_out), llm_out[0])\n\
+                 print('RLM:', len(rlm_out), rlm_out[0])",
+                Some(&bridge),
+            )
+            .await
+            .expect("execute batched guard probes");
+        rt.shutdown().await;
+
+        let out = round.stdout.replace("\r\n", "\n");
+        assert!(
+            out.contains("LLM: 20 [llm_query_batched: batch too large: 20 > 16]"),
+            "unexpected llm_query_batched output: {out}"
+        );
+        assert!(
+            out.contains("RLM: 20 [rlm_query_batched: batch too large: 20 > 16]"),
+            "unexpected rlm_query_batched output: {out}"
+        );
+        assert!(
+            !out.contains("size mismatch"),
+            "oversized batch guard must not trigger Python size mismatch: {out}"
+        );
+        assert!(mock.captured_requests().is_empty());
     }
 
     #[tokio::test]

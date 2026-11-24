@@ -65,11 +65,11 @@ codewhale --telemetry false              # the same kill switch, for one command
 **`telemetry = false` in the config file is the opt-out.** It is a floor:
 `--telemetry true` and `CODEWHALE_TELEMETRY=1` both lose to it, because a
 setting you can undo by accident from a wrapper script is not a setting. It
-deletes the random install id, truncates every buffered event and every dry-run
+deletes the random install id, deletes every spool, truncates every dry-run
 record, and writes a tombstone. Appends, identity/state writes, and delivery all
 share the wipe's ordering lock, so once opt-out returns no pre-opt-out write or
 POST remains in flight. If any part of that wipe fails, the tombstone is still
-there and the buffer is undrainable — a failed wipe fails closed. Every later
+there and no spool can be sent — a failed wipe fails closed. Every later
 run re-asserts the same tombstone for as long as the setting stands, so it
 survives. Turning telemetry back on in `/settings` records that explicit preference
 in both existing privacy registers; a fresh launch can then clear the tombstone. Nothing buffered before that point is
@@ -101,17 +101,21 @@ Everything is under `$CODEWHALE_HOME/telemetry/` (`0700`), every file `0600`:
 
 | file | role |
 |---|---|
-| `buffer.jsonl` | pending events, one JSON object per line |
+| `spool/<nonce>.jsonl` | one running process's pending events: a header line (schema, notice and app version, release sha, surface, whether a terminal), then one JSON object per line |
+| `spool/<nonce>.lock` | held by that process while it runs; a spool whose lock is free belongs to a process that has ended |
 | `buffer.jsonl.lock` | the sibling ordering lock shared by writes, delivery, arming, and wipe |
+| `buffer.jsonl` | left over from older versions; only ever emptied, never written or sent |
 | `dryrun.jsonl` | where batches go when the endpoint is configured empty |
 | `state.json` | the last app version seen and the last flush attempt |
 | `install_id.json` | the random install id and when it was minted |
 | `disabled` | the tombstone; present means nothing is appended or sent |
 
-Both `buffer.jsonl` and `dryrun.jsonl` are rings capped at 512 records or
-256 KiB, whichever comes first, with the oldest dropped. The documented
-footprint ceiling for the whole directory is therefore **512 KiB plus a few
-hundred bytes of metadata**.
+The nonce is random, names a file on your disk and is never sent. Each spool and
+`dryrun.jsonl` is a ring capped at 512 records (the header counts as one) or
+256 KiB, whichever comes first, with the oldest events dropped. The documented
+footprint ceiling is therefore **256 KiB for each running process, 256 KiB for
+`dryrun.jsonl`, and at most four leftover spools of ended processes kept after
+each TUI, `exec` or `serve` start**, plus a few hundred bytes of metadata.
 
 The install id is a random v4 UUID. It is never derived from your hostname,
 MAC address, `machine-id`, home directory, username, or executable path — a
@@ -126,18 +130,43 @@ claim one.
 ## When anything is sent, and where
 
 Nothing is collected or sent when a persistent opt-out or run-scoped kill
-switch is in force, or when privacy state is unreadable. TUI and `exec` sessions have exactly one network flush point: an attempt
-during shutdown, bounded at three seconds. Short CLI commands such as `config`,
-`doctor`, and `auth` do not wait for that network request. They record
-`session_end`, seal the event to the local buffer with a much shorter bound, and
-return; a configured endpoint sends those buffered events with the next
-interactive shutdown flush. An explicitly empty endpoint finalizes its local
-dry-run batch immediately.
+switch is in force, or when privacy state is unreadable. TUI and `exec` sessions have one network flush point at a normal end: an attempt
+during shutdown, bounded at three seconds. That flush sends only the process's
+own spool, under that process's own surface and version, and deletes it before
+the request is made. Short CLI commands such as `config`, `doctor`, and `auth`
+do not wait for that network request. They record `session_end`, seal the event
+to their own spool with a much shorter bound, and return; the next TUI, `exec`
+or `serve` start sends what they left (below). An explicitly empty endpoint
+finalizes its local dry-run batch immediately.
 
-There is no startup flush, mid-session flush, per-turn flush, or per-tool-call
-flush. Every network shutdown flush re-resolves your setting from disk
+A session that is ended early makes one more bounded attempt, so its usage is
+not lost with it. When a terminating signal (interrupt, terminate, hang-up, or
+console close) reaches a TUI, `exec` or `serve` session, and when `exec` ends
+because the program reading its output has closed the pipe, the session records
+`session_end` with exit class `signal`, then makes one send attempt bounded at
+one and a half seconds, alongside the process's own shutdown work. A second
+signal ends the process at once without waiting. This is the same single `POST`
+of the same fields, never retried. Short CLI commands stay local-only on this
+path too.
+
+A session that ends without any report (killed outright, a power loss, a crash
+before the handler runs) leaves its spool behind. When a later TUI, `exec` or
+`serve` session starts, it sends the leftovers once: at most four, newest first,
+one `POST` per leftover session, each carrying that session's own surface and
+app version and this installation's current install id and send time. Each
+leftover is deleted before its request is made and is never retried. A leftover
+older than seven days, one beyond the newest four, one written by a build with a
+different schema or notice version, and any line that fails the schema bounds is
+deleted without being sent. Consent and the opt-out tombstone are checked
+before anything is read and again before each request, and the request runs on
+its own thread so it never delays your session. Opting out deletes every spool.
+Opting back in starts without any spool from before.
+
+There is no mid-session flush, per-turn flush, or per-tool-call
+flush. Every network flush re-resolves your setting from disk
 immediately beforehand, so `codewhale config set telemetry false` written from
-another terminal stops the flush of a session that is already running.
+another terminal stops the flush of a session that is already running, including
+one that is being terminated.
 
 A flush is **one `POST`** to the resolved endpoint — by default
 `https://telemetry.codewhale.net/v1/telemetry`. The request carries a
@@ -206,7 +235,7 @@ new fields, surfaces, and `product_usage` events.
 | `arch` | enum | `std::env::consts::ARCH` | `x86_64 \| aarch64 \| other`. |
 | `libc` | enum | `cfg!(target_env)` — **compile time** | `gnu \| musl \| none`. Runtime detection reads distro vendor strings; compile-time is free and leaks nothing. |
 | `tty` | bool | `std::io::IsTerminal`, as at `crates/telemetry/src/envelope.rs:196` | `stdin().is_terminal() && stdout().is_terminal()`. |
-| `events` | array | the drained buffer | Every element is one of the six events below and nothing else. Capped at 200 events or 64 KiB per batch; a batch that would exceed either cap leaves the remainder buffered for the next flush. |
+| `events` | array | the process's spool | Every element is one of the six events below and nothing else. Capped at 200 events or 64 KiB per batch; events beyond either cap are dropped with the spool, never carried to a later flush. |
 
 **`os_major` is not collected.** Reading it costs unsafe FFI on two platforms plus a file parser on a third, in the one crate whose entire value is being small enough to audit — and `os`, `arch`, and `libc` are free and answer the platform question. It may be reconsidered if the stored data ever shows that the OS-version cut is what triage is missing; a hunch is not that evidence.
 
@@ -317,7 +346,7 @@ The workhorse. Everything a session accumulated ships here, once.
 
 **`duration_bucket`** — `chrono` delta from `app.session_started_at` (`crates/tui/src/tui/app.rs:1889`). Half-open, seconds: `lt_1m` (`d < 60`), `1m_10m` (`60 ≤ d < 600`), `10m_60m` (`600 ≤ d < 3600`), `gt_60m` (`d ≥ 3600`).
 
-**`exit_class`** — `clean | signal | panic | error`. **Derived from an explicit `AtomicU8`, never from an exit code.** `RunTerminationReason::Canceled` maps to exit 130 (`crates/engine/src/core/runtime_contract/termination.rs:53`), the same value the signal task uses (`crates/tui/src/lib.rs:682`, 128+SIGINT), so a code-based derivation would report every Esc-cancelled turn as a signal. The atomic is set by the panic hook (`crates/tui/src/lib.rs:1582`), by the signal task (`:678-696`) before `std::process::exit`, and on the clean path from `RunTerminationReason::is_success()` (`crates/engine/src/core/runtime_contract/termination.rs:44-46`) — `error` otherwise. Exit codes remain insufficient: an approval-required exit (3) and a terminal exec failure (1) need their actual termination classification.
+**`exit_class`** — `clean | signal | panic | error`. **Derived from an explicit `AtomicU8`, never from an exit code.** `RunTerminationReason::Canceled` maps to exit 130 (`crates/engine/src/core/runtime_contract/termination.rs:53`), the same value the signal task uses (`crates/tui/src/lib.rs:682`, 128+SIGINT), so a code-based derivation would report every Esc-cancelled turn as a signal. The atomic is set by the panic hook (`crates/tui/src/lib.rs:1582`), by the signal task when the first signal arrives, by `exec` when its output pipe closes, and on the clean path from `RunTerminationReason::is_success()` (`crates/engine/src/core/runtime_contract/termination.rs:44-46`) — `error` otherwise. Exit codes remain insufficient: an approval-required exit (3) and a terminal exec failure (1) need their actual termination classification.
 
 **`cold_start_bucket`** — from `startup_trace::elapsed_ms()`, which reads `PROCESS_START` directly and is independent of the startup summary's buffer clear (`crates/runtime/src/startup_trace.rs:39-45`). Boundaries: `lt_250`, `250_1000`, `1000_3000`, `gte_3000`. Absent on non-TUI surfaces.
 
@@ -327,11 +356,11 @@ The workhorse. Everything a session accumulated ships here, once.
 
 | field | source anchor |
 |---|---|
-| `turns` | `run_event_loop` in `crates/tui/src/tui/ui/event_loop.rs`, immediately before it calls `execute_turn_end_observer_hook`. Never inside that hook: its first statement is `if !app.hooks.has_hooks_for_event(HookEvent::TurnEnd) { return Ok(()); }` (`crates/tui/src/tui/ui/observer_hooks.rs`), and the natural future optimization hoists that check to the call site, silently zeroing the counter for every user without hooks. |
+| `turns` | `record_model_turn_telemetry` in `crates/engine/src/core/engine.rs`, called once per turn the engine runs, before the zero-usage early return, so a turn that reported no tokens still counts. The engine counts on every surface (terminal UI, `exec`, `serve`, desktop), so an `exec` or `serve` session reports the turns it ran. It counts turns of the session's own engine only: a sub-agent's or an RLM call's child engine adds no session turn, though its model usage rows still count. The terminal UI no longer counts a turn itself. Autonomous continuation turns and review turns are turns the engine runs and count. Compared with the earlier terminal-UI count, shell-command turns (`!` commands), rejected submissions, history purges and turns that failed before the model was called no longer count. The call site never lives inside a conditionally entered handler such as the turn-end hook. |
 | `tool_calls` | `execute_tool_with_lock` in `crates/engine/src/core/engine/tool_execution.rs` — surface-agnostic, fires for exec and CLI too |
 | `fleet_dispatch` | `create_queued_run_with_descriptor` in `crates/engine/src/fleet/manager.rs` — the single funnel that `create_run` and `create_queued_run` both land in; counting at either caller would double-count a plain `fleet run`. |
 | `workflow_run` | bumped in `WorkflowTool::execute` (`crates/engine/src/tools/workflow/mod.rs`) only after `parse_workflow_action` returns an `Ok(WorkflowAction)`, never from `input["action"]`. The JSON Schema `enum` in `WorkflowTool::input_schema` is what is published *to the model* — a declaration, not a guard; the real parse also accepts `spawn\|wait\|list\|inspect\|stop\|abort`, and its reject arm (`Invalid workflow action '…'`) embeds the model string verbatim, so a rejected action is never counted. |
-| `subagent_spawn` | `apply_agent_spawned_status_and_observer` in `crates/tui/src/tui/ui/apply.rs` |
+| `subagent_spawn` | `spawn_subagent_from_input` in `crates/engine/src/tools/subagent/mod.rs`, after the sub-agent has been registered; surface-agnostic, so `exec` and `serve` count it too. A refused spawn is not counted. |
 | `mcp_server_connected` | bumped when a server snapshot's `.connected` is true, in `snapshot_from_config` (`crates/engine/src/mcp.rs`); never `name`, `command_or_url`, or `error` — server names are user-chosen and routinely internal infra |
 | `memory_search` | `tool_name == "memory_search"` (the tool registered in `crates/engine/src/tools/native_memory.rs`), counted at the same `execute_tool_with_lock` choke point |
 | `approval_modal_shown` | the `Event::ApprovalRequired` arm of `run_event_loop` (`crates/tui/src/tui/ui/event_loop.rs`; the event is defined in `crates/engine/src/core/events.rs`) |
@@ -351,7 +380,7 @@ The workhorse. Everything a session accumulated ships here, once.
 
 Why discriminants and nothing else: `ToolError::PathEscape`'s `Display` *is* an absolute path (`crates/tools/src/lib.rs:61`); `fim.rs:48-50`'s `Display` *is* a literal source fragment the model emitted; `secrets/src/lib.rs:50`'s `Display` carries the secret store's absolute path; every `LlmError` variant carries the raw provider HTTP body verbatim (`crates/engine/src/llm_client/mod.rs:327`), and a 400 from a content filter routinely echoes the prompt.
 
-**`turn_wall`** — a per-session histogram of counts, never per-turn events. `lt_5s`, `5_30s`, `30_120s`, `gte_120s`. Recorded by `observe_turn_secs` next to the `turns` bump in `run_event_loop`, which already has the turn duration in hand.
+**`turn_wall`** — a per-session histogram of counts, never per-turn events. `lt_5s`, `5_30s`, `30_120s`, `gte_120s`. Recorded by `observe_turn_secs` next to the `turns` bump in `record_model_turn_telemetry`; the duration is the time from the engine starting the turn to the turn settling, and the same sub-agent and RLM exclusion as `turns` applies. The sum of its four buckets equals `turns`.
 
 ### Event: `panic`
 
@@ -488,7 +517,7 @@ arguments.
 
 This section was a gate on configuring any non-loopback endpoint. The endpoint is now configured by default, so this is a description of a service that exists rather than a promise about one that might.
 
-**What it is.** `https://telemetry.codewhale.net/v1/telemetry` — a Cloudflare Worker named `codewhale-telemetry-ingest`, whose complete source is in this repository at [`telemetry-ingest/`](../telemetry-ingest/). It is the single schema and storage authority; browser applications may use a same-origin proxy that forwards only the body. There is no telemetry queue or additional runtime collector. It is write-only: nothing in the Worker can read back what was stored, and querying happens out of band through Cloudflare's SQL API with the owner's token. The hostname is deliberately self-describing, so anyone inspecting their own network traffic can tell what it is from the name alone.
+**What it is.** `https://telemetry.codewhale.net/v1/telemetry` — a Cloudflare Worker named `codewhale-telemetry-ingest`, whose complete source is in this repository at [`telemetry-ingest/`](../telemetry-ingest/). It is the single schema and storage authority; browser applications may use a same-origin proxy that forwards only the body. There is no telemetry queue or additional runtime collector. It is write-only: nothing in the Worker can read back what was stored, and querying happens out of band: the owner's token against Cloudflare's SQL API, or the separate private [`telemetry-stats/`](../telemetry-stats/) Worker, which reads the dataset in place through an account binding with no token. The hostname is deliberately self-describing, so anyone inspecting their own network traffic can tell what it is from the name alone.
 
 **What it stores.** Everything in this document and nothing else, in Workers Analytics Engine — one row per event. The validator in `telemetry-ingest/src/schema.ts` is a **closed** field set: an unknown key anywhere in a batch rejects the whole batch with `400`. A future client bug that starts attaching a path, a prompt, or a provider table name gets refused by the server rather than quietly stored. `telemetry-ingest/test/schema-doc.test.ts` parses the field names and enum spellings back out of *this file* and asserts set equality against the validator, and `telemetry-ingest/test/ingest.test.ts` posts the Rust client's own pinned golden batch and asserts it is accepted byte for byte — so this document, the client, and the endpoint cannot drift apart without a red test.
 
@@ -501,7 +530,7 @@ Batches are **IP-stripped at ingest**. No IP is stored, logged, or joined to `in
 - Rate limiting is keyed on `install_id` from the validated body, never on a network address. An IP-keyed limiter would mean this Worker handles IPs. It is the weaker limiter and it is the right trade.
 - `telemetry-ingest/test/no-ip.test.ts` reads the shipped source as text and fails the build if any address or geo name appears, if the set of headers read grows past two, if a `console.*` call is added, or if a `Response` is ever constructed with a body.
 
-**Retention: three months.** That is Cloudflare's fixed window for Analytics Engine and it is not configurable, so it is a ceiling rather than a policy — there is no setting that could make it longer.
+**Retention: three months.** That is Cloudflare's fixed window for Analytics Engine and it is not configurable, so it is a ceiling rather than a policy — there is no setting that could make it longer. Separately from the ingest Worker, which stays write-only, the owner runs a private stats page behind Cloudflare Access that shows aggregate charts only (never install ids) read in place from Analytics Engine, and a daily rollup keeps per-day totals with no install ids in our own Cloudflare storage beyond three months while raw rows still age out at three months.
 
 **Optional PostHog processor.** After first-party storage, an explicitly
 configured ingest may forward validated schema-v3 / notice-v5 batches and
@@ -541,11 +570,11 @@ is established by this source change.
 
 `install_id` rotates client-side every 90 days (`rotated_at` in `install_id.json`), so no single identifier spans a long history. This costs longitudinal accuracy and the docs say so: **no count derived from `install_id` is a user count.** It is a lower bound on distinct machine-installs in a window, and it undercounts a returning user across a rotation.
 
-**Turning it off deletes what was kept locally, not what was already sent.** `codewhale config set telemetry false` erases the install id, the buffer, and the dry-run records on your machine, and stops anything further. Rows already accepted by the endpoint are keyed only by a rotating random id that is now gone; first-party rows age out with the three-month window. If PostHog processing is activated, already-delivered processor records follow that project’s configured retention. The client has no remote deletion API and does not claim that local opt-out erases delivered records.
+**Turning it off deletes what was kept locally, not what was already sent.** `codewhale config set telemetry false` erases the install id, every spool, and the dry-run records on your machine, and stops anything further. Rows already accepted by the endpoint are keyed only by a rotating random id that is now gone; first-party rows age out with the three-month window. If PostHog processing is activated, already-delivered processor records follow that project’s configured retention. The client has no remote deletion API and does not claim that local opt-out erases delivered records.
 
 ### What the owner reads back — observed active installs
 
-The one product metric derived from this data is **observed active installs**: the number of distinct rotating anonymous install ids that produced a `session_start` event on a UTC day. That is the whole definition. It is not a count of people, not a count of accounts, and not a count of total installs — the id is per installation, rotates every 90 days, and is deleted on opt-out, so no number derived from it can be any of those things.
+The headline product metric derived from this data is **observed active installs**: the number of distinct rotating anonymous install ids that produced a `session_start` event on a UTC day. That is the whole definition of that metric. It is not a count of people, not a count of accounts, and not a count of total installs — the id is per installation, rotates every 90 days, and is deleted on opt-out, so no number derived from it can be any of those things. The private stats page also charts active installs and sessions by version, surface and OS, aggregate turns and tool calls, tool calls and errors by tool, model turns and tokens by provider and catalog model, and the native and website funnels; see [`telemetry-stats/README.md`](../telemetry-stats/README.md).
 
 The exact owner command is checked into the repository, so the routine query is reviewable code rather than SQL pasted from a chat:
 

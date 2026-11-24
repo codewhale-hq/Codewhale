@@ -2,7 +2,7 @@ use super::*;
 // `fs` was a cfg(test) import on the parent, and `Path` is now only used by
 // the legacy/render seams. Both belong here.
 use crate::tui::app::{App, TuiOptions};
-use codewhale_localization::Locale;
+use codewhale_localization::{Locale, MessageId};
 use codewhale_runtime::config::Config;
 use std::fs;
 use std::path::Path;
@@ -26,6 +26,7 @@ fn extension_owner_report_escapes_every_plugin_controlled_field() {
         &Presentation(Locale::En),
         &mut output,
         &codewhale_engine::extension_host::OwnerReport {
+            cohort: None,
             state: Some(
                 codewhale_engine::extension_host::registry::OwnerState::Failed(
                     "\u{1b}[31m<script>".into(),
@@ -49,6 +50,7 @@ fn extension_owner_report_escapes_every_plugin_controlled_field() {
         &Presentation(Locale::ZhHans),
         &mut localized,
         &codewhale_engine::extension_host::OwnerReport {
+            cohort: None,
             state: None,
             tools: vec![],
             diagnostics: vec![],
@@ -758,6 +760,98 @@ fn dsh_import_reviews_without_installing_then_installs_the_exact_bundle() {
 }
 
 #[test]
+fn dsh_import_review_surfaces_sibling_plugin_json_hooks_commands_and_agents() {
+    let _lock = crate::test_support::lock_test_env();
+    let root = TempDir::new().unwrap();
+    let codewhale_home = root.path().join("codewhale-home");
+    let _codewhale_home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &codewhale_home);
+    let package = root.path().join("combo-dsh-package");
+    fs::create_dir_all(package.join("commands")).unwrap();
+    fs::create_dir_all(package.join("agents")).unwrap();
+    fs::create_dir_all(package.join("hooks")).unwrap();
+    fs::write(
+        package.join("package.json"),
+        r#"{"name": "@demo/combo-dsh", "version": "1.0.0", "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}}"#,
+    )
+    .unwrap();
+    fs::write(package.join("cordis.patch.yml"), "[]\n").unwrap();
+    fs::write(package.join("commands/hello.md"), "# Hello\n").unwrap();
+    fs::write(
+        package.join("agents/reviewer.toml"),
+        "id = \"reviewer\"\n[role]\nname = \"reviewer\"\ndescription = \"Reviews\"\nprompt = \"Review.\"\n",
+    )
+    .unwrap();
+    fs::write(
+        package.join("hooks/hooks.toml"),
+        "enabled = true\n[[hooks]]\nname = \"check\"\nevent = \"turn_end\"\ncommand = \"true\"\n",
+    )
+    .unwrap();
+    fs::write(
+        package.join("plugin.json"),
+        serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "combo-dsh",
+            "version": "1.0.0",
+            "description": "ignored sibling description",
+            "extensions": {
+                "net.codewhale": {
+                    "commands": {"path": "commands"},
+                    "agents": {"path": "agents"},
+                    "hooks": {"path": "hooks"}
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let (mut app, _temp) = create_test_app(root.path());
+    let review = plugins_with_kimi_home_override(
+        &mut app,
+        Some(&format!("import dsh {}", package.display())),
+        None,
+    );
+    assert!(!review.is_error, "{:?}", review.message);
+    let message = review.message.unwrap();
+    for fact in [
+        "@demo/combo-dsh@1.0.0",
+        "plugin 'combo-dsh'",
+        "Commands: commands/hello.md",
+        "Agents: agents/reviewer.toml",
+        "Hooks (run shell commands with your user's authority): hooks/hooks.toml",
+        "Diagnostics:",
+        "description",
+        "Nothing was installed",
+    ] {
+        assert!(
+            message.replace('\\', "").contains(fact),
+            "{fact}: {message}"
+        );
+    }
+    assert!(!codewhale_home.join("plugins/combo-dsh").exists());
+
+    let approval = message
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("/plugin "))
+        .expect("review renders an exact approval command")
+        .to_string();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let installed = plugins_with_kimi_home_override(&mut app, Some(&approval), None);
+        assert!(!installed.is_error, "{:?}", installed.message);
+    });
+    assert!(
+        codewhale_home
+            .join("plugins/combo-dsh/hooks/hooks.toml")
+            .is_file()
+    );
+}
+
+#[test]
 fn kimi_managed_import_is_read_only_until_hash_bound_approval() {
     let _lock = crate::test_support::lock_test_env();
     let root = TempDir::new().unwrap();
@@ -1074,6 +1168,7 @@ fn doctor_reports_read_only_then_fix_retires_stale_records_with_a_backup() {
 struct ScriptedConsole {
     interactive: bool,
     agent_marked: bool,
+    provenance: Option<Result<headless::AgentRunProvenance, String>>,
     answer: bool,
     printed: Vec<String>,
     prompts: Vec<(String, usize)>,
@@ -1086,6 +1181,14 @@ impl headless::Console for ScriptedConsole {
 
     fn agent_marked(&self) -> bool {
         self.agent_marked
+    }
+
+    fn agent_provenance(&self) -> anyhow::Result<headless::AgentRunProvenance> {
+        match &self.provenance {
+            Some(Ok(provenance)) => Ok(provenance.clone()),
+            Some(Err(message)) => Err(anyhow::anyhow!("{message}")),
+            None => Ok(headless::AgentRunProvenance::default()),
+        }
     }
 
     fn print(&mut self, text: &str) {
@@ -1506,4 +1609,1675 @@ fn headless_marked_trust_needs_an_install_from_a_folder_in_the_project() {
         registry.get("from-inside").unwrap().approved_by,
         Some(PluginApprover::command_line(Some(registry.workspace())))
     );
+}
+
+fn install_temp_home_plugin(
+    root: &Path,
+    name: &str,
+    version: &str,
+) -> (
+    std::path::PathBuf,
+    std::sync::Arc<codewhale_plugins::PluginRegistry>,
+) {
+    let source = root.join("src").join(name);
+    fs::create_dir_all(source.join("skills/hello")).unwrap();
+    fs::write(
+        source.join("plugin.toml"),
+        format!(
+            "schema_version = 1\n[plugin]\nname = {name:?}\nversion = {version:?}\n[skills]\npath = \"skills\"\n"
+        ),
+    )
+    .unwrap();
+    fs::write(
+        source.join("skills/hello/SKILL.md"),
+        "---\nname: hello\ndescription: hi\n---\nbody\n",
+    )
+    .unwrap();
+    let (app, _temp) = create_test_app(root);
+    let mut registry = app.plugin_registry.clone();
+    let network = codewhale_net::network_policy::NetworkPolicy::default();
+    let ctx = codewhale_plugins::mutation::PluginMutationContext {
+        network: &network,
+        max_size: codewhale_plugins::install::DEFAULT_MAX_SIZE_BYTES,
+    };
+    let parsed = codewhale_plugins::install::PluginInstallSource::parse(
+        source.to_str().expect("utf-8 path"),
+    )
+    .unwrap();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(codewhale_plugins::mutation::execute(
+            codewhale_plugins::mutation::PluginMutationRequest::Install { source: parsed },
+            &ctx,
+            std::sync::Arc::make_mut(&mut registry),
+        ))
+        .unwrap();
+    let registry = registry.rediscover_for_workspace(registry.workspace());
+    (source, registry)
+}
+
+#[test]
+fn headless_show_prints_review_without_prompting_or_trusting() {
+    let _lock = crate::test_support::lock_test_env();
+    let root = TempDir::new().unwrap();
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path().join("home"));
+    write_mcp_review_bundle(root.path());
+    let (mut app, _temp) = create_test_app(root.path());
+    let Some(AppAction::OpenCommandReview { content, .. }) =
+        plugins_with_kimi_home_override(&mut app, Some("trust review-mcp"), None).action
+    else {
+        panic!("trust opens a confirmation control");
+    };
+    let registry = app.plugin_registry.clone();
+    let token = registry.get("review-mcp").unwrap().review_token();
+
+    let mut interactive = ScriptedConsole {
+        interactive: true,
+        answer: true,
+        ..ScriptedConsole::default()
+    };
+    headless::show(&registry, Locale::En, "review-mcp", false, &mut interactive).unwrap();
+    assert!(interactive.prompts.is_empty());
+    assert!(interactive.printed[0].starts_with(&content));
+    assert!(interactive.printed[0].ends_with(&format!("Bundle review token: {token}")));
+    assert!(!registry.get("review-mcp").unwrap().trusted());
+
+    let mut json_console = ScriptedConsole::default();
+    headless::show(&registry, Locale::En, "review-mcp", true, &mut json_console).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json_console.printed[0]).unwrap();
+    assert_eq!(parsed["action"], "review");
+    assert_eq!(parsed["trusted_by_this_command"], false);
+    assert_eq!(parsed["bundle_review_token"], token);
+}
+
+#[test]
+fn headless_update_reports_current_or_new_version_and_network_approval() {
+    let _lock = crate::test_support::lock_test_env();
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &home);
+    let (source, mut registry) = install_temp_home_plugin(root.path(), "demo", "1.0.0");
+    let network = codewhale_net::network_policy::NetworkPolicy::default();
+
+    let mut console = ScriptedConsole::default();
+    headless::update(
+        &mut registry,
+        Locale::En,
+        "demo",
+        &network,
+        false,
+        &mut console,
+    )
+    .unwrap();
+    assert!(
+        console.printed.last().unwrap().contains("already current"),
+        "{:?}",
+        console.printed
+    );
+
+    fs::write(
+        source.join("plugin.toml"),
+        "schema_version = 1\n[plugin]\nname = \"demo\"\nversion = \"1.1.0\"\n[skills]\npath = \"skills\"\n",
+    )
+    .unwrap();
+    headless::update(
+        &mut registry,
+        Locale::En,
+        "demo",
+        &network,
+        false,
+        &mut console,
+    )
+    .unwrap();
+    assert!(
+        console.printed.last().unwrap().contains("updated to 1.1.0"),
+        "{:?}",
+        console.printed
+    );
+    assert_eq!(
+        registry.get("demo").unwrap().manifest.plugin.version,
+        "1.1.0"
+    );
+
+    fs::write(
+        home.join("plugins/demo/.installed-from"),
+        serde_json::json!({
+            "version": 2,
+            "spec": "https://example.com/demo.tar.gz",
+            "source_checksum": "",
+            "content_hash": "",
+            "plugin_name": "demo"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let err = headless::update(
+        &mut registry,
+        Locale::En,
+        "demo",
+        &network,
+        false,
+        &mut console,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains(
+            "Network approval required for example.com; run `/network allow example.com` in the terminal UI, or add \"example.com\" to `allow` under [network] in config.toml, then retry"
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn headless_uninstall_disables_enabled_plugin_first_and_removes_it() {
+    let _lock = crate::test_support::lock_test_env();
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &home);
+    let (_source, mut registry) = install_temp_home_plugin(root.path(), "demo", "1.0.0");
+    let token = registry.get("demo").unwrap().review_token();
+    let mut console = ScriptedConsole::default();
+    headless_trust_named(
+        &mut registry,
+        "demo",
+        Some(&token),
+        true,
+        false,
+        &mut console,
+    )
+    .unwrap();
+    headless::enable(&mut registry, Locale::En, "demo", false, &mut console).unwrap();
+    assert!(registry.get("demo").unwrap().enabled);
+    let installed_dir = home.join("plugins/demo");
+    assert!(installed_dir.exists());
+
+    let piped_err = headless::uninstall(
+        &mut registry,
+        Locale::En,
+        "demo",
+        false,
+        false,
+        &mut console,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(piped_err.contains("--yes"), "{piped_err}");
+    assert!(installed_dir.exists());
+
+    let mut json_interactive = ScriptedConsole {
+        interactive: true,
+        answer: true,
+        ..ScriptedConsole::default()
+    };
+    let json_err = headless::uninstall(
+        &mut registry,
+        Locale::En,
+        "demo",
+        false,
+        true,
+        &mut json_interactive,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(json_err.contains("--yes"), "{json_err}");
+    assert!(json_interactive.prompts.is_empty());
+    assert!(installed_dir.exists());
+
+    let mut declined = ScriptedConsole {
+        interactive: true,
+        answer: false,
+        ..ScriptedConsole::default()
+    };
+    headless::uninstall(
+        &mut registry,
+        Locale::En,
+        "demo",
+        false,
+        false,
+        &mut declined,
+    )
+    .unwrap();
+    assert_eq!(declined.prompts.len(), 1);
+    assert_eq!(declined.prompts[0].0, "Remove demo 1.0.0?");
+    assert!(installed_dir.exists());
+    assert!(registry.get("demo").unwrap().enabled);
+
+    let mut accepted = ScriptedConsole {
+        interactive: true,
+        answer: true,
+        ..ScriptedConsole::default()
+    };
+    headless::uninstall(
+        &mut registry,
+        Locale::En,
+        "demo",
+        false,
+        false,
+        &mut accepted,
+    )
+    .unwrap();
+    assert_eq!(accepted.prompts.len(), 1);
+    assert_eq!(accepted.prompts[0].0, "Remove demo 1.0.0?");
+    assert!(!installed_dir.exists());
+    let rediscovered = registry.rediscover_for_workspace(registry.workspace());
+    assert!(rediscovered.get("demo").is_none());
+}
+
+#[test]
+fn headless_trust_and_enable_record_auto_review_posture_with_provenance() {
+    use codewhale_plugins::host_services::{AgentPosture, PluginApprover};
+    let _lock = crate::test_support::lock_test_env();
+    let root = TempDir::new().unwrap();
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path().join("home"));
+    write_mcp_review_bundle(root.path());
+    mark_installed_from(
+        &root.path().join(".codewhale/plugins/review-mcp"),
+        &root.path().join("src/review-mcp"),
+    );
+    let (app, _temp) = create_test_app(root.path());
+    let mut registry = app.plugin_registry.clone();
+    let token = registry.get("review-mcp").unwrap().review_token();
+
+    let provenance = headless::AgentRunProvenance {
+        posture: Some(AgentPosture::AutoReview),
+        thread_id: Some("thread-auto-1".to_string()),
+        turn_id: Some("turn-auto-2".to_string()),
+        tool_call_id: Some("call-auto-3".to_string()),
+    };
+    let expected = PluginApprover::auto_review(
+        registry.workspace(),
+        Some("thread-auto-1".to_string()),
+        Some("turn-auto-2".to_string()),
+        Some("call-auto-3".to_string()),
+    );
+
+    let mut review = ScriptedConsole {
+        agent_marked: true,
+        provenance: Some(Ok(provenance.clone())),
+        ..ScriptedConsole::default()
+    };
+    headless_trust(&mut registry, None, false, false, &mut review).unwrap();
+    assert!(
+        review.printed[1].contains("approved by the agent in Auto-Review"),
+        "{:?}",
+        review.printed
+    );
+
+    let mut trust_console = ScriptedConsole {
+        agent_marked: true,
+        provenance: Some(Ok(provenance)),
+        ..ScriptedConsole::default()
+    };
+    headless_trust(&mut registry, Some(&token), true, true, &mut trust_console).unwrap();
+    assert_eq!(
+        registry.get("review-mcp").unwrap().approved_by,
+        Some(expected.clone())
+    );
+    let reported: serde_json::Value = serde_json::from_str(&trust_console.printed[0]).unwrap();
+    assert_eq!(reported["approved_by"]["kind"], "agent");
+    assert_eq!(reported["approved_by"]["posture"], "auto_review");
+    assert_eq!(reported["approved_by"]["thread_id"], "thread-auto-1");
+    assert_eq!(reported["approved_by"]["turn_id"], "turn-auto-2");
+    assert_eq!(reported["approved_by"]["tool_call_id"], "call-auto-3");
+
+    headless::enable(
+        &mut registry,
+        Locale::En,
+        "review-mcp",
+        false,
+        &mut trust_console,
+    )
+    .unwrap();
+    assert_eq!(
+        registry.get("review-mcp").unwrap().enabled_by,
+        Some(expected)
+    );
+
+    let mut missing_ids = ScriptedConsole {
+        agent_marked: true,
+        provenance: Some(Ok(headless::AgentRunProvenance {
+            posture: Some(AgentPosture::AutoReview),
+            thread_id: Some("thread-auto-1".to_string()),
+            turn_id: None,
+            tool_call_id: Some("call-auto-3".to_string()),
+        })),
+        ..ScriptedConsole::default()
+    };
+    let err = headless::enable(
+        &mut registry,
+        Locale::En,
+        "review-mcp",
+        false,
+        &mut missing_ids,
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("thread, turn and tool call"),
+        "{err:#}"
+    );
+
+    let mut invalid_posture = ScriptedConsole {
+        agent_marked: true,
+        provenance: Some(Ok(headless::AgentRunProvenance {
+            posture: Some(AgentPosture::FullAccess),
+            ..headless::AgentRunProvenance::default()
+        })),
+        ..ScriptedConsole::default()
+    };
+    let posture_err = headless_trust(
+        &mut registry,
+        Some(&token),
+        true,
+        false,
+        &mut invalid_posture,
+    )
+    .unwrap_err();
+    assert!(
+        posture_err.to_string().contains("full_access"),
+        "{posture_err:#}"
+    );
+}
+
+#[cfg(test)]
+fn user_message(text: &str) -> codewhale_models::Message {
+    codewhale_models::Message {
+        role: codewhale_models::Role::User,
+        content: vec![codewhale_models::ContentBlock::Text {
+            text: text.to_string(),
+            cache_control: None,
+        }],
+    }
+}
+
+#[cfg(test)]
+fn fixture_snapshot(
+    app: &App,
+    session_id: &str,
+    source: Option<codewhale_engine::core::ops::SessionSnapshotSource>,
+) -> codewhale_engine::core::ops::SessionSnapshot {
+    let identity = app.admitted_provider_identity().unwrap();
+    codewhale_engine::core::ops::SessionSnapshot {
+        source,
+        session_id: session_id.to_string(),
+        messages: Vec::new(),
+        total_tokens: 0,
+        model: app.model.clone(),
+        model_provider: identity.persisted_kind().to_string(),
+        model_provider_id: identity.persisted_id().map(str::to_string),
+        workspace: app.workspace.clone(),
+        system_prompt: None,
+        instruction_assembly: None,
+        mode: app.mode.as_setting().to_string(),
+        agent_preset: app.agent_preset(),
+    }
+}
+
+#[test]
+fn plugin_create_starts_a_creator_conversation_with_the_idea_as_a_draft() {
+    use crate::tui::widgets::Renderable;
+    use codewhale_engine::conversation_modes::CreatorAvailabilityGuard;
+    use codewhale_engine::core::ops::{Op, SessionSnapshotSource};
+    use ratatui::{buffer::Buffer, layout::Rect};
+
+    let _available = CreatorAvailabilityGuard::set(None);
+    let _home = crate::test_support::SealedHome::new();
+    let root = TempDir::new().unwrap();
+    let (mut app, _temp) = create_test_app(root.path());
+    app.current_session_id = Some("old-session".to_string());
+    app.capture_session_fixture_source();
+    app.push_api_message(user_message("earlier turn"));
+
+    let idea = "  first line  with  two spaces\r\nsecond line  ";
+    let result = crate::commands::execute_with_config(
+        &format!("/plugin create {idea}"),
+        &mut app,
+        &Config::default(),
+    );
+    assert!(!result.is_error, "{:?}", result.message);
+    match result.action.as_ref() {
+        Some(AppAction::NewSession {
+            sync,
+            force: false,
+            draft: Some(draft),
+        }) => {
+            assert_eq!(sync.agent_preset.as_deref(), Some("creator"));
+            assert_eq!(draft, idea);
+        }
+        other => panic!("expected NewSession, got {other:?}"),
+    }
+    assert_eq!(app.conversation_mode, None);
+    assert_eq!(app.current_session_id.as_deref(), Some("old-session"));
+    assert!(app.input.is_empty());
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(
+        crate::commands::session_lifecycle_regression_tests::acknowledge_new_session(
+            &mut app, &result,
+        ),
+    );
+    assert_eq!(app.conversation_mode.as_deref(), Some("creator"));
+    assert_eq!(app.agent_preset().as_deref(), Some("creator"));
+    assert_eq!(app.input, idea);
+    assert_eq!(app.cursor_position, idea.chars().count());
+    assert!(!app.line_began_with_slash);
+    assert!(app.api_messages.is_empty());
+    assert!(app.queued_messages.is_empty());
+
+    let area = Rect::new(0, 0, 60, 8);
+    let mut buf = Buffer::empty(area);
+    crate::tui::widgets::ComposerWidget::new(&app, area.height, &[], &[]).render(area, &mut buf);
+    let rendered = (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("first line"), "{rendered}");
+    assert!(rendered.contains("second line"), "{rendered}");
+    assert!(!rendered.contains("Use the "), "{rendered}");
+
+    let (mut special_app, _special_temp) = create_test_app(root.path());
+    special_app.current_session_id = Some("old-session-2".to_string());
+    special_app.capture_session_fixture_source();
+    let special_idea = format!("{}\u{0003}\u{001b}[31mtail", "a".repeat(2048));
+    let special_result = crate::commands::execute_with_config(
+        &format!("/plugin create {special_idea}"),
+        &mut special_app,
+        &Config::default(),
+    );
+    assert!(!special_result.is_error, "{:?}", special_result.message);
+    let Some(AppAction::NewSession {
+        sync,
+        force,
+        draft: Some(special_draft),
+    }) = special_result.action
+    else {
+        panic!("expected NewSession with special draft");
+    };
+    assert_eq!(special_draft, special_idea);
+
+    let initial_source = SessionSnapshotSource::control(special_app.session_sync_control());
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
+    crate::tui::ui::begin_fresh_session(
+        &mut special_app,
+        &engine.handle,
+        sync.clone(),
+        force,
+        Some(special_draft),
+    )
+    .unwrap();
+    assert!(!crate::tui::ui::poll_fresh_session(
+        &mut special_app,
+        &engine.handle
+    ));
+    let mut observed_ops = Vec::new();
+    while let Ok(op) = engine.rx_op.try_recv() {
+        match op {
+            Op::GetSessionSnapshot { tx } => {
+                observed_ops.push("GetSessionSnapshot");
+                let snapshot =
+                    fixture_snapshot(&special_app, "old-session-2", Some(initial_source.clone()));
+                let _ = tx.lock().unwrap().take().unwrap().send(snapshot);
+            }
+            Op::SyncSession { .. } => observed_ops.push("SyncSession"),
+            Op::SendMessage(_) | Op::Review { .. } | Op::ContinueGoal { .. } => {
+                observed_ops.push("Turn");
+            }
+            _ => observed_ops.push("Other"),
+        }
+    }
+    assert_eq!(observed_ops, vec!["GetSessionSnapshot"]);
+    assert!(!crate::tui::ui::poll_fresh_session(
+        &mut special_app,
+        &engine.handle
+    ));
+    while let Ok(op) = engine.rx_op.try_recv() {
+        match op {
+            Op::SyncSession {
+                control,
+                agent_preset,
+                ..
+            } => {
+                observed_ops.push("SyncSession");
+                assert_eq!(agent_preset.as_deref(), Some("creator"));
+                let expected_workspace = special_app.workspace.clone();
+                let expected_model = special_app.model.clone();
+                let ack = crate::tui::ui::acknowledge_fresh_session(
+                    &mut special_app,
+                    sync.session_id.as_deref().unwrap(),
+                    Some(&SessionSnapshotSource::control(control)),
+                    &expected_workspace,
+                    &expected_model,
+                );
+                assert!(ack);
+            }
+            Op::GetSessionSnapshot { tx } => {
+                observed_ops.push("GetSessionSnapshotAck");
+                drop(tx);
+            }
+            Op::SendMessage(_) | Op::Review { .. } | Op::ContinueGoal { .. } => {
+                observed_ops.push("Turn");
+            }
+            _ => observed_ops.push("Other"),
+        }
+    }
+    assert_eq!(
+        observed_ops,
+        vec!["GetSessionSnapshot", "SyncSession", "GetSessionSnapshotAck"]
+    );
+    assert!(!observed_ops.contains(&"Turn"));
+    assert_eq!(special_app.input, special_idea);
+    assert_eq!(special_app.conversation_mode.as_deref(), Some("creator"));
+
+    let mut special_buf = Buffer::empty(area);
+    crate::tui::widgets::ComposerWidget::new(&special_app, area.height, &[], &[])
+        .render(area, &mut special_buf);
+}
+
+#[test]
+fn plugin_create_without_an_idea_starts_creator_with_an_empty_composer() {
+    use codewhale_engine::conversation_modes::CreatorAvailabilityGuard;
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _available = CreatorAvailabilityGuard::set(None);
+    let _home = crate::test_support::SealedHome::new();
+    let root = TempDir::new().unwrap();
+
+    for cmd in ["/plugin create", "/plugin create   \t\r\n"] {
+        let (mut app, _temp) = create_test_app(root.path());
+        app.current_session_id = Some("old-session".to_string());
+        app.capture_session_fixture_source();
+
+        let result = crate::commands::execute_with_config(cmd, &mut app, &Config::default());
+        assert!(!result.is_error, "{:?}", result.message);
+        match result.action.as_ref() {
+            Some(AppAction::NewSession {
+                sync,
+                force: false,
+                draft: None,
+            }) => assert_eq!(sync.agent_preset.as_deref(), Some("creator")),
+            other => panic!("expected empty-draft NewSession for {cmd:?}, got {other:?}"),
+        }
+
+        rt.block_on(
+            crate::commands::session_lifecycle_regression_tests::acknowledge_new_session(
+                &mut app, &result,
+            ),
+        );
+        assert_eq!(app.conversation_mode.as_deref(), Some("creator"));
+        assert!(app.input.is_empty());
+        assert_eq!(app.cursor_position, 0);
+        assert!(app.api_messages.is_empty());
+    }
+}
+
+#[test]
+fn plugin_create_says_why_when_creator_is_unavailable_and_changes_nothing() {
+    use codewhale_engine::conversation_modes::{CREATOR_KEY_OFF_REASON, CreatorAvailabilityGuard};
+
+    let _home = crate::test_support::SealedHome::new();
+    let root = TempDir::new().unwrap();
+
+    for (forced_reason, expected_substring) in [
+        (CREATOR_KEY_OFF_REASON, CREATOR_KEY_OFF_REASON),
+        (
+            "No plugin runtime was found.",
+            "No plugin runtime was found.",
+        ),
+    ] {
+        let _guard = CreatorAvailabilityGuard::set(Some(forced_reason));
+        let (mut app, _temp) = create_test_app(root.path());
+        app.current_session_id = Some("old-session".to_string());
+        app.push_api_message(user_message("keep this"));
+        app.ui_locale = Locale::En;
+        let expected = crate::tui::conversation_mode::unavailable_message(
+            app.ui_locale,
+            "Creator mode",
+            &crate::tui::conversation_mode::display_reason(app.ui_locale, forced_reason),
+        );
+
+        let result = crate::commands::execute_with_config(
+            "/plugin create a word counter",
+            &mut app,
+            &Config::default(),
+        );
+        assert!(result.is_error);
+        assert!(result.action.is_none());
+        let msg = result.message.unwrap();
+        assert_eq!(msg, format!("Error: {expected}"));
+        assert!(msg.contains(expected_substring), "{msg}");
+        assert_eq!(app.current_session_id.as_deref(), Some("old-session"));
+        assert_eq!(app.conversation_mode, None);
+        assert_eq!(app.api_messages.len(), 1);
+        assert!(app.input.is_empty());
+    }
+}
+
+#[test]
+fn plugin_create_is_blocked_like_new_while_messages_are_queued() {
+    use codewhale_engine::conversation_modes::CreatorAvailabilityGuard;
+
+    let _available = CreatorAvailabilityGuard::set(None);
+    let _home = crate::test_support::SealedHome::new();
+    let root = TempDir::new().unwrap();
+    let (mut app, _temp) = create_test_app(root.path());
+    app.current_session_id = Some("old-session".to_string());
+    app.queued_messages
+        .push_back(crate::tui::app::QueuedMessage::new(
+            "wait for me".to_string(),
+            None,
+        ));
+
+    let plugin_result = crate::commands::execute_with_config(
+        "/plugin create queued blocker",
+        &mut app,
+        &Config::default(),
+    );
+    let new_result =
+        crate::commands::execute_with_config("/new creator", &mut app, &Config::default());
+
+    assert!(plugin_result.is_error);
+    assert!(plugin_result.action.is_none());
+    assert_eq!(plugin_result.message, new_result.message);
+    assert_eq!(app.current_session_id.as_deref(), Some("old-session"));
+    assert_eq!(app.conversation_mode, None);
+    assert_eq!(app.queued_messages.len(), 1);
+    assert!(app.input.is_empty());
+}
+
+#[test]
+fn plugin_named_create_is_still_shown_by_plugin_show() {
+    let _lock = crate::test_support::lock_test_env();
+    let root = TempDir::new().unwrap();
+    let codewhale_home = root.path().join("home");
+    fs::create_dir_all(&codewhale_home).unwrap();
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &codewhale_home);
+
+    let bundle = root.path().join(".codewhale/plugins/create");
+    fs::create_dir_all(bundle.join("skills/hello")).unwrap();
+    fs::write(
+        bundle.join("plugin.toml"),
+        "schema_version = 1\n[plugin]\nname = \"create\"\nversion = \"2.3.4\"\ndescription = \"Literal create bundle\"\n[skills]\npath = \"skills\"\n",
+    )
+    .unwrap();
+    fs::write(
+        bundle.join("skills/hello/SKILL.md"),
+        "---\nname: hello\ndescription: hello\n---\nbody\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.path().join("tools")).unwrap();
+    fs::write(
+        root.path().join("tools/create.sh"),
+        "# name: create\n# description: Legacy create script tool\n",
+    )
+    .unwrap();
+
+    let (mut app, _temp) = create_test_app(root.path());
+    app.current_session_id = Some("old-session".to_string());
+
+    let shown =
+        crate::commands::execute_with_config("/plugin show create", &mut app, &Config::default());
+    assert!(!shown.is_error, "{:?}", shown.message);
+    assert!(shown.action.is_none());
+    let shown_msg = shown.message.unwrap();
+    assert!(shown_msg.contains("create"), "{shown_msg}");
+    assert!(
+        shown_msg.contains("Qualified skills: [create:hello]"),
+        "{shown_msg}"
+    );
+    assert_eq!(app.conversation_mode, None);
+
+    let tool =
+        crate::commands::execute_with_config("/plugin tools create", &mut app, &Config::default());
+    assert!(!tool.is_error, "{:?}", tool.message);
+    assert!(tool.action.is_none());
+    let tool_msg = tool.message.unwrap();
+    assert!(tool_msg.contains("Legacy create script tool"), "{tool_msg}");
+    assert_eq!(app.conversation_mode, None);
+}
+
+#[test]
+fn plugin_help_lists_create() {
+    let _lock = crate::test_support::lock_test_env();
+    let root = TempDir::new().unwrap();
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path().join("home"));
+    let (mut app, _temp) = create_test_app(root.path());
+
+    let localized_usage = codewhale_localization::tr(
+        Locale::En,
+        codewhale_localization::MessageId::CmdPluginBundleUsage,
+    );
+    assert!(
+        localized_usage.contains("create [idea]"),
+        "{localized_usage}"
+    );
+
+    let help = crate::commands::execute_with_config("/plugin help", &mut app, &Config::default());
+    assert!(!help.is_error, "{:?}", help.message);
+    let help_msg = help.message.unwrap();
+    assert!(help_msg.contains("/plugin create [idea]"), "{help_msg}");
+    assert!(help_msg.contains("create [idea]"), "{help_msg}");
+
+    assert!(
+        PLUGINS_INFO.usage.contains("create"),
+        "{}",
+        PLUGINS_INFO.usage
+    );
+}
+
+#[test]
+fn plugin_create_and_new_creator_give_the_same_refusal() {
+    use codewhale_engine::conversation_modes::{CREATOR_KEY_OFF_REASON, CreatorAvailabilityGuard};
+
+    let _home = crate::test_support::SealedHome::new();
+    let root = TempDir::new().unwrap();
+
+    for reason in [CREATOR_KEY_OFF_REASON, "No plugin runtime was found."] {
+        let _guard = CreatorAvailabilityGuard::set(Some(reason));
+        let (mut app, _temp) = create_test_app(root.path());
+        app.current_session_id = Some("old-session".to_string());
+
+        let via_plugin = crate::commands::execute_with_config(
+            "/plugin create a word counter",
+            &mut app,
+            &Config::default(),
+        );
+        let via_new =
+            crate::commands::execute_with_config("/new creator", &mut app, &Config::default());
+
+        assert!(via_plugin.is_error);
+        assert!(via_new.is_error);
+        assert!(via_plugin.action.is_none());
+        assert!(via_new.action.is_none());
+        assert_eq!(via_plugin.message, via_new.message);
+        assert_eq!(app.current_session_id.as_deref(), Some("old-session"));
+        assert_eq!(app.conversation_mode, None);
+    }
+}
+
+#[test]
+fn a_failed_fresh_session_drops_the_draft_and_restores_the_earlier_input() {
+    use codewhale_engine::conversation_modes::CreatorAvailabilityGuard;
+    use codewhale_engine::core::ops::{Op, SessionSnapshotSource};
+
+    let _available = CreatorAvailabilityGuard::set(None);
+    let _home = crate::test_support::SealedHome::new();
+    let root = TempDir::new().unwrap();
+    let (mut app, _temp) = create_test_app(root.path());
+    app.current_session_id = Some("old-session".to_string());
+    app.capture_session_fixture_source();
+    app.input = "earlier composer draft".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    let blocked = crate::commands::execute_with_config(
+        "/plugin create ignored draft",
+        &mut app,
+        &Config::default(),
+    );
+    assert!(blocked.is_error);
+    assert!(blocked.action.is_none());
+    assert_eq!(app.input, "earlier composer draft");
+
+    app.input = "   ".to_string();
+    app.cursor_position = 3;
+    let queued = crate::commands::execute_with_config(
+        "/plugin create candidate draft",
+        &mut app,
+        &Config::default(),
+    );
+    assert!(!queued.is_error, "{:?}", queued.message);
+    let Some(AppAction::NewSession {
+        sync,
+        force,
+        draft: Some(draft),
+    }) = queued.action
+    else {
+        panic!("expected NewSession with candidate draft");
+    };
+
+    let initial_source = SessionSnapshotSource::control(app.session_sync_control());
+    let mut engine = codewhale_engine::core::engine::mock_engine_handle();
+    crate::tui::ui::begin_fresh_session(&mut app, &engine.handle, sync, force, Some(draft))
+        .unwrap();
+    app.input = "earlier composer draft".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    assert!(!crate::tui::ui::poll_fresh_session(
+        &mut app,
+        &engine.handle
+    ));
+    match engine.rx_op.try_recv().expect("snapshot inspection op") {
+        Op::GetSessionSnapshot { tx } => {
+            let snapshot = fixture_snapshot(&app, "old-session", Some(initial_source));
+            let _ = tx.lock().unwrap().take().unwrap().send(snapshot);
+        }
+        other => panic!("unexpected op {other:?}"),
+    }
+    assert!(!crate::tui::ui::poll_fresh_session(
+        &mut app,
+        &engine.handle
+    ));
+    match engine.rx_op.try_recv().expect("sync session op") {
+        Op::SyncSession { .. } => {}
+        other => panic!("unexpected op {other:?}"),
+    }
+    match engine.rx_op.try_recv().expect("ack snapshot op") {
+        Op::GetSessionSnapshot { tx } => {
+            let mismatched = fixture_snapshot(&app, "mismatched-session", None);
+            let _ = tx.lock().unwrap().take().unwrap().send(mismatched);
+        }
+        other => panic!("unexpected op {other:?}"),
+    }
+
+    assert!(!crate::tui::ui::poll_fresh_session(
+        &mut app,
+        &engine.handle
+    ));
+    assert!(
+        app.pending_fresh_session
+            .as_ref()
+            .is_none_or(|p| p.draft.is_none())
+    );
+    assert_eq!(app.input, "earlier composer draft");
+    assert_ne!(app.input, "candidate draft");
+    assert_eq!(app.current_session_id.as_deref(), Some("old-session"));
+    assert_eq!(app.conversation_mode, None);
+}
+
+#[test]
+fn plugin_show_lists_added_commands_and_profiles() {
+    let _lock = crate::test_support::lock_test_env();
+    let root = TempDir::new().unwrap();
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path().join("home"));
+    let bundle = root.path().join(".codewhale/plugins/toolkit");
+    fs::create_dir_all(bundle.join("commands")).unwrap();
+    fs::create_dir_all(bundle.join("agents")).unwrap();
+    fs::write(
+        bundle.join("plugin.toml"),
+        "schema_version = 1\n[plugin]\nname = \"toolkit\"\nversion = \"1.0.0\"\n[commands]\npath = \"commands\"\n[agents]\npath = \"agents\"\n",
+    )
+    .unwrap();
+    fs::write(
+        bundle.join("commands/deploy.md"),
+        "---\ndescription: Deploy release\n---\nDeploy\n",
+    )
+    .unwrap();
+    fs::write(
+        bundle.join("commands/custom_file.md"),
+        "---\nname: ship-it\ndescription: Named command\n---\nShip\n",
+    )
+    .unwrap();
+    fs::write(
+        bundle.join("agents/reviewer.toml"),
+        "name = \"security-reviewer\"\ndescription = \"Reviews changes\"\n",
+    )
+    .unwrap();
+    fs::write(
+        bundle.join("agents/scout.toml"),
+        "description = \"Explores code\"\n",
+    )
+    .unwrap();
+
+    let (mut app, _temp) = create_test_app(root.path());
+    let show = plugins_with_kimi_home_override(&mut app, Some("show toolkit"), None)
+        .message
+        .expect("show output");
+    assert!(show.contains("Commands: [/deploy, /ship\\-it]"), "{show}");
+    assert!(
+        show.contains("Profiles: [scout, security\\-reviewer]"),
+        "{show}"
+    );
+}
+
+fn write_native_service_bundle(
+    root: &Path,
+    name: &str,
+    host_services: &[&str],
+) -> std::path::PathBuf {
+    let bundle = root.join(".codewhale/plugins").join(name);
+    fs::create_dir_all(bundle.join("native")).unwrap();
+    fs::create_dir_all(bundle.join("skills/hello")).unwrap();
+    fs::write(
+        bundle.join("native/index.mjs"),
+        "export function apply() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        bundle.join("skills/hello/SKILL.md"),
+        "---\nname: hello\ndescription: hi\n---\nbody\n",
+    )
+    .unwrap();
+    let asked = if host_services.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "[capabilities]\nhost_services = [{}]\n",
+            host_services
+                .iter()
+                .map(|service| format!("{service:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    fs::write(
+        bundle.join("plugin.toml"),
+        format!(
+            "schema_version = 1\n[plugin]\nname = {name:?}\nversion = \"1.0.0\"\n[skills]\npath = \"skills\"\n[native]\npath = \"native/index.mjs\"\n{asked}"
+        ),
+    )
+    .unwrap();
+    bundle
+}
+
+#[test]
+fn plugin_list_and_show_name_the_approver_and_who_turned_it_on() {
+    use codewhale_plugins::host_services::{
+        AGENT_PROCESS_NOTE, AgentApproval, AgentPosture, PersonVia, PluginApprover, ReviewApproval,
+    };
+
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    let other_project = root.path().join("otherproject");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&other_project).unwrap();
+    let sealed = crate::test_support::SealedHome::at(&home);
+
+    write_native_service_bundle(root.path(), "agentsvc", &["workspace", "attachments"]);
+    write_native_service_bundle(root.path(), "peer-plain", &[]);
+    write_skill_bundle(root.path(), "personplug", "");
+    write_skill_bundle(root.path(), "preplug", "");
+    let other_bundle = sealed.codewhale_home().join("plugins/otherproj");
+    fs::create_dir_all(other_bundle.join("skills/hello")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(
+            sealed.codewhale_home().join("plugins"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+    }
+    fs::write(
+        other_bundle.join("plugin.toml"),
+        "schema_version = 1\n[plugin]\nname = \"otherproj\"\nversion = \"1.0.0\"\n[skills]\npath = \"skills\"\n",
+    )
+    .unwrap();
+    fs::write(
+        other_bundle.join("skills/hello/SKILL.md"),
+        "---\nname: hello\ndescription: hi\n---\nbody\n",
+    )
+    .unwrap();
+
+    {
+        let mut other_reg = codewhale_plugins::PluginDiscoveryContext::capture_pre_dotenv()
+            .registry_for_workspace(&other_project);
+        let other_ws_str = other_reg.workspace().to_string_lossy().into_owned();
+        let agent_elsewhere = PluginApprover::Agent(AgentApproval {
+            posture: AgentPosture::AutoReview,
+            workspace: other_ws_str,
+            thread_id: Some("th-other-1".to_string()),
+            turn_id: Some("turn-other-1".to_string()),
+            tool_call_id: Some("call-other-1".to_string()),
+        });
+        let other_hs = other_reg
+            .host_service_review_for("otherproj", &agent_elsewhere)
+            .map(|review| review.token);
+        std::sync::Arc::make_mut(&mut other_reg)
+            .trust_and_enable_by(
+                "otherproj",
+                ReviewApproval {
+                    approved_by: agent_elsewhere.clone(),
+                    host_services: other_hs,
+                },
+                agent_elsewhere,
+            )
+            .unwrap();
+    }
+
+    let (mut app, _temp) = create_test_app(root.path());
+    let ws_str = app
+        .plugin_registry
+        .workspace()
+        .to_string_lossy()
+        .into_owned();
+
+    let agent_full = PluginApprover::Agent(AgentApproval {
+        posture: AgentPosture::FullAccess,
+        workspace: ws_str,
+        thread_id: Some("th-agent-1".to_string()),
+        turn_id: Some("turn-agent-1".to_string()),
+        tool_call_id: Some("call-agent-1".to_string()),
+    });
+    let hs_token = app
+        .plugin_registry
+        .host_service_review_for("agentsvc", &agent_full)
+        .map(|review| review.token);
+    std::sync::Arc::make_mut(&mut app.plugin_registry)
+        .trust_and_enable_by(
+            "agentsvc",
+            ReviewApproval {
+                approved_by: agent_full.clone(),
+                host_services: hs_token,
+            },
+            agent_full,
+        )
+        .unwrap();
+    {
+        let reg = std::sync::Arc::make_mut(&mut app.plugin_registry);
+        let person_term = PluginApprover::person(PersonVia::Terminal);
+        reg.trust_and_enable_by(
+            "personplug",
+            ReviewApproval {
+                approved_by: person_term.clone(),
+                host_services: None,
+            },
+            person_term.clone(),
+        )
+        .unwrap();
+        reg.trust_and_enable_by(
+            "preplug",
+            ReviewApproval {
+                approved_by: person_term.clone(),
+                host_services: None,
+            },
+            person_term,
+        )
+        .unwrap();
+    }
+
+    let state_path = app.plugin_registry.state_path().unwrap().to_path_buf();
+    let pre_id = app
+        .plugin_registry
+        .get("preplug")
+        .unwrap()
+        .id
+        .as_str()
+        .to_string();
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    if let Some(entry) = state["plugins"][&pre_id].as_object_mut() {
+        entry.remove("enabled_by");
+        if let Some(trust) = entry.get_mut("trust").and_then(|v| v.as_object_mut()) {
+            trust.remove("approved_by");
+        }
+        if let Some(history) = entry
+            .get_mut("review_history")
+            .and_then(|v| v.as_array_mut())
+        {
+            for item in history {
+                if let Some(obj) = item.as_object_mut() {
+                    obj.remove("approved_by");
+                }
+            }
+        }
+    }
+    fs::write(&state_path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+    let reloaded = plugins_with_kimi_home_override(&mut app, Some("reload"), None);
+    assert!(!reloaded.is_error, "{:?}", reloaded.message);
+
+    let show_before = plugins_with_kimi_home_override(&mut app, Some("show agentsvc"), None)
+        .message
+        .unwrap();
+    assert!(show_before.contains("Trust: not reviewed"), "{show_before}");
+    assert!(
+        show_before.contains("Approval: approved by the agent in Full Access (approved "),
+        "{show_before}"
+    );
+    assert!(
+        show_before.contains("Approval thread: th\\-agent\\-1"),
+        "{show_before}"
+    );
+    assert!(
+        show_before.contains("Turned on by: turned on by the agent in Full Access"),
+        "{show_before}"
+    );
+    assert!(
+        show_before.contains("Reach: this project ("),
+        "{show_before}"
+    );
+    assert!(
+        show_before.contains(&format!("Process: {AGENT_PROCESS_NOTE}")),
+        "{show_before}"
+    );
+    assert!(
+        show_before.contains("workspace (Workspace files and commands): can use"),
+        "{show_before}"
+    );
+    assert!(
+        show_before
+            .contains("attachments (Images in the conversation): this version does not offer it"),
+        "{show_before}"
+    );
+
+    let peer_approver = PluginApprover::Agent(AgentApproval {
+        posture: AgentPosture::AutoReview,
+        workspace: app
+            .plugin_registry
+            .workspace()
+            .to_string_lossy()
+            .into_owned(),
+        thread_id: Some("th-peer-1".to_string()),
+        turn_id: Some("turn-peer-1".to_string()),
+        tool_call_id: Some("call-peer-1".to_string()),
+    });
+    let peer_hs = app
+        .plugin_registry
+        .host_service_review_for("peer-plain", &peer_approver)
+        .map(|review| review.token);
+    std::sync::Arc::make_mut(&mut app.plugin_registry)
+        .trust_and_enable_by(
+            "peer-plain",
+            ReviewApproval {
+                approved_by: peer_approver.clone(),
+                host_services: peer_hs,
+            },
+            peer_approver,
+        )
+        .unwrap();
+
+    let list = plugins_with_kimi_home_override(&mut app, Some("list"), None)
+        .message
+        .unwrap();
+    assert!(
+        list.contains("agentsvc — active\n  workspace · not reviewed"),
+        "{list}"
+    );
+    assert!(
+        list.contains("approved by the agent in Full Access (approved "),
+        "{list}"
+    );
+    assert!(
+        list.contains("turned on by the agent in Full Access"),
+        "{list}"
+    );
+    assert!(
+        list.contains("approved by the agent in Auto-Review (approved "),
+        "{list}"
+    );
+    assert!(
+        list.contains("personplug — active\n  workspace · trusted"),
+        "{list}"
+    );
+    assert!(list.contains("approved by you (approved "), "{list}");
+    assert!(list.contains("turned on by you"), "{list}");
+    assert!(list.contains("otherproj — inactive"), "{list}");
+    assert!(list.contains("on only in otherproject"), "{list}");
+    assert!(
+        list.contains("approver not recorded (reviewed before 0.10.3)"),
+        "{list}"
+    );
+    assert!(
+        list.contains("who turned it on not recorded (enabled before 0.10.3)"),
+        "{list}"
+    );
+
+    let show_withheld = plugins_with_kimi_home_override(&mut app, Some("show agentsvc"), None)
+        .message
+        .unwrap();
+    assert!(
+        show_withheld.contains(
+            "workspace (Workspace files and commands): off for now: `peer-plain` is turned on and its review does not include it"
+        ),
+        "{show_withheld}"
+    );
+    assert!(
+        show_withheld
+            .contains("attachments (Images in the conversation): this version does not offer it"),
+        "{show_withheld}"
+    );
+
+    let show_other = plugins_with_kimi_home_override(&mut app, Some("show otherproj"), None)
+        .message
+        .unwrap();
+    assert!(
+        show_other.contains("Reach: on only in otherproject"),
+        "{show_other}"
+    );
+
+    let show_pre = plugins_with_kimi_home_override(&mut app, Some("show preplug"), None)
+        .message
+        .unwrap();
+    assert!(
+        show_pre.contains("Approval: approver not recorded (reviewed before 0.10.3)"),
+        "{show_pre}"
+    );
+    assert!(
+        show_pre.contains("Turned on by: who turned it on not recorded (enabled before 0.10.3)"),
+        "{show_pre}"
+    );
+
+    let token = app.plugin_registry.get("agentsvc").unwrap().review_token();
+    let reviewed =
+        plugins_with_kimi_home_override(&mut app, Some(&format!("trust agentsvc {token}")), None);
+    assert!(!reviewed.is_error, "{:?}", reviewed.message);
+    let show_after = plugins_with_kimi_home_override(&mut app, Some("show agentsvc"), None)
+        .message
+        .unwrap();
+    assert!(show_after.contains("Trust: trusted"), "{show_after}");
+    assert!(
+        show_after.contains("Approval: approved by you (approved "),
+        "{show_after}"
+    );
+    assert!(!show_after.contains("Trust: not reviewed"), "{show_after}");
+    assert!(!show_after.contains("Approval thread:"), "{show_after}");
+    assert!(!show_after.contains("Turned on by:"), "{show_after}");
+    assert!(!show_after.contains(AGENT_PROCESS_NOTE), "{show_after}");
+    assert!(
+        show_after.contains("Earlier reviews:")
+            && show_after.contains("approved by the agent in Full Access"),
+        "{show_after}"
+    );
+}
+
+#[test]
+fn command_line_trust_never_reads_as_reviewed_by_you() {
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let _home = crate::test_support::SealedHome::at(&home);
+
+    write_skill_bundle(root.path(), "cmdplug", "");
+    let (mut app, _temp) = create_test_app(root.path());
+    let mut reg_arc = app.plugin_registry.clone();
+    let mut console = ScriptedConsole::default();
+    let token = reg_arc.get("cmdplug").unwrap().review_token();
+    headless_trust_named(
+        &mut reg_arc,
+        "cmdplug",
+        Some(&token),
+        true,
+        false,
+        &mut console,
+    )
+    .unwrap();
+    std::sync::Arc::make_mut(&mut reg_arc)
+        .enable("cmdplug")
+        .unwrap();
+    app.plugin_registry = reg_arc;
+
+    let list = plugins_with_kimi_home_override(&mut app, Some("list"), None)
+        .message
+        .unwrap();
+    assert!(
+        list.contains("cmdplug — active\n  workspace · not reviewed"),
+        "{list}"
+    );
+    assert!(
+        list.contains("trusted from the command line with --yes; no review was shown there"),
+        "{list}"
+    );
+    assert!(!list.contains("reviewed by you"), "{list}");
+
+    let show = plugins_with_kimi_home_override(&mut app, Some("show cmdplug"), None)
+        .message
+        .unwrap();
+    assert!(show.contains("Trust: not reviewed"), "{show}");
+    assert!(
+        show.contains(
+            "Approval: trusted from the command line with --yes; no review was shown there"
+        ),
+        "{show}"
+    );
+    assert!(show.contains("Turned on by: turned on by you"), "{show}");
+    assert!(!show.contains("reviewed by you"), "{show}");
+}
+
+#[test]
+fn an_agent_approved_plugin_a_person_turned_on_still_reads_not_reviewed() {
+    use codewhale_plugins::host_services::{
+        AGENT_PROCESS_NOTE, AgentApproval, AgentPosture, PersonVia, PluginApprover, ReviewApproval,
+    };
+
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let _home = crate::test_support::SealedHome::at(&home);
+
+    write_skill_bundle(root.path(), "hybridplug", "");
+    let (mut app, _temp) = create_test_app(root.path());
+    let ws = app
+        .plugin_registry
+        .workspace()
+        .to_string_lossy()
+        .into_owned();
+    {
+        let agent_hybrid = PluginApprover::Agent(AgentApproval {
+            posture: AgentPosture::AutoReview,
+            workspace: ws,
+            thread_id: Some("th-hybrid".to_string()),
+            turn_id: Some("turn-hybrid".to_string()),
+            tool_call_id: Some("call-hybrid".to_string()),
+        });
+        let hybrid_hs = app
+            .plugin_registry
+            .host_service_review_for("hybridplug", &agent_hybrid)
+            .map(|review| review.token);
+        let reg = std::sync::Arc::make_mut(&mut app.plugin_registry);
+        reg.trust_reviewed(
+            "hybridplug",
+            ReviewApproval {
+                approved_by: agent_hybrid,
+                host_services: hybrid_hs,
+            },
+        )
+        .unwrap();
+        reg.enable_by("hybridplug", PluginApprover::person(PersonVia::App))
+            .unwrap();
+    }
+
+    let list = plugins_with_kimi_home_override(&mut app, Some("list"), None)
+        .message
+        .unwrap();
+    assert!(
+        list.contains("hybridplug — active\n  workspace · not reviewed"),
+        "{list}"
+    );
+    assert!(
+        list.contains("approved by the agent in Auto-Review (approved "),
+        "{list}"
+    );
+    assert!(list.contains("turned on by you"), "{list}");
+    assert!(!list.contains("approved by you"), "{list}");
+
+    let show = plugins_with_kimi_home_override(&mut app, Some("show hybridplug"), None)
+        .message
+        .unwrap();
+    assert!(show.contains("Trust: not reviewed"), "{show}");
+    assert!(
+        show.contains("Approval: approved by the agent in Auto-Review (approved "),
+        "{show}"
+    );
+    assert!(show.contains("Turned on by: turned on by you"), "{show}");
+    assert!(
+        show.contains(&format!("Process: {AGENT_PROCESS_NOTE}")),
+        "{show}"
+    );
+}
+
+#[test]
+fn the_approval_date_is_never_shown_as_the_turned_on_date() {
+    use codewhale_plugins::host_services::{
+        AgentApproval, AgentPosture, PluginApprover, ReviewApproval,
+    };
+
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let _home = crate::test_support::SealedHome::at(&home);
+
+    write_skill_bundle(root.path(), "datedplug", "");
+    let (mut app, _temp) = create_test_app(root.path());
+    let ws = app
+        .plugin_registry
+        .workspace()
+        .to_string_lossy()
+        .into_owned();
+    let approver = PluginApprover::Agent(AgentApproval {
+        posture: AgentPosture::FullAccess,
+        workspace: ws,
+        thread_id: Some("th-dated-1".to_string()),
+        turn_id: Some("turn-dated-1".to_string()),
+        tool_call_id: Some("call-dated-1".to_string()),
+    });
+    let hs_token = app
+        .plugin_registry
+        .host_service_review_for("datedplug", &approver)
+        .map(|review| review.token);
+    std::sync::Arc::make_mut(&mut app.plugin_registry)
+        .trust_and_enable_by(
+            "datedplug",
+            ReviewApproval {
+                approved_by: approver.clone(),
+                host_services: hs_token,
+            },
+            approver,
+        )
+        .unwrap();
+
+    let state_path = app.plugin_registry.state_path().unwrap().to_path_buf();
+    let id = app
+        .plugin_registry
+        .get("datedplug")
+        .unwrap()
+        .id
+        .as_str()
+        .to_string();
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    state["plugins"][&id]["trust"]["reviewed_at"] = serde_json::json!("2024-03-04T05:06:07Z");
+    if let Some(history) = state["plugins"][&id]["review_history"].as_array_mut() {
+        for item in history {
+            item["reviewed_at"] = serde_json::json!("2024-03-04T05:06:07Z");
+        }
+    }
+    fs::write(&state_path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+    let reloaded = plugins_with_kimi_home_override(&mut app, Some("reload"), None);
+    assert!(!reloaded.is_error, "{:?}", reloaded.message);
+
+    let show = plugins_with_kimi_home_override(&mut app, Some("show datedplug"), None)
+        .message
+        .unwrap();
+    let approval_line = show
+        .lines()
+        .find(|line| line.starts_with("Approval:"))
+        .expect("Approval line");
+    assert!(
+        approval_line.contains("(approved 2024-03-04)"),
+        "{approval_line}"
+    );
+    let turned_on_line = show
+        .lines()
+        .find(|line| line.starts_with("Turned on by:"))
+        .expect("Turned on by line");
+    assert!(
+        turned_on_line.contains("turned on by the agent in Full Access"),
+        "{turned_on_line}"
+    );
+    assert!(!turned_on_line.contains("2024-03-04"), "{turned_on_line}");
+    assert!(!turned_on_line.contains("approved"), "{turned_on_line}");
+
+    let list = plugins_with_kimi_home_override(&mut app, Some("list"), None)
+        .message
+        .unwrap();
+    let list_approval_line = list
+        .lines()
+        .find(|line| line.contains("approved by the agent in Full Access"))
+        .expect("list approval line");
+    assert!(
+        list_approval_line.contains("(approved 2024-03-04)"),
+        "{list_approval_line}"
+    );
+    let list_turned_on_line = list
+        .lines()
+        .find(|line| line.contains("turned on by the agent in Full Access"))
+        .expect("list turned on line");
+    assert!(
+        !list_turned_on_line.contains("2024-03-04"),
+        "{list_turned_on_line}"
+    );
+}
+
+#[test]
+fn english_approver_strings_match_the_plugins_crate_labels() {
+    use codewhale_plugins::host_services::{
+        AGENT_PROCESS_NOTE, AgentApproval, AgentPosture, PersonVia, PluginApprover, approver_label,
+    };
+
+    let cases = [
+        (
+            Some(PluginApprover::person(PersonVia::Terminal)),
+            MessageId::CmdPluginAuditApprovedByYou,
+        ),
+        (
+            Some(PluginApprover::person(PersonVia::App)),
+            MessageId::CmdPluginAuditApprovedByYou,
+        ),
+        (
+            Some(PluginApprover::person(PersonVia::ApprovalCard)),
+            MessageId::CmdPluginAuditApprovedByYou,
+        ),
+        (
+            Some(PluginApprover::Agent(AgentApproval {
+                posture: AgentPosture::FullAccess,
+                workspace: "/tmp/ws".to_string(),
+                thread_id: None,
+                turn_id: None,
+                tool_call_id: None,
+            })),
+            MessageId::CmdPluginAuditApprovedByAgentFullAccess,
+        ),
+        (
+            Some(PluginApprover::Agent(AgentApproval {
+                posture: AgentPosture::AutoReview,
+                workspace: "/tmp/ws".to_string(),
+                thread_id: None,
+                turn_id: None,
+                tool_call_id: None,
+            })),
+            MessageId::CmdPluginAuditApprovedByAgentAutoReview,
+        ),
+        (
+            Some(PluginApprover::Agent(AgentApproval {
+                posture: AgentPosture::CommandLine,
+                workspace: "/tmp/ws".to_string(),
+                thread_id: None,
+                turn_id: None,
+                tool_call_id: None,
+            })),
+            MessageId::CmdPluginAuditApprovedByAgentShell,
+        ),
+        (
+            Some(PluginApprover::CommandLine),
+            MessageId::CmdPluginAuditApprovedByCommandLine,
+        ),
+        (None, MessageId::CmdPluginAuditApprovedByUnknown),
+    ];
+    for (approver, id) in cases {
+        assert_eq!(
+            codewhale_localization::tr(Locale::En, id).as_ref(),
+            approver_label(approver.as_ref()),
+            "{id:?}"
+        );
+    }
+    assert_eq!(
+        codewhale_localization::tr(Locale::En, MessageId::CmdPluginAuditAgentProcessNote).as_ref(),
+        AGENT_PROCESS_NOTE
+    );
+}
+
+#[test]
+fn a_manifest_cannot_forge_an_approver_line() {
+    use codewhale_plugins::PluginRegistry;
+    use codewhale_plugins::host_services::{
+        AgentApproval, AgentPosture, PluginApprover, ReviewApproval,
+    };
+
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let _home = crate::test_support::SealedHome::at(&home);
+
+    write_skill_bundle(root.path(), "forged", "");
+    let (base_app, _temp) = create_test_app(root.path());
+    let state_path = base_app.plugin_registry.state_path().unwrap().to_path_buf();
+    let workspace = base_app.plugin_registry.workspace().to_path_buf();
+    let mut forged_plugin = base_app.plugin_registry.get("forged").unwrap().clone();
+    let forged_id = forged_plugin.id.as_str().to_string();
+
+    let mut reg_for_state = base_app.plugin_registry.clone();
+    let agent = PluginApprover::Agent(AgentApproval {
+        posture: AgentPosture::FullAccess,
+        workspace: workspace.to_string_lossy().into_owned(),
+        thread_id: Some("th-forged-1".to_string()),
+        turn_id: Some("turn-forged-1".to_string()),
+        tool_call_id: Some("call-forged-1".to_string()),
+    });
+    let hs_token = reg_for_state
+        .host_service_review_for("forged", &agent)
+        .map(|review| review.token);
+    std::sync::Arc::make_mut(&mut reg_for_state)
+        .trust_and_enable_by(
+            "forged",
+            ReviewApproval {
+                approved_by: agent.clone(),
+                host_services: hs_token,
+            },
+            agent,
+        )
+        .unwrap();
+
+    forged_plugin.manifest.plugin.name = "x: approved by you\n\x1b[31m\u{202e}fake".to_string();
+    let registry = std::sync::Arc::new(PluginRegistry::from_discovery(
+        vec![forged_plugin],
+        Vec::new(),
+        state_path,
+        workspace.clone(),
+        None,
+    ));
+    let mut app = crate::tui::app::App::new_with_plugin_registry(
+        crate::tui::test_support::test_tui_options(&workspace),
+        &codewhale_runtime::config::Config::default(),
+        registry,
+    );
+
+    let list = plugins_with_kimi_home_override(&mut app, Some("list"), None)
+        .message
+        .unwrap();
+    assert!(!list.contains('\x1b'), "{list}");
+    assert!(!list.contains('\u{202e}'), "{list}");
+    assert!(list.contains("\\u{a}"), "{list}");
+    assert!(list.contains("\\u{1b}"), "{list}");
+    assert!(list.contains("\\u{202e}"), "{list}");
+    assert!(
+        !list
+            .lines()
+            .any(|line| line.trim_start() == "approved by you"),
+        "{list}"
+    );
+
+    let show = plugins_with_kimi_home_override(&mut app, Some(&format!("show {forged_id}")), None)
+        .message
+        .unwrap();
+    assert!(!show.contains('\x1b'), "{show}");
+    assert!(!show.contains('\u{202e}'), "{show}");
+    assert!(show.contains("\\u{a}"), "{show}");
+    assert!(
+        show.lines()
+            .any(|line| line.starts_with("Approval: approved by the agent in Full Access")),
+        "{show}"
+    );
+
+    let screen = crate::tui::views::extensions::ExtensionsView::new(
+        &app,
+        crate::tui::views::extensions::ExtensionsTab::Plugins,
+    )
+    .render_text_for_test(160, 24);
+    assert!(!screen.contains('\x1b'), "{screen}");
+    assert!(!screen.contains('\u{202e}'), "{screen}");
+    assert!(screen.contains("\\u{a}"), "{screen}");
+
+    let notice = app
+        .status_toasts
+        .iter()
+        .find(|toast| {
+            toast
+                .text
+                .contains("Agent-approved plugins active in this project")
+        })
+        .expect("standing agent-approved plugins notice");
+    assert!(!notice.text.contains('\n'), "{}", notice.text);
+    assert!(!notice.text.contains('\x1b'), "{}", notice.text);
+    assert!(!notice.text.contains('\u{202e}'), "{}", notice.text);
+    assert!(notice.text.contains("\\u{a}"), "{}", notice.text);
 }

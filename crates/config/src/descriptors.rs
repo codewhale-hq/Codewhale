@@ -10,7 +10,24 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-const DESCRIPTORS_JSON: &str = include_str!("../assets/provider_descriptors.json");
+pub(crate) const DESCRIPTORS_JSON: &str = include_str!("../assets/provider_descriptors.json");
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelIdsPolicy {
+    Strict,
+    Roster,
+    Catalog,
+    Verbatim,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ModelRules {
+    pub ids: ModelIdsPolicy,
+    pub accept: &'static [&'static str],
+    pub strip_prefixes: &'static [&'static str],
+    pub aliases: &'static [(&'static str, &'static str)],
+    pub wire_slugs: &'static [(&'static str, &'static str)],
+}
 
 /// Immutable built-in view compiled from the same descriptor data file.
 #[derive(Debug, Clone, Copy)]
@@ -29,6 +46,7 @@ pub(crate) struct BuiltinProviderDescriptor {
     pub retired: bool,
     pub wire_policy: crate::provider::WirePolicy,
     pub credential_help: crate::provider::CredentialHelp,
+    pub models: ModelRules,
 }
 
 /// Exact compatibility identity for the TUI-only legacy DeepSeek China table.
@@ -211,10 +229,72 @@ pub fn bundled_provider_descriptors() -> &'static [ProviderDescriptor] {
 }
 
 #[must_use]
-pub fn provider_descriptor(id: &str) -> Option<&'static ProviderDescriptor> {
-    bundled_provider_descriptors()
-        .iter()
+pub fn active_provider_descriptors() -> Vec<ProviderDescriptor> {
+    let mut out = bundled_provider_descriptors().to_vec();
+    if let Some(admitted) = crate::cloud_facts::overlay::pulled_registry() {
+        for row in &mut out {
+            if let Some(default_model) = admitted.compiled.descriptor_defaults.get(&row.id) {
+                row.default_model.clone_from(default_model);
+            }
+        }
+        out.extend(
+            admitted
+                .providers
+                .iter()
+                .map(crate::cloud_facts::PulledProvider::to_descriptor),
+        );
+    }
+    out
+}
+
+#[must_use]
+pub fn is_registry_admitted_base_url(base_url: &str) -> bool {
+    fn host(raw: &str) -> Option<String> {
+        url::Url::parse(raw.trim()).ok().and_then(|url| {
+            url.host_str()
+                .map(|host| host.trim_end_matches('.').to_ascii_lowercase())
+        })
+    }
+    let Some(target) = host(base_url) else {
+        return false;
+    };
+    crate::cloud_facts::overlay::pulled_registry().is_some_and(|admitted| {
+        admitted
+            .providers
+            .iter()
+            .any(|provider| host(&provider.base_url).as_deref() == Some(target.as_str()))
+    })
+}
+
+#[must_use]
+pub fn provider_descriptor(id: &str) -> Option<ProviderDescriptor> {
+    active_provider_descriptors()
+        .into_iter()
         .find(|descriptor| descriptor.matches(id))
+}
+
+#[must_use]
+pub(crate) fn normalize_model_lookup_key(model: &str) -> String {
+    model.trim().to_ascii_lowercase().replace(['_', ' '], "-")
+}
+
+pub(crate) fn model_rules_for(kind: crate::ProviderKind) -> &'static ModelRules {
+    &builtin_provider_descriptor(kind).models
+}
+
+#[must_use]
+pub fn provider_model_alias(kind: crate::ProviderKind, model: &str) -> Option<&'static str> {
+    let key = normalize_model_lookup_key(model);
+    model_rules_for(kind)
+        .aliases
+        .iter()
+        .find(|(alias, _)| *alias == key)
+        .map(|(_, target)| *target)
+}
+
+#[must_use]
+pub fn provider_passes_model_through(kind: crate::ProviderKind) -> bool {
+    model_rules_for(kind).ids == ModelIdsPolicy::Verbatim
 }
 
 #[cfg(test)]
@@ -244,7 +324,9 @@ mod tests {
         assert_eq!(cmd.base_url, "https://api.commandcode.ai/provider/v1");
         assert_eq!(cmd.api_key_env, "COMMAND_CODE_API_KEY");
         assert_eq!(
-            provider_descriptor("cmd-code").map(|row| row.id.as_str()),
+            provider_descriptor("cmd-code")
+                .as_ref()
+                .map(|row| row.id.as_str()),
             Some("command-code")
         );
         // Alibaba Model Studio is a data-driven row: live /v1/models is the
@@ -256,7 +338,9 @@ mod tests {
         );
         assert_eq!(dashscope.api_key_env, "DASHSCOPE_API_KEY");
         assert_eq!(
-            provider_descriptor("qwen").map(|row| row.id.as_str()),
+            provider_descriptor("qwen")
+                .as_ref()
+                .map(|row| row.id.as_str()),
             Some("dashscope"),
             "the founder's `qwen` name resolves to the DashScope row"
         );
@@ -313,7 +397,9 @@ mod tests {
         assert_eq!(row.api_key_env, "CHEAPER_INFERENCE_API_KEY");
         assert_eq!(row.default_model, "gpt-5.4-mini");
         assert_eq!(
-            provider_descriptor("cheaper_inference").map(|row| row.id.as_str()),
+            provider_descriptor("cheaper_inference")
+                .as_ref()
+                .map(|row| row.id.as_str()),
             Some("cheaperinference")
         );
     }
@@ -327,8 +413,26 @@ mod tests {
         assert_eq!(row.api_key_env, "STANDARDCOMPUTE_API_KEY");
         assert_eq!(row.default_model, "standardcompute");
         assert_eq!(
-            provider_descriptor("standard_compute").map(|row| row.id.as_str()),
+            provider_descriptor("standard_compute")
+                .as_ref()
+                .map(|row| row.id.as_str()),
             Some("standardcompute")
+        );
+    }
+
+    #[test]
+    fn worldrouter_is_a_descriptor_row() {
+        let row = provider_descriptor("worldrouter").expect("worldrouter");
+        assert_eq!(row.id, "worldrouter");
+        assert_eq!(row.wire, DescriptorWire::OpenaiCompatible);
+        assert_eq!(row.base_url, "https://inference-api.worldrouter.ai/v1");
+        assert_eq!(row.api_key_env, "WORLDROUTER_API_KEY");
+        assert_eq!(row.default_model, "claude-sonnet-5-5");
+        assert_eq!(
+            provider_descriptor("world_router")
+                .as_ref()
+                .map(|row| row.id.as_str()),
+            Some("worldrouter")
         );
     }
 
@@ -341,9 +445,21 @@ mod tests {
         assert_eq!(row.api_key_env, "OPPER_API_KEY");
         assert_eq!(row.default_model, "claude-sonnet-4-6");
         assert_eq!(
-            provider_descriptor("opper_ai").map(|row| row.id.as_str()),
+            provider_descriptor("opper_ai")
+                .as_ref()
+                .map(|row| row.id.as_str()),
             Some("opper")
         );
+    }
+
+    #[test]
+    fn llmtr_is_a_descriptor_row() {
+        let row = provider_descriptor("llmtr").expect("llmtr");
+        assert_eq!(row.id, "llmtr");
+        assert_eq!(row.wire, DescriptorWire::OpenaiCompatible);
+        assert_eq!(row.base_url, "https://llmtr.com/v1");
+        assert_eq!(row.api_key_env, "LLMTR_API_KEY");
+        assert_eq!(row.default_model, "minimax/minimax-m3.1-flash");
     }
 
     #[test]
@@ -438,7 +554,7 @@ mod tests {
         // reusing its name; compatible-host lookup remains separately scoped.
         assert!(provider_descriptor("openai").is_none());
         assert!(provider_descriptor("deepseek").is_none());
-        assert_eq!(bundled_provider_descriptors().len(), 16);
+        assert_eq!(bundled_provider_descriptors().len(), 18);
         let wafer = provider_descriptor("wafer").expect("wafer");
         assert_eq!(wafer.base_url, "https://pass.wafer.ai/v1");
         assert_eq!(wafer.default_model, "GLM-5.3");

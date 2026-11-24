@@ -105,6 +105,7 @@ async fn foreign_scoped_automation_and_unbound_trigger_never_dispatch_through_cu
         workspace: Some(root.path().to_path_buf()),
         owner_session_id: None,
         parent_trigger_id: None,
+        disallowed_tools: Vec::new(),
     })?;
     trigger.execution_scope = None;
     trigger.fire_at = Utc::now() - Duration::seconds(1);

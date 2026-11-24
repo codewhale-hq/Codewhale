@@ -522,20 +522,6 @@ impl OfferingPricing {
         None
     }
 
-    /// Per-million price for one canonical class, when published.
-    #[must_use]
-    pub fn price_per_million(&self, class: TokenClass) -> Option<f64> {
-        match class {
-            TokenClass::Input => self.input_per_million,
-            TokenClass::Output => self.output_per_million,
-            TokenClass::CacheRead => self.cache_read_per_million,
-            TokenClass::CacheWrite => self.cache_write_per_million,
-            TokenClass::Reasoning => self.reasoning_per_million,
-            TokenClass::InputAudio => self.input_audio_per_million,
-            TokenClass::OutputAudio => self.output_audio_per_million,
-        }
-    }
-
     /// Classes this turn actually used that carry no published price.
     ///
     /// Non-empty means [`Self::estimate_cost`] fails closed for this usage; the
@@ -612,36 +598,22 @@ impl OfferingPricing {
         {
             return Err(PricingQuoteError::InvalidUsage);
         }
-        for (class, tokens, rate, total) in [
-            (
-                TokenClass::Reasoning,
-                usage.reasoning,
-                cost.reasoning,
-                usage.output,
-            ),
-            (
-                TokenClass::InputAudio,
-                usage.input_audio,
-                cost.input_audio,
-                total_input,
-            ),
-            (
-                TokenClass::OutputAudio,
-                usage.output_audio,
-                cost.output_audio,
-                usage.output,
-            ),
-        ] {
-            if rate.is_some() && tokens.is_none() && total > 0 {
-                return Err(PricingQuoteError::MissingUsage(class));
-            }
+        if cost.reasoning.is_some()
+            && cost.reasoning != cost.output
+            && usage.reasoning.is_none()
+            && usage.output > 0
+        {
+            return Err(PricingQuoteError::MissingUsage(TokenClass::Reasoning));
         }
-        if audio_input > 0 && (usage.cache_read > 0 || usage.cache_write > 0) {
+        if audio_input > 0
+            && cost.input_audio != cost.input
+            && (usage.cache_read > 0 || usage.cache_write > 0)
+        {
             return Err(PricingQuoteError::MissingUsage(TokenClass::InputAudio));
         }
         billable.input = usage.input - audio_input;
         billable.output = usage.output - audio_output;
-        if cost.reasoning.is_some() {
+        if cost.reasoning.is_some() && usage.reasoning.is_some() {
             billable.output -= reasoning;
         } else {
             billable.reasoning = None;

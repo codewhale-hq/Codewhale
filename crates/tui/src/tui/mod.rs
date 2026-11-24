@@ -34,6 +34,7 @@ pub mod composer_ui;
 pub mod context_inspector;
 pub mod context_menu;
 pub(crate) mod control_socket;
+pub(crate) mod conversation_mode;
 pub(crate) mod coordination_detail;
 pub mod display_refresh;
 pub mod external_editor;

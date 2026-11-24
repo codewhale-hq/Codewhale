@@ -940,7 +940,7 @@ def validate_reviewed(data: Any) -> dict[str, Any]:
     if not isinstance(intrinsic, dict):
         die("reviewed intrinsic facts must be an object")
     for key, row in intrinsic.items():
-        if not identifier(key) or not isinstance(row, dict) or not identifier(row.get("source")) or any(not positive(row.get(field)) for field in ("context_window", "max_output", "generation_default")) or not (row.get("reasoning") is None or isinstance(row.get("reasoning"), bool)):
+        if not identifier(key) or not isinstance(row, dict) or not identifier(row.get("source")) or any(not positive(row.get(field)) for field in ("context_window", "max_output", "generation_default")) or any(not (row.get(field) is None or isinstance(row.get(field), bool)) for field in ("reasoning", "thought_signatures_required", "thinking_can_disable")):
             die("malformed reviewed intrinsic fact")
     public = data.get("public_models", [])
     if not isinstance(public, list):
@@ -950,12 +950,9 @@ def validate_reviewed(data: Any) -> dict[str, Any]:
         if not isinstance(row, dict) or not identifier(row.get("id")) or row["id"] in seen or row["id"].lower() not in intrinsic:
             die("missing or duplicate reviewed public model")
         seen.add(row["id"])
-    for key in ("compatibility_aliases", "completion_rosters", "constants", "groups"):
+    for key in ("completion_rosters", "constants", "groups"):
         if not isinstance(data.get(key, {}), dict):
             die(f"reviewed {key} must be an object")
-    for aliases in data.get("compatibility_aliases", {}).values():
-        if not isinstance(aliases, dict) or any(not identifier(key) or not identifier(value) for key, value in aliases.items()):
-            die("malformed reviewed alias")
     for entries in data.get("completion_rosters", {}).values():
         if not isinstance(entries, list) or any(not identifier(value) for value in entries):
             die("malformed reviewed completion roster")

@@ -46,6 +46,7 @@ Editing the message you're about to send.
 |-----------------------------|---------------------------------------------------------|
 | `Enter`                     | Send when idle; queue while busy; with an empty composer, send the next queued follow-up now |
 | `Shift-Enter` / `Alt-Enter` / `Ctrl-J` | Insert a newline without sending (idle or busy) |
+| `r`                         | Approve a one-use retry of the latest Auto-Review-blocked call (only when composer is empty in Work + Auto-Review with an unapproved retry receipt; `/permissions blocked` lists and approves any receipt) |
 | `Ctrl-Enter` / `Cmd-Enter`  | Steer: send into the current turn, closing the in-flight model request at once (reasoning, text or tool call) and continuing the same turn with your message; send normally when idle (when the terminal reports it distinctly). Text already shown is kept; unfinished reasoning and partial tool calls are discarded, never run. A second `Enter` within 500 ms of queueing a message while busy steers too |
 | `Ctrl-U`                    | Clear the whole draft (recoverable — see `Ctrl-Z`)      |
 | `Ctrl-Z`                    | Restore the cleared draft (only while the composer is empty) |
@@ -241,10 +242,7 @@ panel and placement. `Alt-!`/`Alt-@`/`Alt-#`/`Alt-$` switch panels.
 
 | Chord | Action |
 |---|---|
-| `F7` | View the OrcaRouter partner offer in `/provider` or `/model`, keeping the current selection |
-
-Click the OrcaRouter recommendation for the same offer. Its pager includes the
-redemption URL and referral disclosure. On Apple keyboards, hold Fn if needed.
+| `F7` | Opened the OrcaRouter partner offer in `/provider` or `/model` while its campaign ran. The campaign ended on 2026-11-21, so the key now does nothing and Help no longer lists it |
 
 ## Session Picker (`Ctrl-R` or `/sessions`)
 
@@ -317,8 +315,9 @@ then `Enter` to submit or `Esc` to return to the options without sending.
 | `Esc`                | Step back one screen                                |
 | `1`–`9`              | Pick a language (Language step)                    |
 | `0`–`9`              | Pick a provider (Provider step; SGLang, vLLM, and Ollama are keyless by default) |
-| `y` / `Y`            | Trust the workspace (Trust step)                   |
-| `n` / `N`            | Skip the trust prompt                              |
+| `1`                  | Trust the workspace (Trust step)                   |
+| `2`                  | Continue without trusting (Trust step)             |
+| `3` / `Esc`          | Quit Codewhale (Trust step); letters do nothing there |
 
 ## v0.8.29 audit notes
 

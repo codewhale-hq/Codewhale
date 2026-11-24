@@ -1,29 +1,31 @@
-[1m[38;5;103mNote[0m[48;5;234m [1m[38;5;74mReceipt: Add a --json flag to ls.py so the tests[0m[48;5;234m  [38;5;80m┃
-[38;5;103m▏    [1m[38;5;74mpass, t...[0m[48;5;234m                                        [38;5;80m┃
-[38;5;103m▏    ────────────────────────────────────────[39m          [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mChanged 1 file (+4 −0) · ran 1 command · 1[0m[48;5;234m        [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mapproved by you · 1 ran without asking[0m[48;5;234m            [38;5;239m│
+[38;5;103m▏    [39m                                                  [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mTokens: 36834 in · 466 out · 37300 total · 4[0m[48;5;234m      [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mprovider calls (35840 cache read, 24 reasoning)[0m[48;5;234m   [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mCost, as /cost reports it:[0m[48;5;234m                        [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mSession Cost:[0m[48;5;234m                                     [38;5;239m│
+[38;5;103m▏    [3m[38;5;109m─────────────────────────────[0m[48;5;234m                     [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mEstimated total: $0.0005[0m[48;5;234m                          [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mBased on audited provider-reported usage and[0m[48;5;234m      [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mpublished rates.[0m[48;5;234m                                  [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mBreakdown (components sum to the total above):[0m[48;5;234m    [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mParent turns: $0.0005[0m[48;5;234m                             [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mThis is an estimate, not a bill: it is computed[0m[48;5;234m   [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mlocally from provider-reported token usage and[0m[48;5;234m    [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mpublished rates, and can differ from your[0m[48;5;234m         [38;5;239m│
+[38;5;103m▏    [3m[38;5;109minvoice.[0m[48;5;234m                                          [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mCovered: 4 of 4 money-metered turn(s) priced.[0m[48;5;234m     [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mPricing sources used: provider_docs.[0m[48;5;234m              [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mAudited routes (redacted):[0m[48;5;234m                        [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mprovider=deepseek identity=deepseek[0m[48;5;234m               [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mmodel=deepseek-flash surface=first-party-payg[0m[48;5;234m     [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mendpoint_[0m[48;5;234m                                         [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mfp=812b1f7c4a8b1af438d207c4d010794296f83296c29dcd[0m[48;5;234m [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109m10b8b6dd22f64c79db billing_mode=metered[0m[48;5;234m           [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mcurrency=usd+cny[0m[48;5;234m                                  [38;5;80m┃
 [38;5;103m▏    [39m                                                  [38;5;80m┃
-[38;5;103m▏    [3m[38;5;109msession 918b26d7-0f5a-4a7f-bea7-6dbc57fe410c ·[0m[48;5;234m    [38;5;80m┃
-[38;5;103m▏    [3m[38;5;109m/home/dev/proj · scripted-demo · Ask[0m[48;5;234m              [38;5;80m┃
+[38;5;103m▏    [38;5;74m1. [3m[38;5;109medited [48;5;17mls.py[48;5;234m (+4 −0)[0m[48;5;234m                           [38;5;80m┃
+[38;5;103m▏    [38;5;74m2. [3m[38;5;109mran [48;5;17mpython3 -m unittest -v test_ls.py 2>&1;[0m[48;5;234m    [38;5;80m┃
+[38;5;103m▏    [39m   [3m[38;5;109m[48;5;17mecho "EXIT=$?"[48;5;234m · approved by you[0m[48;5;234m               [38;5;80m┃
 [38;5;103m▏    [39m                                                  [38;5;80m┃
-[38;5;103m▏    [3m[38;5;109mChanged 1 file · ran 1 command · 1 approved by[0m[48;5;234m    [38;5;80m┃
-[38;5;103m▏    [3m[38;5;109myou · 1 ran without asking under Ask[0m[48;5;234m              [38;5;80m┃
-[38;5;103m▏    [39m                                                  [38;5;80m┃
-[38;5;103m▏    [38;5;74m1. [3m[38;5;109mwrote [48;5;17mls.py[0m[48;5;234m                                    [38;5;80m┃
-[38;5;103m▏    [38;5;74m2. [3m[38;5;109mran [48;5;17mpython3 -m unittest -q[48;5;234m · approved by you[0m[48;5;234m   [38;5;80m┃
-[38;5;103m▏    [39m                                                  [38;5;80m┃
-[38;5;103m▏    [3m[38;5;109mNot recorded:[0m[48;5;234m                                     [38;5;80m┃
-[38;5;103m▏    [38;5;74m- [3m[38;5;109mExit codes: calls that saved no structured[0m[48;5;234m      [38;5;80m┃
-[38;5;103m▏    [39m  [3m[38;5;109mresult (terminal sessions) show pass or fail,[0m[48;5;234m   [38;5;80m┃
-[38;5;103m▏    [39m  [3m[38;5;109mnot the exit code.[0m[48;5;234m                              [38;5;80m┃
-[38;5;103m▏    [38;5;74m- [3m[38;5;109mFiles changed outside file tools come from the[0m[48;5;234m  [38;5;80m┃
-[38;5;103m▏    [39m  [3m[38;5;109mworkspace snapshots taken before and after each[0m[48;5;234m [38;5;80m┃
-[38;5;103m▏    [39m  [3m[38;5;109mturn, so they include anything that wrote to[0m[48;5;234m    [38;5;80m┃
-[38;5;103m▏    [39m  [3m[38;5;109mthe workspace during the turn, not only[0m[48;5;234m         [38;5;80m┃
-[38;5;103m▏    [39m  [3m[38;5;109mCodewhale. They leave out what snapshots do not[0m[48;5;234m [38;5;80m┃
-[38;5;103m▏    [39m  [3m[38;5;109mtrack: ignored and skipped paths (.gitignore[0m[48;5;234m    [38;5;80m┃
-[38;5;103m▏    [39m  [3m[38;5;109mentries, .env, node_modules, target, and the[0m[48;5;234m    [38;5;80m┃
-[38;5;103m▏    [39m  [3m[38;5;109mlike) and anything outside the workspace.[0m[48;5;234m       [38;5;80m┃
-[38;5;103m▏    [38;5;74m- [3m[38;5;109mLine counts: some file changes have no saved[0m[48;5;234m    [38;5;80m┃
-[38;5;103m▏    [39m  [3m[38;5;109mdiff, so their +/- counts are not recorded.[0m[48;5;234m     [38;5;80m┃
-[38;5;103m▏    [38;5;74m- [3m[38;5;109mTimestamps: a terminal session saves calls in[0m[48;5;234m   [38;5;80m┃
-[38;5;103m▏    [39m  [3m[38;5;109morder, not when each one ran.[0m[48;5;234m                   [38;5;80m┃

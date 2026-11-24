@@ -721,6 +721,21 @@ pub struct PluginMcpServerDetail {
     pub enabled: bool,
 }
 
+/// Portable host-service grant and cohort sharing state for plugin detail rendering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginHostServiceDetail {
+    pub service: String,
+    pub can_use: bool,
+    pub withheld_by: Vec<String>,
+}
+
+/// Portable earlier review entry for plugin detail rendering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginEarlierReview {
+    pub reviewed_at: String,
+    pub approver: String,
+}
+
 /// Portable summary of one loaded plugin bundle (list output, FEAT-020 D2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginSummary {
@@ -729,6 +744,13 @@ pub struct PluginSummary {
     pub state_label: String,
     pub scope: String,
     pub trust_status: String,
+    pub review_display: Option<String>,
+    pub approver: Option<String>,
+    pub reviewed_date: Option<String>,
+    pub enabled_by: Option<String>,
+    pub reach_folder: Option<String>,
+    pub outside_reach: bool,
+    pub process_note: Option<String>,
     pub compatibility: String,
     pub inventory: String,
     pub active: bool,
@@ -752,6 +774,17 @@ pub struct PluginDetail {
     pub scope: String,
     pub state_label: String,
     pub trust_status: String,
+    pub trust_display: Option<String>,
+    pub approver: Option<String>,
+    pub reviewed_date: Option<String>,
+    pub enabled_by: Option<String>,
+    pub agent_thread_id: Option<String>,
+    pub agent_workspace_path: Option<String>,
+    pub reach_folder: Option<String>,
+    pub outside_reach: bool,
+    pub process_note: Option<String>,
+    pub host_services: Vec<PluginHostServiceDetail>,
+    pub earlier_reviews: Vec<PluginEarlierReview>,
     pub compatibility: String,
     pub content_hash: String,
     pub capability_hash: String,
@@ -762,6 +795,8 @@ pub struct PluginDetail {
     pub unsupported_labels: Vec<String>,
     pub supported_labels: Vec<String>,
     pub skills: Vec<String>,
+    pub commands: Vec<String>,
+    pub profiles: Vec<String>,
     pub filesystem_roots: Vec<String>,
     pub network_hosts: Vec<String>,
     pub stdio_mcp_servers: usize,
@@ -853,6 +888,9 @@ pub struct PluginDshPreview {
     pub source_version: Option<String>,
     pub content_hash: String,
     pub skills: Vec<String>,
+    pub commands: Vec<String>,
+    pub agents: Vec<String>,
+    pub hooks: Vec<String>,
     pub remote_servers: Vec<String>,
     pub local_servers: Vec<String>,
     pub network_hosts: Vec<String>,
@@ -1361,6 +1399,7 @@ pub struct SessionSyncPayload {
     pub model: String,
     pub workspace: PathBuf,
     pub mode: CommandMode,
+    pub agent_preset: Option<String>,
 }
 
 /// `/branch` success projection (`session/branch.rs`). The handler composes
@@ -1486,10 +1525,15 @@ pub trait CommandSessionLifecycleContext {
     /// `/fork <session_id|prefix>`: explicit-source fork.
     fn fork_from(&mut self, session_id_or_prefix: &str) -> Result<SessionForkFromReceipt, String>;
 
-    /// `/new [--force]`: fresh-session transition. The caller has already
-    /// parsed the argument and applied the transition-blocked gate; blocker,
-    /// busy-work-state, and success handling match the baseline.
-    fn fresh_session(&mut self, force: bool) -> Result<SessionNewReceipt, String>;
+    /// `/new [<mode>] [--force]`: fresh-session transition. The caller has
+    /// already parsed the arguments and applied the transition-blocked gate;
+    /// `conversation_mode` is the id the person named, absent for Standard.
+    /// The host validates it against the Engine's mode table.
+    fn fresh_session(
+        &mut self,
+        force: bool,
+        conversation_mode: Option<&str>,
+    ) -> Result<SessionNewReceipt, String>;
 
     /// `/load <path>`: resolve the path (separator-bearing direct vs
     /// workspace-relative) and validate the saved-session shape without
@@ -1592,6 +1636,7 @@ pub struct PlanSections {
     pub verification_plan: Option<String>,
     pub risks_and_unknowns: Option<String>,
     pub handoff_packet: Option<String>,
+    pub replan_if: Vec<String>,
     pub items: Vec<PlanStep>,
 }
 
@@ -1952,12 +1997,22 @@ pub enum RestorePointProjection {
     Recorded { snapshots: Vec<RestoreSnapshot> },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExportTurnOutcome {
+    pub status: String,
+    pub error: String,
+    pub code: Option<String>,
+    pub ended_at_unix: i64,
+    pub after_message_count: usize,
+}
+
 /// Full conversation projection (D3/D8/D9).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConversationExportProjection {
     pub metadata: ExportMetadata,
     pub transcript: TranscriptProjection,
     pub restore_points: RestorePointProjection,
+    pub turn_outcomes: Vec<ExportTurnOutcome>,
 }
 
 /// Turn-handoff projection (D2).

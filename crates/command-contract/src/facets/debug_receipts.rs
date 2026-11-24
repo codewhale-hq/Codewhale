@@ -140,6 +140,8 @@ pub struct ReceiptTotals {
     pub network: usize,
     pub mcp_calls: usize,
     pub plugin_calls: usize,
+    #[serde(default)]
+    pub plugin_changes: usize,
     pub subagents: usize,
     pub approvals: ApprovalTotals,
     /// File changes, commands, code runs, web and MCP calls, and agents that
@@ -252,6 +254,15 @@ pub enum ActionKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         server: Option<String>,
         plugin: bool,
+    },
+    PluginChange {
+        method: String,
+        plugin: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        hash: Option<String>,
+        approver: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        services: Vec<String>,
     },
     Subagent {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -372,6 +383,7 @@ impl ReceiptAction {
                     | ActionKind::Code { .. }
                     | ActionKind::Network { .. }
                     | ActionKind::Mcp { .. }
+                    | ActionKind::PluginChange { .. }
                     | ActionKind::Subagent { .. }
             )
     }

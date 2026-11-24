@@ -605,7 +605,7 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
     def(
         "show_thinking",
         SettingKind::Bool(SHOW_THINKING),
-        "false",
+        "true",
         ui(
             TAB_APPEARANCE,
             "display",
@@ -1313,7 +1313,7 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
     def(
         "telemetry",
         SettingKind::Bool(TELEMETRY),
-        "false",
+        "true",
         ui(
             TAB_TRUST,
             "network",
@@ -1415,7 +1415,8 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
     // A transport timeout; advanced networking, available through `/set` only.
     def("stream_chunk_timeout_secs", SettingKind::Int, "900", None),
     // Canonical transport keys. Runtime resolution stays in TUI Config.
-    def("stream.open_timeout_secs", SettingKind::Int, "45", None),
+    def("stream.open_timeout_secs", SettingKind::Int, "180", None),
+    def("stream.open_retries", SettingKind::Int, "1", None),
     def("stream.chunk_timeout_secs", SettingKind::Int, "900", None),
     def("stream.max_resumes", SettingKind::Int, "3", None),
     def(
@@ -1544,6 +1545,12 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
         "operate_deprecation_shown",
         SettingKind::Bool(ON_OFF),
         "false",
+        None,
+    ),
+    def(
+        "account_preferences_notice_shown",
+        SettingKind::String,
+        "",
         None,
     ),
     // Round 3 work-bar placement migration ran once (`top` → `bottom`).

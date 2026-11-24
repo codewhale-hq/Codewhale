@@ -1,10 +1,12 @@
 import Link from "next/link";
 import { GettingStartedSteps } from "@/components/getting-started-steps";
 import { SessionMedia } from "@/components/session-media";
-import { NativeTerminalGallery } from "@/components/native-terminal-gallery";
+import { SessionFrames, type SessionFrame } from "@/components/route/session-frames";
+import { TerminalCapture } from "@/components/terminal-capture";
 import { GUIDE_NEXT_LINKS } from "@/lib/content/getting-started";
-import { fill, getDocsGuide, getHome, pickText } from "@/lib/i18n/dictionaries";
-import { getMediaAsset, TERMINAL_SCREENSHOT } from "@/lib/media-manifest";
+import { getDocsGuide, getHome, pickText } from "@/lib/i18n/dictionaries";
+import { getMediaAsset } from "@/lib/media-manifest";
+import { RELEASED_CAPTURE_FRAMES } from "@/lib/released-capture.generated";
 import { buildPageMetadata } from "@/lib/page-meta";
 import { getNativeTerminalCopy } from "@/lib/content/native-terminal";
 
@@ -25,6 +27,27 @@ export default async function GuidePage({ params }: { params: Promise<{ locale: 
   const session = getMediaAsset("first-fleet-session");
   const terminal = getNativeTerminalCopy(locale);
   const home = getHome(locale);
+  const views: SessionFrame[] = terminal.views.map((view) => ({
+    key: view.id,
+    name: view.label,
+    wide: (
+      <TerminalCapture
+        data={RELEASED_CAPTURE_FRAMES[view.wide]}
+        label={view.description}
+        regionLabel={`${home.shotPreview} · ${view.label}`}
+        rows={"wideRows" in view ? view.wideRows : undefined}
+      />
+    ),
+    narrow: (
+      <TerminalCapture
+        data={RELEASED_CAPTURE_FRAMES[view.narrow]}
+        label={view.description}
+        regionLabel={`${home.shotPreview} · ${view.label}`}
+        rows={"narrowRows" in view ? view.narrowRows : undefined}
+      />
+    ),
+    note: false,
+  }));
 
   return (
     <section className="space-y-10">
@@ -40,14 +63,7 @@ export default async function GuidePage({ params }: { params: Promise<{ locale: 
       <section id="terminal-views" className="scroll-mt-32">
         <h2 className="font-display text-2xl mb-1">{terminal.title}</h2>
         <p className={`${t.bodyClassName} mt-3 mb-4`}>{terminal.description}</p>
-        <div className="figure-frame">
-          <NativeTerminalGallery
-            locale={locale}
-            defaultFrame="composer"
-            regionLabel={home.shotPreview}
-            label={fill(home.screenshotAlt, { version: TERMINAL_SCREENSHOT.version })}
-          />
-        </div>
+        <SessionFrames frames={views} initial={views.length - 2} label={terminal.viewsLabel} caption={null} note="" />
       </section>
 
       {session?.status === "published" && (

@@ -4,7 +4,7 @@
 use crate::tui::app::App;
 use crate::tui::history::HistoryCell;
 
-/// `/mcp` and every MCP action land on Extensions → MCP, the one MCP
+/// `/mcp` and every MCP action land on Plugins → Connectors, the one MCP
 /// surface, rebuilt from the snapshot just stored on `app`. A pager full of
 /// text was the 0.9.12 "terrible menu" (defects #17–#20). An Extensions view
 /// already on top is replaced so it reads the fresh snapshot.

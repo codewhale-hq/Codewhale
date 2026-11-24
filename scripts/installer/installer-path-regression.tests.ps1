@@ -57,7 +57,11 @@ else {
 
 try {
     [void] (New-Item -ItemType Directory -Path $stageInstallerDir -Force)
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'LICENSE') -Destination (Join-Path $stageRoot 'LICENSE')
+    $noticeFiles = @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'docs/THIRD_PARTY_NOTICES.md')
+    [void] (New-Item -ItemType Directory -Path (Join-Path $stageRoot 'docs') -Force)
+    foreach ($file in $noticeFiles) {
+        Copy-Item -LiteralPath (Join-Path $repoRoot $file) -Destination (Join-Path $stageRoot $file)
+    }
     Copy-Item `
         -LiteralPath (Join-Path $PSScriptRoot 'codewhale.nsi') `
         -Destination (Join-Path $stageInstallerDir 'codewhale.nsi')
@@ -118,6 +122,16 @@ try {
     $installArguments = [System.Collections.Generic.List[string]]::new()
     $installArguments.Add('/S')
     $installArguments.Add("/D=$installDir")
+    $collisionDir = Join-Path $testRoot 'collision'
+    $collisionDocs = Join-Path $collisionDir 'codewhale-notices'
+    [void] (New-Item -ItemType Directory -Path $collisionDocs -Force)
+    $collisionFile = Join-Path $collisionDocs 'LICENSE'
+    [System.IO.File]::WriteAllText($collisionFile, 'belongs to another project')
+    $refused = Start-Process -FilePath $installer -ArgumentList @('/S', "/D=$collisionDir") -Wait -PassThru
+    if ($refused.ExitCode -eq 0 -or [System.IO.File]::ReadAllText($collisionFile) -cne 'belongs to another project' -or
+        (Test-Path -LiteralPath (Join-Path $collisionDir '.codewhale-install'))) {
+        throw 'Installer did not preserve an existing release notice destination.'
+    }
     $installProcess = Start-Process `
         -FilePath $installer `
         -ArgumentList @($installArguments) `
@@ -127,6 +141,27 @@ try {
         throw "CodeWhaleSetup.exe exited with code $($installProcess.ExitCode)."
     }
 
+    $rootMarker = Join-Path $installDir '.codewhale-install'
+    $staleLicense = Join-Path $installDir 'codewhale-notices/LICENSE'
+    Move-Item -LiteralPath $rootMarker -Destination "$rootMarker.saved"
+    try {
+        [System.IO.File]::WriteAllText($staleLicense, 'belongs to the replacement directory')
+        $refused = Start-Process -FilePath $installer -ArgumentList @($installArguments) -Wait -PassThru
+        if ($refused.ExitCode -eq 0 -or [System.IO.File]::ReadAllText($staleLicense) -cne 'belongs to the replacement directory' -or
+            (Test-Path -LiteralPath $rootMarker)) {
+            throw 'Stale registry ownership allowed the installer to overwrite a replacement directory.'
+        }
+    } finally {
+        Move-Item -LiteralPath "$rootMarker.saved" -Destination $rootMarker
+    }
+    $upgrade = Start-Process -FilePath $installer -ArgumentList @($installArguments) -Wait -PassThru
+    if ($upgrade.ExitCode -ne 0) { throw 'An upgrade to the owned directory failed.' }
+    foreach ($file in $noticeFiles) {
+        $installed = Join-Path (Join-Path $installDir 'codewhale-notices') $file
+        if ((Get-FileHash -LiteralPath $installed).Hash -ne (Get-FileHash -LiteralPath (Join-Path $repoRoot $file)).Hash) {
+            throw "Installed notice differs from the release source: $file"
+        }
+    }
     $expectedBin = Join-Path $installDir 'bin'
     $afterInstall = Get-RawUserPath -EnvironmentKey $environmentKey
     if (([string] $afterInstall) -cne "$seedPath;$expectedBin") {
@@ -179,6 +214,9 @@ try {
     $afterUninstall = Get-RawUserPath -EnvironmentKey $environmentKey
     if (([string] $afterUninstall) -cne $seedPath) {
         throw 'Install followed by uninstall did not restore the seeded long PATH exactly.'
+    }
+    if (Test-Path -LiteralPath (Join-Path $installDir 'codewhale-notices')) {
+        throw 'The uninstaller left release notices behind.'
     }
     if (Test-Path -LiteralPath $launcher -PathType Leaf) {
         throw 'Uninstall did not remove codewhale.bat.'

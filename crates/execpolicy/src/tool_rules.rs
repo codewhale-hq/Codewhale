@@ -16,14 +16,15 @@ fn requires_raw_shell(name: &str) -> bool {
             | "exec_interact"
             | "task_shell_start"
             | "task_gate_run"
-            // These owners start a fresh execution and currently cannot
-            // transport this command's deny ceiling. Fail closed until they
-            // can preserve it; inspection and cancellation stay available.
             | "task_create"
             | "automation_create"
             | "automation_update"
             | "automation_resume"
+            | "automation_adopt"
             | "automation_run"
+            | "terminal_run"
+            | "terminal_send"
+            | "terminal_reset"
             | "terminal/run"
             | "terminal/send"
             | "terminal/reset"
@@ -70,6 +71,11 @@ fn policy_tool_aliases(name: &str) -> &'static [&'static str] {
             "edit_file",
         ],
         "bash" | "exec_shell" => &["bash", "exec_shell"],
+        "terminal_run" | "terminal/run" => &["terminal_run", "terminal/run"],
+        "terminal_send" | "terminal/send" => &["terminal_send", "terminal/send"],
+        "terminal_wait" | "terminal/wait" => &["terminal_wait", "terminal/wait"],
+        "terminal_cancel" | "terminal/cancel" => &["terminal_cancel", "terminal/cancel"],
+        "terminal_reset" | "terminal/reset" => &["terminal_reset", "terminal/reset"],
         "mcp_read_resource" | "read_mcp_resource" => &["mcp_read_resource", "read_mcp_resource"],
         _ => &[],
     }

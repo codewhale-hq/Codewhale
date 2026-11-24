@@ -429,41 +429,6 @@ pub(crate) fn openrouter_credits_from_json(
     })
 }
 
-/// Route text from either clipboard transport into the canonical provider
-/// picker. Keeping this small seam pure lets tests exercise ordinary
-/// Cmd/Ctrl+V without reading the developer's real clipboard.
-pub(crate) fn paste_text_into_provider_picker(app: &mut App, text: &str) -> bool {
-    if app.view_stack.top_kind() != Some(ModalKind::ProviderPicker) {
-        return false;
-    }
-    let _ = app.view_stack.handle_paste(text);
-    true
-}
-
-/// Read an ordinary Cmd/Ctrl+V clipboard shortcut for the provider picker.
-/// Images are deliberately consumed but ignored: an open credential modal
-/// must never leak unsupported clipboard content into the composer beneath it.
-pub(crate) fn paste_provider_picker_from_clipboard(app: &mut App) -> bool {
-    if app.view_stack.top_kind() != Some(ModalKind::ProviderPicker) {
-        return false;
-    }
-    // The same guard the composer uses: a backend that forwards both edges of
-    // Ctrl+V would otherwise paste the text twice into the credential field.
-    if app.clipboard_paste_within_dedupe_window() {
-        return true;
-    }
-    if app.clipboard.requires_terminal_paste() {
-        app.status_message = Some(app.tr(MessageId::ClipboardSshPasteHint).into_owned());
-        app.note_clipboard_paste();
-        return true;
-    }
-    if let Some(ClipboardContent::Text(text)) = app.clipboard.read(app.workspace.as_path()) {
-        let _ = paste_text_into_provider_picker(app, &text);
-    }
-    app.note_clipboard_paste();
-    true
-}
-
 pub(crate) async fn fetch_available_models(config: &Config) -> Result<Vec<String>> {
     let client = crate::active_route_client(config).await?;
     let models = tokio::time::timeout(Duration::from_secs(20), client.list_models()).await??;
@@ -654,6 +619,9 @@ pub(crate) fn reasoning_effort_receipt_for_route(
 }
 
 pub(crate) async fn sync_mode_update(app: &mut App, engine_handle: &EngineHandle) {
+    if app.mode != AppMode::Agent || app.approval_mode != ApprovalMode::Auto {
+        app.revoke_approvable_auto_review_receipts();
+    }
     // #6150: non-blocking send on the input path. ChangeMode is safe to drop
     // on a full channel — `try_send` still publishes the live authority
     // snapshot, which the drain applies before the next queued op.
@@ -936,6 +904,7 @@ async fn switch_provider_inner(
                 model: app.model.clone(),
                 workspace: app.workspace.clone(),
                 mode: app.mode,
+                agent_preset: app.agent_preset(),
             })
             .await;
     }

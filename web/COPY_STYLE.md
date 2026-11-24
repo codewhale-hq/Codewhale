@@ -14,7 +14,7 @@ Sources: UT Dallas JSOM Business Communication Center guides
 7. **Parallel structure.** List items share a grammatical form (all verbs, or all nouns).
 8. **"You", not "we" or "users".** Address the reader directly. "We" is allowed in the belief and in sentences about direction. "We are building" is the honest form for what is not released; "you will get" reads as availability and is not used.
 9. **Plain English.** Read it aloud; rewrite anything that doesn't parse on the first pass.
-10. **Exact product vocabulary.** Plan / Work / Operate, Ask / Auto-Review / Full Access, Fleet, Runtime, `codewhale exec`, `/provider`, `/model`.
+10. **Exact product vocabulary.** The Permissions control: Ask / Accept Edits / Plan / Auto-Review / Full Access. The conversation mode: Standard mode / Creator mode. Fleet, Runtime, `codewhale exec`, `/provider`, `/model`.
 11. **No public pricing. No desktop download offer until the desktop release object is true.** Placeholders (`{brand}`, `{version}`, `{tag}`) stay verbatim.
 
 12. **Write whole sentences.** No short, choppy fragments or stacked two-word slogans ("Any model. Your machine."), in headlines or body. A heading may be a plain noun phrase; a slogan built from fragments is not. (Founder, 2026-11-10.)

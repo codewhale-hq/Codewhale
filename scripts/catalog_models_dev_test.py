@@ -433,7 +433,7 @@ class CommittedSeedTests(unittest.TestCase):
             lambda row: row["intrinsic"]["kimi-k3"].update(context_window=0),
             lambda row: row["intrinsic"]["kimi-k3"].update(max_output=True),
             lambda row: row["public_models"].append(row["public_models"][0]),
-            lambda row: row["compatibility_aliases"].update(hostile={"name": "bad\x1bvalue"}),
+            lambda row: row["completion_rosters"].update(hostile=["bad\x1bvalue"]),
             lambda row: row["numeric_refs"]["KIMI_K3_CONTEXT_WINDOW_TOKENS"].update(model="missing-private-name"),
         ]:
             fixture = json.loads(json.dumps(data))

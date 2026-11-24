@@ -233,6 +233,7 @@ pub(crate) struct UserDispatchSnapshot {
     pub(crate) history_revisions_len: usize,
     pub(crate) api_messages_len: usize,
     pub(crate) last_send_at: Option<Instant>,
+    pub(crate) active_turn_user_index: Option<usize>,
 }
 
 /// Data captured synchronously before the async dispatch phase. All values are
@@ -264,6 +265,7 @@ pub(crate) struct UserDispatchPrepare {
     pub(super) hook_executor: Option<Arc<HookExecutor>>,
     pub(super) verbosity: Option<String>,
     pub(super) provenance: UserInputProvenance,
+    pub(super) input_authorship: codewhale_engine::core::ops::TurnInputAuthorship,
     pub(super) auto_router_context: String,
     pub(super) should_auto_resolve: bool,
     pub(super) auto_compact_user_configured: bool,

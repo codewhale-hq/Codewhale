@@ -115,6 +115,67 @@ pub(crate) struct SessionStoreCounts {
     pub(crate) checkpoints: usize,
 }
 
+pub(crate) fn latest_session_route_line(
+    sessions: &Path,
+    configured_provider: &str,
+    configured_model: &str,
+) -> Option<String> {
+    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(sessions)
+        .ok()?
+        .flatten()
+        .filter(|entry| {
+            let path = entry.path();
+            path.extension().is_some_and(|ext| ext == "json")
+                && path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .is_some_and(|stem| {
+                        stem != "session_boot_owners"
+                            && codewhale_runtime::artifacts::is_valid_session_id(stem)
+                    })
+                && entry.file_type().is_ok_and(|kind| kind.is_file())
+        })
+        .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
+        .collect();
+    candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+
+    let metadata = candidates
+        .into_iter()
+        .take(32)
+        .filter_map(|(_, path)| {
+            codewhale_engine::session_manager::SessionManager::load_session_metadata(&path).ok()
+        })
+        .filter(|meta| {
+            let provider = meta
+                .model_provider_id
+                .as_deref()
+                .unwrap_or(meta.model_provider.as_str());
+            !provider.trim().is_empty() && !meta.model.trim().is_empty()
+        })
+        .max_by_key(|meta| meta.updated_at)?;
+
+    let clean = |value: &str| -> String { value.chars().filter(|ch| !ch.is_control()).collect() };
+    let provider = clean(
+        metadata
+            .model_provider_id
+            .as_deref()
+            .unwrap_or(metadata.model_provider.as_str()),
+    );
+    let model = clean(&metadata.model);
+    let short_id: String = clean(&metadata.id).chars().take(8).collect();
+    let relation = if provider == configured_provider
+        && model.trim_start_matches("models/") == configured_model.trim_start_matches("models/")
+    {
+        "same as the configured default"
+    } else {
+        "differs from the configured default; each session keeps the route it ran with, and /provider or /model without saving as default changes only that session"
+    };
+    Some(format!(
+        "most recent saved session route: {provider} / {model} (session {short_id}, updated {}; {relation})",
+        metadata.updated_at.format("%Y-%m-%d %H:%M UTC"),
+    ))
+}
+
 pub(crate) fn session_store_counts(sessions: &Path) -> Result<Option<SessionStoreCounts>, String> {
     let Some(manager) =
         codewhale_engine::session_manager::SessionManager::open_read_only(sessions.to_path_buf())
@@ -202,6 +263,9 @@ pub(crate) fn config_credential_shaped_keys(raw: &str) -> Vec<String> {
         value.len() >= 20 && PREFIXES.iter().any(|prefix| value.starts_with(prefix))
     }
     fn suspect_key(key: &str) -> bool {
+        if key == "oauth_credential_generation" {
+            return false;
+        }
         let key = key.to_ascii_lowercase();
         [
             "token",
@@ -594,7 +658,7 @@ pub(crate) async fn probe_ds4_models(
     use codewhale_engine::core::model_client::ModelClient;
 
     let endpoint =
-        codewhale_secrets::sanitize::redact_url_for_display(&config.active_route_base_url());
+        codewhale_sanitize::sanitize::redact_url_for_display(&config.active_route_base_url());
     let client = CodewhaleClient::new(config)?;
     let configured_alias = client.model().to_string();
     let models = match tokio::time::timeout(
@@ -632,7 +696,7 @@ pub(crate) async fn probe_ds4_models(
 
 fn ds4_probe_error(config: &codewhale_runtime::config::Config, error: &str) -> String {
     let endpoint =
-        codewhale_secrets::sanitize::redact_url_for_display(&config.active_route_base_url());
+        codewhale_sanitize::sanitize::redact_url_for_display(&config.active_route_base_url());
     let status = error
         .split_whitespace()
         .collect::<Vec<_>>()

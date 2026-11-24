@@ -60,6 +60,7 @@ async fn interactive_thinking_only_drop_preserves_nothing_and_never_claims_it_di
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -303,6 +304,7 @@ async fn run_reasoning_only_turn_with_reprompts(
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -831,6 +833,120 @@ async fn post_edit_hook_skips_unknown_tool_names() {
     assert_eq!(fake.call_count(), 0);
 }
 
+#[test]
+fn turn_tool_context_and_surface_gate_lsp_by_config() {
+    let tmp = tempdir().expect("tempdir");
+    let authority = crate::core::authority::TurnAuthority::from_effective_fields(
+        AppMode::Agent,
+        true,
+        true,
+        true,
+        ApprovalMode::Bypass,
+    );
+    let route_for = |engine: &Engine| TurnRouteContext {
+        provider: ProviderKind::Deepseek,
+        model: "test-model".to_string(),
+        capabilities: codewhale_config::route::RouteCapabilities::default(),
+        limits: None,
+        client: None,
+        api_config: Box::new(Config::default()),
+        locale_tag: engine.config.locale_tag.clone(),
+        role_models: engine.subagent_role_models(),
+        auto_model: false,
+        reasoning_effort: None,
+        reasoning_effort_auto: false,
+    };
+
+    let (engine_off, _handle_off) = Engine::new(
+        EngineConfig {
+            workspace: tmp.path().to_path_buf(),
+            lsp_config: None,
+            ..Default::default()
+        },
+        &Config::default(),
+    );
+    let ctx_off = engine_off.build_tool_context_for_turn(&authority, &route_for(&engine_off));
+    assert!(ctx_off.lsp_manager.is_none());
+
+    let registry_off = ToolRegistryBuilder::new()
+        .with_file_tools()
+        .with_lsp_tool()
+        .build(ctx_off);
+    let catalog_off = build_model_tool_catalog(
+        registry_off.to_api_tools_with_cache(true),
+        Vec::new(),
+        AppMode::Agent,
+        &HashSet::new(),
+    );
+    let surface_off = ToolSurfacePolicy::new(
+        registry_off,
+        Some(catalog_off),
+        AppMode::Agent,
+        &HashSet::new(),
+        &[],
+        false,
+        None,
+        None,
+        None,
+        crate::core::engine::tool_catalog::ToolMode::Direct,
+    );
+    assert!(surface_off.catalog.iter().all(|tool| tool.name != "lsp"));
+    let search_desc_off = &surface_off
+        .catalog
+        .iter()
+        .find(|tool| tool.name == codewhale_tools::names::TOOL_SEARCH_NAME)
+        .expect("tool_search")
+        .description;
+    assert!(!search_desc_off.contains("`lsp`"));
+
+    let (engine_on, _handle_on) = Engine::new(
+        EngineConfig {
+            workspace: tmp.path().to_path_buf(),
+            lsp_config: Some(codewhale_lsp::LspConfig::default()),
+            ..Default::default()
+        },
+        &Config::default(),
+    );
+    let ctx_on = engine_on.build_tool_context_for_turn(&authority, &route_for(&engine_on));
+    assert!(
+        ctx_on
+            .lsp_manager
+            .as_ref()
+            .is_some_and(|manager| manager.config().enabled)
+    );
+
+    let registry_on = ToolRegistryBuilder::new()
+        .with_file_tools()
+        .with_lsp_tool()
+        .build(ctx_on);
+    let catalog_on = build_model_tool_catalog(
+        registry_on.to_api_tools_with_cache(true),
+        Vec::new(),
+        AppMode::Agent,
+        &HashSet::new(),
+    );
+    let surface_on = ToolSurfacePolicy::new(
+        registry_on,
+        Some(catalog_on),
+        AppMode::Agent,
+        &HashSet::new(),
+        &[],
+        false,
+        None,
+        None,
+        None,
+        crate::core::engine::tool_catalog::ToolMode::Direct,
+    );
+    assert!(surface_on.catalog.iter().any(|tool| tool.name == "lsp"));
+    let search_desc_on = &surface_on
+        .catalog
+        .iter()
+        .find(|tool| tool.name == codewhale_tools::names::TOOL_SEARCH_NAME)
+        .expect("tool_search")
+        .description;
+    assert!(search_desc_on.contains("`lsp`"));
+}
+
 // ── #3802: non-blocking send for ListSubAgents refresh events ─────────────
 
 #[test]
@@ -897,6 +1013,8 @@ fn engine_handle_try_send_does_not_block_when_op_channel_is_full() {
         tx_user_input: mpsc::channel(1).0,
         tx_steer: mpsc::channel(1).0,
         turn_controls: Arc::new(StdMutex::new(handle::TurnControls::default())),
+        host_profile: EngineHostProfile::Normal,
+        owner_surface_attached: false,
         shared_paused: Arc::new(StdMutex::new(false)),
         client_preflight_required: true,
         live_runtime_authority: Arc::new(StdMutex::new(LiveRuntimeAuthorityState::new(
@@ -909,6 +1027,9 @@ fn engine_handle_try_send_does_not_block_when_op_channel_is_full() {
                 None,
             ),
         ))),
+        auto_review_state: Arc::new(parking_lot::Mutex::new(
+            crate::core::authority::auto_review::AutoReviewConversationState::default(),
+        )),
         compaction_cancellation: Arc::new(StdMutex::new(CompactionCancellationState::default())),
         turn_heartbeat: turn_heartbeat::TurnHeartbeat::new(),
         subagent_manager: crate::tools::subagent::new_shared_subagent_manager(
@@ -917,6 +1038,7 @@ fn engine_handle_try_send_does_not_block_when_op_channel_is_full() {
         ),
         terminal_worker_events: None,
         mcp_pool_slot: Arc::default(),
+        exec_policy: codewhale_execpolicy::ExecPolicyEngine::default(),
     };
 
     // Fill the op channel with one message (capacity = 1).
@@ -1916,5 +2038,97 @@ async fn mcp_tool_search_cancel_aborts_handshake_and_clears_connecting() {
         0,
         "MCP discovery must not call a provider"
     );
+    fixture_manager.shutdown().await;
+}
+
+#[tokio::test]
+async fn turn_catalog_drops_an_mcp_tool_switched_off_after_the_server_connected() {
+    let Some(node) = codewhale_dependencies::resolve_node() else {
+        return;
+    };
+    let tmp = tempdir().expect("tempdir");
+    let fixture_manager = Arc::new(crate::extension_host::ExtensionHostManager::new(
+        crate::extension_host::ExtensionHostOptions {
+            root: Some(tmp.path().join("host-home")),
+            ..Default::default()
+        },
+    ));
+    let _fixture_manager_guard =
+        crate::extension_host::TestManagerGuard::install(Arc::clone(&fixture_manager));
+    let server = tmp.path().join("server.mjs");
+    fs::write(&server, r#"import readline from 'node:readline';
+const lines = readline.createInterface({ input: process.stdin });
+lines.on('line', (line) => {
+  const request = JSON.parse(line);
+  if (request.id === undefined) return;
+  const result = request.method === 'initialize'
+    ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'issues', version: '1' } }
+    : { tools: ['list_issues', 'close_issue'].map(name => ({ name, inputSchema: { type: 'object' } })) };
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\n');
+});"#).expect("fixture");
+    let config_path = tmp.path().join("mcp.json");
+    let write_config = |disabled: &[&str], age: u64| {
+        fs::write(
+            &config_path,
+            serde_json::to_vec(&json!({
+                "timeouts": { "connect_timeout": 120 },
+                "servers": {
+                    "issues": { "command": node, "args": [server], "required": true, "disabled_tools": disabled }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&config_path)
+            .and_then(|file| {
+                file.set_modified(std::time::SystemTime::now() - Duration::from_secs(age))
+            })
+            .unwrap();
+    };
+    write_config(&[], 60);
+    let (mut engine, _handle) = Engine::new(
+        EngineConfig {
+            workspace: tmp.path().to_path_buf(),
+            mcp_config_path: config_path.clone(),
+            ..Default::default()
+        },
+        &Config::default(),
+    );
+    engine
+        .start_mcp_session_boot(McpConnectRefresh::IfChanged)
+        .await
+        .expect("session boot starts");
+    let names = |tools: Vec<Tool>| {
+        tools
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<HashSet<_>>()
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while !names(engine.mcp_tools().await).contains("mcp_issues_close_issue") {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "fixture server never connected"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    write_config(&["close_issue"], 0);
+    assert!(!names(engine.mcp_tools().await).contains("mcp_issues_close_issue"));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let offered = names(engine.mcp_tools().await);
+        assert!(!offered.contains("mcp_issues_close_issue"), "{offered:?}");
+        if offered.contains("mcp_issues_list_issues") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "server never reconnected"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     fixture_manager.shutdown().await;
 }

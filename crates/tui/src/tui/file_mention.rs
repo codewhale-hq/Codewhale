@@ -32,6 +32,7 @@ use codewhale_core::{
     ContextReference, ContextReferenceKind, ContextReferenceSource, MediaAttachmentReference,
     media_attachment_references,
 };
+use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_runtime::working_set::Workspace;
 
 /// Maximum number of `@`-mentions whose contents are inlined into one user
@@ -514,9 +515,10 @@ pub fn user_request_with_file_mentions_cached(
 }
 
 #[must_use]
-pub fn pending_context_previews(input: &str) -> Vec<FileMentionPreview> {
+pub fn pending_context_previews(input: &str, locale: Locale) -> Vec<FileMentionPreview> {
     let mut previews = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let resolved_on_send = tr(locale, MessageId::ComposerContextResolvedOnSend);
     for mention in extract_file_mentions(input)
         .into_iter()
         .take(MAX_FILE_MENTIONS_PER_MESSAGE)
@@ -531,7 +533,7 @@ pub fn pending_context_previews(input: &str) -> Vec<FileMentionPreview> {
             previews.push(FileMentionPreview {
                 kind: "git".to_string(),
                 label: kind.label().to_string(),
-                detail: Some("resolved on send".to_string()),
+                detail: Some(resolved_on_send.to_string()),
                 included: false,
                 removable: false,
             });
@@ -544,7 +546,7 @@ pub fn pending_context_previews(input: &str) -> Vec<FileMentionPreview> {
             detail: Some(if media {
                 "use /attach for media bytes".to_string()
             } else {
-                "resolved on send".to_string()
+                resolved_on_send.to_string()
             }),
             // Lexical preview deliberately does not stat the path while the
             // user types. Exact inclusion/missing metadata is resolved once,
@@ -1838,7 +1840,7 @@ mod tests {
 
     #[test]
     fn pending_context_preview_is_lexical_and_does_not_probe_paths() {
-        let previews = pending_context_previews("read @guide.md and @missing.md");
+        let previews = pending_context_previews("read @guide.md and @missing.md", Locale::En);
 
         assert_eq!(previews.len(), 2);
         assert_eq!(previews[0].kind, "mention");
@@ -1858,7 +1860,7 @@ mod tests {
         let attached = tmp.path().join("photo.png").display().to_string();
         let input = format!("inspect @photo.png\n[Attached image: {attached}]");
 
-        let previews = pending_context_previews(&input);
+        let previews = pending_context_previews(&input, Locale::En);
 
         assert!(
             previews
@@ -2459,10 +2461,17 @@ mod tests {
 
     #[test]
     fn composer_preview_lists_git_mentions_without_running_git() {
-        let previews = pending_context_previews("@git @diff");
+        let previews = pending_context_previews("@git @diff", Locale::En);
         let kinds: Vec<&str> = previews.iter().map(|p| p.kind.as_str()).collect();
         assert_eq!(kinds, vec!["git", "git"]);
         assert!(previews.iter().all(|p| !p.included));
+        let localized = pending_context_previews("@git @notes.md", Locale::ZhHans);
+        assert!(
+            localized
+                .iter()
+                .all(|p| p.detail.as_deref() == Some("发送时解析")),
+            "{localized:?}"
+        );
     }
 
     /// #4067 review follow-up: `mention_menu_limit = 0` is a documented way to

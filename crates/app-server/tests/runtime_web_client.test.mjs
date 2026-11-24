@@ -10,6 +10,7 @@ import {
   applySnapshot,
   buildCreateThreadRequest,
   claimInFlight,
+  collectProviderModelPages,
   createThreadState,
   createWebSessionFetch,
   createStreamConnector,
@@ -336,23 +337,31 @@ test("new thread selection keeps provider and model scoped to the create request
 
   const namedCustom = {
     current: "custom",
-    providers: [{
-      id: "custom",
-      model_provider_id: "lm-studio",
-      default_model: "local-vision-model",
-    }],
+    current_provider_id: "seer-vibe",
+    providers: [
+      {
+        id: "custom",
+        model_provider_id: "another-gateway",
+        default_model: "other-model",
+      },
+      {
+        id: "custom",
+        model_provider_id: "seer-vibe",
+        default_model: "deepseek/deepseek-flash",
+      },
+    ],
   };
   assert.deepEqual(newThreadDefaults(namedCustom), {
     providerId: "custom",
-    modelProviderId: "lm-studio",
-    model: "local-vision-model",
+    modelProviderId: "seer-vibe",
+    model: "deepseek/deepseek-flash",
   });
   assert.deepEqual(
-    buildCreateThreadRequest("custom", "local-vision-model", "lm-studio"),
+    buildCreateThreadRequest("custom", "deepseek/deepseek-flash", "seer-vibe"),
     {
       model_provider: "custom",
-      model: "local-vision-model",
-      model_provider_id: "lm-studio",
+      model: "deepseek/deepseek-flash",
+      model_provider_id: "seer-vibe",
     },
   );
   assert.equal(
@@ -368,6 +377,28 @@ test("new thread selection keeps provider and model scoped to the create request
     model_provider_id: "lm-studio",
   }), "lm-studio");
   assert.equal(threadProviderLabel({ model_provider: "deepseek" }), "deepseek");
+});
+
+test("named custom model catalogs request and validate the exact route identity", async () => {
+  const paths = [];
+  const models = await collectProviderModelPages("custom", async (path) => {
+    paths.push(path);
+    return {
+      provider: "custom",
+      model_provider_id: "seer-vibe",
+      models: [{ id: "deepseek/deepseek-flash" }],
+      total: 1,
+    };
+  }, "seer-vibe");
+
+  assert.equal(models[0].id, "deepseek/deepseek-flash");
+  assert.equal(new URL(paths[0], "http://runtime.local").searchParams.get("model_provider_id"), "seer-vibe");
+  await assert.rejects(collectProviderModelPages("custom", async () => ({
+    provider: "custom",
+    model_provider_id: "another-gateway",
+    models: [],
+    total: 0,
+  }), "seer-vibe"), /different provider/);
 });
 
 test("thread facts keep exact named provider identity visible after creation", async () => {
@@ -410,8 +441,10 @@ test("new thread dialog labels exact vision capability without exposing attachme
   assert.doesNotMatch(html, /type="file"/);
   assert.match(source, /api\("\/v1\/providers"\)/);
   // The dialog loads the catalog through the bounded, paginated collector
-  // keyed by provider.id; the wire endpoint stays /v1/providers/<id>/models.
+  // keyed by the provider kind and exact custom route id.
   assert.match(source, /collectProviderModelPages\(provider\.id/);
+  assert.match(source, /provider\.model_provider_id\);/);
+  assert.match(source, /query\.set\("model_provider_id", exactProviderId\)/);
   assert.match(source, /\/v1\/providers\/\$\{encodeURIComponent\(provider\)\}\/models\?\$\{query\.toString\(\)\}/);
   assert.match(source, /body: JSON\.stringify\(request\)/);
   assert.match(source, /function trapFocusWithin\(event, container\)/);

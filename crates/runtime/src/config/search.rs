@@ -67,6 +67,11 @@ pub enum SearchProvider {
     /// DeepSeek Search API (<https://api-docs.deepseek.com/guides/search>). Requires api_key.
     #[serde(rename = "deepseek", alias = "deep-seek", alias = "deepseek-search")]
     DeepSeek,
+    /// SearchApi Google SERP API (<https://www.searchapi.io>). Requires api_key;
+    /// returns Google organic results with snippets. Falls back to the
+    /// `SEARCHAPI_API_KEY` env var when `[search] api_key` is not set.
+    #[serde(rename = "searchapi", alias = "search-api", alias = "search_api")]
+    SearchApi,
 }
 
 impl SearchProvider {
@@ -87,6 +92,7 @@ impl SearchProvider {
             "sofya" => Some(Self::Sofya),
             "serply" => Some(Self::Serply),
             "deepseek" | "deep-seek" | "deepseek-search" => Some(Self::DeepSeek),
+            "searchapi" | "search-api" | "search_api" => Some(Self::SearchApi),
             _ => None,
         }
     }
@@ -106,12 +112,13 @@ impl SearchProvider {
             Self::Sofya => "sofya",
             Self::Serply => "serply",
             Self::DeepSeek => "deepseek",
+            Self::SearchApi => "searchapi",
         }
     }
 
     #[must_use]
     pub fn names_hint() -> &'static str {
-        "bing, duckduckgo, firecrawl, tavily, bocha, metaso, searxng, baidu, volcengine, sofya, serply, deepseek"
+        "bing, duckduckgo, firecrawl, tavily, bocha, metaso, searxng, baidu, volcengine, sofya, serply, deepseek, searchapi"
     }
 }
 
@@ -198,10 +205,11 @@ pub struct SearchConfig {
     /// SearXNG instance root or `/search` endpoint.
     #[serde(default)]
     pub base_url: Option<String>,
-    /// Optional for Firecrawl; required for Tavily, Bocha, Metaso, Baidu, Volcengine, Sofya, Serply, or DeepSeek.
+    /// Optional for Firecrawl; required for Tavily, Bocha, Metaso, Baidu, Volcengine, Sofya, Serply, DeepSeek, or SearchApi.
     /// Metaso also falls back to the `METASO_API_KEY` env var.
     /// Baidu also falls back to `BAIDU_SEARCH_API_KEY` env var.
     /// Serply also falls back to the `SERPLY_API_KEY` env var.
+    /// SearchApi also falls back to the `SEARCHAPI_API_KEY` env var.
     /// Volcengine also falls back to `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY` env vars.
     ///
     /// This slot is shared across providers. `TAVILY_API_KEY` is **not**

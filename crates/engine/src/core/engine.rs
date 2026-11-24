@@ -84,8 +84,8 @@ use super::authority::{
 };
 use super::events::{Event, TurnOutcomeStatus, TurnRoute};
 use super::ops::{
-    McpManagerUpdate, Op, ProviderRuntimeStatus, SessionContextBudget, SessionSnapshot, TurnSpec,
-    USER_SHELL_TOOL_ID_PREFIX, UserInputProvenance,
+    McpManagerUpdate, Op, ProviderRuntimeStatus, SessionContextBudget, SessionSnapshot,
+    TurnInputAuthorship, TurnSpec, USER_SHELL_TOOL_ID_PREFIX, UserInputProvenance,
 };
 use super::session::Session;
 use super::turn::{TurnContext, format_snapshot_label, post_turn_snapshot};
@@ -141,23 +141,7 @@ fn state_unreachable_reason(error: &anyhow::Error) -> Option<&'static str> {
 }
 
 fn agent_list_event(manager: &SubAgentManager, active_session_id: &str) -> Event {
-    // One clock read shared by every row, so elapsed values in a single
-    // listing are consistent with each other (#5479).
-    let now_ms = crate::tools::subagent::epoch_millis_now();
-    Event::AgentList {
-        owner_session_id: active_session_id.to_string(),
-        agents: manager.list_for_session(active_session_id),
-        coordination: manager.coordination_detail_projection_for_session(
-            active_session_id,
-            None,
-            24,
-        ),
-        queued_follow_ups: manager.queued_follow_up_counts_for_session(active_session_id),
-        roster: crate::agent_roster::build_agent_roster(
-            &manager.list_worker_records_for_session(active_session_id),
-            now_ms,
-        ),
-    }
+    manager.agent_list_event(active_session_id)
 }
 
 /// The `<turn_meta>` line naming the permission posture a turn ran under
@@ -314,8 +298,8 @@ pub struct EngineConfig {
     pub session_id: Option<String>,
     /// Optional host-owned root for delegated-agent runtime state.
     ///
-    /// When unset, the worker ledger, complete transcript artifacts and
-    /// coordination lock retain their historical location under
+    /// When unset, the worker ledger and complete transcript artifacts
+    /// retain their historical location under
     /// `workspace/.codewhale/state`. Embedders may set a session-scoped root
     /// to separate that control-plane state from the execution workspace.
     /// Child cwd and file authority still derive from `workspace`; hosts using
@@ -340,6 +324,7 @@ pub struct EngineConfig {
     pub skills_dir: PathBuf,
     /// Session-pinned skill discovery, bundle policy and ambient index limits.
     pub skills_config: std::sync::Arc<codewhale_runtime::config::SkillsConfig>,
+    pub agent_preset: Option<String>,
     /// Immutable plugin authority snapshot scoped to `workspace`. Normal App
     /// hosts provide this explicitly; headless/embed callers that leave it
     /// unset receive a fresh workspace-specific snapshot in [`Engine::new`].
@@ -533,12 +518,13 @@ pub struct EngineConfig {
     /// from `[tui].stream_max_duration_secs`. Pre-R1 this was the hard-coded
     /// `DEFAULT_STREAM_MAX_DURATION_SECS`.
     pub stream_max_duration: Duration,
-    /// Proven pre-dispatch open retries from `[tui].stream_max_resumes`.
+    /// Proven pre-dispatch open retries from `[stream].max_resumes` and
+    /// response-header-timeout retries from `[stream].open_retries`.
     /// The parsed max_transparent_retries/max_errors values are inactive
     /// compatibility fields and cannot authorize an inference POST replay.
     pub stream_retry_limits: turn_budget::StreamRetryLimits,
     /// Bounded wait for SSE response headers (#6700). Resolved from
-    /// `[tui].stream_open_timeout_secs`, then
+    /// `[stream].open_timeout_secs`, then
     /// `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`; only the awaiting-model
     /// heartbeat bound reads it here — the client owns the real timeout.
     pub stream_open_timeout: Duration,
@@ -624,6 +610,7 @@ impl Default for EngineConfig {
             mcp_oauth_callback_url: None,
             skills_dir: codewhale_skills::default_skills_dir(),
             skills_config: Default::default(),
+            agent_preset: None,
             plugin_registry: None,
             instructions: Vec::new(),
             project_context_pack_enabled: false,
@@ -800,6 +787,8 @@ pub struct EngineHandle {
     /// change publishes here before its mailbox op is queued, so gates never
     /// consult a stale per-turn copy.
     live_runtime_authority: Arc<StdMutex<LiveRuntimeAuthorityState>>,
+    auto_review_state:
+        Arc<parking_lot::Mutex<crate::core::authority::auto_review::AutoReviewConversationState>>,
     /// Out-of-band authority for one exact compaction request. The engine can
     /// be awaiting a provider while its bounded op mailbox is unable to drain,
     /// so cancellation cannot depend on processing a later mailbox entry.
@@ -812,6 +801,9 @@ pub struct EngineHandle {
     subagent_manager: SharedSubAgentManager,
     terminal_worker_events: Option<Arc<TerminalEventDelivery>>,
     mcp_pool_slot: Arc<StdMutex<McpPoolSlot>>,
+    owner_surface_attached: bool,
+    host_profile: host_profile::EngineHostProfile,
+    exec_policy: codewhale_execpolicy::ExecPolicyEngine,
 }
 
 #[derive(Default)]
@@ -1051,9 +1043,13 @@ pub fn project_history_for_restore(
 pub struct Engine {
     rlm_host: Option<rlm_host::RlmHostState>,
     host_profile: EngineHostProfile,
+    owner_surface_attached: bool,
+    turn_run_origin: RunOrigin,
+    turn_owner_present: bool,
     child_host: Option<child_host::ChildHostState>,
     turn_narrowing: TurnNarrowing,
     turn_acp_shell_ceiling: Option<bool>,
+    active_turn_accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
     config: EngineConfig,
     api_config: Config,
     instruction_settings: crate::project_context::InstructionSettings,
@@ -1081,11 +1077,14 @@ pub struct Engine {
     /// Its context is refreshed before each run, while user-created Python
     /// state stays alive across model turns.
     repl_kernel: Option<codewhale_repl::PythonRuntime>,
+    repl_kernel_policy: Option<codewhale_sandbox::SandboxPolicy>,
     subagent_manager: SharedSubAgentManager,
     subagent_execution_limits: Option<SubAgentExecutionLimits>,
     /// The deterministic Auto-Review policy shared with every child runtime
     /// so children are gated by the same rules as the parent turn.
     shared_auto_review_policy: Arc<crate::core::authority::auto_review::AutoReviewPolicy>,
+    auto_review_state:
+        Arc<parking_lot::Mutex<crate::core::authority::auto_review::AutoReviewConversationState>>,
     shell_manager: SharedShellManager,
     /// Read-before-edit snapshots live for the session, not for one turn's
     /// transient `ToolContext` (#4475).
@@ -1137,6 +1136,8 @@ pub struct Engine {
     /// Immutable contribution snapshot for the running turn. Re-delivery after
     /// compaction uses these same bytes, never a mid-turn host re-sampling.
     extension_prompt_block: Option<String>,
+    creator_available: bool,
+    creator_unavailable_noted: Option<String>,
     constitution_block: Option<String>,
     /// The local-fallback notice for an unavailable account profile is shown
     /// once per engine; later turns only log it.
@@ -1361,6 +1362,26 @@ impl LiveRuntimeAuthority {
             approval_mode: self.approval_mode,
         }
     }
+
+    pub(crate) fn mode(&self) -> AppMode {
+        self.mode
+    }
+
+    pub(crate) fn approval_mode(&self) -> ApprovalMode {
+        self.approval_mode
+    }
+
+    pub(crate) fn allow_shell(&self) -> bool {
+        self.allow_shell
+    }
+
+    pub(crate) fn configured_sandbox_mode(&self) -> Option<&str> {
+        self.configured_sandbox_mode.as_deref()
+    }
+
+    pub(crate) fn is_read_only_sandbox(&self) -> bool {
+        self.mode == AppMode::Plan || self.configured_sandbox_mode.as_deref() == Some("read-only")
+    }
 }
 
 #[derive(Debug)]
@@ -1440,6 +1461,7 @@ fn project_turn_authority(
     context.trust_mode = authority.trust_mode;
     context.auto_approve = authority.auto_approve;
     context.approval_mode = authority.approval_mode;
+    context.owner_present = authority.owner_present();
     context.set_shell_policy(authority.shell_policy());
     context.elevated_sandbox_policy =
         Some(authority.sandbox_policy(workspace, configured_sandbox_mode, network_access));
@@ -1470,17 +1492,15 @@ impl LivePosture {
     }
 
     pub fn switch_for_tests(&self, approval_mode: ApprovalMode) {
+        self.switch_mode_for_tests(AppMode::Agent, approval_mode);
+    }
+
+    pub fn switch_mode_for_tests(&self, mode: AppMode, approval_mode: ApprovalMode) {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .authority = LiveRuntimeAuthority::from_fields(
-            AppMode::Agent,
-            true,
-            false,
-            false,
-            approval_mode,
-            None,
-        );
+            .authority =
+            LiveRuntimeAuthority::from_fields(mode, true, false, false, approval_mode, None);
     }
 }
 
@@ -1621,9 +1641,16 @@ async fn forward_subagent_mailbox_message(
     owner_session_id: &str,
     turn_id: &str,
     seq: u64,
-    message: MailboxMessage,
+    turn_seq: u64,
+    mut message: MailboxMessage,
     best_effort_sent_at: &mut HashMap<String, Instant>,
 ) -> bool {
+    if let MailboxMessage::FileWrites {
+        turn_seq: stamp, ..
+    } = &mut message
+    {
+        *stamp = turn_seq;
+    }
     let event = Event::SubAgentMailbox {
         owner_session_id: owner_session_id.to_string(),
         turn_id: turn_id.to_string(),
@@ -1679,6 +1706,16 @@ impl Engine {
                     reason,
                 })
                 .await;
+        }
+        if crate::core::turn::take_snapshots_resumed_notice(
+            &self.session.workspace,
+            Some(&self.session.id),
+        ) {
+            let line = crate::core::turn::snapshots_resumed_line(
+                &self.session.workspace,
+                codewhale_localization::resolve_locale(&self.config.locale_tag),
+            );
+            let _ = self.send_event(Event::status(line)).await;
         }
     }
 
@@ -1738,7 +1775,109 @@ impl Engine {
             controls: Arc::clone(&self.turn_controls),
             id: control.id,
             narrowing: control.narrowing,
+            origin: control.origin,
         }
+    }
+
+    fn mint_turn_origin(
+        &self,
+        control_origin: Option<handle::RustTurnOrigin>,
+        provenance: UserInputProvenance,
+    ) -> (RunOrigin, bool) {
+        if self.is_acp_turn() || self.host_profile.is_acp() || self.host_profile.is_headless() {
+            return (RunOrigin::Headless, false);
+        }
+        if let Some(child) = self.child_host.as_ref() {
+            if !child.authority.runtime.has_foreground_ownership() {
+                return (RunOrigin::Background, false);
+            }
+            let origin = child.authority.runtime.parent_run_origin;
+            let owner_present =
+                origin == RunOrigin::Interactive && child.authority.runtime.parent_owner_present;
+            return (origin, owner_present);
+        }
+        if matches!(self.host_profile, EngineHostProfile::Rlm)
+            || !matches!(provenance, UserInputProvenance::ExternalUser)
+        {
+            return (RunOrigin::Background, false);
+        }
+        if let Some(origin) = control_origin {
+            let owner_present = origin.run_origin == RunOrigin::Interactive
+                && origin.owner_present
+                && self.owner_surface_attached;
+            let run_origin = if origin.run_origin == RunOrigin::Interactive && !owner_present {
+                RunOrigin::Background
+            } else {
+                origin.run_origin
+            };
+            return (run_origin, owner_present);
+        }
+        if self.owner_surface_attached {
+            (RunOrigin::Interactive, true)
+        } else {
+            (RunOrigin::Background, false)
+        }
+    }
+
+    pub(super) fn current_turn_authority(&self) -> TurnAuthority {
+        TurnAuthority::from_effective_fields(
+            self.current_mode,
+            self.session.allow_shell,
+            self.session.trust_mode,
+            self.session.auto_approve,
+            self.session.approval_mode,
+        )
+        .with_rust_origin(self.turn_run_origin, self.turn_owner_present)
+    }
+
+    pub(super) fn commit_pending_steer_with_intent(
+        &mut self,
+        pending: handle::PendingSteer,
+    ) -> (String, Option<String>) {
+        let (text, owner_steer, person_text) = pending.commit_with_owner_intent();
+        if owner_steer
+            && self.owner_surface_attached
+            && matches!(self.host_profile, EngineHostProfile::Normal)
+            && !self.is_acp_turn()
+            && self.child_host.is_none()
+            && self.rlm_host.is_none()
+            && !self.api_config.runtime_chat_isolated
+        {
+            self.turn_run_origin = RunOrigin::Interactive;
+            self.turn_owner_present = true;
+            (text, person_text)
+        } else {
+            (text, None)
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn commit_pending_steer(&mut self, pending: handle::PendingSteer) -> String {
+        let (text, _person_text) = self.commit_pending_steer_with_intent(pending);
+        text
+    }
+
+    pub(super) fn accepts_owner_turn_input(
+        &self,
+        provenance: UserInputProvenance,
+        is_review: bool,
+    ) -> bool {
+        provenance == UserInputProvenance::ExternalUser
+            && !is_review
+            && self.turn_run_origin == RunOrigin::Interactive
+            && self.turn_owner_present
+            && self.owner_surface_attached
+            && matches!(self.host_profile, EngineHostProfile::Normal)
+            && !self.is_acp_turn()
+            && self.child_host.is_none()
+            && self.rlm_host.is_none()
+            && !self.api_config.runtime_chat_isolated
+    }
+
+    #[cfg(test)]
+    pub(crate) fn attach_owner_surface_for_tests(&mut self, handle: &mut EngineHandle) {
+        self.owner_surface_attached = true;
+        handle.set_owner_surface_attached(true);
     }
 
     /// Take the next steer belonging to the active turn.
@@ -1865,6 +2004,7 @@ impl Engine {
             return false;
         }
         self.session.messages.truncate_to(mark.index);
+        self.session.truncate_intents_to(mark.index);
         self.session.bump_messages_revision();
         true
     }
@@ -2260,6 +2400,9 @@ impl Engine {
         let live_runtime_authority = Arc::new(StdMutex::new(LiveRuntimeAuthorityState::new(
             initial_authority,
         )));
+        let auto_review_state = Arc::new(parking_lot::Mutex::new(
+            crate::core::authority::auto_review::AutoReviewConversationState::default(),
+        ));
         let compaction_cancellation =
             Arc::new(StdMutex::new(CompactionCancellationState::default()));
         let tool_exec_lock = Arc::new(RwLock::new(()));
@@ -2278,16 +2421,23 @@ impl Engine {
             Some(EngineHostSetup::Rlm(_)) => None,
             None => own_plugin_registry
                 .as_ref()
-                .filter(|_| config.features.enabled(Feature::ExtensionHost))
+                .filter(|_| {
+                    config.features.enabled(Feature::ExtensionHost)
+                        || (config.features.enabled(Feature::PluginCreator)
+                            && !api_config.runtime_chat_isolated)
+                })
                 .map(|registry| {
                     let manager = crate::extension_host::manager();
                     let attachment = manager.attach(Arc::clone(registry));
-                    attachment.sync_in_background();
+                    if config.features.enabled(Feature::ExtensionHost) {
+                        attachment.sync_in_background();
+                    }
                     attachment
                 }),
         };
         let plugin_registry = extension_host
             .as_ref()
+            .filter(|_| config.features.enabled(Feature::ExtensionHost))
             .map(|attachment| attachment.plugin_view())
             .or(own_plugin_registry)
             .unwrap_or_else(|| {
@@ -2328,6 +2478,7 @@ impl Engine {
         {
             session.id = session_id.to_string();
         }
+        session.agent_preset = config.agent_preset.clone();
         if let Some(attachment) = extension_host.as_ref() {
             attachment.set_identity(
                 Some(session.id.clone()),
@@ -2396,7 +2547,7 @@ impl Engine {
             prompts::PromptHost::Headless
         };
         let (system_prompt, instruction_assembly) = if let Some(host) = host.as_ref() {
-            (host.system_prompt().clone(), None)
+            (host.system_prompt().clone(), host.instruction_assembly())
         } else if api_config.runtime_chat_isolated {
             (
                 SystemPrompt::Text(ISOLATED_CHAT_SYSTEM_PROMPT.to_string()),
@@ -2463,11 +2614,13 @@ impl Engine {
                 prompt_host,
                 Some((&raw, &instruction_settings, initial_instruction_budgets)),
             );
+            session.pinned_project_instructions =
+                crate::project_context::PinnedProjectInstructions::from_project_context(&raw);
             session.project_context = Some(raw);
-            (prompt, Some(assembly))
+            (prompt, Some(Arc::new(assembly)))
         };
         let pending_instruction_notices = Vec::new();
-        session.instruction_assembly = instruction_assembly.map(Arc::new);
+        session.instruction_assembly = instruction_assembly;
         let stable_prompt = Some(system_prompt);
         session.last_system_prompt_hash = Some(system_prompt_hash(stable_prompt.as_ref()));
         session.system_prompt = stable_prompt;
@@ -2606,9 +2759,9 @@ impl Engine {
                 }
                 #[cfg(any(test, feature = "test-support"))]
                 {
-                    Ok(ApprovalReceiptStore::new(std::env::temp_dir().join(
-                        format!("codewhale-approval-tests-{}", uuid::Uuid::new_v4()),
-                    )))
+                    Ok(ApprovalReceiptStore::new(
+                        crate::test_support::test_scratch_dir("codewhale-approval-tests"),
+                    ))
                 }
             },
             EngineHostSetup::approval_store,
@@ -2635,6 +2788,9 @@ impl Engine {
             }
             EngineHostSetup::Rlm(_) => None,
         });
+        if let Some(EngineHostSetup::Child(child)) = host.as_ref() {
+            Self::apply_child_parent_intent(&mut session, &child.authority.runtime);
+        }
         let (child_host, rlm_host) = match host {
             Some(EngineHostSetup::Child(child)) => {
                 (Some(child_host::ChildHostState::from(child)), None)
@@ -2649,8 +2805,12 @@ impl Engine {
             instruction_settings,
             authoritative_route_config: None,
             host_profile,
+            owner_surface_attached: false,
+            turn_run_origin: RunOrigin::Background,
+            turn_owner_present: false,
             turn_narrowing: TurnNarrowing::Inherit,
             turn_acp_shell_ceiling: None,
+            active_turn_accounting_origin: None,
             codewhale_client,
             model_client,
             model_client_injected: false,
@@ -2661,9 +2821,11 @@ impl Engine {
             instruction_guard_key: None,
             instruction_budget_error,
             repl_kernel: None,
+            repl_kernel_policy: None,
             subagent_manager,
             subagent_execution_limits,
             shared_auto_review_policy,
+            auto_review_state: Arc::clone(&auto_review_state),
             shell_manager,
             file_read_tracker,
             mcp_pool,
@@ -2682,6 +2844,8 @@ impl Engine {
             plugin_registry,
             extension_host,
             extension_prompt_block: None,
+            creator_available: false,
+            creator_unavailable_noted: None,
             constitution_block: None,
             profile_constitution_fallback_noticed: false,
             turn_account_fence: None,
@@ -2753,6 +2917,7 @@ impl Engine {
             shared_paused,
             client_preflight_required: true,
             live_runtime_authority,
+            auto_review_state,
             compaction_cancellation,
             turn_heartbeat: Arc::clone(&engine.turn_heartbeat),
             subagent_manager: Arc::clone(&engine.subagent_manager),
@@ -2761,6 +2926,9 @@ impl Engine {
                 .as_ref()
                 .map(|limits| limits.terminal_events.clone()),
             mcp_pool_slot: Arc::clone(&engine.mcp_pool_slot),
+            owner_surface_attached: false,
+            host_profile,
+            exec_policy: engine.config.exec_policy_engine.clone(),
         };
 
         (engine, handle)
@@ -2784,15 +2952,14 @@ impl Engine {
         #[cfg(any(test, feature = "test-support"))]
         if engine.config.compaction.runtime_cost_owner.is_none()
             && engine.config.runtime_services.accounting_origin.is_none()
+            && let Ok(dir) = crate::session_manager::default_sessions_dir()
         {
-            let owner = format!("test-standalone:{}", engine.session.id);
-            crate::usage_persistence::register_persistent_interactive_runtime_usage_sink(
-                &owner,
-                crate::cost_status::scope_token(),
-                &engine.session.id,
-                "test-standalone",
-            );
-            engine.config.compaction.runtime_cost_owner = Some(owner);
+            engine.config.runtime_services.accounting_origin =
+                Some(crate::cost_status::NativeUsageOrigin::session(
+                    crate::cost_status::scope_token(),
+                    dir,
+                    engine.session.id.clone(),
+                ));
         }
         (engine, handle)
     }
@@ -2840,16 +3007,22 @@ impl Engine {
             .unwrap_or_default()
             .to_string();
 
+        let (shell_origin, shell_owner_present) =
+            self.mint_turn_origin(None, UserInputProvenance::ExternalUser);
+        let previous_origin = std::mem::replace(&mut self.turn_run_origin, shell_origin);
+        let previous_owner_present =
+            std::mem::replace(&mut self.turn_owner_present, shell_owner_present);
         let authority = TurnAuthority::from_effective_fields(
             mode,
             allow_shell,
             trust_mode,
             auto_approve,
             approval_mode,
-        );
+        )
+        .with_rust_origin(shell_origin, shell_owner_present);
         let prior = self.applied_runtime_authority();
         self.apply_runtime_mode_policy(&authority);
-        self.discard_kernels_if_narrowed(&prior).await;
+        self.discard_kernels_if_policy_changed(&prior).await;
 
         let previous_source = self.session.snapshot_source.clone();
         self.session.snapshot_source = Some(crate::core::ops::SessionSnapshotSource::turn(
@@ -3009,6 +3182,8 @@ impl Engine {
             snapshot_prompt,
             pending_post_turn,
         );
+        self.turn_owner_present = previous_owner_present;
+        self.turn_run_origin = previous_origin;
         drop(turn_control);
     }
 
@@ -3169,7 +3344,16 @@ impl Engine {
         let prior = self.applied_runtime_authority();
         self.api_config.sandbox_mode = configured_sandbox_mode;
         self.apply_runtime_mode_policy(&authority);
-        self.discard_kernels_if_narrowed(&prior).await;
+        self.discard_kernels_if_policy_changed(&prior).await;
+        if prior.approval_mode != effective_approval {
+            if effective_approval == ApprovalMode::Auto {
+                self.auto_review_state.lock().reset_for_auto_resume();
+            } else {
+                self.auto_review_state.lock().revoke_retry_grants();
+            }
+        } else if prior.mode != authority.mode {
+            self.auto_review_state.lock().revoke_retry_grants();
+        }
         if !changed {
             return false;
         }
@@ -3183,11 +3367,11 @@ impl Engine {
                 // policy itself gone, which is the one word the notice exists
                 // to carry. Product words only (§19): Permissions, then
                 // Plan / Work — not "Policy" or the ACT tag.
-                "Permissions: {} · {}",
-                effective_approval.permission_chip_label(),
+                "Permissions: {}",
                 match mode {
-                    AppMode::Plan => "Plan",
-                    AppMode::Agent => "Work",
+                    AppMode::Plan => "Plan (read only)".to_string(),
+                    AppMode::Agent =>
+                        format!("{} · Work", effective_approval.permission_chip_label()),
                 },
             )))
             .await;
@@ -3227,6 +3411,52 @@ impl Engine {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .authority
             .clone()
+    }
+
+    pub(super) fn auto_review_stop_reason(&self) -> Option<String> {
+        (self.session.approval_mode == ApprovalMode::Auto)
+            .then(|| {
+                self.auto_review_state
+                    .lock()
+                    .stop_reason()
+                    .map(str::to_string)
+            })
+            .flatten()
+    }
+
+    pub(super) fn take_auto_review_retry_notices(&self) -> Vec<String> {
+        if self.child_host.is_some() {
+            return Vec::new();
+        }
+        self.auto_review_state.lock().take_retry_notices()
+    }
+
+    pub(super) async fn pause_auto_review_to_ask(&mut self, reason: &str) {
+        self.apply_change_mode(
+            self.current_mode,
+            self.session.allow_shell,
+            self.session.trust_mode,
+            false,
+            ApprovalMode::Suggest,
+            self.api_config.sandbox_mode.clone(),
+        )
+        .await;
+        let authority = self.applied_runtime_authority();
+        {
+            let mut state = self
+                .live_runtime_authority
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.revision = state.revision.wrapping_add(1).max(1);
+            state.applied_revision = state.revision;
+            state.authority = authority;
+        }
+        let _ = self
+            .send_event(Event::AutoReviewPaused {
+                reason: reason.to_string(),
+                approval_mode: ApprovalMode::Suggest,
+            })
+            .await;
     }
 
     async fn apply_runtime_authority(&mut self, authority: LiveRuntimeAuthority) -> bool {
@@ -3282,26 +3512,39 @@ impl Engine {
         }
     }
 
-    /// A Python kernel keeps whatever it imported, opened or started under the
-    /// posture it ran in. Once the posture grants less than `prior`, drop the
-    /// session kernel and every persistent RLM kernel so later code starts in
-    /// a fresh interpreter. Nothing takes a kernel out and puts it back, so a
-    /// round already in flight cannot restore one.
-    ///
-    /// Known limitation: these interpreters are approval-gated local
-    /// subprocesses, not OS-sandboxed; discarding them bounds reuse, it does
-    /// not undo effects of code that already ran.
-    async fn discard_kernels_if_narrowed(&mut self, prior: &LiveRuntimeAuthority) {
-        if !self.applied_runtime_authority().narrows(prior) {
+    async fn discard_kernels_if_policy_changed(&mut self, prior: &LiveRuntimeAuthority) {
+        let current = self.applied_runtime_authority();
+        if !current.narrows(prior)
+            && self.effective_sandbox_policy(prior) == self.effective_sandbox_policy(&current)
+        {
             return;
         }
         self.repl_kernel = None;
+        self.repl_kernel_policy = None;
         self.config
             .runtime_services
             .rlm_sessions
             .lock()
             .await
             .clear();
+    }
+
+    fn effective_sandbox_policy(
+        &self,
+        authority: &LiveRuntimeAuthority,
+    ) -> codewhale_sandbox::SandboxPolicy {
+        crate::core::authority::sandbox_policy_for_turn(
+            authority.mode,
+            crate::core::authority::agent_approval_mode_for_turn(
+                authority.auto_approve,
+                authority.approval_mode,
+            ),
+            authority.configured_sandbox_mode.as_deref(),
+            &self.session.workspace,
+            crate::core::authority::SandboxNetworkAccess::from_config(
+                self.api_config.sandbox_network_access,
+            ),
+        )
     }
 
     fn apply_runtime_mode_policy(&mut self, authority: &TurnAuthority) {
@@ -3427,6 +3670,26 @@ impl Engine {
         &self.session.id
     }
 
+    pub(super) fn apply_child_parent_intent(
+        session: &mut crate::core::session::Session,
+        runtime: &crate::tools::subagent::SubAgentRuntime,
+    ) {
+        session.pinned_project_instructions =
+            runtime.parent_pinned_project_instructions.as_ref().clone();
+        if runtime.has_foreground_ownership()
+            && runtime.parent_run_origin
+                == crate::core::authority::auto_review::RunOrigin::Interactive
+            && runtime.parent_owner_present
+        {
+            for msg in runtime.parent_person_messages.iter() {
+                session.record_person_message(msg.clone(), None);
+            }
+            if let Some(plan) = runtime.parent_approved_plan.as_deref() {
+                session.record_approved_plan(plan.to_string(), None);
+            }
+        }
+    }
+
     /// Install one restored history and invalidate every dependent prompt/token
     /// cache. Resume and conditional undo share this exact implementation.
     fn restore_session_history(
@@ -3437,6 +3700,7 @@ impl Engine {
     ) {
         self.session.snapshot_source = None;
         self.session.tool_activation_cache.clear();
+        self.session.clear_recorded_intents();
         let compaction_checkpoint =
             compaction_checkpoint_for_restore(&messages, system_prompt.clone());
         let restored_messages =
@@ -3504,6 +3768,7 @@ impl Engine {
                 .as_deref()
                 .map(crate::project_context::InstructionAssembly::receipt_json),
             mode: self.current_mode.as_setting().to_string(),
+            agent_preset: self.session.agent_preset.clone(),
         }
     }
 
@@ -3870,6 +4135,7 @@ impl Engine {
                 hook_executor: self.config.hook_executor.clone(),
                 verbosity: self.config.verbosity.clone(),
                 provenance: UserInputProvenance::Runtime,
+                input_authorship: TurnInputAuthorship::NotPerson,
                 images: Vec::new(),
                 max_output_tokens: None,
                 // Background shell completion wake: no host submission to
@@ -4086,6 +4352,7 @@ impl Engine {
                                     hook_executor: self.config.hook_executor.clone(),
                                     verbosity: self.config.verbosity.clone(),
                                     provenance: UserInputProvenance::GoalContinuation,
+                                    input_authorship: TurnInputAuthorship::NotPerson,
                                     images: Vec::new(),
                                     max_output_tokens: None,
                                     // Engine-scheduled goal continuation: no host
@@ -4440,6 +4707,9 @@ impl Engine {
                         Op::SetStreamChunkTimeout { timeout_secs } => {
                             self.config.stream_chunk_timeout = Duration::from_secs(timeout_secs);
                         }
+                        Op::SetAutoReviewReviewerModel { reviewer_model } => {
+                            self.config.auto_review_policy.reviewer_model = reviewer_model;
+                        }
                         Op::SetSubagentRuntimeConfig {
                             enabled,
                             max_subagents,
@@ -4503,6 +4773,7 @@ impl Engine {
                             model,
                             workspace,
                             mode,
+                            agent_preset,
                         } => {
                             if expected
                                 .as_deref()
@@ -4523,6 +4794,9 @@ impl Engine {
                             } else {
                                 previous_session_id.clone()
                             };
+                            let keep_conversation_mode = next_session_id == previous_session_id
+                                && !self.session.messages.is_empty()
+                                && self.session.agent_preset != agent_preset;
                             let closed_session_id = (next_session_id != previous_session_id)
                                 .then_some(previous_session_id);
                             // SyncSession installs a conversation's identity; an id
@@ -4534,7 +4808,7 @@ impl Engine {
                             // must be finalized here or they keep gating writers in
                             // the new conversation (#5372). Same-session reloads
                             // keep their id and are deliberately left untouched.
-                            if let Some(closed_session_id) = closed_session_id {
+                            if let Some(ref closed_session_id) = closed_session_id {
                                 let manager = self.subagent_manager.clone();
                                 let session_id = closed_session_id.clone();
                                 let finalized =
@@ -4559,7 +4833,7 @@ impl Engine {
                                 };
                                 crate::tools::subagent::settle_requested_children_for_session(
                                     &self.subagent_manager,
-                                    &closed_session_id,
+                                    closed_session_id,
                                     None,
                                 )
                                 .await;
@@ -4589,6 +4863,14 @@ impl Engine {
                             self.session.model = model;
                             self.session.workspace = workspace.clone();
                             self.current_mode = mode;
+                            if keep_conversation_mode {
+                                tracing::warn!(
+                                    target: "conversation_mode",
+                                    "ignored a conversation mode change on a conversation that already has messages"
+                                );
+                            } else {
+                                self.session.agent_preset = agent_preset;
+                            }
                             self.config.model.clone_from(&self.session.model);
                             self.config.workspace = workspace.clone();
                             if plugin_workspace_changed {
@@ -4601,8 +4883,12 @@ impl Engine {
                                 self.drop_mcp_pool();
                                 if let Some(attachment) = &self.extension_host {
                                     attachment.set_plugins(Arc::clone(&self.plugin_registry));
-                                    self.plugin_registry = attachment.plugin_view();
-                                    attachment.sync_in_background();
+                                    if self.config.features.enabled(Feature::ExtensionHost) {
+                                        self.plugin_registry = attachment.plugin_view();
+                                        attachment.sync_in_background();
+                                    } else if self.creator_available {
+                                        attachment.sync_creator_in_background();
+                                    }
                                 }
                             }
                             self.session.project_context =
@@ -4613,8 +4899,21 @@ impl Engine {
                                         &self.instruction_settings,
                                     )
                                 });
+                            self.session.pinned_project_instructions = self
+                                .session
+                                .project_context
+                                .as_ref()
+                                .map(crate::project_context::PinnedProjectInstructions::from_project_context)
+                                .unwrap_or_default();
                             self.session.rebuild_working_set();
                             self.reconcile_restored_work_bindings().await;
+                            if closed_session_id.is_some() {
+                                self.auto_review_state
+                                    .lock()
+                                    .reset_for_conversation_boundary();
+                            } else if plugin_workspace_changed {
+                                self.auto_review_state.lock().revoke_retry_grants();
+                            }
                             if self.mcp_pool.is_none()
                                 && let Err(error) = self
                                     .start_mcp_session_boot(McpConnectRefresh::IfChanged)
@@ -4658,6 +4957,7 @@ impl Engine {
                                 Some(crate::core::ops::SessionSnapshotSource::control(control));
                             self.session.rebuild_working_set();
                             self.reconcile_restored_work_bindings().await;
+                            self.auto_review_state.lock().revoke_retry_grants();
                             let _ = tx.send(Some(self.session_snapshot()));
                             self.emit_session_updated().await;
                         }
@@ -4843,11 +5143,24 @@ impl Engine {
                                 .get(idx..)
                                 .map(<[_]>::to_vec)
                                 .unwrap_or_default();
+                            let saved_intents = self.session.recorded_intents.clone();
                             self.session.messages.truncate_to(idx);
+                            self.session.truncate_intents_to(idx);
                             self.session.bump_messages_revision();
                             // Now dispatch the new message as a normal send,
                             // reusing the engine's stored mode/model config.
                             let mode = self.current_mode;
+                            let edit_authorship = if self.owner_surface_attached
+                                && matches!(self.host_profile, EngineHostProfile::Normal)
+                                && !self.is_acp_turn()
+                                && self.child_host.is_none()
+                                && self.rlm_host.is_none()
+                                && !self.api_config.runtime_chat_isolated
+                            {
+                                TurnInputAuthorship::Person(new_message.clone())
+                            } else {
+                                TurnInputAuthorship::NotPerson
+                            };
                             let outcome = self
                                 .handle_send_message(TurnSpec {
                                     profile_constitution: None,
@@ -4874,6 +5187,7 @@ impl Engine {
                                     hook_executor: self.config.hook_executor.clone(),
                                     verbosity: self.config.verbosity.clone(),
                                     provenance: UserInputProvenance::ExternalUser,
+                                    input_authorship: edit_authorship,
                                     images: Vec::new(),
                                     max_output_tokens: None,
                                     submission_id,
@@ -4890,6 +5204,7 @@ impl Engine {
                                     .map(<[_]>::to_vec)
                                     .unwrap_or_default();
                                 self.session.messages.truncate_to(idx);
+                                self.session.recorded_intents = saved_intents;
                                 self.session.messages.push_batch(removed_exchange);
                                 self.session.messages.push_batch(appended);
                                 self.session.bump_messages_revision();
@@ -5651,6 +5966,7 @@ impl Engine {
                 hook_executor: self.config.hook_executor.clone(),
                 verbosity: self.config.verbosity.clone(),
                 provenance: UserInputProvenance::SubAgentHandoff,
+                input_authorship: TurnInputAuthorship::NotPerson,
                 images: Vec::new(),
                 max_output_tokens: None,
                 // Idle sub-agent completion resume: no host submission to
@@ -6258,17 +6574,12 @@ impl Engine {
         let plan_state = self.config.plan_state.clone();
 
         let mut tool_context = self.build_tool_context_for_turn(input_policy, &route);
-        if wiring.is_live()
-            && let Some(owner) = self.config.compaction.runtime_cost_owner.as_deref()
-        {
-            tool_context.accounting_origin = crate::cost_status::NativeUsageOrigin::runtime(
-                crate::cost_status::scope_token(),
-                owner,
-            )
-            .ok();
-        }
-        if tool_context.accounting_origin.is_none() {
-            tool_context.accounting_origin = self.config.runtime_services.accounting_origin.clone();
+        if wiring.is_live() {
+            if let Some(origin) = self.turn_accounting_origin() {
+                tool_context.accounting_origin = Some(origin);
+            }
+        } else if tool_context.accounting_origin.is_none() {
+            tool_context.accounting_origin = self.turn_accounting_origin();
         }
         // Ensure MCP pool is initialized before building the tool registry,
         // so start_mcp_server can be registered when Feature::Mcp is enabled.
@@ -6320,14 +6631,15 @@ impl Engine {
             runtime.reasoning_effort = route.reasoning_effort.clone();
             runtime.reasoning_effort_auto = route.reasoning_effort_auto;
             runtime.mcp_pool = mcp_pool.clone();
-            child
-                .authority
-                .tool_registry_builder(
-                    runtime,
-                    self.config.todos.clone(),
-                    self.config.plan_state.clone(),
-                )
-                .with_dynamic_tools(dynamic_tools)
+            let mut builder = child.authority.tool_registry_builder(
+                runtime,
+                self.config.todos.clone(),
+                self.config.plan_state.clone(),
+            );
+            if let Some(pool) = mcp_pool.as_ref() {
+                builder = builder.with_mcp_tools(Arc::clone(pool)).await;
+            }
+            builder.with_dynamic_tools(dynamic_tools)
         } else {
             self.build_turn_tool_registry_builder_for_route(
                 input_policy.mode,
@@ -6380,6 +6692,7 @@ impl Engine {
                 let tx_event_clone = self.tx_event.clone();
                 let mailbox_owner_session_id = self.session.id.clone();
                 let mailbox_turn_id = turn_id.to_string();
+                let mailbox_turn_seq = self.turn_counter;
                 let (flush_tx, mut flush_rx) = tokio::sync::oneshot::channel();
                 let drain_handle = spawn_supervised(
                     "subagent-mailbox-drainer",
@@ -6396,6 +6709,7 @@ impl Engine {
                                             &mailbox_owner_session_id,
                                             &mailbox_turn_id,
                                             envelope.seq,
+                                            mailbox_turn_seq,
                                             envelope.message,
                                             &mut best_effort_sent_at,
                                         ).await {
@@ -6411,6 +6725,7 @@ impl Engine {
                                         &mailbox_owner_session_id,
                                         &mailbox_turn_id,
                                         envelope.seq,
+                                        mailbox_turn_seq,
                                         envelope.message,
                                         &mut best_effort_sent_at,
                                     ).await {
@@ -6473,7 +6788,14 @@ impl Engine {
                 .with_permission_posture(
                     Arc::clone(&self.shared_auto_review_policy),
                     self.config.terminal_chrome_enabled,
-                );
+                )
+                .with_parent_origin(self.turn_run_origin, self.turn_owner_present)
+                .with_parent_review_context(
+                    self.session.person_messages(),
+                    self.session.approved_plan().map(str::to_string),
+                    self.session.pinned_project_instructions.clone(),
+                )
+                .with_parent_auto_review_state(Arc::clone(&self.auto_review_state));
                 if matches!(input_policy.mode, AppMode::Plan) {
                     rt.worker_profile = WorkerRuntimeProfile::for_role(FleetRole::Planner);
                 }
@@ -6518,19 +6840,38 @@ impl Engine {
         // Load plugin tools from the user's tools directory and apply any
         // config.toml overrides. Explicit overrides win over auto-discovered
         // scripts with the same tool name; neither may replace a built-in.
-        let extension_host = self
+        let ext_enabled = self.config.features.enabled(Feature::ExtensionHost);
+        let creator_eligible = self.creator_eligible();
+        let is_creator =
+            crate::conversation_modes::is_creator(self.session.agent_preset.as_deref());
+        let extension_host = self.extension_host.as_ref().filter(|_| ext_enabled);
+        if let Some(attachment) = self
             .extension_host
             .as_ref()
-            .filter(|_| self.config.features.enabled(Feature::ExtensionHost));
-        if let Some(attachment) = extension_host {
-            // Natives only: scripts are added next and must not count as built-ins.
+            .filter(|_| ext_enabled || creator_eligible)
+        {
             attachment
                 .manager()
                 .note_native_names(tool_registry.names());
-            if attachment.selection_settled() {
-                attachment.sync_in_background();
-            } else {
-                attachment.sync_within(EXTENSION_FIRST_SYNC_WAIT).await;
+            if ext_enabled {
+                if attachment.selection_settled()
+                    && (!creator_eligible || !is_creator || attachment.creator_ready())
+                {
+                    attachment.sync_in_background();
+                } else {
+                    attachment.sync_within(EXTENSION_FIRST_SYNC_WAIT).await;
+                }
+            } else if creator_eligible {
+                if is_creator && !attachment.creator_ready() {
+                    attachment
+                        .sync_creator_within(EXTENSION_FIRST_SYNC_WAIT)
+                        .await;
+                } else {
+                    attachment.sync_creator_in_background();
+                }
+            }
+            if creator_eligible {
+                attachment.install_creator_tools(&mut tool_registry);
             }
         }
         let (mut plugin_tool_names, refused_overrides) =
@@ -6549,8 +6890,11 @@ impl Engine {
         // Extension tools go in last and never replace a name already present
         // (`ToolRegistry::register` would overwrite it silently). Only this
         // engine's own plugins' tools are installed.
+        let mut extension_tool_names = HashSet::new();
         if let Some(attachment) = extension_host {
-            plugin_tool_names.extend(attachment.install_tools(&mut tool_registry));
+            let installed = attachment.install_tools(&mut tool_registry);
+            extension_tool_names.extend(installed.iter().cloned());
+            plugin_tool_names.extend(installed);
         }
 
         let mcp_state = if self.config.features.enabled(Feature::Mcp) {
@@ -6667,8 +7011,11 @@ impl Engine {
         // The surface budget belongs to the route the request would go to,
         // which is not necessarily the installed one under auto routing.
         let capability = route.capability_profile();
-        let always_load = self.config.tools_always_load.clone();
+        let always_load = self.effective_tools_always_load();
         self.turn_tool_surface_budget = Some(capability.tool_surface_budget);
+        if !self.lsp_manager.config().enabled {
+            tool_registry.remove_tool("lsp");
+        }
         if self.child_host.is_some() {
             tool_registry.remove_tool("create_goal");
             tool_registry.remove_tool("update_goal");
@@ -6714,7 +7061,8 @@ impl Engine {
             // Model metadata wins once wired; today the hint is always None
             // and the [features] flags decide.
             tool_catalog::requested_tool_mode(None, &self.config.features),
-        );
+        )
+        .with_extension_tool_names(extension_tool_names);
         if let Some(child) = self.child_host.as_ref() {
             Self::narrow_child_surface(&child.authority, &mut surface);
         }
@@ -6788,6 +7136,11 @@ impl Engine {
         );
         let _stall_watchdog_guard = turn_heartbeat::AbortOnDrop(stall_watchdog);
         let previous = std::mem::replace(&mut self.turn_narrowing, control.narrowing);
+        let (turn_run_origin, turn_owner_present) =
+            self.mint_turn_origin(control.origin, spec.provenance);
+        let previous_origin = std::mem::replace(&mut self.turn_run_origin, turn_run_origin);
+        let previous_owner_present =
+            std::mem::replace(&mut self.turn_owner_present, turn_owner_present);
         let shell_ceiling = self.is_acp_turn().then_some(spec.allow_shell);
         let previous_shell = std::mem::replace(&mut self.turn_acp_shell_ceiling, shell_ceiling);
         let outcome = match review {
@@ -6798,6 +7151,8 @@ impl Engine {
             None => self.handle_admitted_message(spec, autonomous).await,
         };
         self.turn_acp_shell_ceiling = previous_shell;
+        self.turn_owner_present = previous_owner_present;
+        self.turn_run_origin = previous_origin;
         self.turn_narrowing = previous;
         drop(control);
         self.clear_turn_meta_git_snapshot();
@@ -6851,49 +7206,33 @@ impl Engine {
             hook_executor,
             verbosity,
             provenance,
+            input_authorship,
             submission_id,
         } = spec;
         let route = *route;
         let compaction = *compaction;
         let initial_routed_usage = *initial_routed_usage;
-        let initial_usage_owner = compaction.runtime_cost_owner.clone();
+        let initial_origin = self.turn_accounting_origin();
+        let initial_cost_scope = initial_origin.as_ref().map_or_else(
+            crate::cost_status::scope_token,
+            crate::cost_status::NativeUsageOrigin::scope,
+        );
         for record in initial_routed_usage
             .records
             .iter()
             .filter(|record| record.settlement.is_some())
         {
-            let settled = if record.has_captured_origin() {
-                crate::cost_status::settle_runtime_usage_record(
-                    crate::cost_status::scope_token(),
-                    initial_usage_owner.as_deref(),
-                    record,
-                )
-                .await
-            } else {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "initial usage has no captured native origin",
-                ))
-            };
-            if let Err(error) = settled {
-                let message = format!(
-                    "Cannot start the turn while classifier usage remains unsettled: {error}"
-                );
-                let _ = self
-                    .send_event(Event::error(ErrorEnvelope::classify(
-                        message.clone(),
-                        false,
-                    )))
-                    .await;
-                return SendMessageOutcome::NotStarted {
-                    error: Some(message),
-                };
-            }
+            crate::cost_status::record_runtime_usage_async(
+                initial_cost_scope,
+                initial_origin.as_ref(),
+                record,
+            )
+            .await;
         }
         if autonomous && self.cancel_token.is_cancelled() {
-            crate::cost_status::report_runtime_usage_batch(
-                crate::cost_status::scope_token(),
-                initial_usage_owner.as_deref(),
+            crate::cost_status::record_runtime_usage_batch(
+                initial_cost_scope,
+                initial_origin.as_ref(),
                 &initial_routed_usage,
             );
             return SendMessageOutcome::NotStarted { error: None };
@@ -6904,9 +7243,9 @@ impl Engine {
             Ok(images) => images,
             Err(error) => {
                 let message = error.to_string();
-                crate::cost_status::report_runtime_usage_batch(
-                    crate::cost_status::scope_token(),
-                    initial_usage_owner.as_deref(),
+                crate::cost_status::record_runtime_usage_batch(
+                    initial_cost_scope,
+                    initial_origin.as_ref(),
                     &initial_routed_usage,
                 );
                 let _ = self
@@ -6973,9 +7312,9 @@ impl Engine {
                     crate::prompts::load_user_constitution_block()
                 }
                 Err(error) => {
-                    crate::cost_status::report_runtime_usage_batch(
-                        crate::cost_status::scope_token(),
-                        initial_usage_owner.as_deref(),
+                    crate::cost_status::record_runtime_usage_batch(
+                        initial_cost_scope,
+                        initial_origin.as_ref(),
                         &initial_routed_usage,
                     );
                     let _ = self
@@ -7034,9 +7373,9 @@ impl Engine {
                 // A queued operation is not an admitted turn. No TurnStarted,
                 // session mutation or provider dispatch happened, but an Auto
                 // classifier may already have produced billed routed usage.
-                crate::cost_status::report_runtime_usage_batch(
-                    crate::cost_status::scope_token(),
-                    initial_usage_owner.as_deref(),
+                crate::cost_status::record_runtime_usage_batch(
+                    initial_cost_scope,
+                    initial_origin.as_ref(),
                     &initial_routed_usage,
                 );
                 return SendMessageOutcome::NotStarted {
@@ -7050,9 +7389,9 @@ impl Engine {
         let whale_soul = match whale_soul {
             Ok(voice) => voice,
             Err(error) => {
-                crate::cost_status::report_runtime_usage_batch(
-                    crate::cost_status::scope_token(),
-                    initial_usage_owner.as_deref(),
+                crate::cost_status::record_runtime_usage_batch(
+                    initial_cost_scope,
+                    initial_origin.as_ref(),
                     &initial_routed_usage,
                 );
                 self.sync_unstarted_goal_for_terminal_projection(
@@ -7121,10 +7460,9 @@ impl Engine {
         let dispatched_product =
             crate::route_billing::capture_product(&route.config, &route.identity);
         if let Err(err) = self.install_resolved_runtime_route_async(route).await {
-            let cost_scope = crate::cost_status::scope_token();
-            crate::cost_status::report_runtime_usage_batch(
-                cost_scope,
-                initial_usage_owner.as_deref(),
+            crate::cost_status::record_runtime_usage_batch(
+                initial_cost_scope,
+                initial_origin.as_ref(),
                 &initial_routed_usage,
             );
             self.sync_unstarted_goal_for_terminal_projection(
@@ -7199,7 +7537,8 @@ impl Engine {
             trust_mode,
             auto_approve,
             approval_mode,
-        );
+        )
+        .with_rust_origin(self.turn_run_origin, self.turn_owner_present);
         let mut prompt_context = NextTurnPromptContext::for_planned_turn(
             effective_provider,
             model.clone(),
@@ -7249,7 +7588,7 @@ impl Engine {
         // after the UI changed modes (#3568).
         let prior = self.applied_runtime_authority();
         self.apply_runtime_mode_policy(&input_policy);
-        self.discard_kernels_if_narrowed(&prior).await;
+        self.discard_kernels_if_policy_changed(&prior).await;
 
         // Create turn context first so start event includes a stable turn id.
         // An active goal gets the host's goal allowance (#5994); turns with
@@ -7389,10 +7728,9 @@ impl Engine {
             u64::try_from(initial_routed_usage.drop_records.len()).unwrap_or(u64::MAX),
         );
         turn.add_routed_usage_dropped_records(residual_dropped_records);
-        let initial_cost_scope = crate::cost_status::scope_token();
-        crate::cost_status::report_runtime_usage_batch(
+        crate::cost_status::record_runtime_usage_batch(
             initial_cost_scope,
-            initial_usage_owner.as_deref(),
+            initial_origin.as_ref(),
             &crate::cost_status::RuntimeUsageBatch {
                 decisions: initial_routed_usage.decisions.clone(),
                 records: initial_routed_usage.records.clone(),
@@ -7410,11 +7748,12 @@ impl Engine {
                 .await;
         }
         for record in &initial_routed_usage.drop_records {
-            crate::cost_status::report_unreceipted_provider_success(
+            crate::cost_status::report_missing_runtime_usage(
                 initial_cost_scope,
-                initial_usage_owner.as_deref(),
+                initial_origin.as_ref(),
                 &record.source_id,
                 &record.route,
+                record.reason,
             );
         }
 
@@ -7507,41 +7846,28 @@ impl Engine {
             return outcome;
         }
 
-        // Headless/runtime hosts supply their durable turn owner; an embedded
-        // host may supply its captured Session origin. Only an otherwise
-        // unowned interactive turn installs this turn-local fallback, after
-        // pre-dispatch failures, and retires it at settlement.
-        let interactive_runtime_cost_owner = if self.config.compaction.runtime_cost_owner.is_none()
-            && self.config.runtime_services.accounting_origin.is_none()
-        {
-            let owner = format!("interactive:{}:{}", self.session.id, turn.id);
-            crate::usage_persistence::register_persistent_interactive_runtime_usage_sink(
-                &owner,
-                crate::cost_status::scope_token(),
-                &self.session.id,
-                &turn.id,
-            );
-            self.config.compaction.runtime_cost_owner = Some(owner.clone());
-            Some(owner)
+        self.active_turn_accounting_origin = if let Some(origin) = self.turn_accounting_origin() {
+            Some(origin)
         } else {
-            None
-        };
-
-        let turn_accounting_origin = self
-            .config
-            .compaction
-            .runtime_cost_owner
-            .as_deref()
-            .map(|owner| {
-                crate::cost_status::NativeUsageOrigin::runtime(
-                    crate::cost_status::scope_token(),
-                    owner,
-                )
+            let scope = crate::cost_status::scope_token();
+            let session_id = self.session.id.clone();
+            match codewhale_runtime::runtime_control::owner_work(move || {
+                let manager = crate::session_manager::SessionManager::default_location()?;
+                Ok(crate::cost_status::NativeUsageOrigin::session(
+                    scope,
+                    manager.sessions_dir().to_path_buf(),
+                    session_id,
+                ))
             })
-            .transpose()
-            .map(|origin| {
-                origin.or_else(|| self.config.runtime_services.accounting_origin.clone())
-            });
+            .await
+            {
+                Ok(origin) => Some(origin),
+                Err(error) => {
+                    tracing::warn!(%error, "turn accounting origin unavailable; continuing with unknown cost");
+                    None
+                }
+            }
+        };
 
         let previous_goal_objective = self.config.goal_objective.clone();
         let previous_goal_token_budget = self.config.goal_token_budget;
@@ -7564,6 +7890,7 @@ impl Engine {
                 goal_status,
             );
         }
+        self.refresh_creator_availability().await;
         self.config.allowed_tools = allowed_tools;
         self.config.hook_executor = hook_executor;
         self.session.reasoning_effort = reasoning_effort;
@@ -7593,7 +7920,9 @@ impl Engine {
             // Capture only this engine's reviewed, live plugin contributions. A
             // failed/withdrawn capture records retirement. Full bounded snapshots
             // use ordinary session history, not the smaller workspace line delta.
-            if let Some(attachment) = self.extension_host.as_ref() {
+            if self.config.features.enabled(Feature::ExtensionHost)
+                && let Some(attachment) = self.extension_host.as_ref()
+            {
                 self.plugin_registry = attachment.plugin_view();
             }
             self.config.hook_executor = self.config.hook_executor.as_ref().map(|hooks| {
@@ -7664,6 +7993,7 @@ impl Engine {
             }
 
             self.record_mode_context(mode);
+            self.record_creator_first_turn();
 
             self.session
                 .working_set
@@ -7699,6 +8029,20 @@ impl Engine {
             };
             user_msg.content.splice(image_index..image_index, images);
             self.session.add_message(user_msg);
+            let user_msg_index = self.session.messages.len().saturating_sub(1);
+            if self.accepts_owner_turn_input(provenance, false) {
+                match input_authorship {
+                    TurnInputAuthorship::Person(raw_text) => {
+                        self.session
+                            .record_person_message(raw_text, Some(user_msg_index));
+                    }
+                    TurnInputAuthorship::ApprovedPlan(plan_text) => {
+                        self.session
+                            .record_approved_plan(plan_text, Some(user_msg_index));
+                    }
+                    TurnInputAuthorship::NotPerson => {}
+                }
+            }
             turn.unanswered_user_message = Some(self.mark_unanswered_user_message());
 
             if let Some(job) = self.child_job()
@@ -7821,7 +8165,7 @@ impl Engine {
         // so the stall watchdog never reports a turn that already ended.
         self.turn_heartbeat.idle();
         let _post_timing = codewhale_runtime::logging::PhaseTimer::start("turn_postprocessing");
-        let (mut status, mut error) = match turn_result {
+        let (mut status, error) = match turn_result {
             Ok(outcome) => outcome,
             Err(panic) => {
                 let detail = codewhale_util::utils::panic_message(&*panic);
@@ -7837,23 +8181,16 @@ impl Engine {
             }
         };
 
-        let accounting_settlement = match turn_accounting_origin {
-            Ok(Some(origin)) => origin.flush_retained_usage().await,
-            Ok(None) => Ok(()),
-            Err(error) => Err(error),
-        };
-        if let Err(accounting_error) = accounting_settlement {
-            if status == TurnOutcomeStatus::Completed {
-                status = TurnOutcomeStatus::Failed;
-            }
-            error.get_or_insert_with(|| {
-                format!("Turn usage remains unacknowledged: {accounting_error}")
-            });
-        }
-
         // Update session usage
         self.session.total_usage.add(&turn.usage);
-        record_model_turn_telemetry(self.api_provider, &self.session.model, &turn, status);
+        record_model_turn_telemetry(
+            codewhale_telemetry::session_counters(),
+            self.api_provider,
+            &self.session.model,
+            &turn,
+            status,
+            self.child_host.is_none() && self.rlm_host.is_none(),
+        );
         if !self.is_acp_turn() {
             self.record_goal_usage_for_turn(&turn.usage, turn.started_at);
         }
@@ -7900,10 +8237,6 @@ impl Engine {
                 }
             }
         }
-        // The advisor is dispatched after TurnComplete, but its usage still
-        // belongs to this originating turn. Acquire the owner lease before an
-        // interactive owner is marked terminal so a late provider response
-        // retains its exact sink instead of falling into a later session.
         let advisor_usage_context = (!is_review
             && !self.is_acp_turn()
             && self.config.advisor_config.enabled
@@ -7911,18 +8244,10 @@ impl Engine {
             && self.codewhale_client.is_some())
         .then(|| {
             crate::tools::subagent::advisor::AdvisorUsageContext::capture(
-                self.config.compaction.runtime_cost_owner.as_deref(),
-                self.config.runtime_services.accounting_origin.clone(),
+                self.turn_accounting_origin(),
             )
         });
-        if let Some(owner) = interactive_runtime_cost_owner.as_deref() {
-            crate::cost_status::finish_runtime_usage_owner(owner);
-            // This owner is turn-local. Leaving it in the reusable engine
-            // config makes the next interactive turn skip registration and
-            // route background usage into a retired sink/journal. Host-owned
-            // runtime turn ids never enter this branch and remain untouched.
-            self.config.compaction.runtime_cost_owner = None;
-        }
+        self.active_turn_accounting_origin = None;
 
         // Emit turn complete event — after all post-turn bookkeeping so
         // the terminal is immediately responsive when the UI receives it.
@@ -8128,13 +8453,12 @@ impl Engine {
         let messages_before = self.session.messages.len();
 
         let purge = async {
-            let origin =
-                if let Some(origin) = self.config.runtime_services.accounting_origin.clone() {
-                    origin
-                } else {
+            let origin = if let Some(origin) = self.turn_accounting_origin() {
+                Some(origin)
+            } else {
                     let scope = crate::cost_status::scope_token();
                     let session_id = self.session.id.clone();
-                    codewhale_runtime::runtime_control::owner_work(move || {
+                    match codewhale_runtime::runtime_control::owner_work(move || {
                         let manager = crate::session_manager::SessionManager::default_location()?;
                         Ok(crate::cost_status::NativeUsageOrigin::session(
                             scope,
@@ -8143,7 +8467,13 @@ impl Engine {
                         ))
                     })
                     .await
-                    .map_err(|error| format!("Purge accounting admission failed: {error}"))?
+                    {
+                        Ok(origin) => Some(origin),
+                        Err(error) => {
+                            tracing::warn!(%error, "purge accounting admission failed; continuing with unknown cost");
+                            None
+                        }
+                    }
                 };
             run_purge(
                 &client,
@@ -8277,6 +8607,25 @@ impl Engine {
         models
     }
 
+    fn turn_accounting_origin(&self) -> Option<crate::cost_status::NativeUsageOrigin> {
+        self.active_turn_accounting_origin
+            .clone()
+            .or_else(|| {
+                self.config
+                    .compaction
+                    .runtime_cost_owner
+                    .as_deref()
+                    .and_then(|owner| {
+                        self.config
+                            .runtime_services
+                            .owner_accounting_origin
+                            .as_ref()
+                            .and_then(|resolve| resolve(owner))
+                    })
+            })
+            .or_else(|| self.config.runtime_services.accounting_origin.clone())
+    }
+
     fn build_tool_context(&self, mode: AppMode, auto_approve: bool) -> ToolContext {
         let authority = TurnAuthority::from_effective_fields(
             mode,
@@ -8300,7 +8649,7 @@ impl Engine {
         };
         let mut context = self.build_tool_context_for_turn(&authority, &route);
         if context.accounting_origin.is_none() {
-            context.accounting_origin = self.config.runtime_services.accounting_origin.clone();
+            context.accounting_origin = self.turn_accounting_origin();
         }
         context
     }
@@ -8331,8 +8680,7 @@ impl Engine {
             {
                 Ok(origin) => tool_context.accounting_origin = Some(origin),
                 Err(error) => {
-                    tracing::warn!(%error, "off-turn child accounting admission failed");
-                    return None;
+                    tracing::warn!(%error, "off-turn child accounting admission failed; continuing with unknown cost");
                 }
             }
         }
@@ -8367,6 +8715,17 @@ impl Engine {
         .with_permission_posture(
             Arc::clone(&self.shared_auto_review_policy),
             self.config.terminal_chrome_enabled,
+        )
+        .with_parent_review_context(
+            self.session.person_messages(),
+            self.session.approved_plan().map(str::to_string),
+            self.session.pinned_project_instructions.clone(),
+        )
+        .with_parent_auto_review_state(
+            self.child_host
+                .as_ref()
+                .and_then(|child| child.authority.runtime.parent_auto_review_state.clone())
+                .unwrap_or_else(|| Arc::clone(&self.auto_review_state)),
         );
         if matches!(mode, AppMode::Plan) {
             rt.worker_profile = WorkerRuntimeProfile::for_role(FleetRole::Planner);
@@ -8394,7 +8753,8 @@ impl Engine {
             self.session.trust_mode,
             self.session.auto_approve,
             self.session.approval_mode,
-        );
+        )
+        .with_rust_origin(self.turn_run_origin, self.turn_owner_present);
         project_turn_authority(
             &mut context,
             &authority,
@@ -8568,8 +8928,9 @@ impl Engine {
         .with_runtime_services(self.config.runtime_services.clone())
         .with_skills_config(
             self.config.skills_dir.clone(),
-            self.config.skills_config.clone(),
+            self.conversation_skills_config(),
         )
+        .with_read_only_roots(self.conversation_read_only_roots())
         .with_plugin_registry(Arc::clone(&self.plugin_registry))
         .with_session_objects(crate::rlm::session::SessionObjectSnapshot::new(
             self.session.id.clone(),
@@ -8582,6 +8943,9 @@ impl Engine {
         .with_shell_policy(authority.shell_policy())
         .with_trusted_external_paths(trusted_external_paths)
         .with_follow_symlinks(self.config.workspace_follow_symlinks);
+        if self.lsp_manager.config().enabled {
+            ctx = ctx.with_lsp_manager(Arc::clone(&self.lsp_manager));
+        }
         ctx.acp_host = self.is_acp_turn().then_some(authority.mode);
         ctx.disallowed_tools = self.config.disallowed_tools.clone().unwrap_or_default();
         ctx.persist_services_enabled = self.config.runtime_services.persist_services_enabled;
@@ -8765,12 +9129,14 @@ impl Engine {
 
     async fn ensure_mcp_pool(&mut self) -> Result<Arc<AsyncMutex<McpPool>>, ToolError> {
         if let Some(pool) = self.mcp_pool.clone() {
+            let current_network = self.current_network_decider();
             let mut held = pool.lock().await;
             if !Arc::ptr_eq(&held.auth_context(), &self.config.mcp_auth_context.0) {
                 return Err(ToolError::not_available(
                     "MCP pool belongs to another credential authority",
                 ));
             }
+            held.set_network_policy(current_network);
             held.bind_caller_plugins(Arc::clone(&self.plugin_registry))
                 .map_err(|error| ToolError::not_available(error.to_string()))?;
             self.config.runtime_services.runtime_mcp_servers = held.runtime_server_scope();
@@ -9256,7 +9622,8 @@ impl Engine {
             };
             let connecting =
                 Self::mcp_connecting_names(&*pool.lock().await, &self.mcp_connection_errors);
-            let needs_schema = connecting.iter().any(|server| names.contains(server));
+            let needs_schema = !explicit.connects.is_empty()
+                || connecting.iter().any(|server| names.contains(server));
             if !needs_schema {
                 break;
             }
@@ -9349,6 +9716,9 @@ impl Engine {
         for (name, error) in errors {
             self.mcp_connection_errors
                 .insert(name, crate::mcp::format_mcp_error_for_display(&error));
+        }
+        for (name, _) in &pending {
+            self.mcp_connection_errors.remove(name.as_str());
         }
         state.catalog_generation = generation;
         state.names = pending.iter().map(|(name, _)| name.clone()).collect();
@@ -9604,6 +9974,9 @@ impl Engine {
                 let _ = done_tx.send(true);
             },
         );
+        if let Some(previous) = self.mcp_boot_task.take() {
+            previous.abort();
+        }
         self.mcp_boot_task = Some(boot_task.abort_handle());
 
         Ok(generation)
@@ -9757,6 +10130,32 @@ impl Engine {
             }
         };
 
+        let reloaded = pool.lock().await.reload_if_config_changed().await;
+        match reloaded {
+            Ok(true) => {
+                if let Some(previous) = self.mcp_boot_task.take() {
+                    previous.abort();
+                }
+                self.mcp_boot_in_flight = false;
+                self.mcp_boot_generation = None;
+                if let Err(error) = self
+                    .start_mcp_session_boot(McpConnectRefresh::IfChanged)
+                    .await
+                {
+                    tracing::debug!(
+                        "MCP session boot after config change failed: {}",
+                        crate::mcp::format_mcp_error_for_display(&error)
+                    );
+                }
+                self.session.pending_prefix_change_reason = Some("mcp-session-boot".to_string());
+            }
+            Ok(false) => {}
+            Err(error) => tracing::debug!(
+                "MCP config reload failed: {}",
+                crate::mcp::format_mcp_error_for_display(&error)
+            ),
+        }
+
         if self.mcp_boot_in_flight {
             // Optional servers are still connecting in the background. Snapshot
             // currently-ready tools so the first LLM call is not serialized
@@ -9826,6 +10225,124 @@ impl Engine {
         if previous != Some(&message) {
             self.session.add_message(message);
         }
+    }
+
+    fn conversation_loadout(&self) -> crate::conversation_modes::Loadout {
+        if self.creator_available
+            && self.child_host.is_none()
+            && self.rlm_host.is_none()
+            && !self.api_config.runtime_chat_isolated
+        {
+            crate::conversation_modes::loadout(self.session.agent_preset.as_deref())
+        } else {
+            crate::conversation_modes::Loadout::STANDARD
+        }
+    }
+
+    fn effective_tools_always_load(&self) -> HashSet<String> {
+        let mut names = self.config.tools_always_load.clone();
+        names.extend(
+            self.conversation_loadout()
+                .always_load
+                .iter()
+                .map(|name| (*name).to_string()),
+        );
+        names
+    }
+
+    fn conversation_creator_skills(&self) -> bool {
+        if self.child_host.is_some() {
+            self.config.skills_config.creator_skills
+        } else {
+            self.conversation_loadout().creator_skills
+        }
+    }
+
+    fn conversation_skills_config(&self) -> Arc<codewhale_runtime::config::SkillsConfig> {
+        let creator = self.conversation_creator_skills();
+        if self.config.skills_config.creator_skills == creator {
+            return self.config.skills_config.clone();
+        }
+        let mut config = (*self.config.skills_config).clone();
+        config.creator_skills = creator;
+        Arc::new(config)
+    }
+
+    fn conversation_read_only_roots(&self) -> Vec<PathBuf> {
+        if self.conversation_creator_skills() {
+            codewhale_skills::bundled_creator_skill_dirs()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn creator_eligible(&self) -> bool {
+        self.creator_available
+            && self.child_host.is_none()
+            && self.rlm_host.is_none()
+            && !self.api_config.runtime_chat_isolated
+    }
+
+    async fn refresh_creator_availability(&mut self) {
+        self.creator_available = false;
+        let is_creator =
+            crate::conversation_modes::is_creator(self.session.agent_preset.as_deref());
+        let eligible = self.child_host.is_none()
+            && self.rlm_host.is_none()
+            && !self.api_config.runtime_chat_isolated;
+        let reason = if eligible {
+            let options = crate::extension_host::ExtensionHostOptions::from_config(
+                self.api_config.extension_host.as_ref(),
+            );
+            let plugin_creator_enabled = self.config.features.enabled(Feature::PluginCreator);
+            crate::conversation_modes::creator_unavailable_reason(options, plugin_creator_enabled)
+                .await
+        } else {
+            None
+        };
+        if eligible {
+            self.creator_available = reason.is_none();
+        }
+        if let Some(attachment) = self.extension_host.as_ref() {
+            let ext_enabled = self.config.features.enabled(Feature::ExtensionHost);
+            if attachment.set_creator_demand(self.creator_available) {
+                if ext_enabled {
+                    attachment.sync_in_background();
+                } else {
+                    attachment.sync_creator_in_background();
+                }
+            }
+        }
+        if is_creator
+            && let Some(reason) = reason
+            && self.creator_unavailable_noted.as_deref() != Some(self.session.id.as_str())
+        {
+            self.creator_unavailable_noted = Some(self.session.id.clone());
+            let _ = self
+                .send_event(Event::status(format!(
+                    "Creator mode is unavailable, so this conversation runs without its plugin tools and guides: {reason}"
+                )))
+                .await;
+        }
+    }
+
+    fn record_creator_first_turn(&mut self) {
+        if !self.conversation_loadout().first_turn_event {
+            return;
+        }
+        if self
+            .session
+            .messages
+            .iter()
+            .any(crate::runtime_handoff::is_creator_runtime_message)
+        {
+            return;
+        }
+        let body = crate::tools::skill::bundled_creator_skill_body("cordis-plugin-development");
+        self.session
+            .add_message(crate::runtime_handoff::creator_runtime_message(
+                body.as_deref(),
+            ));
     }
 
     /// Record the current mode and its purpose as a runtime notice (KV-cache
@@ -10085,7 +10602,7 @@ impl Engine {
             return;
         }
         let (stable_prompt, assembly) = match self.host_owned_system_prompt() {
-            Some(prompt) => (Some(prompt), None),
+            Some(prompt) => (Some(prompt), self.host_owned_instruction_assembly()),
             None => {
                 self.record_project_trust_warning();
                 let raw = self.capture_project_instructions_for(context);
@@ -10103,10 +10620,10 @@ impl Engine {
                     budgets,
                 );
                 self.session.project_context = Some(raw);
-                (Some(prompt), Some(assembly))
+                (Some(prompt), Some(Arc::new(assembly)))
             }
         };
-        self.session.instruction_assembly = assembly.map(Arc::new);
+        self.session.instruction_assembly = assembly;
         self.instruction_guard_key = None;
         let stable_hash = system_prompt_hash(stable_prompt.as_ref());
         self.session.pinned_prompt_context = Some(context.clone());
@@ -10253,6 +10770,14 @@ impl Engine {
         None
     }
 
+    fn host_owned_instruction_assembly(
+        &self,
+    ) -> Option<Arc<crate::project_context::InstructionAssembly>> {
+        self.rlm_host
+            .as_ref()
+            .and_then(rlm_host::RlmHostState::instruction_assembly)
+    }
+
     /// Compose the stable system prompt for an explicit route, without
     /// touching session state.
     ///
@@ -10278,7 +10803,11 @@ impl Engine {
         Option<crate::project_context::InstructionAssembly>,
     ) {
         if let Some(prompt) = self.host_owned_system_prompt() {
-            return (Some(prompt), None, None);
+            return (
+                Some(prompt),
+                None,
+                self.host_owned_instruction_assembly().as_deref().cloned(),
+            );
         }
         let raw = self.capture_project_instructions_for(context);
         let memory = codewhale_runtime::native_memory::native_prompt_block(
@@ -10474,9 +11003,8 @@ impl Engine {
             self.emit_session_updated().await;
         }
         for body in notices {
-            self.add_session_message(self.runtime_text_message_with_turn_metadata(
+            self.add_session_message(crate::runtime_handoff::instruction_notice_runtime_message(
                 body,
-                crate::core::ops::UserInputProvenance::Runtime,
             ))
             .await;
         }
@@ -10590,11 +11118,16 @@ fn configure_plugin_tools(
 ) -> (std::collections::HashSet<String>, Vec<String>) {
     // Everything registered before the plugin directory loads is built in
     // (native and host-dynamic tools); no script tool may replace it (D4).
-    let builtin_names: std::collections::HashSet<String> = tool_registry
+    let mut builtin_names: std::collections::HashSet<String> = tool_registry
         .names()
         .into_iter()
         .map(|s| s.to_string())
         .collect();
+    builtin_names.extend(
+        crate::conversation_modes::CREATOR_TOOL_NAMES
+            .into_iter()
+            .map(str::to_string),
+    );
 
     let plugin_dir = plugin_tools_dir(tools_config);
     let executor = crate::tools::plugin::PluginExecutor::for_engine();
@@ -10694,6 +11227,12 @@ pub enum ToolAskRuleDecision {
     Block(String),
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct AskRuleEvaluation {
+    pub decision: Option<ToolAskRuleDecision>,
+    pub typed_narrow_allow: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AutoReviewPlanDecision {
     NoChange,
@@ -10705,11 +11244,14 @@ pub enum AutoReviewPlanDecision {
     ConsultReviewer(String),
 }
 
-pub fn auto_review_run_origin_for_plan(detached_start: bool) -> RunOrigin {
+pub fn auto_review_run_origin_for_plan(
+    authority: &TurnAuthority,
+    detached_start: bool,
+) -> RunOrigin {
     if detached_start {
         RunOrigin::Background
     } else {
-        RunOrigin::Interactive
+        authority.run_origin()
     }
 }
 
@@ -10744,13 +11286,10 @@ pub fn auto_review_plan_decision_for_context(
                     "Built-in safety gate requires approval: {}",
                     decision.reason
                 );
-                if matches!(
-                    context.approval_mode,
-                    ApprovalMode::Auto | ApprovalMode::Never
-                ) {
-                    // Auto-Review and Never are non-interactive for approval
-                    // holds, so the floor fails closed instead of stranding
-                    // the call on a modal neither posture opens.
+                if context.approval_mode == ApprovalMode::Never
+                    || (context.approval_mode == ApprovalMode::Auto
+                        && !decision.force_prompt_in_auto)
+                {
                     AutoReviewPlanDecision::Block(reason)
                 } else {
                     AutoReviewPlanDecision::ForcePrompt(reason)
@@ -10797,6 +11336,22 @@ pub(super) fn exec_shell_ask_rule_decision(
     )
 }
 
+pub(super) fn exec_shell_ask_rule_evaluation(
+    config: &EngineConfig,
+    tool_name: &str,
+    tool_input: &Value,
+    workspace: &Path,
+    approval_mode: ApprovalMode,
+) -> Option<AskRuleEvaluation> {
+    exec_shell_ask_rule_evaluation_for_policy(
+        &config.exec_policy_engine,
+        tool_name,
+        tool_input,
+        workspace,
+        approval_mode,
+    )
+}
+
 /// Evaluate the persisted shell ask/allow/deny rules without requiring a full
 /// [`EngineConfig`]. Headless protocol adapters use this seam so they enforce
 /// the same sibling `permissions.toml` policy as the interactive engine.
@@ -10807,17 +11362,31 @@ pub fn exec_shell_ask_rule_decision_for_policy(
     workspace: &Path,
     approval_mode: ApprovalMode,
 ) -> Option<ToolAskRuleDecision> {
+    exec_shell_ask_rule_evaluation_for_policy(
+        exec_policy_engine,
+        tool_name,
+        tool_input,
+        workspace,
+        approval_mode,
+    )
+    .and_then(|eval| eval.decision)
+}
+
+fn exec_shell_ask_rule_evaluation_for_policy(
+    exec_policy_engine: &codewhale_execpolicy::ExecPolicyEngine,
+    tool_name: &str,
+    tool_input: &Value,
+    workspace: &Path,
+    approval_mode: ApprovalMode,
+) -> Option<AskRuleEvaluation> {
     let policy_tool_name =
         codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, tool_input);
-    // Task tools that hand a command string to the shell answer to the same
-    // shell deny and ask rules. Their own approval requirement stays: a shell
-    // allow rule does not waive it.
     let runs_shell_command = matches!(policy_tool_name, "task_shell_start" | "task_gate_run");
     if policy_tool_name != "exec_shell" && !runs_shell_command {
         return None;
     }
     let command = tool_input.get("command").and_then(Value::as_str)?;
-    let decision = tool_ask_rule_decision_for_context(
+    let (decision, allow_kind) = tool_ask_rule_evaluation_for_context(
         exec_policy_engine,
         "exec_shell",
         command,
@@ -10828,9 +11397,16 @@ pub fn exec_shell_ask_rule_decision_for_policy(
     if runs_shell_command && matches!(decision, Some(ToolAskRuleDecision::Allow)) {
         return None;
     }
-    decision
+    decision.map(|decision| AskRuleEvaluation {
+        typed_narrow_allow: approval_mode == ApprovalMode::Auto
+            && !runs_shell_command
+            && matches!(decision, ToolAskRuleDecision::Allow)
+            && allow_kind == codewhale_execpolicy::TypedAllowKind::Narrow,
+        decision: Some(decision),
+    })
 }
 
+#[cfg(test)]
 pub(super) fn file_tool_ask_rule_decision(
     config: &EngineConfig,
     tool_name: &str,
@@ -10839,6 +11415,22 @@ pub(super) fn file_tool_ask_rule_decision(
     approval_mode: ApprovalMode,
 ) -> Option<ToolAskRuleDecision> {
     file_tool_ask_rule_decision_for_policy(
+        &config.exec_policy_engine,
+        tool_name,
+        tool_input,
+        workspace,
+        approval_mode,
+    )
+}
+
+pub(super) fn file_tool_ask_rule_evaluation(
+    config: &EngineConfig,
+    tool_name: &str,
+    tool_input: &Value,
+    workspace: &Path,
+    approval_mode: ApprovalMode,
+) -> Option<AskRuleEvaluation> {
+    file_tool_ask_rule_evaluation_for_policy(
         &config.exec_policy_engine,
         tool_name,
         tool_input,
@@ -10857,17 +11449,37 @@ pub fn file_tool_ask_rule_decision_for_policy(
     workspace: &Path,
     approval_mode: ApprovalMode,
 ) -> Option<ToolAskRuleDecision> {
+    file_tool_ask_rule_evaluation_for_policy(
+        exec_policy_engine,
+        tool_name,
+        tool_input,
+        workspace,
+        approval_mode,
+    )
+    .and_then(|eval| eval.decision)
+}
+
+fn file_tool_ask_rule_evaluation_for_policy(
+    exec_policy_engine: &codewhale_execpolicy::ExecPolicyEngine,
+    tool_name: &str,
+    tool_input: &Value,
+    workspace: &Path,
+    approval_mode: ApprovalMode,
+) -> Option<AskRuleEvaluation> {
     let policy_tool_name =
         codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, tool_input);
     let paths = file_tool_permission_paths(policy_tool_name, tool_input)?;
     if paths.is_empty() {
         if matches!(policy_tool_name, "write_file" | "edit_file" | "apply_patch") {
-            return Some(ToolAskRuleDecision::Block(
-                "File write has no resolvable target; provide an explicit path or valid patch."
-                    .to_string(),
-            ));
+            return Some(AskRuleEvaluation {
+                decision: Some(ToolAskRuleDecision::Block(
+                    "File write has no resolvable target; provide an explicit path or valid patch."
+                        .to_string(),
+                )),
+                typed_narrow_allow: false,
+            });
         }
-        return tool_ask_rule_decision_for_context(
+        let (decision, allow_kind) = tool_ask_rule_evaluation_for_context(
             exec_policy_engine,
             policy_tool_name,
             "",
@@ -10875,47 +11487,113 @@ pub fn file_tool_ask_rule_decision_for_policy(
             workspace,
             approval_mode,
         );
+        return decision.map(|decision| AskRuleEvaluation {
+            typed_narrow_allow: approval_mode == ApprovalMode::Auto
+                && matches!(decision, ToolAskRuleDecision::Allow)
+                && allow_kind == codewhale_execpolicy::TypedAllowKind::Narrow,
+            decision: Some(decision),
+        });
     }
 
     let mut prompt: Option<String> = None;
     let mut all_allowed = true;
+    let mut all_narrow = approval_mode == ApprovalMode::Auto;
     for path in paths {
-        match tool_ask_rule_decision_for_context(
+        let (decision, allow_kind) = tool_ask_rule_evaluation_for_context(
             exec_policy_engine,
             policy_tool_name,
             "",
             Some(&path),
             workspace,
             approval_mode,
-        ) {
+        );
+        match decision {
             Some(ToolAskRuleDecision::Block(reason)) => {
-                return Some(ToolAskRuleDecision::Block(reason));
+                return Some(AskRuleEvaluation {
+                    decision: Some(ToolAskRuleDecision::Block(reason)),
+                    typed_narrow_allow: false,
+                });
             }
             Some(ToolAskRuleDecision::Prompt(reason)) => {
                 prompt.get_or_insert(reason);
                 all_allowed = false;
+                all_narrow = false;
             }
-            Some(ToolAskRuleDecision::Allow) => {}
-            None => all_allowed = false,
+            Some(ToolAskRuleDecision::Allow) => {
+                all_narrow &= allow_kind == codewhale_execpolicy::TypedAllowKind::Narrow;
+            }
+            None => {
+                all_allowed = false;
+                all_narrow = false;
+            }
         }
     }
     if let Some(prompt) = prompt {
-        Some(ToolAskRuleDecision::Prompt(prompt))
+        Some(AskRuleEvaluation {
+            decision: Some(ToolAskRuleDecision::Prompt(prompt)),
+            typed_narrow_allow: false,
+        })
     } else if all_allowed {
-        Some(ToolAskRuleDecision::Allow)
+        Some(AskRuleEvaluation {
+            decision: Some(ToolAskRuleDecision::Allow),
+            typed_narrow_allow: all_narrow,
+        })
     } else {
         None
     }
 }
 
-fn tool_ask_rule_decision_for_context(
+pub(super) fn other_tool_ask_rule_evaluation(
+    config: &EngineConfig,
+    tool_name: &str,
+    tool_input: &Value,
+    workspace: &Path,
+    approval_mode: ApprovalMode,
+) -> Option<AskRuleEvaluation> {
+    let policy_tool_name =
+        codewhale_execpolicy::canonical_action::canonical_action_alias(tool_name, tool_input);
+    if matches!(
+        policy_tool_name,
+        "exec_shell" | "bash" | "task_shell_start" | "task_gate_run"
+    ) || file_tool_permission_paths(policy_tool_name, tool_input).is_some()
+    {
+        return None;
+    }
+    let is_agent_tool = matches!(
+        policy_tool_name.trim().to_ascii_lowercase().as_str(),
+        "agent" | "subagent" | "spawn_agent"
+    ) || matches!(
+        tool_name.trim().to_ascii_lowercase().as_str(),
+        "agent" | "subagent" | "spawn_agent"
+    );
+    let (decision, allow_kind) = tool_ask_rule_evaluation_for_context(
+        &config.exec_policy_engine,
+        policy_tool_name,
+        "",
+        None,
+        workspace,
+        approval_mode,
+    );
+    decision.map(|decision| AskRuleEvaluation {
+        typed_narrow_allow: approval_mode == ApprovalMode::Auto
+            && !is_agent_tool
+            && matches!(decision, ToolAskRuleDecision::Allow)
+            && allow_kind == codewhale_execpolicy::TypedAllowKind::Narrow,
+        decision: Some(decision),
+    })
+}
+
+fn tool_ask_rule_evaluation_for_context(
     exec_policy_engine: &codewhale_execpolicy::ExecPolicyEngine,
     tool_name: &str,
     command: &str,
     path: Option<&str>,
     workspace: &Path,
     approval_mode: ApprovalMode,
-) -> Option<ToolAskRuleDecision> {
+) -> (
+    Option<ToolAskRuleDecision>,
+    codewhale_execpolicy::TypedAllowKind,
+) {
     let cwd = workspace.to_string_lossy();
     let ask_for_approval = match approval_mode {
         ApprovalMode::Never => AskForApproval::Never,
@@ -10924,29 +11602,36 @@ fn tool_ask_rule_decision_for_context(
         | ApprovalMode::Suggest
         | ApprovalMode::AcceptEdits => AskForApproval::OnFailure,
     };
-    let decision = exec_policy_engine
-        .check(ExecPolicyContext {
+    let Ok(outcome) = exec_policy_engine.check_with_narrow_allow(
+        ExecPolicyContext {
             command,
             cwd: cwd.as_ref(),
             tool: Some(tool_name),
             path,
             ask_for_approval,
             sandbox_mode: None,
-        })
-        .ok()?;
+        },
+        approval_mode == ApprovalMode::Auto,
+    ) else {
+        return (None, codewhale_execpolicy::TypedAllowKind::None);
+    };
+    let decision = outcome.decision;
     if !decision.allow {
-        Some(ToolAskRuleDecision::Block(decision.reason().to_string()))
+        (
+            Some(ToolAskRuleDecision::Block(decision.reason().to_string())),
+            codewhale_execpolicy::TypedAllowKind::None,
+        )
     } else if decision.requires_approval {
-        Some(ToolAskRuleDecision::Prompt(decision.reason().to_string()))
+        (
+            Some(ToolAskRuleDecision::Prompt(decision.reason().to_string())),
+            codewhale_execpolicy::TypedAllowKind::None,
+        )
     } else if decision.matched_action == Some(codewhale_execpolicy::PermissionAction::Allow) {
-        // Count only. Never `matched_rule`, never `reason()`, never the
-        // command or its argv: `auto_allow` patterns are user-authored command
-        // strings.
         codewhale_telemetry::session_counters()
             .bump(codewhale_telemetry::Counter::ApprovalAutoAllowed);
-        Some(ToolAskRuleDecision::Allow)
+        (Some(ToolAskRuleDecision::Allow), outcome.allow_kind)
     } else {
-        None
+        (None, codewhale_execpolicy::TypedAllowKind::None)
     }
 }
 
@@ -11007,15 +11692,22 @@ fn apply_patch_permission_paths(input: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Spawn the engine in a background task
-pub async fn spawn_engine(
+async fn spawn_engine_inner(
     config: EngineConfig,
     api_config: &Config,
     mcp_handoff: Option<crate::mcp::McpHandoff>,
+    host_profile: EngineHostProfile,
+    owner_surface_attached: bool,
 ) -> EngineHandle {
     let api_config = api_config.clone();
+    let owner_surface_attached =
+        owner_surface_attached && matches!(host_profile, EngineHostProfile::Normal);
     let (engine, mut handle) = codewhale_runtime::runtime_control::owner_work(move || {
-        let (engine, handle) = Engine::new(config, &api_config);
+        let (mut engine, mut handle) = Engine::new(config, &api_config);
+        engine.host_profile = host_profile;
+        engine.owner_surface_attached = owner_surface_attached;
+        handle.set_host_profile(host_profile);
+        handle.set_owner_surface_attached(owner_surface_attached);
         engine
             .mcp_pool_slot
             .lock()
@@ -11035,12 +11727,104 @@ pub async fn spawn_engine(
     handle
 }
 
+/// Spawn the engine in a background task
+pub async fn spawn_engine(
+    config: EngineConfig,
+    api_config: &Config,
+    mcp_handoff: Option<crate::mcp::McpHandoff>,
+) -> EngineHandle {
+    spawn_engine_inner(
+        config,
+        api_config,
+        mcp_handoff,
+        EngineHostProfile::Normal,
+        false,
+    )
+    .await
+}
+
+pub async fn spawn_tui_engine(
+    config: EngineConfig,
+    api_config: &Config,
+    mcp_handoff: Option<crate::mcp::McpHandoff>,
+) -> EngineHandle {
+    spawn_engine_inner(
+        config,
+        api_config,
+        mcp_handoff,
+        EngineHostProfile::Normal,
+        true,
+    )
+    .await
+}
+
+pub async fn spawn_headless_engine(
+    config: EngineConfig,
+    api_config: &Config,
+    mcp_handoff: Option<crate::mcp::McpHandoff>,
+) -> EngineHandle {
+    spawn_engine_inner(
+        config,
+        api_config,
+        mcp_handoff,
+        EngineHostProfile::Headless,
+        false,
+    )
+    .await
+}
+
 /// Spawn a runtime-owned engine whose autonomous later turns resolve against
 /// the manager's atomic config snapshot. This does not mutate an active turn.
 pub fn spawn_engine_with_authoritative_route_config(
+    config: EngineConfig,
+    api_config: &Config,
+    host_profile: EngineHostProfile,
+    authoritative_route_config: Arc<parking_lot::RwLock<Config>>,
+    model_client: Option<SharedModelClient>,
+    subagent_manager: Option<SharedSubAgentManager>,
+    execution_admission: CancellationToken,
+) -> (EngineHandle, tokio::task::JoinHandle<()>) {
+    spawn_engine_with_authoritative_route_config_inner(
+        config,
+        api_config,
+        host_profile,
+        false,
+        authoritative_route_config,
+        model_client,
+        subagent_manager,
+        execution_admission,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_runtime_engine_with_owner_surface(
+    config: EngineConfig,
+    api_config: &Config,
+    host_profile: EngineHostProfile,
+    owner_surface_attached: bool,
+    authoritative_route_config: Arc<parking_lot::RwLock<Config>>,
+    model_client: Option<SharedModelClient>,
+    subagent_manager: Option<SharedSubAgentManager>,
+    execution_admission: CancellationToken,
+) -> (EngineHandle, tokio::task::JoinHandle<()>) {
+    spawn_engine_with_authoritative_route_config_inner(
+        config,
+        api_config,
+        host_profile,
+        owner_surface_attached,
+        authoritative_route_config,
+        model_client,
+        subagent_manager,
+        execution_admission,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_engine_with_authoritative_route_config_inner(
     mut config: EngineConfig,
     api_config: &Config,
     host_profile: EngineHostProfile,
+    owner_surface_attached: bool,
     authoritative_route_config: Arc<parking_lot::RwLock<Config>>,
     model_client: Option<SharedModelClient>,
     subagent_manager: Option<SharedSubAgentManager>,
@@ -11054,6 +11838,8 @@ pub fn spawn_engine_with_authoritative_route_config(
         config.goal_max_steps = None;
         config.subagents_enabled = false;
     }
+    let owner_surface_attached =
+        owner_surface_attached && matches!(host_profile, EngineHostProfile::Normal);
     let (mut engine, mut handle) =
         Engine::new_admitted_with_subagent_manager(config, api_config, None, subagent_manager);
     if let Some(limits) = engine.subagent_execution_limits.as_mut() {
@@ -11066,6 +11852,9 @@ pub fn spawn_engine_with_authoritative_route_config(
         handle.client_preflight_required = false;
     }
     engine.host_profile = host_profile;
+    engine.owner_surface_attached = owner_surface_attached;
+    handle.set_host_profile(host_profile);
+    handle.set_owner_surface_attached(owner_surface_attached);
     engine.authoritative_route_config = Some(authoritative_route_config);
 
     let (run, completion) = run_completion::observe(Box::pin(engine.run()));
@@ -11236,6 +12025,9 @@ pub fn mock_engine_handle() -> MockEngineHandle {
         shared_paused,
         client_preflight_required: false,
         live_runtime_authority,
+        auto_review_state: Arc::new(parking_lot::Mutex::new(
+            crate::core::authority::auto_review::AutoReviewConversationState::default(),
+        )),
         compaction_cancellation,
         turn_heartbeat: turn_heartbeat::TurnHeartbeat::new(),
         subagent_manager: crate::tools::subagent::new_shared_subagent_manager(
@@ -11244,6 +12036,9 @@ pub fn mock_engine_handle() -> MockEngineHandle {
         ),
         terminal_worker_events: Some(Arc::new(TerminalEventDelivery::default())),
         mcp_pool_slot: Arc::default(),
+        owner_surface_attached: false,
+        host_profile: host_profile::EngineHostProfile::Normal,
+        exec_policy: codewhale_execpolicy::ExecPolicyEngine::default(),
     };
 
     MockEngineHandle {
@@ -11679,6 +12474,7 @@ mod approval_publication;
 mod compaction;
 mod context;
 pub mod handle;
+pub use handle::AutoReviewRetryApprovalError;
 mod run_completion;
 pub use run_completion::EngineRunCompletion;
 pub mod preview;
@@ -11691,10 +12487,13 @@ pub use context::compact_tool_result_for_route_with_window;
 /// Public so external hosts/wrappers can reuse the engine's input-budget math
 /// (see `context_input_budget_for_route`'s doc) instead of re-deriving it.
 pub use context::context_input_budget_for_route;
+pub(crate) use context::filter_messages_mcp_server_instructions;
 #[cfg(test)]
 use context::route_context_budget_for_provider;
 #[cfg(test)]
 use context::route_context_budget_for_route;
+#[cfg(test)]
+pub use context::tool_result_context_view;
 use context::{
     MAX_CONTEXT_RECOVERY_ATTEMPTS, context_overflow_exhausted_message,
     extract_compaction_summary_prompt, is_context_length_error_message,
@@ -11727,6 +12526,14 @@ pub use dispatch::content_without_approval_note;
 pub use token_estimate_cache::TokenEstimateCache;
 
 pub(super) const MAX_PARALLEL_SHELL_EXEC: usize = 4;
+pub(super) const MAX_PARALLEL_SHELL_EXEC_CAP: usize = 32;
+
+pub(super) fn resolve_max_parallel_shell_exec(configured: Option<usize>) -> usize {
+    configured
+        .filter(|&value| value > 0)
+        .unwrap_or(MAX_PARALLEL_SHELL_EXEC)
+        .min(MAX_PARALLEL_SHELL_EXEC_CAP)
+}
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn default_active_native_tool_names() -> &'static [&'static str] {
@@ -11783,11 +12590,17 @@ use codewhale_tools::names::{REQUEST_USER_INPUT_NAME, is_tool_search_tool};
 pub mod tests;
 
 fn record_model_turn_telemetry(
+    counters: &codewhale_telemetry::SessionCounters,
     provider: ProviderKind,
     model: &str,
     turn: &TurnContext,
     status: TurnOutcomeStatus,
+    counts_as_session_turn: bool,
 ) {
+    if counts_as_session_turn {
+        counters.bump(codewhale_telemetry::Counter::Turns);
+        counters.observe_turn_secs(turn.started_at.elapsed().as_secs());
+    }
     let usage = &turn.parent_route_usage;
     if usage.input_tokens == 0 && usage.output_tokens == 0 && status == TurnOutcomeStatus::Completed
     {
@@ -11798,7 +12611,7 @@ fn record_model_turn_telemetry(
         TurnOutcomeStatus::Failed => codewhale_telemetry::TurnOutcome::Failed,
         TurnOutcomeStatus::Interrupted => codewhale_telemetry::TurnOutcome::Interrupted,
     };
-    codewhale_telemetry::session_counters().record_model_turn(
+    counters.record_model_turn(
         provider,
         model,
         outcome,

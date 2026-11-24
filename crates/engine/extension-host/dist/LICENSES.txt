@@ -14,9 +14,12 @@ Packages:
   @deepseek-ai/dsh-hooks-codex@0.2.2-rc.1 (MIT)
   @deepseek-ai/dsh-llm@0.2.2-rc.1 (MIT)
   @deepseek-ai/dsh-persona@0.2.2-rc.1 (MIT)
+  @deepseek-ai/dsh-plugin-manager@0.2.2-rc.1 (MIT)
+  @deepseek-ai/dsh-sandbox@0.2.2-rc.1 (MIT)
   @deepseek-ai/dsh-session@0.2.2-rc.1 (MIT)
   @deepseek-ai/dsh-system-prompt@0.2.2-rc.1 (MIT)
   @deepseek-ai/dsh-system-prompt@0.2.2-rc.1 (MIT)
+  @deepseek-ai/dsh-tool-cordis@0.2.2-rc.1 (MIT)
   @deepseek-ai/dsh-tools@0.2.2-rc.1 (MIT)
   @deepseek-ai/dsh-user-questions@0.2.2-rc.1 (MIT)
   @deepseek-ai/dsh-util-crypto@0.2.2-rc.1 (MIT)
@@ -366,6 +369,62 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ========================================================================
+@deepseek-ai/dsh-plugin-manager@0.2.2-rc.1 (MIT)
+========================================================================
+
+Pinned @deepseek-ai/dsh-plugin-manager@0.2.2-rc.1 lib/types/tools.js verbatim in src/dsh/upstream/creator/plugin-manager/tools.js; adapted behind Codewhale broker services in src/dsh/plugin-manager.ts and src/builtin/creator.ts.
+
+MIT License
+
+Copyright (c) 2026 DeepSeek
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+========================================================================
+@deepseek-ai/dsh-sandbox@0.2.2-rc.1 (MIT)
+========================================================================
+
+Pinned @deepseek-ai/dsh-sandbox@0.2.2-rc.1 lib/index.js escalation excerpt in src/dsh/upstream/creator/sandbox/escalation.js; Core retains sandbox and approval enforcement.
+
+MIT License
+
+Copyright (c) 2026 DeepSeek
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+========================================================================
 @deepseek-ai/dsh-session@0.2.2-rc.1 (MIT)
 ========================================================================
 
@@ -426,6 +485,34 @@ SOFTWARE.
 ========================================================================
 
 Pinned deepseek-harness 66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db. Additive persona configuration and strict simple template mapping adapted in src/dsh/persona.ts and the Rust prompt renderer; source and license receipts: src/dsh/persona.UPSTREAM.json. Core retains prompt assembly and accepted model/workspace values.
+
+MIT License
+
+Copyright (c) 2026 DeepSeek
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+========================================================================
+@deepseek-ai/dsh-tool-cordis@0.2.2-rc.1 (MIT)
+========================================================================
+
+Pinned @deepseek-ai/dsh-tool-cordis@0.2.2-rc.1 lib/index.js verbatim in src/dsh/upstream/creator/tool-cordis/index.js; wired behind Codewhale broker services in src/builtin/creator.ts.
 
 MIT License
 

@@ -103,7 +103,7 @@ impl ToolSpec for SendLaterTool {
 Actions: \"schedule\" (create a pending trigger; requires approval), \
 \"list\" (recent triggers), \"read\" (one trigger by trigger_id), \
 \"cancel\" (cancel a pending trigger before it fires; requires approval). \
-Use delay_minutes or fire_at (ISO 8601 UTC) — not both. \
+Specify exactly one of delay_seconds, delay_minutes, or fire_at (ISO 8601 UTC). \
 Returns trigger_id and resolved fire_at."
         }
     }
@@ -121,18 +121,26 @@ Returns trigger_id and resolved fire_at."
         );
         if !self.read_only {
             properties.insert(
+                "delay_seconds".to_string(),
+                json!({
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Seconds from now to fire (minimum 1). Mutually exclusive with delay_minutes and fire_at. (action=schedule)"
+                }),
+            );
+            properties.insert(
                 "delay_minutes".to_string(),
                 json!({
                     "type": "integer",
                     "minimum": 1,
-                    "description": "Minutes from now to fire. Mutually exclusive with fire_at. (action=schedule)"
+                    "description": "Minutes from now to fire. Mutually exclusive with delay_seconds and fire_at. (action=schedule)"
                 }),
             );
             properties.insert(
                 "fire_at".to_string(),
                 json!({
                     "type": "string",
-                    "description": "Absolute UTC fire time as an ISO 8601 string, e.g. \"2026-07-08T00:43:00Z\". Mutually exclusive with delay_minutes. (action=schedule)"
+                    "description": "Absolute UTC fire time as an ISO 8601 string, e.g. \"2026-07-08T00:43:00Z\". Mutually exclusive with delay_seconds and delay_minutes. (action=schedule)"
                 }),
             );
             properties.insert(
@@ -247,10 +255,42 @@ Returns trigger_id and resolved fire_at."
 
 // ── Action handlers ────────────────────────────────────────────────────────
 
+fn optional_delay_arg(input: &Value, key: &str) -> Result<Option<i64>, ToolError> {
+    let Some(raw) = input.get(key) else {
+        return Ok(None);
+    };
+    if raw.is_null() {
+        return Ok(None);
+    }
+    let value = codewhale_tools::json_nonnegative_integer(raw).ok_or_else(|| {
+        ToolError::invalid_input(format!(
+            "send_later schedule: `{key}` must be a positive integer"
+        ))
+    })?;
+    if value == 0 {
+        return Err(ToolError::invalid_input(format!(
+            "send_later schedule: `{key}` must be >= 1"
+        )));
+    }
+    i64::try_from(value)
+        .map(Some)
+        .map_err(|_| ToolError::invalid_input(format!("send_later schedule: `{key}` is too large")))
+}
+
+fn checked_delay_fire_at(delta: Option<Duration>, key: &str) -> Result<DateTime<Utc>, ToolError> {
+    let delta = delta.ok_or_else(|| {
+        ToolError::invalid_input(format!("send_later schedule: `{key}` is too large"))
+    })?;
+    Utc::now().checked_add_signed(delta).ok_or_else(|| {
+        ToolError::invalid_input(format!("send_later schedule: `{key}` is too large"))
+    })
+}
+
 async fn execute_schedule(input: &Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
     let automations = SendLaterTool::automations_from_context(context)?;
 
-    let delay_minutes = input.get("delay_minutes").and_then(Value::as_u64);
+    let delay_seconds = optional_delay_arg(input, "delay_seconds")?;
+    let delay_minutes = optional_delay_arg(input, "delay_minutes")?;
     let fire_at_str = optional_str(input, "fire_at")?;
     let message = input
         .get("message")
@@ -263,47 +303,42 @@ async fn execute_schedule(input: &Value, context: &ToolContext) -> Result<ToolRe
         ));
     }
 
-    // Validate mutual exclusivity and resolve fire_at.
-    let fire_at: DateTime<Utc> = match (delay_minutes, fire_at_str) {
-        (Some(_), Some(_)) => {
-            return Err(ToolError::invalid_input(
-                "send_later schedule: `delay_minutes` and `fire_at` are mutually exclusive",
-            ));
+    let fire_at: DateTime<Utc> = match (delay_seconds, delay_minutes, fire_at_str) {
+        (Some(seconds), None, None) => {
+            checked_delay_fire_at(Duration::try_seconds(seconds), "delay_seconds")?
         }
-        (None, None) => {
-            return Err(ToolError::invalid_input(
-                "send_later schedule: one of `delay_minutes` or `fire_at` is required",
-            ));
+        (None, Some(minutes), None) => {
+            checked_delay_fire_at(Duration::try_minutes(minutes), "delay_minutes")?
         }
-        (Some(minutes), None) => {
-            if minutes == 0 {
-                return Err(ToolError::invalid_input(
-                    "send_later schedule: `delay_minutes` must be >= 1",
-                ));
-            }
-            let minutes_i64 = i64::try_from(minutes).map_err(|_| {
-                ToolError::invalid_input("send_later schedule: `delay_minutes` is too large")
-            })?;
-            Utc::now() + Duration::minutes(minutes_i64)
-        }
-        (None, Some(fire_at_s)) => fire_at_s.parse::<DateTime<Utc>>().map_err(|err| {
+        (None, None, Some(fire_at_s)) => fire_at_s.parse::<DateTime<Utc>>().map_err(|err| {
             ToolError::invalid_input(format!(
                 "send_later schedule: invalid `fire_at` — expected ISO 8601 UTC, e.g. \
                      \"2026-07-08T00:43:00Z\": {err}"
             ))
         })?,
+        (None, None, None) => {
+            return Err(ToolError::invalid_input(
+                "send_later schedule: exactly one of `delay_seconds`, `delay_minutes`, or `fire_at` is required",
+            ));
+        }
+        _ => {
+            return Err(ToolError::invalid_input(
+                "send_later schedule: `delay_seconds`, `delay_minutes`, and `fire_at` are mutually exclusive",
+            ));
+        }
     };
 
-    let workspace: Option<PathBuf> = optional_str(input, "workspace")?
-        .map(PathBuf::from)
-        .or_else(|| {
+    let workspace: Option<PathBuf> = match optional_str(input, "workspace")? {
+        Some(raw) => Some(context.resolve_path(raw)?),
+        None => {
             let ws = &context.workspace;
             if ws == std::path::Path::new(".") {
                 None
             } else {
                 Some(ws.clone())
             }
-        });
+        }
+    };
 
     let parent_trigger_id = optional_str(input, "parent_trigger_id")?.map(String::from);
 
@@ -320,6 +355,7 @@ async fn execute_schedule(input: &Value, context: &ToolContext) -> Result<ToolRe
         workspace,
         owner_session_id: Some(context.state_namespace.clone()),
         parent_trigger_id,
+        disallowed_tools: context.disallowed_tools.clone(),
     };
 
     let record = {
@@ -499,6 +535,104 @@ mod tests {
                 automations: Some(shared),
                 ..Default::default()
             })
+    }
+
+    fn make_context_in_workspace(tmp: &TempDir, workspace: &std::path::Path) -> ToolContext {
+        let manager = AutomationManager::open_for_test(tmp.path().to_path_buf()).unwrap();
+        ToolContext::new(workspace)
+            .with_state_namespace("test-session")
+            .with_runtime_services(RuntimeToolServices {
+                automations: Some(Arc::new(Mutex::new(manager))),
+                ..Default::default()
+            })
+    }
+
+    fn stored_triggers(tmp: &TempDir) -> Vec<crate::automation_manager::DelayedTriggerRecord> {
+        AutomationManager::open_for_test(tmp.path().to_path_buf())
+            .unwrap()
+            .list_triggers(None, None)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn schedule_refuses_a_workspace_the_session_cannot_reach() {
+        let store = TempDir::new().unwrap();
+        let workspace = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let ctx = make_context_in_workspace(&store, workspace.path());
+        let tool = SendLaterTool::new("send_later");
+
+        let result = tool
+            .execute(
+                json!({
+                    "action": "schedule",
+                    "delay_minutes": 5,
+                    "message": "look around",
+                    "workspace": outside.path().to_string_lossy()
+                }),
+                &ctx,
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "a directory outside the session workspace must be refused"
+        );
+        assert!(stored_triggers(&store).is_empty(), "nothing is scheduled");
+    }
+
+    #[tokio::test]
+    async fn schedule_stores_a_reachable_workspace_resolved() {
+        let store = TempDir::new().unwrap();
+        let workspace = TempDir::new().unwrap();
+        std::fs::create_dir(workspace.path().join("sub")).unwrap();
+        let ctx = make_context_in_workspace(&store, workspace.path());
+        let tool = SendLaterTool::new("send_later");
+
+        tool.execute(
+            json!({
+                "action": "schedule",
+                "delay_minutes": 5,
+                "message": "work in sub",
+                "workspace": "sub"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        let triggers = stored_triggers(&store);
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(
+            triggers[0]
+                .workspace
+                .as_deref()
+                .map(|p| p.canonicalize().unwrap()),
+            Some(workspace.path().join("sub").canonicalize().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn schedule_allows_any_workspace_in_trust_mode() {
+        let store = TempDir::new().unwrap();
+        let workspace = TempDir::new().unwrap();
+        let elsewhere = TempDir::new().unwrap();
+        let ctx = make_context_in_workspace(&store, workspace.path()).with_trust_mode(true);
+        let tool = SendLaterTool::new("send_later");
+
+        tool.execute(
+            json!({
+                "action": "schedule",
+                "delay_minutes": 5,
+                "message": "trusted",
+                "workspace": elsewhere.path().to_string_lossy()
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(stored_triggers(&store).len(), 1);
     }
 
     #[tokio::test]
@@ -906,6 +1040,7 @@ mod tests {
                 workspace: None,
                 owner_session_id: None,
                 parent_trigger_id: None,
+                disallowed_tools: Vec::new(),
             })
             .unwrap();
 
@@ -985,6 +1120,7 @@ mod tests {
             workspace: None,
             owner_session_id: Some("session-a".to_string()),
             parent_trigger_id: None,
+            disallowed_tools: Vec::new(),
         };
         let record = manager.create_trigger(req).unwrap();
         let due = manager.collect_due_triggers(chrono::Utc::now()).unwrap();
@@ -1044,5 +1180,120 @@ mod tests {
             "a refused schedule must not leave a trigger behind: {}",
             listed.content
         );
+    }
+
+    #[tokio::test]
+    async fn schedule_with_delay_seconds_succeeds() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = make_context(&tmp);
+        let tool = SendLaterTool::new("send_later");
+
+        let before = chrono::Utc::now();
+        let result = tool
+            .execute(
+                json!({
+                    "action": "schedule",
+                    "delay_seconds": 15,
+                    "message": "Sub-minute check."
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let after = chrono::Utc::now();
+
+        let parsed: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+        assert!(parsed["trigger_id"].as_str().unwrap().starts_with("trig_"));
+        let fire_at: chrono::DateTime<chrono::Utc> =
+            parsed["fire_at"].as_str().unwrap().parse().unwrap();
+        assert!(fire_at >= before + Duration::seconds(14));
+        assert!(fire_at <= after + Duration::seconds(16));
+    }
+
+    #[tokio::test]
+    async fn schedule_rejects_invalid_and_overflow_delay_seconds() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = make_context(&tmp);
+        let tool = SendLaterTool::new("send_later");
+
+        for bad in [
+            json!(0),
+            json!(-5),
+            json!(1.5),
+            json!("10"),
+            json!(u64::MAX),
+            json!(i64::MAX),
+        ] {
+            let err = tool
+                .execute(
+                    json!({
+                        "action": "schedule",
+                        "delay_seconds": bad,
+                        "message": "Invalid delay."
+                    }),
+                    &ctx,
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("delay_seconds"),
+                "unexpected error for {bad}: {err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn schedule_enforces_three_way_timing_mutual_exclusion() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = make_context(&tmp);
+        let tool = SendLaterTool::new("send_later");
+        let fire_at = (chrono::Utc::now() + Duration::minutes(10)).to_rfc3339();
+
+        for payload in [
+            json!({
+                "action": "schedule",
+                "delay_seconds": 30,
+                "delay_minutes": 1,
+                "message": "Conflict"
+            }),
+            json!({
+                "action": "schedule",
+                "delay_seconds": 30,
+                "fire_at": fire_at,
+                "message": "Conflict"
+            }),
+            json!({
+                "action": "schedule",
+                "delay_minutes": 1,
+                "fire_at": fire_at,
+                "message": "Conflict"
+            }),
+            json!({
+                "action": "schedule",
+                "delay_seconds": 30,
+                "delay_minutes": 1,
+                "fire_at": fire_at,
+                "message": "Conflict"
+            }),
+        ] {
+            let err = tool.execute(payload, &ctx).await.unwrap_err();
+            assert!(
+                err.to_string().contains("mutually exclusive"),
+                "unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn schema_and_description_expose_delay_seconds_when_writable() {
+        let writable = SendLaterTool::new("send_later");
+        let schema = writable.input_schema();
+        let prop = &schema["properties"]["delay_seconds"];
+        assert_eq!(prop["type"], "integer");
+        assert_eq!(prop["minimum"], 1);
+        assert!(writable.description().contains("delay_seconds"));
+
+        let readonly = SendLaterTool::read_only("send_later_read");
+        assert!(readonly.input_schema()["properties"]["delay_seconds"].is_null());
     }
 }

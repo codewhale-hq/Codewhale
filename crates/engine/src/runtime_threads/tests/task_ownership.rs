@@ -182,6 +182,190 @@ async fn shutdown_waits_actual_engine_exit_and_terminal_monitor_before_releasing
 }
 
 #[tokio::test]
+async fn background_task_with_ask_rule_refuses_without_pending_approval_and_interactive_card_requires_owner()
+-> Result<()> {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let root = tempfile::tempdir()?;
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let mut cfg = Config::default().with_legacy_root(
+        Some("task-ownership-ask-rule-key".to_string()),
+        Some("http://127.0.0.1:1/v1".to_string()),
+    );
+    cfg.allow_shell = Some(true);
+    cfg.exec_policy_engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
+        codewhale_execpolicy::Ruleset::user(vec![], vec![]).with_ask_rules(vec![
+            codewhale_execpolicy::ToolAskRule::exec_shell("git push"),
+        ]),
+    ]);
+    let plugins = Arc::new(codewhale_plugins::PluginRegistry::empty(&workspace));
+    let owner_arc = Arc::new(RuntimeThreadManager::open_owner_host(
+        cfg,
+        workspace.clone(),
+        test_manager_config(root.path().join("rt-owner")),
+        plugins,
+        None,
+        None,
+    )?);
+
+    let mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn(
+            "call_task_ask",
+            "Bash",
+            r#"{"action":"run","command":"git push"}"#,
+        ),
+        canned::simple_text_turn("task done"),
+        canned::tool_call_turn(
+            "call_interactive_ask",
+            "Bash",
+            r#"{"action":"run","command":"git push"}"#,
+        ),
+        canned::simple_text_turn("interactive done"),
+    ]));
+    owner_arc.set_test_model_client(mock.clone());
+
+    let task_thread = owner_arc
+        .create_thread(CreateThreadRequest {
+            workspace: Some(workspace.clone()),
+            permission_posture: Some("auto-review".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let task_turn = owner_arc
+        .start_task_turn(
+            &task_thread.id,
+            StartTurnRequest {
+                prompt: "scheduled task push".to_string(),
+                allow_shell: Some(true),
+                ..Default::default()
+            },
+            "task-ask-rule-1",
+        )
+        .await?;
+    let settled_task = wait_for_terminal_turn(owner_arc.as_ref(), &task_turn.id).await?;
+    assert_eq!(
+        settled_task.status,
+        RuntimeTurnStatus::Completed,
+        "task failed: {:?}",
+        settled_task.error
+    );
+    assert_eq!(
+        owner_arc.pending_approvals_count(),
+        0,
+        "Background task turn must register no pending approval"
+    );
+    let task_events = owner_arc.events_since(&task_thread.id, None)?;
+    assert!(
+        !task_events.iter().any(|ev| ev.event == "approval.required"),
+        "Background task turn must not emit approval.required: {task_events:?}"
+    );
+    assert!(
+        task_events
+            .iter()
+            .any(|ev| { ev.event == "item.failed" && ev.payload.to_string().contains("git push") }),
+        "Background task refusal must name the ask rule: {task_events:?}"
+    );
+
+    let interactive_thread = owner_arc
+        .create_thread(CreateThreadRequest {
+            workspace: Some(workspace),
+            permission_posture: Some("auto-review".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let interactive_turn = owner_arc
+        .start_turn(
+            &interactive_thread.id,
+            StartTurnRequest {
+                prompt: "interactive owner push".to_string(),
+                allow_shell: Some(true),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let interactive_deadline = Instant::now() + APPROVAL_READINESS_TIMEOUT;
+    let execution_id = loop {
+        if let Some(id) = owner_arc
+            .events_since(&interactive_thread.id, None)?
+            .into_iter()
+            .find_map(|event| {
+                (event.event == "item.started"
+                    && event
+                        .payload
+                        .pointer("/item/metadata/provider_tool_use_id")
+                        .and_then(Value::as_str)
+                        == Some("call_interactive_ask"))
+                .then(|| {
+                    event
+                        .payload
+                        .pointer("/item/metadata/execution_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .flatten()
+            })
+        {
+            break id;
+        }
+        anyhow::ensure!(
+            Instant::now() < interactive_deadline,
+            "interactive item.started not emitted for call_interactive_ask"
+        );
+        sleep(Duration::from_millis(20)).await;
+    };
+    let approval_id =
+        await_approval_identity(owner_arc.as_ref(), &interactive_thread.id, &execution_id).await?;
+    assert_eq!(owner_arc.pending_approvals_count(), 1);
+
+    for non_owner in [
+        None,
+        Some(ApprovalResponder::Phone),
+        Some(ApprovalResponder::Acp),
+    ] {
+        let err = owner_arc
+            .deliver_approval_from(
+                &approval_id,
+                None,
+                ExternalApprovalDecision::Allow { remember: false },
+                non_owner,
+            )
+            .await
+            .expect_err("non-owner responder must be refused on owner-only Auto-Review card");
+        assert!(
+            err.is::<ApprovalOwnerRequired>(),
+            "expected ApprovalOwnerRequired for {non_owner:?}, got {err:#}"
+        );
+        assert_eq!(
+            owner_arc.pending_approvals_count(),
+            1,
+            "rejected non-owner response must keep the card pending"
+        );
+    }
+
+    let delivered = owner_arc
+        .deliver_approval_from(
+            &approval_id,
+            None,
+            ExternalApprovalDecision::Allow { remember: false },
+            Some(ApprovalResponder::Desktop),
+        )
+        .await?;
+    assert!(delivered);
+    let settled_interactive =
+        wait_for_terminal_turn(owner_arc.as_ref(), &interactive_turn.id).await?;
+    assert_eq!(
+        settled_interactive.status,
+        RuntimeTurnStatus::Completed,
+        "interactive turn failed: {:?}",
+        settled_interactive.error
+    );
+    assert_eq!(owner_arc.pending_approvals_count(), 0);
+    owner_arc.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn shutdown_drains_accepted_user_input_receipt_after_caller_disconnects() -> Result<()> {
     let root = tempfile::tempdir()?;
     let runtime = Arc::new(test_manager(root.path().join("runtime"))?);
@@ -360,5 +544,474 @@ async fn shutdown_drains_an_already_started_recovery_flush() -> Result<()> {
             .count(),
         1
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn runtime_turn_origin_table_and_unattended_auto_review_tasks() -> Result<()> {
+    use crate::automation_manager::{AutomationManager, fire_due_triggers_shared};
+    use crate::core::authority::auto_review::RunOrigin;
+    use crate::core::engine::{EngineHostProfile, TurnNarrowing};
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    use codewhale_app_server_protocol::runtime::watch_event::{
+        WatchEventReceipt, WatchEventSource, WatchEventSourceKind, WatchScheduleSource,
+    };
+
+    let _env = crate::test_support::lock_test_env();
+    let root = tempfile::tempdir()?;
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
+    let cfg = fixture_config();
+    let workspace = root.path().to_path_buf();
+    let plugins = Arc::new(codewhale_plugins::PluginRegistry::empty(&workspace));
+
+    let owner_mgr = RuntimeThreadManager::open_owner_host(
+        cfg.clone(),
+        workspace.clone(),
+        test_manager_config(root.path().join("rt-owner")),
+        plugins.clone(),
+        None,
+        None,
+    )?;
+    let bg_mgr = RuntimeThreadManager::open(
+        cfg.clone(),
+        workspace.clone(),
+        test_manager_config(root.path().join("rt-bg")),
+    )?;
+    let headless_mgr = RuntimeThreadManager::open_host(
+        cfg.clone(),
+        workspace.clone(),
+        test_manager_config(root.path().join("rt-headless")),
+        plugins.clone(),
+        EngineHostProfile::Headless,
+        None,
+        None,
+    )?;
+    let acp_mgr = RuntimeThreadManager::open_host(
+        cfg.clone(),
+        workspace.clone(),
+        test_manager_config(root.path().join("rt-acp")),
+        plugins,
+        EngineHostProfile::Acp,
+        None,
+        None,
+    )?;
+
+    let scheduled = RuntimeTurnInputSource::Scheduled {
+        task_id: "task-1".to_string(),
+    };
+    let watch = RuntimeTurnInputSource::WatchEvent(Box::new(WatchEventReceipt {
+        version: 1,
+        platform_account_id: "acct-1".to_string(),
+        project_id: "proj-1".to_string(),
+        watch_id: "watch-1".to_string(),
+        watch_revision: 1,
+        definition_sha256: "0".repeat(64),
+        source_kind: WatchEventSourceKind::Schedule,
+        occurrence_sha256: "1".repeat(64),
+        event_sha256: "2".repeat(64),
+        run_id: "run-1".to_string(),
+        room_thread_root_id: "thr-1".to_string(),
+        source: WatchEventSource::Schedule(WatchScheduleSource {
+            slot: "2026-11-13T00:00:00Z".to_string(),
+        }),
+    }));
+    let ext_cmd = RuntimeTurnInputSource::ExtensionCommand {
+        reference: crate::extension_host::command::ExtensionCommandRef {
+            handle: 1,
+            plugin_id: "ext-a".to_string(),
+            generation: 1,
+            origin: "extension:ext-a".to_string(),
+            workspace: workspace.clone(),
+            selection: None,
+            scope: None,
+            content_hash: "0".repeat(64),
+        },
+        operation_fingerprint: "fp-1".to_string(),
+        cancel: CancellationToken::new(),
+    };
+    let mail = RuntimeTurnInputSource::AgentMail {
+        message_id: "msg-1".to_string(),
+        persisted_summary: "mail".to_string(),
+    };
+    let goal = RuntimeTurnInputSource::GoalContinuation {
+        continuation_index: 1,
+        expected_goal: Box::new(codewhale_protocol::ThreadGoal {
+            thread_id: "thr-1".to_string(),
+            goal_id: "goal-1".to_string(),
+            objective: "finish".to_string(),
+            status: codewhale_protocol::ThreadGoalStatus::Active,
+            token_budget: None,
+            tokens_used: 0,
+            time_used_seconds: 0,
+            continuation_count: 0,
+            created_at: 0,
+            updated_at: 0,
+            last_gap_fingerprint: None,
+            repeated_gap_count: 0,
+            last_gap_pass: None,
+            pause_reason: None,
+        }),
+    };
+    let sources = [
+        (
+            &RuntimeTurnInputSource::ExternalUser,
+            RunOrigin::Interactive,
+            true,
+        ),
+        (&scheduled, RunOrigin::Background, false),
+        (&watch, RunOrigin::Background, false),
+        (&ext_cmd, RunOrigin::Background, false),
+        (&mail, RunOrigin::Background, false),
+        (&goal, RunOrigin::Background, false),
+        (
+            &RuntimeTurnInputSource::AsyncCompletionWake,
+            RunOrigin::Background,
+            false,
+        ),
+    ];
+
+    for (source, owner_origin, owner_flag) in sources {
+        assert_eq!(
+            owner_mgr.mint_turn_origin_for_source(source, TurnNarrowing::Inherit),
+            (owner_origin, owner_flag)
+        );
+        assert_eq!(
+            owner_mgr.mint_turn_origin_for_source(source, TurnNarrowing::Acp),
+            (RunOrigin::Headless, false)
+        );
+        assert_eq!(
+            bg_mgr.mint_turn_origin_for_source(source, TurnNarrowing::Inherit),
+            (RunOrigin::Background, false)
+        );
+        assert_eq!(
+            headless_mgr.mint_turn_origin_for_source(source, TurnNarrowing::Inherit),
+            (RunOrigin::Headless, false)
+        );
+        assert_eq!(
+            acp_mgr.mint_turn_origin_for_source(source, TurnNarrowing::Inherit),
+            (RunOrigin::Headless, false)
+        );
+    }
+
+    bg_mgr.shutdown_and_wait().await?;
+    headless_mgr.shutdown_and_wait().await?;
+    acp_mgr.shutdown_and_wait().await?;
+
+    let owner_arc = Arc::new(owner_mgr);
+    let outside_dir = tempfile::tempdir()?;
+    let outside_victim = outside_dir.path().join("unattended-target");
+    std::fs::write(&outside_victim, "keep\n")?;
+    let destructive_args = serde_json::json!({
+        "action": "run",
+        "command": format!("rm -rf \"{}\"", outside_victim.display()),
+    })
+    .to_string();
+    let mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn("call_destruct_task", "Bash", &destructive_args),
+        canned::simple_text_turn("task done"),
+        canned::tool_call_turn("call_destruct_watch", "Bash", &destructive_args),
+        canned::simple_text_turn("watch done"),
+        canned::tool_call_turn("call_destruct_trigger", "Bash", &destructive_args),
+        canned::simple_text_turn("trigger done"),
+    ]));
+    owner_arc.set_test_model_client(mock.clone());
+
+    let task_thread = owner_arc
+        .create_thread(CreateThreadRequest {
+            workspace: Some(workspace.clone()),
+            permission_posture: Some("auto-review".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let task_turn = owner_arc
+        .start_task_turn(
+            &task_thread.id,
+            StartTurnRequest {
+                prompt: "run scheduled destructive check".to_string(),
+                ..Default::default()
+            },
+            "task-unattended-1",
+        )
+        .await?;
+    let settled_task = wait_for_terminal_turn(owner_arc.as_ref(), &task_turn.id).await?;
+    assert_eq!(
+        settled_task.status,
+        RuntimeTurnStatus::Completed,
+        "task failed: {:?}",
+        settled_task.error
+    );
+    let task_events = owner_arc.events_since(&task_thread.id, None)?;
+    assert!(
+        !task_events.iter().any(|ev| ev.event == "approval.required"),
+        "scheduled task must not open an approval card: {task_events:?}"
+    );
+    assert!(
+        task_events.iter().any(|ev| {
+            ev.event == "item.failed" && ev.payload.to_string().contains("Built-in safety gate")
+        }),
+        "scheduled task must hit Auto-Review unattended floor: {task_events:?}"
+    );
+    assert_eq!(mock.call_count(), 2);
+
+    let watch_thread = owner_arc
+        .create_thread(CreateThreadRequest {
+            workspace: Some(workspace.clone()),
+            permission_posture: Some("auto-review".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let (watch_turn, _) = owner_arc
+        .start_turn_with_source(
+            &watch_thread.id,
+            StartTurnRequest {
+                prompt: "run automation watch destructive check".to_string(),
+                ..Default::default()
+            },
+            watch.clone(),
+            None,
+            false,
+        )
+        .await?;
+    let settled_watch = wait_for_terminal_turn(owner_arc.as_ref(), &watch_turn.id).await?;
+    assert_eq!(
+        settled_watch.status,
+        RuntimeTurnStatus::Completed,
+        "watch automation failed: {:?}",
+        settled_watch.error
+    );
+    let watch_events = owner_arc.events_since(&watch_thread.id, None)?;
+    assert!(
+        !watch_events
+            .iter()
+            .any(|ev| ev.event == "approval.required"),
+        "automation watch must not open an approval card: {watch_events:?}"
+    );
+    assert!(
+        watch_events.iter().any(|ev| {
+            ev.event == "item.failed" && ev.payload.to_string().contains("Built-in safety gate")
+        }),
+        "automation watch must hit Auto-Review unattended floor: {watch_events:?}"
+    );
+    assert_eq!(mock.call_count(), 4);
+
+    let tasks = TaskManager::start_with_runtime_manager(
+        TaskManagerConfig::from_runtime(&cfg, workspace.clone(), None, Some(1)),
+        cfg.clone(),
+        owner_arc.clone(),
+    )
+    .await?;
+    let automations = Arc::new(tokio::sync::Mutex::new(AutomationManager::open(
+        root.path().join("automations"),
+    )?));
+    let trigger_thread = owner_arc
+        .create_thread(CreateThreadRequest {
+            workspace: Some(workspace.clone()),
+            permission_posture: Some("auto-review".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    {
+        let mut mgr = automations.lock().await;
+        mgr.bind_task_manager(&tasks)?;
+        let mut trigger =
+            mgr.create_trigger(crate::automation_manager::CreateDelayedTriggerRequest {
+                destination_thread_id: Some(trigger_thread.id.clone()),
+                fire_at: chrono::Utc::now() + chrono::Duration::hours(1),
+                message: "run delayed destructive check".to_string(),
+                workspace: Some(workspace),
+                owner_session_id: Some(trigger_thread.id.clone()),
+                parent_trigger_id: None,
+                disallowed_tools: Vec::new(),
+            })?;
+        trigger.fire_at = chrono::Utc::now() - chrono::Duration::minutes(1);
+        mgr.save_trigger(&trigger)?;
+    }
+    fire_due_triggers_shared(&automations, &tasks).await?;
+
+    let deadline = tokio::time::Instant::now() + TURN_SETTLEMENT_DEADLOCK_TIMEOUT;
+    loop {
+        let events = owner_arc.events_since(&trigger_thread.id, None)?;
+        assert!(
+            !events.iter().any(|ev| ev.event == "approval.required"),
+            "send_later task must never open an approval card"
+        );
+        if let Some(done) = events.iter().find(|ev| ev.event == "turn.completed") {
+            assert_eq!(done.payload["turn"]["status"], "completed", "{events:?}");
+            assert!(
+                events.iter().any(|ev| {
+                    ev.event == "item.failed"
+                        && ev.payload.to_string().contains("Built-in safety gate")
+                }),
+                "send_later task must hit Auto-Review unattended floor: {events:?}"
+            );
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for send_later Auto-Review turn completion: {events:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    assert!(outside_victim.exists());
+    assert_eq!(mock.call_count(), 6);
+    tasks.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn runtime_threads_only_owner_attached_interactive_composer_records_person_messages()
+-> Result<()> {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let _env = crate::test_support::lock_test_env();
+    let root = tempfile::tempdir()?;
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(workspace.join(".git"))?;
+
+    let mut cfg = fixture_config();
+    cfg.set_feature("subagents", true)?;
+    let plugins = Arc::new(codewhale_plugins::PluginRegistry::empty(&workspace));
+
+    let owner_mgr = Arc::new(RuntimeThreadManager::open_owner_host(
+        cfg.clone(),
+        workspace.clone(),
+        test_manager_config(root.path().join("rt-owner")),
+        plugins,
+        None,
+        None,
+    )?);
+    let bg_mgr = Arc::new(RuntimeThreadManager::open(
+        cfg.clone(),
+        workspace.clone(),
+        test_manager_config(root.path().join("rt-bg")),
+    )?);
+
+    let mock = Arc::new(MockLlmClient::new(Vec::new()));
+    mock.push_factory(|_| canned::simple_text_turn("task turn done"));
+    mock.push_factory(|_| canned::simple_text_turn("non-owner turn done"));
+    mock.push_factory(|_| {
+        canned::tool_call_turn(
+            "call-rt-env",
+            "File",
+            r#"{"action":"write","path":".env","content":"ok=1\n"}"#,
+        )
+    });
+    mock.push_factory(|request| {
+        assert_eq!(request.stream, Some(false));
+        let doc: serde_json::Value = serde_json::from_str(match &request.messages[0].content[0] {
+            codewhale_models::ContentBlock::Text { text, .. } => text.as_str(),
+            _ => panic!("guardian text"),
+        })
+        .expect("guardian json");
+        let pmsgs = doc["person_messages"].as_array().expect("person_messages");
+        assert_eq!(
+            pmsgs,
+            &[serde_json::json!("owner composer write env")],
+            "{doc:#}"
+        );
+        canned::simple_text_turn(
+            r#"{"risk_level":"low","decision":"allow","reason":"owner composer authorized"}"#,
+        )
+    });
+    mock.push_factory(|_| canned::simple_text_turn("owner turn done"));
+    owner_mgr.set_test_model_client(mock.clone());
+
+    let bg_mock = Arc::new(MockLlmClient::new(Vec::new()));
+    bg_mock.push_factory(|_| {
+        canned::tool_call_turn(
+            "call-bg-env",
+            "File",
+            r#"{"action":"write","path":".env","content":"bg=1\n"}"#,
+        )
+    });
+    bg_mock.push_factory(|request| {
+        assert_eq!(request.stream, Some(false));
+        let doc: serde_json::Value = serde_json::from_str(match &request.messages[0].content[0] {
+            codewhale_models::ContentBlock::Text { text, .. } => text.as_str(),
+            _ => panic!("guardian text"),
+        })
+        .expect("guardian json");
+        let pmsgs = doc["person_messages"].as_array().expect("person_messages");
+        assert!(
+            pmsgs.is_empty(),
+            "background thread must have no person_messages: {doc:#}"
+        );
+        canned::simple_text_turn(
+            r#"{"risk_level":"high","decision":"deny","reason":"no person authorization"}"#,
+        )
+    });
+    bg_mock.push_factory(|_| canned::simple_text_turn("bg thread turn done"));
+    bg_mgr.set_test_model_client(bg_mock.clone());
+
+    let thread = owner_mgr
+        .create_thread(CreateThreadRequest {
+            workspace: Some(workspace.clone()),
+            permission_posture: Some("auto-review".to_string()),
+            ..Default::default()
+        })
+        .await?;
+
+    let task_turn = owner_mgr
+        .start_task_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "SPOOF TASK PROMPT".to_string(),
+                ..Default::default()
+            },
+            "task-intent-1",
+        )
+        .await?;
+    let settled_task = wait_for_terminal_turn(owner_mgr.as_ref(), &task_turn.id).await?;
+    assert_eq!(settled_task.status, RuntimeTurnStatus::Completed);
+
+    let non_owner_turn = owner_mgr
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "SPOOF NON OWNER COMPOSER".to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let settled_non_owner = wait_for_terminal_turn(owner_mgr.as_ref(), &non_owner_turn.id).await?;
+    assert_eq!(settled_non_owner.status, RuntimeTurnStatus::Completed);
+
+    let bg_thread = bg_mgr
+        .create_thread(CreateThreadRequest {
+            workspace: Some(workspace),
+            permission_posture: Some("auto-review".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let bg_turn = bg_mgr
+        .start_turn_owner(
+            &bg_thread.id,
+            StartTurnRequest {
+                prompt: "SPOOF BACKGROUND THREAD".to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let settled_bg = wait_for_terminal_turn(bg_mgr.as_ref(), &bg_turn.id).await?;
+    assert_eq!(settled_bg.status, RuntimeTurnStatus::Completed);
+    assert_eq!(bg_mock.call_count(), 3);
+
+    let (owner_turn, _) = owner_mgr
+        .start_turn_owner_reporting_replay(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "owner composer write env".to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let settled_owner = wait_for_terminal_turn(owner_mgr.as_ref(), &owner_turn.id).await?;
+    assert_eq!(settled_owner.status, RuntimeTurnStatus::Completed);
+    assert_eq!(mock.call_count(), 5);
+
+    bg_mgr.shutdown_and_wait().await?;
+    owner_mgr.shutdown_and_wait().await?;
     Ok(())
 }

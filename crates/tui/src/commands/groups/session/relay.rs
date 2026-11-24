@@ -143,6 +143,7 @@ fn build_relay_instruction(projection: RelayProjection, focus: Option<&str>) -> 
                 "Handoff packet",
                 sections.handoff_packet.as_deref(),
             );
+            write_plan_list(&mut out, "Replan if", &sections.replan_if);
             for item in sections.items {
                 let _ = writeln!(
                     out,
@@ -309,6 +310,7 @@ mod tests {
                     title: Some("Relay Plan".to_string()),
                     explanation: Some("  because  ".to_string()),
                     sources_used: vec!["repo-a".to_string(), "  ".to_string()],
+                    replan_if: vec!["abort on schema mismatch".to_string(), "  ".to_string()],
                     items: vec![PlanStep {
                         status: PlanStepStatus::InProgress,
                         text: "port relay".to_string(),
@@ -328,6 +330,7 @@ mod tests {
         assert!(message.contains("- Title: Relay Plan"));
         assert!(message.contains("- Explanation: because"));
         assert!(message.contains("- Source: repo-a"));
+        assert!(message.contains("- Replan if: abort on schema mismatch"));
         assert!(message.contains("- [in_progress] port relay"));
     }
 

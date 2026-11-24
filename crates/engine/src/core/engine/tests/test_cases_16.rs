@@ -562,7 +562,7 @@ fn tool_search_scenario() {
             )
             .expect("search succeeds");
 
-            assert_eq!(tool_search_reference_count(&result), 8);
+            assert_eq!(tool_search_reference_count(&result), 4);
         }
     }
     // from tool_search_respects_and_caps_max_results
@@ -606,7 +606,7 @@ fn tool_search_scenario() {
             .expect("tool search definition exists");
         let schema = &tool.input_schema["properties"]["max_results"];
 
-        assert_eq!(schema["default"], 8);
+        assert_eq!(schema["default"], 4);
         assert_eq!(schema["maximum"], 8);
         assert_eq!(schema["minimum"], 1);
         assert_eq!(tool.input_schema["properties"]["match"]["default"], "bm25");
@@ -1132,9 +1132,14 @@ fn missing_tool_scenario() {
             let message = missing_tool_error_message(tool_name, &catalog);
             assert!(message.contains("not available in the current tool catalog"));
             assert!(
-                message.contains("foreground-only"),
+                !message.contains("foreground-only"),
                 "{tool_name}: {message}"
             );
+            assert!(
+                message.contains("background: true") && message.contains("task_shell_wait"),
+                "{tool_name}: {message}"
+            );
+            assert!(message.contains("terminal_run"), "{tool_name}: {message}");
             assert!(message.contains(TOOL_SEARCH_NAME), "{tool_name}: {message}");
         }
     }
@@ -1147,7 +1152,17 @@ fn missing_shell_scenario() {
     {
         let catalog = vec![api_tool("read_file")];
 
-        for tool_name in ["task_shell_start", "task_shell_wait"] {
+        for tool_name in [
+            "bash",
+            "Bash",
+            "task_shell_start",
+            "task_shell_wait",
+            "terminal_run",
+            "terminal_wait",
+            "terminal_send",
+            "terminal_cancel",
+            "terminal/run",
+        ] {
             let message = missing_tool_error_message(tool_name, &catalog);
             assert!(message.contains("not available in the current tool catalog"));
             assert!(

@@ -12,4 +12,5 @@ export function tagResolves(tag: string): boolean;
 export function deriveReleaseBaseline(release: { tag: string; version: string } | null): ReleaseBaselineJson | null;
 export function readCommittedBaseline(): ReleaseBaselineJson | null;
 export function serializeBaseline(baseline: ReleaseBaselineJson): string;
+export function checkReleaseBaseline(committedBaseline: ReleaseBaselineJson | null, release: { tag: string; version: string } | null, derivedBaseline: ReleaseBaselineJson | null, options?: { allowShallow?: boolean }): string[];
 export function refreshReleaseBaseline(release: { tag: string; version: string } | null): ReleaseBaselineJson | null;

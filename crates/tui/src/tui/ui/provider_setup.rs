@@ -50,8 +50,9 @@ impl ProviderKeyVerifier for LiveProviderKeyVerifier {
 /// this probe was read), refresh on its own schedule, or remove the roster if
 /// the user abandons setup. The rows are secret-free facts about this
 /// endpoint; account-scoped endpoints are re-fenced by
-/// `begin_refresh_for_identity`.
+/// `begin_scoped_refresh`.
 pub(crate) fn publish_verified_roster(
+    config: &Config,
     identity: &codewhale_runtime::config::ProviderIdentity,
     base_url: &str,
     roster: Option<codewhale_config::catalog::ProviderCatalogDelta>,
@@ -60,6 +61,11 @@ pub(crate) fn publish_verified_roster(
         return;
     }
     let Some(mut roster) = roster else {
+        return;
+    };
+    let Ok(ticket) =
+        codewhale_engine::provider_catalog_live::begin_scoped_refresh(config, identity, base_url)
+    else {
         return;
     };
     let key = identity.key.as_str();
@@ -98,11 +104,6 @@ pub(crate) fn publish_verified_roster(
         row.provider.clone_from(&owner);
     }
     roster.provider = owner;
-    let ticket = codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
-        identity.provider,
-        key,
-        base_url,
-    );
     // `None` means a newer refresh for this route superseded the probe; its
     // rows win, which is the failure-preserving outcome we want.
     let _ = codewhale_engine::provider_catalog_live::record_success_if_current(&ticket, roster);

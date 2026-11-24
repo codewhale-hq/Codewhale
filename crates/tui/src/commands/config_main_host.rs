@@ -19,8 +19,7 @@ use codewhale_runtime::config::{
     MAX_SUBAGENT_API_TIMEOUT_SECS, MAX_SUBAGENT_HEARTBEAT_TIMEOUT_SECS, MAX_SUBAGENTS,
     MIN_STREAM_CHUNK_TIMEOUT_SECS, MIN_SUBAGENT_API_TIMEOUT_SECS,
     MIN_SUBAGENT_HEARTBEAT_TIMEOUT_SECS, SearchProvider, SearchProviderSource, SubagentsConfig,
-    XIAOMI_MIMO_PAY_AS_YOU_GO_BASE_URL, normalize_custom_model_id,
-    normalize_model_name_for_provider, validate_route,
+    XIAOMI_MIMO_PAY_AS_YOU_GO_BASE_URL, normalize_custom_model_id, validate_route,
 };
 use codewhale_runtime::config_persistence::{
     persist_root_bool_key, persist_root_string_key, persist_subagents_bool_key,
@@ -461,6 +460,17 @@ pub(crate) fn show_single_setting(app: &App, key: &str) -> ConfigReply {
         "prompt_suggestion" => load_command_config(app)
             .ok()
             .map(|config| prompt_suggestion_display(&config)),
+        "auto_review.reviewer_model" => Some(
+            app.auto_review_reviewer_model
+                .clone()
+                .or_else(|| {
+                    load_command_config(app)
+                        .ok()
+                        .and_then(|config| config.auto_review)
+                        .and_then(|cfg| cfg.reviewer_model)
+                })
+                .unwrap_or_else(|| "auto (default)".to_string()),
+        ),
         "notifications" => Some(notifications_summary_value(&app.notification_settings)),
         _ => {
             // Any spelling `/set` accepts; internal flags, actions and
@@ -813,6 +823,23 @@ pub(crate) fn config_editability_audit(
             ),
         ),
         (
+            "auto_review.reviewer_model",
+            app.auto_review_reviewer_model
+                .clone()
+                .or_else(|| {
+                    config
+                        .auto_review
+                        .as_ref()
+                        .and_then(|cfg| cfg.reviewer_model.clone())
+                })
+                .unwrap_or_else(|| "auto (default)".to_string()),
+            "runtime+persisted",
+            "/config auto_review.reviewer_model <model|default> --save",
+            codewhale_command_contract::config::ConfigMessage::literal(
+                "Applies to subsequent Auto-Review turns; pass default to restore catalog selection.",
+            ),
+        ),
+        (
             "notifications",
             notifications_summary(&config),
             "runtime+persisted",
@@ -1059,6 +1086,53 @@ fn set_prompt_suggestion(app: &mut App, value: &str, persist: bool) -> ConfigRep
             ],
         ),
         AppAction::UpdatePromptSuggestion { enabled },
+    )
+}
+
+fn set_auto_review_reviewer_model(app: &mut App, value: &str, persist: bool) -> ConfigReply {
+    let trimmed = value.trim();
+    let reviewer_model = if matches!(
+        trimmed.to_ascii_lowercase().as_str(),
+        "default" | "auto" | "unset" | "none" | "clear"
+    ) {
+        None
+    } else {
+        if let Err(err) = codewhale_runtime::config::validate_auto_review_reviewer_model(trimmed) {
+            return ConfigReply::error(err.to_string());
+        }
+        Some(trimmed.to_string())
+    };
+    let scope = if persist {
+        let result = match reviewer_model.as_deref() {
+            Some(model) => persist_table_string_key(
+                app.config_path.as_deref(),
+                "auto_review",
+                "reviewer_model",
+                model,
+            ),
+            None => codewhale_runtime::config_persistence::persist_unset_table_key(
+                app.config_path.as_deref(),
+                "auto_review",
+                "reviewer_model",
+            ),
+        };
+        match result {
+            Ok(path) => format!("saved to {}", path.display()),
+            Err(err) => {
+                return ConfigReply::error(format!(
+                    "Failed to save auto_review.reviewer_model: {err}"
+                ));
+            }
+        }
+    } else {
+        "session only".to_string()
+    };
+    let display_value = reviewer_model.as_deref().unwrap_or("auto (default)");
+    config_action_reply(
+        ConfigMessage::literal(format!(
+            "auto_review.reviewer_model = {display_value} ({scope})"
+        )),
+        AppAction::SetAutoReviewReviewerModel { reviewer_model },
     )
 }
 
@@ -1818,11 +1892,12 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                 {
                     value.trim().to_string()
                 } else {
-                    let Some(model) =
-                        normalize_model_name_for_provider(ProviderKind::Deepseek, value)
+                    let Ok(resolved) =
+                        codewhale_config::route::resolve_model(ProviderKind::Deepseek, value, None)
                     else {
                         return ConfigReply::error(format!("Invalid DeepSeek model '{value}'."));
                     };
+                    let model = resolved.wire_id;
                     if let Err(error) = validate_route(ProviderKind::Deepseek, &model) {
                         return ConfigReply::error(error);
                     }
@@ -1852,12 +1927,15 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             let model = if auto_select {
                 "auto".to_string()
             } else if app.api_provider == ProviderKind::OpencodeGo {
-                let Some(model) = normalize_model_name_for_provider(app.api_provider, value) else {
+                let Ok(resolved) =
+                    codewhale_config::route::resolve_model(app.api_provider, value, None)
+                else {
                     return ConfigReply::error(format!(
                         "Invalid model '{value}' for provider {}.",
                         app.api_provider.as_str()
                     ));
                 };
+                let model = resolved.wire_id;
                 if let Err(reason) = validate_route(app.api_provider, &model) {
                     return ConfigReply::error(reason);
                 }
@@ -1880,12 +1958,15 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                 };
                 model
             } else {
-                let Some(model) = normalize_model_name_for_provider(app.api_provider, value) else {
+                let Ok(resolved) =
+                    codewhale_config::route::resolve_model(app.api_provider, value, None)
+                else {
                     return ConfigReply::error(format!(
                         "Invalid model '{value}' for provider {}.",
                         app.api_provider.as_str()
                     ));
                 };
+                let model = resolved.wire_id;
                 if let Err(reason) = validate_route(app.api_provider, &model) {
                     return ConfigReply::error(reason);
                 }
@@ -2038,6 +2119,9 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             }
             let mode = ApprovalMode::from_config_value(value);
             return match mode {
+                Some(ApprovalMode::Auto) if app.auto_review_disabled => ConfigReply::error(
+                    "Auto-Review is disabled by managed configuration (`auto_review.disabled = true`)",
+                ),
                 Some(ApprovalMode::Bypass)
                     if persist
                         && matches!(
@@ -2375,6 +2459,9 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             return set_search_provider(app, value, persist);
         }
         "prompt_suggestion" => return set_prompt_suggestion(app, value, persist),
+        "auto_review.reviewer_model" => {
+            return set_auto_review_reviewer_model(app, value, persist);
+        }
         _ => {}
     }
 
@@ -3717,9 +3804,18 @@ mod tests {
     #[test]
     fn test_mode_rejects_unknown_value() {
         let mut app = create_test_app();
+        let prior = app.mode;
         let result = mode_command(&mut app, Some("fast"));
-        assert!(result.is_error);
-        assert!(result.message.unwrap().contains("Usage: /mode"));
+        assert!(!result.is_error);
+        assert!(matches!(
+            result.action,
+            Some(AppAction::SetConversationMode { ref id }) if id == "fast"
+        ));
+        assert_eq!(app.mode, prior);
+
+        let invalid = mode_command(&mut app, Some("fast mode"));
+        assert!(invalid.is_error);
+        assert!(invalid.message.unwrap().contains("Usage: /mode"));
     }
 
     #[test]
@@ -5608,14 +5704,8 @@ context_window = 262144
 
     #[test]
     fn explicit_default_background_override_survives_theme_preview() {
-        let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-background-override-test-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
+        let temp_root =
+            crate::test_support::test_scratch_dir("codewhale-tui-background-override-test");
         fs::create_dir_all(temp_root.join(".deepseek")).expect("settings dir");
         let _guard = EnvGuard::new(&temp_root);
         fs::write(
@@ -5671,14 +5761,8 @@ context_window = 262144
 
     #[test]
     fn session_only_background_override_survives_theme_preview() {
-        let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-session-background-test-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
+        let temp_root =
+            crate::test_support::test_scratch_dir("codewhale-tui-session-background-test");
         fs::create_dir_all(temp_root.join(".deepseek")).expect("settings dir");
         let _guard = EnvGuard::new(&temp_root);
         fs::write(
@@ -6203,15 +6287,7 @@ context_window = 262144
 
     #[test]
     fn test_logout_starts_account_logout_without_clearing_api_key_state() {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-logout-test-{}-{}",
-            std::process::id(),
-            nanos
-        ));
+        let temp_root = crate::test_support::test_scratch_dir("codewhale-tui-logout-test");
         fs::create_dir_all(&temp_root).unwrap();
         let _guard = EnvGuard::new(&temp_root);
 
@@ -6237,15 +6313,7 @@ context_window = 262144
 
     #[test]
     fn logout_preserves_named_custom_provider_keys() {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_root = env::temp_dir().join(format!(
-            "codewhale-custom-logout-test-{}-{}",
-            std::process::id(),
-            nanos
-        ));
+        let temp_root = crate::test_support::test_scratch_dir("codewhale-custom-logout-test");
         fs::create_dir_all(&temp_root).unwrap();
         let _guard = EnvGuard::new(&temp_root);
         let config_path = temp_root.join(".deepseek").join("config.toml");
@@ -6288,5 +6356,70 @@ context_window = 262144
             message.contains("[providers.custom-a]") && message.contains("missing"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn config_command_auto_review_reviewer_model_gets_sets_unsets_and_rejects_invalid() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "codewhale-ar-reviewer-model-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root).unwrap();
+        let _guard = EnvGuard::new(&temp_root);
+        let config_path = temp_root.join(".codewhale").join("config.toml");
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        fs::write(&config_path, "").unwrap();
+
+        let mut app = create_test_app();
+        app.config_path = Some(config_path.clone());
+
+        let initial = config_command(&mut app, Some("auto_review.reviewer_model"));
+        assert!(!initial.is_error);
+        assert!(
+            initial
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("auto (default)")
+        );
+
+        let set_saved = config_command(
+            &mut app,
+            Some("auto_review.reviewer_model claude-sonnet-5-5 --save"),
+        );
+        assert!(!set_saved.is_error, "{:?}", set_saved.message);
+        assert_eq!(
+            set_saved.action,
+            Some(AppAction::SetAutoReviewReviewerModel {
+                reviewer_model: Some("claude-sonnet-5-5".to_string())
+            })
+        );
+        let saved_toml = fs::read_to_string(&config_path).unwrap();
+        assert!(
+            saved_toml.contains("reviewer_model = \"claude-sonnet-5-5\""),
+            "{saved_toml}"
+        );
+        app.auto_review_reviewer_model = Some("claude-sonnet-5-5".to_string());
+
+        let invalid = config_command(&mut app, Some("auto_review.reviewer_model bad model"));
+        assert!(invalid.is_error);
+        assert!(invalid.action.is_none());
+
+        let reset_saved =
+            config_command(&mut app, Some("auto_review.reviewer_model default --save"));
+        assert!(!reset_saved.is_error, "{:?}", reset_saved.message);
+        assert_eq!(
+            reset_saved.action,
+            Some(AppAction::SetAutoReviewReviewerModel {
+                reviewer_model: None
+            })
+        );
+        let after_unset = fs::read_to_string(&config_path).unwrap();
+        assert!(!after_unset.contains("reviewer_model"), "{after_unset}");
     }
 }

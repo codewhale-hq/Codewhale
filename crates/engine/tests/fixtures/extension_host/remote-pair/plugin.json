@@ -1,0 +1,14 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/plugin.json",
+  "name": "remote-pair",
+  "version": "0.1.0",
+  "description": "Test fixture: one tool that calls the `remote` service and reports exactly what came back.",
+  "license": "MIT",
+  "extensions": {
+    "net.codewhale": {
+      "native": {
+        "path": "index.mjs"
+      }
+    }
+  }
+}

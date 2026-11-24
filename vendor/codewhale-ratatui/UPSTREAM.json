@@ -1,9 +1,9 @@
 {
-  "repository": "https://github.com/Hmbown/codewhale-ratatui",
+  "repository": "https://github.com/codewhale-hq/codewhale-ratatui",
   "commit": "2ad795b37782990844fd9cc2d78bac460929365a",
-  "version": "0.1.2",
+  "version": "0.2.1",
   "upstream_version": "0.1.0",
-  "version_note": "version identifies the current vendored Cargo package; upstream_version and files retain the original snapshot provenance. Publish 0.1.2 only from the frozen Engine candidate directory, including its local patches.",
+  "version_note": "version identifies the current Engine vendored Cargo package. The top-level commit/files and earlier update records retain historical snapshot provenance. runtime_update records the selected current upstream behavior and retained Engine adaptations; this is not a whole-repository mirror.",
   "license": "MIT",
   "files": {
     "BENCHMARKS.md": "e9512637752467a627d1d15b3d3b6e23af72741ef713a243862ac600cbd6b9b7",
@@ -257,6 +257,78 @@
       "src/tui_palettes.rs": "25c7c0b6f6769b41c6f0eed98e834787df4551a724b2e8db7be755ae65be8f38",
       "src/whale.rs": "a4fef5f4a8e86336c45b971f7a91c0137984bdcfc9e3f727c54571088b33e2dd",
       "vendor/codewhale-design/tokens.rs": "bf1edf64929baee4732b4898a997619a1e91babd7edf787f31e32304220193e3"
+    }
+  },
+  "runtime_update": {
+    "commit": "e8c2746e4b93070ebeac41a064dde3d362cb975d",
+    "scope": "Selected generic widget fixes, measured ocean themes and caller-clock water drift from standalone; roles and theme verified already matching; data-display honesty fixes (chart), Ocean quiet-ink floors in for_theme, and the crate-private is_truecolor used by motion. Standalone tooling, gallery export and repository-only tests are outside this source synchronization.",
+    "files": {
+      "src/components/instrument.rs": "468280c9c5be4d1244ef1601784d11d9956b2e1d36c9f671618404fbb010c77a",
+      "src/components/list.rs": "8f4b8d7220202b49e6a6fb17e4d587123e538ce90d03fbe0c16c3776765a0e34",
+      "src/components/transcript.rs": "df1e5c67f689eb53634e9968668b77afa7ce6211a6e83718e1e0c26502033420",
+      "src/components/progress.rs": "d79d98ee993fba068f35ad89fff881a7b5eadc8a67b52ba6eeb2dc3ce1d9b8e2",
+      "src/components/segmented.rs": "a148c79c1d6d214c6b28ed0ac5ab7f669805d0d6a41250efc56632da9b39eb62",
+      "src/components/tabs.rs": "2e18bc604786f5403e1491e50322e0bf771fa70389ef34347528ae8bef6afa44",
+      "src/components/surface.rs": "fcdec44734d0bdc2db69dad41dd9c88f018003b128927f9d59c4d7536cb9e6c0",
+      "src/ocean.rs": "62eff5da97dab3e5939e7e425ac6922bf2cd309be3caaa128052f89c4bcbd4ff",
+      "src/ombre.rs": "7356cc1c7b9af444f8272817d57cbaaa8133bfd2689220a1a794dfaf0d897fda",
+      "src/components/chart.rs": "692f3f8725ca467df27fe16545ed39573c8ad8bd597dafe6596c61bd75e117b4",
+      "src/gallery/chart.rs": "dc0832242654174b36f90e35a761900d2b28156ba463bdd00a52741f1f467eda",
+      "examples/data.rs": "633ee3f3786ec5053b98a50cc72b2b44d68ba41a9eedba56a58504f04881670a",
+      "src/roles.rs": "2ac8760785aa0a83daeb89c32e7dec259dbae358e9a80426900c83e606f8fa79",
+      "src/theme.rs": "ac3851f676511b494bfb3a9e680d016daff1c85a20ced8ff4b4eba6f115f9f21",
+      "src/color.rs": "e63bfde21ec7197d6d955f689eea8790797a1df9fdb43c25950e6d82534eb551",
+      "src/components/motion.rs": "7b41b6616ff61513d098cd2710a5912d8bece9704d8fdc6c0e8dbb5a5f158251"
+    },
+    "retained_engine_adaptations": {
+      "src/components/workbar.rs": {
+        "reason": "Terminal panel and nine-item order",
+        "sha256": "2fd780b1cb80a04de8b999c5c182a9a7ff86a8c431f9606eb41f5adb3d31970d"
+      },
+      "src/components/posture.rs": {
+        "reason": "Update metric and hover styling; turn clock sheds after hints and counts and is never covered by the right notice",
+        "sha256": "5f93ae93ad2cc32103a99d3c23bf01c239d218e75efb8eec5b6a8916c967f3ab"
+      },
+      "src/components/native_chrome.rs": {
+        "reason": "u64 total",
+        "sha256": "f0d43491f7ccfdb1f625db2f6a73bb5cad2dfe99435dbc0704004e68f9f95dea"
+      },
+      "src/components/native_composer.rs": {
+        "reason": "public paint and full available height without a menu; bounded composer wrapping for long non-ASCII drafts",
+        "sha256": "f6d082267037fdac248b37f6a35109aace538d104a6746d707dc5746ce0f75e4"
+      },
+      "Cargo.toml": {
+        "reason": "Engine package 0.2.1 and local protocol dependency",
+        "sha256": "bd990e6110d09e71710df77f94b7a126230fafb003ce7c90bfa5cf0062fa76e7"
+      },
+      "src/components/motion.rs": {
+        "reason": "Engine activity sweep (ACTIVITY_SWEEP_* and activity_sweep_strength) driven by the 5.4.0 motion tokens",
+        "sha256": "0043ca04f13a861a3b332c786c99e8e32692abec9a2d10527de829b9906200c4"
+      }
+    }
+  },
+  "design_5_4_update": {
+    "commit": "e7b6003e553a31276703f53315130101ccc702c6",
+    "scope": "Design tokens 5.4.0: generated roles, appearance-aware theme, named palettes and the vendored tokens.rs. Other upstream changes between e8c2746 and e7b6003 are outside this source synchronization.",
+    "local_changes": "None: these five files match upstream at this commit byte for byte. motion.rs carries the 5.4.0 sweep constants plus the Engine activity sweep recorded under runtime_update.retained_engine_adaptations.",
+    "files": {
+      "src/roles.rs": "f8ea3567a7b04390525131f7dd2ce02f4cc4b30dc1b331c7f0610c6df8cedefc",
+      "src/theme.rs": "efcb750efe749815e0834977c1c3df6419cbdde3b0070f4cb572325e409259de",
+      "src/tui_palettes.rs": "7bae01e430dd5bf33e0450f10462fec6ae28e16306e6a97d4a7b5946d9772276",
+      "assets/tui-palettes.json": "d6e214a2edc4416bb9cc7d0d18df18ab3ec6272eeb9bd37a759424b838834708",
+      "vendor/codewhale-design/tokens.rs": "0350649d604cb82669fd43f8f4da5caa4f4c3e52a9760a735db7367e94be1d72"
+    }
+  },
+  "habitat_update": {
+    "commit": "0481d4e00e3da13a56f6d2f40433c85b1cbf0d53",
+    "scope": "The whole-ocean Habitat as merged on upstream main (FishSchool, Shoal, Jellyfish, MarineSnow, BubbleField, DistantWhale, with strict truecolor-only glow, no foreground-equals-background glyphs, ultrawide whale spacing and wide-grapheme clearance), its poses, color::glow_over, the habitat gallery entries and the habitat example. The Engine paints its Underwater field through Habitat; standalone tests, tools and README assets are outside this source synchronization.",
+    "local_changes": "None: these five files match upstream at this commit byte for byte.",
+    "files": {
+      "src/color.rs": "d7647e683dd19a3b3c5947adcbd0fd329643c36b59e2cd5fb6879c100f83ebd8",
+      "src/components/habitat.rs": "720bc083f699280ef96819a1f3ee44a4878870a4c14709517606d367cdad00be",
+      "src/components/habitat_poses.rs": "25067903aaaf63a4db80511f896ab190d7a0a4ecbcdcf21ea8ca409ad214a8ca",
+      "src/gallery/habitat.rs": "641b949c898d2966a4649e4af2defd06700399257fa3c9828b70eeb44ffa91e9",
+      "examples/habitat.rs": "c063f79997fd3fdde9c853fd85b20a1b61b1ec4270ae71231b4e1437c8a8d9b7"
     }
   }
 }

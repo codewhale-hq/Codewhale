@@ -24,7 +24,8 @@ class PublishPreflightTests(unittest.TestCase):
         for name in ("publish-crates.sh", "validate-crate-publish-order.py", "check-crate-sizes.py"):
             shutil.copy2(SCRIPTS / name, self.scripts / name)
         (self.scripts / "crates.sh").write_text(
-            "release_crates=(codewhale-preflight-base codewhale-preflight-app)\n"
+            (SCRIPTS / "crates.sh").read_text()
+            + "release_crates=(codewhale-preflight-base codewhale-preflight-app)\n"
         )
         # These independently tested guards require a real GitHub release. The
         # fixture tests the subsequent Cargo boundary without contacting GitHub.
@@ -35,6 +36,14 @@ class PublishPreflightTests(unittest.TestCase):
         (self.root / "Cargo.toml").write_text(
             '[workspace]\nmembers = ["base", "app"]\nresolver = "2"\n'
         )
+        for document in ("LICENSE", "THIRD_PARTY_NOTICES.md", "docs/THIRD_PARTY_NOTICES.md"):
+            source = self.root / document
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(document)
+            for name in ("base", "app"):
+                target = self.root / name / "codewhale-notices" / document
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
         for name in ("base", "app"):
             crate = self.root / name
             (crate / "src").mkdir(parents=True)
@@ -69,17 +78,40 @@ class PublishPreflightTests(unittest.TestCase):
             '    args=()\n    for arg in "$@"; do\n'
             '      [[ "$arg" == --dry-run ]] || args+=("$arg")\n    done\n'
             '    exec "$TEST_REAL_CARGO" package "${args[@]}"\n  fi\n'
-            '  echo attempted >> "$TEST_UPLOADS"\n  exit 98\nfi\n'
+            '  echo attempted >> "$TEST_UPLOADS"\n'
+            '  if [[ -n "${TEST_RATE_LIMIT:-}" ]]; then\n'
+            '    prev=; for arg; do [[ "$prev" == -p ]] && crate="$arg"; prev="$arg"; done\n'
+            '    if [[ ! -e "$TEST_INDEX/$crate.limited" ]]; then\n'
+            '      touch "$TEST_INDEX/$crate.limited"\n'
+            '      echo "error: failed to publish $crate: the remote server responded with an error'
+            ' (status 429 Too Many Requests): You have published too many new crates in a short'
+            ' period of time. Please try again after Sun, 01 Nov 2026 20:37:59 GMT or email'
+            ' help@crates.io to have your limit increased." >&2\n'
+            '      exit 101\n    fi\n'
+            '    touch "$TEST_INDEX/$crate"\n    exit 0\n  fi\n'
+            '  exit 98\nfi\n'
             'exec "$TEST_REAL_CARGO" "$@"\n'
         )
         cargo.chmod(0o755)
+        self.index = self.root / "index"
+        self.index.mkdir()
         curl = bin_dir / "curl"
-        curl.write_text("#!/bin/sh\nexit 22\n")
+        curl.write_text(
+            '#!/usr/bin/env bash\nfor url; do :; done\n'
+            '[[ -e "$TEST_INDEX/${url##*/}" ]] || exit 22\n'
+            'echo "{\\"name\\":\\"${url##*/}\\",\\"vers\\":\\"0.0.0\\"}"\n'
+        )
         curl.chmod(0o755)
+        self.sleeps = self.root / "sleeps"
+        sleep = bin_dir / "sleep"
+        sleep.write_text('#!/bin/sh\necho "$@" >> "$TEST_SLEEPS"\n')
+        sleep.chmod(0o755)
         self.env = {
             **os.environ,
             "TEST_REAL_CARGO": real_cargo,
             "TEST_UPLOADS": str(self.uploads),
+            "TEST_INDEX": str(self.index),
+            "TEST_SLEEPS": str(self.sleeps),
             "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
             "CARGO_NET_OFFLINE": "true",
             "CARGO_HOME": str(self.root / "cargo-home"),
@@ -118,7 +150,8 @@ class PublishPreflightTests(unittest.TestCase):
     def test_resume_verifies_tarballs_and_skips_existing_versions(self):
         manifest = self.root / "app/Cargo.toml"
         manifest.write_text(manifest.read_text().replace('exclude = ["src/payload.txt"]\n', ""))
-        (self.root / "bin/curl").write_text("#!/bin/sh\nexit 0\n")
+        for name in ("base", "app"):
+            (self.index / f"codewhale-preflight-{name}").touch()
         output = self.run_command(
             ["bash", str(self.scripts / "publish-crates.sh"), "publish"], success=True
         )
@@ -126,6 +159,29 @@ class PublishPreflightTests(unittest.TestCase):
         self.assertIn("Skipping codewhale-preflight-app", output)
         self.assertTrue((self.root / "target/package/codewhale-preflight-app-0.0.0.crate").exists())
         self.assertFalse(self.uploads.exists())
+
+    def test_rate_limited_upload_waits_and_resumes(self):
+        manifest = self.root / "app/Cargo.toml"
+        manifest.write_text(manifest.read_text().replace('exclude = ["src/payload.txt"]\n', ""))
+        (self.index / "codewhale-preflight-base").touch()
+        self.env["TEST_RATE_LIMIT"] = "1"
+        output = self.run_command(
+            ["bash", str(self.scripts / "publish-crates.sh"), "publish"], success=True
+        )
+        self.assertIn("Skipping codewhale-preflight-base 0.0.0; already published.", output)
+        self.assertIn("Rate limited publishing codewhale-preflight-app 0.0.0; waiting until", output)
+        self.assertIn("Published codewhale-preflight-app 0.0.0.", output)
+        self.assertEqual(self.uploads.read_text().split(), ["attempted", "attempted"])
+        self.assertEqual(self.sleeps.read_text().split(), ["30"])
+
+    def test_other_upload_failure_stops_naming_the_crate(self):
+        manifest = self.root / "app/Cargo.toml"
+        manifest.write_text(manifest.read_text().replace('exclude = ["src/payload.txt"]\n', ""))
+        output = self.run_command(
+            ["bash", str(self.scripts / "publish-crates.sh"), "publish"], success=False
+        )
+        self.assertIn("Publishing codewhale-preflight-base 0.0.0 failed; stopping.", output)
+        self.assertEqual(self.uploads.read_text().split(), ["attempted"])
 
     def test_dry_run_builds_dependent_tarball(self):
         self.assert_missing_asset_blocks("dry-run")
@@ -140,6 +196,18 @@ class PublishPreflightTests(unittest.TestCase):
             ["bash", str(self.scripts / "publish-crates.sh"), "dry-run"], success=True
         )
         self.assertFalse(self.uploads.exists())
+
+    def test_changed_and_missing_notices_refuse_upload(self):
+        manifest = self.root / "app/Cargo.toml"
+        manifest.write_text(manifest.read_text().replace('exclude = ["src/payload.txt"]\n', ""))
+        (self.root / "app/codewhale-notices/THIRD_PARTY_NOTICES.md").write_text("out of date")
+        (self.root / "base/codewhale-notices/docs/THIRD_PARTY_NOTICES.md").unlink()
+        output = self.run_command(
+            ["bash", str(self.scripts / "publish-crates.sh"), "publish"], success=False
+        )
+        self.assertFalse(self.uploads.exists())
+        self.assertIn("packaged THIRD_PARTY_NOTICES.md differs", output)
+        self.assertIn("missing docs/THIRD_PARTY_NOTICES.md", output)
 
     def test_oversized_tarball_is_refused_before_any_upload(self):
         # crates.io refused codewhale-tui's 11.93 MiB tarball with HTTP 413 in

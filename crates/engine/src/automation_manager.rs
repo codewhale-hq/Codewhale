@@ -22,7 +22,7 @@ use chrono::{
     DateTime, Datelike, Duration, Local, NaiveDateTime, TimeZone, Timelike, Utc, Weekday,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -44,8 +44,43 @@ impl std::fmt::Debug for ThreadEventSink {
 // v2 pins provider identity. Older runtimes must reject a pinned definition
 // instead of silently sending its model through their current provider.
 pub const CURRENT_AUTOMATION_SCHEMA_VERSION: u32 = 3;
+const DENY_RULES_AUTOMATION_SCHEMA_VERSION: u32 = 4;
+const MAX_SUPPORTED_AUTOMATION_SCHEMA_VERSION: u32 = DENY_RULES_AUTOMATION_SCHEMA_VERSION;
 const CURRENT_RUN_SCHEMA_VERSION: u32 = 3;
+const DENY_RULES_RUN_SCHEMA_VERSION: u32 = 4;
+const MAX_SUPPORTED_RUN_SCHEMA_VERSION: u32 = DENY_RULES_RUN_SCHEMA_VERSION;
 const CURRENT_TRIGGER_SCHEMA_VERSION: u32 = 3;
+const DENY_RULES_TRIGGER_SCHEMA_VERSION: u32 = 4;
+const MAX_SUPPORTED_TRIGGER_SCHEMA_VERSION: u32 = DENY_RULES_TRIGGER_SCHEMA_VERSION;
+
+pub const fn required_automation_schema_version(disallowed_tools: &[String]) -> u32 {
+    if disallowed_tools.is_empty() {
+        CURRENT_AUTOMATION_SCHEMA_VERSION
+    } else {
+        DENY_RULES_AUTOMATION_SCHEMA_VERSION
+    }
+}
+
+const fn required_run_schema_version(dispatch: Option<&AutomationDispatch>) -> u32 {
+    match dispatch {
+        Some(dispatch) if !dispatch.request.disallowed_tools.is_empty() => {
+            DENY_RULES_RUN_SCHEMA_VERSION
+        }
+        _ => CURRENT_RUN_SCHEMA_VERSION,
+    }
+}
+
+const fn required_trigger_schema_version(record: &DelayedTriggerRecord) -> u32 {
+    let dispatch_denied = match &record.dispatch {
+        Some(dispatch) => !dispatch.request.disallowed_tools.is_empty(),
+        None => false,
+    };
+    if record.disallowed_tools.is_empty() && !dispatch_denied {
+        CURRENT_TRIGGER_SCHEMA_VERSION
+    } else {
+        DENY_RULES_TRIGGER_SCHEMA_VERSION
+    }
+}
 const DEFAULT_AUTOMATION_MODE: &str = "agent";
 const DEFAULT_AUTOMATION_ALLOW_SHELL: bool = false;
 const DEFAULT_AUTOMATION_TRUST_MODE: bool = false;
@@ -108,6 +143,8 @@ pub struct DelayedTriggerRecord {
     pub owner_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination_thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_tools: Vec<String>,
     pub status: DelayedTriggerStatus,
     pub created_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -143,6 +180,7 @@ pub struct CreateDelayedTriggerRequest {
     /// Optional parent trigger id for re-arm lineage tracking.
     pub parent_trigger_id: Option<String>,
     pub destination_thread_id: Option<String>,
+    pub disallowed_tools: Vec<String>,
 }
 
 // ── End delayed-trigger types ──────────────────────────────────────────────
@@ -298,6 +336,8 @@ pub struct AutomationRecord {
     pub delivery_mode: Option<AutomationDeliveryMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination_thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_tools: Vec<String>,
     pub status: AutomationStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -311,6 +351,23 @@ pub struct AutomationRecord {
     /// Increments on every definition mutation; absent on legacy records (0).
     #[serde(default)]
     pub revision: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationExecutionOwnership {
+    Owned,
+    OtherRuntime,
+    Unbound,
+    HostUnattached,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AutomationRecordView {
+    #[serde(flatten)]
+    pub record: AutomationRecord,
+    pub scheduled_here: bool,
+    pub execution_ownership: AutomationExecutionOwnership,
 }
 
 impl AutomationRecord {
@@ -415,6 +472,8 @@ pub struct CreateAutomationRequest {
     pub delivery_mode: Option<AutomationDeliveryMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination_thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_tools: Vec<String>,
     #[serde(default)]
     pub status: Option<AutomationStatus>,
 }
@@ -1175,6 +1234,7 @@ pub struct AutomationManager {
     triggers_dir: PathBuf,
     archive_dir: PathBuf,
     missed_dir: PathBuf,
+    trigger_wakeup: Arc<Notify>,
 }
 
 impl AutomationManager {
@@ -1276,6 +1336,7 @@ impl AutomationManager {
             triggers_dir,
             archive_dir,
             missed_dir,
+            trigger_wakeup: Arc::new(Notify::new()),
         })
     }
 
@@ -1349,6 +1410,30 @@ impl AutomationManager {
         scope.is_some() && scope == self.execution_scope()
     }
 
+    pub fn execution_ownership(&self, record: &AutomationRecord) -> AutomationExecutionOwnership {
+        match (self.execution_scope(), record.execution_scope.as_deref()) {
+            (Some(here), Some(bound)) if bound == here => AutomationExecutionOwnership::Owned,
+            (Some(_), Some(_)) => AutomationExecutionOwnership::OtherRuntime,
+            (_, None) => AutomationExecutionOwnership::Unbound,
+            (None, Some(_)) => AutomationExecutionOwnership::HostUnattached,
+        }
+    }
+
+    pub fn is_scheduled_here(&self, record: &AutomationRecord) -> bool {
+        record.status == AutomationStatus::Active
+            && self.eligible_scope(record.execution_scope.as_deref())
+    }
+
+    pub fn record_view(&self, record: AutomationRecord) -> AutomationRecordView {
+        let scheduled_here = self.is_scheduled_here(&record);
+        let execution_ownership = self.execution_ownership(&record);
+        AutomationRecordView {
+            record,
+            scheduled_here,
+            execution_ownership,
+        }
+    }
+
     /// Explicit control may bind an unbound definition; saved admissions never
     /// read this field back from the definition during recovery.
     fn adopt_for_run(&self, automation: &mut AutomationRecord) -> Result<()> {
@@ -1361,7 +1446,12 @@ impl AutomationManager {
             }
         } else {
             automation.execution_scope = Some(scope.to_string());
-            automation.schema_version = CURRENT_AUTOMATION_SCHEMA_VERSION;
+            automation.schema_version =
+                automation
+                    .schema_version
+                    .max(required_automation_schema_version(
+                        &automation.disallowed_tools,
+                    ));
             automation.updated_at = Utc::now();
             if automation.status == AutomationStatus::Active {
                 let schedule = AutomationSchedule::parse_rrule(&automation.rrule)?;
@@ -1449,8 +1539,9 @@ impl AutomationManager {
             None
         };
 
+        let disallowed_tools = crate::task_manager::normalize_deny_rules(req.disallowed_tools);
         let record = AutomationRecord {
-            schema_version: CURRENT_AUTOMATION_SCHEMA_VERSION,
+            schema_version: required_automation_schema_version(&disallowed_tools),
             execution_scope: self.execution_scope.clone(),
             id: Uuid::new_v4().to_string(),
             name: req.name.trim().to_string(),
@@ -1466,6 +1557,7 @@ impl AutomationManager {
             auto_approve: req.auto_approve,
             delivery_mode: req.delivery_mode,
             destination_thread_id: normalize_optional_string(req.destination_thread_id),
+            disallowed_tools,
             status,
             created_at: now,
             updated_at: now,
@@ -1484,21 +1576,33 @@ impl AutomationManager {
         read_automation_file(&path)
     }
 
+    pub fn get_automation_view(&self, id: &str) -> Result<AutomationRecordView> {
+        Ok(self.record_view(self.get_automation(id)?))
+    }
+
     pub fn save_automation(&self, record: &AutomationRecord) -> Result<()> {
         self.with_transaction(|| self.save_automation_unlocked(record))
     }
 
     fn save_automation_unlocked(&self, record: &AutomationRecord) -> Result<()> {
-        if record.model_provider.is_some() || record.model_provider_id.is_some() {
-            if record
+        if (record.model_provider.is_some() || record.model_provider_id.is_some())
+            && record
                 .model
                 .as_deref()
                 .is_none_or(|model| model.trim().is_empty())
-            {
-                bail!("A pinned automation provider requires an explicit model");
-            }
+        {
+            bail!("A pinned automation provider requires an explicit model");
+        }
+        let min_version = if !record.disallowed_tools.is_empty() {
+            DENY_RULES_AUTOMATION_SCHEMA_VERSION
+        } else if record.model_provider.is_some() || record.model_provider_id.is_some() {
+            CURRENT_AUTOMATION_SCHEMA_VERSION
+        } else {
+            record.schema_version
+        };
+        if record.schema_version < min_version {
             let mut record = record.clone();
-            record.schema_version = record.schema_version.max(CURRENT_AUTOMATION_SCHEMA_VERSION);
+            record.schema_version = min_version;
             return write_json_atomic(&self.automation_path(&record.id)?, &record);
         }
         write_json_atomic(&self.automation_path(&record.id)?, record)
@@ -1521,6 +1625,105 @@ impl AutomationManager {
         Ok(out)
     }
 
+    pub fn list_automation_views(&self) -> Result<Vec<AutomationRecordView>> {
+        Ok(self
+            .list_automations()?
+            .into_iter()
+            .map(|record| self.record_view(record))
+            .collect())
+    }
+
+    pub fn adopt_automation(&self, id: &str) -> Result<AutomationRecord> {
+        self.adopt_automation_if(id, None)
+    }
+
+    pub fn adopt_automation_if(
+        &self,
+        id: &str,
+        expected_revision: Option<u64>,
+    ) -> Result<AutomationRecord> {
+        self.with_transaction(|| {
+            let scope = self
+                .execution_scope()
+                .context("Automation execution ownership is unverified")?
+                .to_string();
+            let mut existing = self.get_automation(id)?;
+            check_expected_revision(&existing, expected_revision)?;
+            if existing.execution_scope.as_deref() == Some(scope.as_str()) {
+                return Ok(existing);
+            }
+            let now = Utc::now();
+            existing.execution_scope = Some(scope);
+            existing.schema_version =
+                existing
+                    .schema_version
+                    .max(required_automation_schema_version(
+                        &existing.disallowed_tools,
+                    ));
+            existing.updated_at = now;
+            existing.revision = existing.revision.saturating_add(1);
+            let mut missed_event: Option<&'static str> = None;
+            let mut saved = false;
+            if existing.status == AutomationStatus::Active
+                && let Some(due_at) = existing.next_run_at
+                && due_at < now
+            {
+                let mut state = self.read_missed_state(&existing.id)?;
+                if !state
+                    .owed
+                    .as_ref()
+                    .is_some_and(|owed| owed.due_at == due_at)
+                {
+                    match state
+                        .policy
+                        .unwrap_or_else(|| default_missed_policy(&existing))
+                    {
+                        AutomationMissedPolicy::RunOnce => {}
+                        AutomationMissedPolicy::Skip => {
+                            let schedule = AutomationSchedule::parse_rrule(&existing.rrule)?;
+                            state.owed = None;
+                            push_missed_outcome(
+                                &mut state,
+                                MissedRunOutcome {
+                                    due_at,
+                                    decided_at: now,
+                                    outcome: MissedRunOutcomeKind::Skipped,
+                                    decided_by: MissedRunDecider::Policy,
+                                    run_id: None,
+                                },
+                            );
+                            self.save_missed_state(&existing.id, &state)?;
+                            self.advance_automation_after_slot(
+                                &mut existing,
+                                &schedule,
+                                due_at,
+                                now,
+                            )?;
+                            saved = true;
+                            missed_event = Some("automation.missed_skipped");
+                        }
+                        AutomationMissedPolicy::Ask => {
+                            state.owed = Some(OwedOccurrence {
+                                due_at,
+                                detected_at: now,
+                            });
+                            self.save_missed_state(&existing.id, &state)?;
+                            missed_event = Some("automation.missed");
+                        }
+                    }
+                }
+            }
+            if !saved {
+                self.save_automation_unlocked(&existing)?;
+            }
+            self.emit_automation_event("automation.updated", &existing);
+            if let Some(event) = missed_event {
+                self.emit_automation_event(event, &existing);
+            }
+            Ok(existing)
+        })
+    }
+
     pub fn update_automation(
         &self,
         id: &str,
@@ -1536,6 +1739,13 @@ impl AutomationManager {
     ) -> Result<AutomationRecord> {
         let mut existing = self.get_automation(id)?;
         check_expected_revision(&existing, req.expected_revision)?;
+        if self.execution_scope.is_some()
+            && existing.execution_scope.is_some()
+            && !self.eligible_scope(existing.execution_scope.as_deref())
+            && req.status != Some(AutomationStatus::Paused)
+        {
+            bail!("Automation belongs to another Runtime execution scope");
+        }
         let adopting = existing.execution_scope.is_none()
             && self.execution_scope.is_some()
             && req.status != Some(AutomationStatus::Paused);
@@ -1609,8 +1819,14 @@ impl AutomationManager {
         if existing.execution_scope.is_some()
             || existing.model_provider.is_some()
             || existing.model_provider_id.is_some()
+            || !existing.disallowed_tools.is_empty()
         {
-            existing.schema_version = CURRENT_AUTOMATION_SCHEMA_VERSION;
+            existing.schema_version =
+                existing
+                    .schema_version
+                    .max(required_automation_schema_version(
+                        &existing.disallowed_tools,
+                    ));
         }
 
         existing.updated_at = Utc::now();
@@ -1981,7 +2197,14 @@ impl AutomationManager {
         let dir = self.runs_dir_for(&run.automation_id)?;
         fs::create_dir_all(&dir).with_context(|| format!("Failed to create {}", dir.display()))?;
         let path = self.run_path(run)?;
-        write_json_atomic(&path, run)?;
+        let min_version = required_run_schema_version(run.dispatch.as_ref());
+        if run.schema_version < min_version {
+            let mut updated = run.clone();
+            updated.schema_version = min_version;
+            write_json_atomic(&path, &updated)?;
+        } else {
+            write_json_atomic(&path, run)?;
+        }
         // Rewrites of a legacy-named run migrate it to the sortable name; drop
         // the old file so the run never exists twice.
         let legacy = self.legacy_run_path(&run.automation_id, &run.id)?;
@@ -2551,8 +2774,13 @@ impl AutomationManager {
         if req.message.trim().is_empty() {
             bail!("Trigger message must not be empty");
         }
+        let disallowed_tools = crate::task_manager::normalize_deny_rules(req.disallowed_tools);
         let record = DelayedTriggerRecord {
-            schema_version: CURRENT_TRIGGER_SCHEMA_VERSION,
+            schema_version: if disallowed_tools.is_empty() {
+                CURRENT_TRIGGER_SCHEMA_VERSION
+            } else {
+                DENY_RULES_TRIGGER_SCHEMA_VERSION
+            },
             execution_scope: self.execution_scope.clone(),
             trigger_id: format!("trig_{}", Uuid::new_v4().simple()),
             fire_at: req.fire_at,
@@ -2560,6 +2788,7 @@ impl AutomationManager {
             workspace: req.workspace,
             owner_session_id: req.owner_session_id,
             destination_thread_id: normalize_optional_string(req.destination_thread_id),
+            disallowed_tools,
             status: DelayedTriggerStatus::Pending,
             created_at: now,
             fired_at: None,
@@ -2570,6 +2799,7 @@ impl AutomationManager {
             dispatch: None,
         };
         self.save_trigger(&record)?;
+        self.trigger_wakeup.notify_one();
         self.emit_trigger_event("trigger.scheduled", &record);
         Ok(record)
     }
@@ -2581,11 +2811,11 @@ impl AutomationManager {
             .with_context(|| format!("Trigger '{trigger_id}' not found"))?;
         let record: DelayedTriggerRecord = serde_json::from_str(&raw)
             .with_context(|| format!("Failed to parse trigger '{trigger_id}'"))?;
-        if record.schema_version > CURRENT_TRIGGER_SCHEMA_VERSION {
+        if record.schema_version > MAX_SUPPORTED_TRIGGER_SCHEMA_VERSION {
             bail!(
                 "Trigger schema v{} is newer than supported v{}",
                 record.schema_version,
-                CURRENT_TRIGGER_SCHEMA_VERSION
+                MAX_SUPPORTED_TRIGGER_SCHEMA_VERSION
             );
         }
         Ok(record)
@@ -2613,6 +2843,12 @@ impl AutomationManager {
 
     fn save_trigger_unlocked(&self, record: &DelayedTriggerRecord) -> Result<()> {
         let path = self.trigger_path(&record.trigger_id)?;
+        let min_version = required_trigger_schema_version(record);
+        if record.schema_version < min_version {
+            let mut updated = record.clone();
+            updated.schema_version = min_version;
+            return write_json_atomic(&path, &updated);
+        }
         write_json_atomic(&path, record)
     }
 
@@ -2639,6 +2875,14 @@ impl AutomationManager {
                 .and_then(|raw| serde_json::from_str::<DelayedTriggerRecord>(&raw).ok())
             {
                 Some(record) => {
+                    if record.schema_version > MAX_SUPPORTED_TRIGGER_SCHEMA_VERSION {
+                        tracing::warn!(
+                            "Skipping trigger file {} with unsupported schema v{}",
+                            path.display(),
+                            record.schema_version
+                        );
+                        continue;
+                    }
                     if let Some(filter) = status_filter
                         && record.status != filter
                     {
@@ -2706,8 +2950,38 @@ impl AutomationManager {
             self.save_trigger_unlocked(&record)?;
             Ok(record)
         })?;
+        self.trigger_wakeup.notify_one();
         self.emit_trigger_event("trigger.canceled", &record);
         Ok(record)
+    }
+
+    pub(crate) fn trigger_wakeup(&self) -> Arc<Notify> {
+        Arc::clone(&self.trigger_wakeup)
+    }
+
+    pub(crate) fn trigger_wait_duration(
+        &self,
+        now: DateTime<Utc>,
+        max_wait: std::time::Duration,
+    ) -> Result<std::time::Duration> {
+        let next_fire_at = self
+            .list_triggers(Some(DelayedTriggerStatus::Pending), None)?
+            .into_iter()
+            .filter(|trigger| {
+                trigger.owner_session_id.is_some()
+                    && self.eligible_scope(trigger.execution_scope.as_deref())
+            })
+            .map(|trigger| trigger.fire_at)
+            .min();
+        let wait = match next_fire_at {
+            Some(fire_at) if fire_at <= now => std::time::Duration::ZERO,
+            Some(fire_at) => (fire_at - now)
+                .to_std()
+                .unwrap_or(max_wait)
+                .clamp(std::time::Duration::ZERO, max_wait),
+            None => max_wait,
+        };
+        Ok(wait)
     }
 
     /// Return due proposals and unfinished durable trigger admissions.
@@ -2859,6 +3133,7 @@ fn automation_task_request(automation: &AutomationRecord) -> NewTaskRequest {
         trust_mode: Some(automation.task_trust_mode()),
         auto_approve: Some(automation.task_auto_approve()),
         permission_posture: Some(automation_posture(automation.task_auto_approve())),
+        disallowed_tools: automation.disallowed_tools.clone(),
         owner_session_id: None,
         destination_thread_id: automation.destination_thread_id.clone(),
     }
@@ -2873,11 +3148,17 @@ fn bind_run_dispatch(
     if automation.execution_scope.is_none() {
         bail!("Automation execution ownership is unverified");
     }
-    run.schema_version = CURRENT_RUN_SCHEMA_VERSION;
+    let request = automation_task_request(automation);
+    let min_version = if request.disallowed_tools.is_empty() {
+        CURRENT_RUN_SCHEMA_VERSION
+    } else {
+        DENY_RULES_RUN_SCHEMA_VERSION
+    };
+    run.schema_version = run.schema_version.max(min_version);
     run.task_id = Some(crate::task_manager::TaskManager::new_task_id());
     run.dispatch = Some(AutomationDispatch {
         execution_scope: automation.execution_scope.clone(),
-        request: automation_task_request(automation),
+        request,
         task_data_dir: task_data_dir
             .canonicalize()
             .context("resolve task store before automation admission")?,
@@ -3179,7 +3460,7 @@ where
     Ok(())
 }
 
-async fn fire_due_triggers_shared(
+pub(crate) async fn fire_due_triggers_shared(
     automations: &SharedAutomationManager,
     task_manager: &SharedTaskManager,
 ) -> Result<()> {
@@ -3285,7 +3566,6 @@ where
                     {
                         return Ok(None);
                     }
-                    current.schema_version = CURRENT_TRIGGER_SCHEMA_VERSION;
                     current.status = DelayedTriggerStatus::Dispatching;
                     current.task_id = Some(crate::task_manager::TaskManager::new_task_id());
                     current.dispatch = Some(AutomationDispatch {
@@ -3302,6 +3582,7 @@ where
                             trust_mode: Some(false),
                             auto_approve: Some(false),
                             permission_posture: Some(automation_posture(false)),
+                            disallowed_tools: current.disallowed_tools.clone(),
                             owner_session_id: current.owner_session_id.clone(),
                             destination_thread_id: current.destination_thread_id.clone(),
                         },
@@ -3311,6 +3592,9 @@ where
                         suppress_report: false,
                         schedule: None,
                     });
+                    current.schema_version = current
+                        .schema_version
+                        .max(required_trigger_schema_version(&current));
                     manager.save_trigger_unlocked(&current)?;
                     Ok(Some(current))
                 })
@@ -3581,7 +3865,9 @@ async fn reconcile_run_statuses_shared(
             suppress_report: false,
             schedule: None,
         });
-        run.schema_version = CURRENT_RUN_SCHEMA_VERSION;
+        run.schema_version = run
+            .schema_version
+            .max(required_run_schema_version(Some(&*dispatch)));
         dispatch.accepted = true;
         dispatch.suppress_report = watcher_noop;
         if let Err(error) = with_manager_blocking(automations, {
@@ -3631,11 +3917,11 @@ fn read_automation_file(path: &Path) -> Result<AutomationRecord> {
         .with_context(|| format!("Failed to read automation {}", path.display()))?;
     let record: AutomationRecord = serde_json::from_str(&raw)
         .with_context(|| format!("Failed to parse automation {}", path.display()))?;
-    if record.schema_version > CURRENT_AUTOMATION_SCHEMA_VERSION {
+    if record.schema_version > MAX_SUPPORTED_AUTOMATION_SCHEMA_VERSION {
         bail!(
             "Automation schema v{} is newer than supported v{}",
             record.schema_version,
-            CURRENT_AUTOMATION_SCHEMA_VERSION
+            MAX_SUPPORTED_AUTOMATION_SCHEMA_VERSION
         );
     }
     Ok(record)
@@ -3646,11 +3932,11 @@ fn read_run_file(path: &Path) -> Result<AutomationRunRecord> {
         fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
     let run: AutomationRunRecord = serde_json::from_str(&raw)
         .with_context(|| format!("Failed to parse {}", path.display()))?;
-    if run.schema_version > CURRENT_RUN_SCHEMA_VERSION {
+    if run.schema_version > MAX_SUPPORTED_RUN_SCHEMA_VERSION {
         bail!(
             "Automation run schema v{} is newer than supported v{}",
             run.schema_version,
-            CURRENT_RUN_SCHEMA_VERSION
+            MAX_SUPPORTED_RUN_SCHEMA_VERSION
         );
     }
     Ok(run)
@@ -3747,6 +4033,11 @@ pub fn spawn_scheduler(
         std::panic::Location::caller(),
         async move {
             let interval = config.tick_interval_secs.max(5);
+            let max_wait = std::time::Duration::from_secs(interval);
+            let wakeup =
+                with_manager_blocking(&automations, |manager| Ok(manager.trigger_wakeup()))
+                    .await
+                    .unwrap_or_else(|_| Arc::new(Notify::new()));
             let grace = Duration::seconds(
                 SCHEDULER_PRESENCE_MIN_GRACE_SECS.max(
                     i64::try_from(interval)
@@ -3780,9 +4071,16 @@ pub fn spawn_scheduler(
                     tracing::warn!("delayed trigger tick failed: {err}");
                 }
 
+                let wait_duration = with_manager_blocking(&automations, move |manager| {
+                    manager.trigger_wait_duration(Utc::now(), max_wait)
+                })
+                .await
+                .unwrap_or(max_wait);
+
                 tokio::select! {
                     _ = cancel.cancelled() => break,
-                    _ = sleep(std::time::Duration::from_secs(interval)) => {}
+                    _ = sleep(wait_duration) => {}
+                    _ = wakeup.notified() => {}
                 }
             }
         },
@@ -4218,6 +4516,7 @@ mod tests {
                 workspace: None,
                 owner_session_id: Some("fixture-owner".into()),
                 parent_trigger_id: None,
+                disallowed_tools: Vec::new(),
             })?;
             trigger.fire_at = Utc::now() - Duration::minutes(1);
             trigger.created_at = Utc::now() - Duration::minutes(index);
@@ -4636,6 +4935,7 @@ mod tests {
             next_run_at: None,
             last_run_at: None,
             revision: 0,
+            disallowed_tools: Vec::new(),
         }
     }
 
@@ -5038,6 +5338,7 @@ mod tests {
                 auto_approve: None,
                 delivery_mode: None,
                 status: Some(AutomationStatus::Active),
+                disallowed_tools: Vec::new(),
             })
             .expect("create");
         assert_eq!(created.model.as_deref(), Some("scheduled-model"));
@@ -5084,6 +5385,7 @@ mod tests {
                 auto_approve: None,
                 delivery_mode: None,
                 status: Some(AutomationStatus::Active),
+                disallowed_tools: Vec::new(),
             })
             .expect("create");
 
@@ -5610,6 +5912,7 @@ model = "private-model"
             workspace: None,
             owner_session_id: Some("session-a".to_string()),
             parent_trigger_id: None,
+            disallowed_tools: Vec::new(),
         })?;
         owned.fire_at = Utc::now() - Duration::minutes(1);
         manager.save_trigger(&owned)?;
@@ -5621,6 +5924,7 @@ model = "private-model"
             workspace: None,
             owner_session_id: None,
             parent_trigger_id: None,
+            disallowed_tools: Vec::new(),
         })?;
         legacy.fire_at = Utc::now() - Duration::minutes(1);
         manager.save_trigger(&legacy)?;
@@ -5661,6 +5965,263 @@ model = "private-model"
             "parent_trigger_id": null
         }))?;
         assert_eq!(record.owner_session_id, None);
+        Ok(())
+    }
+
+    #[test]
+    fn denied_automation_and_run_use_v4_schema_while_open_stay_v3() -> Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let manager = AutomationManager::open_for_test(tempdir.path().join("automations"))?;
+
+        let open = manager.create_automation(CreateAutomationRequest {
+            destination_thread_id: None,
+            name: "Open".to_string(),
+            prompt: "prompt".to_string(),
+            rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
+            cwds: Vec::new(),
+            model: None,
+            model_provider: None,
+            model_provider_id: None,
+            mode: None,
+            allow_shell: None,
+            trust_mode: None,
+            auto_approve: None,
+            delivery_mode: None,
+            status: Some(AutomationStatus::Active),
+            disallowed_tools: vec!["   ".to_string()],
+        })?;
+        assert_eq!(open.schema_version, CURRENT_AUTOMATION_SCHEMA_VERSION);
+        assert!(open.disallowed_tools.is_empty());
+
+        let open_disk: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(manager.automation_path(&open.id)?)?)?;
+        assert_eq!(
+            open_disk["schema_version"],
+            CURRENT_AUTOMATION_SCHEMA_VERSION
+        );
+        assert!(open_disk.get("disallowed_tools").is_none());
+
+        let mut open_run = new_run_record(&open.id, Utc::now(), Utc::now());
+        bind_run_dispatch(&mut open_run, &open, tempdir.path(), true)?;
+        manager.save_run(&open_run)?;
+        let open_run_disk: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(manager.run_path(&open_run)?)?)?;
+        assert_eq!(open_run.schema_version, CURRENT_RUN_SCHEMA_VERSION);
+        assert_eq!(open_run_disk["schema_version"], CURRENT_RUN_SCHEMA_VERSION);
+
+        let restricted = manager.create_automation(CreateAutomationRequest {
+            destination_thread_id: None,
+            name: "Restricted".to_string(),
+            prompt: "prompt".to_string(),
+            rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
+            cwds: Vec::new(),
+            model: None,
+            model_provider: None,
+            model_provider_id: None,
+            mode: None,
+            allow_shell: None,
+            trust_mode: None,
+            auto_approve: None,
+            delivery_mode: None,
+            status: Some(AutomationStatus::Active),
+            disallowed_tools: vec![
+                "shell".to_string(),
+                " shell ".to_string(),
+                "mcp_secret_*".to_string(),
+            ],
+        })?;
+        assert_eq!(
+            restricted.schema_version,
+            DENY_RULES_AUTOMATION_SCHEMA_VERSION
+        );
+        assert_eq!(restricted.disallowed_tools, vec!["shell", "mcp_secret_*"]);
+
+        let updated = manager.update_automation(
+            &restricted.id,
+            UpdateAutomationRequest {
+                allow_shell: Some(false),
+                ..Default::default()
+            },
+        )?;
+        assert_eq!(updated.schema_version, DENY_RULES_AUTOMATION_SCHEMA_VERSION);
+        assert_eq!(updated.disallowed_tools, vec!["shell", "mcp_secret_*"]);
+
+        let auto_path = manager.automation_path(&restricted.id)?;
+        let mut restricted_disk: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&auto_path)?)?;
+        assert_eq!(
+            restricted_disk["schema_version"],
+            DENY_RULES_AUTOMATION_SCHEMA_VERSION
+        );
+        assert_eq!(
+            restricted_disk["disallowed_tools"],
+            serde_json::json!(["shell", "mcp_secret_*"])
+        );
+        assert_eq!(
+            manager.get_automation(&restricted.id)?.schema_version,
+            DENY_RULES_AUTOMATION_SCHEMA_VERSION
+        );
+
+        let mut restricted_run = new_run_record(&restricted.id, Utc::now(), Utc::now());
+        bind_run_dispatch(&mut restricted_run, &restricted, tempdir.path(), true)?;
+        assert_eq!(restricted_run.schema_version, DENY_RULES_RUN_SCHEMA_VERSION);
+        manager.save_run(&restricted_run)?;
+        let run_path = manager.run_path(&restricted_run)?;
+        let mut run_disk: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&run_path)?)?;
+        assert_eq!(run_disk["schema_version"], DENY_RULES_RUN_SCHEMA_VERSION);
+        assert_eq!(
+            run_disk["dispatch"]["request"]["disallowed_tools"],
+            serde_json::json!(["shell", "mcp_secret_*"])
+        );
+        assert_eq!(manager.list_runs(&restricted.id, None)?.len(), 1);
+
+        run_disk["schema_version"] = serde_json::json!(MAX_SUPPORTED_RUN_SCHEMA_VERSION + 1);
+        fs::write(&run_path, serde_json::to_string_pretty(&run_disk)?)?;
+        assert!(
+            manager
+                .list_runs(&restricted.id, None)
+                .unwrap_err()
+                .to_string()
+                .contains("newer than supported")
+        );
+
+        restricted_disk["schema_version"] =
+            serde_json::json!(MAX_SUPPORTED_AUTOMATION_SCHEMA_VERSION + 1);
+        fs::write(&auto_path, serde_json::to_string_pretty(&restricted_disk)?)?;
+        assert!(
+            manager
+                .get_automation(&restricted.id)
+                .unwrap_err()
+                .to_string()
+                .contains("newer than supported")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn denied_delayed_trigger_uses_v4_and_preserves_deny_rules_when_fired() -> Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let task_dir = tempdir.path().join("tasks");
+        let task_manager = TaskManager::start_with_executor(
+            automation_task_config(task_dir.clone()),
+            std::sync::Arc::new(AutomationNoopExecutor),
+        )
+        .await?;
+        let manager = AutomationManager::open_for_test(tempdir.path().join("automations"))?;
+
+        let open = manager.create_trigger(CreateDelayedTriggerRequest {
+            fire_at: Utc::now() + Duration::hours(1),
+            message: "open later".to_string(),
+            workspace: None,
+            owner_session_id: Some("session-open".to_string()),
+            parent_trigger_id: None,
+            destination_thread_id: None,
+            disallowed_tools: vec!["   ".to_string()],
+        })?;
+        assert_eq!(open.schema_version, CURRENT_TRIGGER_SCHEMA_VERSION);
+        assert!(open.disallowed_tools.is_empty());
+        let open_disk: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+            manager.trigger_path(&open.trigger_id)?,
+        )?)?;
+        assert_eq!(open_disk["schema_version"], CURRENT_TRIGGER_SCHEMA_VERSION);
+        assert!(open_disk.get("disallowed_tools").is_none());
+
+        let mut restricted = manager.create_trigger(CreateDelayedTriggerRequest {
+            fire_at: Utc::now() + Duration::hours(1),
+            message: "restricted later".to_string(),
+            workspace: Some(tempdir.path().to_path_buf()),
+            owner_session_id: Some("session-deny".to_string()),
+            parent_trigger_id: None,
+            destination_thread_id: None,
+            disallowed_tools: vec!["shell".to_string(), " mcp_secret_* ".to_string()],
+        })?;
+        assert_eq!(restricted.schema_version, DENY_RULES_TRIGGER_SCHEMA_VERSION);
+        assert_eq!(restricted.disallowed_tools, vec!["shell", "mcp_secret_*"]);
+        restricted.fire_at = Utc::now() - Duration::minutes(1);
+        manager.save_trigger(&restricted)?;
+
+        let trigger_path = manager.trigger_path(&restricted.trigger_id)?;
+        let initial_disk: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&trigger_path)?)?;
+        assert_eq!(
+            initial_disk["schema_version"],
+            DENY_RULES_TRIGGER_SCHEMA_VERSION
+        );
+        assert_eq!(
+            initial_disk["disallowed_tools"],
+            serde_json::json!(["shell", "mcp_secret_*"])
+        );
+
+        let shared = Arc::new(Mutex::new(manager));
+        fire_due_triggers_with(&shared, &task_dir, |claimed| async move {
+            assert_eq!(claimed.status, DelayedTriggerStatus::Dispatching);
+            assert_eq!(claimed.schema_version, DENY_RULES_TRIGGER_SCHEMA_VERSION);
+            assert_eq!(
+                claimed
+                    .dispatch
+                    .as_ref()
+                    .expect("dispatch")
+                    .request
+                    .disallowed_tools,
+                vec!["shell", "mcp_secret_*"]
+            );
+            anyhow::bail!("pause at dispatching boundary")
+        })
+        .await?;
+
+        let dispatching_disk: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&trigger_path)?)?;
+        assert_eq!(dispatching_disk["status"], "dispatching");
+        assert_eq!(
+            dispatching_disk["schema_version"],
+            DENY_RULES_TRIGGER_SCHEMA_VERSION
+        );
+        assert_eq!(
+            dispatching_disk["dispatch"]["request"]["disallowed_tools"],
+            serde_json::json!(["shell", "mcp_secret_*"])
+        );
+
+        fire_due_triggers_shared(&shared, &task_manager).await?;
+
+        let manager = shared.lock().await;
+        let fired = manager.get_trigger(&restricted.trigger_id)?;
+        assert_eq!(fired.status, DelayedTriggerStatus::Fired);
+        assert_eq!(fired.schema_version, DENY_RULES_TRIGGER_SCHEMA_VERSION);
+        assert_eq!(fired.disallowed_tools, vec!["shell", "mcp_secret_*"]);
+        assert_eq!(
+            fired
+                .dispatch
+                .as_ref()
+                .expect("dispatch")
+                .request
+                .disallowed_tools,
+            vec!["shell", "mcp_secret_*"]
+        );
+
+        let task = task_manager
+            .get_task(fired.task_id.as_deref().expect("fired task id"))
+            .await?;
+        assert_eq!(task.schema_version, 5);
+        assert_eq!(task.disallowed_tools, vec!["shell", "mcp_secret_*"]);
+
+        let mut future_disk: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&trigger_path)?)?;
+        future_disk["schema_version"] = serde_json::json!(MAX_SUPPORTED_TRIGGER_SCHEMA_VERSION + 1);
+        fs::write(&trigger_path, serde_json::to_string_pretty(&future_disk)?)?;
+        assert!(
+            manager
+                .get_trigger(&restricted.trigger_id)
+                .unwrap_err()
+                .to_string()
+                .contains("newer than supported")
+        );
+        let listed = manager.list_triggers(None, None)?;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].trigger_id, open.trigger_id);
+
+        drop(manager);
+        task_manager.shutdown();
         Ok(())
     }
 
@@ -5992,6 +6553,7 @@ model = "private-model"
                 auto_approve: None,
                 delivery_mode: None,
                 status: Some(AutomationStatus::Active),
+                disallowed_tools: Vec::new(),
             })
             .expect("create");
         let shared: SharedAutomationManager = Arc::new(Mutex::new(manager));
@@ -6225,5 +6787,180 @@ model = "private-model"
         assert!(apply_task_status(&mut run, &task));
         assert_eq!(run.status, AutomationRunStatus::Canceled);
         assert_eq!(run.error, None);
+    }
+
+    #[tokio::test]
+    async fn trigger_wait_duration_clamps_and_cancel_wakes_notifier() -> Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let mut manager = AutomationManager::open_for_test(tempdir.path().to_path_buf())?;
+        let max_wait = std::time::Duration::from_secs(60);
+        let now = Utc::now();
+        assert_eq!(manager.trigger_wait_duration(now, max_wait)?, max_wait);
+
+        let far = manager.create_trigger(CreateDelayedTriggerRequest {
+            destination_thread_id: None,
+            fire_at: now + Duration::seconds(120),
+            message: "far".to_string(),
+            workspace: None,
+            owner_session_id: Some("session-a".to_string()),
+            parent_trigger_id: None,
+            disallowed_tools: Vec::new(),
+        })?;
+        assert_eq!(manager.trigger_wait_duration(now, max_wait)?, max_wait);
+
+        let wakeup = manager.trigger_wakeup();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), wakeup.notified())
+                .await
+                .is_ok()
+        );
+
+        let now = Utc::now();
+        let subminute = manager.create_trigger(CreateDelayedTriggerRequest {
+            destination_thread_id: None,
+            fire_at: now + Duration::seconds(2),
+            message: "subminute".to_string(),
+            workspace: None,
+            owner_session_id: Some("session-a".to_string()),
+            parent_trigger_id: None,
+            disallowed_tools: Vec::new(),
+        })?;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), wakeup.notified())
+                .await
+                .is_ok()
+        );
+        let sub_wait = manager.trigger_wait_duration(now, max_wait)?;
+        assert!(sub_wait <= std::time::Duration::from_secs(2));
+        assert!(sub_wait > std::time::Duration::ZERO);
+
+        let mut past = manager.create_trigger(CreateDelayedTriggerRequest {
+            destination_thread_id: None,
+            fire_at: now + Duration::seconds(30),
+            message: "past".to_string(),
+            workspace: None,
+            owner_session_id: Some("session-a".to_string()),
+            parent_trigger_id: None,
+            disallowed_tools: Vec::new(),
+        })?;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), wakeup.notified())
+                .await
+                .is_ok()
+        );
+        past.fire_at = now - Duration::seconds(5);
+        manager.save_trigger(&past)?;
+        assert_eq!(
+            manager.trigger_wait_duration(now, max_wait)?,
+            std::time::Duration::ZERO
+        );
+        manager.cancel_trigger(&past.trigger_id)?;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), wakeup.notified())
+                .await
+                .is_ok()
+        );
+
+        let notified = tokio::spawn({
+            let wakeup = Arc::clone(&wakeup);
+            async move { wakeup.notified().await }
+        });
+        tokio::task::yield_now().await;
+        manager.cancel_trigger(&subminute.trigger_id)?;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), notified)
+                .await
+                .is_ok()
+        );
+        assert_eq!(manager.trigger_wait_duration(now, max_wait)?, max_wait);
+
+        let now = Utc::now();
+        let mut ownerless = manager.create_trigger(CreateDelayedTriggerRequest {
+            destination_thread_id: None,
+            fire_at: now + Duration::seconds(1),
+            message: "ownerless".to_string(),
+            workspace: None,
+            owner_session_id: None,
+            parent_trigger_id: None,
+            disallowed_tools: Vec::new(),
+        })?;
+        ownerless.fire_at = now - Duration::seconds(1);
+        manager.save_trigger(&ownerless)?;
+        manager.execution_scope = Some("other-scope".to_string());
+        let now = Utc::now();
+        let mut foreign = manager.create_trigger(CreateDelayedTriggerRequest {
+            destination_thread_id: None,
+            fire_at: now + Duration::seconds(1),
+            message: "foreign".to_string(),
+            workspace: None,
+            owner_session_id: Some("session-b".to_string()),
+            parent_trigger_id: None,
+            disallowed_tools: Vec::new(),
+        })?;
+        foreign.fire_at = now - Duration::seconds(1);
+        manager.save_trigger(&foreign)?;
+        manager.execution_scope = far.execution_scope.clone();
+        assert_eq!(manager.trigger_wait_duration(now, max_wait)?, max_wait);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn scheduler_wakes_within_one_second_for_subminute_trigger() -> Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let task_manager = TaskManager::start_with_executor(
+            automation_task_config(tempdir.path().join("tasks")),
+            std::sync::Arc::new(AutomationNoopExecutor),
+        )
+        .await?;
+        let mut manager = AutomationManager::open(tempdir.path().join("automations"))?;
+        manager.bind_task_manager(&task_manager)?;
+        let shared = Arc::new(Mutex::new(manager));
+        let cancel = CancellationToken::new();
+        let handle = spawn_scheduler(
+            Arc::clone(&shared),
+            Arc::clone(&task_manager),
+            cancel.clone(),
+            AutomationSchedulerConfig {
+                tick_interval_secs: 60,
+            },
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let start = std::time::Instant::now();
+        let trigger = {
+            let guard = shared.lock().await;
+            guard.create_trigger(CreateDelayedTriggerRequest {
+                destination_thread_id: None,
+                fire_at: Utc::now() + Duration::milliseconds(60),
+                message: "sub-second notify wakeup".to_string(),
+                workspace: None,
+                owner_session_id: Some("session-notify".to_string()),
+                parent_trigger_id: None,
+                disallowed_tools: Vec::new(),
+            })?
+        };
+
+        let mut fired = None;
+        for _ in 0..95 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            let current = shared.lock().await.get_trigger(&trigger.trigger_id)?;
+            if current.status == DelayedTriggerStatus::Fired {
+                fired = Some(current);
+                break;
+            }
+        }
+        let elapsed = start.elapsed();
+
+        cancel.cancel();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
+        task_manager.shutdown();
+
+        let fired = fired.expect("sub-minute trigger must fire before 1s via Notify");
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "expected wakeup and fire under 1s, took {elapsed:?}"
+        );
+        assert!(fired.task_id.is_some());
+        Ok(())
     }
 }

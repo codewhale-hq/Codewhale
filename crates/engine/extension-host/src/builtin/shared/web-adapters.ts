@@ -80,6 +80,7 @@ function provider(input: Row): Json {
     case 'searxng': items=array(parsed.results); scorePath='/results'; break
     case 'sofya': items=array(parsed.results); snippetKeys=['content','description']; trim=false; break
     case 'serply': items=array(parsed.results); urlKeys=['link']; snippetKeys=['description','snippet']; trim=false; break
+    case 'searchapi': items=array(parsed.organic_results); urlKeys=['link']; snippetKeys=['snippet']; trim=false; break
     case 'volcengine': {
       if (own(parsed,'error')) {
         const value = parsed.error && typeof parsed.error==='object' && !Array.isArray(parsed.error) ? row(parsed.error) : {}
@@ -165,6 +166,7 @@ function request(input: Row): Json {
     case 'baidu':payload={messages:[{role:'user',content:query}],search_source:'baidu_search_v2',resource_type_filter:[{type:'web',top_k:max}]};break
     case 'volcengine':payload={input:[{role:'user',content:[{type:'input_text',text:`Search the web for: ${query}\n\nCRITICAL: Respond ONLY with a valid JSON object. No markdown, no explanation.\nSchema: {"results":[{"title":"...","url":"https://...","snippet":"..."}]}\n- results: 1-${max} most relevant pages\n- title: page title (required)\n- url: full URL starting with https:// (required)\n- snippet: 1-2 sentence factual summary (required)\n- If zero results: {"results":[]}\n- Your entire response must be valid, parseable JSON.`}]}]};break
     case 'serply':pairs=[['q',query],['num',String(max)],...(language===undefined?[]:[['hl',language]]),...(region===undefined?[]:[['gl',region.toLowerCase()]])];break
+    case 'searchapi':pairs=[['q',query],['engine','google'],['num',String(max)],...(window===undefined?[]:[['time_period',`last_${window}`]]),...(language===undefined?[]:[['hl',language]]),...(region===undefined?[]:[['gl',region.toLowerCase()]])];break
     case 'searxng':pairs=[['q',query],['format','json'],...(window===undefined?[]:[['time_range',window]]),...(locale===undefined?[]:[['language',locale]])];break
     case 'bing':case 'duckduckgo':pairs=[['q',query]];break
     default:throw new Error('unadmitted web request provider')

@@ -162,6 +162,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "codewhale-app-server-protocol"
+version = "0.10.4"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "codewhale-pet-tui"
 version = "0.1.0"
 dependencies = [
@@ -171,19 +180,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "codewhale-app-server-protocol"
-version = "0.10.2"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "codewhale-protocol"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
- "codewhale-app-server-protocol",
  "chrono",
+ "codewhale-app-server-protocol",
  "serde",
  "serde_json",
  "uuid",
@@ -191,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "codewhale-ratatui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "codewhale-protocol",
  "crossterm",

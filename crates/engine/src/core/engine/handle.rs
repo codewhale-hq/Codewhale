@@ -23,12 +23,50 @@ use super::{
     RuntimePermissionAuthority, UserInputResponse,
 };
 use crate::approval_log::ApprovalDecider;
+use crate::core::authority::auto_review::{AutoReviewBlockedAction, AutoReviewRetryGrant};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutoReviewRetryApprovalError {
+    OwnerRequired,
+    NotInAutoReview,
+    InvalidTarget(String),
+}
+
+impl std::fmt::Display for AutoReviewRetryApprovalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OwnerRequired => {
+                f.write_str("owner surface is required to approve Auto-Review retry")
+            }
+            Self::NotInAutoReview => {
+                f.write_str("Auto-Review retry can only be approved while Auto-Review is active")
+            }
+            Self::InvalidTarget(msg) => f.write_str(msg),
+        }
+    }
+}
+
+impl std::error::Error for AutoReviewRetryApprovalError {}
 
 // This bounds host delivery/acknowledgement, never the person's time to
 // answer. No active waiter may consume a reply after its caller abandoned it.
 const USER_INPUT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl EngineHandle {
+    pub fn replace_user_permission_ruleset(&self, ruleset: codewhale_execpolicy::Ruleset) {
+        self.exec_policy.clone().set_ruleset(ruleset);
+    }
+
+    #[must_use]
+    pub fn exec_policy(&self) -> &codewhale_execpolicy::ExecPolicyEngine {
+        &self.exec_policy
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_exec_policy(&mut self, exec_policy: codewhale_execpolicy::ExecPolicyEngine) {
+        self.exec_policy = exec_policy;
+    }
+
     /// Wait for this exact background run to return or terminate abnormally.
     /// Cancelling a wait does not stop the engine or consume another waiter's result.
     /// Directly constructed handles return `NotObserved`; completion does not prove
@@ -82,10 +120,17 @@ async fn await_user_input_acceptance(
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct RustTurnOrigin {
+    pub run_origin: crate::core::authority::auto_review::RunOrigin,
+    pub owner_present: bool,
+}
+
 #[derive(Clone)]
 pub(super) struct TurnControl {
     pub id: u64,
     pub narrowing: super::host_profile::TurnNarrowing,
+    pub origin: Option<RustTurnOrigin>,
     pub cancel: CancellationToken,
     pub reason: Arc<StdMutex<Option<CancelReason>>>,
 }
@@ -106,6 +151,7 @@ impl TurnControls {
         TurnControl {
             id: self.next_id,
             narrowing: super::host_profile::TurnNarrowing::Inherit,
+            origin: None,
             cancel: CancellationToken::new(),
             reason: Arc::new(StdMutex::new(None)),
         }
@@ -120,6 +166,7 @@ pub(super) struct TurnControlGuard {
     pub controls: Arc<StdMutex<TurnControls>>,
     pub id: u64,
     pub narrowing: super::host_profile::TurnNarrowing,
+    pub origin: Option<RustTurnOrigin>,
 }
 
 impl Drop for TurnControlGuard {
@@ -143,7 +190,9 @@ pub struct SteerInput {
     pub(super) turn_id: Option<u64>,
     pub(super) replace_pending: bool,
     pub content: String,
+    pub(super) person_text: Option<String>,
     pub(super) outcome: Option<oneshot::Sender<SteerOutcome>>,
+    pub(super) owner_steer: bool,
 }
 
 /// The engine's verdict on one steer. A steer whose turn had already moved
@@ -167,16 +216,25 @@ pub enum SteerOutcome {
 pub struct PendingSteer {
     pub replace_pending: bool,
     pub content: String,
+    person_text: Option<String>,
     outcome: Option<oneshot::Sender<SteerOutcome>>,
+    owner_steer: bool,
 }
 
 impl PendingSteer {
     pub fn new(content: String, outcome: Option<oneshot::Sender<SteerOutcome>>) -> Self {
         Self {
             content,
+            person_text: None,
             outcome,
             replace_pending: false,
+            owner_steer: false,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) const fn is_owner_steer(&self) -> bool {
+        self.owner_steer
     }
 
     /// Commit the steer into the turn's record: report `Accepted`, then hand
@@ -189,6 +247,12 @@ impl PendingSteer {
         // `Drop` runs after this returns and finds `outcome` already taken,
         // so the verdict stays exactly one `Accepted`.
         std::mem::take(&mut self.content)
+    }
+
+    pub(super) fn commit_with_owner_intent(mut self) -> (String, bool, Option<String>) {
+        let owner_steer = self.owner_steer;
+        let person_text = self.person_text.take();
+        (self.commit(), owner_steer, person_text)
     }
 }
 
@@ -211,6 +275,8 @@ impl SteerInput {
         // settle and the verdict travels with the `PendingSteer`.
         let mut pending = PendingSteer::new(std::mem::take(&mut self.content), self.outcome.take());
         pending.replace_pending = self.replace_pending;
+        pending.person_text = self.person_text.take();
+        pending.owner_steer = self.owner_steer;
         pending
     }
 }
@@ -239,6 +305,7 @@ impl std::fmt::Display for SteerInput {
 pub struct SteerPermit {
     permit: mpsc::OwnedPermit<SteerInput>,
     turn_id: Option<u64>,
+    owner_steer: bool,
 }
 
 impl SteerPermit {
@@ -247,7 +314,20 @@ impl SteerPermit {
             turn_id: self.turn_id,
             replace_pending: false,
             content,
+            person_text: None,
             outcome: None,
+            owner_steer: self.owner_steer,
+        });
+    }
+
+    pub fn send_with_person_text(self, content: String, person_text: Option<String>) {
+        self.permit.send(SteerInput {
+            turn_id: self.turn_id,
+            replace_pending: false,
+            content,
+            person_text,
+            outcome: None,
+            owner_steer: self.owner_steer,
         });
     }
 
@@ -257,24 +337,40 @@ impl SteerPermit {
     /// first, and closes without a verdict only if the engine itself is gone
     /// (#6276).
     pub fn send_with_outcome(self, content: String) -> oneshot::Receiver<SteerOutcome> {
-        self.send_with_replacement_outcome(content, false)
+        let owner_steer = self.owner_steer;
+        self.send_with_replacement_outcome(content, None, false, owner_steer)
+    }
+
+    pub fn send_with_outcome_and_authorship(
+        self,
+        content: String,
+        owner_steer: bool,
+        person_text: Option<String>,
+    ) -> oneshot::Receiver<SteerOutcome> {
+        let allowed_owner_steer = self.owner_steer && owner_steer;
+        self.send_with_replacement_outcome(content, person_text, false, allowed_owner_steer)
     }
 
     pub fn send_replacing_with_outcome(self, content: String) -> oneshot::Receiver<SteerOutcome> {
-        self.send_with_replacement_outcome(content, true)
+        let owner_steer = self.owner_steer;
+        self.send_with_replacement_outcome(content, None, true, owner_steer)
     }
 
     fn send_with_replacement_outcome(
         self,
         content: String,
+        person_text: Option<String>,
         replace_pending: bool,
+        owner_steer: bool,
     ) -> oneshot::Receiver<SteerOutcome> {
         let (outcome_tx, outcome_rx) = oneshot::channel();
         self.permit.send(SteerInput {
             turn_id: self.turn_id,
             replace_pending,
             content,
+            person_text,
             outcome: Some(outcome_tx),
+            owner_steer,
         });
         outcome_rx
     }
@@ -429,16 +525,74 @@ impl EngineHandle {
         }
     }
 
+    pub(crate) fn set_owner_surface_attached(&mut self, attached: bool) {
+        self.owner_surface_attached = attached;
+    }
+
+    pub(crate) fn set_host_profile(
+        &mut self,
+        host_profile: super::host_profile::EngineHostProfile,
+    ) {
+        self.host_profile = host_profile;
+    }
+
     /// Bind controls and enqueue under one lock, preserving the same FIFO as
     /// the operation mailbox even when several senders hold reserved slots.
     pub fn send_reserved_op(&self, permit: mpsc::OwnedPermit<Op>, op: Op) {
-        self.send_reserved_narrowed_op(permit, op, super::host_profile::TurnNarrowing::Inherit);
+        self.send_reserved_narrowed_op(
+            permit,
+            op,
+            super::host_profile::TurnNarrowing::Inherit,
+            None,
+        );
     }
 
     /// Called only by the captured ACP Runtime admission. One lock retains the
     /// exact control/mailbox FIFO; no profile is added to the public operation.
     pub fn send_reserved_acp_op(&self, permit: mpsc::OwnedPermit<Op>, op: Op) {
-        self.send_reserved_narrowed_op(permit, op, super::host_profile::TurnNarrowing::Acp);
+        self.send_reserved_narrowed_op(
+            permit,
+            op,
+            super::host_profile::TurnNarrowing::Acp,
+            Some(RustTurnOrigin {
+                run_origin: crate::core::authority::auto_review::RunOrigin::Headless,
+                owner_present: false,
+            }),
+        );
+    }
+
+    pub(crate) fn send_reserved_op_with_origin(
+        &self,
+        permit: mpsc::OwnedPermit<Op>,
+        op: Op,
+        narrowing: super::host_profile::TurnNarrowing,
+        run_origin: crate::core::authority::auto_review::RunOrigin,
+        owner_present: bool,
+    ) {
+        use crate::core::authority::auto_review::RunOrigin;
+        let origin = if matches!(narrowing, super::host_profile::TurnNarrowing::Acp)
+            || self.host_profile.is_acp()
+            || self.host_profile.is_headless()
+        {
+            RustTurnOrigin {
+                run_origin: RunOrigin::Headless,
+                owner_present: false,
+            }
+        } else {
+            let owner_present = run_origin == RunOrigin::Interactive
+                && owner_present
+                && self.owner_surface_attached;
+            let run_origin = if run_origin == RunOrigin::Interactive && !owner_present {
+                RunOrigin::Background
+            } else {
+                run_origin
+            };
+            RustTurnOrigin {
+                run_origin,
+                owner_present,
+            }
+        };
+        self.send_reserved_narrowed_op(permit, op, narrowing, Some(origin));
     }
 
     fn send_reserved_narrowed_op(
@@ -446,6 +600,7 @@ impl EngineHandle {
         permit: mpsc::OwnedPermit<Op>,
         op: Op,
         narrowing: super::host_profile::TurnNarrowing,
+        origin: Option<RustTurnOrigin>,
     ) {
         let mut controls = self
             .turn_controls
@@ -454,6 +609,7 @@ impl EngineHandle {
         if matches!(&op, Op::SendMessage(_) | Op::Review { .. }) {
             let mut control = controls.fresh();
             control.narrowing = narrowing;
+            control.origin = origin;
             controls.pending.push_back(control);
         }
         permit.send(op);
@@ -486,8 +642,14 @@ impl EngineHandle {
             .live_runtime_authority
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let approval_changed = state.authority.approval_mode != authority.approval_mode;
+        let mode_changed = state.authority.mode != authority.mode;
         state.revision = state.revision.wrapping_add(1).max(1);
         state.authority = authority;
+        if (approval_changed && state.authority.approval_mode != ApprovalMode::Auto) || mode_changed
+        {
+            self.auto_review_state.lock().revoke_retry_grants();
+        }
     }
 
     pub fn publish_turn_authority(
@@ -525,13 +687,26 @@ impl EngineHandle {
     /// without a cancellation point between those two operations.
     pub async fn reserve_steer(&self) -> Result<SteerPermit> {
         let permit = self.tx_steer.clone().reserve_owned().await?;
-        let turn_id = self
+        let controls = self
             .turn_controls
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .target()
-            .map(|control| control.id);
-        Ok(SteerPermit { permit, turn_id })
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let target = controls.target();
+        let turn_id = target.map(|control| control.id);
+        let target_acp = target.is_some_and(|control| {
+            matches!(control.narrowing, super::host_profile::TurnNarrowing::Acp)
+        });
+        let owner_steer = self.owner_surface_attached
+            && matches!(
+                self.host_profile,
+                super::host_profile::EngineHostProfile::Normal
+            )
+            && !target_acp;
+        Ok(SteerPermit {
+            permit,
+            turn_id,
+            owner_steer,
+        })
     }
 
     /// Cancel the current request (user-initiated path — keeps the
@@ -1032,6 +1207,17 @@ impl EngineHandle {
         Ok(())
     }
 
+    pub async fn steer_with_person_text(
+        &self,
+        content: impl Into<String>,
+        person_text: Option<String>,
+    ) -> Result<()> {
+        self.reserve_steer()
+            .await?
+            .send_with_person_text(content.into(), person_text);
+        Ok(())
+    }
+
     /// Request the live context-window budget for this session's route.
     /// `None` means the route cannot express a bounded window (e.g. an
     /// unknown model with no catalog or configured limits) — callers should
@@ -1124,6 +1310,79 @@ impl EngineHandle {
         rx.await
             .map_err(|_| anyhow::anyhow!("Engine dropped MCP reload oneshot"))?
             .map_err(anyhow::Error::msg)
+    }
+
+    #[must_use]
+    pub fn list_auto_review_blocks(&self) -> Vec<AutoReviewBlockedAction> {
+        self.auto_review_state.lock().blocked_actions()
+    }
+
+    pub fn approve_auto_review_retry(
+        &self,
+        target: &str,
+    ) -> std::result::Result<AutoReviewRetryGrant, AutoReviewRetryApprovalError> {
+        if !self.owner_surface_attached
+            || !matches!(
+                self.host_profile,
+                super::host_profile::EngineHostProfile::Normal
+            )
+        {
+            return Err(AutoReviewRetryApprovalError::OwnerRequired);
+        }
+        if self.runtime_permission_authority().approval_mode != ApprovalMode::Auto {
+            return Err(AutoReviewRetryApprovalError::NotInAutoReview);
+        }
+        self.auto_review_state
+            .lock()
+            .approve_retry(target)
+            .map_err(AutoReviewRetryApprovalError::InvalidTarget)
+    }
+
+    pub fn reset_auto_review_state_for_boundary(&self) {
+        self.auto_review_state
+            .lock()
+            .reset_for_conversation_boundary();
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_auto_review_authority_for_test(&self, approval_mode: ApprovalMode) {
+        self.publish_turn_authority(
+            AppMode::Agent,
+            true,
+            false,
+            approval_mode == ApprovalMode::Bypass,
+            approval_mode,
+            None,
+        );
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_auto_review_block_for_test(
+        &self,
+        tool_id: &str,
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+        rule: Option<&str>,
+        reason: &str,
+        gate: &str,
+        verdict: &str,
+        approvable: bool,
+    ) -> Option<String> {
+        let recorded = self.auto_review_state.lock().record_block(
+            true,
+            self.owner_surface_attached,
+            false,
+            approvable,
+            tool_id,
+            tool_name,
+            tool_input,
+            rule,
+            reason,
+            gate,
+            verdict,
+        );
+        recorded.receipt_id
     }
 }
 

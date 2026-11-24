@@ -388,11 +388,24 @@ pub const SPILLOVER_PREVIEW_HINT: &str = "view full output in the tool details v
 /// promising retrieval there would just be a fourth dead route; say plainly
 /// that there is no tool call for it and name what does work instead.
 pub fn spillover_recovery_instruction(retrieval_ref: Option<&str>) -> String {
+    spillover_recovery_instruction_for(retrieval_ref, None)
+}
+
+fn spillover_recovery_instruction_for(
+    retrieval_ref: Option<&str>,
+    omitted_lines: Option<usize>,
+) -> String {
     match retrieval_ref {
+        Some(reference) if omitted_lines.is_some_and(|lines| lines <= 3) => format!(
+            "{SPILLOVER_RECOVERY_HINT} call retrieve_tool_result with ref=\"{reference}\" \
+             (it is one or a few long lines: mode=\"summary\" for its structure, \
+             mode=\"json\" with jsonpath=\"$.field\" for part of a JSON value, \
+             mode=\"query\" with query=\"…\" to search it)"
+        ),
         Some(reference) => format!(
             "{SPILLOVER_RECOVERY_HINT} call retrieve_tool_result with ref=\"{reference}\" \
-             (mode=\"tail\" for the end, mode=\"lines\" with lines=\"120-160\" for a range, \
-             mode=\"query\" with query=\"…\" to search it)"
+             (mode=\"tail\" for the end, mode=\"lines\" with lines=\"A-B\" for a line range, \
+             mode=\"query\" with query=\"…\" to search it, mode=\"json\" for JSON)"
         ),
         None => format!(
             "{SPILLOVER_RECOVERY_HINT} no tool call reaches this copy — re-run the command \
@@ -415,7 +428,7 @@ fn spillover_preview_footer(
         codewhale_runtime::artifacts::format_byte_size(
             omitted_bytes.try_into().unwrap_or(u64::MAX)
         ),
-        spillover_recovery_instruction(retrieval_ref)
+        spillover_recovery_instruction_for(retrieval_ref, Some(omitted_lines))
     )
 }
 
@@ -600,22 +613,43 @@ fn apply_spillover_inner(
     let mut artifact_path = None;
     if let Some(context) = artifact_context {
         let artifact_id = codewhale_runtime::artifacts::artifact_id_for_tool_call(tool_id);
-        // Publish immutably, like adaptive evidence: a turn's artifact
-        // reference names these bytes by digest, so a later call that reuses
-        // the id must fail closed (legacy footer) instead of rewriting them.
-        match codewhale_runtime::artifacts::write_session_artifact_immutable(
-            context.session_id,
-            &artifact_id,
-            original_content.as_bytes(),
-        ) {
-            Ok((absolute_path, relative_path)) => {
-                let record = codewhale_runtime::artifacts::record_tool_output_artifact(
-                    context.session_id,
-                    tool_id,
-                    context.tool_name,
-                    relative_path.clone(),
-                    &original_content,
-                );
+        let persisted = if let Some(existing) =
+            pre_persisted_session_artifact(result, &artifact_id, context.session_id)
+        {
+            Ok((
+                existing.absolute_path,
+                existing.relative_path,
+                Some(existing.byte_size),
+            ))
+        } else {
+            codewhale_runtime::artifacts::write_session_artifact_immutable(
+                context.session_id,
+                &artifact_id,
+                original_content.as_bytes(),
+            )
+            .map(|(absolute_path, relative_path)| (absolute_path, relative_path, None))
+        };
+        match persisted {
+            Ok((absolute_path, relative_path, existing_byte_size)) => {
+                let record = match existing_byte_size {
+                    Some(byte_size) => {
+                        codewhale_runtime::artifacts::record_tool_output_artifact_with_size(
+                            context.session_id,
+                            tool_id,
+                            context.tool_name,
+                            relative_path.clone(),
+                            byte_size,
+                            &original_content,
+                        )
+                    }
+                    None => codewhale_runtime::artifacts::record_tool_output_artifact(
+                        context.session_id,
+                        tool_id,
+                        context.tool_name,
+                        relative_path.clone(),
+                        &original_content,
+                    ),
+                };
                 result.content = truncated_preview(
                     head,
                     tail,
@@ -991,6 +1025,58 @@ pub fn refit_spilled_preview(
     ))
 }
 
+struct PrePersistedSessionArtifact {
+    absolute_path: PathBuf,
+    relative_path: PathBuf,
+    byte_size: u64,
+    digest: String,
+}
+
+fn pre_persisted_session_artifact(
+    result: &ToolResult,
+    expected_artifact_id: &str,
+    expected_session_id: &str,
+) -> Option<PrePersistedSessionArtifact> {
+    let metadata = result.metadata.as_ref()?.as_object()?;
+    if metadata
+        .get("artifact_id")
+        .and_then(serde_json::Value::as_str)?
+        != expected_artifact_id
+    {
+        return None;
+    }
+    if metadata
+        .get("artifact_session_id")
+        .and_then(serde_json::Value::as_str)?
+        != expected_session_id
+    {
+        return None;
+    }
+    let absolute_path = PathBuf::from(
+        metadata
+            .get("artifact_path")
+            .and_then(serde_json::Value::as_str)?,
+    );
+    let relative_path = PathBuf::from(
+        metadata
+            .get("artifact_relative_path")
+            .and_then(serde_json::Value::as_str)?,
+    );
+    let byte_size = metadata
+        .get("artifact_byte_size")
+        .and_then(serde_json::Value::as_u64)?;
+    let digest = metadata
+        .get("artifact_digest")
+        .and_then(serde_json::Value::as_str)?
+        .to_string();
+    Some(PrePersistedSessionArtifact {
+        absolute_path,
+        relative_path,
+        byte_size,
+        digest,
+    })
+}
+
 fn apply_adaptive_evidence_inner(
     result: &mut ToolResult,
     tool_id: &str,
@@ -1001,6 +1087,9 @@ fn apply_adaptive_evidence_inner(
         EvidenceRetentionState, EvidenceRouting, estimate_tokens, publish_evidence_metadata,
         unix_millis_now,
     };
+
+    let artifact_id = codewhale_runtime::artifacts::artifact_id_for_tool_call(tool_id);
+    let pre_persisted = pre_persisted_session_artifact(result, &artifact_id, context.session_id);
 
     let estimated_tokens = estimate_tokens(&result.content);
     let threshold = result
@@ -1017,7 +1106,7 @@ fn apply_adaptive_evidence_inner(
         .cloned()
         .and_then(|value| serde_json::from_value::<EvidenceRouting>(value).ok())
         .unwrap_or_else(|| EvidenceRouting::from_token_estimate(estimated_tokens, threshold));
-    if routing == EvidenceRouting::Inline {
+    if routing == EvidenceRouting::Inline && pre_persisted.is_none() {
         return None;
     }
 
@@ -1028,29 +1117,41 @@ fn apply_adaptive_evidence_inner(
         (HANDLE_ONLY_HEAD_BYTES, HANDLE_ONLY_TAIL_BYTES)
     };
     let (head, tail) = head_tail_windows(&original, head_bytes, tail_bytes);
-    let omitted = original.len().saturating_sub(head.len() + tail.len());
-    if omitted == 0 {
-        // The whole output fits inside the preview budget: there is nothing
-        // to recover, so publishing an artifact and claiming a truncation
-        // would both be dishonest. Pass the content through unchanged.
+    let omitted = if routing == EvidenceRouting::Inline {
+        0
+    } else {
+        original.len().saturating_sub(head.len() + tail.len())
+    };
+    if omitted == 0 && pre_persisted.is_none() {
         return None;
     }
     let head_len = head.len();
     let tail_len = tail.len();
 
-    let artifact_id = codewhale_runtime::artifacts::artifact_id_for_tool_call(tool_id);
-    let relative_path = codewhale_runtime::artifacts::session_artifact_relative_path(&artifact_id);
-    let digest = codewhale_runtime::hashing::sha256_hex(original.as_bytes());
+    let (relative_path, digest, size_bytes, content_type) = match pre_persisted.as_ref() {
+        Some(existing) => (
+            existing.relative_path.clone(),
+            existing.digest.clone(),
+            existing.byte_size,
+            "text/plain".to_string(),
+        ),
+        None => (
+            codewhale_runtime::artifacts::session_artifact_relative_path(&artifact_id),
+            codewhale_runtime::hashing::sha256_hex(original.as_bytes()),
+            original.len().try_into().unwrap_or(u64::MAX),
+            if serde_json::from_str::<serde_json::Value>(&original).is_ok() {
+                "application/json".to_string()
+            } else {
+                "text/plain".to_string()
+            },
+        ),
+    };
     let now_ms = unix_millis_now();
     let proposed_artifact = EvidenceArtifact {
         handle: artifact_id.clone(),
         digest: digest.clone(),
-        size_bytes: original.len().try_into().unwrap_or(u64::MAX),
-        content_type: if serde_json::from_str::<serde_json::Value>(&original).is_ok() {
-            "application/json".to_string()
-        } else {
-            "text/plain".to_string()
-        },
+        size_bytes,
+        content_type,
         tool_name: context.tool_name.to_string(),
         call_id: tool_id.to_string(),
         origin_session: context.session_id.to_string(),
@@ -1076,32 +1177,33 @@ fn apply_adaptive_evidence_inner(
         }
         Ok(_) => {
             tracing::warn!(target: "evidence", tool_id, "adaptive evidence replay conflicts with immutable metadata");
-            bound_unpersisted_output(result, head_bytes, tail_bytes);
+            if omitted > 0 {
+                bound_unpersisted_output(result, head_bytes, tail_bytes);
+            }
             return None;
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             if let Err(err) = publish_evidence_metadata(context.session_id, &proposed_artifact) {
                 tracing::warn!(target: "evidence", ?err, tool_id, "adaptive evidence metadata publication failed");
-                bound_unpersisted_output(result, head_bytes, tail_bytes);
+                if omitted > 0 {
+                    bound_unpersisted_output(result, head_bytes, tail_bytes);
+                }
                 return None;
             }
             proposed_artifact
         }
         Err(err) => {
             tracing::warn!(target: "evidence", ?err, tool_id, "adaptive evidence metadata validation failed");
-            bound_unpersisted_output(result, head_bytes, tail_bytes);
+            if omitted > 0 {
+                bound_unpersisted_output(result, head_bytes, tail_bytes);
+            }
             return None;
         }
     };
 
-    // Seal the ownership/integrity record before publishing predictable
-    // `art_<call>.txt` bytes. If metadata publication fails, no payload exists
-    // for a guessed handle to retrieve without the generation, redaction,
-    // retention, size, and digest checks above. A metadata-only interruption
-    // is safe: the handle is never advertised and a retry can idempotently
-    // publish the matching bytes.
-    let (absolute_path, relative_path) =
-        match codewhale_runtime::artifacts::write_session_artifact_immutable(
+    let (absolute_path, relative_path) = match pre_persisted {
+        Some(existing) => (existing.absolute_path, existing.relative_path),
+        None => match codewhale_runtime::artifacts::write_session_artifact_immutable(
             context.session_id,
             &artifact_id,
             original.as_bytes(),
@@ -1112,22 +1214,26 @@ fn apply_adaptive_evidence_inner(
                 bound_unpersisted_output(result, head_bytes, tail_bytes);
                 return None;
             }
-        };
+        },
+    };
 
-    let record = codewhale_runtime::artifacts::record_tool_output_artifact(
+    let record = codewhale_runtime::artifacts::record_tool_output_artifact_with_size(
         context.session_id,
         tool_id,
         context.tool_name,
         relative_path.clone(),
+        artifact.size_bytes,
         &original,
     );
-    result.content = truncated_preview(
-        head,
-        tail,
-        &original,
-        &codewhale_runtime::artifacts::format_artifact_relative_path(&absolute_path),
-        Some(artifact_id.as_str()),
-    );
+    if omitted > 0 {
+        result.content = truncated_preview(
+            head,
+            tail,
+            &original,
+            &codewhale_runtime::artifacts::format_artifact_relative_path(&absolute_path),
+            Some(artifact_id.as_str()),
+        );
+    }
     let metadata = result.metadata.get_or_insert_with(|| serde_json::json!({}));
     if let Some(object) = metadata.as_object_mut() {
         object.insert(
@@ -1148,8 +1254,10 @@ fn apply_adaptive_evidence_inner(
         object.insert("evidence_available".into(), true.into());
         object.insert("truncated".into(), true.into());
         object.insert("original_byte_count".into(), artifact.size_bytes.into());
-        object.insert("retained_head_bytes".into(), head_len.into());
-        object.insert("retained_tail_bytes".into(), tail_len.into());
+        if omitted > 0 {
+            object.insert("retained_head_bytes".into(), head_len.into());
+            object.insert("retained_tail_bytes".into(), tail_len.into());
+        }
         object.insert(
             "artifact_preview".into(),
             original.chars().take(200).collect::<String>().into(),
@@ -1175,6 +1283,116 @@ fn sanitise_id(id: &str) -> Option<String> {
         None
     } else {
         Some(cleaned)
+    }
+}
+
+#[must_use]
+pub fn json_len(value: &serde_json::Value) -> usize {
+    struct Count(usize);
+    impl io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    let _ = serde_json::to_writer(&mut count, value);
+    count.0
+}
+
+#[must_use]
+pub fn shrink_json(value: serde_json::Value, budget: usize) -> (serde_json::Value, usize) {
+    if json_len(&value) <= budget {
+        return (value, 0);
+    }
+    let mut omitted = 0;
+    let value = shrink_json_inner(value, budget, &mut omitted);
+    (value, omitted.max(1))
+}
+
+fn shrink_json_inner(
+    value: serde_json::Value,
+    budget: usize,
+    omitted: &mut usize,
+) -> serde_json::Value {
+    use serde_json::Value;
+    const MIN_ENTRY_BYTES: usize = 8;
+    match value {
+        Value::String(text) => {
+            let mut keep = budget.saturating_sub(5).min(text.len());
+            loop {
+                while !text.is_char_boundary(keep) {
+                    keep -= 1;
+                }
+                let cut = Value::String(format!("{}…", &text[..keep]));
+                if keep == 0 || json_len(&cut) <= budget {
+                    *omitted += 1;
+                    return cut;
+                }
+                keep /= 2;
+            }
+        }
+        Value::Array(items) => {
+            let total = items.len();
+            let mut kept = Vec::new();
+            let mut used = 2;
+            for item in items {
+                let remaining = budget.saturating_sub(used + 1);
+                if remaining < MIN_ENTRY_BYTES {
+                    break;
+                }
+                let fits = json_len(&item) <= remaining;
+                let item = if fits {
+                    item
+                } else {
+                    shrink_json_inner(item, remaining, omitted)
+                };
+                let len = json_len(&item);
+                if len > remaining {
+                    break;
+                }
+                used += len + 1;
+                kept.push(item);
+                if !fits {
+                    break;
+                }
+            }
+            *omitted += total - kept.len();
+            Value::Array(kept)
+        }
+        Value::Object(map) => {
+            let total = map.len();
+            let mut kept = serde_json::Map::new();
+            let mut used = 2;
+            for (key, item) in map {
+                if budget.saturating_sub(used) < MIN_ENTRY_BYTES {
+                    break;
+                }
+                let key_len = json_len(&Value::String(key.clone())) + 2;
+                let remaining = budget.saturating_sub(used + key_len);
+                if remaining < MIN_ENTRY_BYTES {
+                    continue;
+                }
+                let fits = json_len(&item) <= remaining;
+                let item = if fits {
+                    item
+                } else {
+                    shrink_json_inner(item, remaining, omitted)
+                };
+                let len = json_len(&item);
+                if len > remaining {
+                    continue;
+                }
+                used += key_len + len;
+                kept.insert(key, item);
+            }
+            *omitted += total - kept.len();
+            Value::Object(kept)
+        }
+        other => other,
     }
 }
 
@@ -1530,6 +1748,14 @@ mod tests {
             let footer = spillover_preview_footer(4096, 120, "/tmp/x.txt", reference);
             assert!(footer.contains(SPILLOVER_RECOVERY_HINT), "{footer}");
         }
+    }
+
+    #[test]
+    fn single_line_spillover_footer_points_to_json_and_query_not_a_line_range() {
+        let footer = spillover_preview_footer(319_744, 1, "/tmp/x.txt", Some("art_1"));
+        assert!(footer.contains("mode=\"json\""), "{footer}");
+        assert!(footer.contains("mode=\"query\""), "{footer}");
+        assert!(!footer.contains("mode=\"lines\""), "{footer}");
     }
 
     #[test]

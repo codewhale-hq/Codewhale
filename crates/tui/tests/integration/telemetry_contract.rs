@@ -51,7 +51,7 @@ const SENTINEL_FILENAME: &str = "tc-workspace-sentinel-file.txt";
 const SENTINEL_PROVIDER_TABLE: &str = "tc_custom_provider_sentinel";
 const SENTINEL_MCP_SERVER: &str = "tc-mcp-server-sentinel";
 const SENTINEL_API_KEY: &str = "tc-api-key-sentinel-not-a-real-key";
-/// Planted by writing to `buffer.jsonl` directly, which is what any other
+/// Planted by writing to a spool file directly, which is what any other
 /// process running as this user can do.
 const SENTINEL_INJECTED: &str = "tc-injected-sentinel-/Users/victim/secret-repo";
 /// The key lives only in the child's environment, never in a file, so the
@@ -279,22 +279,43 @@ async fn assert_no_batches(server: &MockServer, why: &str) {
     );
 }
 
+fn spool_files(fixture: &Fixture) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(fixture.telemetry_root().join("spool")) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .collect();
+    files.sort();
+    files
+}
+
+fn only_spool_file(fixture: &Fixture) -> Option<PathBuf> {
+    let mut files = spool_files(fixture);
+    (files.len() == 1).then(|| files.remove(0))
+}
+
 fn buffered_events(fixture: &Fixture) -> Vec<Value> {
-    let path = fixture.telemetry_root().join("buffer.jsonl");
-    let body = std::fs::read_to_string(&path).unwrap_or_else(|error| {
-        panic!(
-            "read locally buffered telemetry at {}: {error}",
-            path.display()
-        )
-    });
-    body.lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            serde_json::from_str::<Value>(line).unwrap_or_else(|error| {
+    let mut events = Vec::new();
+    for path in spool_files(fixture) {
+        let body = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!(
+                "read locally buffered telemetry at {}: {error}",
+                path.display()
+            )
+        });
+        for line in body.lines().filter(|line| !line.trim().is_empty()) {
+            let value = serde_json::from_str::<Value>(line).unwrap_or_else(|error| {
                 panic!("buffered telemetry must be JSON: {error}\nline: {line}")
-            })
-        })
-        .collect()
+            });
+            if value.get("event").is_some() {
+                events.push(value);
+            }
+        }
+    }
+    events
 }
 
 async fn assert_short_cli_persistence_without_network(
@@ -380,8 +401,12 @@ async fn incomplete_short_cli_sessions_require_an_explicit_timeout() {
     let server = start_recorder().await;
     let fixture = Fixture::new().with_endpoint(&server.uri());
     std::fs::create_dir_all(fixture.telemetry_root()).expect("create local buffer root");
+    std::fs::create_dir_all(fixture.telemetry_root().join("spool")).expect("create spool dir");
     std::fs::write(
-        fixture.telemetry_root().join("buffer.jsonl"),
+        fixture
+            .telemetry_root()
+            .join("spool")
+            .join(format!("{}.jsonl", "a".repeat(32))),
         "{\"event\":\"session_start\",\"source\":\"unknown\"}\n",
     )
     .expect("write incomplete session");
@@ -845,8 +870,10 @@ async fn a_hostile_buffer_line_never_reaches_a_batch() {
     let stdout = read_in_background(child.stdout.take().expect("stdout pipe"));
     let stderr = read_in_background(child.stderr.take().expect("stderr pipe"));
 
-    let buffer = fixture.telemetry_root().join("buffer.jsonl");
-    wait_until(Duration::from_secs(30), || buffer.exists());
+    wait_until(Duration::from_secs(30), || {
+        only_spool_file(&fixture).is_some()
+    });
+    let buffer = only_spool_file(&fixture).expect("this session's spool");
     append_lines(
         &buffer,
         &[
@@ -929,11 +956,10 @@ async fn mid_session_opt_out_stops_the_shutdown_flush() {
     // Wait until this session's event is actually buffered, then leave enough
     // time for any accidental background flush to reach the recorder. Nothing
     // may be sent before shutdown.
-    let buffer = fixture.telemetry_root().join("buffer.jsonl");
     wait_until(Duration::from_secs(30), || {
-        std::fs::read_to_string(&buffer)
-            .map(|body| body.contains("\"event\":\"session_start\""))
-            .unwrap_or(false)
+        only_spool_file(&fixture)
+            .and_then(|buffer| std::fs::read_to_string(buffer).ok())
+            .is_some_and(|body| body.contains("\"event\":\"session_start\""))
     });
     tokio::time::sleep(Duration::from_millis(250)).await;
     assert_no_batches(&server, "before the shutdown flush").await;
@@ -981,7 +1007,7 @@ async fn ctrl_c_exits_while_a_second_process_holds_the_lock() {
     // Arming itself takes the lock, so the holder below must wait until the
     // session is armed — otherwise this test would pin a deadlock it created.
     wait_until(Duration::from_secs(30), || {
-        root.join("buffer.jsonl").exists()
+        only_spool_file(&fixture).is_some()
     });
     let _holder = LockHolder::take(&lock_path);
 

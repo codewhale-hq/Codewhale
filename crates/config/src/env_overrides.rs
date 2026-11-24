@@ -1,6 +1,4 @@
-use crate::base_url_resolution::provider_preserves_custom_base_url_model;
 use crate::display_redaction::{parse_bool, parse_http_headers};
-use crate::model_normalization::normalize_model_for_provider;
 use crate::provider;
 use crate::provider_kind::ProviderKind;
 use crate::telemetry::{read_telemetry_env, telemetry_floor_in_force};
@@ -415,10 +413,9 @@ impl EnvRuntimeOverrides {
             _ => None,
         }?;
 
-        if provider_preserves_custom_base_url_model(provider, base_url) {
-            Some(model.trim().to_string())
-        } else {
-            Some(normalize_model_for_provider(provider, &model))
-        }
+        Some(
+            crate::route::resolve_model(provider, &model, Some(base_url))
+                .map_or_else(|_| model.trim().to_string(), |resolved| resolved.wire_id),
+        )
     }
 }
