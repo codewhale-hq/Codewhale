@@ -1765,7 +1765,7 @@ pub(crate) fn apply_context_menu_action(
             }
         }
         ContextMenuAction::Paste => {
-            app.paste_from_clipboard();
+            crate::tui::paste::handle_paste(app, crate::tui::paste::PasteSource::Shortcut);
         }
         ContextMenuAction::Row(action) => {
             outcome = ContextMenuOutcome::Events(apply_sidebar_row_action(app, action));

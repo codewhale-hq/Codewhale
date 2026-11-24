@@ -17,7 +17,7 @@ use codewhale_core::ContextReference;
 use codewhale_execpolicy::ApprovalMode;
 
 use crate::tui::active_cell::ActiveCell;
-use crate::tui::clipboard::{ClipboardContent, ClipboardHandler};
+use crate::tui::clipboard::ClipboardHandler;
 use crate::tui::history::{
     HistoryCell, TranscriptActionOwner, TranscriptFold, TranscriptRenderOptions,
 };
@@ -1719,6 +1719,8 @@ pub struct App {
     /// When the clipboard paste last ran, so a terminal that reports both the
     /// press and the release of Ctrl+V pastes once instead of twice.
     pub last_clipboard_paste: Option<Instant>,
+    /// A clipboard read still running off the UI thread.
+    pub(crate) pending_paste: Option<crate::tui::paste::PendingPaste>,
     pub paste_shortcut_press_seen: bool,
     /// Whether the once-per-turn provider-wait incident (#3095) has already
     /// been logged for the current turn.

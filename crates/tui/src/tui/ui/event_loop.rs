@@ -2404,6 +2404,8 @@ pub(crate) async fn run_event_loop(
             }
         }
 
+        crate::tui::paste::poll_pending_paste(app);
+
         // Drain dispatch completions from spawned send tasks (#4605). The
         // closure receives `&mut App` and applies success state or rollback.
         while let Ok(apply) = dispatch_completion_rx.try_recv() {
@@ -5937,6 +5939,9 @@ pub(crate) async fn run_event_loop(
         if let Some(until_flush) = app.paste_burst_next_flush_delay_if_enabled(now) {
             poll_timeout = poll_timeout.min(until_flush);
         }
+        if let Some(until_paste) = crate::tui::paste::pending_paste_poll_delay(app) {
+            poll_timeout = poll_timeout.min(until_paste);
+        }
         if let Some(until_draw) = draw_wait {
             poll_timeout = poll_timeout.min(until_draw);
         }
@@ -6061,13 +6066,16 @@ pub(crate) async fn run_event_loop(
                 }
             }
             if let Event::Paste(text) = &evt {
-                if crate::tui::work_surface::handle_terminal_paste(app, text) {
-                    continue;
-                }
-                if app.launch.return_to_session && app.view_stack.is_empty() {
+                if app.launch.return_to_session
+                    && app.view_stack.is_empty()
+                    && app.focus() != crate::tui::shell_key_routing::Focus::TerminalPanel
+                {
                     app.launch.dismiss();
                 }
-                handle_bracketed_paste(app, text);
+                crate::tui::paste::handle_paste(
+                    app,
+                    crate::tui::paste::PasteSource::Terminal(text),
+                );
                 continue;
             }
 
@@ -6291,15 +6299,10 @@ pub(crate) async fn run_event_loop(
                 key_shortcuts::PasteEdge::Route => {}
                 key_shortcuts::PasteEdge::Ignore => continue,
                 key_shortcuts::PasteEdge::ImageOnly => {
-                    let composer_owns_key = match app.focus() {
-                        crate::tui::shell_key_routing::Focus::Composer => true,
-                        crate::tui::shell_key_routing::Focus::Launch => app.launch.composer_focus,
-                        _ => false,
-                    };
-                    if composer_owns_key && !app.is_history_search_active() {
-                        app.attach_clipboard_image();
-                        app.needs_redraw = true;
-                    }
+                    crate::tui::paste::handle_paste(
+                        app,
+                        crate::tui::paste::PasteSource::ReleaseOnly,
+                    );
                     continue;
                 }
             }
@@ -6578,7 +6581,10 @@ pub(crate) async fn run_event_loop(
                 // onboarding back-transition the shell used to force.
                 OnboardingKeyRoute::ProviderPicker | OnboardingKeyRoute::AccountLogin => {
                     if key_shortcuts::is_paste_shortcut(&key)
-                        && paste_provider_picker_from_clipboard(app)
+                        && crate::tui::paste::handle_paste(
+                            app,
+                            crate::tui::paste::PasteSource::Shortcut,
+                        )
                     {
                         app.needs_redraw = true;
                         continue;
@@ -7035,7 +7041,10 @@ pub(crate) async fn run_event_loop(
 
             if !app.view_stack.is_empty() {
                 if key_shortcuts::is_paste_shortcut(&key)
-                    && paste_provider_picker_from_clipboard(app)
+                    && crate::tui::paste::handle_paste(
+                        app,
+                        crate::tui::paste::PasteSource::Shortcut,
+                    )
                 {
                     app.needs_redraw = true;
                     continue;
@@ -8179,7 +8188,7 @@ pub(crate) async fn run_event_loop(
                     crate::tui::mouse_ui::cut_selection(app);
                 }
                 _ if key_shortcuts::is_paste_shortcut(&key) => {
-                    app.paste_from_clipboard();
+                    crate::tui::paste::handle_paste(app, crate::tui::paste::PasteSource::Shortcut);
                 }
                 KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::ALT) => {
                     apply_mode_update(app, &engine_handle, AppMode::Agent).await;

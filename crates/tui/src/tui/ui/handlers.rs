@@ -216,47 +216,6 @@ pub(crate) fn handle_memory_quick_add(app: &mut App, input: &str, config: &Confi
     }
 }
 
-/// Route one terminal bracketed-paste event without exposing its contents.
-///
-/// Keeping the routing in one function makes the credential and ordinary
-/// composer paths exercise the same observability boundary.
-pub(crate) fn handle_bracketed_paste(app: &mut App, text: &str) {
-    tracing::debug!(
-        paste_bytes = text.len(),
-        paste_chars = text.chars().count(),
-        "Received bracketed paste event"
-    );
-    // Once a real bracketed-paste event has been observed in this session,
-    // the rapid-keystroke heuristic in paste_burst is redundant — disable it
-    // so fast typing / IME commits / autocomplete bursts don't get
-    // mis-classified as a paste.
-    app.bracketed_paste_seen = true;
-    if app.is_history_search_active() && app.view_stack.is_empty() {
-        app.history_search_insert_str(text);
-    } else if paste_text_into_provider_picker(app, text) || app.view_stack.handle_paste(text) {
-        // Modal consumed the paste (e.g. provider picker key entry).
-    } else if !app.view_stack.is_empty() {
-        // A non-consumed modal is open — don't leak paste into composer.
-    } else {
-        // Main-input paste takes the same keyboard ownership as typed text.
-        // Otherwise the visible composer command's Enter stays with the dock.
-        crate::tui::work_surface::release_focus(app);
-        if text.is_empty() {
-            // A terminal that answers an image-only clipboard with an empty
-            // paste has already proven the person pressed paste; read the
-            // picture ourselves. Windows Terminal sends no event at all in
-            // that case, which is why `/attach` with no path also exists.
-            // A terminal-owned SSH paste has no readable clipboard, so it
-            // falls through instead of flashing a hint for an empty copy.
-            if !app.clipboard.requires_terminal_paste() {
-                app.paste_from_clipboard();
-            }
-            return;
-        }
-        app.insert_paste_text(text);
-    }
-}
-
 /// The event-loop seam for Ctrl+T. Keeping the `KeyEvent` predicate and App
 /// mutation together makes the real terminal route directly testable rather
 /// than testing `cycle_effort` in isolation.

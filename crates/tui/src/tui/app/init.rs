@@ -839,6 +839,7 @@ impl App {
             dispatch_cancel: None,
             last_enter_instant: None,
             last_clipboard_paste: None,
+            pending_paste: None,
             paste_shortcut_press_seen: false,
             provider_wait_incident_logged: false,
             prompt_suggestion: None,

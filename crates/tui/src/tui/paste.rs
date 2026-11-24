@@ -5,11 +5,15 @@
 //! `App.paste_burst` (`tui::paste_burst`); these helpers wire it to the key
 //! event loop and the composer's text buffer.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::app::{App, looks_like_slash_command_input};
+use super::clipboard::{ClipboardContent, ClipboardRead};
+use super::shell_key_routing::Focus;
+use super::views::ModalKind;
+use codewhale_localization::MessageId;
 use codewhale_tui_kit::paste_burst::CharDecision;
 
 /// Terminals known to deliver `Event::Paste` for a real paste.
@@ -183,6 +187,211 @@ fn in_command_context(app: &App) -> bool {
     looks_like_slash_command_input(&composite)
 }
 
+/// Where a paste came from. Every paste, terminal-delivered or read from the
+/// clipboard, reaches [`handle_paste`]: the one place that decides who owns
+/// it and whether the clipboard has to be asked at all.
+pub(crate) enum PasteSource<'a> {
+    /// `Event::Paste`: the terminal already delivered the text. Windows
+    /// Terminal sends an empty one for an image-only clipboard ("send an empty
+    /// bracketed paste even if the clipboard was empty"), which is the only
+    /// signal a TUI gets that the person pasted.
+    Terminal(&'a str),
+    /// Cmd/Ctrl+V reached Codewhale, or the mouse menu's Paste: read the
+    /// clipboard.
+    Shortcut,
+    /// Only the release of Ctrl+V arrived: the terminal took the chord and
+    /// delivers any text itself, so only an image is Codewhale's to attach.
+    ReleaseOnly,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PasteTarget {
+    TerminalPanel,
+    HistorySearch,
+    ProviderPicker,
+    Modal,
+    Composer,
+}
+
+/// A clipboard read still running on the reader thread. One at a time: a
+/// paste while it runs is the other edge of the same key press, or a repeat
+/// the person will see land once the read answers.
+pub(crate) struct PendingPaste {
+    target: PasteTarget,
+    image_only: bool,
+    started: Instant,
+    rx: std::sync::mpsc::Receiver<Option<ClipboardContent>>,
+}
+
+/// The slowest read finishes inside this: two `wl-paste` waits of 2 s, or
+/// PowerShell's 10 s image fallback plus the backend open. A reader stuck
+/// past it is abandoned so the next paste can start a fresh one.
+const PENDING_PASTE_LIMIT: Duration = Duration::from_secs(15);
+const PENDING_PASTE_POLL: Duration = Duration::from_millis(16);
+
+fn paste_target(app: &App) -> PasteTarget {
+    if app.focus() == Focus::TerminalPanel && app.work_surface.last_area.is_some() {
+        PasteTarget::TerminalPanel
+    } else if app.view_stack.top_kind() == Some(ModalKind::ProviderPicker) {
+        PasteTarget::ProviderPicker
+    } else if !app.view_stack.is_empty() {
+        PasteTarget::Modal
+    } else if app.is_history_search_active() {
+        PasteTarget::HistorySearch
+    } else {
+        PasteTarget::Composer
+    }
+}
+
+/// Route one paste. Returns whether the paste was taken; a clipboard shortcut
+/// the focused surface does not paste into (a terminal panel, a non-credential
+/// modal) is left for that surface's own key handling.
+pub(crate) fn handle_paste(app: &mut App, source: PasteSource<'_>) -> bool {
+    let target = paste_target(app);
+    match source {
+        PasteSource::Terminal(text) => {
+            tracing::debug!(
+                paste_bytes = text.len(),
+                paste_chars = text.chars().count(),
+                "Received bracketed paste event"
+            );
+            app.bracketed_paste_seen = true;
+            if text.is_empty() && target == PasteTarget::Composer {
+                request_clipboard(app, target, false, true);
+            } else {
+                deliver_text(app, target, text);
+            }
+            true
+        }
+        PasteSource::Shortcut => match target {
+            PasteTarget::TerminalPanel | PasteTarget::Modal => false,
+            _ => {
+                request_clipboard(app, target, false, false);
+                true
+            }
+        },
+        PasteSource::ReleaseOnly => {
+            if target == PasteTarget::Composer {
+                request_clipboard(app, target, true, true);
+            }
+            true
+        }
+    }
+}
+
+fn request_clipboard(app: &mut App, target: PasteTarget, image_only: bool, quiet: bool) {
+    // A terminal may forward both edges of Ctrl+V. The window runs from the
+    // end of the previous read, so a slow read cannot push the second edge
+    // outside it, and a read still running absorbs that edge outright.
+    if app.pending_paste.is_some() || app.clipboard_paste_within_dedupe_window() {
+        return;
+    }
+    // In SSH sessions without a forwarded display the terminal client owns
+    // paste: a direct shortcut gets the local terminal-paste instruction and
+    // `Event::Paste` stays the data path.
+    if app.clipboard.requires_terminal_paste() {
+        if !quiet {
+            app.status_message = Some(app.tr(MessageId::ClipboardSshPasteHint).into_owned());
+            app.note_clipboard_paste();
+        }
+        return;
+    }
+    let prefer_markdown = target == PasteTarget::Composer && !image_only;
+    match app.clipboard.read(app.workspace.as_path(), prefer_markdown) {
+        ClipboardRead::Ready(content) => finish_paste(app, target, image_only, content),
+        ClipboardRead::Pending(rx) => {
+            app.pending_paste = Some(PendingPaste {
+                target,
+                image_only,
+                started: Instant::now(),
+                rx,
+            });
+        }
+    }
+}
+
+/// Apply a finished clipboard read. Called from the event loop every tick.
+pub(crate) fn poll_pending_paste(app: &mut App) {
+    let Some(pending) = app.pending_paste.as_ref() else {
+        return;
+    };
+    let content = match pending.rx.try_recv() {
+        Ok(content) => content,
+        Err(std::sync::mpsc::TryRecvError::Empty)
+            if pending.started.elapsed() < PENDING_PASTE_LIMIT =>
+        {
+            return;
+        }
+        Err(_) => {
+            tracing::warn!(
+                target: "codewhale_tui::clipboard",
+                "clipboard read did not answer; abandoned"
+            );
+            app.pending_paste = None;
+            return;
+        }
+    };
+    let Some(pending) = app.pending_paste.take() else {
+        return;
+    };
+    if paste_target(app) == pending.target {
+        finish_paste(app, pending.target, pending.image_only, content);
+    } else {
+        // Focus moved while the clipboard answered: the paste belonged to a
+        // surface that is gone, and must not land in whatever replaced it (a
+        // credential must never reach the composer under a closed picker).
+        app.note_clipboard_paste();
+    }
+}
+
+/// Shortens the event loop's wait while a clipboard read is running.
+pub(crate) fn pending_paste_poll_delay(app: &App) -> Option<Duration> {
+    app.pending_paste.as_ref().map(|_| PENDING_PASTE_POLL)
+}
+
+fn finish_paste(
+    app: &mut App,
+    target: PasteTarget,
+    image_only: bool,
+    content: Option<ClipboardContent>,
+) {
+    app.note_clipboard_paste();
+    app.needs_redraw = true;
+    match content {
+        // Images go only to the composer; an open credential modal consumes
+        // and ignores one rather than leaking it to the draft beneath.
+        Some(ClipboardContent::Image(pasted)) if target == PasteTarget::Composer => {
+            crate::tui::work_surface::release_focus(app);
+            let description = format!("{} ({})", pasted.short_label(), pasted.size_label());
+            app.insert_media_attachment("image", &pasted.path, Some(&description));
+            app.status_message = Some(format!("Attached image: {description}"));
+        }
+        Some(ClipboardContent::Text(text)) if !image_only => deliver_text(app, target, &text),
+        // The read cannot tell an empty clipboard from an unreadable one;
+        // either way the person asked to paste and nothing happened.
+        None if !image_only && target == PasteTarget::Composer => {
+            app.status_message = Some(app.tr(MessageId::ClipboardNothingToPaste).into_owned());
+        }
+        _ => {}
+    }
+}
+
+fn deliver_text(app: &mut App, target: PasteTarget, text: &str) {
+    match target {
+        PasteTarget::TerminalPanel => {
+            crate::tui::work_surface::handle_terminal_paste(app, text);
+        }
+        PasteTarget::HistorySearch => app.history_search_insert_str(text),
+        PasteTarget::ProviderPicker | PasteTarget::Modal => {
+            let _ = app.view_stack.handle_paste(text);
+        }
+        PasteTarget::Composer => {
+            crate::tui::work_surface::release_focus(app);
+            app.insert_paste_text(text);
+        }
+    }
+}
+
 #[cfg(test)]
 mod bracketed_paste_trust_tests {
     use super::{terminal_delivers_bracketed_paste, terminal_identity_allows_paste_bypass};
@@ -264,6 +473,50 @@ mod tests {
 
     fn plain(ch: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn a_clipboard_read_lands_when_it_answers_and_absorbs_the_second_edge() {
+        let mut app = test_app();
+        let (clipboard, tx) = crate::tui::clipboard::ClipboardHandler::with_pending_read_for_test();
+        app.clipboard = clipboard;
+        assert!(handle_paste(&mut app, PasteSource::Shortcut));
+        assert!(pending_paste_poll_delay(&app).is_some());
+
+        // The other edge of the same chord arrives while the read runs.
+        assert!(handle_paste(&mut app, PasteSource::Shortcut));
+        poll_pending_paste(&mut app);
+        assert!(app.input.is_empty());
+
+        tx.send(Some(ClipboardContent::Text("pasted".to_string())))
+            .unwrap();
+        poll_pending_paste(&mut app);
+        assert_eq!(app.input, "pasted");
+        assert!(app.pending_paste.is_none());
+        assert!(handle_paste(&mut app, PasteSource::Shortcut));
+        assert_eq!(app.input, "pasted");
+    }
+
+    #[test]
+    fn a_clipboard_read_for_a_surface_that_closed_is_dropped() {
+        let mut app = test_app();
+        let (clipboard, tx) = crate::tui::clipboard::ClipboardHandler::with_pending_read_for_test();
+        app.clipboard = clipboard;
+        assert!(handle_paste(&mut app, PasteSource::Shortcut));
+        // Focus moves to history search before the clipboard answers.
+        app.start_history_search();
+
+        tx.send(Some(ClipboardContent::Text("sk-secret".to_string())))
+            .unwrap();
+        poll_pending_paste(&mut app);
+
+        assert!(app.input.is_empty(), "{}", app.input);
+        assert!(app.pending_paste.is_none());
+        assert!(
+            !app.history_search_query()
+                .unwrap_or_default()
+                .contains("sk-secret")
+        );
     }
 
     #[test]
