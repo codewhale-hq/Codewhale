@@ -1025,7 +1025,7 @@ pub async fn run_tui(
     pending_telemetry_notice: Option<codewhale_engine::telemetry_notice::PendingTelemetryNotice>,
     launch_conversation_mode: Option<String>,
     permission_mode: Option<codewhale_engine::runtime_options::PermissionMode>,
-    launch_external_agent: Option<crate::tui::external_agent::ExternalAgentSession>,
+    launch_external_agent: Option<Box<crate::tui::external_agent::ExternalAgentSession>>,
 ) -> Result<()> {
     // Install notification, sound, category, and attention policy before any
     // producer (including the model-facing notify tool) can emit an event.
@@ -1207,7 +1207,7 @@ pub async fn run_tui(
         let notice = app
             .tr(MessageId::ExternalAgentSessionStarted)
             .replace("{agent}", &session.agent_name);
-        app.external_agent = Some(session);
+        app.external_agent = Some(*session);
         app.add_message(HistoryCell::System {
             content: notice.clone(),
         });

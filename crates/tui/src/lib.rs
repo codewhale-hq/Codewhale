@@ -3142,7 +3142,7 @@ async fn run_async_main_dispatch(
                         auto_mode,
                         &config,
                     );
-                    return run_exec_external_agent(
+                    return Box::pin(run_exec_external_agent(
                         &config,
                         agent_id,
                         &prompt,
@@ -3153,7 +3153,7 @@ async fn run_async_main_dispatch(
                         args.json,
                         args.output_format,
                         std::sync::Arc::clone(&plugin_registry),
-                    )
+                    ))
                     .await;
                 }
                 let resume_session_id = resolve_exec_resume_session_id(&args, &workspace)?;
@@ -15661,14 +15661,17 @@ async fn run_interactive_prepared(
                 "--agent cannot be combined with --resume or --continue.",
             );
         }
-        let discovered = match tui::external_agent::validate_external_agent_for_cli(agent_id).await
+        let discovered = match Box::pin(tui::external_agent::validate_external_agent_for_cli(
+            agent_id,
+        ))
+        .await
         {
             Ok(row) => row,
             Err(error) => exit_refused("codewhale", &error.to_string()),
         };
         let (posture, mode) =
             tui::external_agent::resolve_external_agent_posture(cli.permission_mode, yolo, config);
-        match tui::external_agent::create_external_agent_session(
+        match Box::pin(tui::external_agent::create_external_agent_session(
             config,
             workspace.clone(),
             posture,
@@ -15676,10 +15679,10 @@ async fn run_interactive_prepared(
             discovered.id,
             Some(discovered.name),
             std::sync::Arc::clone(&plugin_registry),
-        )
+        ))
         .await
         {
-            Ok(session) => Some(session),
+            Ok(session) => Some(Box::new(session)),
             Err(error) => exit_refused("codewhale", &error.to_string()),
         }
     } else {

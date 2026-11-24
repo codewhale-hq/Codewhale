@@ -69,6 +69,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`/effort` and the reasoning-effort picker now accept `low` and `medium` on Ollama Cloud:** removed the picker's duplicate catalog effort parser in favor of `ReasoningEffort::catalog_effort_values_for_offering` and `from_catalog_token`, and aligned Ollama Cloud's picker ladder (`auto`, `off`, `low`, `medium`, `high`, `max`) with the engine. (CW-8360)
+- **Skill companion discovery includes subdirectories and non-English trigger clauses:** `load_skill` now recursively lists companion files inside skill subdirectories (sorted deterministically, skipping symlinks) and skill index shortening recognizes non-English trigger prefixes such as `Триггеры:` and `触发条件:`. (Refs #7432)
+- **Full Access is selected through `Shift+Tab` instead of the legacy yolo-compat funnel:** removed `Alt+Y`, `Alt+Shift+Y`, and the `/mode yolo|bypass|4` permission shortcut; `/mode yolo` now points to `Shift+Tab` (or `/auto`), and `/zidong` is now an alias for `/auto` (Auto-Review). Launch flags (`--yolo`, `--full-access`, `CODEWHALE_YOLO`, `default_mode = "yolo"`) keep their startup behavior.
+
+### Fixed
+
+- **Composer vim mode no longer swallows typing after pressing `v`:** removed the unfinished `VimMode::Visual` state that absorbed all keys until `Esc` with no on-screen indicator or operators.
+- **Lone non-ASCII keys now reach normal key routing on untrusted terminals:** single IME/non-ASCII commits in paste-burst detection keep their Enter-suppression window while falling through to the main key match (vim Normal mode, Esc-Esc backtrack reset, and ordinary insertion) instead of bypassing it.
+- **Launch-card resume always opens confirmation from mouse and keyboard:** unified mouse and keyboard launch-action dispatchers into one `apply_launch_action` path and removed the unreachable direct-resume mouse arm.
+- Updated vendored `codewhale-ratatui` to `codewhale-design` 5.5.0 (Obsidian/Porcelain tokens) from upstream `f268539`, retiring the four now-upstreamed Engine adaptations (`posture.rs`, `native_composer.rs`, `motion.rs`, `native_chrome.rs`) from `UPSTREAM.json`.
+### Fixed
+
+- **`/rlm` now reaches the discoverable `rlm` tool:** `/rlm` no longer tells the model to emit ```` ```repl ```` fences or forbid `rlm` actions, and the canonical `rlm` tool (`open`, `eval`, `configure`, `close`, `session_objects`) is discoverable via `tool_search` while legacy `rlm_*` aliases stay hidden. (CW-8360)
+- **Removed duplicate TUI `login` and `logout` subcommands reachable through `codewhale run`:** `codewhale run logout` no longer clears saved provider API keys and `codewhale run login` is removed; use `codewhale login`, `codewhale logout`, and `codewhale auth ...` instead. (CW-8360)
+- **`codewhale model resolve` agrees with turns:** removed the reviewed-selection admission gate (`admit_reviewed_selection`) so `codewhale model resolve` no longer refuses model IDs that `/model` lists and turns accept; live-catalog refusals (`fetched_at > 0`) and Ollama's placeholder default refusal stay in place. (CW-8360)
+- **User config is now the single source of workspace trust:** removed repository self-trust markers (`.deepseek/trusted` and `.deepseek/trust.json`) from trust checks and project context loading so a repository cannot hide the trust prompt or make `doctor`/`setup` report it as trusted while hooks, MCP, and skills remain off. Workspaces that relied only on those markers will prompt for trust once. (CW-8360)
+### Added
+
+- **Choose an external ACP agent in the terminal:** `/model` now lists installed external ACP agents (`antigravity`, `opencode`, `copilot`, `dsh`, and others) alongside Codewhale models, showing why non-runnable agents are blocked and what to run, and `codewhale --agent <id>` / `codewhale exec --agent <id>` starts an interactive or headless session through the Engine ACP executor. (CW-8361)
+- Added Onomeo as a bundled provider descriptor row. Thanks [@Owaid0723666](https://github.com/Owaid0723666). (#7525)
+- Added Simplified Chinese translation of `AUTO_REVIEW.md` (`docs/zh_hans/AUTO_REVIEW.md`). Thanks [@Goldloli](https://github.com/Goldloli). (#7521)
+- Improved runtime item-index caching and turn-reference lookup performance. Thanks [@gaord](https://github.com/gaord). (#7446, #7522)
 
 ### Fixed
 
