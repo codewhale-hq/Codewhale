@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Skills discovery, triggers, and config validation:** `load_skill` companion file lists now include files inside subdirectories (bounded depth/count, skipping hidden files and symlinks), `split_trigger` recognizes localized trigger clauses (such as Russian `Триггеры:` and Chinese `触发条件：`), the names-only skill index tier preserves skill paths whenever budget allows, and unknown keys under `[skills]` are rejected during config parsing instead of silently ignored. (#7432)
+
 ### Added
 
 - **Verified candidate evaluator for experimental search workflows:** `workflows/operate_best_of_n.workflow.js` now supports an optional host-owned `args.evaluator` (`task.verifyCandidate`) that freezes a clean Git baseline, seals candidate diffs, and replays public and held-out gates inside Linux bubblewrap with `proposal_only` receipts. Thanks [@axobase001](https://github.com/axobase001). (#7294)

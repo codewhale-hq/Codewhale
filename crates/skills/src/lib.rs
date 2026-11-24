@@ -1897,6 +1897,13 @@ impl IndexRow<'_> {
         format!("- {}\n", self.name)
     }
 
+    fn render_name_with_source(&self) -> String {
+        match &self.source {
+            Some(source) => format!("- {} ({source})\n", self.name),
+            None => format!("- {}\n", self.name),
+        }
+    }
+
     fn summary_len(&self) -> usize {
         self.summary.chars().count()
     }
@@ -1910,26 +1917,74 @@ impl IndexRow<'_> {
     }
 }
 
-/// Split a description into its summary and `Use when:` trigger phrase, so
-/// shortening can favour the half the model routes on.
+fn find_marker_case_insensitive(haystack: &str, marker: &str) -> Option<(usize, usize)> {
+    let marker_chars: Vec<char> = marker.chars().collect();
+    if marker_chars.is_empty() {
+        return None;
+    }
+    for (start_byte, _) in haystack.char_indices() {
+        let mut hay_iter = haystack[start_byte..].char_indices();
+        let mut matched_len = 0usize;
+        let mut ok = true;
+        for &mc in &marker_chars {
+            let Some((rel_byte, hc)) = hay_iter.next() else {
+                ok = false;
+                break;
+            };
+            let mut lower = hc.to_lowercase();
+            if lower.next() != Some(mc) || lower.next().is_some() {
+                ok = false;
+                break;
+            }
+            matched_len = rel_byte + hc.len_utf8();
+        }
+        if ok {
+            return Some((start_byte, start_byte + matched_len));
+        }
+    }
+    None
+}
+
 fn split_trigger(description: &str) -> (String, Option<String>) {
     let single_line = description.split_whitespace().collect::<Vec<_>>().join(" ");
-    let lower = single_line.to_ascii_lowercase();
     for marker in [
+        "use this skill when ",
+        "use this when ",
         "use when:",
         "use when ",
-        "use this when ",
-        "use this skill when ",
+        "triggers:",
+        "trigger:",
+        "триггеры:",
+        "триггер:",
+        "использовать, когда ",
+        "используй, когда ",
+        "использовать при ",
+        "используй при ",
+        "触发条件：",
+        "触发条件:",
+        "适用场景：",
+        "适用场景:",
+        "使用时机：",
+        "使用时机:",
+        "トリガー：",
+        "トリガー:",
+        "使用条件：",
+        "使用条件:",
+        "트리거:",
+        "사용 조건:",
+        "usar cuando ",
+        "utilisez quand ",
+        "verwenden, wenn ",
     ] {
-        if let Some(pos) = lower.find(marker) {
-            let (head, tail) = single_line.split_at(pos);
-            let trigger = tail[marker.len()..]
+        if let Some((start, end)) = find_marker_case_insensitive(&single_line, marker) {
+            let head = &single_line[..start];
+            let trigger = single_line[end..]
                 .trim()
-                .trim_end_matches('.')
+                .trim_end_matches(['.', '。'])
                 .to_string();
             let summary = head
                 .trim()
-                .trim_end_matches(['.', ';', ',', '—', '-'])
+                .trim_end_matches(['.', ';', ',', '—', '-', '。', '；', '，'])
                 .trim();
             if !trigger.is_empty() {
                 return (summary.to_string(), Some(trigger));
@@ -2146,12 +2201,21 @@ Skills are optional instruction packs. This index exposes routing metadata; bodi
                 out.push_str(line);
             }
         } else {
-            // Tier 3: names only. Omission is the last resort and only when
-            // even the names overflow.
+            // Tier 3: names + source when all fit, otherwise bare names;
+            // omission is the last resort only when even bare names overflow.
             let names_budget = shortened_budget.saturating_sub(skill_omission_reserve);
+            let with_source_total: usize = rows
+                .iter()
+                .map(|row| row.render_name_with_source().chars().count())
+                .sum();
+            let include_source = with_source_total <= names_budget;
             let mut used = 0usize;
             for row in &rows {
-                let line = row.render_name_only();
+                let line = if include_source {
+                    row.render_name_with_source()
+                } else {
+                    row.render_name_only()
+                };
                 let len = line.chars().count();
                 if used + len > names_budget {
                     omitted += 1;
