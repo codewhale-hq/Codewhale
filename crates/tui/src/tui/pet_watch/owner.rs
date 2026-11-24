@@ -152,7 +152,7 @@ enum Work {
         AudioLease,
         tokio::sync::oneshot::Sender<Result<Value, String>>,
     ),
-    Export(tokio::sync::oneshot::Sender<Result<Value, String>>),
+    Export(tokio::sync::oneshot::Sender<Result<Vec<u8>, String>>),
 }
 
 #[derive(Clone)]
@@ -323,7 +323,23 @@ async fn export(State(state): State<Service>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &state) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    submit(&state, Work::Export).await
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    if state.tx.try_send(Work::Export(tx)).is_err() {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    let snapshot = match tokio::time::timeout(WORK_REPLY_TIMEOUT, rx).await {
+        Ok(Ok(Ok(snapshot))) => snapshot,
+        Ok(Ok(Err(error))) => return answer(Err(error)),
+        _ => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    };
+    match tokio::task::spawn_blocking(move || {
+        serde_json::from_slice::<serde::de::IgnoredAny>(&snapshot).map(|_| snapshot)
+    })
+    .await
+    {
+        Ok(Ok(snapshot)) => ([("content-type", "application/json")], snapshot).into_response(),
+        _ => answer(Err("Recording export failed".into())),
+    }
 }
 async fn pair(State(state): State<Service>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &state) {
@@ -791,10 +807,7 @@ fn run_world(
             Work::Export(reply) => {
                 let result = context
                     .with(|ctx| super::persistence::export_recording(&ctx, true))
-                    .map_err(|_| "Recording export failed".to_owned())
-                    .and_then(|text| {
-                        serde_json::from_slice(&text).map_err(|_| "Recording export failed".into())
-                    });
+                    .map_err(|_| "Recording export failed".to_owned());
                 let _ = reply.send(result);
             }
             Work::Audio(request, reply) => {
@@ -1159,6 +1172,40 @@ mod tests {
             mint_code(&state, now).unwrap();
         }
         assert_eq!(state.codes.lock().unwrap().len(), MAX_PAIR_CODES);
+    }
+
+    #[tokio::test]
+    async fn export_validates_and_sends_the_world_snapshot_off_the_world() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let state = Service {
+            tx,
+            ..service(4100)
+        };
+        let snapshot = br#"{"petReplayVersion":1,"tape":[]}"#.to_vec();
+        let world = std::thread::spawn({
+            let snapshot = snapshot.clone();
+            move || {
+                for reply in [snapshot, b"{\"tape\":[".to_vec()] {
+                    let Ok(Work::Export(sender)) = rx.recv() else {
+                        panic!("expected an export")
+                    };
+                    sender.send(Ok(reply)).unwrap();
+                }
+            }
+        });
+        let bearer = format!("Bearer {}", "a".repeat(64));
+        let auth = headers(&[("host", "127.0.0.1:4100"), ("authorization", &bearer)]);
+        let complete = export(State(state.clone()), auth.clone()).await;
+        assert_eq!(complete.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(complete.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), snapshot.as_slice());
+        assert_eq!(
+            export(State(state), auth).await.status(),
+            StatusCode::CONFLICT
+        );
+        world.join().unwrap();
     }
 
     #[test]

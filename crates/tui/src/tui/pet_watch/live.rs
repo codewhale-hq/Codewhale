@@ -283,15 +283,14 @@ impl Client {
             self.http.get(url)
         };
         if path == "/v1/export" {
-            // The owner serializes the recording on its world thread for up
-            // to its own work bound; giving up sooner abandons an export the
-            // owner still completes. Other calls keep the 2 s client bound.
+            // The owner copies the recording out of its world thread for up
+            // to its own work bound, then validates and sends it off that
+            // thread; giving up sooner abandons an export the owner still
+            // completes. Other calls keep the 2 s client bound.
             //
-            // Known limitation (U06-m4): export runs synchronously in the
-            // owner's single QuickJS world, so the world answers no other work
-            // until it finishes. Keeping it responsive needs an incremental
-            // export in pet-native.js; aligning this wait is only the client
-            // half.
+            // Known limitation (U06-m4): the copy itself is QuickJS chunk
+            // reads on the owner's single world, so the world answers no other
+            // work while it takes that snapshot.
             request = request.timeout(owner::WORK_REPLY_TIMEOUT + Duration::from_secs(1));
         }
         let response = request
