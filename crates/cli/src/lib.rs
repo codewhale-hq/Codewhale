@@ -7775,7 +7775,7 @@ mod tests {
         let bytes_before = std::fs::read(&path).unwrap();
         let token = ["sk-live-", "Z7qX4mNb2Vc9Lk3PwR8t"].concat();
         for (key, value) in [
-            ("approval_policy", "ask"),
+            ("approval_policy", "full-access"),
             ("sandbox_mode", "full"),
             ("verbosity", "quiet"),
             ("approval_policy", token.as_str()),
