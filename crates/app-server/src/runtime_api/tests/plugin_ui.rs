@@ -750,6 +750,7 @@ exports.apply = function (ctx) {
 
 #[tokio::test]
 async fn plugin_settings_round_trip_conflicts_and_security_boundaries() -> Result<()> {
+    let _policy = codewhale_plugins::activation::TestPolicyGuard::extension_host(true);
     let tmp = tempfile::tempdir()?;
     let root = tmp.path().join("runtime");
     let workspace = tmp.path().join("ws");
@@ -759,7 +760,39 @@ async fn plugin_settings_round_trip_conflicts_and_security_boundaries() -> Resul
         "api_key = \"sk-host-secret\"\n\n[plugins.other.config]\nsecret = \"sibling-only\"\n",
     )?;
 
-    let no_settings_pkg = write_dsh_package(tmp.path(), "nosettings", DSH_CLIENT)?;
+    let no_settings_pkg = tmp.path().join("nosettings");
+    fs::create_dir_all(no_settings_pkg.join("skills/greet"))?;
+    fs::write(
+        no_settings_pkg.join("package.json"),
+        serde_json::json!({
+            "name": "dsh-no-settings",
+            "version": "1.0.0",
+            "main": "./index.js",
+            "exports": { "./client": { "default": "./client.js" } },
+            "dsh": {
+                "engines": { "dsh": "^0.2.2-rc.1" },
+                "bundle": { "patch": "./cordis.patch.yml" },
+                "client": { "platform": "web" }
+            }
+        })
+        .to_string(),
+    )?;
+    fs::write(
+        no_settings_pkg.join("cordis.patch.yml"),
+        "- insert:\n  - id: main\n    name: \"./index.js\"\n  - id: skills\n    name: \"@deepseek-ai/dsh-skill-filesystem\"\n    config:\n      customSkillDirs:\n        - ./skills\n",
+    )?;
+    fs::write(
+        no_settings_pkg.join("skills/greet/SKILL.md"),
+        "---\nname: greet\ndescription: Greets a person\n---\nSay hi.\n",
+    )?;
+    fs::write(
+        no_settings_pkg.join("index.js"),
+        "export const name = 'no-settings';\nexport function apply() {}\n",
+    )?;
+    fs::write(
+        no_settings_pkg.join("client.js"),
+        "exports.apply = function apply() {};\n",
+    )?;
     let settings_pkg = tmp.path().join("withsettings");
     fs::create_dir_all(settings_pkg.join("skills/greet"))?;
     fs::write(
