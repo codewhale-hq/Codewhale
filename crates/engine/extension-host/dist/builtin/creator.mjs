@@ -1604,7 +1604,11 @@ var compatibility_default = {
       "sessionProjections",
       "workspaceRegistry",
       "typertGateway",
-      "web"
+      "web",
+      "webServer",
+      "connection",
+      "sessionTitle",
+      "profileContext"
     ],
     cordis: [
       "logger",
@@ -1656,7 +1660,11 @@ var compatibility_default = {
     "sessionProjections",
     "workspaceRegistry",
     "typertGateway",
-    "web"
+    "web",
+    "webServer",
+    "connection",
+    "sessionTitle",
+    "profileContext"
   ],
   row_bridges: {
     "@deepseek-ai/dsh-mcp-client": "mcp",
@@ -2753,6 +2761,92 @@ var inspect_catalog_default = {
         ]
       },
       {
+        key: "webServer",
+        group: "dsh",
+        summary: "Sandboxed Engine-brokered in-memory HTTP route registry (no raw sockets).",
+        availability: "always",
+        availabilityText: "Available to every plugin that injects it.",
+        methods: [
+          {
+            name: "register",
+            signature: "register(route: { kind?: 'exact' | 'prefix', path: string, method?: string, methods?: string[], handler: (req, res) => void | Promise<void> }): () => void",
+            summary: "Register an owner-scoped HTTP route dispatched through Engine plugin_route/dispatch."
+          },
+          {
+            name: "getOrigin",
+            signature: "getOrigin(): string",
+            summary: "Return the loopback origin advertised to the plugin."
+          }
+        ]
+      },
+      {
+        key: "connection",
+        group: "dsh",
+        summary: "Scoped loopback connection status, trust fence, Fetch route registry, and RPC channel registry.",
+        availability: "always",
+        availabilityText: "Available to every plugin that injects it.",
+        methods: [
+          {
+            name: "requestRejection",
+            signature: "requestRejection(req?: { headers?: Record<string, string | string[] | undefined> }): { status: number, message: string } | null",
+            summary: "Verify loopback Host and non-cross-site Fetch metadata."
+          },
+          {
+            name: "fetch.register",
+            signature: "fetch.register(route: { path: string, methods?: string[], fetch: (req: Request) => Response | Promise<Response> }): () => void",
+            summary: "Register an owner-scoped Fetch-style route handler."
+          },
+          {
+            name: "rpc.handle",
+            signature: "rpc.handle(channel: string, handler: (endpoint: string, payload: unknown) => unknown | Promise<unknown>): () => void",
+            summary: "Register an owner-scoped JSON RPC channel handler."
+          }
+        ]
+      },
+      {
+        key: "sessionTitle",
+        group: "dsh",
+        summary: "Owner-scoped in-memory session title store and rename observer.",
+        availability: "always",
+        availabilityText: "Available to every plugin that injects it.",
+        methods: [
+          {
+            name: "get",
+            signature: "get(session: unknown): string | undefined",
+            summary: "Read a session title stored by this owner."
+          },
+          {
+            name: "rename",
+            signature: "rename(session: unknown, title: string): string",
+            summary: "Store a bounded single-line title for a session under this owner."
+          },
+          {
+            name: "register",
+            signature: "register(listener: (sessionId: string, title: string) => void): () => void",
+            summary: "Observe session title updates within this owner."
+          }
+        ]
+      },
+      {
+        key: "profileContext",
+        group: "dsh",
+        summary: "Read-only owner-scoped profile directory metadata.",
+        availability: "always",
+        availabilityText: "Available to every plugin that injects it.",
+        methods: [
+          {
+            name: "dir",
+            signature: "get dir(): string",
+            summary: "Return the owner's scoped data directory (fails closed when absent)."
+          },
+          {
+            name: "installAnchor",
+            signature: "get installAnchor(): string",
+            summary: "Return the owner's scoped install anchor directory."
+          }
+        ]
+      },
+      {
         key: "logger",
         group: "cordis",
         summary: "Cordis logging. Every line becomes a host log notification attributed to the plugin.",
@@ -2978,7 +3072,11 @@ var inspect_catalog_default = {
       "sessionProjections",
       "workspaceRegistry",
       "typertGateway",
-      "web"
+      "web",
+      "webServer",
+      "connection",
+      "sessionTitle",
+      "profileContext"
     ],
     events: [
       {

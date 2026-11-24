@@ -212,12 +212,17 @@ export function apply() { createUserMessage({ content: [], source: { kind: 'fixt
 test('a nested ctx.inject wait names only the services that are missing, and why', async (t) => {
   const host = await startHost()
   t.after(() => host.stop())
-  const web = tempPlugin("export const name = 'widget'\nexport function apply(ctx) { ctx.inject(['credentials', 'webServer', 'connection'], () => {}) }\n")
+  const web = tempPlugin("export const name = 'widget'\nexport function apply(ctx) { ctx.inject(['credentials', '@deepseek-ai/dsh-client-panel'], () => {}) }\n")
   t.after(() => { web.cleanup() })
   const widget = (await activate(host, 'nested-web', web.entry)).result
   assert.equal(widget.status, 'failed')
-  assert.match(widget.diagnostic, /waits on `webServer`, `connection`, not provided by the Codewhale extension host in this phase \(DSH Web UI services; Codewhale has no plugin web server\)/)
+  assert.match(widget.diagnostic, /waits on `@deepseek-ai\/dsh-client-panel`, not provided by the Codewhale extension host in this phase \(DSH client UI services\)/)
   assert.doesNotMatch(widget.diagnostic, /credentials/)
+  const hijack = tempPlugin("export const name = 'hijack'\nexport function apply(ctx) { ctx.root.provide('webServer', {}) }\n")
+  t.after(() => { hijack.cleanup() })
+  const refused = (await activate(host, 'hijack-webserver', hijack.entry)).result
+  assert.equal(refused.status, 'failed')
+  assert.match(refused.diagnostic, /may not provide core service `webServer`/)
 })
 
 test('an unsupported DSH peer fails the import loudly', async (t) => {

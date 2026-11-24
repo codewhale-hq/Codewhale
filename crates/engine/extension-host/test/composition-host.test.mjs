@@ -111,11 +111,13 @@ test('a failed composition row names its import error, and a waiting row names o
   const imported=(await activate(host,'row-peer',peer.entry)).result
   assert.equal(imported.status,'failed')
   assert.match(imported.diagnostic,/composition row "row-0" failed activation: UnsupportedPeerError: requires `@deepseek-ai\/dsh-user-approval`/)
-  const web=moduleClosureComposition(t,"export const inject=['tools','webServer'];export function apply(){}",{})
+  const web=moduleClosureComposition(t,"export const inject=['tools','@deepseek-ai/dsh-client-panel'];export function apply(){}",{})
   const waiting=(await activate(host,'row-web',web.entry)).result
   assert.equal(waiting.status,'failed')
-  assert.match(waiting.diagnostic,/composition row "row-0" requires `webServer`, not provided by the Codewhale extension host in this phase \(DSH Web UI services; Codewhale has no plugin web server\)/)
+  assert.match(waiting.diagnostic,/composition row "row-0" requires `@deepseek-ai\/dsh-client-panel`, not provided by the Codewhale extension host in this phase \(DSH client UI services\)/)
   assert.doesNotMatch(waiting.diagnostic,/`tools`/)
+  const webOk=moduleClosureComposition(t,"export const inject=['tools','webServer','connection'];export function apply(){}",{})
+  assert.equal((await activate(host,'row-web-ok',webOk.entry)).result.status,'ok')
   const spawn=moduleClosureComposition(t,"export const inject=['subprocess'];export function apply(){}",{})
   const owned=(await activate(host,'row-subprocess',spawn.entry)).result
   assert.equal(owned.status,'failed')
