@@ -3540,4 +3540,41 @@ mod tests {
         assert!(text.contains("Could not open sessions"), "{text}");
         assert!(!text.contains("No saved sessions yet"), "{text}");
     }
+
+    #[test]
+    fn delete_selected_sets_status_when_sessions_directory_fails() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let blocking_file = tmp.path().join("not-a-directory");
+        std::fs::write(&blocking_file, b"x").expect("write blocking file");
+        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &blocking_file);
+        let mut view = picker_with(vec![test_session(1, "Saved session")], None);
+
+        assert!(view.delete_selected().is_none());
+        assert_eq!(
+            view.status.as_deref(),
+            Some(tr(view.locale, MessageId::SessionsDirectoryFailed).as_ref())
+        );
+    }
+
+    #[test]
+    fn truncate_keeps_zwj_emoji_and_cjk_within_width() {
+        for width in 4u16..=14 {
+            let out = truncate("session 👨‍👩‍👧‍👦 notes", width);
+            assert!(
+                codewhale_tui_kit::ui_text::text_display_width(&out) <= usize::from(width),
+                "width {width} exceeded: {out:?}"
+            );
+            assert!(
+                out.contains("👨‍👩‍👧‍👦") || (!out.contains('👨') && !out.contains('\u{200d}')),
+                "ZWJ cluster split at width {width}: {out:?}"
+            );
+        }
+        let cjk = truncate("作業ディレクトリ一覧", 10);
+        assert!(
+            codewhale_tui_kit::ui_text::text_display_width(&cjk) <= 10,
+            "CJK width exceeded: {cjk:?}"
+        );
+        assert!(cjk.ends_with("..."), "{cjk:?}");
+    }
 }
