@@ -115,6 +115,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Avoid holding the MCP pool lock across desktop-browser admission checks:** `McpToolAdapter::execute_rich` now runs `admit_desktop_browser_call` before acquiring the shared MCP pool mutex. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Refs #7461)
 
+### Fixed
+
+- **Structured failure `cause` on provider request receipts and saved turn outcomes:** failed provider request receipts (`open_failed`, `incomplete`, `review_failed`) and persisted `turn_outcomes` now carry a backwards-compatible structured `cause` object (`code`, `category`, `transmission`, optional `http_status`, `timeout_ms`, and `phase`) alongside the typed error `code` already rendered on TUI error cards. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Closes #7328)
+
+### Fixed
+
+- **Sub-agent terminal status, budget recovery, mailbox fidelity, and default spawn depth:** interrupted and cancelled sub-agents now emit distinct `subagent.interrupted` and `subagent.cancelled` sentinel events instead of plain `subagent.done`; `repair_stopped_tool_calls` now runs in production budget-stop finalization before checkpointing and transcript persistence so unanswered final tool calls record explicit budget-stop tool results; `MailboxMessage::BudgetExhausted` preserves budget-exhausted status across the mailbox and TUI projections instead of collapsing to `Failed`; and `DEFAULT_SPAWN_DEPTH` is now bounded to `3` instead of `u32::MAX` (still configurable via `[subagents] max_depth`). Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Closes #7434)
+
+### Fixed
+
+- **Settings schema `allow_shell` matches interactive threads and reports `persisted`:** `/v1/settings/schema` now resolves `allow_shell` using the interactive default (`interactive_allow_shell()` gated by shell-access policy, matching new interactive threads) instead of the headless `false` default, and populates `persisted` for config.toml-owned `RUNTIME_CONFIG_KEYS` rows so Desktop Settings › Trust can distinguish an unset default from an explicit `allow_shell = false`. (CW-8386)
+
+### Fixed
+
+- **Faster stop settlement and damaged thread record recovery:** cancelling a stalled provider stream now drops the stream immediately and skips post-stream tool finalization, and follow-up turns sent while a stop is settling wait briefly for turn completion instead of failing as busy; damaged `threads/thr_*.json` records are now rebuilt from their intact `events/thr_*.jsonl` log (with strict thread-id and schema-version checks) and repaired atomically on disk instead of disappearing from the session list. (CW-8391)
+
+### Changed
+
+- **Test-only Fleet methods gated behind `#[cfg(test)]`:** gated the five remaining test-only `pub` methods in `crates/engine/src/fleet/` (`FleetLedger::{claim_next,record_alert,mark_task_terminal_status_if_unchanged}`, `FleetScheduler::cancel_run`, `FleetExecutor::all_terminal`) under `#[cfg(test)]` so production builds expose no unused Fleet helpers. Thanks [@luochen211](https://github.com/luochen211). (Refs #7270)
+
+### Fixed
+
+- **MCP stdio shutdown kills the process group before reaping a timed-out leader:** when a stdio MCP server ignores `SIGTERM` past the shutdown grace period, `process_broker` now signals its `ProcessTree` before reaping the leader child so descendants are terminated while the process group ID is still pinned. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Refs #6558)
+
 ## [0.10.4] - 2026-11-23
 
 Codewhale v0.10.4 is a hotfix release. Ctrl+V no longer pastes text twice in Windows Terminal, which also doubled API keys pasted into `/provider`; the fix was checked on a real Windows Terminal. `codewhale update` no longer refuses a release binary because an unrelated `cargo install` left a Cargo record beside it. The refusal happens inside the installed 0.10.3, so an install it affects cannot update itself to 0.10.4: rerun the installer once (`curl -fsSL https://codewhale.net/install.sh | sh` on macOS and Linux, or `install.bat` from the 0.10.4 Windows archive), and later updates work. `/provider` now works for projects on a second Windows drive such as D:, Computer Use installs from the Marketplace, and every terminal draws the dot whale in `/pet`. `url` is updated to 2.5.9 for RUSTSEC-2026-0592. DeepSeek Harness compatibility is limited: of 32 published packages tried unmodified, 2 activate in the terminal; [DSH compatibility](docs/DSH_COMPATIBILITY.md) lists each one.
