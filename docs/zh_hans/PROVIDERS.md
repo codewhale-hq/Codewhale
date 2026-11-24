@@ -30,6 +30,7 @@ DeepSeek 仍是默认提供商，但 `ProviderKind::ALL` 中的每个条目都�
 | Wafer | `https://pass.wafer.ai/v1` | `GLM-5.3`（默认）、`GLM-5.2`、`Kimi-K3`、`DeepSeek-V4-Pro` | `WAFER_API_KEY` |
 | Runcrate | `https://api.runcrate.ai/v1` | `deepseek-ai/DeepSeek-V4.1-Flash`、`zai-org/GLM-5.3`、`openai/gpt-oss-120b` | `RUNCRATE_API_KEY` |
 | Opper | `https://api.opper.ai/v3/compat` | `claude-sonnet-4-6`、`gpt-5.4-mini`（池名称）；`anthropic/claude-sonnet-4-6` | `OPPER_API_KEY` |
+| UberLLM | `https://api.uberllm.dev/v1` | `deepseek/deepseek-v4-flash`、`openai/gpt-5.4-mini`、`anthropic/claude-sonnet-4.6` | `UBERLLM_API_KEY` |
 | 腾讯 TokenHub | `https://tokenhub-intl.tencentcloudmaas.com/v1` | `hy4` | `TENCENT_API_KEY` |
 | WorldRouter | `https://inference-api.worldrouter.ai/v1` | `claude-sonnet-5-5`、`deepseek-v4-flash`、`gemini-4-neon` | `WORLDROUTER_API_KEY` |
 | onomeo | `https://onomeo.com/v1` | `deepseek-v4.1-flash`、`claude-sonnet-5.5`、`gpt-6.2-sol` | `ONOMEO_API_KEY` |
@@ -47,6 +48,8 @@ Wafer 是 OpenAI 兼容的无服务器目录。Chat Completions 发往 `https://
 
 Runcrate 是 OpenAI 兼容网关，一个密钥即可使用来自多家实验室的模型。模型 ID 区分大小写，形如 `deepseek-ai/DeepSeek-V4.1-Flash`。模型列表以 `GET https://api.runcrate.ai/v1/models` 的结果为准。配置好 Runcrate 后，运行 `codewhale models --update --provider runcrate` 即可匿名刷新。推理仍需要 `RUNCRATE_API_KEY`，公开列表无法验证密钥。文档见 <https://www.runcrate.ai/docs/getting-started/quickstart>。
 Opper 是托管在欧盟的 OpenAI 兼容网关，一个密钥即可使用来自 50 多家提供商的 700 多个模型。`claude-sonnet-4-6` 这类不带前缀的池名称由 Opper 按请求选择路由；`anthropic/claude-sonnet-4-6` 这类 `provider/model` ID 则固定使用单条路由。Token 价格即模型提供商的价格，不加价。以带密钥请求 `GET https://api.opper.ai/v3/compat/models` 的结果为准，文档见 <https://docs.opper.ai/build/gateway/drop-in-sdks>。
+UberLLM 是 OpenAI 兼容网关，一个密钥即可使用 OpenAI、Anthropic、Google、DeepSeek、Qwen、GLM、Kimi 等厂商的模型。模型 ID 形如 `vendor/model`，例如 `deepseek/deepseek-v4-flash`（默认）或 `anthropic/claude-sonnet-4.6`。模型列表以公开的 `GET https://api.uberllm.dev/v1/models` 为准，其中也列出各模型价格（<https://uberllm.dev/models>）。推理需要 `UBERLLM_API_KEY`；公开列表不能验证密钥。在 <https://uberllm.dev/signup> 创建密钥。文档见 <https://uberllm.dev/docs/quickstart>。
+
 TrustedRouter 是 OpenAI 兼容网关，一个密钥即可使用来自多家实验室的模型。模型 ID 带厂商前缀，例如 `deepseek/deepseek-v4-flash`（默认）或 `anthropic/claude-sonnet-4.5`；`trustedrouter/auto` 会在多个模型之间路由每个请求。模型列表以公开的 `GET https://api.trustedrouter.com/v1/models` 为准。推理需要 `TRUSTEDROUTER_API_KEY`；公开列表请求成功并不代表密钥有效。
 
 WorldRouter 是 OpenAI 兼容网关，一个密钥即可使用 Claude、GPT、Gemini、DeepSeek、Kimi 和 GLM 等模型。模型 ID 不带前缀，例如 `claude-sonnet-5-5`、`deepseek-v4-flash`，模型列表和价格见 <https://www.worldrouter.ai/models>。以带密钥请求 `GET https://inference-api.worldrouter.ai/v1/models` 的结果为准，文档见 <https://www.worldrouter.ai/docs/quickstart>。

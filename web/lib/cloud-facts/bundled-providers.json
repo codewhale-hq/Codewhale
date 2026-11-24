@@ -2333,6 +2333,25 @@
       "wire": "openai-compatible",
       "wire_policy": "openai-compatible"
     },
+    "uberllm": {
+      "aliases": [
+        "uber-llm"
+      ],
+      "api_key_env": "UBERLLM_API_KEY",
+      "auth": {
+        "env_vars": [
+          "UBERLLM_API_KEY"
+        ],
+        "secret_slot": "uberllm"
+      },
+      "base_url": "https://api.uberllm.dev/v1",
+      "credential_url": "https://uberllm.dev/signup",
+      "discovery": "public_models_endpoint",
+      "docs_url": "https://uberllm.dev/docs/quickstart",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
     "vllm": {
       "aliases": [
         "v-llm"
