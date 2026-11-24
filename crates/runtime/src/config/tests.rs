@@ -3395,6 +3395,22 @@ fn workspace_trust_reads_existing_projects_table() -> Result<()> {
 }
 
 #[test]
+fn needs_trust_ignores_repository_self_trust_markers() -> Result<()> {
+    let _lock = lock_test_env();
+    let temp_root = tempfile::tempdir()?;
+    let _guard = EnvGuard::new(temp_root.path());
+    let workspace = temp_root.path().join("project");
+    let legacy_dir = workspace.join(".deepseek");
+    fs::create_dir_all(&legacy_dir)?;
+    fs::write(legacy_dir.join("trusted"), "")?;
+    fs::write(legacy_dir.join("trust.json"), "{}")?;
+
+    assert!(!is_workspace_trusted(&workspace));
+    assert!(crate::config::needs_trust(&workspace));
+    Ok(())
+}
+
+#[test]
 fn saved_credential_describe_returns_config_file_path() {
     let cf = SavedCredential::ConfigFile(PathBuf::from("/tmp/x.toml"));
     assert_eq!(cf.describe(), "/tmp/x.toml");

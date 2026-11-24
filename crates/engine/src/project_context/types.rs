@@ -93,8 +93,6 @@ pub struct ProjectContext {
     pub loaded_rule_paths: Vec<PathBuf>,
     /// Project root directory
     pub project_root: PathBuf,
-    /// Whether this is a trusted project
-    pub is_trusted: bool,
 }
 
 impl ProjectContext {
@@ -111,7 +109,6 @@ impl ProjectContext {
             constitution_source_path: None,
             loaded_rule_paths: Vec::new(),
             project_root,
-            is_trusted: false,
         }
     }
 

@@ -1000,7 +1000,7 @@ condition = { type = "tool_name", name = "exec_shell" }
 
 ### 项目本地 hooks
 
-仓库可以在 `<workspace>/.codewhale/hooks.toml` 中携带策略，使用与 `[hooks]` 表相同的形态(顶层字段加 `[[hooks]]` 条目)。项目 hooks 是可执行的 shell 配置，所以 Codewhale 只会在工作区通过信任提示或 `[projects."<workspace>"] trust_level = "trusted"` 条目在用户自有配置中被信任之后才加载它们。会话 `/trust on` 模式本身不启用仓库提供的 hooks，仓库本地旧标记(如 `.deepseek/trusted`)也不启用项目 hooks。一旦受信任，项目 hooks 会追加到 `config.toml` 的全局 hooks 之后，所以它们最后运行，并且对于 `updatedInput`，在平局时胜出。格式错误的受信任项目文件记录警告，启动回退到仅全局 hooks。
+仓库可以在 `<workspace>/.codewhale/hooks.toml` 中携带策略，使用与 `[hooks]` 表相同的形态(顶层字段加 `[[hooks]]` 条目)。项目 hooks 是可执行的 shell 配置，所以 Codewhale 只会在工作区通过信任提示或 `[projects."<workspace>"] trust_level = "trusted"` 条目在用户自有配置中被信任之后才加载它们。会话 `/trust on` 模式本身不启用仓库提供的 hooks。一旦受信任，项目 hooks 会追加到 `config.toml` 的全局 hooks 之后，所以它们最后运行，并且对于 `updatedInput`，在平局时胜出。格式错误的受信任项目文件记录警告，启动回退到仅全局 hooks。
 
 ```toml
 # .codewhale/hooks.toml
