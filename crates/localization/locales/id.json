@@ -2856,5 +2856,14 @@
   "OnboardingMarkFailed": "Tidak dapat menyimpan progres orientasi: {error}",
   "FeatureIntroFlagSaveFailed": "Tidak dapat menyimpan pengaturan tips fitur: {error}",
   "QueueFullNotice": "Antrean pesan lanjutan penuh ({max} pesan); pesan Anda dikembalikan ke kolom tulis.",
-  "ConfigLookupFailed": "Tidak dapat membaca `{key}`: konfigurasi gagal dimuat ({error})"
+  "ConfigLookupFailed": "Tidak dapat membaca `{key}`: konfigurasi gagal dimuat ({error})",
+  "CtxMenuNoSelectionToOpen": "Tidak ada pilihan untuk dibuka",
+  "CtxMenuSelectionCleared": "Pilihan dihapus",
+  "CtxMenuNoSelectionToClear": "Tidak ada pilihan untuk dihapus",
+  "CtxMenuNoDetailsForLine": "Tidak ada detail tersedia untuk baris tersebut",
+  "CtxMenuExtensionUnlisted": "Ekstensi tersebut tidak lagi tercantum",
+  "CtxMenuCellHidden": "Sel disembunyikan",
+  "CtxMenuCellShown": "Sel ditampilkan",
+  "CtxMenuHiddenCellsRestored": "{count} sel tersembunyi dipulihkan",
+  "CtxMenuNoSelectionToCopy": "Tidak ada pilihan untuk disalin"
 }
