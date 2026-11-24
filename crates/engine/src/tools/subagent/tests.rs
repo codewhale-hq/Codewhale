@@ -13849,7 +13849,13 @@ fn subagent_completion_emits_distinct_events_for_interrupted_and_cancelled() {
     interrupted.checkpoint = Some(build_subagent_checkpoint(
         &interrupted.agent_id,
         "API timeout",
-        &[Message::user("hi")],
+        &[Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hi".to_string(),
+                cache_control: None,
+            }],
+        }],
         2,
         true,
     ));
