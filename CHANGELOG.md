@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Verified candidate evaluator for experimental search workflows:** `workflows/operate_best_of_n.workflow.js` now supports an optional host-owned `args.evaluator` (`task.verifyCandidate`) that freezes a clean Git baseline, seals candidate diffs, and replays public and held-out gates inside Linux bubblewrap with `proposal_only` receipts. Thanks [@axobase001](https://github.com/axobase001). (#7294)
 
+### Fixed
+
+- **Avoid holding the MCP pool lock across desktop-browser admission checks:** `McpToolAdapter::execute_rich` now runs `admit_desktop_browser_call` before acquiring the shared MCP pool mutex. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Refs #7461)
+
 ## [0.10.4] - 2026-11-23
 
 Codewhale v0.10.4 is a hotfix release. Ctrl+V no longer pastes text twice in Windows Terminal, which also doubled API keys pasted into `/provider`; the fix was checked on a real Windows Terminal. `codewhale update` no longer refuses a release binary because an unrelated `cargo install` left a Cargo record beside it. The refusal happens inside the installed 0.10.3, so an install it affects cannot update itself to 0.10.4: rerun the installer once (`curl -fsSL https://codewhale.net/install.sh | sh` on macOS and Linux, or `install.bat` from the 0.10.4 Windows archive), and later updates work. `/provider` now works for projects on a second Windows drive such as D:, Computer Use installs from the Marketplace, and every terminal draws the dot whale in `/pet`. `url` is updated to 2.5.9 for RUSTSEC-2026-0592. DeepSeek Harness compatibility is limited: of 32 published packages tried unmodified, 2 activate in the terminal; [DSH compatibility](docs/DSH_COMPATIBILITY.md) lists each one.
