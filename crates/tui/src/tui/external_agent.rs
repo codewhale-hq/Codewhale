@@ -837,6 +837,10 @@ mod tests {
         }])
         .to_string();
         let _env_lock = codewhale_engine::test_support::lock_test_env();
+        let _runtime_dir_guard = codewhale_engine::test_support::EnvVarGuard::set(
+            "CODEWHALE_RUNTIME_DIR",
+            temp.path().join("runtime"),
+        );
         let _env_guard = codewhale_engine::test_support::EnvVarGuard::set(
             codewhale_engine::fleet::agents::CUSTOM_AGENTS_ENV,
             custom_json,
@@ -926,6 +930,10 @@ mod tests {
         }])
         .to_string();
         let _env_lock = codewhale_engine::test_support::lock_test_env();
+        let _runtime_dir_guard = codewhale_engine::test_support::EnvVarGuard::set(
+            "CODEWHALE_RUNTIME_DIR",
+            temp.path().join("runtime"),
+        );
         let _env_guard = codewhale_engine::test_support::EnvVarGuard::set(
             codewhale_engine::fleet::agents::CUSTOM_AGENTS_ENV,
             custom_json,

@@ -43,12 +43,12 @@ describe("public legal routes and retired pricing", () => {
   it("pins the single publication authority and fails on vendored metadata drift", () => {
     const pin = JSON.parse(readFileSync(new URL("vendor/legal-documents/PIN.json", webRoot), "utf8"));
     expect(pin.sourceRepository).toBe("codewhale-hq/codewhale-platform");
-    expect(pin.sourceCommit).toBe("4cd9450aec07ed81d6c56b5ce741424fec533d6b");
+    expect(pin.sourceCommit).toBe("405446d18787499be640d8e0d31c490fb9214848");
     expect(pin.files.map((row: { path: string }) => row.path).sort()).toEqual(["legal-content.tsx", "legal-documents.d.ts", "legal-documents.js"]);
     expect(pin.files.find((row: { path: string }) => row.path === "legal-content.tsx")).toEqual({
-      source: "apps/web/components/legal/legal-content.tsx",
+      source: "apps/web-next/shared/components/legal/legal-content.tsx",
       path: "legal-content.tsx",
-      sha256: "0ffc3568bb9a8dea5e05c497763a342377fec3526b16fa273103909be9f9a3c1",
+      sha256: "865bd6dee6210aef72ae6a19066aaac3ee76fd278e9cbee44b5b53e5bda7e4ae",
     });
     for (const row of pin.files) {
       const data = readFileSync(new URL(`vendor/legal-documents/${row.path}`, webRoot));
@@ -83,6 +83,7 @@ describe("public legal routes and retired pricing", () => {
       }
       expect(privacy).toContain('id="processors"');
       expect(privacy).toContain('id="payments"');
+      expect(privacy).not.toMatch(/PostHog/i);
     }
   });
 

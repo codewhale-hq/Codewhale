@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:5da2c4c9d5f9 -->
+<!-- source: README.md sha256:7e0e7ebc680b -->
 <div align="center">
 
 <picture>
@@ -82,13 +82,13 @@ W trybach Ask, Accept Edits i Auto-Review polecenia działają w piaskownicy sys
 
 Klucze API dodane przez `/provider` zostają na twoim komputerze, a modele lokalne nie wymagają klucza. `/cost` i stopka śledzą koszt sesji, gdy cennik jest znany (nieznana cena jest pokazywana jako nieznana, nigdy jako darmowa).
 
-Zbiorcza telemetria jest domyślnie włączona (wersja, system operacyjny, długość i wynik sesji, identyfikatory wbudowanych dostawców, liczniki funkcji/błędów; losowy identyfikator instalacji zmieniany co 90 dni; nigdy kod, prompty, rozmowy, nazwy modeli, ścieżki ani poświadczenia). Wyłącz ją poleceniem:
+Zbiorcza telemetria jest domyślnie włączona (wersja, system operacyjny, czas trwania i wynik sesji, identyfikatory wbudowanych dostawców, identyfikatory modeli z wbudowanego katalogu publicznego (modele własne, prywatne i lokalne zapisywane są jako `other`), łączne tokeny, liczniki wywołań i błędów wbudowanych narzędzi oraz liczniki funkcji i błędów; losowy identyfikator instalacji zmieniany co 90 dni; nigdy kod, prompty, rozmowy, nazwy własnych/prywatnych modeli, nazwy plików/repozytoriów/gałęzi, poświadczenia ani adresy IP). Wyłącz ją poleceniem:
 
 ```bash
 codewhale config set telemetry false
 ```
 
-Ustaw `CODEWHALE_NO_UPDATE_CHECK=1`, aby pominąć sprawdzanie wydań na GitHubie przy starcie. Szczegóły: [kolejność autoryzacji](../AUTHORIZATION_ORDER.md), [piaskownica](../SANDBOX.md) i [telemetria](../TELEMETRY.md).
+Przy uruchomieniu Codewhale sprawdza też nowe wydania na GitHubie (`CODEWHALE_NO_UPDATE_CHECK=1`, aby pominąć) i co 24 godziny odświeża publiczny katalog modeli `models.dev` (`CODEWHALE_DISABLE_MODELS_DEV_FETCH=1` lub `[catalog] auto_refresh = false`, aby wyłączyć; automatycznie wyłączane w CI i przy `DO_NOT_TRACK`). Szczegóły: [kolejność autoryzacji](../AUTHORIZATION_ORDER.md), [piaskownica](../SANDBOX.md) i [telemetria](../TELEMETRY.md).
 
 ## Dokumentacja
 

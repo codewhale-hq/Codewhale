@@ -1966,6 +1966,7 @@ pub(super) async fn run_child_agent(
         stream_retry_limits: api.stream_retry_limits(),
         stream_open_timeout: api.stream_open_timeout(),
         auto_review_policy: runtime.auto_review_policy.as_ref().clone(),
+        tools: api.tools.clone(),
         tools_always_load: allowed_tools.iter().flatten().cloned().collect(),
         reasoning_only_max_reprompts: api.reasoning_only_max_reprompts(),
         reasoning_only_on_output_limit: api.reasoning_only_on_output_limit(),

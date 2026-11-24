@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:5da2c4c9d5f9 -->
+<!-- source: README.md sha256:7e0e7ebc680b -->
 <div align="center">
 
 <picture>
@@ -84,13 +84,13 @@ Ask、Accept Edits、Auto-Review では、対応 OS のサンドボックス内�
 
 `/provider` で追加した API キーはローカルマシンにのみ保存され、ローカルモデルにはキー不要です。`/cost` とフッターは価格が判明しているセッション費用を表示します（価格不明の場合は無料とせず不明と表示します）。
 
-集計テレメトリはデフォルトで有効です（バージョン、OS、セッション長と結果、内蔵プロバイダー ID、機能・エラー回数のみを 90 日ごとにローテーションするランダムなインストール ID で送信し、コード・プロンプト・会話・モデル名・パス・認証情報は一切送信しません）。無効化するには次を実行します：
+集計テレメトリはデフォルトで有効です（バージョン、OS、セッション長と結果、内蔵プロバイダー ID、内蔵公開カタログのモデル ID（カスタム・プライベート・ローカルモデルは `other` に分類）、トークン合計、内蔵ツールの呼び出し・エラー回数、機能・エラー回数；90 日ごとにローテーションするランダムなインストール ID；コード・プロンプト・会話・カスタム／プライベートモデル名・ファイル／リポジトリ／ブランチ名・認証情報・IP アドレスは一切送信しません）。無効化するには次を実行します：
 
 ```bash
 codewhale config set telemetry false
 ```
 
-起動時の GitHub リリース確認をスキップするには `CODEWHALE_NO_UPDATE_CHECK=1` を設定してください。詳細は [認可順序](../AUTHORIZATION_ORDER.md)、[サンドボックス](../SANDBOX.md)、[テレメトリ](../TELEMETRY.md) を参照してください。
+起動時には GitHub の新リリース確認（`CODEWHALE_NO_UPDATE_CHECK=1` でスキップ）と、24 時間ごとの公開 `models.dev` モデルカタログ更新も行います（`CODEWHALE_DISABLE_MODELS_DEV_FETCH=1` または `[catalog] auto_refresh = false` でスキップ、CI 環境と `DO_NOT_TRACK` では自動抑止）。詳細は [認可順序](../AUTHORIZATION_ORDER.md)、[サンドボックス](../SANDBOX.md)、[テレメトリ](../TELEMETRY.md) を参照してください。
 
 ## ドキュメント
 

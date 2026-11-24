@@ -1015,6 +1015,29 @@ async fn interpreter_execution_policy_refuses_external_backend_local_fallback() 
     assert!(!workspace.path().join("external-fallback.txt").exists());
 }
 
+#[tokio::test]
+async fn failed_sandbox_backend_construction_fails_closed_without_local_fallback() {
+    let backend = sandbox_backend_from_result(Err(anyhow::anyhow!("opensandbox tls init failed")))
+        .expect("retain fail-closed external boundary");
+    assert_eq!(
+        backend.kind(),
+        codewhale_sandbox::backend::SandboxKind::Unsupported
+    );
+    let error = backend
+        .exec("echo must-not-run", &std::collections::HashMap::new())
+        .await
+        .expect_err("failed backend must refuse execution");
+    assert!(
+        error.to_string().contains("opensandbox tls init failed"),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains("refusing local execution fallback"),
+        "{error}"
+    );
+    assert!(sandbox_backend_from_result(Ok(None)).is_none());
+}
+
 #[test]
 fn plan_mode_catalog_skips_code_execution_tool_but_agent_keeps_it() {
     let mut plan_catalog = vec![api_tool("read_file")];

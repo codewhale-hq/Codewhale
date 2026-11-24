@@ -133,9 +133,15 @@ mod dsh_plugins;
 mod dsh_remote;
 pub(crate) use dsh_remote::end_remote_session;
 pub use dsh_remote::{RemoteClient, RemoteDenial, RemotePairing, RemoteSecret, RemoteState};
-mod dsh_settings;
+pub mod dsh_settings;
 pub(crate) mod dsh_terminal;
+pub mod dsh_webserver;
 mod dsh_workspace;
+pub use dsh_webserver::{
+    MAX_PLUGIN_ROUTE_REQUEST_BYTES, MAX_PLUGIN_ROUTE_RESPONSE_BYTES,
+    PLUGIN_ROUTE_DISPATCH_DEADLINE, PluginRouteError, PluginRouteRequest, PluginRouteResponse,
+    dispatch_plugin_route,
+};
 pub mod execution;
 pub use dsh_network::forget_plugin_credentials;
 pub use execution::StockOperation;
@@ -1022,6 +1028,48 @@ impl ManagerShared {
                     })?;
                 let owner = registration.owner.clone();
                 found = Some(registration);
+                Ok(owner)
+            })
+            .await?;
+        Ok((host, found.expect("set when the owner was found")))
+    }
+
+    pub(crate) async fn live_host_for_plugin_authority(
+        &self,
+        authority: &PluginAuthority,
+    ) -> Result<(Arc<HostProcess>, OwnerRef), String> {
+        let cohort = {
+            let registry = self.registry.lock().expect("registry lock");
+            let entry = registry
+                .owners()
+                .find(|entry| {
+                    entry.state == OwnerState::Active && entry.authority.as_ref() == Some(authority)
+                })
+                .ok_or_else(|| {
+                    format!(
+                        "plugin `{}` is not active in the extension host",
+                        authority.plugin_id
+                    )
+                })?;
+            entry.cohort.clone()
+        };
+        let mut found = None;
+        let host = self
+            .live_host(&cohort, |registry| {
+                let entry = registry
+                    .owners()
+                    .find(|entry| {
+                        entry.state == OwnerState::Active
+                            && entry.authority.as_ref() == Some(authority)
+                    })
+                    .ok_or_else(|| {
+                        format!(
+                            "plugin `{}` is not active in the extension host",
+                            authority.plugin_id
+                        )
+                    })?;
+                let owner = entry.owner.clone();
+                found = Some(owner.clone());
                 Ok(owner)
             })
             .await?;

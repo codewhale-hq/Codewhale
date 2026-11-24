@@ -3254,28 +3254,6 @@
       }
     },
     {
-      "id": "atmorouter",
-      "label": "AtmoRouter",
-      "wire": "openai-compatible",
-      "base_url": "https://atmorouter.dev/v1",
-      "api_key_env": "ATMOROUTER_API_KEY",
-      "default_model": "zai/glm-5.3",
-      "discovery": "models_endpoint",
-      "docs_url": "https://atmorouter.dev/docs/quickstart",
-      "credential_url": "https://atmorouter.dev/dashboard/keys",
-      "guidance": "OpenAI-compatible gateway (Chat Completions + GET /v1/models). Model ids are namespaced vendor/model values such as zai/glm-5.3 or zai/glm-5.3-flash, as listed at atmorouter.dev/models. Live /v1/models is the model authority. Store ATMOROUTER_API_KEY, not a raw key.",
-      "aliases": [
-        "atmo-router"
-      ],
-      "models": {
-        "ids": "catalog",
-        "accept": [],
-        "strip_prefixes": [],
-        "aliases": {},
-        "wire_slugs": {}
-      }
-    },
-    {
       "id": "baseten",
       "label": "Baseten",
       "wire": "openai-compatible",
@@ -3593,28 +3571,6 @@
       }
     },
     {
-      "id": "uberllm",
-      "label": "UberLLM",
-      "wire": "openai-compatible",
-      "base_url": "https://api.uberllm.dev/v1",
-      "api_key_env": "UBERLLM_API_KEY",
-      "default_model": "deepseek/deepseek-v4-flash",
-      "discovery": "public_models_endpoint",
-      "docs_url": "https://uberllm.dev/docs/quickstart",
-      "credential_url": "https://uberllm.dev/signup",
-      "guidance": "OpenAI-compatible gateway (Chat Completions + GET /v1/models, which is public). Model ids are vendor/model ids such as deepseek/deepseek-v4-flash or anthropic/claude-sonnet-4.6. Live /v1/models is the model authority. Store UBERLLM_API_KEY, not a raw key. A public listing does not verify the key.",
-      "aliases": [
-        "uber-llm"
-      ],
-      "models": {
-        "ids": "catalog",
-        "accept": [],
-        "strip_prefixes": [],
-        "aliases": {},
-        "wire_slugs": {}
-      }
-    },
-    {
       "id": "yolo-auto",
       "label": "Yolo-Auto",
       "wire": "openai-compatible",
@@ -3645,25 +3601,6 @@
       "docs_url": "https://llmtr.com/docs/",
       "credential_url": "https://llmtr.com/dashboard/keys",
       "guidance": "Browse GET /v1/models for current vendor/model IDs. Use LLMTR_API_KEY for Chat Completions. Check the model’s published residency before sending data that must stay in Turkey.",
-      "models": {
-        "ids": "catalog",
-        "accept": [],
-        "strip_prefixes": [],
-        "aliases": {},
-        "wire_slugs": {}
-      }
-    },
-    {
-      "id": "onomeo",
-      "label": "onomeo",
-      "wire": "openai-compatible",
-      "base_url": "https://onomeo.com/v1",
-      "api_key_env": "ONOMEO_API_KEY",
-      "default_model": "deepseek-v4.1-flash",
-      "discovery": "models_endpoint",
-      "docs_url": "https://onomeo.com/integrations",
-      "credential_url": "https://onomeo.com/dashboard",
-      "guidance": "OpenAI-compatible gateway (Chat Completions + GET /v1/models with your key). Bare model ids such as deepseek-v4.1-flash, claude-sonnet-5.5 or gpt-6.2-sol. New accounts can call deepseek-v4.1-flash for free within daily limits; Claude, GPT and Gemini models need a topped-up balance. Live /v1/models is the model authority. Store ONOMEO_API_KEY, not a raw key.",
       "models": {
         "ids": "catalog",
         "accept": [],

@@ -71,7 +71,12 @@ test('every curated method is defined on the class that serves it', () => {
     workspace: ['dsh/workspace.ts', 'WorkspaceService'], llm: ['dsh/llm.ts', 'LlmService'],
     credentials: ['dsh/network.ts', 'CredentialsService'], settings: ['dsh/settings.ts', 'SettingsService'],
     pluginManager: ['dsh/catalog.ts', 'PluginManagerService'], deepseekAccount: ['dsh/catalog.ts', 'DeepSeekAccountService'],
-    terminal: ['dsh/terminal.ts', 'TerminalService'],
+    terminal: ['dsh/terminal.ts', 'TerminalService'], attachments: ['dsh/attachments.ts', 'AttachmentsService'],
+    agentPresets: ['dsh/host-services.ts', 'AgentPresetsService'], agentDefaultModel: ['dsh/host-services.ts', 'AgentDefaultModelService'],
+    sessionProjections: ['dsh/host-services.ts', 'SessionProjectionsService'], workspaceRegistry: ['dsh/host-services.ts', 'WorkspaceRegistryService'],
+    typertGateway: ['dsh/host-services.ts', 'TypertGatewayService'], web: ['dsh/host-services.ts', 'WebService'],
+    webServer: ['dsh/webserver.ts', 'WebServerService'], connection: ['dsh/webserver.ts', 'ConnectionService'],
+    sessionTitle: ['dsh/webserver.ts', 'SessionTitleService'], profileContext: ['dsh/webserver.ts', 'ProfileContextService'],
   }
   const cordis = { events: ['events', ['on', 'once', 'emit']], reflect: ['reflect', ['provide', 'get']], registry: ['registry', ['get', 'resolve']] }
   const agentsSource = text(src('dsh/agents.ts'))
@@ -89,6 +94,8 @@ test('every curated method is defined on the class that serves it', () => {
     for (const m of service.methods) {
       if (service.key === 'subagents' && m.name === 'result') assert.match(agentsSource, /^\s*get result\(\)/m, 'subagents.result is a getter')
       else if (service.key === 'subagents' && m.name === 'dispose') assert.match(agentsSource, /^\s*dispose\(\)/m, 'subagents.dispose')
+      else if (service.key === 'connection' && (m.name === 'fetch.register' || m.name === 'rpc.handle')) assert.match(body, new RegExp(`^\\s*get\\s+${m.name.split('.')[0]}\\(\\)`, 'm'), `${service.key}.${m.name}`)
+      else if (service.key === 'profileContext' && (m.name === 'dir' || m.name === 'installAnchor')) assert.match(body, new RegExp(`^\\s*get\\s+${m.name}\\(\\)`, 'm'), `${service.key}.${m.name}`)
       else assert.ok(defines(body, m.name), `${service.key}.${m.name}`)
     }
   }
@@ -131,14 +138,14 @@ test('every slot and its seat equal the Engine seat table', () => {
 test('the refused events equal the list in root.ts', () => {
   const body = rootSource.slice(rootSource.indexOf('unsupportedDshLifecycle = new Set(['), rootSource.indexOf('])', rootSource.indexOf('unsupportedDshLifecycle = new Set([')))
   const refused = [...body.matchAll(/'([^']+)'/g)].map((m) => m[1])
-  assert.equal(refused.length, 4)
+  assert.equal(refused.length, 5)
   assert.deepEqual(catalog.host.events.filter((e) => e.status === 'refused').map((e) => e.name), refused)
   for (const name of catalog.host.events.filter((e) => e.status === 'supported').map((e) => e.name)) assert.ok(rootSource.includes(`'${name}'`) || text(src('dsh/agents.ts')).includes(`'${name}'`), name)
 })
 
 test('the Service provider answers a directory, one contract, and refuses a name the host lacks', async () => {
   const directory = await ask('host', 'Service', 'listService')
-  assert.equal(directory.services.length, 25)
+  assert.equal(directory.services.length, 36)
   assert.ok(!directory.services.some((s) => s.key === 'fs'))
   const one = await ask('host', 'Service', 'listService', { service: 'prompt' })
   assert.equal(one.service.methods[0].name, 'registerSection')
@@ -147,7 +154,7 @@ test('the Service provider answers a directory, one contract, and refuses a name
 
 test('the Event provider separates supported from refused', async () => {
   const { events } = await ask('host', 'Event', 'listEvents')
-  assert.deepEqual(events.map((e) => e.status), ['supported', 'supported', 'supported', 'refused', 'refused', 'refused', 'refused'])
+  assert.deepEqual(events.map((e) => e.status), ['supported', 'supported', 'supported', 'supported', 'refused', 'refused', 'refused', 'refused', 'refused'])
   assert.equal((await ask('host', 'Event', 'listEvents', { event: 'tools/pre-execute' })).event.name, 'tools/pre-execute')
   await assert.rejects(ask('host', 'Event', 'listEvents', { event: 'subagent/start-x' }), /not known/)
 })

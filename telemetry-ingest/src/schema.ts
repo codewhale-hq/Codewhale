@@ -41,7 +41,6 @@ export const V6_NOTICE_VERSION = 8;
 /** The notice version schema v3 batches carry. */
 export const V3_NOTICE_VERSION = 5;
 
-/** Explicit consent to the PostHog processor disclosure. */
 export const CONSENT_VERSION = 4;
 
 /** `BATCH_MAX_EVENTS` in `crates/telemetry/src/actor.rs`. */
@@ -237,7 +236,8 @@ export const CONTEXT_FIELDS = ["lt_32k", "32k_128k", "128k_256k", "gte_256k"] as
 
 /** `event::TOOL_NAMES` plus the `mcp` and `other` buckets. */
 export const TOOL_NAMES = [
-  "agent", "apply_patch", "authenticate", "bash", "code_execution", "create_goal",
+  "agent", "apply_patch", "authenticate", "bash", "code_execution",
+  "context_archive_get", "context_archive_search", "create_goal",
   "diagnostics", "edit", "edit_file", "exec_shell", "execute_tools", "fetch_url",
   "file_search", "fim_edit", "finance", "get_goal", "git_blame", "git_commit_plan",
   "git_diff", "git_fetch", "git_log", "git_merge_tree", "git_show", "git_status",
@@ -246,9 +246,10 @@ export const TOOL_NAMES = [
   "project_map", "read", "read_file", "read_media", "remember", "request_plugin_install",
   "request_user_input", "retrieve_tool_result", "revert_turn", "review", "rlm",
   "run_tests", "run_verifiers", "session_get", "session_search", "start_mcp_server",
-  "task_create", "task_shell_wait", "todo_write", "tool_search", "update_goal",
-  "update_plan", "validate_data", "verify", "wait_for_dev_server", "web_search",
-  "workflow", "write", "write_file", "mcp", "other",
+  "task_create", "task_shell_wait", "terminal_cancel", "terminal_reset",
+  "terminal_run", "terminal_send", "terminal_wait", "todo_write", "tool_search",
+  "update_goal", "update_plan", "validate_data", "verify", "wait_for_dev_server",
+  "web_search", "workflow", "write", "write_file", "mcp", "other",
 ] as const;
 
 /** `Counters::FIELDS`, in declaration order. */

@@ -652,25 +652,6 @@
       },
       "wire_policy": "chat_completions"
     },
-    "atmorouter": {
-      "aliases": [
-        "atmo-router"
-      ],
-      "api_key_env": "ATMOROUTER_API_KEY",
-      "auth": {
-        "env_vars": [
-          "ATMOROUTER_API_KEY"
-        ],
-        "secret_slot": "atmorouter"
-      },
-      "base_url": "https://atmorouter.dev/v1",
-      "credential_url": "https://atmorouter.dev/dashboard/keys",
-      "discovery": "models_endpoint",
-      "docs_url": "https://atmorouter.dev/docs/quickstart",
-      "origin": "descriptor",
-      "wire": "openai-compatible",
-      "wire_policy": "openai-compatible"
-    },
     "baseten": {
       "aliases": [
         "base-ten",
@@ -1675,22 +1656,6 @@
       },
       "wire_policy": "chat_completions"
     },
-    "onomeo": {
-      "api_key_env": "ONOMEO_API_KEY",
-      "auth": {
-        "env_vars": [
-          "ONOMEO_API_KEY"
-        ],
-        "secret_slot": "onomeo"
-      },
-      "base_url": "https://onomeo.com/v1",
-      "credential_url": "https://onomeo.com/dashboard",
-      "discovery": "models_endpoint",
-      "docs_url": "https://onomeo.com/integrations",
-      "origin": "descriptor",
-      "wire": "openai-compatible",
-      "wire_policy": "openai-compatible"
-    },
     "openai": {
       "aliases": [
         "open-ai"
@@ -2329,25 +2294,6 @@
       "base_url": "https://api.tsubasa.sh/v1",
       "discovery": "models_endpoint",
       "docs_url": "https://tsubasa.sh/docs",
-      "origin": "descriptor",
-      "wire": "openai-compatible",
-      "wire_policy": "openai-compatible"
-    },
-    "uberllm": {
-      "aliases": [
-        "uber-llm"
-      ],
-      "api_key_env": "UBERLLM_API_KEY",
-      "auth": {
-        "env_vars": [
-          "UBERLLM_API_KEY"
-        ],
-        "secret_slot": "uberllm"
-      },
-      "base_url": "https://api.uberllm.dev/v1",
-      "credential_url": "https://uberllm.dev/signup",
-      "discovery": "public_models_endpoint",
-      "docs_url": "https://uberllm.dev/docs/quickstart",
       "origin": "descriptor",
       "wire": "openai-compatible",
       "wire_policy": "openai-compatible"

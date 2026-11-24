@@ -22,9 +22,7 @@ describe("additive website funnel contract", () => {
     expect(Object.keys(batch.events[0].counters)).toEqual([...PRODUCT_COUNTER_FIELDS]);
     const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
     const { env, written } = harness();
-    const response = await worker.fetch(postJson(batch), {
-      ...env, POSTHOG_HOST: "https://us.i.posthog.com", POSTHOG_PROJECT_TOKEN: "phc_local_test_fixture", POSTHOG_IP_SAFE_EGRESS_VERIFIED: "true",
-    });
+    const response = await worker.fetch(postJson(batch), env);
     expect(response.status).toBe(204);
     expect(await response.text()).toBe("");
     expect(written).toHaveLength(2);
@@ -104,7 +102,7 @@ describe("additive website funnel contract", () => {
       expect(validateBatch(batch).ok, `v${version}`).toBe(true);
       if (version !== 4 && version !== 6) continue;
       const { env, written } = harness();
-      expect((await worker.fetch(postJson(batch), { ...env, POSTHOG_HOST: "https://us.i.posthog.com", POSTHOG_PROJECT_TOKEN: "phc_local_test_fixture", POSTHOG_IP_SAFE_EGRESS_VERIFIED: "true" })).status).toBe(204);
+      expect((await worker.fetch(postJson(batch), env)).status).toBe(204);
       expect(written).toHaveLength(batch.events.length);
       expect(fetch).not.toHaveBeenCalled();
     }

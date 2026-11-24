@@ -31,7 +31,6 @@ export const RELEASE_CONTRIBUTORS: string[] = [
  * one. scripts/check-contributor-credit.py requires them here now; the release
  * cut moves them into RELEASE_CONTRIBUTORS with that release's changelog block.
  */
-<<<<<<< HEAD
 export const UNRELEASED_CONTRIBUTORS: string[] = [
   "@NieZhuZhu",
   "@WTFitsmemyself",
@@ -40,22 +39,10 @@ export const UNRELEASED_CONTRIBUTORS: string[] = [
   "@Serendo",
   "@gaord",
   "@Goldloli",
-  "@Owaid0723666",
   "@axobase001",
   "@SamhandsomeLee",
+  "@jperla",
 ];
-=======
-export const UNRELEASED_CONTRIBUTORS: string[] = [
-  "@NieZhuZhu",
-  "@WTFitsmemyself",
-  "@deosiree",
-  "@luochen211",
-  "@Serendo",
-  "@gaord",
-  "@Goldloli",
-  "@Owaid0723666",
-];
->>>>>>> 617ee415c9 (chore(release): record post-0.10.4 contributor credits and unreleased changelog)
 
 /**
  * Contributors who helped with reports, reproductions, and verification.

@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:5da2c4c9d5f9 -->
+<!-- source: README.md sha256:7e0e7ebc680b -->
 <div align="center">
 
 <picture>
@@ -84,13 +84,13 @@ Pada Ask, Accept Edits, dan Auto-Review, perintah berjalan di dalam sandbox OS j
 
 Kunci API yang ditambahkan melalui `/provider` tetap berada di mesin Anda, dan model lokal tidak memerlukan kunci. `/cost` dan footer melacak biaya sesi saat harga diketahui (harga yang tidak diketahui ditampilkan sebagai tidak diketahui, tidak pernah sebagai gratis).
 
-Telemetri agregat aktif secara bawaan (versi, OS, durasi/hasil sesi, ID penyedia bawaan, hitungan fitur/galat; ID pemasangan acak yang berganti setiap 90 hari; tidak pernah kode, prompt, percakapan, nama model, jalur, atau kredensial). Nonaktifkan dengan:
+Telemetri agregat aktif secara bawaan (versi, OS, durasi/hasil sesi, ID penyedia bawaan, ID model katalog publik bawaan (model kustom, privat, atau lokal dicatat sebagai `other`), total token, hitungan panggilan/galat alat bawaan, dan penghitung fitur/galat; ID pemasangan acak yang berganti setiap 90 hari; tidak pernah kode, prompt, percakapan, nama model kustom/privat, nama berkas/repo/cabang, kredensial, atau alamat IP). Nonaktifkan dengan:
 
 ```bash
 codewhale config set telemetry false
 ```
 
-Atur `CODEWHALE_NO_UPDATE_CHECK=1` untuk melewati pemeriksaan rilis GitHub saat mulai. Detail: [urutan otorisasi](../AUTHORIZATION_ORDER.md), [sandbox](../SANDBOX.md), dan [telemetri](../TELEMETRY.md).
+Saat mulai, Codewhale juga memeriksa rilis baru di GitHub (`CODEWHALE_NO_UPDATE_CHECK=1` untuk melewati) dan menyegarkan katalog model publik `models.dev` setiap 24 jam (`CODEWHALE_DISABLE_MODELS_DEV_FETCH=1` atau `[catalog] auto_refresh = false` untuk melewati; dinonaktifkan otomatis di CI dan saat `DO_NOT_TRACK` aktif). Detail: [urutan otorisasi](../AUTHORIZATION_ORDER.md), [sandbox](../SANDBOX.md), dan [telemetri](../TELEMETRY.md).
 
 ## Dokumentasi
 

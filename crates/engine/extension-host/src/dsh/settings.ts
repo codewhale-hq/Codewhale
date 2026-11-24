@@ -51,15 +51,57 @@ function descriptor(value: unknown): SettingsDescriptor {
   return { ns: row.ns, writable: row.writable, roots: row.roots.map(String), value: row.value, revision: row.revision, applied: typeof row.applied === 'boolean' ? row.applied : null, applies: 'reload' }
 }
 
+export function hostLocalePreference(): string {
+  const fromIntl = (() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().locale
+    } catch {
+      return undefined
+    }
+  })()
+  const raw = fromIntl || process.env.LC_ALL || process.env.LC_MESSAGES || process.env.LANG || 'en'
+  const cleaned = String(raw).split('.')[0].replaceAll('_', '-').trim()
+  return cleaned.length > 0 ? cleaned : 'en'
+}
+
+function localeDescriptor(): SettingsDescriptor {
+  return Object.freeze({
+    ns: 'locale',
+    writable: false,
+    roots: Object.freeze([]),
+    value: Object.freeze({ preference: hostLocalePreference() }),
+    revision: 'host-locale',
+    applied: true,
+    applies: 'reload',
+  }) as unknown as SettingsDescriptor
+}
+
 export const settingsAdapter: DshAdapter = {
   service: 'settings',
   define(host: AdapterHost) {
     class SettingsService extends Service {
       constructor(ctx: any) { super(ctx, 'settings') }
 
-      describe(): Promise<SettingsDescriptor[]> {
-        host.brokerTicket(this.ctx, 'settings')
-        return host.broker(this.ctx, 'settings', 'describe', {}).then((row) => [descriptor(row)])
+      get locale(): Readonly<{ preference: string }> {
+        return Object.freeze({ preference: hostLocalePreference() })
+      }
+
+      describe(): Promise<SettingsDescriptor[]> | SettingsDescriptor[] {
+        try {
+          host.brokerTicket(this.ctx, 'settings')
+        } catch {
+          const forms = [localeDescriptor()]
+          Object.defineProperty(forms, 'then', {
+            value(onFulfilled?: (v: SettingsDescriptor[]) => unknown, onRejected?: (e: unknown) => unknown) {
+              return Promise.resolve([localeDescriptor()]).then(onFulfilled, onRejected)
+            },
+          })
+          return forms
+        }
+        return host.broker(this.ctx, 'settings', 'describe', {}).then((row) => {
+          const desc = descriptor(row)
+          return desc.ns === 'locale' ? [desc] : [desc, localeDescriptor()]
+        })
       }
 
       async update(ns: unknown, patch: unknown, expectedRevision?: unknown): Promise<SettingsWrite> {

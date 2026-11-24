@@ -2719,19 +2719,13 @@ impl Engine {
             None => codewhale_lsp::LspManager::disabled(),
         });
 
-        // External sandbox backend (#516). Logged but non-fatal: if the
-        // backend fails to construct, the engine continues with local
-        // execution as the fallback.
+        // External sandbox backend (#516). Keep a fail-closed backend when
+        // construction fails so shell execution never falls back to local.
         let sandbox_backend = host
             .as_ref()
             .map(|host| host.context().sandbox_backend.clone())
             .unwrap_or_else(|| {
-                codewhale_sandbox::backend::create_backend(api_config)
-                    .unwrap_or_else(|e| {
-                        tracing::warn!("Failed to create sandbox backend: {e}");
-                        None
-                    })
-                    .map(std::sync::Arc::from)
+                sandbox_backend_from_result(codewhale_sandbox::backend::create_backend(api_config))
             });
         let sandbox_enforcement = if sandbox_backend.is_some() {
             codewhale_sandbox::policy::SandboxEnforcement::ExternalBackend
@@ -11725,6 +11719,20 @@ async fn spawn_engine_inner(
     handle.run_completion = Some(completion);
     spawn_supervised("engine-event-loop", std::panic::Location::caller(), run);
     handle
+}
+
+fn sandbox_backend_from_result(
+    result: anyhow::Result<Option<Box<dyn codewhale_sandbox::backend::SandboxBackend>>>,
+) -> Option<std::sync::Arc<dyn codewhale_sandbox::backend::SandboxBackend>> {
+    match result {
+        Ok(backend) => backend.map(std::sync::Arc::from),
+        Err(e) => {
+            tracing::warn!("Failed to create sandbox backend: {e}");
+            Some(std::sync::Arc::from(
+                codewhale_sandbox::backend::unavailable_backend(e.to_string()),
+            ))
+        }
+    }
 }
 
 /// Spawn the engine in a background task

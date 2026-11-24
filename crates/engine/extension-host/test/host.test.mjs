@@ -212,16 +212,17 @@ export function apply() { createUserMessage({ content: [], source: { kind: 'fixt
 test('a nested ctx.inject wait names only the services that are missing, and why', async (t) => {
   const host = await startHost()
   t.after(() => host.stop())
-  const web = tempPlugin("export const name = 'widget'\nexport function apply(ctx) { ctx.inject(['credentials', 'webServer', 'connection'], () => {}) }\n")
-  const presets = tempPlugin("export const name = 'presets'\nexport function apply(ctx) { ctx.inject(['agentPresets'], () => {}) }\n")
-  t.after(() => { web.cleanup(); presets.cleanup() })
+  const web = tempPlugin("export const name = 'widget'\nexport function apply(ctx) { ctx.inject(['credentials', '@deepseek-ai/dsh-client-panel'], () => {}) }\n")
+  t.after(() => { web.cleanup() })
   const widget = (await activate(host, 'nested-web', web.entry)).result
   assert.equal(widget.status, 'failed')
-  assert.match(widget.diagnostic, /waits on `webServer`, `connection`, not provided by the Codewhale extension host in this phase \(DSH Web UI services; Codewhale has no plugin web server\)/)
+  assert.match(widget.diagnostic, /waits on `@deepseek-ai\/dsh-client-panel`, not provided by the Codewhale extension host in this phase \(DSH client UI services\)/)
   assert.doesNotMatch(widget.diagnostic, /credentials/)
-  const registry = (await activate(host, 'nested-presets', presets.entry)).result
-  assert.equal(registry.status, 'failed')
-  assert.match(registry.diagnostic, /waits on `agentPresets`, not provided .*\(the DSH 0\.2\.2 agent-preset registry is not adopted\)/)
+  const hijack = tempPlugin("export const name = 'hijack'\nexport function apply(ctx) { ctx.root.provide('webServer', {}) }\n")
+  t.after(() => { hijack.cleanup() })
+  const refused = (await activate(host, 'hijack-webserver', hijack.entry)).result
+  assert.equal(refused.status, 'failed')
+  assert.match(refused.diagnostic, /may not provide core service `webServer`/)
 })
 
 test('an unsupported DSH peer fails the import loudly', async (t) => {
@@ -809,7 +810,7 @@ import * as questions from '@deepseek-ai/dsh-user-questions'
 export const name = 'dsh-style'
 export const inject = ['commands']
 export function apply(ctx) {
-  assert.deepEqual(Object.keys(llm), ['HarnessError', 'createUserMessage'])
+  for (const key of ['HarnessError', 'createUserMessage', 'ReasoningEffortId']) assert.ok(key in llm, 'llm missing ' + key)
   assert.deepEqual(Object.keys(questions), ['UserQuestionError'])
   const cause = new Error('original cause')
   const failure = new questions.UserQuestionError('human cancelled', 'ASK_CANCELLED', { cause })
@@ -823,7 +824,7 @@ export function apply(ctx) {
   const baseFailure = new llm.HarnessError('base', 'FIXTURE', { cause })
   assert.equal(baseFailure.name, 'HarnessError')
   assert.equal(baseFailure.cause, cause)
-  assert.deepEqual(Object.keys(session), ['SessionId'])
+  for (const key of ['SessionId', 'KNOWN_SESSION_EVENT_TYPES', 'deriveEventMessage']) assert.ok(key in session, 'session missing ' + key)
   assert.deepEqual(Object.keys(prompt), ['PERSONA_PREFIX_SECTION'])
   assert.equal(prompt.PERSONA_PREFIX_SECTION, 'deployment:persona-prefix')
   for (const value of ['', 'session', 7, null, { arbitrary: true }]) assert.equal(session.SessionId(value), value)

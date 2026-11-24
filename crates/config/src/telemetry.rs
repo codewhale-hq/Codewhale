@@ -3,7 +3,7 @@ use crate::display_redaction::parse_bool;
 /// Where an enabled session's batches go when nobody has said otherwise.
 ///
 /// The first-party ingest service — a Cloudflare Worker that appends to Workers
-/// Analytics Engine, with an optional disclosed PostHog sink. See
+/// Analytics Engine. See
 /// `docs/TELEMETRY.md` for what a batch contains and `telemetry-ingest/` for the handler.
 ///
 /// This is a *default*, not a floor, and it changes nothing about permission:
@@ -65,8 +65,21 @@ pub fn telemetry_floor_in_force() -> bool {
     !matches!(parse_bool(&raw), Ok(true))
 }
 
-fn do_not_track() -> bool {
-    std::env::var("DO_NOT_TRACK").is_ok_and(|raw| matches!(parse_bool(&raw), Ok(true)))
+#[must_use]
+pub fn is_do_not_track_value(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    !matches!(
+        trimmed.to_ascii_lowercase().as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
+#[must_use]
+pub fn do_not_track() -> bool {
+    std::env::var("DO_NOT_TRACK").is_ok_and(|raw| is_do_not_track_value(&raw))
 }
 
 /// Where resolved telemetry consent came from (#5441).
@@ -199,4 +212,25 @@ pub(crate) fn telemetry_consent_from_env(
         TelemetrySource::Default
     };
     (on, source)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_do_not_track_value;
+
+    #[test]
+    fn do_not_track_matches_console_do_not_track_spec() {
+        for active in ["1", "true", "TRUE", "yes", "on", "please", "anything"] {
+            assert!(
+                is_do_not_track_value(active),
+                "expected active for {active:?}"
+            );
+        }
+        for inactive in ["", "   ", "0", "false", "FALSE", "no", "off", " 0 "] {
+            assert!(
+                !is_do_not_track_value(inactive),
+                "expected inactive for {inactive:?}"
+            );
+        }
+    }
 }

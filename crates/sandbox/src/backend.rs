@@ -115,6 +115,30 @@ impl SandboxBackend for UnsupportedBackend {
     }
 }
 
+struct UnavailableBackend {
+    reason: String,
+}
+
+#[async_trait]
+impl SandboxBackend for UnavailableBackend {
+    fn kind(&self) -> SandboxKind {
+        SandboxKind::Unsupported
+    }
+    async fn exec(&self, _cmd: &str, _env: &HashMap<String, String>) -> Result<SandboxOutput> {
+        anyhow::bail!(
+            "Configured sandbox_backend failed to initialize ({}); refusing local execution fallback.",
+            self.reason
+        )
+    }
+}
+
+#[must_use]
+pub fn unavailable_backend(reason: impl Into<String>) -> Box<dyn SandboxBackend> {
+    Box::new(UnavailableBackend {
+        reason: reason.into(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +170,22 @@ mod tests {
             };
             assert!(create_backend(&config).unwrap().is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn unavailable_backend_refuses_execution_instead_of_falling_back_to_local() {
+        let backend = unavailable_backend("client build failed");
+        assert_eq!(backend.kind(), SandboxKind::Unsupported);
+        let error = backend
+            .exec("echo must-not-run", &HashMap::new())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("client build failed"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("refusing local execution fallback"),
+            "{error}"
+        );
     }
 }

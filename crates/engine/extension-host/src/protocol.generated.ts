@@ -47,6 +47,7 @@ export const METHODS = [
   { name: 'tool/call', direction: 'core_to_host', request: true, params: 'ToolCallParams', tiers: ['plugin', 'builtin'] },
   { name: 'command/run', direction: 'core_to_host', request: true, params: 'CommandRunParams', tiers: ['plugin', 'builtin'] },
   { name: 'hook/evaluate', direction: 'core_to_host', request: true, params: 'HookEvaluateParams', tiers: ['plugin', 'builtin'] },
+  { name: 'plugin_route/dispatch', direction: 'core_to_host', request: true, params: 'PluginRouteDispatchParams', tiers: ['plugin', 'builtin'] },
   { name: 'mcp/open', direction: 'core_to_host', request: true, params: 'McpOpenParams', tiers: ['builtin'] },
   { name: 'mcp/request', direction: 'core_to_host', request: true, params: 'McpRequestParams', tiers: ['builtin'] },
   { name: 'mcp/close', direction: 'core_to_host', request: true, params: 'McpCloseParams', tiers: ['builtin'] },
@@ -242,6 +243,16 @@ export const SHAPES: { readonly [name: string]: Shape } = {
   OwnerRef: {
     strict: true,
     required: { plugin_id: 'string', generation: 'uint', owner_token: 'string' },
+    optional: {},
+  },
+  PluginRouteDispatchParams: {
+    strict: true,
+    required: { owner: { ref: 'OwnerRef' }, method: 'string', path: 'string', headers: { items: { ref: 'PluginRouteHeaderWire' } }, deadline_ms: 'uint' },
+    optional: { query: 'string', body_base64: 'string' },
+  },
+  PluginRouteHeaderWire: {
+    strict: true,
+    required: { name: 'string', value: 'string' },
     optional: {},
   },
   ProcLaunchParams: {
@@ -543,6 +554,28 @@ export interface OwnerRef {
   plugin_id: string
   generation: number
   owner_token: string
+}
+
+export interface PluginRouteDispatchParams {
+  owner: OwnerRef
+  method: string
+  path: string
+  query?: string
+  headers: PluginRouteHeaderWire[]
+  body_base64?: string
+  deadline_ms: number
+}
+
+export interface PluginRouteDispatchResult {
+  matched: boolean
+  status: number
+  headers: PluginRouteHeaderWire[]
+  body_base64?: string
+}
+
+export interface PluginRouteHeaderWire {
+  name: string
+  value: string
 }
 
 export interface ProcLaunchParams {

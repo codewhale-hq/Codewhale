@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:5da2c4c9d5f9 -->
+<!-- source: README.md sha256:7e0e7ebc680b -->
 <div align="center">
 
 <picture>
@@ -84,13 +84,13 @@ Fix the failing tests and explain what changed.
 
 透過 `/provider` 新增的 API 金鑰只保留在本機，本機模型不需金鑰。`/cost` 與頁尾會在已知價格時追蹤工作階段費用（未知價格會顯示為未知，絕不顯示為免費）。
 
-彙總遙測預設啟用（僅包含版本、作業系統、工作階段長度與結果、內建供應商 ID、功能與錯誤計數，並採用每 90 天輪換的隨機安裝 ID；絕不上傳程式碼、提示詞、對話內容、模型名稱、路徑或憑證）。執行以下指令即可關閉：
+彙總遙測預設啟用（版本、作業系統、工作階段長度與結果、內建供應商 ID、內建公開目錄中的模型 ID（自訂、私有或本機模型記為 `other`）、彙總 token 數量、內建工具呼叫與錯誤計數、功能與錯誤計數；每 90 天輪換的隨機安裝 ID；絕不上傳程式碼、提示詞、對話內容、自訂/私有模型名稱、檔案/儲存庫/分支名稱、憑證或 IP 位址）。執行以下指令即可關閉：
 
 ```bash
 codewhale config set telemetry false
 ```
 
-設定 `CODEWHALE_NO_UPDATE_CHECK=1` 可略過啟動時的 GitHub 新版本檢查。詳見 [授權順序](../AUTHORIZATION_ORDER.md)、[沙盒機制](../SANDBOX.md) 與 [遙測說明](../TELEMETRY.md)。
+啟動時 Codewhale 也會檢查 GitHub 是否有新版本（設定 `CODEWHALE_NO_UPDATE_CHECK=1` 可略過），並每 24 小時重新整理一次公開的 `models.dev` 模型目錄（設定 `CODEWHALE_DISABLE_MODELS_DEV_FETCH=1` 或 `[catalog] auto_refresh = false` 可略過；在 CI 環境與 `DO_NOT_TRACK` 下自動停用）。詳見 [授權順序](../AUTHORIZATION_ORDER.md)、[沙盒機制](../SANDBOX.md) 與 [遙測說明](../TELEMETRY.md)。
 
 ## 文件
 

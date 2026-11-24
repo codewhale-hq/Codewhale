@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:5da2c4c9d5f9 -->
+<!-- source: README.md sha256:7e0e7ebc680b -->
 <div align="center">
 
 <picture>
@@ -84,13 +84,13 @@ Trong Ask, Accept Edits và Auto-Review, lệnh chạy trong sandbox hệ điề
 
 Khóa API thêm qua `/provider` chỉ lưu trên máy của bạn và mô hình cục bộ không cần khóa. `/cost` và dòng trạng thái theo dõi chi phí phiên khi biết giá (giá chưa rõ sẽ hiển thị là chưa rõ, không bao giờ hiển thị là miễn phí).
 
-Dữ liệu đo từ xa tổng hợp được bật mặc định (phiên bản, hệ điều hành, độ dài/kết quả phiên, ID nhà cung cấp tích hợp, số đếm tính năng/lỗi; ID cài đặt ngẫu nhiên xoay vòng mỗi 90 ngày; không bao giờ gửi mã nguồn, prompt, hội thoại, tên mô hình, đường dẫn hoặc khóa). Tắt bằng lệnh:
+Dữ liệu đo từ xa tổng hợp được bật mặc định (phiên bản, hệ điều hành, độ dài/kết quả phiên, ID nhà cung cấp tích hợp, ID mô hình trong danh mục công khai tích hợp (mô hình tùy chỉnh, riêng tư hoặc cục bộ được ghi là `other`), tổng số token, số lần gọi/lỗi công cụ tích hợp và bộ đếm tính năng/lỗi; ID cài đặt ngẫu nhiên xoay vòng mỗi 90 ngày; không bao giờ gửi mã nguồn, prompt, hội thoại, tên mô hình tùy chỉnh/riêng tư, tên tệp/kho/nhánh, khóa hoặc địa chỉ IP). Tắt bằng lệnh:
 
 ```bash
 codewhale config set telemetry false
 ```
 
-Đặt `CODEWHALE_NO_UPDATE_CHECK=1` để bỏ qua bước kiểm tra bản phát hành GitHub khi khởi động. Chi tiết: [thứ tự ủy quyền](../AUTHORIZATION_ORDER.md), [sandbox](../SANDBOX.md) và [đo từ xa](../TELEMETRY.md).
+Khi khởi động, Codewhale cũng kiểm tra bản phát hành mới trên GitHub (`CODEWHALE_NO_UPDATE_CHECK=1` để bỏ qua) và làm mới danh mục mô hình công khai `models.dev` mỗi 24 giờ (`CODEWHALE_DISABLE_MODELS_DEV_FETCH=1` hoặc `[catalog] auto_refresh = false` để bỏ qua; tự động tắt trong CI và khi bật `DO_NOT_TRACK`). Chi tiết: [thứ tự ủy quyền](../AUTHORIZATION_ORDER.md), [sandbox](../SANDBOX.md) và [đo từ xa](../TELEMETRY.md).
 
 ## Tài liệu
 

@@ -83,7 +83,7 @@ const MAX_UNPACKED_PACKAGES: usize = 256;
 const MAX_UNPACKED_FILES: usize = 14_000;
 const MAX_UNPACKED_BYTES: u64 = 220 * 1024 * 1024;
 const MAX_SCAN_DEPTH: usize = 32;
-const MAX_SCAN_FILE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_SCAN_FILE_BYTES: usize = 8 * 1024 * 1024;
 
 type CachedTarballs = HashMap<(String, String), Arc<Vec<u8>>>;
 
@@ -192,6 +192,12 @@ fn visit_composition_entries(rows: &[Value], referenced: &mut BTreeSet<String>) 
                 .and_then(Value::str)
                 .is_some_and(|n| matches!(n, "cordis:group" | "@deepseek-ai/cordis-plugin-group"));
         if is_group {
+            if let Some(name) = row.get("name").and_then(Value::str)
+                && !matches!(name, "cordis:group" | "@deepseek-ai/cordis-plugin-group")
+                && let Some(pkg) = bare_package_name(name)
+            {
+                referenced.insert(pkg);
+            }
             if let Some(Value::Seq(children)) = row.get("config") {
                 visit_composition_entries(children, referenced);
             }

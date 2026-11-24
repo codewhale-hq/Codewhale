@@ -826,8 +826,8 @@ var init_lib2 = __esm({
         let inFlight;
         let removeWrapper = () => false;
         const waitForSetup = () => {
-          setupBarrier ??= new Promise((resolve7, reject) => {
-            resolveSetup = resolve7;
+          setupBarrier ??= new Promise((resolve9, reject) => {
+            resolveSetup = resolve9;
             rejectSetup = reject;
           });
           return setupBarrier;
@@ -1017,7 +1017,7 @@ var init_lib2 = __esm({
         });
       }
       async _unload() {
-        while ([...this.provisions].some((impl) => impl.dependents.size)) await new Promise((resolve7) => this._release = resolve7);
+        while ([...this.provisions].some((impl) => impl.dependents.size)) await new Promise((resolve9) => this._release = resolve9);
         this._release = void 0;
         await Promise.all(this._disposables.clear().map(async (dispose) => {
           try {
@@ -1682,9 +1682,9 @@ var init_lib2 = __esm({
           return async () => {
             if (this.store[impl.isolate] === impl) delete this.store[impl.isolate];
             this.ctx.isolate(name, impl.isolate).reflect.notify([name]);
-            await new Promise((resolve7) => {
-              impl.release = resolve7;
-              if (!impl.dependents.size) resolve7();
+            await new Promise((resolve9) => {
+              impl.release = resolve9;
+              if (!impl.dependents.size) resolve9();
             });
             impl.release = void 0;
             this.ctx.fiber.provisions.delete(impl);
@@ -1792,16 +1792,16 @@ var init_lib2 = __esm({
       }
     };
     (function(Inject3) {
-      function resolve7(inject, result = /* @__PURE__ */ Object.create(null)) {
+      function resolve9(inject, result = /* @__PURE__ */ Object.create(null)) {
         if (!inject) return result;
         if (Array.isArray(inject)) for (const name of inject) result[name] = null;
         else if (Reflect.has(inject, symbols.checkProto)) {
-          Object.assign(result, resolve7(Object.getPrototypeOf(inject)));
+          Object.assign(result, resolve9(Object.getPrototypeOf(inject)));
           for (const name of Object.keys(inject)) result[name] = inject[name] ?? null;
         } else for (const name of Object.keys(inject)) result[name] = inject[name] ?? null;
         return result;
       }
-      Inject3.resolve = resolve7;
+      Inject3.resolve = resolve9;
     })(Inject || (Inject = {}));
     RegistryService = class {
       ctx;
@@ -12825,2182 +12825,6 @@ var init_bun_closure = __esm({
   }
 });
 
-// src/dsh/compatibility.json
-var compatibility_default;
-var init_compatibility = __esm({
-  "src/dsh/compatibility.json"() {
-    compatibility_default = {
-      version: 3,
-      target_dsh_version: "0.2.2-rc.1",
-      provided_services: {
-        dsh: [
-          "tools",
-          "commands",
-          "storage",
-          "skills",
-          "sessions",
-          "userQuestions",
-          "subagents",
-          "agents",
-          "systemPrompt",
-          "llm",
-          "credentials",
-          "settings",
-          "pluginManager",
-          "deepseekAccount",
-          "terminal"
-        ],
-        cordis: [
-          "logger",
-          "events",
-          "reflect",
-          "registry"
-        ],
-        codewhale: [
-          "prompt",
-          "avatars",
-          "mcp",
-          "shellHooks",
-          "remote",
-          "workspace"
-        ]
-      },
-      refused_services: [
-        "shellHooks",
-        "loader",
-        "approval",
-        "agents",
-        "subagents",
-        "sessions",
-        "llm",
-        "sandboxPolicy",
-        "credentials",
-        "fs",
-        "subprocess",
-        "systemPrompt",
-        "runtimeLoop",
-        "tools",
-        "commands",
-        "prompt",
-        "storage",
-        "skills",
-        "avatars",
-        "mcp",
-        "logger",
-        "userQuestions",
-        "remote",
-        "workspace",
-        "settings",
-        "pluginManager",
-        "deepseekAccount",
-        "terminal"
-      ],
-      row_bridges: {
-        "@deepseek-ai/dsh-mcp-client": "mcp",
-        "@deepseek-ai/dsh-skill-filesystem": "skills",
-        "@deepseek-ai/dsh-hooks-claude-code": "hooks-claude-code",
-        "@deepseek-ai/dsh-hooks-codex": "hooks-codex",
-        "@deepseek-ai/dsh-persona": "persona",
-        "@deepseek-ai/dsh-storage": "host-spine",
-        "@deepseek-ai/dsh-storage-json": "host-spine",
-        "@deepseek-ai/dsh-storage-domain": "host-spine",
-        "@deepseek-ai/dsh-workspace": "host-spine",
-        "@deepseek-ai/dsh-code-runtime-worker-thread": "host-spine",
-        "@deepseek-ai/dsh-tool-subagent/model-selection-settings": "host-spine",
-        "@deepseek-ai/dsh-agent-preset-registry": "host-spine",
-        "@deepseek-ai/dsh-cordis-host-runner": "host-spine",
-        "@deepseek-ai/dsh-host-webserver": "host-spine"
-      },
-      module_singletons: {
-        "@codewhale/dsh-composition": "dsh-composition",
-        "@deepseek-ai/cordis-plugin-loader": "dsh-loader",
-        "@deepseek-ai/cordis-plugin-include": "dsh-include",
-        "@deepseek-ai/cordis-plugin-group": "dsh-group",
-        "@deepseek-ai/cordis": "cordis",
-        "@deepseek-ai/schemastery": "schemastery",
-        "@deepseek-ai/cosmokit": "cosmokit",
-        cosmokit: "cosmokit",
-        "@deepseek-ai/dsh-tools": "dsh-tools",
-        "@deepseek-ai/dsh-util-values": "dsh-util-values",
-        "@deepseek-ai/dsh-commands/brand": "dsh-commands-brand",
-        "@deepseek-ai/dsh-llm": "dsh-llm-values",
-        "@deepseek-ai/dsh-session": "dsh-session-values",
-        "@deepseek-ai/dsh-system-prompt": "dsh-system-prompt-values",
-        "@deepseek-ai/dsh-user-questions": "dsh-user-questions-values"
-      },
-      definition_api: {
-        package: "@deepseek-ai/dsh-tools",
-        version: "0.2.2-rc.1",
-        license: "MIT",
-        tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-tools/-/dsh-tools-0.2.2-rc.1.tgz",
-        integrity: "sha512-svB49dLPCHkKHgGwik3dTvEH0sL1vKwIzlQgqjE4qzEqFbSEROW8fByk3g2y2lxDv8TqgEUa0Vp2qFrVbm2lfw==",
-        license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-        tarball_sha256: "bb94ee037bd7d3efe2d0654c6a1fa7084b268b895fa0ca6ceeb7e65d4fd6da72",
-        sources: [
-          {
-            file: "lib/shared-DTdn5dXO.js",
-            sha256: "d02f0d8f36878313b0dae3a1bba5b77f7db4cffc77a0b72772048a36bacf2cf0",
-            lines: [
-              [
-                22,
-                548
-              ]
-            ]
-          },
-          {
-            file: "lib/index.js",
-            sha256: "1889cbf718d64518dd83245d4dba1e1f080b2c5326259c3ed5b1be7a7666a2bd",
-            lines: [
-              [
-                7,
-                377
-              ]
-            ]
-          },
-          {
-            file: "lib/shared-DTdn5dXO.js",
-            sha256: "d02f0d8f36878313b0dae3a1bba5b77f7db4cffc77a0b72772048a36bacf2cf0",
-            lines: [
-              [
-                566,
-                596
-              ]
-            ]
-          }
-        ]
-      },
-      command_followup: "one-text-message-submit-on-success",
-      pure_api: {
-        file: "src/dsh/dsh-message-compat.js",
-        source_sha256: "aac208e72eac3601b02c5a4ce95bfeb82f1bb3ba0d1e906d786d1e25609e9857",
-        exports: {
-          "@deepseek-ai/dsh-llm": [
-            "createUserMessage",
-            "HarnessError"
-          ],
-          "@deepseek-ai/dsh-session": [
-            "SessionId"
-          ],
-          "@deepseek-ai/dsh-system-prompt": [
-            "PERSONA_PREFIX_SECTION"
-          ],
-          "@deepseek-ai/dsh-user-questions": [
-            "UserQuestionError"
-          ]
-        },
-        packages: [
-          {
-            package: "@deepseek-ai/dsh-brand",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-brand/-/dsh-brand-0.2.2-rc.1.tgz",
-            integrity: "sha512-ShGNEmNuEQA+bfkspWC2kGrdbrM4dFNhqlrNHIWsHO+PgVH1KoTKTLSraT1pt0A8YYk/moKE0gL2gY9dNBU+rw==",
-            tarball_sha256: "d953cb5e8dcd69be0b0347ce9a3b36421eefa751820cbe909f4a185348ad5530",
-            source_file: "lib/index.js",
-            source_sha256: "14feb59256b891982b2017d73ed03ee65e2a7365f48e4902a856acb0e52d5eb0",
-            excerpts: [
-              {
-                name: "brandString",
-                lines: [
-                  20,
-                  22
-                ],
-                sha256: "2f0b62ba6507db54836a99e24d1d219e598b6140e575d2cf5c63d86a18e5e8ac"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          },
-          {
-            package: "@deepseek-ai/dsh-util-crypto",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-crypto/-/dsh-util-crypto-0.2.2-rc.1.tgz",
-            integrity: "sha512-I9Nhh3/64HPzjdR/mUt0J534FYHgodMUe0coXtA91+kxGcJQcSHOYouewv4hf0NWw0BuLh5zihTdtldZtobOWA==",
-            tarball_sha256: "c9ef0dfed280c83202f1d7bd5d32b1139a92a2fc375da62962ef709c3d1e4a6a",
-            source_file: "lib/index.js",
-            source_sha256: "640b26c8e5a1156c6c8e8749a22f805c9c0e34444778eb4ee9529be3e88ec862",
-            excerpts: [
-              {
-                name: "randomUUID",
-                lines: [
-                  27,
-                  33
-                ],
-                sha256: "e6c3b47d5cf366a149204c36d1697e658f61c48bfd96e66ec1c96deec3a8f4e2"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          },
-          {
-            package: "@deepseek-ai/dsh-llm",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-llm/-/dsh-llm-0.2.2-rc.1.tgz",
-            integrity: "sha512-XeEvH+6bpkjx0E2P1B5ZE+WWa+VHp4DimQaJDKNUZEFouqHMuN1B61TIz6IzUquRxa/6X4yJy+qXQ9WwAeMw5w==",
-            tarball_sha256: "cbf45039d3ef63e26987de514928a847a8c2d0b049df8fb24c11684e203b05d4",
-            source_file: "lib/index.js",
-            source_sha256: "8e541fc98a11897706a122fde1db42f8b2a41b3b354ba3fcb932e9a16929ac6a",
-            excerpts: [
-              {
-                name: "createMessage",
-                lines: [
-                  37,
-                  42
-                ],
-                sha256: "74baa44c9dea1821d97bd4fe592b21baf31f60eaf06962a269fcf2ec88e352ae"
-              },
-              {
-                name: "createUserMessage",
-                lines: [
-                  59,
-                  64
-                ],
-                sha256: "2c4929c2c18e511aa0fefe216eb50e703191057bb15ba1412ddcfdcc8bfc020f"
-              },
-              {
-                name: "HarnessError declaration",
-                lines: [
-                  126,
-                  126
-                ],
-                sha256: "d260a23e0a20850d3b623cbeed54626b47d43fa74e000c5d529dc0a341ab63ee"
-              },
-              {
-                name: "HarnessError body",
-                lines: [
-                  128,
-                  134
-                ],
-                sha256: "30ee24ef29e412b1ab2f0ca89ab600bb0260022d1479d43ca2ad21173b774ccf"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          },
-          {
-            package: "@deepseek-ai/dsh-session",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-session/-/dsh-session-0.2.2-rc.1.tgz",
-            integrity: "sha512-e0zx9HFNn8EyqrymGQS85SjKOyr61//ChTgIVDlCBSZvBB723fuXyi9LiHIIuPTlkgmWJl3gm5J51ebEXew7PQ==",
-            tarball_sha256: "b8b1b4a7b9c8efbdbe4c134ed3b18cddf11842b62ad7675c21c05b3afef1cfb5",
-            source_file: "lib/index.js",
-            source_sha256: "6fad466aa1f7aa64bfa038681ead5721f66c88e9891e25d357d2b8edbccd5494",
-            excerpts: [
-              {
-                name: "SessionId",
-                lines: [
-                  13,
-                  15
-                ],
-                sha256: "68a5778f0586d4e1c219ce6ae3cec3120a57446bbb91f371b4ba208533f48996"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          },
-          {
-            package: "@deepseek-ai/dsh-system-prompt",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-system-prompt/-/dsh-system-prompt-0.2.2-rc.1.tgz",
-            integrity: "sha512-1p9imdrenPnJTkLb6Coq+ELBDjngblM/YGP1Pa/xf1oisjLHcCoK2n9kkOUTIfgvoFtqWfxZJNZeKef71ZmlrA==",
-            tarball_sha256: "5ecb3f2ff2f0c037287c22c1ef917f1ce5cdd4c8055d51da6646ed5a39fe02a9",
-            source_file: "lib/index.js",
-            source_sha256: "18b692b03bbb717589085f63b126cbcf22963763c5a0565bb3a7a5d254e8e4a7",
-            excerpts: [
-              {
-                name: "PERSONA_PREFIX_SECTION",
-                lines: [
-                  61,
-                  61
-                ],
-                sha256: "11338254c278626eea6887b9cb5dc94d16f2ab4dae4bd7e555ea608c4b15648f"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          },
-          {
-            package: "@deepseek-ai/dsh-util-values",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-values/-/dsh-util-values-0.2.2-rc.1.tgz",
-            integrity: "sha512-UN4B/Fa9zAunYN3UuXDQ3QknxF/lMKNwTu2WxXKKEC+Ejz745po7I/JmsVFVa7+socfuwwTmVrfSsddRVU+lew==",
-            tarball_sha256: "e5de9a3c2600c70d72dba702cd0dfc8097264b7b6a7f393f4cfa799c81ecf759",
-            source_file: "lib/index.js",
-            source_sha256: "8b4ffdf40126d48bd22017b4671f7e90612d01833fc865f7a0b60d3de4183e8b",
-            excerpts: [
-              {
-                name: "deepFreeze",
-                lines: [
-                  809,
-                  845
-                ],
-                sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: false
-          },
-          {
-            package: "@deepseek-ai/dsh-user-questions",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-user-questions/-/dsh-user-questions-0.2.2-rc.1.tgz",
-            integrity: "sha512-COY40boWZ7XEszSvMGZ4CY5ze5ujCdA+Trtqx5C6ioqWzH9e8YbkY7AxyCOadxVO++5zAsqvsAfq65cZUPIMGA==",
-            tarball_sha256: "e7c1c38234fea9c0634ec95272bd1005c48ce890d2b935c8442b4ae7fee1b51e",
-            source_file: "lib/index.js",
-            source_sha256: "69fee77aa57cc43de583d53a4877394c4cf3b5d58b8d7579fd8095c0a015bfbd",
-            excerpts: [
-              {
-                name: "UserQuestionError",
-                lines: [
-                  430,
-                  435
-                ],
-                sha256: "5d49a4ecdf40039b26824f3575a79820b48ed011f90641870f44fe5a41bf5ced"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          }
-        ],
-        reuse: {
-          package: "@deepseek-ai/dsh-util-values",
-          version: "0.2.2-rc.1",
-          file: "lib/index.js",
-          symbol: "deepFreeze",
-          lines: [
-            809,
-            845
-          ],
-          sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
-        },
-        constructor_names: [
-          "HarnessError",
-          "UserQuestionError"
-        ]
-      },
-      tool_caller_projection: "readonly-id-session-header-cwd",
-      session_methods: {
-        flush: "invocation-bound-acknowledged-checkpoint-with-host-redaction-policy"
-      },
-      user_question_methods: {
-        ask: "invocation-bound-root-agent-typed-answers-no-wait"
-      },
-      subagent_methods: {
-        getProvider: "spawn-only-independent-context",
-        startActivation: "invocation-bound-caller-or-parent-delivery-text-prompt-model-persona-deny",
-        result: "text-output-typed-stop-reason",
-        dispose: "exact-activation"
-      },
-      agents_methods: {},
-      system_prompt_methods: {
-        section: "child-persona-slot-in-agent-created-only"
-      },
-      tool_definition_fields: {
-        deferLoading: "boolean-presentation-noop-engine-controls-loading"
-      }
-    };
-  }
-});
-
-// src/dsh/resolve-hooks.ts
-import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL2 } from "node:url";
-import { resolve as resolve2, isAbsolute as isAbsolute2, dirname as dirname2 } from "node:path";
-function packageName(specifier) {
-  const parts = specifier.split("/");
-  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
-}
-function classifySpecifier(specifier) {
-  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.includes(":")) return null;
-  if (Object.hasOwn(SINGLETONS, specifier)) return SINGLETONS[specifier];
-  const name = packageName(specifier);
-  if (Object.hasOwn(SINGLETONS, name)) {
-    if (specifier !== name) throw new UnsupportedPeerError(specifier);
-    return SINGLETONS[name];
-  }
-  if (name.startsWith("@deepseek-ai/dsh-") || name.startsWith("@deepseek-ai/cordis-")) {
-    throw new UnsupportedPeerError(name);
-  }
-  return null;
-}
-function explainImportError(error) {
-  const match = error instanceof Error ? /Cannot find package '([^']+)'/.exec(error.message) : null;
-  if (!match) return error;
-  try {
-    classifySpecifier(match[1]);
-  } catch (unsupported) {
-    return unsupported;
-  }
-  return error;
-}
-function keyIn(closure, path2) {
-  const canonical = insideKey(closure.canonicalRoot, path2);
-  if (canonical !== void 0) return canonical;
-  for (const root of closure.rawRoots) {
-    const raw = insideKey(root, path2);
-    if (raw !== void 0) return raw;
-  }
-}
-function admitReviewedClosure(baseUrl, files) {
-  const rawRoot = resolve2(fileURLToPath2(baseUrl));
-  const canonicalRoot = canonicalPath(rawRoot);
-  const id = pathKey(canonicalRoot);
-  const accepted = /* @__PURE__ */ Object.create(null);
-  const keys = Object.keys(files);
-  if (keys.length > 16384) throw new Error("reviewed composition closure exceeds its file limit");
-  for (const key of keys) {
-    if (!key || key.split("/").some((part) => !part || part === "." || part === "..") || key.includes("\\") || key.includes(":") || isAbsolute2(key) || !/^[a-f0-9]{64}$/.test(files[key])) throw new Error("invalid reviewed composition closure file");
-    accepted[key] = files[key];
-  }
-  const existing = reviewedClosures.get(id);
-  if (existing) {
-    if (Object.keys(existing.files).length !== keys.length || keys.some((key) => existing.files[key] !== accepted[key])) throw new Error("the same composition root carries different file receipts");
-    existing.refs++;
-    existing.rawRoots.add(rawRoot);
-  } else reviewedClosures.set(id, { files: Object.freeze(accepted), refs: 1, canonicalRoot, rawRoots: /* @__PURE__ */ new Set([rawRoot]) });
-  let disposed = false;
-  return () => {
-    if (disposed) return;
-    disposed = true;
-    const current2 = reviewedClosures.get(id);
-    if (current2 && --current2.refs === 0) reviewedClosures.delete(id);
-  };
-}
-async function importReviewedModule(baseUrl, path2) {
-  const rawRoot = resolve2(fileURLToPath2(baseUrl));
-  const id = pathKey(canonicalPath(rawRoot));
-  const receipt = reviewedClosures.get(id);
-  if (!receipt) throw new Error("composition module closure is no longer admitted");
-  const entry = resolve2(rawRoot, path2);
-  const admitted = closureAt(pathToFileURL2(entry).href);
-  if (!admitted || admitted.root !== id || !(admitted.path in receipt.files)) throw new Error("composition module is absent from reviewed closure");
-  return import(pathToFileURL2(entry).href);
-}
-function closureAt(url) {
-  if (!url?.startsWith("file:")) return;
-  const path2 = resolve2(fileURLToPath2(url));
-  for (const [root, receipt] of reviewedClosures) {
-    const inside = keyIn(receipt, path2);
-    if (inside !== void 0) return { root, receipt, path: inside };
-  }
-}
-var SINGLETONS, UnsupportedPeerError, reviewedClosures;
-var init_resolve_hooks = __esm({
-  "src/dsh/resolve-hooks.ts"() {
-    "use strict";
-    init_canonical_path();
-    init_runtime();
-    init_bun_closure();
-    init_compatibility();
-    SINGLETONS = compatibility_default.module_singletons;
-    UnsupportedPeerError = class extends Error {
-      constructor(specifier) {
-        super(`requires \`${specifier}\`, which the Codewhale extension host does not provide`);
-        this.specifier = specifier;
-        this.name = "UnsupportedPeerError";
-      }
-      specifier;
-    };
-    reviewedClosures = /* @__PURE__ */ new Map();
-  }
-});
-
-// src/dsh/missing-services.ts
-function describeMissingServices(names, { scoped: classifyScoped = true } = {}) {
-  const absent = names.filter((name) => !classifyScoped || !PROVIDED_SERVICES.has(name));
-  const scoped = names.filter((name) => classifyScoped && PROVIDED_SERVICES.has(name));
-  const parts = [];
-  if (absent.length > 0) {
-    const owned = absent.filter((name) => REFUSED_SERVICES.has(name));
-    const reasons = [...new Set(absent.flatMap((name) => UNPROVIDED_REASONS.filter(([matches]) => matches(name)).map(([, reason]) => reason)))];
-    parts.push(`${quoted(absent)}, not provided by the Codewhale extension host in this phase` + (reasons.length > 0 ? ` (${reasons.join("; ")})` : "") + (owned.length > 0 ? `; ${quoted(owned)} belong${owned.length === 1 ? "s" : ""} to the Codewhale core and no reviewed bridge exposes ${owned.length === 1 ? "it" : "them"} yet` : ""));
-  }
-  if (scoped.length > 0) parts.push(`${quoted(scoped)}, provided by the host but unavailable in this scope`);
-  return parts.join("; ");
-}
-var REFUSED_SERVICES, PROVIDED_SERVICES, UNPROVIDED_REASONS, quoted;
-var init_missing_services = __esm({
-  "src/dsh/missing-services.ts"() {
-    "use strict";
-    init_compatibility();
-    REFUSED_SERVICES = new Set(compatibility_default.refused_services);
-    PROVIDED_SERVICES = new Set(Object.values(compatibility_default.provided_services).flat());
-    UNPROVIDED_REASONS = [
-      [(name) => name === "webServer" || name === "connection", "DSH Web UI services; Codewhale has no plugin web server"],
-      [(name) => name === "agentPresets", "the DSH 0.2.2 agent-preset registry is not adopted"],
-      [(name) => name.startsWith("@deepseek-ai/dsh-client-"), "DSH client UI services"]
-    ];
-    quoted = (names) => names.map((name) => `\`${name}\``).join(", ");
-  }
-});
-
-// node_modules/@deepseek-ai/schemastery/lib/index.mjs
-function mergeDesc(original, messages) {
-  const result = typeof original === "string" ? { "": original } : { ...original };
-  for (const locale in messages) {
-    const value = messages[locale];
-    if (value?.$description || value?.$desc) result[locale] = value.$description || value.$desc;
-    else if (typeof value === "string") result[locale] = value;
-  }
-  return result;
-}
-function getInner(value) {
-  return value?.$value ?? value?.$inner;
-}
-function extractKeys(data2) {
-  return filterKeys(data2 ?? {}, (key) => !key.startsWith("$"));
-}
-function validateVolatileSchema(schema3, path2 = [], blocked = false, seen = /* @__PURE__ */ new Map()) {
-  const states = seen.get(schema3) ?? /* @__PURE__ */ new Set();
-  if (states.has(blocked)) return;
-  states.add(blocked);
-  seen.set(schema3, states);
-  if (schema3.meta?.volatile && blocked) throw new ValidationError2("volatile fields require a fixed object path without an enclosing volatile field", { path: path2 });
-  const nested = blocked || !!schema3.meta?.volatile;
-  if (schema3.dict) for (const [key, child] of Object.entries(schema3.dict)) validateVolatileSchema(child, [...path2, key], nested, seen);
-  if (schema3.sKey) validateVolatileSchema(schema3.sKey, [...path2, "<key>"], true, seen);
-  if (schema3.inner && (schema3.type !== "lazy" || schema3.inner[kSchema])) validateVolatileSchema(schema3.inner, [...path2, "*"], true, seen);
-  if (schema3.list) for (let index = 0; index < schema3.list.length; index++) validateVolatileSchema(schema3.list[index], [...path2, String(index)], true, seen);
-}
-function checkWithinRange(data2, meta, description, options, skipMin = false) {
-  const { max = Infinity, min = -Infinity } = meta;
-  if (data2 > max) throw new ValidationError2(`expected ${description} <= ${max} but got ${data2}`, options);
-  if (data2 < min && !skipMin) throw new ValidationError2(`expected ${description} >= ${min} but got ${data2}`, options);
-}
-function decimalShift(data2, digits) {
-  const str2 = data2.toString();
-  if (str2.includes("e")) return data2 * Math.pow(10, digits);
-  const index = str2.indexOf(".");
-  if (index === -1) return data2 * Math.pow(10, digits);
-  const frac = str2.slice(index + 1);
-  const integer = str2.slice(0, index);
-  if (frac.length <= digits) return +(integer + frac.padEnd(digits, "0"));
-  return +(integer + frac.slice(0, digits) + "." + frac.slice(digits));
-}
-function isMultipleOf(data2, min, step) {
-  step = Math.abs(step);
-  if (!/^\d+\.\d+$/.test(step.toString())) return (data2 - min) % step === 0;
-  const index = step.toString().indexOf(".");
-  const digits = step.toString().slice(index + 1).length;
-  return Math.abs(decimalShift(data2, digits) - decimalShift(min, digits)) % decimalShift(step, digits) === 0;
-}
-function property(data2, key, schema3, options) {
-  try {
-    const [value, adapted] = Schema2.resolve(data2[key], schema3, {
-      ...options,
-      path: [...options.path || [], key]
-    });
-    if (adapted !== void 0) data2[key] = adapted;
-    return value;
-  } catch (e) {
-    if (!options?.autofix) throw e;
-    delete data2[key];
-    return schema3.meta.volatile ? createVolatile(schema3.meta.default) : schema3.meta.default;
-  }
-}
-function merge3(result, data2) {
-  for (const key in data2) {
-    if (key in result) continue;
-    result[key] = data2[key];
-  }
-}
-function defineMethod(name, keys, format) {
-  formatters[name] = format;
-  Object.assign(Schema2, { [name](...args) {
-    const schema3 = new Schema2({ type: name });
-    keys.forEach((key, index) => {
-      switch (key) {
-        case "sKey":
-          schema3.sKey = args[index] ?? Schema2.string();
-          break;
-        case "inner":
-          schema3.inner = Schema2.from(args[index]);
-          break;
-        case "list":
-          schema3.list = args[index].map(Schema2.from);
-          break;
-        case "dict":
-          schema3.dict = mapValues(args[index], Schema2.from);
-          break;
-        case "bits":
-          schema3.bits = {};
-          for (const key2 in args[index]) {
-            if (typeof args[index][key2] !== "number") continue;
-            schema3.bits[key2] = args[index][key2];
-          }
-          break;
-        case "callback": {
-          const callback = schema3.callback = args[index];
-          callback["toJSON"] ||= () => callback.toString();
-          break;
-        }
-        case "constructor": {
-          const constructor = schema3.constructor = args[index];
-          if (typeof constructor === "function") constructor["toJSON"] ||= () => constructor["name"];
-          break;
-        }
-        default:
-          schema3[key] = args[index];
-      }
-    });
-    if (name === "object" || name === "dict") schema3.meta.default = {};
-    else if (name === "array" || name === "tuple") schema3.meta.default = [];
-    else if (name === "bitset") schema3.meta.default = 0;
-    return schema3;
-  } });
-}
-var kSchema, kValidationError2, ValidationError2, Schema2, resolvers, checkedVolatile, formatters;
-var init_lib3 = __esm({
-  "node_modules/@deepseek-ai/schemastery/lib/index.mjs"() {
-    init_lib();
-    kSchema = /* @__PURE__ */ Symbol.for("schemastery");
-    kValidationError2 = /* @__PURE__ */ Symbol.for("ValidationError");
-    globalThis.__schemastery_index__ ??= 0;
-    globalThis.__schemastery_refs__ = void 0;
-    ValidationError2 = class extends TypeError {
-      options;
-      name = "ValidationError";
-      constructor(message, options) {
-        let prefix = "$";
-        for (const segment of options.path || []) if (typeof segment === "string") prefix += "." + segment;
-        else if (typeof segment === "number") prefix += "[" + segment + "]";
-        else if (typeof segment === "symbol") prefix += `[Symbol(${segment.toString()})]`;
-        if (prefix.startsWith(".")) prefix = prefix.slice(1);
-        super((prefix === "$" ? "" : `${prefix} `) + message);
-        this.options = options;
-      }
-      static is(error) {
-        return !!error?.[kValidationError2];
-      }
-    };
-    Object.defineProperty(ValidationError2.prototype, kValidationError2, { value: true });
-    Schema2 = function(options) {
-      const schema3 = function(data2, options2 = {}) {
-        return Schema2.resolve(data2, schema3, options2)[0];
-      };
-      if (options.refs) {
-        const refs = mapValues(options.refs, (options2) => new Schema2(options2));
-        const getRef = (uid) => refs[uid];
-        for (const key in refs) {
-          const options2 = refs[key];
-          options2.sKey = getRef(options2.sKey);
-          options2.inner = getRef(options2.inner);
-          options2.list = options2.list && options2.list.map(getRef);
-          options2.dict = options2.dict && mapValues(options2.dict, getRef);
-        }
-        return refs[options.uid];
-      }
-      Object.assign(schema3, options);
-      if (typeof schema3.callback === "string") try {
-        schema3.callback = new Function("return " + schema3.callback)();
-      } catch {
-      }
-      Object.defineProperty(schema3, "uid", { value: globalThis.__schemastery_index__++ });
-      Object.setPrototypeOf(schema3, Schema2.prototype);
-      schema3.meta ||= {};
-      schema3.toString = schema3.toString.bind(schema3);
-      return schema3;
-    };
-    Schema2.prototype = Object.create(Function.prototype);
-    Schema2.prototype[kSchema] = true;
-    Object.defineProperty(Schema2.prototype, "~standard", { get() {
-      return {
-        version: 1,
-        vendor: "schemastery",
-        validate: (value) => {
-          try {
-            return { value: Schema2.resolve(value, this, {})[0] };
-          } catch (error) {
-            if (ValidationError2.is(error)) return { issues: [{
-              message: error.message,
-              path: error.options.path
-            }] };
-            throw error;
-          }
-        }
-      };
-    } });
-    Schema2.ValidationError = ValidationError2;
-    Schema2.prototype.toJSON = function toJSON() {
-      if (globalThis.__schemastery_refs__) {
-        globalThis.__schemastery_refs__[this.uid] ??= JSON.parse(JSON.stringify({ ...this }));
-        return this.uid;
-      }
-      globalThis.__schemastery_refs__ = { [this.uid]: { ...this } };
-      globalThis.__schemastery_refs__[this.uid] = JSON.parse(JSON.stringify({ ...this }));
-      const result = {
-        uid: this.uid,
-        refs: globalThis.__schemastery_refs__
-      };
-      globalThis.__schemastery_refs__ = void 0;
-      return result;
-    };
-    Schema2.prototype.set = function set2(key, value) {
-      this.dict[key] = value;
-      return this;
-    };
-    Schema2.prototype.push = function push(value) {
-      this.list.push(value);
-      return this;
-    };
-    Schema2.prototype.i18n = function i18n(messages) {
-      const schema3 = Schema2(this);
-      const desc = mergeDesc(schema3.meta.description, messages);
-      if (Object.keys(desc).length) schema3.meta.description = desc;
-      if (schema3.dict) schema3.dict = mapValues(schema3.dict, (inner, key) => {
-        return inner.i18n(mapValues(messages, (data2) => getInner(data2)?.[key] ?? data2?.[key]));
-      });
-      if (schema3.list) schema3.list = schema3.list.map((inner, index) => {
-        return inner.i18n(mapValues(messages, (data2 = {}) => {
-          if (Array.isArray(getInner(data2))) return getInner(data2)[index];
-          if (Array.isArray(data2)) return data2[index];
-          return extractKeys(data2);
-        }));
-      });
-      if (schema3.inner) schema3.inner = schema3.inner.i18n(mapValues(messages, (data2) => {
-        if (getInner(data2)) return getInner(data2);
-        return extractKeys(data2);
-      }));
-      if (schema3.sKey) schema3.sKey = schema3.sKey.i18n(mapValues(messages, (data2) => data2?.$key));
-      return schema3;
-    };
-    Schema2.prototype.extra = function extra(key, value) {
-      const schema3 = Schema2(this);
-      schema3.meta = {
-        ...schema3.meta,
-        [key]: value
-      };
-      return schema3;
-    };
-    for (const key of [
-      "required",
-      "disabled",
-      "collapse",
-      "hidden",
-      "loose"
-    ]) Object.assign(Schema2.prototype, { [key](value = true) {
-      const schema3 = Schema2(this);
-      schema3.meta = {
-        ...schema3.meta,
-        [key]: value
-      };
-      return schema3;
-    } });
-    Schema2.prototype.deprecated = function deprecated() {
-      const schema3 = Schema2(this);
-      schema3.meta.badges ||= [];
-      schema3.meta.badges.push({
-        text: "deprecated",
-        type: "danger"
-      });
-      return schema3;
-    };
-    Schema2.prototype.experimental = function experimental() {
-      const schema3 = Schema2(this);
-      schema3.meta.badges ||= [];
-      schema3.meta.badges.push({
-        text: "experimental",
-        type: "warning"
-      });
-      return schema3;
-    };
-    Schema2.prototype.pattern = function pattern(regexp) {
-      const schema3 = Schema2(this);
-      const pattern2 = pick(regexp, ["source", "flags"]);
-      schema3.meta = {
-        ...schema3.meta,
-        pattern: pattern2
-      };
-      return schema3;
-    };
-    Schema2.prototype.simplify = function simplify(value) {
-      if (isVolatile(value)) value = value.get();
-      if (deepEqual(value, this.meta.default, this.type === "dict")) return null;
-      if (isNullable(value)) return value;
-      if (this.type === "object" || this.type === "dict") {
-        const result = {};
-        for (const key in value) {
-          const item = (this.type === "object" ? this.dict[key] : this.inner)?.simplify(value[key]);
-          if (this.type === "dict" || !isNullable(item)) result[key] = item;
-        }
-        if (deepEqual(result, this.meta.default, this.type === "dict")) return null;
-        return result;
-      } else if (this.type === "array" || this.type === "tuple") {
-        const result = [];
-        value.forEach((value2, index) => {
-          const schema3 = this.type === "array" ? this.inner : this.list[index];
-          const item = schema3 ? schema3.simplify(value2) : value2;
-          result.push(item);
-        });
-        return result;
-      } else if (this.type === "intersect") {
-        const result = {};
-        for (const item of this.list) Object.assign(result, item.simplify(value));
-        return result;
-      } else if (this.type === "union") for (const schema3 of this.list) try {
-        Schema2.resolve(value, schema3, {});
-        return schema3.simplify(value);
-      } catch {
-      }
-      return value;
-    };
-    Schema2.prototype.toString = function toString2(inline) {
-      return formatters[this.type]?.(this, inline) ?? `Schema<${this.type}>`;
-    };
-    Schema2.prototype.role = function role(role, extra2) {
-      const schema3 = Schema2(this);
-      schema3.meta = {
-        ...schema3.meta,
-        role,
-        extra: extra2
-      };
-      return schema3;
-    };
-    for (const key of [
-      "default",
-      "link",
-      "comment",
-      "description",
-      "max",
-      "min",
-      "step"
-    ]) Object.assign(Schema2.prototype, { [key](value) {
-      const schema3 = Schema2(this);
-      schema3.meta = {
-        ...schema3.meta,
-        [key]: value
-      };
-      return schema3;
-    } });
-    Schema2.prototype.volatile = function volatile() {
-      if (this.meta.volatile) throw new TypeError("volatile schema is already wrapped");
-      return this.extra("volatile", true);
-    };
-    resolvers = {};
-    checkedVolatile = /* @__PURE__ */ Symbol("checked-volatile-schema");
-    Schema2.extend = function extend2(type2, resolve7) {
-      resolvers[type2] = resolve7;
-    };
-    Schema2.resolve = function resolve3(data2, schema3, options = {}, strict = false) {
-      if (!schema3) return [data2];
-      if (!options[checkedVolatile]) {
-        validateVolatileSchema(schema3, options.path);
-        options = {
-          ...options,
-          [checkedVolatile]: true
-        };
-      }
-      if (schema3.meta?.volatile) {
-        const inner = Schema2(schema3);
-        inner.meta = {
-          ...schema3.meta,
-          volatile: false
-        };
-        const [value, adapted] = Schema2.resolve(data2, inner, options, strict);
-        try {
-          return [createVolatile(value), adapted];
-        } catch (error) {
-          throw new ValidationError2(error instanceof Error ? error.message : String(error), options);
-        }
-      }
-      if (options.ignore?.(data2, schema3)) return [data2];
-      if (isNullable(data2) && schema3.type !== "lazy") {
-        if (schema3.meta.required) throw new ValidationError2(`missing required value`, options);
-        let current2 = schema3;
-        let fallback = schema3.meta.default;
-        while (current2?.type === "intersect" && isNullable(fallback)) {
-          current2 = current2.list[0];
-          fallback = current2?.meta.default;
-        }
-        if (isNullable(fallback)) return [data2];
-        data2 = clone(fallback);
-      }
-      const callback = resolvers[schema3.type];
-      if (!callback) throw new ValidationError2(`unsupported type "${schema3.type}"`, options);
-      try {
-        return callback(data2, schema3, options, strict);
-      } catch (error) {
-        if (!schema3.meta.loose) throw error;
-        return [schema3.meta.default];
-      }
-    };
-    Schema2.from = function from(source) {
-      if (isNullable(source)) return Schema2.any();
-      else if ([
-        "string",
-        "number",
-        "boolean"
-      ].includes(typeof source)) return Schema2.const(source).required();
-      else if (source[kSchema]) return source;
-      else if (typeof source === "function") switch (source) {
-        case String:
-          return Schema2.string().required();
-        case Number:
-          return Schema2.number().required();
-        case Boolean:
-          return Schema2.boolean().required();
-        case Function:
-          return Schema2.function().required();
-        default:
-          return Schema2.is(source).required();
-      }
-      else throw new TypeError(`cannot infer schema from ${source}`);
-    };
-    Schema2.lazy = function lazy(builder) {
-      const toJSON2 = () => {
-        if (!schema3.inner[kSchema]) {
-          schema3.inner = schema3.builder();
-          schema3.inner.meta = {
-            ...schema3.meta,
-            ...schema3.inner.meta
-          };
-        }
-        return schema3.inner.toJSON();
-      };
-      const schema3 = new Schema2({
-        type: "lazy",
-        builder,
-        inner: { toJSON: toJSON2 }
-      });
-      return schema3;
-    };
-    Schema2.natural = function natural() {
-      return Schema2.number().step(1).min(0);
-    };
-    Schema2.percent = function percent() {
-      return Schema2.number().step(0.01).min(0).max(1).role("slider");
-    };
-    Schema2.date = function date() {
-      return Schema2.union([Schema2.is(Date), Schema2.transform(Schema2.string().role("datetime"), (value, options) => {
-        const date2 = new Date(value);
-        if (isNaN(+date2)) throw new ValidationError2(`invalid date "${value}"`, options);
-        return date2;
-      }, true)]);
-    };
-    Schema2.regExp = function regExp(flag = "") {
-      return Schema2.union([Schema2.is(RegExp), Schema2.transform(Schema2.string().role("regexp", { flag }), (value, options) => {
-        try {
-          return new RegExp(value, flag);
-        } catch (e) {
-          throw new ValidationError2(e.message, options);
-        }
-      }, true)]);
-    };
-    Schema2.arrayBuffer = function arrayBuffer(encoding) {
-      return Schema2.union([
-        Schema2.is(ArrayBuffer),
-        Schema2.is(SharedArrayBuffer),
-        Schema2.transform(Schema2.any(), (value, options) => {
-          if (Binary.isSource(value)) return Binary.fromSource(value);
-          throw new ValidationError2(`expected ArrayBufferSource but got ${value}`, options);
-        }, true),
-        ...encoding ? [Schema2.transform(Schema2.string(), (value, options) => {
-          try {
-            return encoding === "base64" ? Binary.fromBase64(value) : Binary.fromHex(value);
-          } catch (e) {
-            throw new ValidationError2(e.message, options);
-          }
-        }, true)] : []
-      ]);
-    };
-    Schema2.extend("lazy", (data2, schema3, options, strict) => {
-      if (!schema3.inner[kSchema]) {
-        schema3.inner = schema3.builder();
-        schema3.inner.meta = {
-          ...schema3.meta,
-          ...schema3.inner.meta
-        };
-        validateVolatileSchema(schema3.inner, options.path, true);
-      }
-      return Schema2.resolve(data2, schema3.inner, options, strict);
-    });
-    Schema2.extend("any", (data2) => {
-      return [data2];
-    });
-    Schema2.extend("never", (data2, _, options) => {
-      throw new ValidationError2(`expected nullable but got ${data2}`, options);
-    });
-    Schema2.extend("const", (data2, { value }, options) => {
-      if (deepEqual(data2, value)) return [value];
-      throw new ValidationError2(`expected ${value} but got ${data2}`, options);
-    });
-    Schema2.extend("string", (data2, { meta }, options) => {
-      if (typeof data2 !== "string") throw new ValidationError2(`expected string but got ${data2}`, options);
-      if (meta.pattern) {
-        const regexp = new RegExp(meta.pattern.source, meta.pattern.flags);
-        if (!regexp.test(data2)) throw new ValidationError2(`expect string to match regexp ${regexp}`, options);
-      }
-      checkWithinRange(data2.length, meta, "string length", options);
-      return [data2];
-    });
-    Schema2.extend("number", (data2, { meta }, options) => {
-      if (typeof data2 !== "number") throw new ValidationError2(`expected number but got ${data2}`, options);
-      checkWithinRange(data2, meta, "number", options);
-      const { step } = meta;
-      if (step && !isMultipleOf(data2, meta.min ?? 0, step)) throw new ValidationError2(`expected number multiple of ${step} but got ${data2}`, options);
-      return [data2];
-    });
-    Schema2.extend("boolean", (data2, _, options) => {
-      if (typeof data2 === "boolean") return [data2];
-      throw new ValidationError2(`expected boolean but got ${data2}`, options);
-    });
-    Schema2.extend("bitset", (data2, { bits, meta }, options) => {
-      let value = 0, keys = [];
-      if (typeof data2 === "number") {
-        value = data2;
-        for (const key in bits) if (data2 & bits[key]) keys.push(key);
-      } else if (Array.isArray(data2)) {
-        keys = data2;
-        for (const key of keys) {
-          if (typeof key !== "string") throw new ValidationError2(`expected string but got ${key}`, options);
-          if (key in bits) value |= bits[key];
-        }
-      } else throw new ValidationError2(`expected number or array but got ${data2}`, options);
-      if (value === meta.default) return [value];
-      return [value, keys];
-    });
-    Schema2.extend("function", (data2, _, options) => {
-      if (typeof data2 === "function") return [data2];
-      throw new ValidationError2(`expected function but got ${data2}`, options);
-    });
-    Schema2.extend("is", (data2, { constructor }, options) => {
-      if (typeof constructor === "function") {
-        if (data2 instanceof constructor) return [data2];
-        throw new ValidationError2(`expected ${constructor.name} but got ${data2}`, options);
-      } else {
-        if (isNullable(data2)) throw new ValidationError2(`expected ${constructor} but got ${data2}`, options);
-        let prototype = Object.getPrototypeOf(data2);
-        while (prototype) {
-          if (prototype.constructor?.name === constructor) return [data2];
-          prototype = Object.getPrototypeOf(prototype);
-        }
-        throw new ValidationError2(`expected ${constructor} but got ${data2}`, options);
-      }
-    });
-    Schema2.extend("array", (data2, { inner, meta }, options) => {
-      if (!Array.isArray(data2)) throw new ValidationError2(`expected array but got ${data2}`, options);
-      checkWithinRange(data2.length, meta, "array length", options, !isNullable(inner.meta.default));
-      return [data2.map((_, index) => property(data2, index, inner, options))];
-    });
-    Schema2.extend("dict", (data2, { inner, sKey }, options, strict) => {
-      if (!isPlainObject(data2)) throw new ValidationError2(`expected object but got ${data2}`, options);
-      const result = {};
-      for (const key in data2) {
-        let rKey;
-        try {
-          rKey = Schema2.resolve(key, sKey, options)[0];
-        } catch (error) {
-          if (strict) continue;
-          throw error;
-        }
-        result[rKey] = property(data2, key, inner, options);
-        data2[rKey] = data2[key];
-        if (key !== rKey) delete data2[key];
-      }
-      return [result];
-    });
-    Schema2.extend("tuple", (data2, { list: list2 }, options, strict) => {
-      if (!Array.isArray(data2)) throw new ValidationError2(`expected array but got ${data2}`, options);
-      const result = list2.map((inner, index) => property(data2, index, inner, options));
-      if (strict) return [result];
-      result.push(...data2.slice(list2.length));
-      return [result];
-    });
-    Schema2.extend("object", (data2, { dict }, options, strict) => {
-      if (!isPlainObject(data2)) throw new ValidationError2(`expected object but got ${data2}`, options);
-      const result = {};
-      for (const key in dict) {
-        const value = property(data2, key, dict[key], options);
-        if (!isNullable(value) || key in data2) result[key] = value;
-      }
-      if (!strict) merge3(result, data2);
-      return [result];
-    });
-    Schema2.extend("union", (data2, { list: list2, toString: toString3 }, options, strict) => {
-      const messages = [];
-      for (const inner of list2) try {
-        return Schema2.resolve(data2, inner, options, strict);
-      } catch (error) {
-        messages.push(error);
-      }
-      throw new ValidationError2(`expected ${toString3()} but got ${JSON.stringify(data2)}`, options);
-    });
-    Schema2.extend("intersect", (data2, { list: list2, toString: toString3 }, options, strict) => {
-      if (!list2.length) return [data2];
-      let result;
-      for (const inner of list2) {
-        const value = Schema2.resolve(data2, inner, options, true)[0];
-        if (isNullable(value)) continue;
-        if (isNullable(result)) result = value;
-        else if (typeof result !== typeof value) throw new ValidationError2(`expected ${toString3()} but got ${JSON.stringify(data2)}`, options);
-        else if (typeof value === "object") merge3(result ??= {}, value);
-        else if (result !== value) throw new ValidationError2(`expected ${toString3()} but got ${JSON.stringify(data2)}`, options);
-      }
-      if (!strict && isPlainObject(data2)) merge3(result, data2);
-      return [result];
-    });
-    Schema2.extend("transform", (data2, { inner, callback, preserve }, options) => {
-      const [result, adapted = data2] = Schema2.resolve(data2, inner, options, true);
-      if (preserve) return [callback(result)];
-      else return [callback(result), callback(adapted)];
-    });
-    formatters = {};
-    defineMethod("is", ["constructor"], ({ constructor }) => {
-      if (typeof constructor === "function") return constructor.name;
-      else return constructor;
-    });
-    defineMethod("any", [], () => "any");
-    defineMethod("never", [], () => "never");
-    defineMethod("const", ["value"], ({ value }) => typeof value === "string" ? JSON.stringify(value) : value);
-    defineMethod("string", [], () => "string");
-    defineMethod("number", [], () => "number");
-    defineMethod("boolean", [], () => "boolean");
-    defineMethod("bitset", ["bits"], () => "bitset");
-    defineMethod("function", [], () => "function");
-    defineMethod("array", ["inner"], ({ inner }) => `${inner.toString(true)}[]`);
-    defineMethod("dict", ["inner", "sKey"], ({ inner, sKey }) => `{ [key: ${sKey.toString()}]: ${inner.toString()} }`);
-    defineMethod("tuple", ["list"], ({ list: list2 }) => `[${list2.map((inner) => inner.toString()).join(", ")}]`);
-    defineMethod("object", ["dict"], ({ dict }) => {
-      if (Object.keys(dict).length === 0) return "{}";
-      return `{ ${Object.entries(dict).map(([key, inner]) => {
-        return `${key}${inner.meta.required ? "" : "?"}: ${inner.toString()}`;
-      }).join(", ")} }`;
-    });
-    defineMethod("union", ["list"], ({ list: list2 }, inline) => {
-      const result = list2.map(({ toString: format }) => format()).join(" | ");
-      return inline ? `(${result})` : result;
-    });
-    defineMethod("intersect", ["list"], ({ list: list2 }) => {
-      return `${list2.map((inner) => inner.toString(true)).join(" & ")}`;
-    });
-    defineMethod("transform", [
-      "inner",
-      "callback",
-      "preserve"
-    ], ({ inner }, isInner) => inner.toString(isInner));
-  }
-});
-
-// src/dsh/cot-translation.ts
-function isRecord2(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function validateEndpoint(value) {
-  const url = new URL(value);
-  if (!["http:", "https:"].includes(url.protocol) || url.username !== "" || url.password !== "" || url.hash !== "") {
-    throw new Error(
-      "Translation endpoint must be an HTTP(S) URL without credentials or a fragment"
-    );
-  }
-  return url.href;
-}
-function mapLanguage(tag, provider) {
-  const lower = tag.toLowerCase();
-  if (lower === "zh" || lower === "zh-cn" || lower === "zh-sg" || lower === "zh-hans") {
-    return provider === "google" ? "zh-CN" : "zh-Hans";
-  }
-  if (lower === "zh-tw" || lower === "zh-hk" || lower === "zh-mo" || lower === "zh-hant") {
-    return provider === "google" ? "zh-TW" : "zh-Hant";
-  }
-  return tag;
-}
-function parseGooglePayload(payload) {
-  if (!Array.isArray(payload) || !Array.isArray(payload[0]) || payload[0].length === 0) {
-    throw new TranslationError(
-      "TRANSLATION_INVALID_RESPONSE",
-      "Google translation returned invalid payload"
-    );
-  }
-  const parts = [];
-  for (const segment of payload[0]) {
-    if (!Array.isArray(segment) || typeof segment[0] !== "string") {
-      throw new TranslationError(
-        "TRANSLATION_INVALID_RESPONSE",
-        "Google translation returned invalid payload"
-      );
-    }
-    parts.push(segment[0]);
-  }
-  return parts.join("");
-}
-function parseBingPayload(payload) {
-  if (!Array.isArray(payload) || payload.length === 0 || !isRecord2(payload[0])) {
-    throw new TranslationError(
-      "TRANSLATION_INVALID_RESPONSE",
-      "Bing translation returned invalid payload"
-    );
-  }
-  const translations = payload[0].translations;
-  if (!Array.isArray(translations) || translations.length === 0 || !isRecord2(translations[0]) || typeof translations[0].text !== "string") {
-    throw new TranslationError(
-      "TRANSLATION_INVALID_RESPONSE",
-      "Bing translation returned invalid payload"
-    );
-  }
-  return translations[0].text;
-}
-function raceWithSignal(promise, signal) {
-  if (signal.aborted) {
-    promise.catch(() => {
-    });
-    return Promise.reject(signal.reason);
-  }
-  return new Promise((resolve7, reject) => {
-    let settled = false;
-    const onAbort = () => {
-      if (settled) return;
-      settled = true;
-      promise.catch(() => {
-      });
-      reject(signal.reason);
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener("abort", onAbort);
-        resolve7(value);
-      },
-      (error) => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      }
-    );
-  });
-}
-async function readBoundedResponseJson(response, maxResponseBytes, provider, signal) {
-  if (!response.body) {
-    throw new TranslationError(
-      "TRANSLATION_INVALID_RESPONSE",
-      `${provider} translation returned empty body`
-    );
-  }
-  if (signal.aborted) {
-    void response.body.cancel().catch(() => {
-    });
-    throw signal.reason;
-  }
-  const chunks = [];
-  let totalBytes = 0;
-  let reader;
-  let cancelled = false;
-  const cancelReader = () => {
-    if (cancelled || !reader) return;
-    cancelled = true;
-    void reader.cancel().catch(() => {
-    });
-  };
-  const onAbort = () => {
-    cancelReader();
-  };
-  try {
-    reader = response.body.getReader();
-    signal.addEventListener("abort", onAbort, { once: true });
-    if (signal.aborted) {
-      cancelReader();
-      throw signal.reason;
-    }
-    while (true) {
-      const { done, value } = await raceWithSignal(reader.read(), signal);
-      if (done) break;
-      if (!value) continue;
-      totalBytes += value.byteLength;
-      if (totalBytes > maxResponseBytes) {
-        cancelReader();
-        throw new TranslationError(
-          "TRANSLATION_RESPONSE_LIMIT",
-          `${provider} translation response exceeded size limit`
-        );
-      }
-      chunks.push(value);
-    }
-  } catch (error) {
-    cancelReader();
-    if (signal.aborted) throw signal.reason;
-    if (error instanceof TranslationError) throw error;
-    throw new TranslationError(
-      "TRANSLATION_REQUEST_FAILED",
-      `${provider} translation request failed`
-    );
-  } finally {
-    signal.removeEventListener("abort", onAbort);
-    reader?.releaseLock();
-  }
-  const merged = new Uint8Array(totalBytes);
-  let offset2 = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset2);
-    offset2 += chunk.byteLength;
-  }
-  try {
-    return JSON.parse(new TextDecoder("utf-8").decode(merged));
-  } catch {
-    throw new TranslationError(
-      "TRANSLATION_INVALID_RESPONSE",
-      `${provider} translation returned invalid JSON`
-    );
-  }
-}
-function reviewedCotTranslationModule() {
-  return TranslatorService;
-}
-var ANONYMOUS_PROVIDERS, VALID_PROVIDERS, LANGUAGE_PREFERENCE_PATTERN, MAX_CONFIG_TEXT_CHARS, MAX_CONFIG_RESPONSE_BYTES, MAX_LANGUAGE_TAG_LENGTH, MAX_SESSION_ID_LENGTH, TranslationError, TranslatorConfigSchema, CotTranslationConfigSchema, TranslatorService;
-var init_cot_translation = __esm({
-  "src/dsh/cot-translation.ts"() {
-    "use strict";
-    init_lib2();
-    init_lib3();
-    ANONYMOUS_PROVIDERS = ["bing", "google"];
-    VALID_PROVIDERS = /* @__PURE__ */ new Set([
-      "google",
-      "bing",
-      "deepseek-account",
-      "deepseek-official"
-    ]);
-    LANGUAGE_PREFERENCE_PATTERN = /^(?:auto|[a-zA-Z]{2,8}(?:-[a-zA-Z0-9]{1,8})*)$/;
-    MAX_CONFIG_TEXT_CHARS = 1048576;
-    MAX_CONFIG_RESPONSE_BYTES = 8 * 1024 * 1024;
-    MAX_LANGUAGE_TAG_LENGTH = 64;
-    MAX_SESSION_ID_LENGTH = 256;
-    TranslationError = class extends Error {
-      code;
-      constructor(code, message) {
-        super(message);
-        this.name = "TranslationError";
-        this.code = code;
-      }
-    };
-    TranslatorConfigSchema = Schema2.object({
-      provider: Schema2.union(["google", "bing", "deepseek-account", "deepseek-official"]).default("bing"),
-      googleEndpoint: Schema2.transform(Schema2.string(), validateEndpoint).default("https://translate.googleapis.com/translate_a/single"),
-      bingEndpoint: Schema2.transform(Schema2.string(), validateEndpoint).default("https://edge.microsoft.com/translate/translatetext"),
-      timeoutMs: Schema2.natural().min(1).max(2147483647).default(1e4),
-      maxTextChars: Schema2.natural().min(2).max(MAX_CONFIG_TEXT_CHARS).default(4e3),
-      maxResponseBytes: Schema2.natural().min(1).max(MAX_CONFIG_RESPONSE_BYTES).default(1048576),
-      deepseekTimeoutMs: Schema2.natural().min(1).max(2147483647).default(6e4),
-      deepseekMaxOutputTokens: Schema2.natural().min(1).max(131072).default(8192)
-    });
-    CotTranslationConfigSchema = Schema2.object({
-      provider: Schema2.union(["google", "bing", "deepseek-account", "deepseek-official"]).default("bing"),
-      targetLanguage: Schema2.string().pattern(LANGUAGE_PREFERENCE_PATTERN).default("auto")
-    });
-    TranslatorService = class extends Service {
-      static inject = ["credentials", "llm"];
-      static provide = "translator";
-      static Config = TranslatorConfigSchema;
-      config;
-      lifetime = new AbortController();
-      pending = /* @__PURE__ */ new Set();
-      constructor(ctx, config) {
-        super(ctx, "translator");
-        this.config = TranslatorConfigSchema(config ?? {});
-        ctx.effect(() => async () => {
-          this.lifetime.abort(new Error("Translator service disposed"));
-          await Promise.allSettled([...this.pending]);
-        });
-      }
-      get maxTextChars() {
-        return this.config.maxTextChars;
-      }
-      combineSignal(signal) {
-        return signal ? AbortSignal.any([this.lifetime.signal, signal]) : this.lifetime.signal;
-      }
-      assertTextLimit(text4) {
-        if (typeof text4 !== "string") {
-          throw new TranslationError(
-            "TRANSLATION_INVALID_RESPONSE",
-            "Translation text must be a string"
-          );
-        }
-        if (text4.length > this.config.maxTextChars) {
-          throw new TranslationError(
-            "TRANSLATION_TEXT_LIMIT",
-            `Translation text exceeds maximum length (${this.config.maxTextChars} characters)`
-          );
-        }
-      }
-      async availableProviders(signal) {
-        const combined = this.combineSignal(signal);
-        if (combined.aborted) throw combined.reason;
-        return [...ANONYMOUS_PROVIDERS];
-      }
-      resolve(request) {
-        if (this.lifetime.signal.aborted) throw this.lifetime.signal.reason;
-        if (!isRecord2(request)) {
-          throw new TranslationError(
-            "TRANSLATION_INVALID_RESPONSE",
-            "Translation request must be an object"
-          );
-        }
-        this.assertTextLimit(request.text);
-        const provider = request.provider ?? this.config.provider;
-        if (typeof provider !== "string" || !VALID_PROVIDERS.has(provider)) {
-          throw new TranslationError(
-            "TRANSLATION_INVALID_RESPONSE",
-            "Unsupported translation provider"
-          );
-        }
-        if (typeof request.targetLanguage !== "string" || request.targetLanguage.trim() === "" || request.targetLanguage.length > MAX_LANGUAGE_TAG_LENGTH) {
-          throw new TranslationError(
-            "TRANSLATION_INVALID_RESPONSE",
-            "Target language is required"
-          );
-        }
-        const sourceLanguage = request.sourceLanguage ?? "auto";
-        if (typeof sourceLanguage !== "string" || sourceLanguage.trim() === "" || sourceLanguage.length > MAX_LANGUAGE_TAG_LENGTH) {
-          throw new TranslationError(
-            "TRANSLATION_INVALID_RESPONSE",
-            "Source language must be a bounded non-empty string"
-          );
-        }
-        if (request.sessionId !== void 0 && (typeof request.sessionId !== "string" || request.sessionId.trim() === "" || request.sessionId.length > MAX_SESSION_ID_LENGTH)) {
-          throw new TranslationError(
-            "TRANSLATION_INVALID_RESPONSE",
-            "Session ID must be a bounded non-empty string"
-          );
-        }
-        return {
-          text: request.text,
-          sourceLanguage,
-          targetLanguage: request.targetLanguage,
-          provider,
-          ...request.sessionId !== void 0 ? { sessionId: request.sessionId } : {}
-        };
-      }
-      async translate(spec, signal) {
-        const combined = this.combineSignal(signal);
-        if (combined.aborted) throw combined.reason;
-        if (!isRecord2(spec)) {
-          throw new TranslationError(
-            "TRANSLATION_INVALID_RESPONSE",
-            "Translation spec must be an object"
-          );
-        }
-        this.assertTextLimit(spec.text);
-        if (typeof spec.provider !== "string" || !VALID_PROVIDERS.has(spec.provider)) {
-          throw new TranslationError(
-            "TRANSLATION_INVALID_RESPONSE",
-            "Unsupported translation provider"
-          );
-        }
-        if (typeof spec.targetLanguage !== "string" || spec.targetLanguage.trim() === "" || spec.targetLanguage.length > MAX_LANGUAGE_TAG_LENGTH) {
-          throw new TranslationError(
-            "TRANSLATION_INVALID_RESPONSE",
-            "Target language is required"
-          );
-        }
-        if (typeof spec.sourceLanguage !== "string" || spec.sourceLanguage.trim() === "" || spec.sourceLanguage.length > MAX_LANGUAGE_TAG_LENGTH) {
-          throw new TranslationError(
-            "TRANSLATION_INVALID_RESPONSE",
-            "Source language must be a bounded non-empty string"
-          );
-        }
-        if (spec.sessionId !== void 0 && (typeof spec.sessionId !== "string" || spec.sessionId.trim() === "" || spec.sessionId.length > MAX_SESSION_ID_LENGTH)) {
-          throw new TranslationError(
-            "TRANSLATION_INVALID_RESPONSE",
-            "Session ID must be a bounded non-empty string"
-          );
-        }
-        if (spec.provider === "deepseek-account" || spec.provider === "deepseek-official") {
-          throw new TranslationError(
-            "TRANSLATION_UNAVAILABLE",
-            `Paid translation route ${spec.provider} is not offered in this build`
-          );
-        }
-        if (spec.text === "") {
-          return "";
-        }
-        const provider = spec.provider;
-        const run = this.executeAnonymous(provider, spec, combined);
-        this.pending.add(run);
-        try {
-          return await run;
-        } finally {
-          this.pending.delete(run);
-        }
-      }
-      async executeAnonymous(provider, spec, combined) {
-        const timeoutController = new AbortController();
-        const timer = setTimeout(() => {
-          timeoutController.abort(
-            new TranslationError(
-              "TRANSLATION_TIMEOUT",
-              `${provider} translation timed out`
-            )
-          );
-        }, this.config.timeoutMs);
-        const effectiveSignal = AbortSignal.any([
-          combined,
-          timeoutController.signal
-        ]);
-        try {
-          const target = mapLanguage(spec.targetLanguage, provider);
-          const source = spec.sourceLanguage === "auto" ? "auto" : mapLanguage(spec.sourceLanguage, provider);
-          let url;
-          let init;
-          if (provider === "google") {
-            url = new URL(this.config.googleEndpoint);
-            url.searchParams.delete("client");
-            url.searchParams.delete("sl");
-            url.searchParams.delete("tl");
-            url.searchParams.delete("dt");
-            url.searchParams.delete("q");
-            init = {
-              method: "POST",
-              headers: { "content-type": "application/x-www-form-urlencoded" },
-              body: new URLSearchParams({
-                client: "gtx",
-                sl: source,
-                tl: target,
-                dt: "t",
-                q: spec.text
-              }).toString(),
-              redirect: "error",
-              credentials: "omit",
-              signal: effectiveSignal
-            };
-          } else {
-            url = new URL(this.config.bingEndpoint);
-            if (source === "auto") {
-              url.searchParams.delete("from");
-            } else {
-              url.searchParams.set("from", source);
-            }
-            url.searchParams.set("to", target);
-            url.searchParams.set("isEnterpriseClient", "false");
-            init = {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify([spec.text]),
-              redirect: "error",
-              credentials: "omit",
-              signal: effectiveSignal
-            };
-          }
-          const hostCtx = this.ctx;
-          const fetchPromise = Promise.resolve().then(
-            () => hostCtx.credentials.fetch(url.href, init)
-          );
-          fetchPromise.then(
-            (res) => {
-              if (effectiveSignal.aborted) {
-                void res?.body?.cancel?.().catch(() => {
-                });
-              }
-            },
-            () => {
-            }
-          );
-          let response;
-          try {
-            response = await raceWithSignal(fetchPromise, effectiveSignal);
-          } catch (error) {
-            if (combined.aborted) throw combined.reason;
-            if (timeoutController.signal.aborted) {
-              throw timeoutController.signal.reason;
-            }
-            if (error instanceof TranslationError) throw error;
-            throw new TranslationError(
-              "TRANSLATION_REQUEST_FAILED",
-              `${provider} translation request failed`
-            );
-          }
-          if (combined.aborted) {
-            void response?.body?.cancel?.().catch(() => {
-            });
-            throw combined.reason;
-          }
-          if (timeoutController.signal.aborted) {
-            void response?.body?.cancel?.().catch(() => {
-            });
-            throw timeoutController.signal.reason;
-          }
-          if (response.redirected) {
-            if (response.body) {
-              await raceWithSignal(
-                response.body.cancel().catch(() => {
-                }),
-                effectiveSignal
-              ).catch(() => {
-              });
-            }
-            if (combined.aborted) throw combined.reason;
-            if (timeoutController.signal.aborted) {
-              throw timeoutController.signal.reason;
-            }
-            throw new TranslationError(
-              "TRANSLATION_REQUEST_FAILED",
-              `${provider} translation response was redirected`
-            );
-          }
-          if (!response.ok) {
-            if (response.body) {
-              await raceWithSignal(
-                response.body.cancel().catch(() => {
-                }),
-                effectiveSignal
-              ).catch(() => {
-              });
-            }
-            if (combined.aborted) throw combined.reason;
-            if (timeoutController.signal.aborted) {
-              throw timeoutController.signal.reason;
-            }
-            throw new TranslationError(
-              "TRANSLATION_HTTP_ERROR",
-              `${provider} translation failed (HTTP ${response.status})`
-            );
-          }
-          const payload = await readBoundedResponseJson(
-            response,
-            this.config.maxResponseBytes,
-            provider,
-            effectiveSignal
-          );
-          return provider === "google" ? parseGooglePayload(payload) : parseBingPayload(payload);
-        } finally {
-          clearTimeout(timer);
-        }
-      }
-    };
-  }
-});
-
-// src/dsh/composition.ts
-var composition_exports = {};
-__export(composition_exports, {
-  ReviewedLoader: () => ReviewedLoader,
-  compositionRowProblem: () => compositionRowProblem,
-  hasReviewedRowBridge: () => hasReviewedRowBridge,
-  installCompositionLoader: () => installCompositionLoader,
-  mountReviewedComposition: () => mountReviewedComposition,
-  mountReviewedPreset: () => mountReviewedPreset,
-  parsePresetComposition: () => parsePresetComposition,
-  reviewComposition: () => reviewComposition
-});
-import { createHash as createHash2 } from "node:crypto";
-import { readFile as readFile2 } from "node:fs/promises";
-import { isAbsolute as isAbsolute3, relative as relative2, resolve as resolve4, sep as sep2 } from "node:path";
-import { fileURLToPath as fileURLToPath3 } from "node:url";
-function digest(bytes) {
-  return createHash2("sha256").update(bytes).digest("hex");
-}
-function plainRelative(path2) {
-  return typeof path2 === "string" && path2.length > 0 && path2.length <= 4096 && !isAbsolute3(path2) && !path2.startsWith("/") && !/[\\:\u0000-\u001f\u007f]/u.test(path2) && path2.split("/").every((part) => part !== "" && part !== "." && part !== "..");
-}
-function boundData(root) {
-  let nodes = 0;
-  let bytes = 0;
-  const ancestors = /* @__PURE__ */ new Set();
-  function visit(value, depth) {
-    if (++nodes > MAX_DATA_NODES || depth > MAX_DEPTH) throw new Error("composition data exceeds its resource limit");
-    if (typeof value === "string") bytes += Buffer.byteLength(value);
-    if (bytes > MAX_DATA_BYTES) throw new Error("composition expanded text exceeds 4 MiB");
-    if (value === null || typeof value !== "object") return;
-    if (ancestors.has(value)) throw new Error("cyclic configuration data is unsupported");
-    ancestors.add(value);
-    if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
-      throw new Error("composition configuration must be plain data");
-    }
-    for (const [key, child] of Object.entries(value)) {
-      bytes += Buffer.byteLength(key);
-      visit(child, depth + 1);
-    }
-    ancestors.delete(value);
-  }
-  visit(root, 0);
-}
-function assignmentSafe(value) {
-  if (Object.hasOwn(value, "__proto__")) throw new Error("prototype-mutating entry field is unsupported");
-}
-function checkRows(rows, depth = 0, count = { value: 0 }) {
-  if (depth > MAX_DEPTH) throw new Error("composition entry nesting exceeds 32 levels");
-  for (const row of rows) {
-    if (++count.value > MAX_ROWS) throw new Error("composition exceeds 1024 entry rows");
-    if (row === null || typeof row !== "object" || Array.isArray(row)) throw new Error("entry row must be an object");
-    assignmentSafe(row);
-    if (row.id !== void 0 && (typeof row.id !== "string" || row.id.length > 512)) throw new Error("entry id must be a bounded string");
-    const isolate2 = row.isolate;
-    if (isolate2 !== void 0 && isolate2 !== null && (typeof isolate2 !== "object" || Array.isArray(isolate2) || Object.hasOwn(isolate2, "translator"))) {
-      throw new Error("composition row cannot override translator isolation");
-    }
-    if (!(row.group === true && row.name === void 0) && (typeof row.name !== "string" || row.name.length === 0 || row.name.length > 4096)) throw new Error("entry name must be a bounded string");
-    if ((row.group || row.name === "cordis:group" || row.name === "@deepseek-ai/cordis-plugin-group") && Array.isArray(row.config)) checkRows(row.config, depth + 1, count);
-  }
-}
-function parsePresetComposition(source) {
-  if (Buffer.byteLength(source) > MAX_SOURCE_BYTES) throw new Error("preset source exceeds its limit");
-  const rows = load(source, { schema: entryListSchema });
-  boundData(rows);
-  if (!Array.isArray(rows)) throw new Error("preset composition must be an entry list");
-  checkRows(rows);
-  return rows;
-}
-function reviewComposition(spec) {
-  if (!spec || spec.version !== 1 || !Array.isArray(spec.layers) || spec.layers.length === 0 || spec.layers.length > MAX_LAYERS) {
-    throw new Error("composition needs 1–64 reviewed layers");
-  }
-  let sourceBytes = 0;
-  const patches = [];
-  const locations = [];
-  const layers = [];
-  for (const layer of spec.layers) {
-    if (!layer || !plainRelative(layer.path) || typeof layer.source !== "string" || typeof layer.sha256 !== "string" || !SHA256.test(layer.sha256)) throw new Error("invalid reviewed layer");
-    sourceBytes += Buffer.byteLength(layer.source);
-    if (sourceBytes > MAX_SOURCE_BYTES || digest(layer.source) !== layer.sha256) throw new Error("layer source changed or exceeds 1 MiB");
-    let parsed;
-    try {
-      parsed = load(layer.source, { schema: entryListSchema });
-    } catch {
-      throw new Error("invalid DSH patch data");
-    }
-    if (!Array.isArray(parsed)) throw new Error("DSH patch layer must be a list");
-    boundData(parsed);
-    for (const patch of parsed) {
-      if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new Error("patch must be an object");
-      assignmentSafe(patch);
-      if (patch.insert !== void 0 && patch.insert !== null) {
-        if (!Array.isArray(patch.insert)) throw new Error("patch insert must be a list");
-        checkRows(patch.insert);
-      }
-    }
-    patches.push(...parsed);
-    locations.push(...parsed.map((_, i2) => ({ layer: layer.path, patch: i2 + 1 })));
-    layers.push({ path: layer.path, sha256: layer.sha256 });
-  }
-  boundData(patches);
-  const warnings = [];
-  const skipped = [];
-  let entries = [];
-  for (const [i2, patch] of patches.entries()) {
-    entries = applyPatches(entries, [patch], (message, ...args) => {
-      let index = 0;
-      const reason = message.replace(/%C/g, () => JSON.stringify(args[index++]));
-      warnings.push(reason);
-      skipped.push({ ...typeof patch.id === "string" ? { row: patch.id } : {}, ...typeof patch.name === "string" ? { package: patch.name } : {}, reason, ...locations[i2] });
-    });
-  }
-  boundData(entries);
-  checkRows(entries);
-  return { version: 1, entries, warnings, skipped, layers };
-}
-function hasReviewedRowBridge(name) {
-  return Object.hasOwn(compatibility_default.row_bridges, name);
-}
-function compositionRowProblem(name) {
-  return UNSUPPORTED_ROWS.get(name);
-}
-function installCompositionLoader(root) {
-  if (loaders.has(root)) return;
-  const ctx = root.isolate("loader");
-  const fiber = ctx.plugin(ReviewedLoader, {});
-  loaders.set(root, { ctx, fiber });
-}
-function validateInventory(group) {
-  for (const row of group.data) {
-    const entry = group.tree.store[row.id];
-    if (!entry || entry.parent !== group || entry.options !== row) {
-      throw new Error(`composition row ${JSON.stringify(row.id ?? row.name)} was not created`);
-    }
-    if (entry.disabled) continue;
-    if (entry.subgroup) validateInventory(entry.subgroup);
-    if (entry.subtree) validateInventory(entry.subtree.root);
-  }
-}
-function describeCause(error) {
-  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-}
-function fiberStateName(state) {
-  return Object.entries(FiberState).find(([, value]) => value === state)?.[0] ?? String(state);
-}
-async function mountReviewedComposition(ctx, baseUrl, spec) {
-  const review = reviewComposition(spec);
-  function groups(rows) {
-    for (const row of rows) {
-      if (row.group === true && row.name === void 0) row.name = "cordis:group";
-      if (row.name === AGENT_PRESETS) row.isolate = { ...row.isolate, agentPresets: true };
-      if ((row.group === true || row.name === "cordis:group" || row.name === "@deepseek-ai/cordis-plugin-group") && Array.isArray(row.config)) groups(row.config);
-    }
-  }
-  groups(review.entries);
-  const installed = loaders.get(ctx.root);
-  if (!installed) throw new Error("composition loader was not installed by this host");
-  await installed.fiber.await();
-  const loaderCtx = ctx.extend({
-    baseUrl,
-    [Context.isolate]: Object.assign(Object.create(ctx[Context.isolate]), {
-      loader: installed.ctx[Context.isolate].loader,
-      translator: /* @__PURE__ */ Symbol("translator")
-    })
-  });
-  const config = { baseUrl, spec, review, releaseClosure: admitReviewedClosure(baseUrl, spec.files) };
-  const carrier = loaderCtx.plugin(ReviewedCarrier, config);
-  let disposed = false;
-  const dispose = async () => {
-    if (disposed) return;
-    disposed = true;
-    try {
-      await mountedTrees.get(config)?.dispose();
-      await carrier.dispose();
-    } finally {
-      config.releaseClosure();
-    }
-  };
-  ctx.effect(() => dispose, "reviewed DSH composition teardown");
-  try {
-    await carrier.await();
-    const mount = mountedTrees.get(config);
-    if (!mount || carrier.state !== FiberState.ACTIVE) throw new Error("reviewed composition carrier did not activate");
-    return { tree: mount.tree, dispose };
-  } catch (error) {
-    await dispose().catch(() => void 0);
-    throw error;
-  }
-}
-function leakedServices(ctx, mount) {
-  const rootIsolate = ctx.root[Context.isolate];
-  const leaked = [];
-  for (const key of Object.getOwnPropertySymbols(ctx.reflect.store)) {
-    const impl = ctx.reflect.store[key];
-    if (impl === void 0) continue;
-    let current2 = impl.ctx.fiber;
-    while (current2 !== mount && current2.parent.fiber !== current2) current2 = current2.parent.fiber;
-    if (current2 === mount && rootIsolate[impl.name] === key) leaked.push(impl.name);
-  }
-  return leaked.sort((left, right) => left.localeCompare(right));
-}
-async function mountReviewedPreset(ctx, baseUrl, spec, catalog, selected) {
-  if (!selected) throw new Error("agent-presets: explicit selection is required when no default is configured");
-  const entries = structuredClone(reviewComposition(spec).entries);
-  const snapshot2 = { catalog, selected, base_url: baseUrl };
-  const receipt = issuePresetReceipt(snapshot2);
-  let found = 0;
-  function prepare(rows) {
-    for (const row of rows) {
-      if (row.group === true || row.name === "cordis:group" || row.name === "@deepseek-ai/cordis-plugin-group") {
-        prepare(row.config);
-      } else if (row.name === AGENT_PRESETS) {
-        found++;
-        row.isolate = { ...row.isolate, agentPresets: true };
-        row.config = { codewhale_reviewed: snapshot2, codewhale_receipt: receipt };
-      }
-    }
-  }
-  prepare(entries);
-  if (found !== 1) {
-    revokePresetReceipt(receipt);
-    throw new Error("exactly one raw roster row is required for a selected preset");
-  }
-  const source = JSON.stringify([{ insert: entries }]);
-  let top;
-  try {
-    top = await mountReviewedComposition(ctx, baseUrl, { ...spec, layers: [{ path: "selected-preset.json", sha256: digest(source), source }] });
-  } finally {
-    revokePresetReceipt(receipt);
-  }
-  try {
-    const entry = [...top.tree.entries()].find((entry2) => entry2.options.name === AGENT_PRESETS && !entry2.disabled);
-    const roster = entry?.ctx.get("agentPresets");
-    if (!roster) throw new Error("selected raw roster did not become active");
-    await roster.mountSelected();
-    return top;
-  } catch (error) {
-    await top.dispose();
-    throw error;
-  }
-}
-var MAX_LAYERS, MAX_SOURCE_BYTES, MAX_DATA_BYTES, MAX_DATA_NODES, MAX_ROWS, MAX_DEPTH, SHA256, UNSUPPORTED_ROWS, ReviewedGroup, ReviewedLoader, loaders, ReviewedTree, mountedTrees, ReviewedCarrier;
-var init_composition = __esm({
-  "src/dsh/composition.ts"() {
-    "use strict";
-    init_lib2();
-    init_fiber_state();
-    init_src();
-    init_src2();
-    init_js_yaml();
-    init_mcp2();
-    init_skill_filesystem();
-    init_shell_hooks();
-    init_resolve_hooks();
-    init_missing_services();
-    init_persona();
-    init_agent_presets();
-    init_cot_translation();
-    init_compatibility();
-    MAX_LAYERS = 64;
-    MAX_SOURCE_BYTES = 1024 * 1024;
-    MAX_DATA_BYTES = 4 * 1024 * 1024;
-    MAX_DATA_NODES = 1e5;
-    MAX_ROWS = 1024;
-    MAX_DEPTH = 32;
-    SHA256 = /^[a-f0-9]{64}$/;
-    UNSUPPORTED_ROWS = /* @__PURE__ */ new Map();
-    ReviewedGroup = class extends Group {
-      static inject = ["loader"];
-    };
-    ReviewedLoader = class extends Loader {
-      constructor(ctx, config) {
-        super(ctx, config);
-        this.builtins.group = ReviewedGroup;
-      }
-    };
-    loaders = /* @__PURE__ */ new WeakMap();
-    ReviewedTree = class extends EntryTree {
-      base;
-      modules;
-      spec;
-      constructor(ctx, base, spec) {
-        super(ctx);
-        this.base = base;
-        this.spec = spec;
-        const modules = /* @__PURE__ */ new Map();
-        if (!Array.isArray(spec.modules) || spec.modules.length > MAX_ROWS || !spec.files || Object.keys(spec.files).length > 16384) throw new Error("invalid reviewed module closure");
-        for (const module of spec.modules) {
-          if (!module || typeof module.name !== "string" || module.name.length === 0 || module.name.length > 4096 || modules.has(module.name) || !plainRelative(module.path) || !SHA256.test(module.sha256) || spec.files[module.path] !== module.sha256) throw new Error("module map differs from reviewed closure");
-          modules.set(module.name, module);
-        }
-        this.modules = modules;
-      }
-      /** A reviewed composition is input; teardown and self-disposal never rewrite it. */
-      commit() {
-      }
-      importFailures = /* @__PURE__ */ new Map();
-      importFailure(name) {
-        return this.importFailures.has(name) ? { error: this.importFailures.get(name) } : void 0;
-      }
-      import(name) {
-        this.importFailures.delete(name);
-        const record3 = (error) => {
-          this.importFailures.set(name, error);
-          throw error;
-        };
-        try {
-          const imported = this.importRow(name);
-          return imported instanceof Promise ? imported.catch(record3) : imported;
-        } catch (error) {
-          return record3(error);
-        }
-      }
-      importRow(name) {
-        if (name === PERSONA) return reviewedPersonaModule;
-        if (name === AGENT_PRESETS) return defineReviewedAgentPresets(mountReviewedComposition);
-        if (name === "cordis:group" || name === "@deepseek-ai/cordis-plugin-group") return ReviewedGroup;
-        if (name === "@deepseek-ai/dsh-mcp-client") return reviewedMcpModule();
-        if (name === "@deepseek-ai/dsh-skill-filesystem") return reviewedSkillModule();
-        if (name === "@deepseek-ai/dsh-hooks-claude-code") return reviewedHookModule("claude-code", fileURLToPath3(this.base), this.spec.files);
-        if (name === "@deepseek-ai/dsh-hooks-codex") return reviewedHookModule("codex", fileURLToPath3(this.base), this.spec.files);
-        const rowBridge = Object.hasOwn(compatibility_default.row_bridges, name) ? compatibility_default.row_bridges[name] : void 0;
-        if (rowBridge === "host-spine") return Object.freeze({ name, apply() {
-        } });
-        if (rowBridge === "cot-translation") return reviewedCotTranslationModule();
-        if (UNSUPPORTED_ROWS.has(name)) throw new Error(`${name}: ${UNSUPPORTED_ROWS.get(name)}`);
-        const module = this.modules.get(name);
-        if (!module) throw new Error(`row requires ${JSON.stringify(name)}, absent from the reviewed module closure`);
-        return this.importReviewed(module);
-      }
-      async importReviewed(module) {
-        const root = fileURLToPath3(this.base);
-        const path2 = resolve4(root, module.path);
-        const inside = relative2(root, path2);
-        if (inside.startsWith(`..${sep2}`) || inside === ".." || isAbsolute3(inside)) throw new Error("module escapes reviewed bundle");
-        if (this.spec.files[module.path] !== module.sha256 || digest(await readFile2(path2)) !== module.sha256) throw new Error("module changed after review");
-        return importReviewedModule(this.base, module.path);
-      }
-    };
-    mountedTrees = /* @__PURE__ */ new WeakMap();
-    ReviewedCarrier = class {
-      constructor(ctx, config) {
-        this.ctx = ctx;
-        this.config = config;
-        this.tree = new ReviewedTree(ctx, config.baseUrl, config.spec);
-        mountedTrees.set(config, { tree: this.tree, dispose: () => this.dispose() });
-      }
-      ctx;
-      config;
-      static inject = ["loader"];
-      tree;
-      disposed = false;
-      async dispose() {
-        if (this.disposed) return;
-        this.disposed = true;
-        const fibers = [...new Set([...this.tree.entries()].map((entry) => entry.fiber).filter((fiber) => fiber !== void 0))].reverse();
-        const pending = this.tree.getTasks();
-        let stopError;
-        try {
-          this.tree.root.stop();
-        } catch (error) {
-          stopError = error;
-        }
-        const outcomes = await Promise.allSettled([
-          ...pending,
-          ...fibers.map((fiber) => Promise.resolve().then(() => fiber.dispose()))
-        ]);
-        try {
-          await this.tree.await();
-          if (stopError !== void 0) throw stopError;
-          const failed = outcomes.find((outcome) => outcome.status === "rejected");
-          if (failed) throw failed.reason;
-        } finally {
-          this.config.releaseClosure();
-        }
-      }
-      async *[Service.init]() {
-        yield () => this.dispose();
-        await this.tree.root.update(this.config.review.entries);
-        await this.tree.await();
-        validateInventory(this.tree.root);
-        for (const entry of this.tree.entries()) {
-          if (entry.disabled) continue;
-          const row = `composition row ${JSON.stringify(entry.options.id ?? entry.options.name)}`;
-          if (!entry.fiber || entry.fiber.uid === null) {
-            const failure = this.tree.importFailure(entry.options.name);
-            throw new Error(failure !== void 0 ? `${row} failed activation: ${describeCause(explainImportError(failure.error))}` : `${row} failed activation (${entry.fiber ? `fiber ${fiberStateName(entry.fiber.state)}` : "no fiber"}); see the logged error above`, failure !== void 0 ? { cause: failure.error } : void 0);
-          }
-          await entry.fiber.await();
-          const missing = Object.keys(entry.fiber.inject).filter((name) => entry.fiber.ctx.get(name) === void 0);
-          if (missing.length) throw new Error(`${row} requires ${describeMissingServices(missing)}`);
-          if (entry.fiber.state !== FiberState.ACTIVE) throw new Error(`${row} is not active (fiber ${fiberStateName(entry.fiber.state)})`);
-        }
-        const leaked = leakedServices(this.ctx, this.ctx.fiber);
-        if (leaked.length) throw new Error(`composition published shared-root services: ${leaked.join(", ")}`);
-      }
-    };
-  }
-});
-
-// src/protocol.generated.ts
-var MAGIC_ASCII, ErrorCode;
-var init_protocol_generated = __esm({
-  "src/protocol.generated.ts"() {
-    "use strict";
-    MAGIC_ASCII = "CWX1";
-    ErrorCode = {
-      ParseError: -32700,
-      InvalidRequest: -32600,
-      MethodNotFound: -32601,
-      InvalidParams: -32602,
-      Internal: -32603,
-      ExecutionFailed: -32e3,
-      NotAvailable: -32001,
-      Refused: -32002,
-      Denied: -32003,
-      Cancelled: -32800
-    };
-  }
-});
-
-// src/protocol.ts
-var MAGIC;
-var init_protocol = __esm({
-  "src/protocol.ts"() {
-    "use strict";
-    init_protocol_generated();
-    init_protocol_generated();
-    MAGIC = Buffer.from(MAGIC_ASCII, "ascii");
-  }
-});
-
-// src/rpc.ts
-var RpcError;
-var init_rpc = __esm({
-  "src/rpc.ts"() {
-    "use strict";
-    init_protocol();
-    RpcError = class extends Error {
-      constructor(code, message, data2) {
-        super(message);
-        this.code = code;
-        this.data = data2;
-        this.name = "RpcError";
-      }
-      code;
-      data;
-      toWire() {
-        return this.data === void 0 ? { code: this.code, message: this.message } : { code: this.code, message: this.message, data: this.data };
-      }
-    };
-  }
-});
-
-// src/dsh/session-prompt.ts
-function checkpointCall(host, ctx, session2) {
-  const invocation = host.liveInvocation(ctx);
-  const ticket = invocation?.ticket;
-  return invocation !== void 0 && typeof ticket === "string" && ticket.length > 0 && session2 !== void 0 && session2 === invocation.session ? invocation : void 0;
-}
-var CHILD_ONLY, sessionsAdapter, systemPromptAdapter;
-var init_session_prompt = __esm({
-  "src/dsh/session-prompt.ts"() {
-    "use strict";
-    init_lib2();
-    init_protocol();
-    init_rpc();
-    CHILD_ONLY = "system prompt sections are only available on a child agent's agent/created context";
-    sessionsAdapter = {
-      service: "sessions",
-      define(host) {
-        class SessionsService extends Service {
-          constructor(ctx) {
-            super(ctx, "sessions");
-          }
-          async flush(session2) {
-            const ctx = this.ctx;
-            const call = checkpointCall(host, ctx, session2);
-            if (call === void 0) throw new RpcError(ErrorCode.NotAvailable, "sessions.flush requires this live tool invocation’s session");
-            const owner = call.owner;
-            const live = () => checkpointCall(host, ctx, session2) === call && !call.signal.aborted;
-            const run = async () => {
-              if (!live()) throw new RpcError(ErrorCode.NotAvailable, "session checkpoint invocation ended");
-              const result2 = await host.rpc.request("session/checkpoint", { owner: owner.ref, ticket: call.ticket }, call.signal);
-              if (!live()) throw new RpcError(ErrorCode.NotAvailable, "session checkpoint invocation ended");
-              if (typeof result2 !== "boolean") throw new RpcError(ErrorCode.Internal, "invalid session checkpoint receipt");
-              return result2;
-            };
-            const result = call.pending.then(run);
-            call.pending = result.then(() => void 0, () => void 0);
-            return result;
-          }
-        }
-        Object.freeze(SessionsService.prototype);
-        return SessionsService;
-      }
-    };
-    systemPromptAdapter = {
-      service: "systemPrompt",
-      define() {
-        class SystemPromptService extends Service {
-          constructor(ctx) {
-            super(ctx, "systemPrompt");
-          }
-          section() {
-            throw new RpcError(ErrorCode.NotAvailable, CHILD_ONLY);
-          }
-          getSectionOrder() {
-            throw new RpcError(ErrorCode.NotAvailable, CHILD_ONLY);
-          }
-        }
-        Object.freeze(SystemPromptService.prototype);
-        return SystemPromptService;
-      }
-    };
-  }
-});
-
 // node_modules/@deepseek-ai/dsh-util-values/lib/index.js
 function isWhitespace(c) {
   return c === " " || c === "\n" || c === "\r" || c === "	";
@@ -15013,7 +12837,7 @@ function assertNever(value, context) {
   throw new Error(`unreachable variant${context ? ` in ${context}` : ""}: ${rendered}`);
 }
 var SIMPLE_ESCAPES, CONTENT_ESCAPE, PartialArguments;
-var init_lib4 = __esm({
+var init_lib3 = __esm({
   "node_modules/@deepseek-ai/dsh-util-values/lib/index.js"() {
     SIMPLE_ESCAPES = {
       '"': '"',
@@ -15629,11 +13453,11 @@ var init_lib4 = __esm({
 });
 
 // src/dsh/dsh-message-compat.js
-var PERSONA_PREFIX_SECTION, HarnessError, UserQuestionError;
+var PERSONA_PREFIX_SECTION, HarnessError, LlmError, UserQuestionError;
 var init_dsh_message_compat = __esm({
   "src/dsh/dsh-message-compat.js"() {
     "use strict";
-    init_lib4();
+    init_lib3();
     PERSONA_PREFIX_SECTION = "deployment:persona-prefix";
     HarnessError = class extends Error {
       code;
@@ -15643,6 +13467,12 @@ var init_dsh_message_compat = __esm({
         this.name = new.target.name;
       }
     };
+    LlmError = class extends HarnessError {
+      constructor(message, code, options) {
+        super(message, code, options);
+        this.name = "LlmError";
+      }
+    };
     UserQuestionError = class extends HarnessError {
       constructor(message, code, options) {
         super(message, code, options);
@@ -15650,12 +13480,2682 @@ var init_dsh_message_compat = __esm({
       }
     };
     Object.defineProperty(HarnessError, "name", { value: "HarnessError" });
+    Object.defineProperty(LlmError, "name", { value: "LlmError" });
     Object.defineProperty(UserQuestionError, "name", { value: "UserQuestionError" });
   }
 });
 
+// src/protocol.generated.ts
+var MAGIC_ASCII, IMAGE_LIMITS, ErrorCode;
+var init_protocol_generated = __esm({
+  "src/protocol.generated.ts"() {
+    "use strict";
+    MAGIC_ASCII = "CWX1";
+    IMAGE_LIMITS = {
+      maxImageBytes: 5242880,
+      maxImagesPerMessage: 1,
+      maxMessageImageBytes: 5242880,
+      maxImagePixels: 33554432,
+      maxImageDimension: 8192,
+      mediaTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"]
+    };
+    ErrorCode = {
+      ParseError: -32700,
+      InvalidRequest: -32600,
+      MethodNotFound: -32601,
+      InvalidParams: -32602,
+      Internal: -32603,
+      ExecutionFailed: -32e3,
+      NotAvailable: -32001,
+      Refused: -32002,
+      Denied: -32003,
+      Cancelled: -32800
+    };
+  }
+});
+
+// src/protocol.ts
+var MAGIC;
+var init_protocol = __esm({
+  "src/protocol.ts"() {
+    "use strict";
+    init_protocol_generated();
+    init_protocol_generated();
+    MAGIC = Buffer.from(MAGIC_ASCII, "ascii");
+  }
+});
+
+// src/rpc.ts
+var RpcError;
+var init_rpc = __esm({
+  "src/rpc.ts"() {
+    "use strict";
+    init_protocol();
+    RpcError = class extends Error {
+      constructor(code, message, data2) {
+        super(message);
+        this.code = code;
+        this.data = data2;
+        this.name = "RpcError";
+      }
+      code;
+      data;
+      toWire() {
+        return this.data === void 0 ? { code: this.code, message: this.message } : { code: this.code, message: this.message, data: this.data };
+      }
+    };
+  }
+});
+
+// src/dsh/settings.ts
+function plain(value, what) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new RpcError(ErrorCode.InvalidParams, `${what} is a plain object`);
+  return value;
+}
+function revision(value) {
+  if (value === void 0) return void 0;
+  if (typeof value !== "string" || value.length === 0) throw new RpcError(ErrorCode.InvalidParams, "an expected revision is the revision string describe returned");
+  return value;
+}
+function descriptor(value) {
+  const row = value;
+  if (row === null || typeof row !== "object" || typeof row.ns !== "string" || typeof row.revision !== "string" || typeof row.writable !== "boolean" || !Array.isArray(row.roots) || typeof row.value !== "object" || row.value === null || row.applies !== "reload") {
+    throw new RpcError(ErrorCode.Internal, "invalid settings broker response");
+  }
+  return { ns: row.ns, writable: row.writable, roots: row.roots.map(String), value: row.value, revision: row.revision, applied: typeof row.applied === "boolean" ? row.applied : null, applies: "reload" };
+}
+function hostLocalePreference() {
+  const fromIntl = (() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().locale;
+    } catch {
+      return void 0;
+    }
+  })();
+  const raw = fromIntl || process.env.LC_ALL || process.env.LC_MESSAGES || process.env.LANG || "en";
+  const cleaned = String(raw).split(".")[0].replaceAll("_", "-").trim();
+  return cleaned.length > 0 ? cleaned : "en";
+}
+function localeDescriptor() {
+  return Object.freeze({
+    ns: "locale",
+    writable: false,
+    roots: Object.freeze([]),
+    value: Object.freeze({ preference: hostLocalePreference() }),
+    revision: "host-locale",
+    applied: true,
+    applies: "reload"
+  });
+}
+var SettingsConflictError, settingsAdapter;
+var init_settings = __esm({
+  "src/dsh/settings.ts"() {
+    "use strict";
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    SettingsConflictError = class extends Error {
+      constructor(ns, expected, actual) {
+        super(`settings namespace "${ns}" changed since it was read`);
+        this.ns = ns;
+        this.expected = expected;
+        this.actual = actual;
+        this.name = "SettingsConflictError";
+      }
+      ns;
+      expected;
+      actual;
+      code = "SETTINGS_CONFLICT";
+    };
+    settingsAdapter = {
+      service: "settings",
+      define(host) {
+        class SettingsService extends Service {
+          constructor(ctx) {
+            super(ctx, "settings");
+          }
+          get locale() {
+            return Object.freeze({ preference: hostLocalePreference() });
+          }
+          describe() {
+            try {
+              host.brokerTicket(this.ctx, "settings");
+            } catch {
+              const forms = [localeDescriptor()];
+              Object.defineProperty(forms, "then", {
+                value(onFulfilled, onRejected) {
+                  return Promise.resolve([localeDescriptor()]).then(onFulfilled, onRejected);
+                }
+              });
+              return forms;
+            }
+            return host.broker(this.ctx, "settings", "describe", {}).then((row) => {
+              const desc = descriptor(row);
+              return desc.ns === "locale" ? [desc] : [desc, localeDescriptor()];
+            });
+          }
+          async update(ns, patch, expectedRevision) {
+            return this.write(ns, "update", { patch: plain(patch, "a settings patch") }, expectedRevision);
+          }
+          async replace(ns, section, expectedRevision) {
+            return this.write(ns, "replace", { value: plain(section, "a settings section") }, expectedRevision);
+          }
+          async mutate(ns, ops, expectedRevision) {
+            if (!Array.isArray(ops)) throw new RpcError(ErrorCode.InvalidParams, "settings edits are an array of path operations");
+            return this.write(ns, "mutate", { ops }, expectedRevision);
+          }
+          async write(ns, method, input, expectedRevision) {
+            if (typeof ns !== "string" || ns.length === 0) throw new RpcError(ErrorCode.InvalidParams, "a settings namespace is a non-empty string");
+            const owner = host.ownerOf(this.ctx);
+            if (owner === void 0 || ns !== owner.pluginName) throw new RpcError(ErrorCode.Refused, "a plugin may edit only its own settings namespace");
+            const expected = revision(expectedRevision);
+            const result = await host.broker(this.ctx, "settings", method, expected === void 0 ? input : { ...input, expected_revision: expected });
+            if (result === null || typeof result !== "object" || typeof result.written !== "boolean" || typeof result.revision !== "string") throw new RpcError(ErrorCode.Internal, "invalid settings broker response");
+            if (result.conflict === true) throw new SettingsConflictError(ns, expected, result.revision);
+            return { written: result.written, revision: result.revision, applies: "reload" };
+          }
+        }
+        Object.freeze(SettingsService.prototype);
+        return SettingsService;
+      }
+    };
+  }
+});
+
+// src/dsh/dsh-shims.ts
+import { randomBytes } from "node:crypto";
+import { lstat, mkdir, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
+import { dirname as dirname2, isAbsolute as isAbsolute2, join as join2, resolve as resolve2 } from "node:path";
+function activeDataDir(operation) {
+  const owner = ownerStorage.getStore();
+  if (!owner || typeof owner.dataDir !== "string" || owner.dataDir.length === 0) {
+    throw new Error(`${operation} requires an active plugin owner with a scoped dataDir`);
+  }
+  return canonicalPath(owner.dataDir);
+}
+function assertNoEscapingAncestor(dataRoot, target, operation) {
+  let current2 = target;
+  while (current2.length >= dataRoot.length) {
+    if (current2 === dataRoot) break;
+    try {
+      const canonical = canonicalPath(current2);
+      const key = insideKey(dataRoot, current2);
+      if (key === void 0 || key === "") {
+        if (canonical !== dataRoot) {
+          throw new Error(`${operation} refused symlink escaping plugin dataDir`);
+        }
+        break;
+      }
+      if (!unlinkedKeyMatches(dataRoot, key, canonical)) {
+        throw new Error(`${operation} refused symlink escaping plugin dataDir`);
+      }
+      break;
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        const next = dirname2(current2);
+        if (next === current2) break;
+        current2 = next;
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+function confinePathToDataDir(targetPath, operation) {
+  if (typeof targetPath !== "string" || targetPath.length === 0 || /[\x00-\x1f\x7f]/.test(targetPath)) {
+    throw new TypeError(`${operation} requires a valid file path string`);
+  }
+  const dataRoot = activeDataDir(operation);
+  const resolved = isAbsolute2(targetPath) ? resolve2(targetPath) : resolve2(dataRoot, targetPath);
+  const rel = insideKey(dataRoot, resolved);
+  if (rel === void 0 || rel === "") {
+    throw new Error(`${operation} refused path outside plugin dataDir`);
+  }
+  assertNoEscapingAncestor(dataRoot, dirname2(resolved), operation);
+  return resolved;
+}
+function credentialRef(value) {
+  if (typeof value !== "string") {
+    throw new TypeError("credentialRef requires a non-empty string");
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_CREDENTIAL_REF_LEN || /[\x00-\x1f\x7f]/.test(trimmed)) {
+    throw new TypeError("credentialRef requires a bounded printable string");
+  }
+  return trimmed;
+}
+async function resolveCredential(ctx, ref2) {
+  if (!ctx?.credentials || typeof ctx.credentials.resolve !== "function") return void 0;
+  return ctx.credentials.resolve(credentialRef(ref2));
+}
+async function describeCredential(ctx, ref2) {
+  if (!ctx?.credentials || typeof ctx.credentials.describe !== "function") return void 0;
+  return ctx.credentials.describe(credentialRef(ref2));
+}
+function settingsNamespace(name) {
+  if (typeof name !== "string" || name.trim().length === 0 || name.length > 128) {
+    throw new TypeError("settingsNamespace requires a non-empty string");
+  }
+  return name.trim();
+}
+function installSettingsSection(ctx, ns, _section) {
+  settingsNamespace(ns);
+  void ctx?.settings;
+  return () => void 0;
+}
+function resolveDshHome(...segments) {
+  const dataRoot = activeDataDir("resolveDshHome");
+  if (segments.length === 0) return dataRoot;
+  for (const seg of segments) {
+    if (typeof seg !== "string" || seg.includes("\0") || isAbsolute2(seg)) {
+      throw new Error("resolveDshHome refused absolute or invalid path segment");
+    }
+  }
+  const target = resolve2(dataRoot, ...segments);
+  const rel = insideKey(dataRoot, target);
+  if (rel === void 0) {
+    throw new Error("resolveDshHome refused path escaping plugin dataDir");
+  }
+  if (rel !== "") {
+    assertNoEscapingAncestor(dataRoot, target, "resolveDshHome");
+  }
+  return target;
+}
+async function withFileLock(targetPath, fn) {
+  const confined = confinePathToDataDir(targetPath, "withFileLock");
+  const prev = fileLocks.get(confined) ?? Promise.resolve();
+  let release;
+  const current2 = new Promise((res) => {
+    release = res;
+  });
+  const chain = prev.then(() => current2);
+  fileLocks.set(confined, chain);
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (fileLocks.get(confined) === chain) {
+      fileLocks.delete(confined);
+    }
+  }
+}
+async function writeFileAtomic(targetPath, data2, options) {
+  const dataRoot = activeDataDir("writeFileAtomic");
+  const confined = confinePathToDataDir(targetPath, "writeFileAtomic");
+  const bytes = typeof data2 === "string" ? Buffer.from(data2, options?.encoding ?? "utf8") : Buffer.from(data2.buffer, data2.byteOffset, data2.byteLength);
+  if (bytes.byteLength > MAX_ATOMIC_WRITE_BYTES) {
+    throw new RangeError(`writeFileAtomic exceeds the ${MAX_ATOMIC_WRITE_BYTES} byte limit`);
+  }
+  try {
+    const existing = await lstat(confined);
+    if (existing.isSymbolicLink()) {
+      throw new Error("writeFileAtomic refused symlink target");
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  const parent = dirname2(confined);
+  await mkdir(parent, { recursive: true });
+  const canonicalParent = canonicalPath(parent);
+  const parentKey = insideKey(dataRoot, parent);
+  if (parentKey === void 0 || (parentKey === "" ? canonicalParent !== dataRoot : !unlinkedKeyMatches(dataRoot, parentKey, canonicalParent))) {
+    throw new Error("writeFileAtomic refused symlink escaping plugin dataDir");
+  }
+  const tmpPath = join2(canonicalParent, `.cw-atomic-${process.pid}-${randomBytes(8).toString("hex")}.tmp`);
+  try {
+    await writeFile2(tmpPath, bytes, {
+      flag: "wx",
+      ...options?.mode !== void 0 ? { mode: options.mode } : {}
+    });
+    await rename2(tmpPath, confined);
+  } catch (error) {
+    await rm2(tmpPath, { force: true }).catch(() => void 0);
+    throw error;
+  }
+}
+function isModelInvocable(skill) {
+  if (!skill || typeof skill !== "object") return false;
+  const s = skill;
+  if (s.disableModelInvocation === true || s.modelInvocable === false) return false;
+  return true;
+}
+function isUserInvocable(skill) {
+  if (!skill || typeof skill !== "object") return false;
+  const s = skill;
+  if (s.userInvocable === false) return false;
+  return true;
+}
+function parseSkillFrontmatter(markdown) {
+  if (typeof markdown !== "string") return { frontmatter: {}, body: "" };
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(markdown);
+  if (!match) return { frontmatter: {}, body: markdown };
+  const frontmatter = {};
+  for (const line of match[1].split(/\r?\n/)) {
+    const idx = line.indexOf(":");
+    if (idx <= 0) continue;
+    const key = line.slice(0, idx).trim();
+    const val = line.slice(idx + 1).trim().replace(/^["']|["']$/g, "");
+    if (key) frontmatter[key] = val;
+  }
+  return { frontmatter, body: match[2] };
+}
+function renderSkillContent(skill, args) {
+  const raw = typeof skill === "string" ? skill : skill && typeof skill === "object" && typeof skill.content === "string" ? skill.content : "";
+  const { body } = parseSkillFrontmatter(raw);
+  if (typeof args !== "string" || args.length === 0) return body;
+  return body.replaceAll("$ARGUMENTS", args);
+}
+function WorkspaceId(id) {
+  return id;
+}
+function isSurfaceEligibleType(type2) {
+  return typeof type2 === "string" && (type2 === "message/user" || type2 === "message/assistant" || type2 === "tool/call" || type2 === "tool/result");
+}
+function foldSurface(events) {
+  if (!Array.isArray(events)) return [];
+  return events.filter((event) => event && typeof event === "object" && isSurfaceEligibleType(event.type));
+}
+function foldSubagentDescriptor(events) {
+  const out = { status: "idle", count: 0 };
+  if (!Array.isArray(events)) return out;
+  for (const ev of events) {
+    if (!ev || typeof ev !== "object") continue;
+    if (ev.type === "subagent/start") {
+      out.status = "running";
+      out.count = out.count + 1;
+    } else if (ev.type === "subagent/end") {
+      out.status = "completed";
+    }
+  }
+  return out;
+}
+function snapshotSubagentDescriptor(descriptor2) {
+  if (!descriptor2 || typeof descriptor2 !== "object") return { status: "idle" };
+  return structuredClone(descriptor2);
+}
+function assembleContextFor(messages = []) {
+  return Array.isArray(messages) ? [...messages] : [];
+}
+function installModelSelection(_ctx, _options) {
+  return () => void 0;
+}
+var MAX_CREDENTIAL_REF_LEN, MAX_ATOMIC_WRITE_BYTES, dshCredentialsModule, dshSettingsModule, dshHomePathsModule, fileLocks, dshAtomicWriteModule, BUNDLED_SKILL_RANK, dshSkillModule, Remote, TypertRemoteService, dshTypertProtocolModule, dshWorkspaceModule, dshSessionSurfaceModule, SubagentError, dshSubagentModule, dshAgentModule;
+var init_dsh_shims = __esm({
+  "src/dsh/dsh-shims.ts"() {
+    "use strict";
+    init_lib2();
+    init_root();
+    init_canonical_path();
+    init_settings();
+    init_dsh_message_compat();
+    MAX_CREDENTIAL_REF_LEN = 256;
+    MAX_ATOMIC_WRITE_BYTES = 16 * 1024 * 1024;
+    dshCredentialsModule = Object.freeze({
+      credentialRef,
+      resolveCredential,
+      describeCredential
+    });
+    dshSettingsModule = Object.freeze({
+      SettingsConflictError,
+      settingsNamespace,
+      installSettingsSection,
+      default: Object.freeze({
+        SettingsConflictError,
+        settingsNamespace,
+        installSettingsSection
+      })
+    });
+    dshHomePathsModule = Object.freeze({
+      resolveDshHome,
+      resolveDshPath: resolveDshHome
+    });
+    fileLocks = /* @__PURE__ */ new Map();
+    dshAtomicWriteModule = Object.freeze({
+      writeFileAtomic,
+      withFileLock
+    });
+    BUNDLED_SKILL_RANK = 100;
+    dshSkillModule = Object.freeze({
+      BUNDLED_SKILL_RANK,
+      isModelInvocable,
+      isUserInvocable,
+      parseSkillFrontmatter,
+      renderSkillContent
+    });
+    Remote = Object.freeze({
+      strictCodec(typeSymbol, schema3) {
+        return Object.freeze({
+          mode: "strict",
+          typeSymbol,
+          create: () => schema3,
+          schema: schema3
+        });
+      },
+      jsonParameter(name, typeSymbol, schema3, acceptsUndefined = false) {
+        return Object.freeze({
+          name,
+          wire: name,
+          source: "json",
+          codec: Remote.strictCodec(typeSymbol, schema3),
+          ...acceptsUndefined ? { acceptsUndefined: true } : {}
+        });
+      },
+      descriptor(def) {
+        return Object.freeze({ ...def });
+      }
+    });
+    TypertRemoteService = class extends Service {
+      descriptors;
+      constructor(ctx, name, descriptors = []) {
+        super(ctx, name);
+        this.descriptors = Object.freeze([...descriptors]);
+      }
+      getDescriptors() {
+        return this.descriptors;
+      }
+    };
+    dshTypertProtocolModule = Object.freeze({
+      Remote,
+      TypertRemoteService
+    });
+    dshWorkspaceModule = Object.freeze({
+      WorkspaceId
+    });
+    dshSessionSurfaceModule = Object.freeze({
+      foldSurface,
+      isSurfaceEligibleType
+    });
+    SubagentError = class extends HarnessError {
+      constructor(message, code = "SUBAGENT_ERROR", options) {
+        super(message, code, options);
+        this.name = "SubagentError";
+      }
+    };
+    dshSubagentModule = Object.freeze({
+      SubagentError,
+      foldSubagentDescriptor,
+      snapshotSubagentDescriptor
+    });
+    dshAgentModule = Object.freeze({
+      assembleContextFor,
+      installModelSelection
+    });
+  }
+});
+
+// src/dsh/compatibility.json
+var compatibility_default;
+var init_compatibility = __esm({
+  "src/dsh/compatibility.json"() {
+    compatibility_default = {
+      version: 3,
+      target_dsh_version: "0.2.2-rc.1",
+      provided_services: {
+        dsh: [
+          "tools",
+          "commands",
+          "storage",
+          "skills",
+          "sessions",
+          "userQuestions",
+          "subagents",
+          "agents",
+          "systemPrompt",
+          "llm",
+          "credentials",
+          "settings",
+          "pluginManager",
+          "deepseekAccount",
+          "terminal",
+          "attachments",
+          "agentPresets",
+          "agentDefaultModel",
+          "sessionProjections",
+          "workspaceRegistry",
+          "typertGateway",
+          "web",
+          "webServer",
+          "connection",
+          "sessionTitle",
+          "profileContext"
+        ],
+        cordis: [
+          "logger",
+          "events",
+          "reflect",
+          "registry"
+        ],
+        codewhale: [
+          "prompt",
+          "avatars",
+          "mcp",
+          "shellHooks",
+          "remote",
+          "workspace"
+        ]
+      },
+      refused_services: [
+        "shellHooks",
+        "loader",
+        "approval",
+        "agents",
+        "subagents",
+        "sessions",
+        "llm",
+        "sandboxPolicy",
+        "credentials",
+        "fs",
+        "subprocess",
+        "systemPrompt",
+        "runtimeLoop",
+        "tools",
+        "commands",
+        "prompt",
+        "storage",
+        "skills",
+        "avatars",
+        "mcp",
+        "logger",
+        "userQuestions",
+        "remote",
+        "workspace",
+        "settings",
+        "pluginManager",
+        "deepseekAccount",
+        "terminal",
+        "attachments",
+        "agentPresets",
+        "agentDefaultModel",
+        "sessionProjections",
+        "workspaceRegistry",
+        "typertGateway",
+        "web",
+        "webServer",
+        "connection",
+        "sessionTitle",
+        "profileContext"
+      ],
+      row_bridges: {
+        "@deepseek-ai/dsh-mcp-client": "mcp",
+        "@deepseek-ai/dsh-skill-filesystem": "skills",
+        "@deepseek-ai/dsh-hooks-claude-code": "hooks-claude-code",
+        "@deepseek-ai/dsh-hooks-codex": "hooks-codex",
+        "@deepseek-ai/dsh-persona": "persona",
+        "@deepseek-ai/dsh-storage": "host-spine",
+        "@deepseek-ai/dsh-storage-json": "host-spine",
+        "@deepseek-ai/dsh-storage-domain": "host-spine",
+        "@deepseek-ai/dsh-workspace": "host-spine",
+        "@deepseek-ai/dsh-code-runtime-worker-thread": "host-spine",
+        "@deepseek-ai/dsh-tool-subagent/model-selection-settings": "host-spine",
+        "@deepseek-ai/dsh-agent-preset-registry": "host-spine",
+        "@deepseek-ai/dsh-cordis-host-runner": "host-spine",
+        "@deepseek-ai/dsh-host-webserver": "host-spine"
+      },
+      module_singletons: {
+        "@codewhale/dsh-composition": "dsh-composition",
+        "@deepseek-ai/cordis-plugin-loader": "dsh-loader",
+        "@deepseek-ai/cordis-plugin-include": "dsh-include",
+        "@deepseek-ai/cordis-plugin-group": "dsh-group",
+        "@deepseek-ai/cordis": "cordis",
+        "@deepseek-ai/schemastery": "schemastery",
+        "@deepseek-ai/cosmokit": "cosmokit",
+        cosmokit: "cosmokit",
+        "@deepseek-ai/dsh-tools": "dsh-tools",
+        "@deepseek-ai/dsh-util-values": "dsh-util-values",
+        "@deepseek-ai/dsh-commands/brand": "dsh-commands-brand",
+        "@deepseek-ai/dsh-llm": "dsh-llm-values",
+        "@deepseek-ai/dsh-session": "dsh-session-values",
+        "@deepseek-ai/dsh-session/surface": "dsh-session-surface",
+        "@deepseek-ai/dsh-system-prompt": "dsh-system-prompt-values",
+        "@deepseek-ai/dsh-user-questions": "dsh-user-questions-values",
+        "@deepseek-ai/dsh-credentials": "dsh-credentials",
+        "@deepseek-ai/dsh-settings": "dsh-settings",
+        "@deepseek-ai/dsh-home-paths": "dsh-home-paths",
+        "@deepseek-ai/dsh-atomic-write": "dsh-atomic-write",
+        "@deepseek-ai/dsh-skill": "dsh-skill",
+        "@deepseek-ai/dsh-typert-protocol": "dsh-typert-protocol",
+        "@deepseek-ai/dsh-workspace": "dsh-workspace",
+        "@deepseek-ai/dsh-subagent": "dsh-subagent"
+      },
+      definition_api: {
+        package: "@deepseek-ai/dsh-tools",
+        version: "0.2.2-rc.1",
+        license: "MIT",
+        tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-tools/-/dsh-tools-0.2.2-rc.1.tgz",
+        integrity: "sha512-svB49dLPCHkKHgGwik3dTvEH0sL1vKwIzlQgqjE4qzEqFbSEROW8fByk3g2y2lxDv8TqgEUa0Vp2qFrVbm2lfw==",
+        license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+        tarball_sha256: "bb94ee037bd7d3efe2d0654c6a1fa7084b268b895fa0ca6ceeb7e65d4fd6da72",
+        sources: [
+          {
+            file: "lib/shared-DTdn5dXO.js",
+            sha256: "d02f0d8f36878313b0dae3a1bba5b77f7db4cffc77a0b72772048a36bacf2cf0",
+            lines: [
+              [
+                22,
+                548
+              ]
+            ]
+          },
+          {
+            file: "lib/index.js",
+            sha256: "1889cbf718d64518dd83245d4dba1e1f080b2c5326259c3ed5b1be7a7666a2bd",
+            lines: [
+              [
+                7,
+                377
+              ]
+            ]
+          },
+          {
+            file: "lib/shared-DTdn5dXO.js",
+            sha256: "d02f0d8f36878313b0dae3a1bba5b77f7db4cffc77a0b72772048a36bacf2cf0",
+            lines: [
+              [
+                566,
+                596
+              ]
+            ]
+          }
+        ]
+      },
+      command_followup: "one-text-message-submit-on-success",
+      pure_api: {
+        file: "src/dsh/dsh-message-compat.js",
+        source_sha256: "018236676c31a588543e69d09821c53bc1138d14f4520b92ceba0e122cc8de78",
+        exports: {
+          "@deepseek-ai/dsh-llm": [
+            "createUserMessage",
+            "createAssistantMessage",
+            "createSystemMessage",
+            "createToolResultMessage",
+            "freezeMessage",
+            "contentHasImage",
+            "ReasoningEffortId",
+            "MessageId",
+            "ToolCallId",
+            "isAgentLoopRequest",
+            "resolveRetryPolicy",
+            "boundContextSummary",
+            "BlockAssembler",
+            "LlmAdapter",
+            "LlmError",
+            "HarnessError"
+          ],
+          "@deepseek-ai/dsh-session": [
+            "SessionId",
+            "SESSION_FORMAT_VERSION",
+            "KNOWN_SESSION_EVENT_TYPES",
+            "deriveEventMessage"
+          ],
+          "@deepseek-ai/dsh-system-prompt": [
+            "PERSONA_PREFIX_SECTION"
+          ],
+          "@deepseek-ai/dsh-user-questions": [
+            "UserQuestionError"
+          ]
+        },
+        packages: [
+          {
+            package: "@deepseek-ai/dsh-brand",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-brand/-/dsh-brand-0.2.2-rc.1.tgz",
+            integrity: "sha512-ShGNEmNuEQA+bfkspWC2kGrdbrM4dFNhqlrNHIWsHO+PgVH1KoTKTLSraT1pt0A8YYk/moKE0gL2gY9dNBU+rw==",
+            tarball_sha256: "d953cb5e8dcd69be0b0347ce9a3b36421eefa751820cbe909f4a185348ad5530",
+            source_file: "lib/index.js",
+            source_sha256: "14feb59256b891982b2017d73ed03ee65e2a7365f48e4902a856acb0e52d5eb0",
+            excerpts: [
+              {
+                name: "brandString",
+                lines: [
+                  20,
+                  22
+                ],
+                sha256: "2f0b62ba6507db54836a99e24d1d219e598b6140e575d2cf5c63d86a18e5e8ac"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-util-crypto",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-crypto/-/dsh-util-crypto-0.2.2-rc.1.tgz",
+            integrity: "sha512-I9Nhh3/64HPzjdR/mUt0J534FYHgodMUe0coXtA91+kxGcJQcSHOYouewv4hf0NWw0BuLh5zihTdtldZtobOWA==",
+            tarball_sha256: "c9ef0dfed280c83202f1d7bd5d32b1139a92a2fc375da62962ef709c3d1e4a6a",
+            source_file: "lib/index.js",
+            source_sha256: "640b26c8e5a1156c6c8e8749a22f805c9c0e34444778eb4ee9529be3e88ec862",
+            excerpts: [
+              {
+                name: "randomUUID",
+                lines: [
+                  27,
+                  33
+                ],
+                sha256: "e6c3b47d5cf366a149204c36d1697e658f61c48bfd96e66ec1c96deec3a8f4e2"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-llm",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-llm/-/dsh-llm-0.2.2-rc.1.tgz",
+            integrity: "sha512-XeEvH+6bpkjx0E2P1B5ZE+WWa+VHp4DimQaJDKNUZEFouqHMuN1B61TIz6IzUquRxa/6X4yJy+qXQ9WwAeMw5w==",
+            tarball_sha256: "cbf45039d3ef63e26987de514928a847a8c2d0b049df8fb24c11684e203b05d4",
+            source_file: "lib/index.js",
+            source_sha256: "8e541fc98a11897706a122fde1db42f8b2a41b3b354ba3fcb932e9a16929ac6a",
+            excerpts: [
+              {
+                name: "createMessage",
+                lines: [
+                  37,
+                  42
+                ],
+                sha256: "74baa44c9dea1821d97bd4fe592b21baf31f60eaf06962a269fcf2ec88e352ae"
+              },
+              {
+                name: "createUserMessage",
+                lines: [
+                  59,
+                  64
+                ],
+                sha256: "2c4929c2c18e511aa0fefe216eb50e703191057bb15ba1412ddcfdcc8bfc020f"
+              },
+              {
+                name: "HarnessError declaration",
+                lines: [
+                  126,
+                  126
+                ],
+                sha256: "d260a23e0a20850d3b623cbeed54626b47d43fa74e000c5d529dc0a341ab63ee"
+              },
+              {
+                name: "HarnessError body",
+                lines: [
+                  128,
+                  134
+                ],
+                sha256: "30ee24ef29e412b1ab2f0ca89ab600bb0260022d1479d43ca2ad21173b774ccf"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-session",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-session/-/dsh-session-0.2.2-rc.1.tgz",
+            integrity: "sha512-e0zx9HFNn8EyqrymGQS85SjKOyr61//ChTgIVDlCBSZvBB723fuXyi9LiHIIuPTlkgmWJl3gm5J51ebEXew7PQ==",
+            tarball_sha256: "b8b1b4a7b9c8efbdbe4c134ed3b18cddf11842b62ad7675c21c05b3afef1cfb5",
+            source_file: "lib/index.js",
+            source_sha256: "6fad466aa1f7aa64bfa038681ead5721f66c88e9891e25d357d2b8edbccd5494",
+            excerpts: [
+              {
+                name: "SessionId",
+                lines: [
+                  13,
+                  15
+                ],
+                sha256: "68a5778f0586d4e1c219ce6ae3cec3120a57446bbb91f371b4ba208533f48996"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-system-prompt",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-system-prompt/-/dsh-system-prompt-0.2.2-rc.1.tgz",
+            integrity: "sha512-1p9imdrenPnJTkLb6Coq+ELBDjngblM/YGP1Pa/xf1oisjLHcCoK2n9kkOUTIfgvoFtqWfxZJNZeKef71ZmlrA==",
+            tarball_sha256: "5ecb3f2ff2f0c037287c22c1ef917f1ce5cdd4c8055d51da6646ed5a39fe02a9",
+            source_file: "lib/index.js",
+            source_sha256: "18b692b03bbb717589085f63b126cbcf22963763c5a0565bb3a7a5d254e8e4a7",
+            excerpts: [
+              {
+                name: "PERSONA_PREFIX_SECTION",
+                lines: [
+                  61,
+                  61
+                ],
+                sha256: "11338254c278626eea6887b9cb5dc94d16f2ab4dae4bd7e555ea608c4b15648f"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-util-values",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-values/-/dsh-util-values-0.2.2-rc.1.tgz",
+            integrity: "sha512-UN4B/Fa9zAunYN3UuXDQ3QknxF/lMKNwTu2WxXKKEC+Ejz745po7I/JmsVFVa7+socfuwwTmVrfSsddRVU+lew==",
+            tarball_sha256: "e5de9a3c2600c70d72dba702cd0dfc8097264b7b6a7f393f4cfa799c81ecf759",
+            source_file: "lib/index.js",
+            source_sha256: "8b4ffdf40126d48bd22017b4671f7e90612d01833fc865f7a0b60d3de4183e8b",
+            excerpts: [
+              {
+                name: "deepFreeze",
+                lines: [
+                  809,
+                  845
+                ],
+                sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: false
+          },
+          {
+            package: "@deepseek-ai/dsh-user-questions",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-user-questions/-/dsh-user-questions-0.2.2-rc.1.tgz",
+            integrity: "sha512-COY40boWZ7XEszSvMGZ4CY5ze5ujCdA+Trtqx5C6ioqWzH9e8YbkY7AxyCOadxVO++5zAsqvsAfq65cZUPIMGA==",
+            tarball_sha256: "e7c1c38234fea9c0634ec95272bd1005c48ce890d2b935c8442b4ae7fee1b51e",
+            source_file: "lib/index.js",
+            source_sha256: "69fee77aa57cc43de583d53a4877394c4cf3b5d58b8d7579fd8095c0a015bfbd",
+            excerpts: [
+              {
+                name: "UserQuestionError",
+                lines: [
+                  430,
+                  435
+                ],
+                sha256: "5d49a4ecdf40039b26824f3575a79820b48ed011f90641870f44fe5a41bf5ced"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          }
+        ],
+        reuse: {
+          package: "@deepseek-ai/dsh-util-values",
+          version: "0.2.2-rc.1",
+          file: "lib/index.js",
+          symbol: "deepFreeze",
+          lines: [
+            809,
+            845
+          ],
+          sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
+        },
+        constructor_names: [
+          "HarnessError",
+          "UserQuestionError"
+        ]
+      },
+      tool_caller_projection: "readonly-id-session-header-cwd",
+      session_methods: {
+        flush: "invocation-bound-acknowledged-checkpoint-with-host-redaction-policy"
+      },
+      user_question_methods: {
+        ask: "invocation-bound-root-agent-typed-answers-no-wait"
+      },
+      subagent_methods: {
+        getProvider: "spawn-only-independent-context",
+        startActivation: "invocation-bound-caller-or-parent-delivery-text-prompt-model-persona-deny",
+        result: "text-output-typed-stop-reason",
+        dispose: "exact-activation"
+      },
+      agents_methods: {},
+      system_prompt_methods: {
+        section: "child-persona-slot-in-agent-created-only"
+      },
+      tool_definition_fields: {
+        deferLoading: "boolean-presentation-noop-engine-controls-loading"
+      }
+    };
+  }
+});
+
+// src/dsh/resolve-hooks.ts
+import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL2 } from "node:url";
+import { resolve as resolve3, isAbsolute as isAbsolute3, dirname as dirname3 } from "node:path";
+function packageName(specifier) {
+  const parts = specifier.split("/");
+  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+}
+function classifySpecifier(specifier) {
+  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.includes(":")) return null;
+  if (Object.hasOwn(SINGLETONS, specifier)) return SINGLETONS[specifier];
+  const name = packageName(specifier);
+  if (Object.hasOwn(SINGLETONS, name)) {
+    if (specifier !== name) throw new UnsupportedPeerError(specifier);
+    return SINGLETONS[name];
+  }
+  if (name.startsWith("@deepseek-ai/dsh-") || name.startsWith("@deepseek-ai/cordis-")) {
+    throw new UnsupportedPeerError(name);
+  }
+  return null;
+}
+function explainImportError(error) {
+  const match = error instanceof Error ? /Cannot find package '([^']+)'/.exec(error.message) : null;
+  if (!match) return error;
+  try {
+    classifySpecifier(match[1]);
+  } catch (unsupported) {
+    return unsupported;
+  }
+  return error;
+}
+function keyIn(closure, path2) {
+  const canonical = insideKey(closure.canonicalRoot, path2);
+  if (canonical !== void 0) return canonical;
+  for (const root of closure.rawRoots) {
+    const raw = insideKey(root, path2);
+    if (raw !== void 0) return raw;
+  }
+}
+function admitReviewedClosure(baseUrl, files) {
+  const rawRoot = resolve3(fileURLToPath2(baseUrl));
+  const canonicalRoot = canonicalPath(rawRoot);
+  const id = pathKey(canonicalRoot);
+  const accepted = /* @__PURE__ */ Object.create(null);
+  const keys = Object.keys(files);
+  if (keys.length > 16384) throw new Error("reviewed composition closure exceeds its file limit");
+  for (const key of keys) {
+    if (!key || key.split("/").some((part) => !part || part === "." || part === "..") || key.includes("\\") || key.includes(":") || isAbsolute3(key) || !/^[a-f0-9]{64}$/.test(files[key])) throw new Error("invalid reviewed composition closure file");
+    accepted[key] = files[key];
+  }
+  const existing = reviewedClosures.get(id);
+  if (existing) {
+    if (Object.keys(existing.files).length !== keys.length || keys.some((key) => existing.files[key] !== accepted[key])) throw new Error("the same composition root carries different file receipts");
+    existing.refs++;
+    existing.rawRoots.add(rawRoot);
+  } else reviewedClosures.set(id, { files: Object.freeze(accepted), refs: 1, canonicalRoot, rawRoots: /* @__PURE__ */ new Set([rawRoot]) });
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    const current2 = reviewedClosures.get(id);
+    if (current2 && --current2.refs === 0) reviewedClosures.delete(id);
+  };
+}
+async function importReviewedModule(baseUrl, path2) {
+  const rawRoot = resolve3(fileURLToPath2(baseUrl));
+  const id = pathKey(canonicalPath(rawRoot));
+  const receipt = reviewedClosures.get(id);
+  if (!receipt) throw new Error("composition module closure is no longer admitted");
+  const entry = resolve3(rawRoot, path2);
+  const admitted = closureAt(pathToFileURL2(entry).href);
+  if (!admitted || admitted.root !== id || !(admitted.path in receipt.files)) throw new Error("composition module is absent from reviewed closure");
+  return import(pathToFileURL2(entry).href);
+}
+function closureAt(url) {
+  if (!url?.startsWith("file:")) return;
+  const path2 = resolve3(fileURLToPath2(url));
+  for (const [root, receipt] of reviewedClosures) {
+    const inside = keyIn(receipt, path2);
+    if (inside !== void 0) return { root, receipt, path: inside };
+  }
+}
+var SINGLETONS, UnsupportedPeerError, reviewedClosures;
+var init_resolve_hooks = __esm({
+  "src/dsh/resolve-hooks.ts"() {
+    "use strict";
+    init_canonical_path();
+    init_runtime();
+    init_bun_closure();
+    init_dsh_message_compat();
+    init_dsh_shims();
+    init_compatibility();
+    SINGLETONS = compatibility_default.module_singletons;
+    UnsupportedPeerError = class extends Error {
+      constructor(specifier) {
+        super(`requires \`${specifier}\`, which the Codewhale extension host does not provide`);
+        this.specifier = specifier;
+        this.name = "UnsupportedPeerError";
+      }
+      specifier;
+    };
+    reviewedClosures = /* @__PURE__ */ new Map();
+  }
+});
+
+// src/dsh/missing-services.ts
+function describeMissingServices(names, { scoped: classifyScoped = true } = {}) {
+  const absent = names.filter((name) => !classifyScoped || !PROVIDED_SERVICES.has(name));
+  const scoped = names.filter((name) => classifyScoped && PROVIDED_SERVICES.has(name));
+  const parts = [];
+  if (absent.length > 0) {
+    const owned = absent.filter((name) => REFUSED_SERVICES.has(name));
+    const reasons = [...new Set(absent.flatMap((name) => UNPROVIDED_REASONS.filter(([matches]) => matches(name)).map(([, reason]) => reason)))];
+    parts.push(`${quoted(absent)}, not provided by the Codewhale extension host in this phase` + (reasons.length > 0 ? ` (${reasons.join("; ")})` : "") + (owned.length > 0 ? `; ${quoted(owned)} belong${owned.length === 1 ? "s" : ""} to the Codewhale core and no reviewed bridge exposes ${owned.length === 1 ? "it" : "them"} yet` : ""));
+  }
+  if (scoped.length > 0) parts.push(`${quoted(scoped)}, provided by the host but unavailable in this scope`);
+  return parts.join("; ");
+}
+var REFUSED_SERVICES, PROVIDED_SERVICES, UNPROVIDED_REASONS, quoted;
+var init_missing_services = __esm({
+  "src/dsh/missing-services.ts"() {
+    "use strict";
+    init_compatibility();
+    REFUSED_SERVICES = new Set(compatibility_default.refused_services);
+    PROVIDED_SERVICES = new Set(Object.values(compatibility_default.provided_services).flat());
+    UNPROVIDED_REASONS = [
+      [(name) => name.startsWith("@deepseek-ai/dsh-client-"), "DSH client UI services"]
+    ];
+    quoted = (names) => names.map((name) => `\`${name}\``).join(", ");
+  }
+});
+
+// node_modules/@deepseek-ai/schemastery/lib/index.mjs
+function mergeDesc(original, messages) {
+  const result = typeof original === "string" ? { "": original } : { ...original };
+  for (const locale in messages) {
+    const value = messages[locale];
+    if (value?.$description || value?.$desc) result[locale] = value.$description || value.$desc;
+    else if (typeof value === "string") result[locale] = value;
+  }
+  return result;
+}
+function getInner(value) {
+  return value?.$value ?? value?.$inner;
+}
+function extractKeys(data2) {
+  return filterKeys(data2 ?? {}, (key) => !key.startsWith("$"));
+}
+function validateVolatileSchema(schema3, path2 = [], blocked = false, seen = /* @__PURE__ */ new Map()) {
+  const states = seen.get(schema3) ?? /* @__PURE__ */ new Set();
+  if (states.has(blocked)) return;
+  states.add(blocked);
+  seen.set(schema3, states);
+  if (schema3.meta?.volatile && blocked) throw new ValidationError2("volatile fields require a fixed object path without an enclosing volatile field", { path: path2 });
+  const nested = blocked || !!schema3.meta?.volatile;
+  if (schema3.dict) for (const [key, child] of Object.entries(schema3.dict)) validateVolatileSchema(child, [...path2, key], nested, seen);
+  if (schema3.sKey) validateVolatileSchema(schema3.sKey, [...path2, "<key>"], true, seen);
+  if (schema3.inner && (schema3.type !== "lazy" || schema3.inner[kSchema])) validateVolatileSchema(schema3.inner, [...path2, "*"], true, seen);
+  if (schema3.list) for (let index = 0; index < schema3.list.length; index++) validateVolatileSchema(schema3.list[index], [...path2, String(index)], true, seen);
+}
+function checkWithinRange(data2, meta, description, options, skipMin = false) {
+  const { max = Infinity, min = -Infinity } = meta;
+  if (data2 > max) throw new ValidationError2(`expected ${description} <= ${max} but got ${data2}`, options);
+  if (data2 < min && !skipMin) throw new ValidationError2(`expected ${description} >= ${min} but got ${data2}`, options);
+}
+function decimalShift(data2, digits) {
+  const str2 = data2.toString();
+  if (str2.includes("e")) return data2 * Math.pow(10, digits);
+  const index = str2.indexOf(".");
+  if (index === -1) return data2 * Math.pow(10, digits);
+  const frac = str2.slice(index + 1);
+  const integer = str2.slice(0, index);
+  if (frac.length <= digits) return +(integer + frac.padEnd(digits, "0"));
+  return +(integer + frac.slice(0, digits) + "." + frac.slice(digits));
+}
+function isMultipleOf(data2, min, step) {
+  step = Math.abs(step);
+  if (!/^\d+\.\d+$/.test(step.toString())) return (data2 - min) % step === 0;
+  const index = step.toString().indexOf(".");
+  const digits = step.toString().slice(index + 1).length;
+  return Math.abs(decimalShift(data2, digits) - decimalShift(min, digits)) % decimalShift(step, digits) === 0;
+}
+function property(data2, key, schema3, options) {
+  try {
+    const [value, adapted] = Schema2.resolve(data2[key], schema3, {
+      ...options,
+      path: [...options.path || [], key]
+    });
+    if (adapted !== void 0) data2[key] = adapted;
+    return value;
+  } catch (e) {
+    if (!options?.autofix) throw e;
+    delete data2[key];
+    return schema3.meta.volatile ? createVolatile(schema3.meta.default) : schema3.meta.default;
+  }
+}
+function merge3(result, data2) {
+  for (const key in data2) {
+    if (key in result) continue;
+    result[key] = data2[key];
+  }
+}
+function defineMethod(name, keys, format) {
+  formatters[name] = format;
+  Object.assign(Schema2, { [name](...args) {
+    const schema3 = new Schema2({ type: name });
+    keys.forEach((key, index) => {
+      switch (key) {
+        case "sKey":
+          schema3.sKey = args[index] ?? Schema2.string();
+          break;
+        case "inner":
+          schema3.inner = Schema2.from(args[index]);
+          break;
+        case "list":
+          schema3.list = args[index].map(Schema2.from);
+          break;
+        case "dict":
+          schema3.dict = mapValues(args[index], Schema2.from);
+          break;
+        case "bits":
+          schema3.bits = {};
+          for (const key2 in args[index]) {
+            if (typeof args[index][key2] !== "number") continue;
+            schema3.bits[key2] = args[index][key2];
+          }
+          break;
+        case "callback": {
+          const callback = schema3.callback = args[index];
+          callback["toJSON"] ||= () => callback.toString();
+          break;
+        }
+        case "constructor": {
+          const constructor = schema3.constructor = args[index];
+          if (typeof constructor === "function") constructor["toJSON"] ||= () => constructor["name"];
+          break;
+        }
+        default:
+          schema3[key] = args[index];
+      }
+    });
+    if (name === "object" || name === "dict") schema3.meta.default = {};
+    else if (name === "array" || name === "tuple") schema3.meta.default = [];
+    else if (name === "bitset") schema3.meta.default = 0;
+    return schema3;
+  } });
+}
+var kSchema, kValidationError2, ValidationError2, Schema2, resolvers, checkedVolatile, formatters;
+var init_lib4 = __esm({
+  "node_modules/@deepseek-ai/schemastery/lib/index.mjs"() {
+    init_lib();
+    kSchema = /* @__PURE__ */ Symbol.for("schemastery");
+    kValidationError2 = /* @__PURE__ */ Symbol.for("ValidationError");
+    globalThis.__schemastery_index__ ??= 0;
+    globalThis.__schemastery_refs__ = void 0;
+    ValidationError2 = class extends TypeError {
+      options;
+      name = "ValidationError";
+      constructor(message, options) {
+        let prefix = "$";
+        for (const segment of options.path || []) if (typeof segment === "string") prefix += "." + segment;
+        else if (typeof segment === "number") prefix += "[" + segment + "]";
+        else if (typeof segment === "symbol") prefix += `[Symbol(${segment.toString()})]`;
+        if (prefix.startsWith(".")) prefix = prefix.slice(1);
+        super((prefix === "$" ? "" : `${prefix} `) + message);
+        this.options = options;
+      }
+      static is(error) {
+        return !!error?.[kValidationError2];
+      }
+    };
+    Object.defineProperty(ValidationError2.prototype, kValidationError2, { value: true });
+    Schema2 = function(options) {
+      const schema3 = function(data2, options2 = {}) {
+        return Schema2.resolve(data2, schema3, options2)[0];
+      };
+      if (options.refs) {
+        const refs = mapValues(options.refs, (options2) => new Schema2(options2));
+        const getRef = (uid) => refs[uid];
+        for (const key in refs) {
+          const options2 = refs[key];
+          options2.sKey = getRef(options2.sKey);
+          options2.inner = getRef(options2.inner);
+          options2.list = options2.list && options2.list.map(getRef);
+          options2.dict = options2.dict && mapValues(options2.dict, getRef);
+        }
+        return refs[options.uid];
+      }
+      Object.assign(schema3, options);
+      if (typeof schema3.callback === "string") try {
+        schema3.callback = new Function("return " + schema3.callback)();
+      } catch {
+      }
+      Object.defineProperty(schema3, "uid", { value: globalThis.__schemastery_index__++ });
+      Object.setPrototypeOf(schema3, Schema2.prototype);
+      schema3.meta ||= {};
+      schema3.toString = schema3.toString.bind(schema3);
+      return schema3;
+    };
+    Schema2.prototype = Object.create(Function.prototype);
+    Schema2.prototype[kSchema] = true;
+    Object.defineProperty(Schema2.prototype, "~standard", { get() {
+      return {
+        version: 1,
+        vendor: "schemastery",
+        validate: (value) => {
+          try {
+            return { value: Schema2.resolve(value, this, {})[0] };
+          } catch (error) {
+            if (ValidationError2.is(error)) return { issues: [{
+              message: error.message,
+              path: error.options.path
+            }] };
+            throw error;
+          }
+        }
+      };
+    } });
+    Schema2.ValidationError = ValidationError2;
+    Schema2.prototype.toJSON = function toJSON() {
+      if (globalThis.__schemastery_refs__) {
+        globalThis.__schemastery_refs__[this.uid] ??= JSON.parse(JSON.stringify({ ...this }));
+        return this.uid;
+      }
+      globalThis.__schemastery_refs__ = { [this.uid]: { ...this } };
+      globalThis.__schemastery_refs__[this.uid] = JSON.parse(JSON.stringify({ ...this }));
+      const result = {
+        uid: this.uid,
+        refs: globalThis.__schemastery_refs__
+      };
+      globalThis.__schemastery_refs__ = void 0;
+      return result;
+    };
+    Schema2.prototype.set = function set2(key, value) {
+      this.dict[key] = value;
+      return this;
+    };
+    Schema2.prototype.push = function push(value) {
+      this.list.push(value);
+      return this;
+    };
+    Schema2.prototype.i18n = function i18n(messages) {
+      const schema3 = Schema2(this);
+      const desc = mergeDesc(schema3.meta.description, messages);
+      if (Object.keys(desc).length) schema3.meta.description = desc;
+      if (schema3.dict) schema3.dict = mapValues(schema3.dict, (inner, key) => {
+        return inner.i18n(mapValues(messages, (data2) => getInner(data2)?.[key] ?? data2?.[key]));
+      });
+      if (schema3.list) schema3.list = schema3.list.map((inner, index) => {
+        return inner.i18n(mapValues(messages, (data2 = {}) => {
+          if (Array.isArray(getInner(data2))) return getInner(data2)[index];
+          if (Array.isArray(data2)) return data2[index];
+          return extractKeys(data2);
+        }));
+      });
+      if (schema3.inner) schema3.inner = schema3.inner.i18n(mapValues(messages, (data2) => {
+        if (getInner(data2)) return getInner(data2);
+        return extractKeys(data2);
+      }));
+      if (schema3.sKey) schema3.sKey = schema3.sKey.i18n(mapValues(messages, (data2) => data2?.$key));
+      return schema3;
+    };
+    Schema2.prototype.extra = function extra(key, value) {
+      const schema3 = Schema2(this);
+      schema3.meta = {
+        ...schema3.meta,
+        [key]: value
+      };
+      return schema3;
+    };
+    for (const key of [
+      "required",
+      "disabled",
+      "collapse",
+      "hidden",
+      "loose"
+    ]) Object.assign(Schema2.prototype, { [key](value = true) {
+      const schema3 = Schema2(this);
+      schema3.meta = {
+        ...schema3.meta,
+        [key]: value
+      };
+      return schema3;
+    } });
+    Schema2.prototype.deprecated = function deprecated() {
+      const schema3 = Schema2(this);
+      schema3.meta.badges ||= [];
+      schema3.meta.badges.push({
+        text: "deprecated",
+        type: "danger"
+      });
+      return schema3;
+    };
+    Schema2.prototype.experimental = function experimental() {
+      const schema3 = Schema2(this);
+      schema3.meta.badges ||= [];
+      schema3.meta.badges.push({
+        text: "experimental",
+        type: "warning"
+      });
+      return schema3;
+    };
+    Schema2.prototype.pattern = function pattern(regexp) {
+      const schema3 = Schema2(this);
+      const pattern2 = pick(regexp, ["source", "flags"]);
+      schema3.meta = {
+        ...schema3.meta,
+        pattern: pattern2
+      };
+      return schema3;
+    };
+    Schema2.prototype.simplify = function simplify(value) {
+      if (isVolatile(value)) value = value.get();
+      if (deepEqual(value, this.meta.default, this.type === "dict")) return null;
+      if (isNullable(value)) return value;
+      if (this.type === "object" || this.type === "dict") {
+        const result = {};
+        for (const key in value) {
+          const item = (this.type === "object" ? this.dict[key] : this.inner)?.simplify(value[key]);
+          if (this.type === "dict" || !isNullable(item)) result[key] = item;
+        }
+        if (deepEqual(result, this.meta.default, this.type === "dict")) return null;
+        return result;
+      } else if (this.type === "array" || this.type === "tuple") {
+        const result = [];
+        value.forEach((value2, index) => {
+          const schema3 = this.type === "array" ? this.inner : this.list[index];
+          const item = schema3 ? schema3.simplify(value2) : value2;
+          result.push(item);
+        });
+        return result;
+      } else if (this.type === "intersect") {
+        const result = {};
+        for (const item of this.list) Object.assign(result, item.simplify(value));
+        return result;
+      } else if (this.type === "union") for (const schema3 of this.list) try {
+        Schema2.resolve(value, schema3, {});
+        return schema3.simplify(value);
+      } catch {
+      }
+      return value;
+    };
+    Schema2.prototype.toString = function toString2(inline) {
+      return formatters[this.type]?.(this, inline) ?? `Schema<${this.type}>`;
+    };
+    Schema2.prototype.role = function role(role, extra2) {
+      const schema3 = Schema2(this);
+      schema3.meta = {
+        ...schema3.meta,
+        role,
+        extra: extra2
+      };
+      return schema3;
+    };
+    for (const key of [
+      "default",
+      "link",
+      "comment",
+      "description",
+      "max",
+      "min",
+      "step"
+    ]) Object.assign(Schema2.prototype, { [key](value) {
+      const schema3 = Schema2(this);
+      schema3.meta = {
+        ...schema3.meta,
+        [key]: value
+      };
+      return schema3;
+    } });
+    Schema2.prototype.volatile = function volatile() {
+      if (this.meta.volatile) throw new TypeError("volatile schema is already wrapped");
+      return this.extra("volatile", true);
+    };
+    resolvers = {};
+    checkedVolatile = /* @__PURE__ */ Symbol("checked-volatile-schema");
+    Schema2.extend = function extend2(type2, resolve9) {
+      resolvers[type2] = resolve9;
+    };
+    Schema2.resolve = function resolve4(data2, schema3, options = {}, strict = false) {
+      if (!schema3) return [data2];
+      if (!options[checkedVolatile]) {
+        validateVolatileSchema(schema3, options.path);
+        options = {
+          ...options,
+          [checkedVolatile]: true
+        };
+      }
+      if (schema3.meta?.volatile) {
+        const inner = Schema2(schema3);
+        inner.meta = {
+          ...schema3.meta,
+          volatile: false
+        };
+        const [value, adapted] = Schema2.resolve(data2, inner, options, strict);
+        try {
+          return [createVolatile(value), adapted];
+        } catch (error) {
+          throw new ValidationError2(error instanceof Error ? error.message : String(error), options);
+        }
+      }
+      if (options.ignore?.(data2, schema3)) return [data2];
+      if (isNullable(data2) && schema3.type !== "lazy") {
+        if (schema3.meta.required) throw new ValidationError2(`missing required value`, options);
+        let current2 = schema3;
+        let fallback = schema3.meta.default;
+        while (current2?.type === "intersect" && isNullable(fallback)) {
+          current2 = current2.list[0];
+          fallback = current2?.meta.default;
+        }
+        if (isNullable(fallback)) return [data2];
+        data2 = clone(fallback);
+      }
+      const callback = resolvers[schema3.type];
+      if (!callback) throw new ValidationError2(`unsupported type "${schema3.type}"`, options);
+      try {
+        return callback(data2, schema3, options, strict);
+      } catch (error) {
+        if (!schema3.meta.loose) throw error;
+        return [schema3.meta.default];
+      }
+    };
+    Schema2.from = function from(source) {
+      if (isNullable(source)) return Schema2.any();
+      else if ([
+        "string",
+        "number",
+        "boolean"
+      ].includes(typeof source)) return Schema2.const(source).required();
+      else if (source[kSchema]) return source;
+      else if (typeof source === "function") switch (source) {
+        case String:
+          return Schema2.string().required();
+        case Number:
+          return Schema2.number().required();
+        case Boolean:
+          return Schema2.boolean().required();
+        case Function:
+          return Schema2.function().required();
+        default:
+          return Schema2.is(source).required();
+      }
+      else throw new TypeError(`cannot infer schema from ${source}`);
+    };
+    Schema2.lazy = function lazy(builder) {
+      const toJSON2 = () => {
+        if (!schema3.inner[kSchema]) {
+          schema3.inner = schema3.builder();
+          schema3.inner.meta = {
+            ...schema3.meta,
+            ...schema3.inner.meta
+          };
+        }
+        return schema3.inner.toJSON();
+      };
+      const schema3 = new Schema2({
+        type: "lazy",
+        builder,
+        inner: { toJSON: toJSON2 }
+      });
+      return schema3;
+    };
+    Schema2.natural = function natural() {
+      return Schema2.number().step(1).min(0);
+    };
+    Schema2.percent = function percent() {
+      return Schema2.number().step(0.01).min(0).max(1).role("slider");
+    };
+    Schema2.date = function date() {
+      return Schema2.union([Schema2.is(Date), Schema2.transform(Schema2.string().role("datetime"), (value, options) => {
+        const date2 = new Date(value);
+        if (isNaN(+date2)) throw new ValidationError2(`invalid date "${value}"`, options);
+        return date2;
+      }, true)]);
+    };
+    Schema2.regExp = function regExp(flag = "") {
+      return Schema2.union([Schema2.is(RegExp), Schema2.transform(Schema2.string().role("regexp", { flag }), (value, options) => {
+        try {
+          return new RegExp(value, flag);
+        } catch (e) {
+          throw new ValidationError2(e.message, options);
+        }
+      }, true)]);
+    };
+    Schema2.arrayBuffer = function arrayBuffer(encoding) {
+      return Schema2.union([
+        Schema2.is(ArrayBuffer),
+        Schema2.is(SharedArrayBuffer),
+        Schema2.transform(Schema2.any(), (value, options) => {
+          if (Binary.isSource(value)) return Binary.fromSource(value);
+          throw new ValidationError2(`expected ArrayBufferSource but got ${value}`, options);
+        }, true),
+        ...encoding ? [Schema2.transform(Schema2.string(), (value, options) => {
+          try {
+            return encoding === "base64" ? Binary.fromBase64(value) : Binary.fromHex(value);
+          } catch (e) {
+            throw new ValidationError2(e.message, options);
+          }
+        }, true)] : []
+      ]);
+    };
+    Schema2.extend("lazy", (data2, schema3, options, strict) => {
+      if (!schema3.inner[kSchema]) {
+        schema3.inner = schema3.builder();
+        schema3.inner.meta = {
+          ...schema3.meta,
+          ...schema3.inner.meta
+        };
+        validateVolatileSchema(schema3.inner, options.path, true);
+      }
+      return Schema2.resolve(data2, schema3.inner, options, strict);
+    });
+    Schema2.extend("any", (data2) => {
+      return [data2];
+    });
+    Schema2.extend("never", (data2, _, options) => {
+      throw new ValidationError2(`expected nullable but got ${data2}`, options);
+    });
+    Schema2.extend("const", (data2, { value }, options) => {
+      if (deepEqual(data2, value)) return [value];
+      throw new ValidationError2(`expected ${value} but got ${data2}`, options);
+    });
+    Schema2.extend("string", (data2, { meta }, options) => {
+      if (typeof data2 !== "string") throw new ValidationError2(`expected string but got ${data2}`, options);
+      if (meta.pattern) {
+        const regexp = new RegExp(meta.pattern.source, meta.pattern.flags);
+        if (!regexp.test(data2)) throw new ValidationError2(`expect string to match regexp ${regexp}`, options);
+      }
+      checkWithinRange(data2.length, meta, "string length", options);
+      return [data2];
+    });
+    Schema2.extend("number", (data2, { meta }, options) => {
+      if (typeof data2 !== "number") throw new ValidationError2(`expected number but got ${data2}`, options);
+      checkWithinRange(data2, meta, "number", options);
+      const { step } = meta;
+      if (step && !isMultipleOf(data2, meta.min ?? 0, step)) throw new ValidationError2(`expected number multiple of ${step} but got ${data2}`, options);
+      return [data2];
+    });
+    Schema2.extend("boolean", (data2, _, options) => {
+      if (typeof data2 === "boolean") return [data2];
+      throw new ValidationError2(`expected boolean but got ${data2}`, options);
+    });
+    Schema2.extend("bitset", (data2, { bits, meta }, options) => {
+      let value = 0, keys = [];
+      if (typeof data2 === "number") {
+        value = data2;
+        for (const key in bits) if (data2 & bits[key]) keys.push(key);
+      } else if (Array.isArray(data2)) {
+        keys = data2;
+        for (const key of keys) {
+          if (typeof key !== "string") throw new ValidationError2(`expected string but got ${key}`, options);
+          if (key in bits) value |= bits[key];
+        }
+      } else throw new ValidationError2(`expected number or array but got ${data2}`, options);
+      if (value === meta.default) return [value];
+      return [value, keys];
+    });
+    Schema2.extend("function", (data2, _, options) => {
+      if (typeof data2 === "function") return [data2];
+      throw new ValidationError2(`expected function but got ${data2}`, options);
+    });
+    Schema2.extend("is", (data2, { constructor }, options) => {
+      if (typeof constructor === "function") {
+        if (data2 instanceof constructor) return [data2];
+        throw new ValidationError2(`expected ${constructor.name} but got ${data2}`, options);
+      } else {
+        if (isNullable(data2)) throw new ValidationError2(`expected ${constructor} but got ${data2}`, options);
+        let prototype = Object.getPrototypeOf(data2);
+        while (prototype) {
+          if (prototype.constructor?.name === constructor) return [data2];
+          prototype = Object.getPrototypeOf(prototype);
+        }
+        throw new ValidationError2(`expected ${constructor} but got ${data2}`, options);
+      }
+    });
+    Schema2.extend("array", (data2, { inner, meta }, options) => {
+      if (!Array.isArray(data2)) throw new ValidationError2(`expected array but got ${data2}`, options);
+      checkWithinRange(data2.length, meta, "array length", options, !isNullable(inner.meta.default));
+      return [data2.map((_, index) => property(data2, index, inner, options))];
+    });
+    Schema2.extend("dict", (data2, { inner, sKey }, options, strict) => {
+      if (!isPlainObject(data2)) throw new ValidationError2(`expected object but got ${data2}`, options);
+      const result = {};
+      for (const key in data2) {
+        let rKey;
+        try {
+          rKey = Schema2.resolve(key, sKey, options)[0];
+        } catch (error) {
+          if (strict) continue;
+          throw error;
+        }
+        result[rKey] = property(data2, key, inner, options);
+        data2[rKey] = data2[key];
+        if (key !== rKey) delete data2[key];
+      }
+      return [result];
+    });
+    Schema2.extend("tuple", (data2, { list: list2 }, options, strict) => {
+      if (!Array.isArray(data2)) throw new ValidationError2(`expected array but got ${data2}`, options);
+      const result = list2.map((inner, index) => property(data2, index, inner, options));
+      if (strict) return [result];
+      result.push(...data2.slice(list2.length));
+      return [result];
+    });
+    Schema2.extend("object", (data2, { dict }, options, strict) => {
+      if (!isPlainObject(data2)) throw new ValidationError2(`expected object but got ${data2}`, options);
+      const result = {};
+      for (const key in dict) {
+        const value = property(data2, key, dict[key], options);
+        if (!isNullable(value) || key in data2) result[key] = value;
+      }
+      if (!strict) merge3(result, data2);
+      return [result];
+    });
+    Schema2.extend("union", (data2, { list: list2, toString: toString3 }, options, strict) => {
+      const messages = [];
+      for (const inner of list2) try {
+        return Schema2.resolve(data2, inner, options, strict);
+      } catch (error) {
+        messages.push(error);
+      }
+      throw new ValidationError2(`expected ${toString3()} but got ${JSON.stringify(data2)}`, options);
+    });
+    Schema2.extend("intersect", (data2, { list: list2, toString: toString3 }, options, strict) => {
+      if (!list2.length) return [data2];
+      let result;
+      for (const inner of list2) {
+        const value = Schema2.resolve(data2, inner, options, true)[0];
+        if (isNullable(value)) continue;
+        if (isNullable(result)) result = value;
+        else if (typeof result !== typeof value) throw new ValidationError2(`expected ${toString3()} but got ${JSON.stringify(data2)}`, options);
+        else if (typeof value === "object") merge3(result ??= {}, value);
+        else if (result !== value) throw new ValidationError2(`expected ${toString3()} but got ${JSON.stringify(data2)}`, options);
+      }
+      if (!strict && isPlainObject(data2)) merge3(result, data2);
+      return [result];
+    });
+    Schema2.extend("transform", (data2, { inner, callback, preserve }, options) => {
+      const [result, adapted = data2] = Schema2.resolve(data2, inner, options, true);
+      if (preserve) return [callback(result)];
+      else return [callback(result), callback(adapted)];
+    });
+    formatters = {};
+    defineMethod("is", ["constructor"], ({ constructor }) => {
+      if (typeof constructor === "function") return constructor.name;
+      else return constructor;
+    });
+    defineMethod("any", [], () => "any");
+    defineMethod("never", [], () => "never");
+    defineMethod("const", ["value"], ({ value }) => typeof value === "string" ? JSON.stringify(value) : value);
+    defineMethod("string", [], () => "string");
+    defineMethod("number", [], () => "number");
+    defineMethod("boolean", [], () => "boolean");
+    defineMethod("bitset", ["bits"], () => "bitset");
+    defineMethod("function", [], () => "function");
+    defineMethod("array", ["inner"], ({ inner }) => `${inner.toString(true)}[]`);
+    defineMethod("dict", ["inner", "sKey"], ({ inner, sKey }) => `{ [key: ${sKey.toString()}]: ${inner.toString()} }`);
+    defineMethod("tuple", ["list"], ({ list: list2 }) => `[${list2.map((inner) => inner.toString()).join(", ")}]`);
+    defineMethod("object", ["dict"], ({ dict }) => {
+      if (Object.keys(dict).length === 0) return "{}";
+      return `{ ${Object.entries(dict).map(([key, inner]) => {
+        return `${key}${inner.meta.required ? "" : "?"}: ${inner.toString()}`;
+      }).join(", ")} }`;
+    });
+    defineMethod("union", ["list"], ({ list: list2 }, inline) => {
+      const result = list2.map(({ toString: format }) => format()).join(" | ");
+      return inline ? `(${result})` : result;
+    });
+    defineMethod("intersect", ["list"], ({ list: list2 }) => {
+      return `${list2.map((inner) => inner.toString(true)).join(" & ")}`;
+    });
+    defineMethod("transform", [
+      "inner",
+      "callback",
+      "preserve"
+    ], ({ inner }, isInner) => inner.toString(isInner));
+  }
+});
+
+// src/dsh/cot-translation.ts
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function validateEndpoint(value) {
+  const url = new URL(value);
+  if (!["http:", "https:"].includes(url.protocol) || url.username !== "" || url.password !== "" || url.hash !== "") {
+    throw new Error(
+      "Translation endpoint must be an HTTP(S) URL without credentials or a fragment"
+    );
+  }
+  return url.href;
+}
+function mapLanguage(tag, provider) {
+  const lower = tag.toLowerCase();
+  if (lower === "zh" || lower === "zh-cn" || lower === "zh-sg" || lower === "zh-hans") {
+    return provider === "google" ? "zh-CN" : "zh-Hans";
+  }
+  if (lower === "zh-tw" || lower === "zh-hk" || lower === "zh-mo" || lower === "zh-hant") {
+    return provider === "google" ? "zh-TW" : "zh-Hant";
+  }
+  return tag;
+}
+function parseGooglePayload(payload) {
+  if (!Array.isArray(payload) || !Array.isArray(payload[0]) || payload[0].length === 0) {
+    throw new TranslationError(
+      "TRANSLATION_INVALID_RESPONSE",
+      "Google translation returned invalid payload"
+    );
+  }
+  const parts = [];
+  for (const segment of payload[0]) {
+    if (!Array.isArray(segment) || typeof segment[0] !== "string") {
+      throw new TranslationError(
+        "TRANSLATION_INVALID_RESPONSE",
+        "Google translation returned invalid payload"
+      );
+    }
+    parts.push(segment[0]);
+  }
+  return parts.join("");
+}
+function parseBingPayload(payload) {
+  if (!Array.isArray(payload) || payload.length === 0 || !isRecord2(payload[0])) {
+    throw new TranslationError(
+      "TRANSLATION_INVALID_RESPONSE",
+      "Bing translation returned invalid payload"
+    );
+  }
+  const translations = payload[0].translations;
+  if (!Array.isArray(translations) || translations.length === 0 || !isRecord2(translations[0]) || typeof translations[0].text !== "string") {
+    throw new TranslationError(
+      "TRANSLATION_INVALID_RESPONSE",
+      "Bing translation returned invalid payload"
+    );
+  }
+  return translations[0].text;
+}
+function raceWithSignal(promise, signal) {
+  if (signal.aborted) {
+    promise.catch(() => {
+    });
+    return Promise.reject(signal.reason);
+  }
+  return new Promise((resolve9, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      promise.catch(() => {
+      });
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        resolve9(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      }
+    );
+  });
+}
+async function readBoundedResponseJson(response, maxResponseBytes, provider, signal) {
+  if (!response.body) {
+    throw new TranslationError(
+      "TRANSLATION_INVALID_RESPONSE",
+      `${provider} translation returned empty body`
+    );
+  }
+  if (signal.aborted) {
+    void response.body.cancel().catch(() => {
+    });
+    throw signal.reason;
+  }
+  const chunks = [];
+  let totalBytes = 0;
+  let reader;
+  let cancelled = false;
+  const cancelReader = () => {
+    if (cancelled || !reader) return;
+    cancelled = true;
+    void reader.cancel().catch(() => {
+    });
+  };
+  const onAbort = () => {
+    cancelReader();
+  };
+  try {
+    reader = response.body.getReader();
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) {
+      cancelReader();
+      throw signal.reason;
+    }
+    while (true) {
+      const { done, value } = await raceWithSignal(reader.read(), signal);
+      if (done) break;
+      if (!value) continue;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxResponseBytes) {
+        cancelReader();
+        throw new TranslationError(
+          "TRANSLATION_RESPONSE_LIMIT",
+          `${provider} translation response exceeded size limit`
+        );
+      }
+      chunks.push(value);
+    }
+  } catch (error) {
+    cancelReader();
+    if (signal.aborted) throw signal.reason;
+    if (error instanceof TranslationError) throw error;
+    throw new TranslationError(
+      "TRANSLATION_REQUEST_FAILED",
+      `${provider} translation request failed`
+    );
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+    reader?.releaseLock();
+  }
+  const merged = new Uint8Array(totalBytes);
+  let offset2 = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset2);
+    offset2 += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder("utf-8").decode(merged));
+  } catch {
+    throw new TranslationError(
+      "TRANSLATION_INVALID_RESPONSE",
+      `${provider} translation returned invalid JSON`
+    );
+  }
+}
+function reviewedCotTranslationModule() {
+  return TranslatorService;
+}
+var ANONYMOUS_PROVIDERS, VALID_PROVIDERS, LANGUAGE_PREFERENCE_PATTERN, MAX_CONFIG_TEXT_CHARS, MAX_CONFIG_RESPONSE_BYTES, MAX_LANGUAGE_TAG_LENGTH, MAX_SESSION_ID_LENGTH, TranslationError, TranslatorConfigSchema, CotTranslationConfigSchema, TranslatorService;
+var init_cot_translation = __esm({
+  "src/dsh/cot-translation.ts"() {
+    "use strict";
+    init_lib2();
+    init_lib4();
+    ANONYMOUS_PROVIDERS = ["bing", "google"];
+    VALID_PROVIDERS = /* @__PURE__ */ new Set([
+      "google",
+      "bing",
+      "deepseek-account",
+      "deepseek-official"
+    ]);
+    LANGUAGE_PREFERENCE_PATTERN = /^(?:auto|[a-zA-Z]{2,8}(?:-[a-zA-Z0-9]{1,8})*)$/;
+    MAX_CONFIG_TEXT_CHARS = 1048576;
+    MAX_CONFIG_RESPONSE_BYTES = 8 * 1024 * 1024;
+    MAX_LANGUAGE_TAG_LENGTH = 64;
+    MAX_SESSION_ID_LENGTH = 256;
+    TranslationError = class extends Error {
+      code;
+      constructor(code, message) {
+        super(message);
+        this.name = "TranslationError";
+        this.code = code;
+      }
+    };
+    TranslatorConfigSchema = Schema2.object({
+      provider: Schema2.union(["google", "bing", "deepseek-account", "deepseek-official"]).default("bing"),
+      googleEndpoint: Schema2.transform(Schema2.string(), validateEndpoint).default("https://translate.googleapis.com/translate_a/single"),
+      bingEndpoint: Schema2.transform(Schema2.string(), validateEndpoint).default("https://edge.microsoft.com/translate/translatetext"),
+      timeoutMs: Schema2.natural().min(1).max(2147483647).default(1e4),
+      maxTextChars: Schema2.natural().min(2).max(MAX_CONFIG_TEXT_CHARS).default(4e3),
+      maxResponseBytes: Schema2.natural().min(1).max(MAX_CONFIG_RESPONSE_BYTES).default(1048576),
+      deepseekTimeoutMs: Schema2.natural().min(1).max(2147483647).default(6e4),
+      deepseekMaxOutputTokens: Schema2.natural().min(1).max(131072).default(8192)
+    });
+    CotTranslationConfigSchema = Schema2.object({
+      provider: Schema2.union(["google", "bing", "deepseek-account", "deepseek-official"]).default("bing"),
+      targetLanguage: Schema2.string().pattern(LANGUAGE_PREFERENCE_PATTERN).default("auto")
+    });
+    TranslatorService = class extends Service {
+      static inject = ["credentials", "llm"];
+      static provide = "translator";
+      static Config = TranslatorConfigSchema;
+      config;
+      lifetime = new AbortController();
+      pending = /* @__PURE__ */ new Set();
+      constructor(ctx, config) {
+        super(ctx, "translator");
+        this.config = TranslatorConfigSchema(config ?? {});
+        ctx.effect(() => async () => {
+          this.lifetime.abort(new Error("Translator service disposed"));
+          await Promise.allSettled([...this.pending]);
+        });
+      }
+      get maxTextChars() {
+        return this.config.maxTextChars;
+      }
+      combineSignal(signal) {
+        return signal ? AbortSignal.any([this.lifetime.signal, signal]) : this.lifetime.signal;
+      }
+      assertTextLimit(text4) {
+        if (typeof text4 !== "string") {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Translation text must be a string"
+          );
+        }
+        if (text4.length > this.config.maxTextChars) {
+          throw new TranslationError(
+            "TRANSLATION_TEXT_LIMIT",
+            `Translation text exceeds maximum length (${this.config.maxTextChars} characters)`
+          );
+        }
+      }
+      async availableProviders(signal) {
+        const combined = this.combineSignal(signal);
+        if (combined.aborted) throw combined.reason;
+        return [...ANONYMOUS_PROVIDERS];
+      }
+      resolve(request) {
+        if (this.lifetime.signal.aborted) throw this.lifetime.signal.reason;
+        if (!isRecord2(request)) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Translation request must be an object"
+          );
+        }
+        this.assertTextLimit(request.text);
+        const provider = request.provider ?? this.config.provider;
+        if (typeof provider !== "string" || !VALID_PROVIDERS.has(provider)) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Unsupported translation provider"
+          );
+        }
+        if (typeof request.targetLanguage !== "string" || request.targetLanguage.trim() === "" || request.targetLanguage.length > MAX_LANGUAGE_TAG_LENGTH) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Target language is required"
+          );
+        }
+        const sourceLanguage = request.sourceLanguage ?? "auto";
+        if (typeof sourceLanguage !== "string" || sourceLanguage.trim() === "" || sourceLanguage.length > MAX_LANGUAGE_TAG_LENGTH) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Source language must be a bounded non-empty string"
+          );
+        }
+        if (request.sessionId !== void 0 && (typeof request.sessionId !== "string" || request.sessionId.trim() === "" || request.sessionId.length > MAX_SESSION_ID_LENGTH)) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Session ID must be a bounded non-empty string"
+          );
+        }
+        return {
+          text: request.text,
+          sourceLanguage,
+          targetLanguage: request.targetLanguage,
+          provider,
+          ...request.sessionId !== void 0 ? { sessionId: request.sessionId } : {}
+        };
+      }
+      async translate(spec, signal) {
+        const combined = this.combineSignal(signal);
+        if (combined.aborted) throw combined.reason;
+        if (!isRecord2(spec)) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Translation spec must be an object"
+          );
+        }
+        this.assertTextLimit(spec.text);
+        if (typeof spec.provider !== "string" || !VALID_PROVIDERS.has(spec.provider)) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Unsupported translation provider"
+          );
+        }
+        if (typeof spec.targetLanguage !== "string" || spec.targetLanguage.trim() === "" || spec.targetLanguage.length > MAX_LANGUAGE_TAG_LENGTH) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Target language is required"
+          );
+        }
+        if (typeof spec.sourceLanguage !== "string" || spec.sourceLanguage.trim() === "" || spec.sourceLanguage.length > MAX_LANGUAGE_TAG_LENGTH) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Source language must be a bounded non-empty string"
+          );
+        }
+        if (spec.sessionId !== void 0 && (typeof spec.sessionId !== "string" || spec.sessionId.trim() === "" || spec.sessionId.length > MAX_SESSION_ID_LENGTH)) {
+          throw new TranslationError(
+            "TRANSLATION_INVALID_RESPONSE",
+            "Session ID must be a bounded non-empty string"
+          );
+        }
+        if (spec.provider === "deepseek-account" || spec.provider === "deepseek-official") {
+          throw new TranslationError(
+            "TRANSLATION_UNAVAILABLE",
+            `Paid translation route ${spec.provider} is not offered in this build`
+          );
+        }
+        if (spec.text === "") {
+          return "";
+        }
+        const provider = spec.provider;
+        const run = this.executeAnonymous(provider, spec, combined);
+        this.pending.add(run);
+        try {
+          return await run;
+        } finally {
+          this.pending.delete(run);
+        }
+      }
+      async executeAnonymous(provider, spec, combined) {
+        const timeoutController = new AbortController();
+        const timer = setTimeout(() => {
+          timeoutController.abort(
+            new TranslationError(
+              "TRANSLATION_TIMEOUT",
+              `${provider} translation timed out`
+            )
+          );
+        }, this.config.timeoutMs);
+        const effectiveSignal = AbortSignal.any([
+          combined,
+          timeoutController.signal
+        ]);
+        try {
+          const target = mapLanguage(spec.targetLanguage, provider);
+          const source = spec.sourceLanguage === "auto" ? "auto" : mapLanguage(spec.sourceLanguage, provider);
+          let url;
+          let init;
+          if (provider === "google") {
+            url = new URL(this.config.googleEndpoint);
+            url.searchParams.delete("client");
+            url.searchParams.delete("sl");
+            url.searchParams.delete("tl");
+            url.searchParams.delete("dt");
+            url.searchParams.delete("q");
+            init = {
+              method: "POST",
+              headers: { "content-type": "application/x-www-form-urlencoded" },
+              body: new URLSearchParams({
+                client: "gtx",
+                sl: source,
+                tl: target,
+                dt: "t",
+                q: spec.text
+              }).toString(),
+              redirect: "error",
+              credentials: "omit",
+              signal: effectiveSignal
+            };
+          } else {
+            url = new URL(this.config.bingEndpoint);
+            if (source === "auto") {
+              url.searchParams.delete("from");
+            } else {
+              url.searchParams.set("from", source);
+            }
+            url.searchParams.set("to", target);
+            url.searchParams.set("isEnterpriseClient", "false");
+            init = {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify([spec.text]),
+              redirect: "error",
+              credentials: "omit",
+              signal: effectiveSignal
+            };
+          }
+          const hostCtx = this.ctx;
+          const fetchPromise = Promise.resolve().then(
+            () => hostCtx.credentials.fetch(url.href, init)
+          );
+          fetchPromise.then(
+            (res) => {
+              if (effectiveSignal.aborted) {
+                void res?.body?.cancel?.().catch(() => {
+                });
+              }
+            },
+            () => {
+            }
+          );
+          let response;
+          try {
+            response = await raceWithSignal(fetchPromise, effectiveSignal);
+          } catch (error) {
+            if (combined.aborted) throw combined.reason;
+            if (timeoutController.signal.aborted) {
+              throw timeoutController.signal.reason;
+            }
+            if (error instanceof TranslationError) throw error;
+            throw new TranslationError(
+              "TRANSLATION_REQUEST_FAILED",
+              `${provider} translation request failed`
+            );
+          }
+          if (combined.aborted) {
+            void response?.body?.cancel?.().catch(() => {
+            });
+            throw combined.reason;
+          }
+          if (timeoutController.signal.aborted) {
+            void response?.body?.cancel?.().catch(() => {
+            });
+            throw timeoutController.signal.reason;
+          }
+          if (response.redirected) {
+            if (response.body) {
+              await raceWithSignal(
+                response.body.cancel().catch(() => {
+                }),
+                effectiveSignal
+              ).catch(() => {
+              });
+            }
+            if (combined.aborted) throw combined.reason;
+            if (timeoutController.signal.aborted) {
+              throw timeoutController.signal.reason;
+            }
+            throw new TranslationError(
+              "TRANSLATION_REQUEST_FAILED",
+              `${provider} translation response was redirected`
+            );
+          }
+          if (!response.ok) {
+            if (response.body) {
+              await raceWithSignal(
+                response.body.cancel().catch(() => {
+                }),
+                effectiveSignal
+              ).catch(() => {
+              });
+            }
+            if (combined.aborted) throw combined.reason;
+            if (timeoutController.signal.aborted) {
+              throw timeoutController.signal.reason;
+            }
+            throw new TranslationError(
+              "TRANSLATION_HTTP_ERROR",
+              `${provider} translation failed (HTTP ${response.status})`
+            );
+          }
+          const payload = await readBoundedResponseJson(
+            response,
+            this.config.maxResponseBytes,
+            provider,
+            effectiveSignal
+          );
+          return provider === "google" ? parseGooglePayload(payload) : parseBingPayload(payload);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+    };
+  }
+});
+
+// src/dsh/composition.ts
+var composition_exports = {};
+__export(composition_exports, {
+  ReviewedLoader: () => ReviewedLoader,
+  compositionRowProblem: () => compositionRowProblem,
+  hasReviewedRowBridge: () => hasReviewedRowBridge,
+  installCompositionLoader: () => installCompositionLoader,
+  mountReviewedComposition: () => mountReviewedComposition,
+  mountReviewedPreset: () => mountReviewedPreset,
+  parsePresetComposition: () => parsePresetComposition,
+  reviewComposition: () => reviewComposition
+});
+import { createHash as createHash2 } from "node:crypto";
+import { readFile as readFile2 } from "node:fs/promises";
+import { isAbsolute as isAbsolute4, relative as relative2, resolve as resolve5, sep as sep2 } from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
+function digest(bytes) {
+  return createHash2("sha256").update(bytes).digest("hex");
+}
+function plainRelative(path2) {
+  return typeof path2 === "string" && path2.length > 0 && path2.length <= 4096 && !isAbsolute4(path2) && !path2.startsWith("/") && !/[\\:\u0000-\u001f\u007f]/u.test(path2) && path2.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+}
+function boundData(root) {
+  let nodes = 0;
+  let bytes = 0;
+  const ancestors = /* @__PURE__ */ new Set();
+  function visit(value, depth) {
+    if (++nodes > MAX_DATA_NODES || depth > MAX_DEPTH) throw new Error("composition data exceeds its resource limit");
+    if (typeof value === "string") bytes += Buffer.byteLength(value);
+    if (bytes > MAX_DATA_BYTES) throw new Error("composition expanded text exceeds 4 MiB");
+    if (value === null || typeof value !== "object") return;
+    if (ancestors.has(value)) throw new Error("cyclic configuration data is unsupported");
+    ancestors.add(value);
+    if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
+      throw new Error("composition configuration must be plain data");
+    }
+    for (const [key, child] of Object.entries(value)) {
+      bytes += Buffer.byteLength(key);
+      visit(child, depth + 1);
+    }
+    ancestors.delete(value);
+  }
+  visit(root, 0);
+}
+function assignmentSafe(value) {
+  if (Object.hasOwn(value, "__proto__")) throw new Error("prototype-mutating entry field is unsupported");
+}
+function checkRows(rows, depth = 0, count = { value: 0 }) {
+  if (depth > MAX_DEPTH) throw new Error("composition entry nesting exceeds 32 levels");
+  for (const row of rows) {
+    if (++count.value > MAX_ROWS) throw new Error("composition exceeds 1024 entry rows");
+    if (row === null || typeof row !== "object" || Array.isArray(row)) throw new Error("entry row must be an object");
+    assignmentSafe(row);
+    if (row.id !== void 0 && (typeof row.id !== "string" || row.id.length > 512)) throw new Error("entry id must be a bounded string");
+    const isolate2 = row.isolate;
+    if (isolate2 !== void 0 && isolate2 !== null && (typeof isolate2 !== "object" || Array.isArray(isolate2) || Object.hasOwn(isolate2, "translator"))) {
+      throw new Error("composition row cannot override translator isolation");
+    }
+    if (!(row.group === true && row.name === void 0) && (typeof row.name !== "string" || row.name.length === 0 || row.name.length > 4096)) throw new Error("entry name must be a bounded string");
+    if ((row.group || row.name === "cordis:group" || row.name === "@deepseek-ai/cordis-plugin-group") && Array.isArray(row.config)) checkRows(row.config, depth + 1, count);
+  }
+}
+function parsePresetComposition(source) {
+  if (Buffer.byteLength(source) > MAX_SOURCE_BYTES) throw new Error("preset source exceeds its limit");
+  const rows = load(source, { schema: entryListSchema });
+  boundData(rows);
+  if (!Array.isArray(rows)) throw new Error("preset composition must be an entry list");
+  checkRows(rows);
+  return rows;
+}
+function reviewComposition(spec) {
+  if (!spec || spec.version !== 1 || !Array.isArray(spec.layers) || spec.layers.length === 0 || spec.layers.length > MAX_LAYERS) {
+    throw new Error("composition needs 1–64 reviewed layers");
+  }
+  let sourceBytes = 0;
+  const patches = [];
+  const locations = [];
+  const layers = [];
+  for (const layer of spec.layers) {
+    if (!layer || !plainRelative(layer.path) || typeof layer.source !== "string" || typeof layer.sha256 !== "string" || !SHA256.test(layer.sha256)) throw new Error("invalid reviewed layer");
+    sourceBytes += Buffer.byteLength(layer.source);
+    if (sourceBytes > MAX_SOURCE_BYTES || digest(layer.source) !== layer.sha256) throw new Error("layer source changed or exceeds 1 MiB");
+    let parsed;
+    try {
+      parsed = load(layer.source, { schema: entryListSchema });
+    } catch {
+      throw new Error("invalid DSH patch data");
+    }
+    if (!Array.isArray(parsed)) throw new Error("DSH patch layer must be a list");
+    boundData(parsed);
+    for (const patch of parsed) {
+      if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new Error("patch must be an object");
+      assignmentSafe(patch);
+      if (patch.insert !== void 0 && patch.insert !== null) {
+        if (!Array.isArray(patch.insert)) throw new Error("patch insert must be a list");
+        checkRows(patch.insert);
+      }
+    }
+    patches.push(...parsed);
+    locations.push(...parsed.map((_, i2) => ({ layer: layer.path, patch: i2 + 1 })));
+    layers.push({ path: layer.path, sha256: layer.sha256 });
+  }
+  boundData(patches);
+  const warnings = [];
+  const skipped = [];
+  let entries = [];
+  for (const [i2, patch] of patches.entries()) {
+    entries = applyPatches(entries, [patch], (message, ...args) => {
+      let index = 0;
+      const reason = message.replace(/%C/g, () => JSON.stringify(args[index++]));
+      warnings.push(reason);
+      skipped.push({ ...typeof patch.id === "string" ? { row: patch.id } : {}, ...typeof patch.name === "string" ? { package: patch.name } : {}, reason, ...locations[i2] });
+    });
+  }
+  boundData(entries);
+  checkRows(entries);
+  return { version: 1, entries, warnings, skipped, layers };
+}
+function hasReviewedRowBridge(name) {
+  return Object.hasOwn(compatibility_default.row_bridges, name);
+}
+function compositionRowProblem(name) {
+  return UNSUPPORTED_ROWS.get(name);
+}
+function installCompositionLoader(root) {
+  if (loaders.has(root)) return;
+  const ctx = root.isolate("loader");
+  const fiber = ctx.plugin(ReviewedLoader, {});
+  loaders.set(root, { ctx, fiber });
+}
+function validateInventory(group) {
+  for (const row of group.data) {
+    const entry = group.tree.store[row.id];
+    if (!entry || entry.parent !== group || entry.options !== row) {
+      throw new Error(`composition row ${JSON.stringify(row.id ?? row.name)} was not created`);
+    }
+    if (entry.disabled) continue;
+    if (entry.subgroup) validateInventory(entry.subgroup);
+    if (entry.subtree) validateInventory(entry.subtree.root);
+  }
+}
+function describeCause(error) {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+function fiberStateName(state) {
+  return Object.entries(FiberState).find(([, value]) => value === state)?.[0] ?? String(state);
+}
+async function mountReviewedComposition(ctx, baseUrl, spec) {
+  const review = reviewComposition(spec);
+  function groups(rows) {
+    for (const row of rows) {
+      if (row.group === true && row.name === void 0) row.name = "cordis:group";
+      if (row.name === AGENT_PRESETS) row.isolate = { ...row.isolate, agentPresets: true };
+      if ((row.group === true || row.name === "cordis:group" || row.name === "@deepseek-ai/cordis-plugin-group") && Array.isArray(row.config)) groups(row.config);
+    }
+  }
+  groups(review.entries);
+  const installed = loaders.get(ctx.root);
+  if (!installed) throw new Error("composition loader was not installed by this host");
+  await installed.fiber.await();
+  const loaderCtx = ctx.extend({
+    baseUrl,
+    [Context.isolate]: Object.assign(Object.create(ctx[Context.isolate]), {
+      loader: installed.ctx[Context.isolate].loader,
+      translator: /* @__PURE__ */ Symbol("translator")
+    })
+  });
+  const config = { baseUrl, spec, review, releaseClosure: admitReviewedClosure(baseUrl, spec.files) };
+  const carrier = loaderCtx.plugin(ReviewedCarrier, config);
+  let disposed = false;
+  const dispose = async () => {
+    if (disposed) return;
+    disposed = true;
+    try {
+      await mountedTrees.get(config)?.dispose();
+      await carrier.dispose();
+    } finally {
+      config.releaseClosure();
+    }
+  };
+  ctx.effect(() => dispose, "reviewed DSH composition teardown");
+  try {
+    await carrier.await();
+    const mount = mountedTrees.get(config);
+    if (!mount || carrier.state !== FiberState.ACTIVE) throw new Error("reviewed composition carrier did not activate");
+    return { tree: mount.tree, dispose };
+  } catch (error) {
+    await dispose().catch(() => void 0);
+    throw error;
+  }
+}
+function leakedServices(ctx, mount) {
+  const rootIsolate = ctx.root[Context.isolate];
+  const leaked = [];
+  for (const key of Object.getOwnPropertySymbols(ctx.reflect.store)) {
+    const impl = ctx.reflect.store[key];
+    if (impl === void 0) continue;
+    let current2 = impl.ctx.fiber;
+    while (current2 !== mount && current2.parent.fiber !== current2) current2 = current2.parent.fiber;
+    if (current2 === mount && rootIsolate[impl.name] === key) leaked.push(impl.name);
+  }
+  return leaked.sort((left, right) => left.localeCompare(right));
+}
+async function mountReviewedPreset(ctx, baseUrl, spec, catalog, selected) {
+  if (!selected) throw new Error("agent-presets: explicit selection is required when no default is configured");
+  const entries = structuredClone(reviewComposition(spec).entries);
+  const snapshot2 = { catalog, selected, base_url: baseUrl };
+  const receipt = issuePresetReceipt(snapshot2);
+  let found = 0;
+  function prepare(rows) {
+    for (const row of rows) {
+      if (row.group === true || row.name === "cordis:group" || row.name === "@deepseek-ai/cordis-plugin-group") {
+        prepare(row.config);
+      } else if (row.name === AGENT_PRESETS) {
+        found++;
+        row.isolate = { ...row.isolate, agentPresets: true };
+        row.config = { codewhale_reviewed: snapshot2, codewhale_receipt: receipt };
+      }
+    }
+  }
+  prepare(entries);
+  if (found !== 1) {
+    revokePresetReceipt(receipt);
+    throw new Error("exactly one raw roster row is required for a selected preset");
+  }
+  const source = JSON.stringify([{ insert: entries }]);
+  let top;
+  try {
+    top = await mountReviewedComposition(ctx, baseUrl, { ...spec, layers: [{ path: "selected-preset.json", sha256: digest(source), source }] });
+  } finally {
+    revokePresetReceipt(receipt);
+  }
+  try {
+    const entry = [...top.tree.entries()].find((entry2) => entry2.options.name === AGENT_PRESETS && !entry2.disabled);
+    const roster = entry?.ctx.get("agentPresets");
+    if (!roster) throw new Error("selected raw roster did not become active");
+    await roster.mountSelected();
+    return top;
+  } catch (error) {
+    await top.dispose();
+    throw error;
+  }
+}
+var MAX_LAYERS, MAX_SOURCE_BYTES, MAX_DATA_BYTES, MAX_DATA_NODES, MAX_ROWS, MAX_DEPTH, SHA256, UNSUPPORTED_ROWS, ReviewedGroup, ReviewedLoader, loaders, ReviewedTree, mountedTrees, ReviewedCarrier;
+var init_composition = __esm({
+  "src/dsh/composition.ts"() {
+    "use strict";
+    init_lib2();
+    init_fiber_state();
+    init_src();
+    init_src2();
+    init_js_yaml();
+    init_mcp2();
+    init_skill_filesystem();
+    init_shell_hooks();
+    init_resolve_hooks();
+    init_missing_services();
+    init_persona();
+    init_agent_presets();
+    init_cot_translation();
+    init_compatibility();
+    MAX_LAYERS = 64;
+    MAX_SOURCE_BYTES = 1024 * 1024;
+    MAX_DATA_BYTES = 4 * 1024 * 1024;
+    MAX_DATA_NODES = 1e5;
+    MAX_ROWS = 1024;
+    MAX_DEPTH = 32;
+    SHA256 = /^[a-f0-9]{64}$/;
+    UNSUPPORTED_ROWS = /* @__PURE__ */ new Map();
+    ReviewedGroup = class extends Group {
+      static inject = ["loader"];
+    };
+    ReviewedLoader = class extends Loader {
+      constructor(ctx, config) {
+        super(ctx, config);
+        this.builtins.group = ReviewedGroup;
+      }
+    };
+    loaders = /* @__PURE__ */ new WeakMap();
+    ReviewedTree = class extends EntryTree {
+      base;
+      modules;
+      spec;
+      constructor(ctx, base, spec) {
+        super(ctx);
+        this.base = base;
+        this.spec = spec;
+        const modules = /* @__PURE__ */ new Map();
+        if (!Array.isArray(spec.modules) || spec.modules.length > MAX_ROWS || !spec.files || Object.keys(spec.files).length > 16384) throw new Error("invalid reviewed module closure");
+        for (const module of spec.modules) {
+          if (!module || typeof module.name !== "string" || module.name.length === 0 || module.name.length > 4096 || modules.has(module.name) || !plainRelative(module.path) || !SHA256.test(module.sha256) || spec.files[module.path] !== module.sha256) throw new Error("module map differs from reviewed closure");
+          modules.set(module.name, module);
+        }
+        this.modules = modules;
+      }
+      /** A reviewed composition is input; teardown and self-disposal never rewrite it. */
+      commit() {
+      }
+      importFailures = /* @__PURE__ */ new Map();
+      importFailure(name) {
+        return this.importFailures.has(name) ? { error: this.importFailures.get(name) } : void 0;
+      }
+      import(name) {
+        this.importFailures.delete(name);
+        const record3 = (error) => {
+          this.importFailures.set(name, error);
+          throw error;
+        };
+        try {
+          const imported = this.importRow(name);
+          return imported instanceof Promise ? imported.catch(record3) : imported;
+        } catch (error) {
+          return record3(error);
+        }
+      }
+      importRow(name) {
+        if (name === PERSONA) return reviewedPersonaModule;
+        if (name === AGENT_PRESETS) return defineReviewedAgentPresets(mountReviewedComposition);
+        if (name === "cordis:group" || name === "@deepseek-ai/cordis-plugin-group") return ReviewedGroup;
+        if (name === "@deepseek-ai/dsh-mcp-client") return reviewedMcpModule();
+        if (name === "@deepseek-ai/dsh-skill-filesystem") return reviewedSkillModule();
+        if (name === "@deepseek-ai/dsh-hooks-claude-code") return reviewedHookModule("claude-code", fileURLToPath3(this.base), this.spec.files);
+        if (name === "@deepseek-ai/dsh-hooks-codex") return reviewedHookModule("codex", fileURLToPath3(this.base), this.spec.files);
+        const rowBridge = Object.hasOwn(compatibility_default.row_bridges, name) ? compatibility_default.row_bridges[name] : void 0;
+        if (rowBridge === "host-spine") return Object.freeze({ name, apply() {
+        } });
+        if (rowBridge === "cot-translation") return reviewedCotTranslationModule();
+        if (UNSUPPORTED_ROWS.has(name)) throw new Error(`${name}: ${UNSUPPORTED_ROWS.get(name)}`);
+        const module = this.modules.get(name);
+        if (!module) throw new Error(`row requires ${JSON.stringify(name)}, absent from the reviewed module closure`);
+        return this.importReviewed(module);
+      }
+      async importReviewed(module) {
+        const root = fileURLToPath3(this.base);
+        const path2 = resolve5(root, module.path);
+        const inside = relative2(root, path2);
+        if (inside.startsWith(`..${sep2}`) || inside === ".." || isAbsolute4(inside)) throw new Error("module escapes reviewed bundle");
+        if (this.spec.files[module.path] !== module.sha256 || digest(await readFile2(path2)) !== module.sha256) throw new Error("module changed after review");
+        return importReviewedModule(this.base, module.path);
+      }
+    };
+    mountedTrees = /* @__PURE__ */ new WeakMap();
+    ReviewedCarrier = class {
+      constructor(ctx, config) {
+        this.ctx = ctx;
+        this.config = config;
+        this.tree = new ReviewedTree(ctx, config.baseUrl, config.spec);
+        mountedTrees.set(config, { tree: this.tree, dispose: () => this.dispose() });
+      }
+      ctx;
+      config;
+      static inject = ["loader"];
+      tree;
+      disposed = false;
+      async dispose() {
+        if (this.disposed) return;
+        this.disposed = true;
+        const fibers = [...new Set([...this.tree.entries()].map((entry) => entry.fiber).filter((fiber) => fiber !== void 0))].reverse();
+        const pending = this.tree.getTasks();
+        let stopError;
+        try {
+          this.tree.root.stop();
+        } catch (error) {
+          stopError = error;
+        }
+        const outcomes = await Promise.allSettled([
+          ...pending,
+          ...fibers.map((fiber) => Promise.resolve().then(() => fiber.dispose()))
+        ]);
+        try {
+          await this.tree.await();
+          if (stopError !== void 0) throw stopError;
+          const failed = outcomes.find((outcome) => outcome.status === "rejected");
+          if (failed) throw failed.reason;
+        } finally {
+          this.config.releaseClosure();
+        }
+      }
+      async *[Service.init]() {
+        yield () => this.dispose();
+        await this.tree.root.update(this.config.review.entries);
+        await this.tree.await();
+        validateInventory(this.tree.root);
+        for (const entry of this.tree.entries()) {
+          if (entry.disabled) continue;
+          const row = `composition row ${JSON.stringify(entry.options.id ?? entry.options.name)}`;
+          if (!entry.fiber || entry.fiber.uid === null) {
+            const failure = this.tree.importFailure(entry.options.name);
+            throw new Error(failure !== void 0 ? `${row} failed activation: ${describeCause(explainImportError(failure.error))}` : `${row} failed activation (${entry.fiber ? `fiber ${fiberStateName(entry.fiber.state)}` : "no fiber"}); see the logged error above`, failure !== void 0 ? { cause: failure.error } : void 0);
+          }
+          await entry.fiber.await();
+          const missing = Object.keys(entry.fiber.inject).filter((name) => entry.fiber.ctx.get(name) === void 0);
+          if (missing.length) throw new Error(`${row} requires ${describeMissingServices(missing)}`);
+          if (entry.fiber.state !== FiberState.ACTIVE) throw new Error(`${row} is not active (fiber ${fiberStateName(entry.fiber.state)})`);
+        }
+        const leaked = leakedServices(this.ctx, this.ctx.fiber);
+        if (leaked.length) throw new Error(`composition published shared-root services: ${leaked.join(", ")}`);
+      }
+    };
+  }
+});
+
+// src/dsh/session-prompt.ts
+function checkpointCall(host, ctx, session2) {
+  const invocation = host.liveInvocation(ctx);
+  const ticket = invocation?.ticket;
+  return invocation !== void 0 && typeof ticket === "string" && ticket.length > 0 && session2 !== void 0 && session2 === invocation.session ? invocation : void 0;
+}
+var CHILD_ONLY, sessionsAdapter, systemPromptAdapter;
+var init_session_prompt = __esm({
+  "src/dsh/session-prompt.ts"() {
+    "use strict";
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    CHILD_ONLY = "system prompt sections are only available on a child agent's agent/created context";
+    sessionsAdapter = {
+      service: "sessions",
+      define(host) {
+        class SessionsService extends Service {
+          constructor(ctx) {
+            super(ctx, "sessions");
+          }
+          async flush(session2) {
+            const ctx = this.ctx;
+            const call = checkpointCall(host, ctx, session2);
+            if (call === void 0) throw new RpcError(ErrorCode.NotAvailable, "sessions.flush requires this live tool invocation’s session");
+            const owner = call.owner;
+            const live = () => checkpointCall(host, ctx, session2) === call && !call.signal.aborted;
+            const run = async () => {
+              if (!live()) throw new RpcError(ErrorCode.NotAvailable, "session checkpoint invocation ended");
+              const result2 = await host.rpc.request("session/checkpoint", { owner: owner.ref, ticket: call.ticket }, call.signal);
+              if (!live()) throw new RpcError(ErrorCode.NotAvailable, "session checkpoint invocation ended");
+              if (typeof result2 !== "boolean") throw new RpcError(ErrorCode.Internal, "invalid session checkpoint receipt");
+              return result2;
+            };
+            const result = call.pending.then(run);
+            call.pending = result.then(() => void 0, () => void 0);
+            return result;
+          }
+        }
+        Object.freeze(SessionsService.prototype);
+        return SessionsService;
+      }
+    };
+    systemPromptAdapter = {
+      service: "systemPrompt",
+      define() {
+        class SystemPromptService extends Service {
+          constructor(ctx) {
+            super(ctx, "systemPrompt");
+          }
+          section() {
+            throw new RpcError(ErrorCode.NotAvailable, CHILD_ONLY);
+          }
+          getSectionOrder() {
+            throw new RpcError(ErrorCode.NotAvailable, CHILD_ONLY);
+          }
+        }
+        Object.freeze(SystemPromptService.prototype);
+        return SystemPromptService;
+      }
+    };
+  }
+});
+
 // src/dsh/agents.ts
-function plain(value, allowed, what) {
+function plain2(value, allowed, what) {
   if (value === null || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new RpcError(ErrorCode.InvalidParams, `expected a plain ${what} object`);
   const result = /* @__PURE__ */ Object.create(null);
   for (const key of Reflect.ownKeys(value)) {
@@ -15671,14 +16171,19 @@ function defineSubagents(host) {
       super(ctx, "subagents");
     }
     getProvider(name) {
-      return name === "spawn" ? SPAWN_PROVIDER : void 0;
+      if (name === "spawn") return SPAWN_PROVIDER;
+      if (name === "fork") return FORK_PROVIDER;
+      return void 0;
+    }
+    listProviders() {
+      return Object.freeze(["spawn", "fork"]);
     }
     async startActivation(request) {
       const owner = host.ownerOf(this.ctx);
-      const input = plain(request, ["provider", "label", "childId", "request", "signal", "delivery"], "activation");
-      if (input.provider !== "spawn") throw new RpcError(ErrorCode.NotAvailable, "only the spawn provider is available");
-      const spawn = plain(input.request, ["parent", "prompt", "agentOptions"], "spawn request");
-      const options = spawn.agentOptions === void 0 ? {} : plain(spawn.agentOptions, ["model"], "agentOptions");
+      const input = plain2(request, ["provider", "label", "childId", "request", "signal", "delivery"], "activation");
+      if (input.provider !== "spawn" && input.provider !== "fork") throw new RpcError(ErrorCode.NotAvailable, "only the spawn and fork providers are available");
+      const spawn = plain2(input.request, ["parent", "prompt", "agentOptions"], "spawn request");
+      const options = spawn.agentOptions === void 0 ? {} : plain2(spawn.agentOptions, ["model"], "agentOptions");
       if (options.model !== void 0 && typeof options.model !== "string") throw new RpcError(ErrorCode.InvalidParams, "agentOptions.model must be a string");
       const delivery = input.delivery === void 0 ? "parent" : input.delivery;
       if (delivery !== "caller" && delivery !== "parent") throw new RpcError(ErrorCode.InvalidParams, "delivery must be caller or parent");
@@ -15686,7 +16191,7 @@ function defineSubagents(host) {
       if (typeof childId !== "string" || !/^[A-Za-z0-9_.:-]{1,128}$/.test(childId)) throw new RpcError(ErrorCode.InvalidParams, "childId must be 1-128 letters, digits, or _.:-");
       if (!Array.isArray(spawn.prompt) || spawn.prompt.length === 0) throw new RpcError(ErrorCode.InvalidParams, "prompt must be a non-empty content array");
       const prompt = spawn.prompt.map((block) => {
-        const item = plain(block, ["type", "text"], "prompt block");
+        const item = plain2(block, ["type", "text"], "prompt block");
         if (item.type !== "text" || typeof item.text !== "string") throw new RpcError(ErrorCode.NotAvailable, "only text prompt blocks are supported");
         return item.text;
       }).join("");
@@ -15716,7 +16221,7 @@ function defineSubagents(host) {
             },
             section(section) {
               sealed();
-              const value = plain(section, ["name", "order", "text"], "system prompt section");
+              const value = plain2(section, ["name", "order", "text"], "system prompt section");
               if (value.name !== PERSONA_PREFIX_SECTION || value.order !== PERSONA_ORDER || typeof value.text !== "string") {
                 throw new RpcError(ErrorCode.NotAvailable, "only the child deployment persona section is supported");
               }
@@ -15729,10 +16234,14 @@ function defineSubagents(host) {
           tools: Object.freeze({
             restrict(filter) {
               sealed();
-              const value = plain(filter, ["deny"], "tool filter");
+              const value = plain2(filter, ["deny"], "tool filter");
               if (!Array.isArray(value.deny) || value.deny.some((name) => typeof name !== "string" || name === "")) throw new RpcError(ErrorCode.InvalidParams, "deny must be a list of tool names");
               for (const name of value.deny) denied.add(name);
               return () => void 0;
+            },
+            guard() {
+              sealed();
+              throw new RpcError(ErrorCode.NotAvailable, "child tools.guard is not supported; use child.ctx.tools.restrict({ deny }) or root ctx.tools.guard");
             }
           })
         })
@@ -15793,7 +16302,7 @@ function defineAgents() {
   Object.freeze(AgentsShim.prototype);
   return AgentsShim;
 }
-var SPAWN_PROVIDER, PERSONA_ORDER, DSH_AGENT_ADAPTERS;
+var SPAWN_PROVIDER, FORK_PROVIDER, PERSONA_ORDER, DSH_AGENT_ADAPTERS;
 var init_agents = __esm({
   "src/dsh/agents.ts"() {
     "use strict";
@@ -15804,7 +16313,12 @@ var init_agents = __esm({
     SPAWN_PROVIDER = Object.freeze({
       name: "spawn",
       inheritsParentContext: false,
-      capabilities: Object.freeze({ persona: true, toolFilter: true, agentOptions: true })
+      capabilities: Object.freeze({ persona: true, toolFilter: true, agentOptions: true, depthLimit: true })
+    });
+    FORK_PROVIDER = Object.freeze({
+      name: "fork",
+      inheritsParentContext: true,
+      capabilities: Object.freeze({ persona: true, toolFilter: true, agentOptions: true, depthLimit: true })
     });
     PERSONA_ORDER = 0;
     DSH_AGENT_ADAPTERS = Object.freeze([
@@ -16119,7 +16633,7 @@ var init_llm = __esm({
 });
 
 // src/dsh/network.ts
-function credentialRef(ref2) {
+function credentialRef2(ref2) {
   if (typeof ref2 !== "string" || ref2.length === 0) throw new RpcError(ErrorCode.InvalidParams, "a credential ref is a non-empty string");
   return ref2;
 }
@@ -16186,20 +16700,20 @@ var init_network = __esm({
             super(ctx, "credentials");
           }
           async resolve(ref2) {
-            const result = await host.broker(this.ctx, "network", "credentials.resolve", { ref: credentialRef(ref2) });
+            const result = await host.broker(this.ctx, "network", "credentials.resolve", { ref: credentialRef2(ref2) });
             const value = result?.value;
             if (value === null || value === void 0) return void 0;
             if (typeof value !== "string" || !value.startsWith(CREDENTIAL_HANDLE_PREFIX)) throw new RpcError(ErrorCode.Internal, "invalid credential handle");
             return { value };
           }
           async describe(ref2) {
-            const result = await host.broker(this.ctx, "network", "credentials.describe", { ref: credentialRef(ref2) });
+            const result = await host.broker(this.ctx, "network", "credentials.describe", { ref: credentialRef2(ref2) });
             if (result === null || typeof result !== "object" || typeof result.set !== "boolean") throw new RpcError(ErrorCode.Internal, "invalid credential description");
-            return typeof result.site === "string" ? { ref: credentialRef(ref2), set: result.set, site: result.site } : { ref: credentialRef(ref2), set: result.set };
+            return typeof result.site === "string" ? { ref: credentialRef2(ref2), set: result.set, site: result.site } : { ref: credentialRef2(ref2), set: result.set };
           }
           async set(ref2, value, site) {
             if (typeof value !== "string" || value.length === 0) throw new RpcError(ErrorCode.InvalidParams, "a credential value is a non-empty string");
-            await host.broker(this.ctx, "network", "credentials.set", { ref: credentialRef(ref2), value, site: credentialSite(site) });
+            await host.broker(this.ctx, "network", "credentials.set", { ref: credentialRef2(ref2), value, site: credentialSite(site) });
           }
           fetch(input, init) {
             return brokeredFetch(host, this.ctx, input, init);
@@ -16207,82 +16721,6 @@ var init_network = __esm({
         }
         Object.freeze(CredentialsService.prototype);
         return CredentialsService;
-      }
-    };
-  }
-});
-
-// src/dsh/settings.ts
-function plain2(value, what) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new RpcError(ErrorCode.InvalidParams, `${what} is a plain object`);
-  return value;
-}
-function revision(value) {
-  if (value === void 0) return void 0;
-  if (typeof value !== "string" || value.length === 0) throw new RpcError(ErrorCode.InvalidParams, "an expected revision is the revision string describe returned");
-  return value;
-}
-function descriptor(value) {
-  const row = value;
-  if (row === null || typeof row !== "object" || typeof row.ns !== "string" || typeof row.revision !== "string" || typeof row.writable !== "boolean" || !Array.isArray(row.roots) || typeof row.value !== "object" || row.value === null || row.applies !== "reload") {
-    throw new RpcError(ErrorCode.Internal, "invalid settings broker response");
-  }
-  return { ns: row.ns, writable: row.writable, roots: row.roots.map(String), value: row.value, revision: row.revision, applied: typeof row.applied === "boolean" ? row.applied : null, applies: "reload" };
-}
-var SettingsConflictError, settingsAdapter;
-var init_settings = __esm({
-  "src/dsh/settings.ts"() {
-    "use strict";
-    init_lib2();
-    init_protocol();
-    init_rpc();
-    SettingsConflictError = class extends Error {
-      constructor(ns, expected, actual) {
-        super(`settings namespace "${ns}" changed since it was read`);
-        this.ns = ns;
-        this.expected = expected;
-        this.actual = actual;
-        this.name = "SettingsConflictError";
-      }
-      ns;
-      expected;
-      actual;
-      code = "SETTINGS_CONFLICT";
-    };
-    settingsAdapter = {
-      service: "settings",
-      define(host) {
-        class SettingsService extends Service {
-          constructor(ctx) {
-            super(ctx, "settings");
-          }
-          describe() {
-            host.brokerTicket(this.ctx, "settings");
-            return host.broker(this.ctx, "settings", "describe", {}).then((row) => [descriptor(row)]);
-          }
-          async update(ns, patch, expectedRevision) {
-            return this.write(ns, "update", { patch: plain2(patch, "a settings patch") }, expectedRevision);
-          }
-          async replace(ns, section, expectedRevision) {
-            return this.write(ns, "replace", { value: plain2(section, "a settings section") }, expectedRevision);
-          }
-          async mutate(ns, ops, expectedRevision) {
-            if (!Array.isArray(ops)) throw new RpcError(ErrorCode.InvalidParams, "settings edits are an array of path operations");
-            return this.write(ns, "mutate", { ops }, expectedRevision);
-          }
-          async write(ns, method, input, expectedRevision) {
-            if (typeof ns !== "string" || ns.length === 0) throw new RpcError(ErrorCode.InvalidParams, "a settings namespace is a non-empty string");
-            const owner = host.ownerOf(this.ctx);
-            if (owner === void 0 || ns !== owner.pluginName) throw new RpcError(ErrorCode.Refused, "a plugin may edit only its own settings namespace");
-            const expected = revision(expectedRevision);
-            const result = await host.broker(this.ctx, "settings", method, expected === void 0 ? input : { ...input, expected_revision: expected });
-            if (result === null || typeof result !== "object" || typeof result.written !== "boolean" || typeof result.revision !== "string") throw new RpcError(ErrorCode.Internal, "invalid settings broker response");
-            if (result.conflict === true) throw new SettingsConflictError(ns, expected, result.revision);
-            return { written: result.written, revision: result.revision, applies: "reload" };
-          }
-        }
-        Object.freeze(SettingsService.prototype);
-        return SettingsService;
       }
     };
   }
@@ -16494,6 +16932,925 @@ var init_terminal = __esm({
   }
 });
 
+// src/dsh/attachments.ts
+function invalid5(message) {
+  throw new RpcError(ErrorCode.InvalidParams, message);
+}
+function isPlainRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) && !ArrayBuffer.isView(value);
+}
+function checkAllowedKeys(value, allowed, label2) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) invalid5(`${label2} contains unsupported field \`${key}\``);
+  }
+}
+function validateSignal(signal) {
+  if (signal === void 0) return void 0;
+  if (!(signal instanceof AbortSignal)) {
+    invalid5("signal must be an AbortSignal");
+  }
+  return signal;
+}
+function checkAborted(signal) {
+  if (signal?.aborted === true) {
+    throw new AttachmentError("CANCELLED", "the attachment operation was aborted");
+  }
+}
+function validateName(name) {
+  if (name === void 0) return void 0;
+  if (typeof name !== "string" || name.length === 0 || name.length > MAX_NAME_LEN || name.startsWith(".") || name.includes("/") || name.includes("\\") || name.includes("..") || name.includes(":") || /[\x00-\x1f\x7f]/.test(name)) {
+    invalid5("attachment name must be a non-empty basename with no path separators or control characters");
+  }
+  return name;
+}
+function serializeImageBytesInput(input) {
+  if (!isPlainRecord(input)) invalid5("image input must be an object");
+  checkAllowedKeys(input, IMAGE_INPUT_KEYS, "image input");
+  const { data: data2, mediaType } = input;
+  if (!(data2 instanceof Uint8Array)) invalid5("image data must be a Uint8Array");
+  if (typeof mediaType !== "string" || mediaType.length === 0) invalid5("mediaType must be a non-empty string");
+  if (!ALLOWED_MEDIA_TYPES.has(mediaType)) {
+    throw new AttachmentError("UNSUPPORTED_IMAGE_TYPE", `unsupported image media type: ${mediaType}`);
+  }
+  const byteLength = data2.byteLength;
+  if (byteLength === 0) {
+    throw new AttachmentError("INVALID_IMAGE", "image payload is empty");
+  }
+  if (byteLength > ATTACHMENT_IMAGE_LIMITS.maxImageBytes) {
+    throw new AttachmentError("IMAGE_TOO_LARGE", `image exceeds the ${ATTACHMENT_IMAGE_LIMITS.maxImageBytes} byte limit`);
+  }
+  const name = validateName(input.name);
+  const data_base64 = Buffer.from(data2.buffer, data2.byteOffset, byteLength).toString("base64");
+  return name === void 0 ? { data_base64, media_type: mediaType } : { data_base64, media_type: mediaType, name };
+}
+function positiveU32(value, label2) {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0 || value > 4294967295) {
+    invalid5(`${label2} must be a positive integer`);
+  }
+  return value;
+}
+function positiveSafeInt(value, label2) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    invalid5(`${label2} must be a positive integer`);
+  }
+  return value;
+}
+function serializeRef(ref2) {
+  if (!isPlainRecord(ref2)) invalid5("attachment reference must be an object");
+  checkAllowedKeys(ref2, REF_KEYS, "attachment reference");
+  if (typeof ref2.attachmentId !== "string" || !ATTACHMENT_ID.test(ref2.attachmentId)) {
+    throw new AttachmentError("INVALID_ATTACHMENT_REF", "invalid attachment id");
+  }
+  const wire = { attachment_id: ref2.attachmentId };
+  if (ref2.mediaType !== void 0) {
+    if (typeof ref2.mediaType !== "string" || ref2.mediaType.length === 0) invalid5("attachment mediaType must be a string");
+    wire.media_type = ref2.mediaType;
+  }
+  if (ref2.bytes !== void 0) wire.bytes = positiveSafeInt(ref2.bytes, "attachment bytes");
+  if (ref2.width !== void 0) wire.width = positiveU32(ref2.width, "attachment width");
+  if (ref2.height !== void 0) wire.height = positiveU32(ref2.height, "attachment height");
+  return wire;
+}
+function serializeRequestTarget(target) {
+  if (target === void 0) return {};
+  if (!isPlainRecord(target)) invalid5("readImageRequest target must be an object");
+  checkAllowedKeys(target, REQUEST_TARGET_KEYS, "readImageRequest target");
+  const wire = {};
+  if (target.width !== void 0) {
+    const width = positiveU32(target.width, "width");
+    if (width > ATTACHMENT_IMAGE_LIMITS.maxImageDimension) {
+      throw new AttachmentError("IMAGE_DIMENSION_TOO_LARGE", `requested width exceeds the ${ATTACHMENT_IMAGE_LIMITS.maxImageDimension}px limit`);
+    }
+    wire.width = width;
+  }
+  if (target.height !== void 0) {
+    const height = positiveU32(target.height, "height");
+    if (height > ATTACHMENT_IMAGE_LIMITS.maxImageDimension) {
+      throw new AttachmentError("IMAGE_DIMENSION_TOO_LARGE", `requested height exceeds the ${ATTACHMENT_IMAGE_LIMITS.maxImageDimension}px limit`);
+    }
+    wire.height = height;
+  }
+  if (target.maxBytes !== void 0) {
+    const maxBytes = positiveSafeInt(target.maxBytes, "maxBytes");
+    if (maxBytes > ATTACHMENT_IMAGE_LIMITS.maxImageBytes) {
+      throw new AttachmentError("IMAGE_TOO_LARGE", `requested maxBytes exceeds the ${ATTACHMENT_IMAGE_LIMITS.maxImageBytes} byte limit`);
+    }
+    wire.max_bytes = maxBytes;
+  }
+  return wire;
+}
+function parseRefWire(value, what) {
+  if (!isPlainRecord(value) || typeof value.attachment_id !== "string" || !ATTACHMENT_ID.test(value.attachment_id) || typeof value.media_type !== "string" || !ALLOWED_MEDIA_TYPES.has(value.media_type) || typeof value.bytes !== "number" || !Number.isSafeInteger(value.bytes) || value.bytes <= 0 || typeof value.width !== "number" || !Number.isInteger(value.width) || value.width <= 0 || typeof value.height !== "number" || !Number.isInteger(value.height) || value.height <= 0) {
+    throw new RpcError(ErrorCode.Internal, `invalid ${what}`);
+  }
+  return {
+    attachmentId: value.attachment_id,
+    mediaType: value.media_type,
+    bytes: value.bytes,
+    width: value.width,
+    height: value.height
+  };
+}
+function mapBrokerError(error) {
+  if (error instanceof Error && error.name === "AbortError") {
+    return new AttachmentError("CANCELLED", error.message || "the attachment operation was aborted");
+  }
+  if (error !== null && typeof error === "object") {
+    const code = error.code;
+    const message = error.message;
+    if (code === ErrorCode.Cancelled) {
+      return new AttachmentError("CANCELLED", typeof message === "string" && message.length > 0 ? message : "the attachments broker call was cancelled");
+    }
+    if (code === ErrorCode.Refused && typeof message === "string") {
+      const match = /^\[([A-Z0-9_]+)\]\s*(.+)$/s.exec(message);
+      if (match !== null) {
+        return new AttachmentError(match[1], match[2]);
+      }
+    }
+  }
+  return error;
+}
+async function callBroker(host, ctx, method, input, signal) {
+  const checkedSignal = validateSignal(signal);
+  checkAborted(checkedSignal);
+  const settled = host.broker(ctx, "attachments", method, input, checkedSignal).catch((error) => {
+    throw mapBrokerError(error);
+  });
+  settled.catch(() => void 0);
+  if (checkedSignal === void 0) {
+    return await settled;
+  }
+  let onAbort;
+  try {
+    const aborted = new Promise((_, reject) => {
+      onAbort = () => reject(new AttachmentError("CANCELLED", "the attachment operation was aborted"));
+      checkedSignal.addEventListener("abort", onAbort, { once: true });
+    });
+    const result = await Promise.race([settled, aborted]);
+    checkAborted(checkedSignal);
+    return result;
+  } finally {
+    if (onAbort !== void 0) checkedSignal.removeEventListener("abort", onAbort);
+  }
+}
+function notAvailable(method) {
+  throw new RpcError(
+    ErrorCode.NotAvailable,
+    `attachments.${method} is not available: Codewhale brokers conversation images only and exposes no generic file store`
+  );
+}
+var ATTACHMENT_ID, IMAGE_INPUT_KEYS, REF_KEYS, REQUEST_TARGET_KEYS, MAX_NAME_LEN, FROZEN_MEDIA_TYPES, ALLOWED_MEDIA_TYPES, ATTACHMENT_IMAGE_LIMITS, AttachmentError, attachmentsAdapter;
+var init_attachments = __esm({
+  "src/dsh/attachments.ts"() {
+    "use strict";
+    init_lib2();
+    init_protocol();
+    init_protocol_generated();
+    init_rpc();
+    ATTACHMENT_ID = /^sha256:[0-9a-f]{64}$/;
+    IMAGE_INPUT_KEYS = /* @__PURE__ */ new Set(["data", "mediaType", "name"]);
+    REF_KEYS = /* @__PURE__ */ new Set(["attachmentId", "mediaType", "bytes", "width", "height"]);
+    REQUEST_TARGET_KEYS = /* @__PURE__ */ new Set(["width", "height", "maxBytes"]);
+    MAX_NAME_LEN = 128;
+    FROZEN_MEDIA_TYPES = Object.freeze([...IMAGE_LIMITS.mediaTypes]);
+    ALLOWED_MEDIA_TYPES = new Set(FROZEN_MEDIA_TYPES);
+    ATTACHMENT_IMAGE_LIMITS = Object.freeze({
+      maxImageBytes: IMAGE_LIMITS.maxImageBytes,
+      maxImagesPerMessage: IMAGE_LIMITS.maxImagesPerMessage,
+      maxMessageImageBytes: IMAGE_LIMITS.maxMessageImageBytes,
+      maxImagePixels: IMAGE_LIMITS.maxImagePixels,
+      maxImageDimension: IMAGE_LIMITS.maxImageDimension,
+      mediaTypes: FROZEN_MEDIA_TYPES
+    });
+    AttachmentError = class extends Error {
+      code;
+      constructor(code, message) {
+        super(message);
+        this.name = "AttachmentError";
+        this.code = code;
+      }
+    };
+    attachmentsAdapter = {
+      service: "attachments",
+      define(host) {
+        class AttachmentsService extends Service {
+          constructor(ctx) {
+            super(ctx, "attachments");
+          }
+          get imageLimits() {
+            return ATTACHMENT_IMAGE_LIMITS;
+          }
+          imageHostPath(_ref, signal) {
+            const checkedSignal = validateSignal(signal);
+            checkAborted(checkedSignal);
+            return void 0;
+          }
+          async validateImage(input, signal) {
+            const wire = serializeImageBytesInput(input);
+            const res = await callBroker(host, this.ctx, "validate", wire, signal);
+            if (!isPlainRecord(res) || res.ok !== true || typeof res.media_type !== "string" || !ALLOWED_MEDIA_TYPES.has(res.media_type) || typeof res.bytes !== "number" || !Number.isSafeInteger(res.bytes) || res.bytes <= 0 || typeof res.width !== "number" || !Number.isInteger(res.width) || res.width <= 0 || typeof res.height !== "number" || !Number.isInteger(res.height) || res.height <= 0) {
+              throw new RpcError(ErrorCode.Internal, "invalid attachments.validate broker response");
+            }
+            return {
+              ok: true,
+              mediaType: res.media_type,
+              bytes: res.bytes,
+              width: res.width,
+              height: res.height
+            };
+          }
+          async saveImage(input, signal) {
+            const wire = serializeImageBytesInput(input);
+            const res = await callBroker(host, this.ctx, "save", wire, signal);
+            if (!isPlainRecord(res)) throw new RpcError(ErrorCode.Internal, "invalid attachments.save broker response");
+            return parseRefWire(res.attachment, "attachments.save attachment reference");
+          }
+          async readImage(ref2, signal) {
+            const attachment = serializeRef(ref2);
+            const res = await callBroker(host, this.ctx, "read", { attachment }, signal);
+            if (!isPlainRecord(res) || typeof res.data_base64 !== "string") {
+              throw new RpcError(ErrorCode.Internal, "invalid attachments.read broker response");
+            }
+            return {
+              data: Buffer.from(res.data_base64, "base64"),
+              ref: parseRefWire(res.attachment, "attachments.read attachment reference")
+            };
+          }
+          async readImageRequest(ref2, target, signal) {
+            const attachment = serializeRef(ref2);
+            const sizing = serializeRequestTarget(target);
+            const res = await callBroker(host, this.ctx, "read_request", { attachment, ...sizing }, signal);
+            if (!isPlainRecord(res) || typeof res.variant_id !== "string" || !ATTACHMENT_ID.test(res.variant_id) || typeof res.data_base64 !== "string" || typeof res.media_type !== "string" || !ALLOWED_MEDIA_TYPES.has(res.media_type)) {
+              throw new RpcError(ErrorCode.Internal, "invalid attachments.read_request broker response");
+            }
+            return {
+              variantId: res.variant_id,
+              data: Buffer.from(res.data_base64, "base64"),
+              mediaType: res.media_type
+            };
+          }
+          saveFile() {
+            return notAvailable("saveFile");
+          }
+          admitEncodedFile() {
+            return notAvailable("admitEncodedFile");
+          }
+          saveFileStream() {
+            return notAvailable("saveFileStream");
+          }
+          readFileStream() {
+            return notAvailable("readFileStream");
+          }
+          readFile() {
+            return notAvailable("readFile");
+          }
+          fileHostPath() {
+            return notAvailable("fileHostPath");
+          }
+        }
+        Object.freeze(AttachmentsService.prototype);
+        return AttachmentsService;
+      }
+    };
+  }
+});
+
+// src/dsh/host-services.ts
+var agentPresetsAdapter, agentDefaultModelAdapter, sessionProjectionsAdapter, workspaceRegistryAdapter, typertGatewayAdapter, webAdapter, DSH_HOST_SERVICE_ADAPTERS;
+var init_host_services = __esm({
+  "src/dsh/host-services.ts"() {
+    "use strict";
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    init_network();
+    agentPresetsAdapter = {
+      service: "agentPresets",
+      define(host) {
+        const ownerPresets = /* @__PURE__ */ new Map();
+        class AgentPresetsService extends Service {
+          constructor(ctx) {
+            super(ctx, "agentPresets");
+          }
+          get defaultId() {
+            return void 0;
+          }
+          get authorable() {
+            return false;
+          }
+          composedPreset() {
+            return void 0;
+          }
+          async list() {
+            const owner = host.ownerOf(this.ctx);
+            const table = owner ? ownerPresets.get(owner.ref.owner_token) : void 0;
+            return table ? [...table.values()].map((row) => structuredClone(row)) : [];
+          }
+          async get(id) {
+            if (typeof id !== "string" || id.length === 0) return void 0;
+            const rows = await this.list();
+            return rows.find((row) => row.id === id);
+          }
+          async resolve(id) {
+            const found = await this.get(id ?? this.defaultId);
+            if (!found) throw new RpcError(ErrorCode.NotAvailable, "preset not found");
+            return found;
+          }
+          async remoteExportList() {
+            const presets = await this.list();
+            return { presets, authorable: false, defaultId: void 0, modeSelectionEnabled: false };
+          }
+          async compositionInventory() {
+            return [];
+          }
+          register(preset) {
+            const owner = host.ownerOf(this.ctx);
+            if (!owner) throw new RpcError(ErrorCode.NotAvailable, "agentPresets.register requires an active owner");
+            if (!preset || typeof preset !== "object" || Array.isArray(preset)) {
+              throw new RpcError(ErrorCode.InvalidParams, "preset must be an object");
+            }
+            const record3 = preset;
+            const id = typeof record3.id === "string" && record3.id.trim().length > 0 ? record3.id.trim() : void 0;
+            if (!id) throw new RpcError(ErrorCode.InvalidParams, "preset.id must be a non-empty string");
+            const token = owner.ref.owner_token;
+            return this.ctx.effect(() => {
+              let table = ownerPresets.get(token);
+              if (!table) {
+                table = /* @__PURE__ */ new Map();
+                ownerPresets.set(token, table);
+              }
+              table.set(id, structuredClone(record3));
+              return () => {
+                const current2 = ownerPresets.get(token);
+                current2?.delete(id);
+                if (current2 && current2.size === 0) ownerPresets.delete(token);
+              };
+            }, `agentPresets.register(${JSON.stringify(id)})`);
+          }
+          mount() {
+            throw new RpcError(ErrorCode.NotAvailable, "select or mount presets through Core agent preset selection");
+          }
+          select() {
+            throw new RpcError(ErrorCode.NotAvailable, "select through Core AgentProfile/native preset selection before a turn");
+          }
+        }
+        Object.freeze(AgentPresetsService.prototype);
+        return AgentPresetsService;
+      }
+    };
+    agentDefaultModelAdapter = {
+      service: "agentDefaultModel",
+      define(host) {
+        class AgentDefaultModelService extends Service {
+          constructor(ctx) {
+            super(ctx, "agentDefaultModel");
+          }
+          currentSelection() {
+            const invocation = host.liveInvocation(this.ctx);
+            if (!invocation) return void 0;
+            return Object.freeze({ provider: "default", model: "default" });
+          }
+        }
+        Object.freeze(AgentDefaultModelService.prototype);
+        return AgentDefaultModelService;
+      }
+    };
+    sessionProjectionsAdapter = {
+      service: "sessionProjections",
+      define(host) {
+        class SessionProjectionsService extends Service {
+          constructor(ctx) {
+            super(ctx, "sessionProjections");
+          }
+          get(sessionId) {
+            const invocation = host.liveInvocation(this.ctx);
+            const activeId = invocation?.agent?.session?.id ?? invocation?.agent?.id;
+            if (!activeId) return void 0;
+            if (sessionId !== void 0 && sessionId !== activeId) return void 0;
+            return Object.freeze({
+              sessionId: activeId,
+              messages: Object.freeze([]),
+              events: Object.freeze([])
+            });
+          }
+          list() {
+            const current2 = this.get();
+            return current2 ? Object.freeze([current2]) : Object.freeze([]);
+          }
+          messages(sessionId) {
+            return this.get(sessionId)?.messages ?? Object.freeze([]);
+          }
+          events(sessionId) {
+            return this.get(sessionId)?.events ?? Object.freeze([]);
+          }
+        }
+        Object.freeze(SessionProjectionsService.prototype);
+        return SessionProjectionsService;
+      }
+    };
+    workspaceRegistryAdapter = {
+      service: "workspaceRegistry",
+      define(host) {
+        function currentWorkspace(ctx) {
+          const invocation = host.liveInvocation(ctx);
+          const cwd = invocation?.session?.header?.cwd;
+          if (!cwd) return void 0;
+          return Object.freeze({
+            id: cwd,
+            path: cwd,
+            status: async () => "available"
+          });
+        }
+        class WorkspaceRegistryService extends Service {
+          constructor(ctx) {
+            super(ctx, "workspaceRegistry");
+          }
+          get state() {
+            return Object.freeze({ archivedSessionIds: Object.freeze([]) });
+          }
+          list() {
+            const ws = currentWorkspace(this.ctx);
+            return ws ? Object.freeze([ws]) : Object.freeze([]);
+          }
+          get(id) {
+            const ws = currentWorkspace(this.ctx);
+            if (!ws || typeof id !== "string") return void 0;
+            return ws.id === id || ws.path === id ? ws : void 0;
+          }
+          resolveByPath(path2) {
+            const ws = currentWorkspace(this.ctx);
+            if (!ws || typeof path2 !== "string") return void 0;
+            return ws.path === path2 ? ws : void 0;
+          }
+          create() {
+            throw new RpcError(ErrorCode.Refused, "workspaceRegistry is read-only in Codewhale");
+          }
+          delete() {
+            throw new RpcError(ErrorCode.Refused, "workspaceRegistry is read-only in Codewhale");
+          }
+          enqueueOperation() {
+            throw new RpcError(ErrorCode.Refused, "workspaceRegistry mutations are refused in Codewhale");
+          }
+        }
+        Object.freeze(WorkspaceRegistryService.prototype);
+        return WorkspaceRegistryService;
+      }
+    };
+    typertGatewayAdapter = {
+      service: "typertGateway",
+      define(host) {
+        const ownerServices = /* @__PURE__ */ new Map();
+        class TypertGatewayService extends Service {
+          constructor(ctx) {
+            super(ctx, "typertGateway");
+          }
+          register(name, service, descriptors = []) {
+            const owner = host.ownerOf(this.ctx);
+            if (!owner) throw new RpcError(ErrorCode.NotAvailable, "typertGateway.register requires an active owner");
+            if (typeof name !== "string" || name.trim().length === 0 || name.length > 128) {
+              throw new RpcError(ErrorCode.InvalidParams, "typertGateway service name must be a non-empty string");
+            }
+            const key = name.trim();
+            const token = owner.ref.owner_token;
+            const frozenDescriptors = Object.freeze(Array.isArray(descriptors) ? [...descriptors] : []);
+            return this.ctx.effect(() => {
+              let table = ownerServices.get(token);
+              if (!table) {
+                table = /* @__PURE__ */ new Map();
+                ownerServices.set(token, table);
+              }
+              table.set(key, { service, descriptors: frozenDescriptors });
+              return () => {
+                const current2 = ownerServices.get(token);
+                current2?.delete(key);
+                if (current2 && current2.size === 0) ownerServices.delete(token);
+              };
+            }, `typertGateway.register(${JSON.stringify(key)})`);
+          }
+          list() {
+            const owner = host.ownerOf(this.ctx);
+            const table = owner ? ownerServices.get(owner.ref.owner_token) : void 0;
+            return Object.freeze(table ? [...table.keys()] : []);
+          }
+          get(name) {
+            if (typeof name !== "string") return void 0;
+            const owner = host.ownerOf(this.ctx);
+            const table = owner ? ownerServices.get(owner.ref.owner_token) : void 0;
+            return table?.get(name);
+          }
+        }
+        Object.freeze(TypertGatewayService.prototype);
+        return TypertGatewayService;
+      }
+    };
+    webAdapter = {
+      service: "web",
+      define(host) {
+        const ownerProviders = /* @__PURE__ */ new Map();
+        class WebService extends Service {
+          constructor(ctx) {
+            super(ctx, "web");
+          }
+          fetch(input, init) {
+            return brokeredFetch(host, this.ctx, input, init);
+          }
+          registerSearchProvider(provider) {
+            const owner = host.ownerOf(this.ctx);
+            if (!owner) throw new RpcError(ErrorCode.NotAvailable, "web.registerSearchProvider requires an active owner");
+            if (!provider || typeof provider !== "object" || Array.isArray(provider)) {
+              throw new RpcError(ErrorCode.InvalidParams, "search provider must be an object");
+            }
+            const row = provider;
+            const id = typeof row.id === "string" && row.id.trim().length > 0 ? row.id.trim() : typeof row.name === "string" && row.name.trim().length > 0 ? row.name.trim() : void 0;
+            if (!id) throw new RpcError(ErrorCode.InvalidParams, "search provider requires a non-empty id or name");
+            const token = owner.ref.owner_token;
+            const entry = Object.freeze({
+              id,
+              name: typeof row.name === "string" && row.name.trim().length > 0 ? row.name.trim() : id,
+              ...typeof row.search === "function" ? { search: row.search } : {}
+            });
+            return this.ctx.effect(() => {
+              let table = ownerProviders.get(token);
+              if (!table) {
+                table = /* @__PURE__ */ new Map();
+                ownerProviders.set(token, table);
+              }
+              table.set(id, entry);
+              return () => {
+                const current2 = ownerProviders.get(token);
+                current2?.delete(id);
+                if (current2 && current2.size === 0) ownerProviders.delete(token);
+              };
+            }, `web.registerSearchProvider(${JSON.stringify(id)})`);
+          }
+          listSearchProviders() {
+            const owner = host.ownerOf(this.ctx);
+            const table = owner ? ownerProviders.get(owner.ref.owner_token) : void 0;
+            return Object.freeze(table ? [...table.values()] : []);
+          }
+        }
+        Object.freeze(WebService.prototype);
+        return WebService;
+      }
+    };
+    DSH_HOST_SERVICE_ADAPTERS = Object.freeze([
+      agentPresetsAdapter,
+      agentDefaultModelAdapter,
+      sessionProjectionsAdapter,
+      workspaceRegistryAdapter,
+      typertGatewayAdapter,
+      webAdapter
+    ]);
+  }
+});
+
+// src/dsh/webserver.ts
+import { isAbsolute as isAbsolute5, resolve as resolve6 } from "node:path";
+function normalizePath(raw) {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > 1024 || /[\x00-\x1f\x7f]/.test(raw)) {
+    throw new RpcError(ErrorCode.InvalidParams, "route path must be a non-empty single-line string");
+  }
+  const withSlash = raw.startsWith("/") ? raw : `/${raw}`;
+  if (withSlash.length > 1 && withSlash.endsWith("/")) {
+    return withSlash.slice(0, -1);
+  }
+  return withSlash;
+}
+function normalizeMethods(method, methods) {
+  const list2 = [];
+  if (typeof method === "string" && method.trim() !== "") {
+    list2.push(method.trim().toUpperCase());
+  }
+  if (Array.isArray(methods)) {
+    for (const item of methods) {
+      if (typeof item === "string" && item.trim() !== "") {
+        list2.push(item.trim().toUpperCase());
+      }
+    }
+  }
+  return list2.length > 0 ? new Set(list2) : void 0;
+}
+function addOwnerRoute(owner, route) {
+  const ownerToken = owner.ref.owner_token;
+  let list2 = routesByOwner.get(ownerToken);
+  if (!list2) {
+    list2 = [];
+    routesByOwner.set(ownerToken, list2);
+  }
+  if (list2.length >= MAX_ROUTES_PER_OWNER) {
+    throw new RpcError(ErrorCode.Refused, `owner exceeded ${MAX_ROUTES_PER_OWNER} registered routes`);
+  }
+  const stored = { ...route, id: nextRouteId++, ownerToken };
+  list2.push(stored);
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    const current2 = routesByOwner.get(ownerToken);
+    if (!current2) return;
+    const index = current2.findIndex((entry) => entry.id === stored.id);
+    if (index >= 0) current2.splice(index, 1);
+    if (current2.length === 0) routesByOwner.delete(ownerToken);
+  };
+}
+function isLoopbackHostHeader(raw) {
+  if (!raw) return true;
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed === "") return true;
+  let host = trimmed;
+  if (host.startsWith("[")) {
+    const close = host.indexOf("]");
+    if (close < 0) return false;
+    host = host.slice(1, close);
+  } else {
+    const colon = host.indexOf(":");
+    if (colon >= 0) host = host.slice(0, colon);
+  }
+  if (host === "localhost" || host.endsWith(".localhost") || host === "::1") return true;
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!match) return false;
+  const octets = match.slice(1).map(Number);
+  return octets[0] === 127 && octets.every((n) => n >= 0 && n <= 255);
+}
+function checkRequestRejection(req) {
+  if (!req || !req.headers) return null;
+  const hostHeader = req.headers.host;
+  const host = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
+  if (!isLoopbackHostHeader(host)) {
+    return { status: 403, message: "forbidden: host is not loopback" };
+  }
+  const fetchSiteHeader = req.headers["sec-fetch-site"];
+  const fetchSite = Array.isArray(fetchSiteHeader) ? fetchSiteHeader[0] : fetchSiteHeader;
+  if (typeof fetchSite === "string" && fetchSite.toLowerCase() === "cross-site") {
+    return { status: 403, message: "forbidden: cross-site request rejected" };
+  }
+  return null;
+}
+function extractSessionId(session2) {
+  if (typeof session2 === "string" && session2.trim() !== "") return session2.trim();
+  if (!session2 || typeof session2 !== "object") return void 0;
+  const obj = session2;
+  if (typeof obj.id === "string" && obj.id.trim() !== "") return obj.id.trim();
+  if (typeof obj.sessionId === "string" && obj.sessionId.trim() !== "") return obj.sessionId.trim();
+  const header = obj.header;
+  if (header && typeof header === "object" && typeof header.id === "string") {
+    const id = header.id.trim();
+    if (id !== "") return id;
+  }
+  return void 0;
+}
+var MAX_REQUEST_BODY_BYTES, MAX_RESPONSE_BODY_BYTES, MAX_ROUTES_PER_OWNER, MAX_SESSION_TITLES, nextRouteId, routesByOwner, webServerAdapter, connectionAdapter, sessionTitleAdapter, profileContextAdapter, DSH_WEBSERVER_ADAPTERS;
+var init_webserver = __esm({
+  "src/dsh/webserver.ts"() {
+    "use strict";
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
+    MAX_RESPONSE_BODY_BYTES = 8 * 1024 * 1024;
+    MAX_ROUTES_PER_OWNER = 256;
+    MAX_SESSION_TITLES = 1024;
+    nextRouteId = 1;
+    routesByOwner = /* @__PURE__ */ new Map();
+    webServerAdapter = {
+      service: "webServer",
+      define(host) {
+        class WebServerService extends Service {
+          host = "127.0.0.1";
+          port = 0;
+          basePath = "";
+          constructor(ctx) {
+            super(ctx, "webServer");
+          }
+          getOrigin() {
+            return "http://127.0.0.1";
+          }
+          register(route) {
+            const owner = host.ownerOf(this.ctx);
+            if (!owner) throw new Error("webServer.register called outside an extension owner");
+            if (!route || typeof route !== "object" || typeof route.handler !== "function") {
+              throw new RpcError(ErrorCode.InvalidParams, "webServer.register requires { path, handler }");
+            }
+            const kind = route.kind === "prefix" ? "prefix" : "exact";
+            const path2 = normalizePath(route.path);
+            const methods = normalizeMethods(route.method, route.methods);
+            return this.ctx.effect(
+              () => addOwnerRoute(owner, { kind, path: path2, methods, mode: "node", nodeHandler: route.handler }),
+              `webServer.register(${kind}:${path2})`
+            );
+          }
+          registerRoute(route) {
+            return this.register(route);
+          }
+          route(path2, handler) {
+            return this.register({ kind: "exact", path: path2, handler });
+          }
+          get(path2, handler) {
+            return this.register({ kind: "exact", path: path2, method: "GET", handler });
+          }
+          post(path2, handler) {
+            return this.register({ kind: "exact", path: path2, method: "POST", handler });
+          }
+          put(path2, handler) {
+            return this.register({ kind: "exact", path: path2, method: "PUT", handler });
+          }
+          patch(path2, handler) {
+            return this.register({ kind: "exact", path: path2, method: "PATCH", handler });
+          }
+          delete(path2, handler) {
+            return this.register({ kind: "exact", path: path2, method: "DELETE", handler });
+          }
+          use(pathOrHandler, maybeHandler) {
+            if (typeof pathOrHandler === "function") {
+              return this.register({ kind: "prefix", path: "/", handler: pathOrHandler });
+            }
+            if (typeof maybeHandler !== "function") {
+              throw new RpcError(ErrorCode.InvalidParams, "webServer.use requires a handler function");
+            }
+            return this.register({ kind: "prefix", path: pathOrHandler, handler: maybeHandler });
+          }
+          registerUpgrade(_spec) {
+            return () => {
+            };
+          }
+          tapIndex(_fn) {
+            return () => {
+            };
+          }
+        }
+        Object.freeze(WebServerService.prototype);
+        return WebServerService;
+      }
+    };
+    connectionAdapter = {
+      service: "connection",
+      define(host) {
+        class ConnectionService extends Service {
+          isLoopback = true;
+          connected = true;
+          baseUrl = "http://127.0.0.1";
+          constructor(ctx) {
+            super(ctx, "connection");
+          }
+          requestRejection(req) {
+            return checkRequestRejection(req);
+          }
+          get fetch() {
+            const ctx = this.ctx;
+            return {
+              register: (route) => {
+                const owner = host.ownerOf(ctx);
+                if (!owner) throw new Error("connection.fetch.register called outside an extension owner");
+                if (!route || typeof route !== "object" || typeof route.fetch !== "function") {
+                  throw new RpcError(ErrorCode.InvalidParams, "connection.fetch.register requires { path, fetch }");
+                }
+                const path2 = normalizePath(route.path);
+                const methods = normalizeMethods(void 0, route.methods);
+                return ctx.effect(
+                  () => addOwnerRoute(owner, { kind: "prefix", path: path2, methods, mode: "fetch", fetchHandler: route.fetch }),
+                  `connection.fetch.register(${path2})`
+                );
+              }
+            };
+          }
+          get rpc() {
+            const ctx = this.ctx;
+            return {
+              handle: (channel, handler, _options) => {
+                const owner = host.ownerOf(ctx);
+                if (!owner) throw new Error("connection.rpc.handle called outside an extension owner");
+                if (typeof handler !== "function") {
+                  throw new RpcError(ErrorCode.InvalidParams, "connection.rpc.handle requires a handler function");
+                }
+                const path2 = normalizePath(channel);
+                return ctx.effect(
+                  () => addOwnerRoute(owner, { kind: "prefix", path: path2, methods: /* @__PURE__ */ new Set(["POST"]), mode: "rpc", rpcHandler: handler }),
+                  `connection.rpc.handle(${path2})`
+                );
+              }
+            };
+          }
+          onReady(cb) {
+            if (typeof cb === "function") queueMicrotask(cb);
+            return () => {
+            };
+          }
+          onNotification(_cb) {
+            return () => {
+            };
+          }
+        }
+        Object.freeze(ConnectionService.prototype);
+        return ConnectionService;
+      }
+    };
+    sessionTitleAdapter = {
+      service: "sessionTitle",
+      define(host) {
+        const titlesByOwner = /* @__PURE__ */ new Map();
+        const listenersByOwner = /* @__PURE__ */ new Map();
+        const requireOwnerToken = (ctx) => {
+          const owner = host.ownerOf(ctx);
+          if (!owner || owner.state === "disposed" || owner.disposing) {
+            throw new RpcError(ErrorCode.NotAvailable, "sessionTitle requires an active extension owner");
+          }
+          return owner.ref.owner_token;
+        };
+        class SessionTitleService extends Service {
+          constructor(ctx) {
+            super(ctx, "sessionTitle");
+          }
+          get(session2) {
+            const ownerToken = requireOwnerToken(this.ctx);
+            const id = extractSessionId(session2);
+            return id ? titlesByOwner.get(ownerToken)?.get(id) : void 0;
+          }
+          rename(session2, title) {
+            const ownerToken = requireOwnerToken(this.ctx);
+            const id = extractSessionId(session2);
+            if (!id) throw new RpcError(ErrorCode.InvalidParams, "sessionTitle.rename requires a session or session id");
+            if (typeof title !== "string") throw new RpcError(ErrorCode.InvalidParams, "sessionTitle.rename requires a string title");
+            const cleaned = title.replace(/[\r\n\t]+/g, " ").trim().slice(0, 256);
+            if (!cleaned) throw new RpcError(ErrorCode.InvalidParams, "sessionTitle.rename requires a non-empty title");
+            let titles = titlesByOwner.get(ownerToken);
+            if (!titles) {
+              titles = /* @__PURE__ */ new Map();
+              titlesByOwner.set(ownerToken, titles);
+            }
+            if (!titles.has(id) && titles.size >= MAX_SESSION_TITLES) {
+              const oldest = titles.keys().next().value;
+              if (oldest !== void 0) titles.delete(oldest);
+            }
+            titles.set(id, cleaned);
+            const listeners = listenersByOwner.get(ownerToken);
+            if (listeners) {
+              for (const listener of listeners) {
+                try {
+                  listener(id, cleaned);
+                } catch {
+                }
+              }
+            }
+            return cleaned;
+          }
+          register(listener) {
+            const ownerToken = requireOwnerToken(this.ctx);
+            if (typeof listener !== "function") {
+              throw new RpcError(ErrorCode.InvalidParams, "sessionTitle.register requires a function");
+            }
+            return this.ctx.effect(() => {
+              let listeners = listenersByOwner.get(ownerToken);
+              if (!listeners) {
+                listeners = /* @__PURE__ */ new Set();
+                listenersByOwner.set(ownerToken, listeners);
+              }
+              listeners.add(listener);
+              return () => {
+                const current2 = listenersByOwner.get(ownerToken);
+                if (!current2) return;
+                current2.delete(listener);
+                if (current2.size === 0) listenersByOwner.delete(ownerToken);
+              };
+            }, "sessionTitle.register");
+          }
+        }
+        Object.freeze(SessionTitleService.prototype);
+        return SessionTitleService;
+      }
+    };
+    profileContextAdapter = {
+      service: "profileContext",
+      define(host) {
+        class ProfileContextService extends Service {
+          name = "codewhale";
+          packageManager = "npm";
+          constructor(ctx) {
+            super(ctx, "profileContext");
+          }
+          get dir() {
+            const owner = host.ownerOf(this.ctx);
+            if (!owner?.dataDir || !isAbsolute5(owner.dataDir)) {
+              throw new RpcError(ErrorCode.NotAvailable, "profileContext requires an active owner with a scoped dataDir");
+            }
+            return resolve6(owner.dataDir);
+          }
+          get installAnchor() {
+            return this.dir;
+          }
+        }
+        Object.freeze(ProfileContextService.prototype);
+        return ProfileContextService;
+      }
+    };
+    DSH_WEBSERVER_ADAPTERS = [
+      webServerAdapter,
+      connectionAdapter,
+      sessionTitleAdapter,
+      profileContextAdapter
+    ];
+  }
+});
+
 // src/dsh/plugin-manager.ts
 var init_plugin_manager = __esm({
   "src/dsh/plugin-manager.ts"() {
@@ -16517,6 +17874,9 @@ var init_adapters = __esm({
     init_settings();
     init_catalog();
     init_terminal();
+    init_attachments();
+    init_host_services();
+    init_webserver();
     init_plugin_manager();
     DSH_ADAPTERS = [
       sessionsAdapter,
@@ -16529,7 +17889,10 @@ var init_adapters = __esm({
       settingsAdapter,
       pluginManagerAdapter,
       deepseekAccountAdapter,
-      terminalAdapter
+      terminalAdapter,
+      attachmentsAdapter,
+      ...DSH_HOST_SERVICE_ADAPTERS,
+      ...DSH_WEBSERVER_ADAPTERS
     ];
   }
 });
@@ -16538,7 +17901,7 @@ var init_adapters = __esm({
 var init_dsh_tools_compat = __esm({
   "src/dsh/dsh-tools-compat.js"() {
     "use strict";
-    init_lib4();
+    init_lib3();
   }
 });
 
@@ -16621,6 +17984,7 @@ var init_root = __esm({
   "src/root.ts"() {
     "use strict";
     init_composition();
+    init_agent_presets();
     init_adapters();
     init_protocol();
     init_rpc();
@@ -16686,7 +18050,7 @@ var init_persona = __esm({
 });
 
 // src/dsh/upstream/agent-presets/metadata.ts
-import { join as join2 } from "node:path";
+import { join as join3 } from "node:path";
 function text3(value) {
   if (typeof value !== "string") return void 0;
   const trimmed = value.trim();
@@ -16695,7 +18059,7 @@ function text3(value) {
 async function readPresetMetadata(directory, readFile3) {
   let raw;
   try {
-    raw = await readFile3(join2(directory, METADATA_FILE), "utf8");
+    raw = await readFile3(join3(directory, METADATA_FILE), "utf8");
   } catch {
     return {};
   }
@@ -16735,13 +18099,13 @@ var init_preset = __esm({
 });
 
 // src/dsh/upstream/agent-presets/specifier.ts
-import { isAbsolute as isAbsolute4 } from "node:path";
+import { isAbsolute as isAbsolute6 } from "node:path";
 import { pathToFileURL as pathToFileURL3 } from "node:url";
 function classifyRowSpecifier(name) {
   if (name.startsWith("cordis:")) return { kind: "builtin", specifier: name };
   if (name.startsWith(".")) return { kind: "preset", specifier: name };
   if (name.startsWith("file:")) return { kind: "file", specifier: name };
-  if (isAbsolute4(name)) return { kind: "file", specifier: pathToFileURL3(name).href };
+  if (isAbsolute6(name)) return { kind: "file", specifier: pathToFileURL3(name).href };
   return { kind: "package", specifier: name };
 }
 var init_specifier = __esm({
@@ -16752,7 +18116,7 @@ var init_specifier = __esm({
 
 // src/dsh/upstream/agent-presets/discovery.ts
 import { isBuiltin as isBuiltin2 } from "node:module";
-import { join as join3, resolve as resolve5 } from "node:path";
+import { join as join4, resolve as resolve7 } from "node:path";
 import { fileURLToPath as fileURLToPath4, pathToFileURL as pathToFileURL4 } from "node:url";
 function entryListProblem(rows, at2 = "") {
   if (!Array.isArray(rows)) {
@@ -16836,7 +18200,7 @@ async function isFile(path2, io) {
   }
 }
 async function scanRoot(root, harnessBase, resolves, io) {
-  const dir = resolve5(root.path);
+  const dir = resolve7(root.path);
   let children;
   try {
     children = await io.readdir(dir, { withFileTypes: true });
@@ -16847,8 +18211,8 @@ async function scanRoot(root, harnessBase, resolves, io) {
   const found = [];
   for (const child of children) {
     if (!child.isDirectory() || !PRESET_ID.test(child.name)) continue;
-    const directory = join3(dir, child.name);
-    const path2 = join3(directory, COMPOSITION_FILE);
+    const directory = join4(dir, child.name);
+    const path2 = join4(directory, COMPOSITION_FILE);
     const broken = await isFile(path2, io) ? await compositionProblem(path2, harnessBase, resolves, io) : `the composition file ${COMPOSITION_FILE} is missing — the directory still occupies the id; delete it or restore the file`;
     const metadata = await readPresetMetadata(directory, io.readFile);
     found.push({
@@ -16960,8 +18324,8 @@ var init_composition_inventory = __esm({
 });
 
 // src/dsh/agent-presets.ts
-import { createHash as createHash3, randomBytes } from "node:crypto";
-import { resolve as resolve6, relative as relative3, dirname as dirname4, sep as sep3 } from "node:path";
+import { createHash as createHash3, randomBytes as randomBytes2 } from "node:crypto";
+import { resolve as resolve8, relative as relative3, dirname as dirname5, sep as sep3 } from "node:path";
 import { fileURLToPath as fileURLToPath5, pathToFileURL as pathToFileURL5 } from "node:url";
 function plain3(path2) {
   return typeof path2 === "string" && path2.length > 0 && path2.length <= 4096 && !/[\\:\u0000-\u001f\u007f]/u.test(path2) && !path2.startsWith("/") && path2.split("/").every((p) => p !== "" && p !== "." && p !== "..");
@@ -17012,7 +18376,7 @@ async function reviewAgentPresets(input) {
   const { composition } = input;
   const files = composition.files;
   if (!files || Object.keys(files).length > 16384 || !Array.isArray(input.directories) || input.directories.length > 16384) fail("invalid source inventory");
-  const base = resolve6("codewhale-reviewed-agent-presets");
+  const base = resolve8("codewhale-reviewed-agent-presets");
   const baseUrl = pathToFileURL5(`${base}${sep3}`).href;
   function key(path2) {
     const inside = relative3(base, path2).split(sep3).join("/");
@@ -17030,12 +18394,12 @@ async function reviewAgentPresets(input) {
   const directories = new Set(input.directories);
   for (const path2 of directories) if (!plain3(path2)) fail("invalid source directory");
   for (const path2 of Object.keys(files)) if (!plain3(path2) || !SHA.test(files[path2])) fail("invalid source file receipt");
-  const invalid5 = /* @__PURE__ */ new Set();
+  const invalid6 = /* @__PURE__ */ new Set();
   const parsed = /* @__PURE__ */ new Map();
   const io = {
     async readFile(path2) {
       const relative4 = key(path2);
-      if (invalid5.has(relative4)) throw new Error("composition exceeds its data/shape bound");
+      if (invalid6.has(relative4)) throw new Error("composition exceeds its data/shape bound");
       const text4 = documents.get(relative4);
       if (text4 === void 0) throw new Error("document not admitted");
       return text4;
@@ -17059,7 +18423,7 @@ async function reviewAgentPresets(input) {
     try {
       parsed.set(path2, parsePresetComposition2(source));
     } catch {
-      invalid5.add(path2);
+      invalid6.add(path2);
     }
   }
   const top = reviewComposition2(composition);
@@ -17087,20 +18451,20 @@ async function reviewAgentPresets(input) {
       }
     });
     if (candidates.length !== 1) fail("shipped root requires exactly one admitted agent-presets package");
-    const folder = dirname4(candidates[0][0]).split(sep3).join("/");
+    const folder = dirname5(candidates[0][0]).split(sep3).join("/");
     const root = folder === "." ? "presets" : `${folder}/presets`;
     if (!directories.has(root)) fail("shipped preset root was not admitted");
-    roots.push({ path: resolve6(base, root), trust: "system" });
+    roots.push({ path: resolve8(base, root), trust: "system" });
   }
   if (config.roots !== void 0 && !Array.isArray(config.roots)) fail("roots must be a literal list");
   for (const root of config.roots ?? []) {
     if (!root || Object.keys(root).some((k) => !["path", "trust"].includes(k)) || !plain3(root.path) || !["system", "user"].includes(root.trust)) fail("configured roots must stay inside the admitted package");
     if (!directories.has(root.path)) fail("configured preset root was not admitted");
-    roots.push({ path: resolve6(base, root.path), trust: root.trust });
+    roots.push({ path: resolve8(base, root.path), trust: root.trust });
   }
   if (config.includeUserRoot !== false) {
     if (!directories.has(".agent-presets")) fail("user root requires an admitted .agent-presets tree; ambient home discovery is refused");
-    roots.push({ path: resolve6(base, ".agent-presets"), trust: "user" });
+    roots.push({ path: resolve8(base, ".agent-presets"), trust: "user" });
   }
   if (roots.length > 64) fail("too many roots");
   const declared = new Map(composition.modules.map((m) => [m.name, m]));
@@ -17176,7 +18540,7 @@ async function reviewAgentPresets(input) {
 }
 function issuePresetReceipt(snapshot2) {
   const payload = JSON.stringify(snapshot2);
-  const receipt = createHash3("sha256").update(randomBytes(32)).update(payload).digest("hex");
+  const receipt = createHash3("sha256").update(randomBytes2(32)).update(payload).digest("hex");
   activePresetReceipts.set(receipt, payload);
   return receipt;
 }
@@ -17184,7 +18548,7 @@ function revokePresetReceipt(receipt) {
   activePresetReceipts.delete(receipt);
 }
 function defineReviewedAgentPresets(mount) {
-  return class ReviewedAgentPresets extends Service {
+  class ReviewedAgentPresets extends Service {
     static inject = ["loader"];
     snapshot;
     selfCtx;
@@ -17259,9 +18623,11 @@ function defineReviewedAgentPresets(mount) {
     remove() {
       fail("delete through Core file/install/review/reload authority");
     }
-  };
+  }
+  Object.defineProperty(ReviewedAgentPresets.prototype, REVIEWED_AGENT_PRESETS_BRAND, { value: true });
+  return ReviewedAgentPresets;
 }
-var AGENT_PRESETS, MAX_PRESETS, hash, SHA, activePresetReceipts;
+var AGENT_PRESETS, MAX_PRESETS, hash, SHA, activePresetReceipts, REVIEWED_AGENT_PRESETS_BRAND;
 var init_agent_presets = __esm({
   "src/dsh/agent-presets.ts"() {
     init_persona();
@@ -17276,11 +18642,13 @@ var init_agent_presets = __esm({
     hash = (bytes) => createHash3("sha256").update(bytes).digest("hex");
     SHA = /^[a-f0-9]{64}$/;
     activePresetReceipts = /* @__PURE__ */ new Map();
+    REVIEWED_AGENT_PRESETS_BRAND = /* @__PURE__ */ Symbol("codewhale.reviewedAgentPresets");
   }
 });
 init_agent_presets();
 export {
   AGENT_PRESETS,
+  REVIEWED_AGENT_PRESETS_BRAND,
   containedPackageModule,
   defineReviewedAgentPresets,
   issuePresetReceipt,

@@ -21,6 +21,7 @@ const SERVICES = {
     methods: [
       { name: 'register', signature: 'register(definition: ToolDefinition): () => void', summary: 'Register one tool built with defineTool from @deepseek-ai/dsh-tools. The definition must stay inside the supported JSON Schema subset (type, oneOf, properties, required, additionalProperties, items, enum, const). A second argument is refused. Returns an idempotent disposer.' },
       { name: 'get', signature: 'get(name: string, agent: Agent): { name: string } | undefined', summary: 'Whether the calling agent has a tool by this name. Answers only inside a live tool call, for that call\'s own agent.' },
+      { name: 'guard', signature: 'guard(fn: (exec: ToolExec) => string | { kind: \'deny\', reason: string } | undefined): () => void', summary: 'Register a deny-only tool guard through the tools/pre-execute admission path. Can deny or abstain, never auto-approve.' },
     ],
   },
   commands: {
@@ -225,6 +226,100 @@ const SERVICES = {
       { name: 'reset', signature: 'reset(id: string): Promise<void>', summary: 'Reset a terminal session buffer.' },
     ],
   },
+  attachments: {
+    summary: 'Conversation image validation, storage, and bounded read/resize through the Engine.',
+    availability: 'review-grant',
+    methods: [
+      { name: 'validateImage', signature: 'validateImage(input: ImageBytesInput, signal?: AbortSignal): Promise<ValidateImageResult>', summary: 'Validate an image payload against Codewhale image limits.' },
+      { name: 'saveImage', signature: 'saveImage(input: ImageBytesInput, signal?: AbortSignal): Promise<StoredImageAttachmentRef>', summary: 'Store a validated conversation image attachment for the active tool result.' },
+      { name: 'readImage', signature: 'readImage(ref: ImageAttachmentRef, signal?: AbortSignal): Promise<ReadImageResult>', summary: 'Read a stored conversation image by attachment reference.' },
+      { name: 'readImageRequest', signature: 'readImageRequest(ref: ImageAttachmentRef, target?: ReadImageRequestTarget, signal?: AbortSignal): Promise<ReadImageRequestResult>', summary: 'Read a resized/fitted variant of a stored conversation image.' },
+    ],
+  },
+  agentPresets: {
+    summary: 'Reviewed read-only agent preset catalog scoped to the owning plugin.',
+    availability: 'always',
+    methods: [
+      { name: 'list', signature: 'list(): Promise<AgentPreset[]>', summary: 'List reviewed presets visible to this owner.' },
+      { name: 'get', signature: 'get(id: string): Promise<AgentPreset | undefined>', summary: 'Look up one reviewed preset by id.' },
+      { name: 'register', signature: 'register(preset: AgentPreset): () => void', summary: 'Register an owner-scoped preset metadata entry.' },
+    ],
+  },
+  agentDefaultModel: {
+    summary: 'Read-only view of the active invocation default model selection.',
+    availability: 'tool-invocation',
+    methods: [
+      { name: 'currentSelection', signature: 'currentSelection(): { provider: string, model: string } | undefined', summary: 'Return the read-only default provider/model for the live invocation.' },
+    ],
+  },
+  sessionProjections: {
+    summary: 'Read-only projection of active session messages and events.',
+    availability: 'tool-invocation',
+    methods: [
+      { name: 'get', signature: 'get(sessionId?: string): SessionProjection | undefined', summary: 'Return the read-only projection for the active session.' },
+      { name: 'list', signature: 'list(): SessionProjection[]', summary: 'List read-only session projections visible to the live invocation.' },
+    ],
+  },
+  workspaceRegistry: {
+    summary: 'Read-only workspace metadata for the active invocation.',
+    availability: 'tool-invocation',
+    methods: [
+      { name: 'list', signature: 'list(): WorkspaceMeta[]', summary: 'List read-only workspace metadata visible to the live invocation.' },
+      { name: 'get', signature: 'get(id: string): WorkspaceMeta | undefined', summary: 'Look up read-only workspace metadata by id or path.' },
+      { name: 'resolveByPath', signature: 'resolveByPath(path: string): WorkspaceMeta | undefined', summary: 'Resolve read-only workspace metadata by filesystem path.' },
+    ],
+  },
+  typertGateway: {
+    summary: 'Owner-scoped Typert service descriptor registry.',
+    availability: 'always',
+    methods: [
+      { name: 'register', signature: 'register(name: string, service: unknown, descriptors?: unknown[]): () => void', summary: 'Register an owner-scoped Typert service and its descriptors.' },
+      { name: 'list', signature: 'list(): string[]', summary: 'List Typert service names registered by this owner.' },
+      { name: 'get', signature: 'get(name: string): { service: unknown, descriptors: unknown[] } | undefined', summary: 'Look up a registered Typert service by name.' },
+    ],
+  },
+  web: {
+    summary: 'Network-policy-guarded web fetch and owner-scoped search provider registration.',
+    availability: 'review-grant',
+    methods: [
+      { name: 'fetch', signature: 'fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>', summary: 'Perform a policy-checked outbound HTTP request through the Engine network broker.' },
+      { name: 'registerSearchProvider', signature: 'registerSearchProvider(provider: SearchProvider): () => void', summary: 'Register an owner-scoped web search provider.' },
+    ],
+  },
+  webServer: {
+    summary: 'Sandboxed Engine-brokered in-memory HTTP route registry (no raw sockets).',
+    availability: 'always',
+    methods: [
+      { name: 'register', signature: 'register(route: { kind?: \'exact\' | \'prefix\', path: string, method?: string, methods?: string[], handler: (req, res) => void | Promise<void> }): () => void', summary: 'Register an owner-scoped HTTP route dispatched through Engine plugin_route/dispatch.' },
+      { name: 'getOrigin', signature: 'getOrigin(): string', summary: 'Return the loopback origin advertised to the plugin.' },
+    ],
+  },
+  connection: {
+    summary: 'Scoped loopback connection status, trust fence, Fetch route registry, and RPC channel registry.',
+    availability: 'always',
+    methods: [
+      { name: 'requestRejection', signature: 'requestRejection(req?: { headers?: Record<string, string | string[] | undefined> }): { status: number, message: string } | null', summary: 'Verify loopback Host and non-cross-site Fetch metadata.' },
+      { name: 'fetch.register', signature: 'fetch.register(route: { path: string, methods?: string[], fetch: (req: Request) => Response | Promise<Response> }): () => void', summary: 'Register an owner-scoped Fetch-style route handler.' },
+      { name: 'rpc.handle', signature: 'rpc.handle(channel: string, handler: (endpoint: string, payload: unknown) => unknown | Promise<unknown>): () => void', summary: 'Register an owner-scoped JSON RPC channel handler.' },
+    ],
+  },
+  sessionTitle: {
+    summary: 'Owner-scoped in-memory session title store and rename observer.',
+    availability: 'always',
+    methods: [
+      { name: 'get', signature: 'get(session: unknown): string | undefined', summary: 'Read a session title stored by this owner.' },
+      { name: 'rename', signature: 'rename(session: unknown, title: string): string', summary: 'Store a bounded single-line title for a session under this owner.' },
+      { name: 'register', signature: 'register(listener: (sessionId: string, title: string) => void): () => void', summary: 'Observe session title updates within this owner.' },
+    ],
+  },
+  profileContext: {
+    summary: 'Read-only owner-scoped profile directory metadata.',
+    availability: 'always',
+    methods: [
+      { name: 'dir', signature: 'get dir(): string', summary: 'Return the owner\'s scoped data directory (fails closed when absent).' },
+      { name: 'installAnchor', signature: 'get installAnchor(): string', summary: 'Return the owner\'s scoped install anchor directory.' },
+    ],
+  },
 }
 
 const AVAILABILITY = {
@@ -251,6 +346,14 @@ const EVENTS_SUPPORTED = [
     mode: 'read-only observers in registration order, after the tool finishes',
     signature: 'ctx.on(\'tools/post-execute\', async (exec: { name: string, callId: string, arguments: { is_error: boolean, duration_ms: number }, signal: AbortSignal, workspace: string, mode: string, model: string }, next: () => Promise<Abstention>) => void)',
     summary: 'Observes a finished tool call for a reviewed native plugin. The view carries only whether the call failed and how long it took, never its output, session or agent. The return value is ignored and an error is logged, so an observer cannot change or fail the call. The listener batch has a five second deadline.',
+    options: 'prepend and global are refused.',
+  },
+  {
+    name: 'tools/result',
+    status: 'supported',
+    mode: 'read-only observers in registration order, after the tool finishes',
+    signature: 'ctx.on(\'tools/result\', async (exec: { name: string, callId: string, arguments: { is_error: boolean, duration_ms: number }, signal: AbortSignal, workspace: string, mode: string, model: string }, next: () => Promise<Abstention>) => void)',
+    summary: 'Alias for read-only tool outcome observation backed by tools/post-execute. Cannot mutate or veto execution.',
     options: 'prepend and global are refused.',
   },
   {

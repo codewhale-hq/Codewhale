@@ -80,7 +80,15 @@ def noreply_ids() -> dict[str, str]:
     return out
 
 
-def expected(since: str) -> dict[str, str]:
+REVERT_RE = re.compile(r"(?im)^this reverts commit ([0-9a-f]{40})\.?")
+
+
+def reverted_shas(since: str) -> set[str]:
+    log = sh("git", "log", f"{since}..HEAD", "--format=%B%x00")
+    return {sha.lower() for sha in REVERT_RE.findall(log)}
+
+
+def expected(since: str, reverted: set[str]) -> dict[str, str]:
     """handle -> why we think they are owed credit."""
     amap = author_map()
     found: dict[str, str] = {}
@@ -99,12 +107,12 @@ def expected(since: str) -> dict[str, str]:
             return
         found.setdefault(handle, why)
 
-    log = sh("git", "log", f"{since}..HEAD", "--format=%an%x1f%ae%x1f%s%x1f%b%x00")
-    work = [parts for parts in (entry.lstrip("\n").split("\x1f", 3) for entry in log.split("\0"))
-            if len(parts) == 4 and not restoring(parts[2], parts[0], parts[1])]
-    for author, email, _, _ in work:
+    log = sh("git", "log", f"{since}..HEAD", "--format=%H%x1f%an%x1f%ae%x1f%s%x1f%b%x00")
+    work = [parts for parts in (entry.lstrip("\n").split("\x1f", 4) for entry in log.split("\0"))
+            if len(parts) == 5 and parts[0].lower() not in reverted and not restoring(parts[3], parts[1], parts[2])]
+    for _, author, email, _, _ in work:
         add(author, email, "commit author")
-    for _, _, _, body in work:
+    for _, _, _, _, body in work:
         for name, addr in re.findall(r"(?im)^co-authored-by:\s*(.+?)\s*<([^>]+)>", body):
             add(name, addr, "co-author trailer")
         for pr, handle in re.findall(r"(?i)harvested from PR #(\d+) by @([A-Za-z0-9-]+)", body):
@@ -115,7 +123,8 @@ def expected(since: str) -> dict[str, str]:
 
 def main() -> int:
     since = sys.argv[1] if len(sys.argv) > 1 else sh("git", "describe", "--tags", "--abbrev=0").strip()
-    owed = expected(since)
+    reverted = reverted_shas(since)
+    owed = expected(since, reverted)
     if not owed:
         print(f"No external contributors found since {since}.")
         return 0
@@ -154,12 +163,14 @@ def main() -> int:
         return nm.group(2).lower() if known == nm.group(1) else ""
 
     log = sh("git", "log", f"{since}..HEAD",
-             "--format=%h%x1f%an%x1f%ae%x1f%(trailers:key=Co-authored-by,unfold)%x1f%B%x00")
+             "--format=%H%x1f%h%x1f%an%x1f%ae%x1f%(trailers:key=Co-authored-by,unfold)%x1f%B%x00")
     for entry in log.split("\0"):
-        parts = entry.strip().split("\x1f", 4)
-        if len(parts) < 5:
+        parts = entry.strip().split("\x1f", 5)
+        if len(parts) < 6:
             continue
-        sha, name, email, parsed, body = parts
+        full_sha, sha, name, email, parsed, body = parts
+        if full_sha.lower() in reverted:
+            continue
         m = re.search(r"\d+\+([^@<>\s]+)@users\.noreply\.github\.com", email)
         author = (amap.get(email.lower()) or amap.get(name.lower()) or (m.group(1) if m else name)).lower()
         trailers = re.findall(r"(?im)^co-authored-by:\s*(.+?)\s*<([^>]+)>", parsed)

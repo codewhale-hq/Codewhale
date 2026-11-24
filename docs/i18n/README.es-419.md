@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:5da2c4c9d5f9 -->
+<!-- source: README.md sha256:7e0e7ebc680b -->
 <div align="center">
 
 <picture>
@@ -82,13 +82,13 @@ En Ask, Accept Edits y Auto-Review, los comandos se ejecutan dentro de un sandbo
 
 Las claves API agregadas con `/provider` permanecen en tu máquina, y los modelos locales no requieren clave. `/cost` y el pie de página muestran el gasto de la sesión cuando el precio es conocido (un precio desconocido se muestra como desconocido, nunca como gratuito).
 
-La telemetría agregada está activada por defecto (versión, SO, duración/resultado de la sesión, IDs de proveedores integrados, recuentos de funciones/errores; ID de instalación aleatorio rotado cada 90 días; nunca código, prompts, conversaciones, nombres de modelos, rutas ni credenciales). Desactívala con:
+La telemetría agregada está activada por defecto (versión, SO, duración y resultado de la sesión, IDs de proveedores integrados, IDs de modelos del catálogo público integrado (los modelos personalizados, privados o locales se registran como `other`), totales de tokens, conteos de llamadas/errores de herramientas integradas y contadores de funciones/errores; ID de instalación aleatorio que rota cada 90 días; nunca código, prompts, conversaciones, nombres de modelos personalizados/privados, nombres de archivos/repos/ramas, credenciales ni direcciones IP). Desactívala con:
 
 ```bash
 codewhale config set telemetry false
 ```
 
-Define `CODEWHALE_NO_UPDATE_CHECK=1` para omitir la comprobación inicial de versiones en GitHub. Detalles: [orden de autorización](../AUTHORIZATION_ORDER.md), [sandboxing](../SANDBOX.md) y [telemetría](../TELEMETRY.md).
+Al iniciar, Codewhale también comprueba nuevas versiones en GitHub (`CODEWHALE_NO_UPDATE_CHECK=1` para omitir) y actualiza el catálogo público de modelos `models.dev` cada 24 horas (`CODEWHALE_DISABLE_MODELS_DEV_FETCH=1` o `[catalog] auto_refresh = false` para omitir; desactivado automáticamente en CI y con `DO_NOT_TRACK`). Detalles: [orden de autorización](../AUTHORIZATION_ORDER.md), [sandboxing](../SANDBOX.md) y [telemetría](../TELEMETRY.md).
 
 ## Documentación
 

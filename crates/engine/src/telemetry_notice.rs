@@ -65,6 +65,19 @@ impl AppliedTelemetryPreference {
         )
     }
 
+    pub fn is_save_failed(&self) -> bool {
+        matches!(self.outcome, TelemetryPreferenceOutcome::SaveFailed(_))
+    }
+
+    pub fn is_persisted(&self) -> bool {
+        matches!(
+            self.outcome,
+            TelemetryPreferenceOutcome::EnabledNextLaunch
+                | TelemetryPreferenceOutcome::Disabled
+                | TelemetryPreferenceOutcome::DisabledWithWarning(_)
+        )
+    }
+
     pub fn message(&self, locale: Locale) -> String {
         let (id, detail) = match &self.outcome {
             TelemetryPreferenceOutcome::EnabledNextLaunch => {

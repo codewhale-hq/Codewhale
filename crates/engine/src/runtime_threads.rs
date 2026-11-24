@@ -3393,6 +3393,12 @@ impl RuntimeThreadStore {
 
     pub fn rebuild_thread_from_event_log(&self, thread_id: &str) -> Result<Option<ThreadRecord>> {
         validated_record_id(thread_id, "thread id")?;
+        if self
+            .seed_journal_path(thread_id)
+            .is_ok_and(|journal_path| journal_path.exists())
+        {
+            return Ok(None);
+        }
         let mut rebuilt: Option<ThreadRecord> = None;
         let mut latest_turn_id: Option<String> = None;
         let mut latest_ts: Option<DateTime<Utc>> = None;

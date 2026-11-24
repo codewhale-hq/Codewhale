@@ -1603,8 +1603,8 @@ the `CODEWHALE_*` value wins.
 - `CODEWHALE_MEMORY` (`1|on|true|yes|y|enabled` turns user memory on)
 - `CODEWHALE_MEMORY_PATH`
 - `CODEWHALE_TELEMETRY` / `DEEPSEEK_TELEMETRY` (legacy alias) — anonymous usage
-  counting is on by default in the current 0.9.12 source, with a disclosure
-  naming Codewhale and PostHog and an easy durable opt-out. Prior explicit
+  counting is on by default in the current source, with a disclosure
+  naming Codewhale as the sole first-party collector and an easy durable opt-out. Prior explicit
   declines remain off. Accepts `0|1|true|false|yes|no|on|off|enabled|
   disabled`. An explicit "off" is a **floor**: it beats `--telemetry true` and
   `telemetry = true` in config, and a value this list cannot read also resolves
@@ -2435,8 +2435,8 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   `eval`) default to `concise` unless config/env/CLI overrides it.
   Override per process with `CODEWHALE_VERBOSITY` or the legacy
   `DEEPSEEK_VERBOSITY` alias.
-- `telemetry` (bool, optional): anonymous usage counting, **`true` by default
-  in the current 0.9.12 source**. Notice version `5` names Codewhale and PostHog
+- `telemetry` (bool, optional): anonymous usage counting, **`true` by default**.
+  Notice version `6` names Codewhale as the sole first-party collector
   and describes the opt-out policy; no acceptance is invented for a default
   user. Existing explicit declines remain off. An explicit `false` here is the
   durable *opt-out*: it deletes the random install id, truncates buffered and

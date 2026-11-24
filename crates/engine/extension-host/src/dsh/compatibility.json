@@ -17,7 +17,18 @@
       "settings",
       "pluginManager",
       "deepseekAccount",
-      "terminal"
+      "terminal",
+      "attachments",
+      "agentPresets",
+      "agentDefaultModel",
+      "sessionProjections",
+      "workspaceRegistry",
+      "typertGateway",
+      "web",
+      "webServer",
+      "connection",
+      "sessionTitle",
+      "profileContext"
     ],
     "cordis": [
       "logger",
@@ -62,7 +73,18 @@
     "settings",
     "pluginManager",
     "deepseekAccount",
-    "terminal"
+    "terminal",
+    "attachments",
+    "agentPresets",
+    "agentDefaultModel",
+    "sessionProjections",
+    "workspaceRegistry",
+    "typertGateway",
+    "web",
+    "webServer",
+    "connection",
+    "sessionTitle",
+    "profileContext"
   ],
   "row_bridges": {
     "@deepseek-ai/dsh-mcp-client": "mcp",
@@ -94,8 +116,17 @@
     "@deepseek-ai/dsh-commands/brand": "dsh-commands-brand",
     "@deepseek-ai/dsh-llm": "dsh-llm-values",
     "@deepseek-ai/dsh-session": "dsh-session-values",
+    "@deepseek-ai/dsh-session/surface": "dsh-session-surface",
     "@deepseek-ai/dsh-system-prompt": "dsh-system-prompt-values",
-    "@deepseek-ai/dsh-user-questions": "dsh-user-questions-values"
+    "@deepseek-ai/dsh-user-questions": "dsh-user-questions-values",
+    "@deepseek-ai/dsh-credentials": "dsh-credentials",
+    "@deepseek-ai/dsh-settings": "dsh-settings",
+    "@deepseek-ai/dsh-home-paths": "dsh-home-paths",
+    "@deepseek-ai/dsh-atomic-write": "dsh-atomic-write",
+    "@deepseek-ai/dsh-skill": "dsh-skill",
+    "@deepseek-ai/dsh-typert-protocol": "dsh-typert-protocol",
+    "@deepseek-ai/dsh-workspace": "dsh-workspace",
+    "@deepseek-ai/dsh-subagent": "dsh-subagent"
   },
   "definition_api": {
     "package": "@deepseek-ai/dsh-tools",
@@ -141,14 +172,31 @@
   "command_followup": "one-text-message-submit-on-success",
   "pure_api": {
     "file": "src/dsh/dsh-message-compat.js",
-    "source_sha256": "aac208e72eac3601b02c5a4ce95bfeb82f1bb3ba0d1e906d786d1e25609e9857",
+    "source_sha256": "018236676c31a588543e69d09821c53bc1138d14f4520b92ceba0e122cc8de78",
     "exports": {
       "@deepseek-ai/dsh-llm": [
         "createUserMessage",
+        "createAssistantMessage",
+        "createSystemMessage",
+        "createToolResultMessage",
+        "freezeMessage",
+        "contentHasImage",
+        "ReasoningEffortId",
+        "MessageId",
+        "ToolCallId",
+        "isAgentLoopRequest",
+        "resolveRetryPolicy",
+        "boundContextSummary",
+        "BlockAssembler",
+        "LlmAdapter",
+        "LlmError",
         "HarnessError"
       ],
       "@deepseek-ai/dsh-session": [
-        "SessionId"
+        "SessionId",
+        "SESSION_FORMAT_VERSION",
+        "KNOWN_SESSION_EVENT_TYPES",
+        "deriveEventMessage"
       ],
       "@deepseek-ai/dsh-system-prompt": [
         "PERSONA_PREFIX_SECTION"

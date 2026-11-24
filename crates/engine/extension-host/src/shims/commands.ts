@@ -74,7 +74,11 @@ export interface CommandInvocation {
   readonly sessionId?: string
   readonly agentId?: string
   readonly originTurnId?: string
-  readonly agent: Readonly<{ id: string; followup(message: unknown): void }>
+  readonly agent: Readonly<{
+    id: string
+    session: Readonly<{ id: string; header: Readonly<{ id: string; cwd?: string }> }>
+    followup(message: unknown): void
+  }>
 }
 
 /** Reject an invalid definition before it reaches the core, with a message that names the problem. */
@@ -141,6 +145,13 @@ export function makeInvocation(
   }
   const agent = context.sessionId?.trim() ? Object.freeze({
     id: context.agentId ?? context.sessionId,
+    session: Object.freeze({
+      id: context.sessionId,
+      header: Object.freeze({
+        id: context.sessionId,
+        ...(context.workspace === undefined ? {} : { cwd: context.workspace }),
+      }),
+    }),
     followup(message: unknown) {
       if (!open || signal.aborted) reject('is unavailable after command settlement or cancellation')
       if (failure) throw failure

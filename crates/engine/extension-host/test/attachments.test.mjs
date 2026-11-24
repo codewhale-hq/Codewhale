@@ -277,13 +277,12 @@ test('consumer-shaped fixture executes against attachmentsAdapter inside Cordis 
   assert.deepEqual(calls.map((c) => c.method), ['read', 'validate', 'save', 'read_request'])
 })
 
-test('real host refuses dsh-attachments activation until DSH-16 turn-on and projects renderResult image blocks', async (t) => {
+test('real host activates dsh-attachments and projects renderResult image blocks', async (t) => {
   const host = await startHost()
   t.after(() => host.stop())
 
-  const unoffered = await activate(host, 'dsh-attachments')
-  assert.equal(unoffered.result.status, 'failed')
-  assert.match(unoffered.result.diagnostic, /requires `attachments`/)
+  const activated = await activate(host, 'dsh-attachments')
+  assert.equal(activated.result.status, 'ok', activated.result.diagnostic)
 
   const renderActivated = await activate(host, 'dsh-attachments-render')
   assert.equal(renderActivated.result.status, 'ok', renderActivated.result.diagnostic)

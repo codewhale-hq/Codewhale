@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:5da2c4c9d5f9 -->
+<!-- source: README.md sha256:7e0e7ebc680b -->
 <div align="center">
 
 <picture>
@@ -82,13 +82,13 @@ In Ask, Accept Edits e Auto-Review, i comandi girano in un sandbox del sistema o
 
 Le chiavi API aggiunte con `/provider` restano sulla tua macchina e i modelli locali non richiedono chiavi. `/cost` e il piè di pagina tracciano la spesa della sessione quando il listino è noto (un prezzo sconosciuto viene mostrato come sconosciuto, mai come gratuito).
 
-La telemetria aggregata è attiva per impostazione predefinita (versione, OS, durata/esito della sessione, ID dei provider integrati, conteggi di funzioni/errori; ID di installazione casuale ruotato ogni 90 giorni; mai codice, prompt, conversazioni, nomi di modelli, percorsi o credenziali). Disattivala con:
+La telemetria aggregata è attiva per impostazione predefinita (versione, SO, durata/esito della sessione, ID dei provider integrati, ID dei modelli del catalogo pubblico integrato (i modelli personalizzati, privati o locali vengono registrati come `other`), totali dei token, conteggi di chiamate/errori degli strumenti integrati e contatori di funzionalità/errori; ID di installazione casuale ruotato ogni 90 giorni; mai codice, prompt, conversazioni, nomi di modelli personalizzati/privati, nomi di file/repo/branch, credenziali o indirizzi IP). Disattivala con:
 
 ```bash
 codewhale config set telemetry false
 ```
 
-Imposta `CODEWHALE_NO_UPDATE_CHECK=1` per saltare il controllo delle release GitHub all’avvio. Dettagli: [ordine di autorizzazione](../AUTHORIZATION_ORDER.md), [sandboxing](../SANDBOX.md) e [telemetria](../TELEMETRY.md).
+All'avvio Codewhale controlla anche eventuali nuove release su GitHub (`CODEWHALE_NO_UPDATE_CHECK=1` per saltare) e aggiorna il catalogo pubblico `models.dev` ogni 24 ore (`CODEWHALE_DISABLE_MODELS_DEV_FETCH=1` o `[catalog] auto_refresh = false` per saltare; disattivato automaticamente in CI e con `DO_NOT_TRACK`). Dettagli: [ordine di autorizzazione](../AUTHORIZATION_ORDER.md), [sandboxing](../SANDBOX.md) e [telemetria](../TELEMETRY.md).
 
 ## Documentazione
 

@@ -14143,7 +14143,7 @@ async fn settings_schema_allow_shell_reports_interactive_default_and_explicit_op
         .iter()
         .find(|row| row["key"] == "allow_shell")
         .expect("allow_shell row present");
-    assert_eq!(default_launch_row["value"], "false");
+    assert_eq!(default_launch_row["value"], "true");
     assert_eq!(default_launch_row["persisted"], true);
     Ok(())
 }
@@ -14239,7 +14239,7 @@ async fn settings_schema_serves_every_declared_row_with_runtime_state() -> Resul
     assert_eq!(row("approval_mode")["row"], "session");
     assert_eq!(row("approval_mode")["editable"], true);
     assert_eq!(row("provider_url")["editable"], false);
-    assert_eq!(row("telemetry")["editable"], false);
+    assert_eq!(row("telemetry")["editable"], true);
     for action in ["mcp_open", "plugins_open"] {
         assert_eq!(row(action)["row"], "action");
         assert_eq!(row(action)["editable"], false);
@@ -14250,6 +14250,65 @@ async fn settings_schema_serves_every_declared_row_with_runtime_state() -> Resul
     assert_eq!(row("permission_posture")["visible"], true);
     assert_eq!(row("approval_policy")["visible"], false);
     assert_eq!(row("managed_approval_policy")["visible"], false);
+    Ok(())
+}
+
+#[tokio::test]
+async fn settings_schema_telemetry_config_toggle_persists_and_validates() -> Result<()> {
+    let _lock = lock_test_env();
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    fs::create_dir_all(&home)?;
+    let config_file = home.join("config.toml");
+    fs::write(
+        &config_file,
+        "provider = \"deepseek\"\napi_key = \"runtime-api-test-key\"\nbase_url = \"http://127.0.0.1:1/v1\"\n",
+    )?;
+    let _home = EnvVarGuard::set("CODEWHALE_HOME", &home);
+    let _config = EnvVarGuard::set("CODEWHALE_CONFIG_PATH", &config_file);
+    let Some((addr, _runtime_threads, handle)) =
+        spawn_test_server_with_config_path(config_file.clone()).await?
+    else {
+        return Ok(());
+    };
+    let client = codewhale_release::tls::reqwest_client();
+
+    let off = client
+        .post(format!("http://{addr}/v1/config"))
+        .json(&json!({"key": "telemetry", "value": "false", "persist": true}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+    assert_eq!(off["key"], "telemetry");
+    assert_eq!(off["value"], "false");
+    assert_eq!(off["persisted"], true);
+    assert_eq!(off["requires_reload"], false);
+    assert!(fs::read_to_string(&config_file)?.contains("telemetry = false"));
+
+    let on = client
+        .post(format!("http://{addr}/v1/config"))
+        .json(&json!({"key": "telemetry", "value": "true", "persist": true}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+    assert_eq!(on["key"], "telemetry");
+    assert_eq!(on["value"], "true");
+    assert_eq!(on["persisted"], true);
+    assert_eq!(on["requires_reload"], true);
+    assert!(fs::read_to_string(&config_file)?.contains("telemetry = true"));
+
+    let invalid = client
+        .post(format!("http://{addr}/v1/config"))
+        .json(&json!({"key": "telemetry", "value": "maybe", "persist": true}))
+        .send()
+        .await?;
+    assert_eq!(invalid.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    handle.abort();
     Ok(())
 }
 

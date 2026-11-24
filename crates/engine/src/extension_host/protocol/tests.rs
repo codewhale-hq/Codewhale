@@ -33,6 +33,7 @@ fn params_schema(method: &str, generator: &mut SchemaGenerator) -> Schema {
         "tool/call" => generator.subschema_for::<ToolCallParams>(),
         "command/run" => generator.subschema_for::<CommandRunParams>(),
         "hook/evaluate" => generator.subschema_for::<HookEvaluateParams>(),
+        "plugin_route/dispatch" => generator.subschema_for::<PluginRouteDispatchParams>(),
         "harness/run" => generator.subschema_for::<HarnessRunParams>(),
         "exec/redeem" => generator.subschema_for::<ExecutionRedeemParams>(),
         "mcp/open" => generator.subschema_for::<McpOpenParams>(),
@@ -155,6 +156,7 @@ fn render() -> String {
     let _ = generator.subschema_for::<ToolResultWire>();
     let _ = generator.subschema_for::<CommandResultWire>();
     let _ = generator.subschema_for::<HookVerdictWire>();
+    let _ = generator.subschema_for::<PluginRouteDispatchResult>();
     let _ = generator.subschema_for::<crate::tools::user_input::UserInputResponse>();
     let defs: BTreeMap<String, Def> = generator
         .definitions()
@@ -462,6 +464,11 @@ const REVIEWED: &[(&str, &str, &str)] = &[
         "core_to_host",
         "command/run",
         "sent only when the user runs the command themselves; the answer is text or a prompt that the core shows or submits through the ordinary turn",
+    ),
+    (
+        "core_to_host",
+        "plugin_route/dispatch",
+        "loopback-only Engine-brokered HTTP route dispatch scoped to one verified plugin owner with bounded request/response bodies and sanitized headers; no raw sockets, credentials, or core authority",
     ),
     (
         "core_to_host",

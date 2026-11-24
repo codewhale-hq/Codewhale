@@ -3821,3 +3821,71 @@ fn dsh_row_turned_off_with_the_flag_converts_and_is_not_enabled() {
     assert!(server.disabled);
     assert!(!server.is_enabled());
 }
+
+#[test]
+fn dsh_named_group_module_is_included_in_reviewed_module_closure() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = write_dsh_base_package(
+        &tmp.path().join("named-group"),
+        serde_json::json!({
+            "name": "demo-named-group",
+            "version": "1.0.0",
+            "type": "module",
+            "exports": {
+                ".": { "default": "./lib/index.js" },
+                "./bundle": { "default": "./lib/bundle.js" }
+            },
+            "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+        }),
+        "- insert:\n    - id: demo-bundle\n      name: demo-named-group/bundle\n      group: true\n      config:\n        - id: demo-core\n          name: demo-named-group\n",
+    );
+    fs::create_dir_all(pkg.join("lib")).unwrap();
+    fs::write(pkg.join("lib/index.js"), "export function apply() {}\n").unwrap();
+    fs::write(
+        pkg.join("lib/bundle.js"),
+        "export default class Bundle {}\n",
+    )
+    .unwrap();
+
+    let out = tmp.path().join("out-named-group");
+    dsh::convert_package(&pkg, &out).unwrap();
+    let comp: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(out.join("native/composition.json")).unwrap())
+            .unwrap();
+    let modules = comp["modules"].as_array().unwrap();
+    assert!(
+        modules
+            .iter()
+            .any(|m| m["name"] == "demo-named-group/bundle" && m["path"] == "lib/bundle.js"),
+        "expected demo-named-group/bundle in reviewed module closure, got {modules:?}"
+    );
+}
+
+#[test]
+fn dsh_npm_deps_scans_bundled_js_asset_above_two_mib_within_eight_mib_cap() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = serde_json::json!({
+        "name": "@demo/large-asset",
+        "version": "1.0.0",
+        "type": "module",
+        "main": "./lib/index.js",
+        "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+    });
+    let pkg = write_dsh_base_package(
+        &tmp.path().join("large-asset"),
+        manifest,
+        "- insert:\n    - id: demo-large\n      name: '@demo/large-asset'\n",
+    );
+    fs::create_dir_all(pkg.join("lib")).unwrap();
+    let mut big = String::with_capacity(2_500_000);
+    big.push_str("export function apply() {}\n// ");
+    big.push_str(&"a".repeat(2_400_000));
+    big.push('\n');
+    fs::write(pkg.join("lib/index.js"), big).unwrap();
+
+    let policy = codewhale_net::network_policy::NetworkPolicy::default();
+    let no_dependencies = dsh::Value::Map(Vec::new());
+    let stage = npm_deps::maybe_stage_with_dependencies(&pkg, &no_dependencies, &[], &policy)
+        .expect("2.4 MiB bundled JS asset should scan cleanly within 8 MiB limit");
+    assert!(stage.is_none());
+}

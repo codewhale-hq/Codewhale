@@ -111,7 +111,7 @@ Codewhale 会写出文件、给你看 diff，然后询问 **APPROVAL: bash pytho
 
 **只选一种。** 同一台机器上装了多份，最后会在 PATH 上互相打架（见[故障排查](#13-故障排查)）。
 
-**隐私说明：** Codewhale **默认**会发送聚合的使用次数统计（PostHog）。要永久关闭：运行 `codewhale config set telemetry false`，或者导出 `CODEWHALE_TELEMETRY=0`（它始终优先）。TUI 启动时还会检查 GitHub 上是否有更新（`~/.codewhale/config.toml` 中的 `[update] check_for_updates`）。
+**隐私说明：** Codewhale **默认**会向 Codewhale 第一方端点（`https://telemetry.codewhale.net/v1/telemetry`）发送聚合的使用次数统计。要永久关闭：运行 `codewhale config set telemetry false`，或者导出 `CODEWHALE_TELEMETRY=0`（它始终优先）。TUI 启动时还会检查 GitHub 上是否有更新（`~/.codewhale/config.toml` 中的 `[update] check_for_updates`）。
 
 ---
 

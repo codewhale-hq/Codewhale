@@ -5959,15 +5959,16 @@ fn remove_readonly_redirect_env(cmd: &mut Command, env: &HashMap<String, String>
                     | "GIT_EXTERNAL_DIFF"
                     | "GIT_ATTR_NOSYSTEM"
                     | "GIT_CONFIG_COUNT"
-                    | "GIT_SSH_COMMAND"
-                    | "GIT_EDITOR"
-                    | "GIT_ASKPASS"
                     | "GH_PAGER"
                     | "GH_PROMPT_DISABLED"
                     | "GH_NO_UPDATE_NOTIFIER"
                     | "GH_HOST"
                     | "GH_REPO"
-            ) || upper.starts_with("GIT_CONFIG_KEY_")
+            ) || (matches!(
+                upper.as_str(),
+                "GIT_SSH_COMMAND" | "GIT_EDITOR" | "GIT_ASKPASS"
+            ) && env.contains_key(upper.as_str()))
+                || upper.starts_with("GIT_CONFIG_KEY_")
                 || upper.starts_with("GIT_CONFIG_VALUE_");
             (guarded && !safe).then(|| key.to_os_string())
         })

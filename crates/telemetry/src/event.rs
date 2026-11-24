@@ -650,7 +650,8 @@ pub enum Event {
         cold_start_bucket: Option<ColdStartBucket>,
         /// Sorted, deduplicated `ProviderKind` names. A custom provider yields
         /// the literal `"custom"`, never the customer's `[providers.<name>]`
-        /// table key, and no model id is sent for any provider.
+        /// table key; bundled public-catalog model ids are reported separately
+        /// in `ModelUsage` (all other models map to `"other"`).
         providers: Vec<String>,
         /// Feature-use counts.
         counters: Counters,
