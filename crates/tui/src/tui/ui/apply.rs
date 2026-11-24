@@ -3096,17 +3096,17 @@ async fn apply_command_result_inner(
             AppAction::OpenSetupWizard => {
                 if app.view_stack.top_kind() != Some(ModalKind::SetupWizard) {
                     let _ = app.next_draft_gen();
-                    app.view_stack
-                        .push(crate::tui::setup::SetupWizardView::new_for_app(app, config));
+                    let view = crate::tui::setup::SetupWizardView::load_for_app(app, config).await;
+                    app.view_stack.push(view);
                 }
             }
             AppAction::OpenSetupWizardAt { step } => {
                 if app.view_stack.top_kind() != Some(ModalKind::SetupWizard) {
                     let _ = app.next_draft_gen();
-                    app.view_stack
-                        .push(crate::tui::setup::SetupWizardView::new_for_app_at(
-                            app, config, step,
-                        ));
+                    let view =
+                        crate::tui::setup::SetupWizardView::load_for_app_at(app, config, step)
+                            .await;
+                    app.view_stack.push(view);
                 }
             }
             AppAction::OpenConstitutionManager { review } => {

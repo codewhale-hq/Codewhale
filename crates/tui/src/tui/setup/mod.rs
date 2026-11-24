@@ -317,9 +317,142 @@ impl Default for SetupRuntimeFacts {
     }
 }
 
+struct SetupDiskProbeInput {
+    config_path: Option<std::path::PathBuf>,
+    locale: Locale,
+    trust_mode: bool,
+    tools_mcp: tools_mcp::ToolsMcpProbeInput,
+}
+
+impl SetupDiskProbeInput {
+    fn from_app_config(app: &App, config: &Config) -> Self {
+        let codewhale_home = setup_codewhale_home_dir();
+        Self {
+            config_path: app.config_path.clone(),
+            locale: app.ui_locale,
+            trust_mode: app.trust_mode,
+            tools_mcp: tools_mcp::ToolsMcpProbeInput::from_app_config(app, config, codewhale_home),
+        }
+    }
+}
+
+struct SetupDiskProbes {
+    state: SetupState,
+    expert_override: SetupExpertOverrideState,
+    roster: codewhale_engine::fleet::roster::FleetRoster,
+    persistence: SetupPersistenceFacts,
+    tools_mcp: tools_mcp::SetupToolsMcpFacts,
+    project_override_warning: Option<String>,
+    constitution_autonomy: String,
+    constitution_file: SetupConstitutionFileState,
+}
+
+impl SetupDiskProbes {
+    fn collect(input: SetupDiskProbeInput) -> Self {
+        let expert_override = SetupExpertOverrideState::load();
+        let user_constitution = UserConstitution::load().ok();
+        let state = match SetupState::load() {
+            Ok(Some(state)) => state,
+            _ => {
+                let user_constitution_validity = user_constitution.as_ref().map_or(
+                    ConstitutionValidity::Unknown,
+                    UserConstitutionLoad::validity,
+                );
+                let has_user_constitution = user_constitution
+                    .as_ref()
+                    .is_some_and(|loaded| !matches!(loaded, UserConstitutionLoad::Missing));
+                SetupState::derive_inherited(&InheritedConfigFacts {
+                    language: Some(input.locale.tag().to_string()),
+                    has_provider_route: !input.tools_mcp.config.default_model().trim().is_empty(),
+                    has_credentials_or_local_runtime: has_api_key(&input.tools_mcp.config),
+                    trust_chosen: input.trust_mode
+                        || !codewhale_runtime::config::needs_trust(&input.tools_mcp.workspace),
+                    has_expert_override: expert_override.is_active(),
+                    has_user_constitution,
+                    user_constitution_validity,
+                })
+            }
+        };
+        let roster = codewhale_engine::fleet::identity::load_effective_roster(
+            &input.tools_mcp.config.fleet_config(),
+            &input.tools_mcp.workspace,
+            Some(input.tools_mcp.plugin_registry.as_ref()),
+        );
+        let persistence = SetupPersistenceFacts::from_paths(
+            input.config_path,
+            &input.tools_mcp.config,
+            &input.tools_mcp.codewhale_home,
+        );
+        let tools_mcp = tools_mcp::SetupToolsMcpFacts::from_probe_input(&input.tools_mcp);
+        let project_override_warning =
+            project_runtime_override_warning(&input.tools_mcp.workspace, input.locale);
+        let constitution_autonomy = user_constitution
+            .as_ref()
+            .and_then(|load| {
+                load.constitution().map(|constitution| {
+                    autonomy_label(constitution.autonomy_preference, input.locale).to_string()
+                })
+            })
+            .unwrap_or_else(|| tr(input.locale, MessageId::SetupAutonomyUnspecified).to_string());
+        let constitution_file = SetupConstitutionFileState::load();
+        Self {
+            state,
+            expert_override,
+            roster,
+            persistence,
+            tools_mcp,
+            project_override_warning,
+            constitution_autonomy,
+            constitution_file,
+        }
+    }
+
+    fn fallback(locale: Locale) -> Self {
+        Self {
+            state: SetupState::default(),
+            expert_override: SetupExpertOverrideState::NotChecked,
+            roster: codewhale_engine::fleet::roster::FleetRoster::failed("setup probe task failed"),
+            persistence: SetupPersistenceFacts::default(),
+            tools_mcp: tools_mcp::SetupToolsMcpFacts::default(),
+            project_override_warning: None,
+            constitution_autonomy: tr(locale, MessageId::SetupAutonomyUnspecified).to_string(),
+            constitution_file: SetupConstitutionFileState::NotChecked,
+        }
+    }
+
+    async fn load(app: &App, config: &Config) -> Self {
+        let input = SetupDiskProbeInput::from_app_config(app, config);
+        match tokio::task::spawn_blocking(move || Self::collect(input)).await {
+            Ok(probes) => probes,
+            Err(error) => {
+                tracing::warn!(target: "tui::setup", %error, "setup probe task failed");
+                Self::fallback(app.ui_locale)
+            }
+        }
+    }
+}
+
 impl SetupRuntimeFacts {
     fn from_app_config(app: &App, config: &Config) -> Self {
-        let expert_override = SetupExpertOverrideState::load();
+        let probes = SetupDiskProbes::collect(SetupDiskProbeInput::from_app_config(app, config));
+        Self::from_app_config_with_probes(app, config, probes).1
+    }
+
+    fn from_app_config_with_probes(
+        app: &App,
+        config: &Config,
+        probes: SetupDiskProbes,
+    ) -> (SetupState, Self) {
+        let SetupDiskProbes {
+            state,
+            expert_override,
+            roster,
+            persistence,
+            tools_mcp,
+            project_override_warning,
+            constitution_autonomy,
+            constitution_file,
+        } = probes;
         let readiness = app
             .admitted_provider_identity()
             .ok()
@@ -443,7 +576,8 @@ impl SetupRuntimeFacts {
             sandbox,
             network
         );
-        let operate = operate::SetupOperateFacts::from_app_config(app, config, provider_ready);
+        let operate =
+            operate::SetupOperateFacts::from_app_config(app, config, provider_ready, &roster);
         let known_hotbar_action_ids = app
             .hotbar_actions
             .iter()
@@ -467,10 +601,6 @@ impl SetupRuntimeFacts {
             "state={hotbar_state}, configured_slots={configured_hotbar_slots}, active_slots={active_hotbar_slots}, actions={}, warnings={hotbar_warning_count}",
             app.hotbar_actions.len()
         );
-        let codewhale_home = setup_codewhale_home_dir();
-        let persistence = SetupPersistenceFacts::from_app_config(app, config, &codewhale_home);
-        let tools_mcp =
-            tools_mcp::SetupToolsMcpFacts::from_app_config(app, config, &codewhale_home);
         let tools_mcp_servers_result = tools_mcp.servers_result;
         let tools_mcp_skills_result = tools_mcp.skills_result;
         let tools_mcp_tools_result = tools_mcp.tools_result;
@@ -484,89 +614,81 @@ impl SetupRuntimeFacts {
         let tools_mcp_plugins_path_display = tools_mcp.plugins_path_display;
         let remote = SetupRemoteFacts::from_app(app);
         let remote_needs_action = remote.needs_action();
-        let constitution_autonomy = UserConstitution::load()
-            .ok()
-            .and_then(|load| {
-                load.constitution().map(|constitution| {
-                    autonomy_label(constitution.autonomy_preference, app.ui_locale).to_string()
-                })
-            })
-            .unwrap_or_else(|| tr(app.ui_locale, MessageId::SetupAutonomyUnspecified).to_string());
-        Self {
-            provider,
-            model,
-            auth,
-            health,
-            provider_ready,
-            provider_status,
-            provider_result,
-            work_intent: app.mode.display_name_localized(app.ui_locale).into_owned(),
-            approval: app
-                .approval_mode
-                .permission_chip_label()
-                .to_ascii_lowercase(),
-            shell,
-            allow_shell_enabled: app.allow_shell,
-            trust,
-            sandbox,
-            sandbox_mode_value,
-            network,
-            network_default_value,
-            runtime_result,
-            operate_runtime_ready: operate.runtime_ready,
-            operate_runtime_result: operate.runtime_result,
-            fleet_roster_ready: operate.roster_ready,
-            fleet_roster_result: operate.roster_result,
-            operate_concurrency_result: operate.concurrency_result,
-            operate_result: operate.result,
-            hotbar_bindings_result,
-            hotbar_actions_result,
-            hotbar_result,
-            tools_mcp_servers_result,
-            tools_mcp_skills_result,
-            tools_mcp_tools_result,
-            tools_mcp_plugins_result,
-            tools_mcp_hotbar_result,
-            tools_mcp_dsh_result,
-            tools_mcp_result,
-            tools_mcp_needs_action,
-            tools_mcp_path_display,
-            tools_mcp_skills_path_display,
-            tools_mcp_plugins_path_display,
-            remote_clouds_result: remote.clouds_result,
-            remote_bridges_result: remote.bridges_result,
-            remote_providers_result: remote.providers_result,
-            remote_mode_result: remote.mode_result,
-            remote_command_provider: remote.command_provider,
-            remote_result: remote.result,
-            remote_control_result: {
-                use codewhale_app_server::remote_control::Status;
-                let message = match app.remote_control.status() {
-                    Status::Connected => MessageId::SetupRemoteStatusReady,
-                    Status::Connecting | Status::Stopping => MessageId::SetupStatusInProgress,
-                    Status::Failed => MessageId::SetupRemoteStatusNeedsAction,
-                    Status::Off => MessageId::SetupRemoteStatusDisabled,
-                };
-                tr(app.ui_locale, message).into_owned()
+        (
+            state,
+            Self {
+                provider,
+                model,
+                auth,
+                health,
+                provider_ready,
+                provider_status,
+                provider_result,
+                work_intent: app.mode.display_name_localized(app.ui_locale).into_owned(),
+                approval: app
+                    .approval_mode
+                    .permission_chip_label()
+                    .to_ascii_lowercase(),
+                shell,
+                allow_shell_enabled: app.allow_shell,
+                trust,
+                sandbox,
+                sandbox_mode_value,
+                network,
+                network_default_value,
+                runtime_result,
+                operate_runtime_ready: operate.runtime_ready,
+                operate_runtime_result: operate.runtime_result,
+                fleet_roster_ready: operate.roster_ready,
+                fleet_roster_result: operate.roster_result,
+                operate_concurrency_result: operate.concurrency_result,
+                operate_result: operate.result,
+                hotbar_bindings_result,
+                hotbar_actions_result,
+                hotbar_result,
+                tools_mcp_servers_result,
+                tools_mcp_skills_result,
+                tools_mcp_tools_result,
+                tools_mcp_plugins_result,
+                tools_mcp_hotbar_result,
+                tools_mcp_dsh_result,
+                tools_mcp_result,
+                tools_mcp_needs_action,
+                tools_mcp_path_display,
+                tools_mcp_skills_path_display,
+                tools_mcp_plugins_path_display,
+                remote_clouds_result: remote.clouds_result,
+                remote_bridges_result: remote.bridges_result,
+                remote_providers_result: remote.providers_result,
+                remote_mode_result: remote.mode_result,
+                remote_command_provider: remote.command_provider,
+                remote_result: remote.result,
+                remote_control_result: {
+                    use codewhale_app_server::remote_control::Status;
+                    let message = match app.remote_control.status() {
+                        Status::Connected => MessageId::SetupRemoteStatusReady,
+                        Status::Connecting | Status::Stopping => MessageId::SetupStatusInProgress,
+                        Status::Failed => MessageId::SetupRemoteStatusNeedsAction,
+                        Status::Off => MessageId::SetupRemoteStatusDisabled,
+                    };
+                    tr(app.ui_locale, message).into_owned()
+                },
+                remote_needs_action,
+                remote_modes: remote.modes,
+                persistence,
+                default_mode: app.mode.as_setting().to_string(),
+                approval_policy_value: config
+                    .approval_policy
+                    .as_deref()
+                    .filter(|policy| !policy.trim().is_empty())
+                    .unwrap_or("on-request")
+                    .to_string(),
+                project_override_warning,
+                constitution_autonomy,
+                constitution_file,
+                expert_override,
             },
-            remote_needs_action,
-            remote_modes: remote.modes,
-            persistence,
-            default_mode: app.mode.as_setting().to_string(),
-            approval_policy_value: config
-                .approval_policy
-                .as_deref()
-                .filter(|policy| !policy.trim().is_empty())
-                .unwrap_or("on-request")
-                .to_string(),
-            project_override_warning: project_runtime_override_warning(
-                &app.workspace,
-                app.ui_locale,
-            ),
-            constitution_autonomy,
-            constitution_file: SetupConstitutionFileState::load(),
-            expert_override,
-        }
+        )
     }
 }
 
@@ -2281,31 +2403,24 @@ fn freeform_note_line(locale: Locale, note: &str, editing: bool) -> Line<'static
 
 impl SetupWizardView {
     #[must_use]
-    pub fn new_for_app(app: &App, config: &Config) -> Self {
-        Self::new_with_facts(
-            load_setup_state_for_app(app, config),
-            app.ui_locale,
-            SetupRuntimeFacts::from_app_config(app, config),
-        )
+    pub async fn load_for_app(app: &App, config: &Config) -> Self {
+        let probes = SetupDiskProbes::load(app, config).await;
+        let (state, facts) = SetupRuntimeFacts::from_app_config_with_probes(app, config, probes);
+        Self::new_with_facts(state, app.ui_locale, facts)
     }
 
     #[must_use]
     pub fn new_checkpoint_for_app(app: &App, config: &Config) -> Self {
-        Self::new_checkpoint_with_facts(
-            load_setup_state_for_app(app, config),
-            app.ui_locale,
-            SetupRuntimeFacts::from_app_config(app, config),
-        )
+        let probes = SetupDiskProbes::collect(SetupDiskProbeInput::from_app_config(app, config));
+        let (state, facts) = SetupRuntimeFacts::from_app_config_with_probes(app, config, probes);
+        Self::new_checkpoint_with_facts(state, app.ui_locale, facts)
     }
 
     #[must_use]
-    pub fn new_for_app_at(app: &App, config: &Config, step: SetupStep) -> Self {
-        Self::new_at_with_facts(
-            load_setup_state_for_app(app, config),
-            app.ui_locale,
-            step,
-            SetupRuntimeFacts::from_app_config(app, config),
-        )
+    pub async fn load_for_app_at(app: &App, config: &Config, step: SetupStep) -> Self {
+        let probes = SetupDiskProbes::load(app, config).await;
+        let (state, facts) = SetupRuntimeFacts::from_app_config_with_probes(app, config, probes);
+        Self::new_at_with_facts(state, app.ui_locale, step, facts)
     }
 
     #[must_use]
@@ -5765,5 +5880,39 @@ mod progressive_tests {
         );
         let complete_text = render_text(&complete, 40, 12);
         assert!(complete_text.contains(tr(Locale::En, MessageId::OnboardReadyTitle).as_ref()));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn load_for_app_at_populates_tools_mcp_facts_off_runtime_thread() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let skills_dir = tmp.path().join("skills");
+        std::fs::create_dir_all(skills_dir.join("beta")).expect("skill dir");
+        std::fs::write(
+            skills_dir.join("beta").join("SKILL.md"),
+            "---\nname: beta\n---\nbody\n",
+        )
+        .expect("skill file");
+
+        let options = crate::tui::app::TuiOptions {
+            config_path: None,
+            skills_dir: skills_dir.clone(),
+            memory_path: tmp.path().join("memory.md"),
+            notes_path: tmp.path().join("notes.txt"),
+            mcp_config_path: tmp.path().join("mcp.json"),
+            ..crate::tui::test_support::test_tui_options(tmp.path())
+        };
+        let config = Config::default();
+        let mut app = App::new(options, &config);
+        app.ui_locale = Locale::En;
+        app.skills_dir = skills_dir;
+        app.cached_skills.clear();
+
+        let view = SetupWizardView::load_for_app_at(&app, &config, SetupStep::ToolsMcp).await;
+        assert_eq!(view.selected_step(), SetupStep::ToolsMcp);
+        assert!(
+            view.facts.tools_mcp_skills_result.contains("1 on disk"),
+            "unexpected skills result: {}",
+            view.facts.tools_mcp_skills_result
+        );
     }
 }
