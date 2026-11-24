@@ -125,9 +125,9 @@
           "tools": 14
         },
         "full": {
-          "bytes": 89938,
-          "identity_sha256": "147be37c265bcfe7f513ffc77d575026ea0a64f699ff0be0ecada4ae0d2daf94",
-          "tokens_est": 22485,
+          "bytes": 92226,
+          "identity_sha256": "06571469801b705ed8bba5efed8e4a874ec13b99bec983abf5c316dfa39f2cab",
+          "tokens_est": 23057,
           "tool_names": [
             "Git",
             "Run",
@@ -162,6 +162,7 @@
             "retrieve_tool_result",
             "revert_turn",
             "review",
+            "rlm",
             "send_later",
             "session_get",
             "session_search",
@@ -184,7 +185,7 @@
             "workflow",
             "write"
           ],
-          "tools": 54
+          "tools": 55
         }
       },
       "operate": {
@@ -211,9 +212,9 @@
           "tools": 14
         },
         "full": {
-          "bytes": 89938,
-          "identity_sha256": "147be37c265bcfe7f513ffc77d575026ea0a64f699ff0be0ecada4ae0d2daf94",
-          "tokens_est": 22485,
+          "bytes": 92226,
+          "identity_sha256": "06571469801b705ed8bba5efed8e4a874ec13b99bec983abf5c316dfa39f2cab",
+          "tokens_est": 23057,
           "tool_names": [
             "Git",
             "Run",
@@ -248,6 +249,7 @@
             "retrieve_tool_result",
             "revert_turn",
             "review",
+            "rlm",
             "send_later",
             "session_get",
             "session_search",
@@ -270,7 +272,7 @@
             "workflow",
             "write"
           ],
-          "tools": 54
+          "tools": 55
         }
       },
       "plan": {

@@ -26,10 +26,6 @@ impl RegisterCommand for RlmCmd {
 }
 
 pub fn rlm(app: &mut App, arg: Option<&str>) -> CommandResult {
-    // The `[N]` depth prefix stays accepted so saved guidance and muscle memory
-    // keep working, but it was part of the retired open/configure/eval control
-    // surface. The session-persistent working context now owns one route, so
-    // the depth is parsed and dropped rather than rejected.
     let (_legacy_depth, target) = match super::util::parse_depth_prefixed_arg(arg, 1) {
         Ok(parsed) => parsed,
         Err(message) => return CommandResult::error(message),
@@ -52,7 +48,7 @@ pub fn rlm(app: &mut App, arg: Option<&str>) -> CommandResult {
         format!("this text: {target:?}")
     };
     let message = format!(
-        "Use the session-persistent working context for this request. It stays alive across turns. Work on {source}. In a `repl` block, load a file into a normal Python variable when useful, retain useful variables and imports, inspect the durable transcript through `context_meta`, `search`, `peek`, or `chunk`, and use `sub_query` or `sub_rlm` only when extra reasoning genuinely helps. Do not use legacy `rlm` tool actions. Call `finalize(...)` only when ready to answer."
+        "Call the `rlm` tool for this request (load it with `tool_search` if it is not yet in your tool list). Work on {source}: call `open` with `file_path` or `content`, inspect it with `eval`, and finish with `close`."
     );
 
     CommandResult::with_message_and_action(

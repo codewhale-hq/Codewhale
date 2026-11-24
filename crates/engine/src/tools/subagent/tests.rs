@@ -8437,6 +8437,7 @@ fn every_named_role_has_one_complete_capability_based_surface() {
         "request_user_input",
         "retrieve_tool_result",
         "review",
+        "rlm",
         "session_get",
         "session_search",
         "show_data",
@@ -8483,6 +8484,7 @@ fn every_named_role_has_one_complete_capability_based_surface() {
         "retrieve_tool_result",
         "revert_turn",
         "review",
+        "rlm",
         "send_later",
         "session_get",
         "session_search",
@@ -22631,14 +22633,14 @@ fn the_unified_rlm_action_cannot_bypass_a_denied_alias() {
         );
     }
 
-    // Visibility: new model turns use the single session-persistent kernel,
-    // so the compatibility action family is never advertised to a child.
-    assert!(
-        registry
-            .tools_for_model(&FleetRole::Builder)
-            .iter()
-            .all(|tool| tool.name != "rlm"),
-        "the compatibility RLM family must stay hidden from new child turns"
+    let rlm_tool = registry
+        .tools_for_model(&FleetRole::Builder)
+        .into_iter()
+        .find(|tool| tool.name == "rlm")
+        .expect("canonical rlm tool stays visible with bounded actions");
+    assert_eq!(
+        rlm_tool.input_schema["properties"]["action"]["enum"],
+        json!(["session_objects", "configure", "close"]),
     );
 }
 
@@ -23639,7 +23641,7 @@ const READ_ONLY_CHILD_ENVELOPE_BYTE_CEILING: usize = 89_112;
 // context_archive_search and context_archive_get specs (#7173) add 751B. The
 // 0.10.3 tool-text batch adds the rest; the ceiling now matches the measured
 // 94,121B on this machine.
-const PARENT_SURFACE_BYTE_CEILING: usize = 95_779;
+const PARENT_SURFACE_BYTE_CEILING: usize = 98_068;
 
 #[tokio::test]
 async fn read_only_child_envelope_stays_within_measured_ceiling() {
