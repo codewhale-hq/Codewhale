@@ -49,6 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Serve the shared web app build from `codewhale web`:** `codewhale web` now serves a built `codewhale-app/apps/web/dist` directory when `CODEWHALE_WEB_DIST` points to a valid directory containing `index.html`, including `/plugin-host.html` (with sandboxed `connect-src 'none'` / `frame-ancestors 'self'` CSP), immutable `/static/*` hashed assets, bounded SPA route fallback, path-traversal/symlink refusal, and preserved auth-bootstrap cookie sessions; falls back to the embedded web client when unset. (#7237)
+### Fixed
+
+- **`/effort` and the reasoning-effort picker now accept `low` and `medium` on Ollama Cloud:** removed the picker's duplicate catalog effort parser in favor of `ReasoningEffort::catalog_effort_values_for_offering` and `from_catalog_token`, and aligned Ollama Cloud's picker ladder (`auto`, `off`, `low`, `medium`, `high`, `max`) with the engine. (CW-8360)
 
 ## [0.10.4] - 2026-11-23
 

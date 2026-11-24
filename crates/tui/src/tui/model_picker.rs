@@ -88,6 +88,14 @@ const CODEX_PICKER_EFFORTS: &[ReasoningEffort] = &[
     ReasoningEffort::High,
     ReasoningEffort::Max,
 ];
+const OLLAMA_CLOUD_PICKER_EFFORTS: &[ReasoningEffort] = &[
+    ReasoningEffort::Auto,
+    ReasoningEffort::Off,
+    ReasoningEffort::Low,
+    ReasoningEffort::Medium,
+    ReasoningEffort::High,
+    ReasoningEffort::Max,
+];
 /// Auto model routing has no concrete provider dialect yet, so retain the
 /// complete preference vocabulary and defer normalization to dispatch.
 const AUTO_MODEL_PICKER_EFFORTS: &[ReasoningEffort] = &[
@@ -4994,6 +5002,9 @@ fn route_picker_efforts(
         // does carry tiers when the account publishes them (#6396).
         return CODEX_PICKER_EFFORTS.to_vec();
     }
+    if provider == ProviderKind::OllamaCloud {
+        return OLLAMA_CLOUD_PICKER_EFFORTS.to_vec();
+    }
     if provider == ProviderKind::Vllm
         && let Some(spec) = codewhale_config::local_reasoning::local_reasoning_spec(wire_model)
     {
@@ -5001,7 +5012,7 @@ fn route_picker_efforts(
             .chain(
                 spec.tiers
                     .iter()
-                    .filter_map(|tier| catalog_effort_value(tier)),
+                    .filter_map(|tier| ReasoningEffort::from_catalog_token(tier)),
             )
             .collect();
     }
@@ -5035,38 +5046,45 @@ fn route_picker_efforts(
 fn catalog_picker_efforts(
     offering: &codewhale_config::catalog::CatalogOffering,
 ) -> Option<Vec<ReasoningEffort>> {
+    if let Some(mut efforts) = ReasoningEffort::catalog_effort_values_for_offering(offering) {
+        if !efforts.contains(&ReasoningEffort::Auto) {
+            efforts.insert(0, ReasoningEffort::Auto);
+        }
+        return Some(efforts);
+    }
+
     let mut efforts = Vec::new();
-    let mut saw_effort_list = false;
     let mut has_toggle = false;
     for option in &offering.reasoning_options {
-        let option_type = option
-            .get("type")
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        if option_type == "toggle" {
+        let Some(option_type) = option.get("type").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if option_type.eq_ignore_ascii_case("toggle") {
             has_toggle = true;
             continue;
         }
-        if option_type != "effort" && option_type != "thinking" {
+        if !option_type.eq_ignore_ascii_case("thinking") {
             continue;
         }
         let Some(values) = option.get("values").and_then(|value| value.as_array()) else {
             continue;
         };
-        saw_effort_list = true;
         for value in values {
             let Some(raw) = value.as_str() else {
                 continue;
             };
-            if let Some(effort) = catalog_effort_value(raw)
+            let effort = match raw.trim().to_ascii_lowercase().as_str() {
+                "always_on" | "always-on" => Some(ReasoningEffort::Max),
+                _ => ReasoningEffort::from_catalog_token(raw),
+            };
+            if let Some(effort) = effort
                 && !efforts.contains(&effort)
             {
                 efforts.push(effort);
             }
         }
     }
-    if !saw_effort_list || efforts.is_empty() {
+    if efforts.is_empty() {
         return None;
     }
     if has_toggle && !efforts.contains(&ReasoningEffort::Off) {
@@ -5076,23 +5094,6 @@ fn catalog_picker_efforts(
         efforts.insert(0, ReasoningEffort::Auto);
     }
     Some(efforts)
-}
-
-fn catalog_effort_value(raw: &str) -> Option<ReasoningEffort> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "off" | "disabled" | "false" => Some(ReasoningEffort::Off),
-        "none" => Some(ReasoningEffort::Off),
-        "minimal" | "minimum" => Some(ReasoningEffort::Minimal),
-        "low" | "light" => Some(ReasoningEffort::Low),
-        "medium" | "mid" => Some(ReasoningEffort::Medium),
-        "high" => Some(ReasoningEffort::High),
-        "xhigh" => Some(ReasoningEffort::XHigh),
-        "ultra" | "ultracode" => Some(ReasoningEffort::Ultra),
-        "max" | "maximum" => Some(ReasoningEffort::Max),
-        "auto" | "automatic" | "adaptive" => Some(ReasoningEffort::Auto),
-        "always_on" | "always-on" => Some(ReasoningEffort::Max),
-        _ => None,
-    }
 }
 
 fn normalize_picker_effort(
@@ -7121,5 +7122,47 @@ api_key = "fixture-xai-key"
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    #[test]
+    fn ollama_cloud_exposes_low_and_medium_and_minimax_thinking_ladders_stay_intact() {
+        let ollama_efforts = picker_efforts_for_route(
+            ProviderKind::OllamaCloud,
+            ProviderKind::OllamaCloud.provider().default_base_url(),
+            "deepseek-v3.2",
+            false,
+        );
+        assert_eq!(
+            ollama_efforts,
+            vec![
+                ReasoningEffort::Auto,
+                ReasoningEffort::Off,
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::Max,
+            ]
+        );
+
+        let minimax_m3 = picker_efforts_for_route(
+            ProviderKind::Minimax,
+            ProviderKind::Minimax.provider().default_base_url(),
+            "MiniMax-M3",
+            false,
+        );
+        assert_eq!(
+            minimax_m3,
+            vec![ReasoningEffort::Auto, ReasoningEffort::Off]
+        );
+        let minimax_m27 = picker_efforts_for_route(
+            ProviderKind::Minimax,
+            ProviderKind::Minimax.provider().default_base_url(),
+            "MiniMax-M2.7",
+            false,
+        );
+        assert_eq!(
+            minimax_m27,
+            vec![ReasoningEffort::Auto, ReasoningEffort::Max]
+        );
     }
 }
