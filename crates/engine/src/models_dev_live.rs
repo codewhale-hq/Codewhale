@@ -393,6 +393,7 @@ fn current_source_fingerprint() -> String {
 
 const CI_ENV_VARS: &[&str] = &[
     "CI",
+    "CONTINUOUS_INTEGRATION",
     "GITHUB_ACTIONS",
     "GITLAB_CI",
     "BUILDKITE",
@@ -400,6 +401,8 @@ const CI_ENV_VARS: &[&str] = &[
     "JENKINS_URL",
     "TRAVIS",
     "TF_BUILD",
+    "TEAMCITY_VERSION",
+    "CODEBUILD_BUILD_ID",
 ];
 
 fn is_ci_env() -> bool {
@@ -422,7 +425,7 @@ pub fn background_fetch_disabled(auto_refresh: bool) -> bool {
     !auto_refresh
         || env_truthy(ENV_DISABLE_FETCH)
         || is_ci_env()
-        || codewhale_config::telemetry::do_not_track()
+        || codewhale_config::do_not_track()
 }
 
 pub fn spawn_background_refresh() {

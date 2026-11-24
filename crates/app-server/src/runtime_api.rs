@@ -14771,23 +14771,17 @@ async fn set_config(
                     enabled,
                 );
                 let message = applied.message(codewhale_localization::Locale::En);
-                match applied.outcome {
-                    codewhale_engine::telemetry_notice::TelemetryPreferenceOutcome::SaveFailed(
-                        _,
-                    ) => {
-                        return Err(ApiError::internal(message));
-                    }
-                    _ => {
-                        state.config.write().telemetry = Some(enabled);
-                        return Ok(Json(SetConfigResponse {
-                            key,
-                            value: enabled.to_string(),
-                            message,
-                            persisted: true,
-                            requires_reload: enabled,
-                        }));
-                    }
+                if applied.is_save_failed() {
+                    return Err(ApiError::internal(message));
                 }
+                state.config.write().telemetry = Some(enabled);
+                return Ok(Json(SetConfigResponse {
+                    key,
+                    value: enabled.to_string(),
+                    message,
+                    persisted: applied.is_persisted(),
+                    requires_reload: enabled,
+                }));
             }
             "memory_enabled" => {
                 let enabled = value.parse::<bool>().map_err(|_| {
