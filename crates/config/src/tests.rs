@@ -4803,16 +4803,23 @@ api_key_env = "CODEWHALE_TEST_BOUND_OPENROUTER_KEY"
     let saved = env::var_os("CODEWHALE_TEST_BOUND_OPENROUTER_KEY");
     unsafe { env::set_var("CODEWHALE_TEST_BOUND_OPENROUTER_KEY", "bound-key") };
     let store = ConfigStore::load(Some(path)).expect("config should load");
-    let resolved = store.config.resolve_runtime_options_with_secrets(
-        &CliRuntimeOverrides::default(),
-        &Secrets::new(Arc::new(RecordingSecretsStore::with_entries(&[]))),
-    );
-    match saved {
-        Some(value) => unsafe { env::set_var("CODEWHALE_TEST_BOUND_OPENROUTER_KEY", value) },
-        None => unsafe { env::remove_var("CODEWHALE_TEST_BOUND_OPENROUTER_KEY") },
+    let secrets = Secrets::new(Arc::new(RecordingSecretsStore::with_entries(&[(
+        "openrouter",
+        "stored-key",
+    )])));
+    let resolved = store
+        .config
+        .resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+    unsafe { env::remove_var("CODEWHALE_TEST_BOUND_OPENROUTER_KEY") };
+    let unset = store
+        .config
+        .resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+    if let Some(value) = saved {
+        unsafe { env::set_var("CODEWHALE_TEST_BOUND_OPENROUTER_KEY", value) };
     }
     assert_eq!(resolved.api_key.as_deref(), Some("bound-key"));
     assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Env));
+    assert_eq!(unset.api_key, None);
 }
 
 #[test]

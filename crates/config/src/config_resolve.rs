@@ -895,8 +895,11 @@ impl ConfigToml {
             .as_deref()
             .map(str::trim)
             .filter(|name| !name.is_empty())
-            .and_then(|name| std::env::var(name).ok())
-            .filter(|value| !value.trim().is_empty());
+            .map(|name| {
+                std::env::var(name)
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+            });
         let cli_base_url = cli.base_url.clone();
         let env_base_url = env.base_url_for(provider);
         let file_base_url = provider_cfg.base_url.clone();
@@ -977,8 +980,11 @@ impl ConfigToml {
             })
         {
             (Some(value), Some(RuntimeApiKeySource::ConfigFile))
-        } else if let Some(value) = bound_env_api_key {
-            (Some(value), Some(RuntimeApiKeySource::Env))
+        } else if let Some(bound) = bound_env_api_key {
+            match bound {
+                Some(value) => (Some(value), Some(RuntimeApiKeySource::Env)),
+                None => (None, None),
+            }
         } else if !custom_endpoint
             && let Some(value) = xiaomi_mimo_env_api_key.filter(|v| !v.trim().is_empty())
         {
