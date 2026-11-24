@@ -890,6 +890,13 @@ impl ConfigToml {
             .or_else(|| provider_cfg.auth_mode.clone())
             .or_else(|| self.auth_mode.clone());
         let from_file = provider_cfg.api_key.clone();
+        let bound_env_api_key = provider_cfg
+            .api_key_env
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .and_then(|name| std::env::var(name).ok())
+            .filter(|value| !value.trim().is_empty());
         let cli_base_url = cli.base_url.clone();
         let env_base_url = env.base_url_for(provider);
         let file_base_url = provider_cfg.base_url.clone();
@@ -970,6 +977,8 @@ impl ConfigToml {
             })
         {
             (Some(value), Some(RuntimeApiKeySource::ConfigFile))
+        } else if let Some(value) = bound_env_api_key {
+            (Some(value), Some(RuntimeApiKeySource::Env))
         } else if !custom_endpoint
             && let Some(value) = xiaomi_mimo_env_api_key.filter(|v| !v.trim().is_empty())
         {

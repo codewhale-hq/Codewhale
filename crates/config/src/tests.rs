@@ -4786,6 +4786,36 @@ fn unknown_provider_error_lists_huggingface() {
 }
 
 #[test]
+fn resolver_reads_the_route_bound_api_key_env() {
+    let _lock = env_lock();
+    let _env = EnvGuard::without_deepseek_runtime_overrides();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    fs::write(
+        &path,
+        r#"provider = "openrouter"
+
+[providers.openrouter]
+api_key_env = "CODEWHALE_TEST_BOUND_OPENROUTER_KEY"
+"#,
+    )
+    .expect("fixture");
+    let saved = env::var_os("CODEWHALE_TEST_BOUND_OPENROUTER_KEY");
+    unsafe { env::set_var("CODEWHALE_TEST_BOUND_OPENROUTER_KEY", "bound-key") };
+    let store = ConfigStore::load(Some(path)).expect("config should load");
+    let resolved = store.config.resolve_runtime_options_with_secrets(
+        &CliRuntimeOverrides::default(),
+        &Secrets::new(Arc::new(RecordingSecretsStore::with_entries(&[]))),
+    );
+    match saved {
+        Some(value) => unsafe { env::set_var("CODEWHALE_TEST_BOUND_OPENROUTER_KEY", value) },
+        None => unsafe { env::remove_var("CODEWHALE_TEST_BOUND_OPENROUTER_KEY") },
+    }
+    assert_eq!(resolved.api_key.as_deref(), Some("bound-key"));
+    assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Env));
+}
+
+#[test]
 fn config_store_preserves_named_custom_provider_identity_across_typed_dispatch_reads() {
     let _lock = env_lock();
     let _env = EnvGuard::without_deepseek_runtime_overrides();
