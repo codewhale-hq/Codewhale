@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use codewhale_release::InstallMethod;
 use serde::Serialize;
 
 /// Canonical user-scoped paths reported by both human and JSON doctor output.
@@ -624,8 +625,13 @@ pub(crate) async fn print_update_report(
     } else {
         DoctorUpdateReport::NotChecked
     };
-    let method = codewhale_release::current_install_method();
-    for (index, line) in doctor_update_report_lines(&report, method.update_command())
+    let update_command = std::env::current_exe().map_or_else(
+        |_| "codewhale update".to_string(),
+        |exe| {
+            codewhale_release::installs::manager_update_command(InstallMethod::detect(&exe), &exe)
+        },
+    );
+    for (index, line) in doctor_update_report_lines(&report, &update_command)
         .into_iter()
         .enumerate()
     {
@@ -725,17 +731,13 @@ mod tests;
 
 pub(crate) fn update_mode_lines(update: &codewhale_runtime::config::UpdateConfig) -> Vec<String> {
     use codewhale_release::autoupdate;
-    let method = codewhale_release::current_install_method();
+    let exe = std::env::current_exe().unwrap_or_default();
+    let method = InstallMethod::detect(&exe);
     let resolved = autoupdate::resolve_mode(update.mode.as_deref(), update.check_for_updates);
-    let mut lines = vec![if method.supports_self_update() {
-        format!("automatic updates: {}", resolved.describe())
-    } else {
-        format!(
-            "automatic updates: not for this copy; {} updates it ({})",
-            method.label(),
-            method.update_command()
-        )
-    }];
+    let mut lines = vec![codewhale_release::installs::update_answer(method, &exe)];
+    if method.supports_self_update() {
+        lines.push(format!("automatic updates: {}", resolved.describe()));
+    }
     if let Ok(home) = codewhale_config::codewhale_home() {
         if let Some(staged) = autoupdate::load_staged(&home) {
             lines.push(format!(
@@ -754,10 +756,17 @@ pub(crate) fn update_mode_lines(update: &codewhale_runtime::config::UpdateConfig
             ));
         }
         if let Some(previous) = autoupdate::load_previous(&home) {
-            lines.push(format!(
-                "rollback: v{} is kept (`codewhale update --rollback`)",
-                previous.version
-            ));
+            lines.push(
+                match autoupdate::rollback_blocker(&previous.version, env!("CARGO_PKG_VERSION")) {
+                    None => format!(
+                        "rollback: v{} is kept (`codewhale update --rollback`)",
+                        previous.version
+                    ),
+                    Some(blocker) => {
+                        format!("rollback: v{} is kept, but {blocker}", previous.version)
+                    }
+                },
+            );
         }
         if let Some(skip) = autoupdate::load_state(&home).skip_version {
             lines.push(format!(
@@ -791,10 +800,23 @@ pub(crate) fn installation_lines(brief: bool) -> Vec<String> {
     lines
 }
 
-pub(crate) fn run_installs_report(json: bool, brief: bool) -> Result<()> {
+/// `update` is set for the installers' brief report, so their closing lines
+/// come from the installed binary's own update state rather than a guess.
+pub(crate) fn run_installs_report(
+    json: bool,
+    brief: bool,
+    update: Option<&codewhale_runtime::config::UpdateConfig>,
+) -> Result<()> {
     if !json {
         for line in installation_lines(brief) {
             println!("{line}");
+        }
+        // The installers already print the update command with its full path.
+        if let Some(update) = update {
+            for line in update_mode_lines(update).into_iter().skip(1) {
+                println!("{line}");
+            }
+            println!("Change it with: codewhale config set update.mode auto|notify|off");
         }
         return Ok(());
     }

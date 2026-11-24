@@ -259,6 +259,27 @@ pub fn load_previous(home: &Path) -> Option<PreviousBinary> {
     load_json(&previous_dir(home).join("previous.json"))
 }
 
+/// Why `codewhale update --rollback` would refuse to go from `current` back
+/// to `previous`, or `None` when it would roll back. Workspace state migrated
+/// by v0.10.3 cannot be verified against earlier releases.
+#[must_use]
+pub fn rollback_blocker(previous: &str, current: &str) -> Option<String> {
+    let (Ok(previous_version), Ok(current_version)) = (
+        crate::parse_release_version(previous),
+        crate::parse_release_version(current),
+    ) else {
+        return Some(format!(
+            "cannot compare v{previous} with v{current}, so rollback is disabled"
+        ));
+    };
+    let triple = |v: &semver::Version| (v.major, v.minor, v.patch);
+    (triple(&current_version) >= (0, 10, 3) && triple(&previous_version) <= (0, 10, 3)).then(|| {
+        format!(
+            "rollback to v{previous} is disabled because its compatibility with migrated workspace state cannot be verified"
+        )
+    })
+}
+
 #[must_use]
 pub fn load_state(home: &Path) -> UpdateState {
     load_json(&updates_dir(home).join("state.json")).unwrap_or_default()

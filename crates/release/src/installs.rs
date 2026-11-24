@@ -313,26 +313,19 @@ fn classify(
     if !related {
         return None;
     }
-    if meta.is_symlink() {
-        let method = InstallMethod::detect(path);
-        return Some(if method == InstallMethod::DesktopApp {
-            InstallClass::AppBundle
-        } else if !method.supports_self_update() {
-            InstallClass::PackageManaged(method)
-        } else {
-            InstallClass::NotOurs("symlink; not changed")
-        });
-    }
-    let method = InstallMethod::from_path(path);
+    let method = InstallMethod::owner(path);
     if method == InstallMethod::DesktopApp {
         return Some(InstallClass::AppBundle);
     }
-    if method == InstallMethod::Cargo || cargo_root_beside(path).is_some() {
-        if cargo_lists(path, name) {
-            return Some(InstallClass::PackageManaged(InstallMethod::Cargo));
-        }
-    } else if !method.supports_self_update() {
+    // Cargo owns only the names its record lists; other files in its `bin`
+    // (old backups, renamed copies) are judged below like any directory.
+    if !method.supports_self_update()
+        && (method != InstallMethod::Cargo || meta.is_symlink() || cargo_lists(path, name))
+    {
         return Some(InstallClass::PackageManaged(method));
+    }
+    if meta.is_symlink() {
+        return Some(InstallClass::NotOurs("symlink; not changed"));
     }
     if !owned_by(&meta, owner) {
         return Some(InstallClass::NotOurs("owned by another user"));
@@ -656,8 +649,38 @@ fn quoted(path: &Path) -> String {
     format!("\"{}\"", path.display())
 }
 
+/// The command that removes the copy at `executable` through its owner.
 #[must_use]
 pub fn manager_command(method: InstallMethod, executable: &Path) -> String {
+    owner_command(method, executable, false)
+}
+
+/// The command that updates the copy at `executable` through its owner,
+/// with the exact Cargo root or npm prefix that installed it.
+#[must_use]
+pub fn manager_update_command(method: InstallMethod, executable: &Path) -> String {
+    owner_command(method, executable, true)
+}
+
+/// One line answering "can this copy update itself, and if not, what does?"
+/// Shared by `codewhale update`, `/update`, rollback and `doctor`.
+#[must_use]
+pub fn update_answer(method: InstallMethod, executable: &Path) -> String {
+    match method {
+        InstallMethod::DesktopApp => crate::install::DESKTOP_APP_UPDATE_HELP.to_string(),
+        InstallMethod::System => "This copy is in a system or package directory, so it cannot update itself; update it with the package manager that installed it.".to_string(),
+        method if method.supports_self_update() => {
+            "This copy updates itself: `codewhale update`.".to_string()
+        }
+        method => format!(
+            "This copy belongs to {}, so it cannot update itself; update it with `{}`.",
+            method.label(),
+            manager_update_command(method, executable)
+        ),
+    }
+}
+
+fn owner_command(method: InstallMethod, executable: &Path, update: bool) -> String {
     let real = fs::canonicalize(executable).unwrap_or_else(|_| executable.to_path_buf());
     let names: Vec<_> = real.components().map(|part| part.as_os_str()).collect();
     let position = |marker: &str| {
@@ -665,15 +688,27 @@ pub fn manager_command(method: InstallMethod, executable: &Path) -> String {
             .iter()
             .position(|name| name.eq_ignore_ascii_case(marker))
     };
+    let fallback = || {
+        if update {
+            method.update_command()
+        } else {
+            method.uninstall_command()
+        }
+        .to_string()
+    };
     match method {
         InstallMethod::Cargo => match real.parent().and_then(Path::parent) {
+            Some(root) if update => format!(
+                "cargo install codewhale-cli --locked --force --root {}",
+                quoted(root)
+            ),
             Some(root) => format!("cargo uninstall codewhale-cli --root {}", quoted(root)),
-            None => method.uninstall_command().to_string(),
+            None => fallback(),
         },
-        InstallMethod::Homebrew => {
+        InstallMethod::Homebrew if !update => {
             match position("Cellar").and_then(|index| names.get(index + 1)) {
                 Some(formula) => format!("brew uninstall {}", formula.to_string_lossy()),
-                None => method.uninstall_command().to_string(),
+                None => fallback(),
             }
         }
         InstallMethod::Npm => match position("node_modules") {
@@ -682,11 +717,21 @@ pub fn manager_command(method: InstallMethod, executable: &Path) -> String {
                 if !cfg!(windows) && root.file_name().is_some_and(|name| name == "lib") {
                     root.pop();
                 }
-                format!("npm uninstall -g codewhale --prefix {}", quoted(&root))
+                if update {
+                    format!("npm install -g codewhale@latest --prefix {}", quoted(&root))
+                } else {
+                    format!("npm uninstall -g codewhale --prefix {}", quoted(&root))
+                }
             }
-            _ => method.uninstall_command().to_string(),
+            _ => fallback(),
         },
-        _ => method.uninstall_command().to_string(),
+        InstallMethod::WindowsInstaller if !update => {
+            match crate::install::windows_installer_uninstaller(&real) {
+                Some(uninstaller) => format!("{}, or run {}", fallback(), quoted(&uninstaller)),
+                None => fallback(),
+            }
+        }
+        _ => fallback(),
     }
 }
 

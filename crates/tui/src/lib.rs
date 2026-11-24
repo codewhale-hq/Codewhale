@@ -2787,7 +2787,15 @@ async fn run_async_main_dispatch(
                     return crate::doctor::run_restore(stamp);
                 }
                 if args.installs {
-                    return crate::doctor::run_installs_report(args.json, args.brief);
+                    let update = (args.brief && !args.json)
+                        .then(|| load_doctor_config_from_cli(&cli, &args).ok())
+                        .flatten()
+                        .map(|config| config.update_config());
+                    return crate::doctor::run_installs_report(
+                        args.json,
+                        args.brief,
+                        update.as_ref(),
+                    );
                 }
                 let config = match load_doctor_config_from_cli(&cli, &args) {
                     Ok(config) => config,
