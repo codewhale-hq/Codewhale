@@ -12554,3 +12554,93 @@ fn tool_launcher_is_refused_from_a_managed_file_the_user_config_names() -> Resul
     );
     Ok(())
 }
+
+#[test]
+fn env_bool_overrides_accept_yes_and_on() {
+    let _lock = lock_test_env();
+    let _legacy_shell = EnvVarGuard::remove("DEEPSEEK_ALLOW_SHELL");
+    let _legacy_yolo = EnvVarGuard::remove("DEEPSEEK_YOLO");
+    let _legacy_net = EnvVarGuard::remove("DEEPSEEK_SANDBOX_NETWORK_ACCESS");
+    let _legacy_bwrap = EnvVarGuard::remove("DEEPSEEK_PREFER_BWRAP");
+
+    for truthy in ["yes", "YES", "on", " ON ", "1", "true"] {
+        let _shell = EnvVarGuard::set("CODEWHALE_ALLOW_SHELL", truthy);
+        let _yolo = EnvVarGuard::set("CODEWHALE_YOLO", truthy);
+        let _net = EnvVarGuard::set("CODEWHALE_SANDBOX_NETWORK_ACCESS", truthy);
+        let _bwrap = EnvVarGuard::set("CODEWHALE_PREFER_BWRAP", truthy);
+        let mut config = Config::default();
+        apply_env_overrides_unlocked(&mut config, ConfigEnvironmentPolicy::Runtime);
+        assert_eq!(config.allow_shell, Some(true), "allow_shell={truthy}");
+        assert_eq!(config.yolo, Some(true), "yolo={truthy}");
+        assert_eq!(config.sandbox_network_access, Some(true), "net={truthy}");
+        assert_eq!(config.prefer_bwrap, Some(true), "bwrap={truthy}");
+    }
+
+    for falsy in ["no", "off", "0", "false", ""] {
+        let _shell = EnvVarGuard::set("CODEWHALE_ALLOW_SHELL", falsy);
+        let mut config = Config::default();
+        apply_env_overrides_unlocked(&mut config, ConfigEnvironmentPolicy::Runtime);
+        assert_eq!(config.allow_shell, Some(false), "allow_shell={falsy}");
+    }
+}
+
+#[test]
+fn unknown_provider_env_does_not_skip_later_env_overrides() {
+    let _lock = lock_test_env();
+    let _provider = EnvVarGuard::set("CODEWHALE_PROVIDER", "nonexistent-provider-id");
+    let _shell = EnvVarGuard::set("CODEWHALE_ALLOW_SHELL", "yes");
+    let _verbosity = EnvVarGuard::set("CODEWHALE_VERBOSITY", "concise");
+    let _max_subagents = EnvVarGuard::set("CODEWHALE_MAX_SUBAGENTS", "5");
+
+    let mut config = Config::default();
+    apply_env_overrides_unlocked(&mut config, ConfigEnvironmentPolicy::Runtime);
+
+    assert_eq!(config.provider.as_deref(), Some("nonexistent-provider-id"));
+    assert_eq!(config.allow_shell, Some(true));
+    assert_eq!(config.verbosity.as_deref(), Some("concise"));
+    assert_eq!(config.max_subagents(), 5);
+    assert_eq!(config.base_url_env_receipt, BaseUrlEnvReceipt::NoOwner);
+}
+
+#[test]
+fn max_subagents_env_and_overlay_override_file_subagents_max_concurrent() {
+    let _lock = lock_test_env();
+    let _legacy = EnvVarGuard::remove("DEEPSEEK_MAX_SUBAGENTS");
+    let _env = EnvVarGuard::set("CODEWHALE_MAX_SUBAGENTS", "4");
+
+    let mut config = Config {
+        subagents: Some(SubagentsConfig {
+            max_concurrent: Some(12),
+            ..SubagentsConfig::default()
+        }),
+        ..Config::default()
+    };
+    assert_eq!(config.max_subagents(), 12);
+    apply_env_overrides_unlocked(&mut config, ConfigEnvironmentPolicy::Runtime);
+    assert_eq!(config.max_subagents(), 4);
+
+    let mut project_target = Config {
+        subagents: Some(SubagentsConfig {
+            max_concurrent: Some(12),
+            ..SubagentsConfig::default()
+        }),
+        ..Config::default()
+    };
+    project_target.set_max_subagents_override(6);
+    assert_eq!(project_target.max_subagents(), 6);
+
+    let merged = merge_config(
+        Config {
+            subagents: Some(SubagentsConfig {
+                max_concurrent: Some(12),
+                ..SubagentsConfig::default()
+            }),
+            ..Config::default()
+        },
+        Config {
+            max_subagents: Some(7),
+            ..Config::default()
+        },
+    );
+    assert_eq!(merged.max_subagents(), 7);
+}

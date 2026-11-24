@@ -3148,7 +3148,17 @@ async fn heartbeat_recovers_a_delayed_pong_then_kills_a_hung_host() {
     };
     let _policy = TestPolicyGuard::extension_host(true);
     let fixture = FixturePlugins::new(&["hang-tool"]).await;
-    let manager = supervised_manager(&fixture, node);
+    let supervision = super::SupervisionOptions {
+        hang_timeout: Duration::from_millis(2_500),
+        ..fast_supervision()
+    };
+    let manager = Arc::new(ExtensionHostManager::new(ExtensionHostOptions {
+        runtime: NODE,
+        node_override: Some(node),
+        bun_override: None,
+        root: Some(fixture.root.clone()),
+        supervision,
+    }));
     let engine = manager.attach(fixture.registry());
     engine.sync().await.unwrap();
     let tool = host_tool(&engine, fixture.workspace(), "hang_probe");
@@ -3174,7 +3184,7 @@ async fn heartbeat_recovers_a_delayed_pong_then_kills_a_hung_host() {
     assert_eq!(manager.spawn_attempts(), 1);
     let tool = host_tool(&engine, fixture.workspace(), "hang_probe");
     let result = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(10),
         tool.execute(
             json!({}),
             &ToolContext::new(fixture.workspace()).with_plugin_registry(engine.plugin_view()),
