@@ -215,7 +215,7 @@ def render() -> None:
         "GitHub's contributor count includes only commit authors and co-authors whose email is linked to their "
         "account, so it misses many of them. If your commits are missing there, add your commit email to your "
         "GitHub account and they will link.\n\n"
-        f"{links}\n\nAlso with us, from commits whose email is not linked to an account: {' · '.join(extra)}.\n"
+        f"{links}\n\nAlso with us, credited without a linked GitHub account: {' · '.join(extra)}.\n"
         "<!-- contributor-wall:end -->\n"
     )
     doc = ROOT / "docs" / "CONTRIBUTORS.md"
