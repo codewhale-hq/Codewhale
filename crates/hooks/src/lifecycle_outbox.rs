@@ -446,13 +446,19 @@ fn acquire_outbox_lock_sync(outbox_path: &Path) -> Result<Option<OutboxLockGuard
     }
 }
 
+struct BuiltBatch {
+    next_seq: u64,
+    lines: Vec<String>,
+    webhook_posts: Vec<(String, Value)>,
+}
+
 fn build_batch_envelopes(
     path: &Path,
     events: &[LifecycleEvent],
     start_seq: u64,
     nonce: &str,
     include_webhooks: bool,
-) -> Result<(u64, Vec<String>, Vec<(String, Value)>)> {
+) -> Result<BuiltBatch> {
     let path_hash = codewhale_paths::stable_hex(path);
     let mut next_seq = start_seq;
     let mut lines = Vec::with_capacity(events.len());
@@ -492,7 +498,11 @@ fn build_batch_envelopes(
         }
         lines.push(serde_json::to_string(&envelope).context("failed to encode outbox event")?);
     }
-    Ok((next_seq, lines, webhook_posts))
+    Ok(BuiltBatch {
+        next_seq,
+        lines,
+        webhook_posts,
+    })
 }
 
 fn append_batch_locked_sync(
@@ -505,14 +515,22 @@ fn append_batch_locked_sync(
     let lock_guard = match acquire_outbox_lock_sync(path) {
         Ok(guard) => guard,
         Err(error) => {
-            let (next_seq, _, webhook_posts) = build_batch_envelopes(
+            let BuiltBatch {
+                next_seq,
+                webhook_posts,
+                ..
+            } = build_batch_envelopes(
                 path,
                 events,
                 fallback_next_seq,
                 fallback_nonce,
                 include_webhooks,
             )
-            .unwrap_or_else(|_| (fallback_next_seq, Vec::new(), Vec::new()));
+            .unwrap_or_else(|_| BuiltBatch {
+                next_seq: fallback_next_seq,
+                lines: Vec::new(),
+                webhook_posts: Vec::new(),
+            });
             return LockedAppendOutcome {
                 next_seq,
                 webhook_posts,
@@ -538,18 +556,21 @@ fn append_batch_locked_sync(
             ),
         };
 
-    let (next_seq, lines, webhook_posts) =
-        match build_batch_envelopes(path, events, start_seq, &nonce, include_webhooks) {
-            Ok(built) => built,
-            Err(error) => {
-                drop(lock_guard);
-                return LockedAppendOutcome {
-                    next_seq: fallback_next_seq,
-                    webhook_posts: Vec::new(),
-                    append_result: Err(error),
-                };
-            }
-        };
+    let BuiltBatch {
+        next_seq,
+        lines,
+        webhook_posts,
+    } = match build_batch_envelopes(path, events, start_seq, &nonce, include_webhooks) {
+        Ok(built) => built,
+        Err(error) => {
+            drop(lock_guard);
+            return LockedAppendOutcome {
+                next_seq: fallback_next_seq,
+                webhook_posts: Vec::new(),
+                append_result: Err(error),
+            };
+        }
+    };
 
     let append_result = if let Some(error) = recover_error {
         Err(error)
