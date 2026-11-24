@@ -234,3 +234,77 @@ export function apply(ctx) {
   )
   assert.deepEqual(await host.call('ext/deactivate', { owner: childAct.ref }), { disposed: true, leaked: [] })
 })
+
+test('DSH P1/P2 module singletons (@deepseek-ai/dsh-agent, dsh-app-boot) and read-only/scoped host services enforce fail-closed boundaries', async (t) => {
+  const host = await startHost()
+  t.after(() => host.stop())
+
+  const pluginA = tempPlugin(`
+import assert from 'node:assert/strict'
+import { assembleContextFor, installModelSelection } from '@deepseek-ai/dsh-agent'
+import { getDshRuntimeVersion, loadProfileDirectory, resolveBundleDir, createRuntimeResolution } from '@deepseek-ai/dsh-app-boot'
+
+export const name = 'dsh-p1-probe-a'
+export const inject = ['sessionPersistence', 'storageDomain', 'invariants', 'permissionPresets']
+export async function apply(ctx) {
+  assert.deepEqual(assembleContextFor([{ role: 'user', text: 'hi' }]), [{ role: 'user', text: 'hi' }])
+  const disposeModel = installModelSelection(ctx, {})
+  assert.equal(typeof disposeModel, 'function')
+  disposeModel()
+
+  assert.equal(typeof getDshRuntimeVersion(), 'string')
+  assert.ok(getDshRuntimeVersion().length > 0)
+  assert.throws(() => loadProfileDirectory(), /not available in Codewhale/)
+  assert.throws(() => resolveBundleDir(), /not available in Codewhale/)
+  await assert.rejects(createRuntimeResolution(), /not available in Codewhale/)
+
+  assert.equal(await ctx.sessionPersistence.findLog('sess-1'), undefined)
+  assert.deepEqual(await ctx.sessionPersistence.listLogs(), [])
+  assert.equal(await ctx.sessionPersistence.readLog('sess-1'), undefined)
+  assert.equal(ctx.sessionPersistence.artifactDirectory({ id: 'sess-1' }), undefined)
+  await assert.rejects(ctx.sessionPersistence.deleteLog('sess-1'), /refused in Codewhale/)
+  await assert.rejects(ctx.sessionPersistence.removeLog('sess-1'), /refused in Codewhale/)
+  await assert.rejects(ctx.sessionPersistence.writeLog('sess-1', {}), /refused in Codewhale/)
+
+  assert.equal(ctx.storageDomain.get('workspace'), undefined)
+  const domain = await ctx.storageDomain.open({ name: 'cache' })
+  assert.deepEqual(ctx.storageDomain.list(), ['cache'])
+  const table = domain.table('items')
+  await table.set('k1', { v: 42 })
+  assert.deepEqual(await table.get('k1'), { v: 42 })
+  assert.equal(await table.has('k1'), true)
+  assert.deepEqual(await table.keys(), ['k1'])
+  assert.deepEqual(await table.list(), [{ v: 42 }])
+  assert.deepEqual(await table.entries(), [['k1', { v: 42 }]])
+  assert.equal(await table.delete('k1'), true)
+  assert.equal(await table.get('k1'), undefined)
+  await assert.rejects(table.set('big', 'x'.repeat(70 * 1024)), /exceeds size limit/)
+  await domain.close()
+  assert.equal(ctx.storageDomain.get('cache'), undefined)
+  await assert.rejects(table.get('k1'), /is closed/)
+
+  const disposeInv = ctx.invariants.register('demo-inv', () => {})
+  assert.deepEqual(ctx.invariants.list(), ['demo-inv'])
+  disposeInv()
+  assert.deepEqual(ctx.invariants.list(), [])
+
+  assert.equal(ctx.permissionPresets.availability, 'readonly')
+  assert.equal(ctx.permissionPresets.defaultPreset, 'ask')
+  assert.deepEqual(ctx.permissionPresets.names, ['ask', 'accept-edits', 'auto-review', 'full-access'])
+  assert.equal(ctx.permissionPresets.get('ask')?.readonly, true)
+  assert.equal(ctx.permissionPresets.get('unknown'), undefined)
+  assert.throws(() => ctx.permissionPresets.apply('full-access'), /read-only in Codewhale/)
+  assert.throws(() => ctx.permissionPresets.set('full-access'), /read-only in Codewhale/)
+  assert.throws(() => ctx.permissionPresets.register({ name: 'evil' }), /read-only in Codewhale/)
+
+  for (const svc of ['sessionPersistence', 'storageDomain', 'invariants', 'permissionPresets']) {
+    assert.throws(() => ctx.root.provide(svc, { fake: true }), /may not provide core service/)
+  }
+}
+`)
+  t.after(() => pluginA.cleanup())
+
+  const act = await activate(host, 'dsh-p1-probe-a', pluginA.entry, { dataDir: pluginA.dataDir })
+  assert.equal(act.result.status, 'ok', act.result.diagnostic)
+  assert.deepEqual(await host.call('ext/deactivate', { owner: act.ref }), { disposed: true, leaked: [] })
+})

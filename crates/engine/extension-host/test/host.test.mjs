@@ -227,11 +227,11 @@ test('a nested ctx.inject wait names only the services that are missing, and why
 
 test('an unsupported DSH peer fails the import loudly', async (t) => {
   const host = await startHost()
-  const plugin = tempPlugin("import '@deepseek-ai/dsh-agent'\nexport function apply() {}\n")
+  const plugin = tempPlugin("import '@deepseek-ai/dsh-subprocess'\nexport function apply() {}\n")
   t.after(async () => { await host.stop(); plugin.cleanup() })
-  const { result } = await activate(host, 'needs-agent', plugin.entry)
+  const { result } = await activate(host, 'needs-subprocess', plugin.entry)
   assert.equal(result.status, 'failed')
-  assert.match(result.diagnostic, /requires `@deepseek-ai\/dsh-agent`/)
+  assert.match(result.diagnostic, /requires `@deepseek-ai\/dsh-subprocess`/)
   for (const specifier of ['@deepseek-ai/dsh-llm/typert', '@deepseek-ai/dsh-llm/message', '@deepseek-ai/dsh-session/types', '@deepseek-ai/dsh-system-prompt/src/index.js', '@deepseek-ai/dsh-user-questions/typert', '@deepseek-ai/dsh-user-questions/remote']) {
     const subpath = tempPlugin(`import '${specifier}'\nexport function apply() {}\n`)
     t.after(subpath.cleanup)
@@ -249,11 +249,11 @@ test('an unsupported DSH peer fails the import loudly', async (t) => {
 test('a DSH peer or a second Cordis shipped in node_modules is refused, not loaded', async (t) => {
   const host = await startHost()
   const plugin = tempPlugin(
-    "import { x } from '@deepseek-ai/dsh-agent'\nexport function apply() { throw new Error('loaded: ' + x) }\n",
+    "import { x } from '@deepseek-ai/dsh-subprocess'\nexport function apply() { throw new Error('loaded: ' + x) }\n",
   )
   const subpath = tempPlugin("import { x } from '@deepseek-ai/cordis/lib/x.js'\nexport function apply() { throw new Error('loaded: ' + x) }\n")
   for (const dir of [plugin.dir, subpath.dir]) {
-    for (const [name, main] of [['dsh-agent', 'index.js'], ['cordis', 'lib/x.js']]) {
+    for (const [name, main] of [['dsh-subprocess', 'index.js'], ['cordis', 'lib/x.js']]) {
       const root = join(dir, 'node_modules', '@deepseek-ai', name)
       mkdirSync(join(root, 'lib'), { recursive: true })
       writeFileSync(join(root, 'package.json'), JSON.stringify({ name: `@deepseek-ai/${name}`, type: 'module', main, exports: { '.': `./${main}`, './lib/*': './lib/*' } }))
@@ -261,9 +261,9 @@ test('a DSH peer or a second Cordis shipped in node_modules is refused, not load
     }
   }
   t.after(async () => { await host.stop(); plugin.cleanup(); subpath.cleanup() })
-  const agent = (await activate(host, 'ships-agent', plugin.entry)).result
-  assert.equal(agent.status, 'failed')
-  assert.match(agent.diagnostic, /requires `@deepseek-ai\/dsh-agent`/)
+  const subproc = (await activate(host, 'ships-subprocess', plugin.entry)).result
+  assert.equal(subproc.status, 'failed')
+  assert.match(subproc.diagnostic, /requires `@deepseek-ai\/dsh-subprocess`/)
   const cordis = (await activate(host, 'ships-cordis', subpath.entry)).result
   assert.equal(cordis.status, 'failed')
   assert.match(cordis.diagnostic, /requires `@deepseek-ai\/cordis/)

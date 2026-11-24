@@ -28,7 +28,11 @@
       "webServer",
       "connection",
       "sessionTitle",
-      "profileContext"
+      "profileContext",
+      "sessionPersistence",
+      "storageDomain",
+      "invariants",
+      "permissionPresets"
     ],
     "cordis": [
       "logger",
@@ -84,7 +88,11 @@
     "webServer",
     "connection",
     "sessionTitle",
-    "profileContext"
+    "profileContext",
+    "sessionPersistence",
+    "storageDomain",
+    "invariants",
+    "permissionPresets"
   ],
   "row_bridges": {
     "@deepseek-ai/dsh-mcp-client": "mcp",
@@ -126,7 +134,9 @@
     "@deepseek-ai/dsh-skill": "dsh-skill",
     "@deepseek-ai/dsh-typert-protocol": "dsh-typert-protocol",
     "@deepseek-ai/dsh-workspace": "dsh-workspace",
-    "@deepseek-ai/dsh-subagent": "dsh-subagent"
+    "@deepseek-ai/dsh-subagent": "dsh-subagent",
+    "@deepseek-ai/dsh-agent": "dsh-agent",
+    "@deepseek-ai/dsh-app-boot": "dsh-app-boot"
   },
   "definition_api": {
     "package": "@deepseek-ai/dsh-tools",

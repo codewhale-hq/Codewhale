@@ -13547,6 +13547,454 @@ var init_rpc = __esm({
   }
 });
 
+// src/dsh/compatibility.json
+var compatibility_default;
+var init_compatibility = __esm({
+  "src/dsh/compatibility.json"() {
+    compatibility_default = {
+      version: 3,
+      target_dsh_version: "0.2.2-rc.1",
+      provided_services: {
+        dsh: [
+          "tools",
+          "commands",
+          "storage",
+          "skills",
+          "sessions",
+          "userQuestions",
+          "subagents",
+          "agents",
+          "systemPrompt",
+          "llm",
+          "credentials",
+          "settings",
+          "pluginManager",
+          "deepseekAccount",
+          "terminal",
+          "attachments",
+          "agentPresets",
+          "agentDefaultModel",
+          "sessionProjections",
+          "workspaceRegistry",
+          "typertGateway",
+          "web",
+          "webServer",
+          "connection",
+          "sessionTitle",
+          "profileContext",
+          "sessionPersistence",
+          "storageDomain",
+          "invariants",
+          "permissionPresets"
+        ],
+        cordis: [
+          "logger",
+          "events",
+          "reflect",
+          "registry"
+        ],
+        codewhale: [
+          "prompt",
+          "avatars",
+          "mcp",
+          "shellHooks",
+          "remote",
+          "workspace"
+        ]
+      },
+      refused_services: [
+        "shellHooks",
+        "loader",
+        "approval",
+        "agents",
+        "subagents",
+        "sessions",
+        "llm",
+        "sandboxPolicy",
+        "credentials",
+        "fs",
+        "subprocess",
+        "systemPrompt",
+        "runtimeLoop",
+        "tools",
+        "commands",
+        "prompt",
+        "storage",
+        "skills",
+        "avatars",
+        "mcp",
+        "logger",
+        "userQuestions",
+        "remote",
+        "workspace",
+        "settings",
+        "pluginManager",
+        "deepseekAccount",
+        "terminal",
+        "attachments",
+        "agentPresets",
+        "agentDefaultModel",
+        "sessionProjections",
+        "workspaceRegistry",
+        "typertGateway",
+        "web",
+        "webServer",
+        "connection",
+        "sessionTitle",
+        "profileContext",
+        "sessionPersistence",
+        "storageDomain",
+        "invariants",
+        "permissionPresets"
+      ],
+      row_bridges: {
+        "@deepseek-ai/dsh-mcp-client": "mcp",
+        "@deepseek-ai/dsh-skill-filesystem": "skills",
+        "@deepseek-ai/dsh-hooks-claude-code": "hooks-claude-code",
+        "@deepseek-ai/dsh-hooks-codex": "hooks-codex",
+        "@deepseek-ai/dsh-persona": "persona",
+        "@deepseek-ai/dsh-storage": "host-spine",
+        "@deepseek-ai/dsh-storage-json": "host-spine",
+        "@deepseek-ai/dsh-storage-domain": "host-spine",
+        "@deepseek-ai/dsh-workspace": "host-spine",
+        "@deepseek-ai/dsh-code-runtime-worker-thread": "host-spine",
+        "@deepseek-ai/dsh-tool-subagent/model-selection-settings": "host-spine",
+        "@deepseek-ai/dsh-agent-preset-registry": "host-spine",
+        "@deepseek-ai/dsh-cordis-host-runner": "host-spine",
+        "@deepseek-ai/dsh-host-webserver": "host-spine"
+      },
+      module_singletons: {
+        "@codewhale/dsh-composition": "dsh-composition",
+        "@deepseek-ai/cordis-plugin-loader": "dsh-loader",
+        "@deepseek-ai/cordis-plugin-include": "dsh-include",
+        "@deepseek-ai/cordis-plugin-group": "dsh-group",
+        "@deepseek-ai/cordis": "cordis",
+        "@deepseek-ai/schemastery": "schemastery",
+        "@deepseek-ai/cosmokit": "cosmokit",
+        cosmokit: "cosmokit",
+        "@deepseek-ai/dsh-tools": "dsh-tools",
+        "@deepseek-ai/dsh-util-values": "dsh-util-values",
+        "@deepseek-ai/dsh-commands/brand": "dsh-commands-brand",
+        "@deepseek-ai/dsh-llm": "dsh-llm-values",
+        "@deepseek-ai/dsh-session": "dsh-session-values",
+        "@deepseek-ai/dsh-session/surface": "dsh-session-surface",
+        "@deepseek-ai/dsh-system-prompt": "dsh-system-prompt-values",
+        "@deepseek-ai/dsh-user-questions": "dsh-user-questions-values",
+        "@deepseek-ai/dsh-credentials": "dsh-credentials",
+        "@deepseek-ai/dsh-settings": "dsh-settings",
+        "@deepseek-ai/dsh-home-paths": "dsh-home-paths",
+        "@deepseek-ai/dsh-atomic-write": "dsh-atomic-write",
+        "@deepseek-ai/dsh-skill": "dsh-skill",
+        "@deepseek-ai/dsh-typert-protocol": "dsh-typert-protocol",
+        "@deepseek-ai/dsh-workspace": "dsh-workspace",
+        "@deepseek-ai/dsh-subagent": "dsh-subagent",
+        "@deepseek-ai/dsh-agent": "dsh-agent",
+        "@deepseek-ai/dsh-app-boot": "dsh-app-boot"
+      },
+      definition_api: {
+        package: "@deepseek-ai/dsh-tools",
+        version: "0.2.2-rc.1",
+        license: "MIT",
+        tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-tools/-/dsh-tools-0.2.2-rc.1.tgz",
+        integrity: "sha512-svB49dLPCHkKHgGwik3dTvEH0sL1vKwIzlQgqjE4qzEqFbSEROW8fByk3g2y2lxDv8TqgEUa0Vp2qFrVbm2lfw==",
+        license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+        tarball_sha256: "bb94ee037bd7d3efe2d0654c6a1fa7084b268b895fa0ca6ceeb7e65d4fd6da72",
+        sources: [
+          {
+            file: "lib/shared-DTdn5dXO.js",
+            sha256: "d02f0d8f36878313b0dae3a1bba5b77f7db4cffc77a0b72772048a36bacf2cf0",
+            lines: [
+              [
+                22,
+                548
+              ]
+            ]
+          },
+          {
+            file: "lib/index.js",
+            sha256: "1889cbf718d64518dd83245d4dba1e1f080b2c5326259c3ed5b1be7a7666a2bd",
+            lines: [
+              [
+                7,
+                377
+              ]
+            ]
+          },
+          {
+            file: "lib/shared-DTdn5dXO.js",
+            sha256: "d02f0d8f36878313b0dae3a1bba5b77f7db4cffc77a0b72772048a36bacf2cf0",
+            lines: [
+              [
+                566,
+                596
+              ]
+            ]
+          }
+        ]
+      },
+      command_followup: "one-text-message-submit-on-success",
+      pure_api: {
+        file: "src/dsh/dsh-message-compat.js",
+        source_sha256: "018236676c31a588543e69d09821c53bc1138d14f4520b92ceba0e122cc8de78",
+        exports: {
+          "@deepseek-ai/dsh-llm": [
+            "createUserMessage",
+            "createAssistantMessage",
+            "createSystemMessage",
+            "createToolResultMessage",
+            "freezeMessage",
+            "contentHasImage",
+            "ReasoningEffortId",
+            "MessageId",
+            "ToolCallId",
+            "isAgentLoopRequest",
+            "resolveRetryPolicy",
+            "boundContextSummary",
+            "BlockAssembler",
+            "LlmAdapter",
+            "LlmError",
+            "HarnessError"
+          ],
+          "@deepseek-ai/dsh-session": [
+            "SessionId",
+            "SESSION_FORMAT_VERSION",
+            "KNOWN_SESSION_EVENT_TYPES",
+            "deriveEventMessage"
+          ],
+          "@deepseek-ai/dsh-system-prompt": [
+            "PERSONA_PREFIX_SECTION"
+          ],
+          "@deepseek-ai/dsh-user-questions": [
+            "UserQuestionError"
+          ]
+        },
+        packages: [
+          {
+            package: "@deepseek-ai/dsh-brand",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-brand/-/dsh-brand-0.2.2-rc.1.tgz",
+            integrity: "sha512-ShGNEmNuEQA+bfkspWC2kGrdbrM4dFNhqlrNHIWsHO+PgVH1KoTKTLSraT1pt0A8YYk/moKE0gL2gY9dNBU+rw==",
+            tarball_sha256: "d953cb5e8dcd69be0b0347ce9a3b36421eefa751820cbe909f4a185348ad5530",
+            source_file: "lib/index.js",
+            source_sha256: "14feb59256b891982b2017d73ed03ee65e2a7365f48e4902a856acb0e52d5eb0",
+            excerpts: [
+              {
+                name: "brandString",
+                lines: [
+                  20,
+                  22
+                ],
+                sha256: "2f0b62ba6507db54836a99e24d1d219e598b6140e575d2cf5c63d86a18e5e8ac"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-util-crypto",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-crypto/-/dsh-util-crypto-0.2.2-rc.1.tgz",
+            integrity: "sha512-I9Nhh3/64HPzjdR/mUt0J534FYHgodMUe0coXtA91+kxGcJQcSHOYouewv4hf0NWw0BuLh5zihTdtldZtobOWA==",
+            tarball_sha256: "c9ef0dfed280c83202f1d7bd5d32b1139a92a2fc375da62962ef709c3d1e4a6a",
+            source_file: "lib/index.js",
+            source_sha256: "640b26c8e5a1156c6c8e8749a22f805c9c0e34444778eb4ee9529be3e88ec862",
+            excerpts: [
+              {
+                name: "randomUUID",
+                lines: [
+                  27,
+                  33
+                ],
+                sha256: "e6c3b47d5cf366a149204c36d1697e658f61c48bfd96e66ec1c96deec3a8f4e2"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-llm",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-llm/-/dsh-llm-0.2.2-rc.1.tgz",
+            integrity: "sha512-XeEvH+6bpkjx0E2P1B5ZE+WWa+VHp4DimQaJDKNUZEFouqHMuN1B61TIz6IzUquRxa/6X4yJy+qXQ9WwAeMw5w==",
+            tarball_sha256: "cbf45039d3ef63e26987de514928a847a8c2d0b049df8fb24c11684e203b05d4",
+            source_file: "lib/index.js",
+            source_sha256: "8e541fc98a11897706a122fde1db42f8b2a41b3b354ba3fcb932e9a16929ac6a",
+            excerpts: [
+              {
+                name: "createMessage",
+                lines: [
+                  37,
+                  42
+                ],
+                sha256: "74baa44c9dea1821d97bd4fe592b21baf31f60eaf06962a269fcf2ec88e352ae"
+              },
+              {
+                name: "createUserMessage",
+                lines: [
+                  59,
+                  64
+                ],
+                sha256: "2c4929c2c18e511aa0fefe216eb50e703191057bb15ba1412ddcfdcc8bfc020f"
+              },
+              {
+                name: "HarnessError declaration",
+                lines: [
+                  126,
+                  126
+                ],
+                sha256: "d260a23e0a20850d3b623cbeed54626b47d43fa74e000c5d529dc0a341ab63ee"
+              },
+              {
+                name: "HarnessError body",
+                lines: [
+                  128,
+                  134
+                ],
+                sha256: "30ee24ef29e412b1ab2f0ca89ab600bb0260022d1479d43ca2ad21173b774ccf"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-session",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-session/-/dsh-session-0.2.2-rc.1.tgz",
+            integrity: "sha512-e0zx9HFNn8EyqrymGQS85SjKOyr61//ChTgIVDlCBSZvBB723fuXyi9LiHIIuPTlkgmWJl3gm5J51ebEXew7PQ==",
+            tarball_sha256: "b8b1b4a7b9c8efbdbe4c134ed3b18cddf11842b62ad7675c21c05b3afef1cfb5",
+            source_file: "lib/index.js",
+            source_sha256: "6fad466aa1f7aa64bfa038681ead5721f66c88e9891e25d357d2b8edbccd5494",
+            excerpts: [
+              {
+                name: "SessionId",
+                lines: [
+                  13,
+                  15
+                ],
+                sha256: "68a5778f0586d4e1c219ce6ae3cec3120a57446bbb91f371b4ba208533f48996"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-system-prompt",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-system-prompt/-/dsh-system-prompt-0.2.2-rc.1.tgz",
+            integrity: "sha512-1p9imdrenPnJTkLb6Coq+ELBDjngblM/YGP1Pa/xf1oisjLHcCoK2n9kkOUTIfgvoFtqWfxZJNZeKef71ZmlrA==",
+            tarball_sha256: "5ecb3f2ff2f0c037287c22c1ef917f1ce5cdd4c8055d51da6646ed5a39fe02a9",
+            source_file: "lib/index.js",
+            source_sha256: "18b692b03bbb717589085f63b126cbcf22963763c5a0565bb3a7a5d254e8e4a7",
+            excerpts: [
+              {
+                name: "PERSONA_PREFIX_SECTION",
+                lines: [
+                  61,
+                  61
+                ],
+                sha256: "11338254c278626eea6887b9cb5dc94d16f2ab4dae4bd7e555ea608c4b15648f"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-util-values",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-values/-/dsh-util-values-0.2.2-rc.1.tgz",
+            integrity: "sha512-UN4B/Fa9zAunYN3UuXDQ3QknxF/lMKNwTu2WxXKKEC+Ejz745po7I/JmsVFVa7+socfuwwTmVrfSsddRVU+lew==",
+            tarball_sha256: "e5de9a3c2600c70d72dba702cd0dfc8097264b7b6a7f393f4cfa799c81ecf759",
+            source_file: "lib/index.js",
+            source_sha256: "8b4ffdf40126d48bd22017b4671f7e90612d01833fc865f7a0b60d3de4183e8b",
+            excerpts: [
+              {
+                name: "deepFreeze",
+                lines: [
+                  809,
+                  845
+                ],
+                sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: false
+          },
+          {
+            package: "@deepseek-ai/dsh-user-questions",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-user-questions/-/dsh-user-questions-0.2.2-rc.1.tgz",
+            integrity: "sha512-COY40boWZ7XEszSvMGZ4CY5ze5ujCdA+Trtqx5C6ioqWzH9e8YbkY7AxyCOadxVO++5zAsqvsAfq65cZUPIMGA==",
+            tarball_sha256: "e7c1c38234fea9c0634ec95272bd1005c48ce890d2b935c8442b4ae7fee1b51e",
+            source_file: "lib/index.js",
+            source_sha256: "69fee77aa57cc43de583d53a4877394c4cf3b5d58b8d7579fd8095c0a015bfbd",
+            excerpts: [
+              {
+                name: "UserQuestionError",
+                lines: [
+                  430,
+                  435
+                ],
+                sha256: "5d49a4ecdf40039b26824f3575a79820b48ed011f90641870f44fe5a41bf5ced"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          }
+        ],
+        reuse: {
+          package: "@deepseek-ai/dsh-util-values",
+          version: "0.2.2-rc.1",
+          file: "lib/index.js",
+          symbol: "deepFreeze",
+          lines: [
+            809,
+            845
+          ],
+          sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
+        },
+        constructor_names: [
+          "HarnessError",
+          "UserQuestionError"
+        ]
+      },
+      tool_caller_projection: "readonly-id-session-header-cwd",
+      session_methods: {
+        flush: "invocation-bound-acknowledged-checkpoint-with-host-redaction-policy"
+      },
+      user_question_methods: {
+        ask: "invocation-bound-root-agent-typed-answers-no-wait"
+      },
+      subagent_methods: {
+        getProvider: "spawn-only-independent-context",
+        startActivation: "invocation-bound-caller-or-parent-delivery-text-prompt-model-persona-deny",
+        result: "text-output-typed-stop-reason",
+        dispose: "exact-activation"
+      },
+      agents_methods: {},
+      system_prompt_methods: {
+        section: "child-persona-slot-in-agent-created-only"
+      },
+      tool_definition_fields: {
+        deferLoading: "boolean-presentation-noop-engine-controls-loading"
+      }
+    };
+  }
+});
+
 // src/dsh/settings.ts
 function plain(value, what) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new RpcError(ErrorCode.InvalidParams, `${what} is a plain object`);
@@ -13880,13 +14328,28 @@ function assembleContextFor(messages = []) {
 function installModelSelection(_ctx, _options) {
   return () => void 0;
 }
-var MAX_CREDENTIAL_REF_LEN, MAX_ATOMIC_WRITE_BYTES, dshCredentialsModule, dshSettingsModule, dshHomePathsModule, fileLocks, dshAtomicWriteModule, BUNDLED_SKILL_RANK, dshSkillModule, Remote, TypertRemoteService, dshTypertProtocolModule, dshWorkspaceModule, dshSessionSurfaceModule, SubagentError, dshSubagentModule, dshAgentModule;
+function getDshRuntimeVersion() {
+  return compatibility_default.target_dsh_version;
+}
+function loadProfileDirectory() {
+  throw new RpcError(ErrorCode.NotAvailable, "dsh-app-boot profile directory loading is not available in Codewhale");
+}
+function resolveBundleDir() {
+  throw new RpcError(ErrorCode.NotAvailable, "dsh-app-boot bundle resolution is not available in Codewhale");
+}
+async function createRuntimeResolution() {
+  throw new RpcError(ErrorCode.NotAvailable, "dsh-app-boot runtime resolution is not available in Codewhale");
+}
+var MAX_CREDENTIAL_REF_LEN, MAX_ATOMIC_WRITE_BYTES, dshCredentialsModule, dshSettingsModule, dshHomePathsModule, fileLocks, dshAtomicWriteModule, BUNDLED_SKILL_RANK, dshSkillModule, Remote, TypertRemoteService, dshTypertProtocolModule, dshWorkspaceModule, dshSessionSurfaceModule, SubagentError, dshSubagentModule, dshAgentModule, dshAppBootModule;
 var init_dsh_shims = __esm({
   "src/dsh/dsh-shims.ts"() {
     "use strict";
     init_lib2();
+    init_protocol();
     init_root();
+    init_rpc();
     init_canonical_path();
+    init_compatibility();
     init_settings();
     init_dsh_message_compat();
     MAX_CREDENTIAL_REF_LEN = 256;
@@ -13981,444 +14444,12 @@ var init_dsh_shims = __esm({
       assembleContextFor,
       installModelSelection
     });
-  }
-});
-
-// src/dsh/compatibility.json
-var compatibility_default;
-var init_compatibility = __esm({
-  "src/dsh/compatibility.json"() {
-    compatibility_default = {
-      version: 3,
-      target_dsh_version: "0.2.2-rc.1",
-      provided_services: {
-        dsh: [
-          "tools",
-          "commands",
-          "storage",
-          "skills",
-          "sessions",
-          "userQuestions",
-          "subagents",
-          "agents",
-          "systemPrompt",
-          "llm",
-          "credentials",
-          "settings",
-          "pluginManager",
-          "deepseekAccount",
-          "terminal",
-          "attachments",
-          "agentPresets",
-          "agentDefaultModel",
-          "sessionProjections",
-          "workspaceRegistry",
-          "typertGateway",
-          "web",
-          "webServer",
-          "connection",
-          "sessionTitle",
-          "profileContext"
-        ],
-        cordis: [
-          "logger",
-          "events",
-          "reflect",
-          "registry"
-        ],
-        codewhale: [
-          "prompt",
-          "avatars",
-          "mcp",
-          "shellHooks",
-          "remote",
-          "workspace"
-        ]
-      },
-      refused_services: [
-        "shellHooks",
-        "loader",
-        "approval",
-        "agents",
-        "subagents",
-        "sessions",
-        "llm",
-        "sandboxPolicy",
-        "credentials",
-        "fs",
-        "subprocess",
-        "systemPrompt",
-        "runtimeLoop",
-        "tools",
-        "commands",
-        "prompt",
-        "storage",
-        "skills",
-        "avatars",
-        "mcp",
-        "logger",
-        "userQuestions",
-        "remote",
-        "workspace",
-        "settings",
-        "pluginManager",
-        "deepseekAccount",
-        "terminal",
-        "attachments",
-        "agentPresets",
-        "agentDefaultModel",
-        "sessionProjections",
-        "workspaceRegistry",
-        "typertGateway",
-        "web",
-        "webServer",
-        "connection",
-        "sessionTitle",
-        "profileContext"
-      ],
-      row_bridges: {
-        "@deepseek-ai/dsh-mcp-client": "mcp",
-        "@deepseek-ai/dsh-skill-filesystem": "skills",
-        "@deepseek-ai/dsh-hooks-claude-code": "hooks-claude-code",
-        "@deepseek-ai/dsh-hooks-codex": "hooks-codex",
-        "@deepseek-ai/dsh-persona": "persona",
-        "@deepseek-ai/dsh-storage": "host-spine",
-        "@deepseek-ai/dsh-storage-json": "host-spine",
-        "@deepseek-ai/dsh-storage-domain": "host-spine",
-        "@deepseek-ai/dsh-workspace": "host-spine",
-        "@deepseek-ai/dsh-code-runtime-worker-thread": "host-spine",
-        "@deepseek-ai/dsh-tool-subagent/model-selection-settings": "host-spine",
-        "@deepseek-ai/dsh-agent-preset-registry": "host-spine",
-        "@deepseek-ai/dsh-cordis-host-runner": "host-spine",
-        "@deepseek-ai/dsh-host-webserver": "host-spine"
-      },
-      module_singletons: {
-        "@codewhale/dsh-composition": "dsh-composition",
-        "@deepseek-ai/cordis-plugin-loader": "dsh-loader",
-        "@deepseek-ai/cordis-plugin-include": "dsh-include",
-        "@deepseek-ai/cordis-plugin-group": "dsh-group",
-        "@deepseek-ai/cordis": "cordis",
-        "@deepseek-ai/schemastery": "schemastery",
-        "@deepseek-ai/cosmokit": "cosmokit",
-        cosmokit: "cosmokit",
-        "@deepseek-ai/dsh-tools": "dsh-tools",
-        "@deepseek-ai/dsh-util-values": "dsh-util-values",
-        "@deepseek-ai/dsh-commands/brand": "dsh-commands-brand",
-        "@deepseek-ai/dsh-llm": "dsh-llm-values",
-        "@deepseek-ai/dsh-session": "dsh-session-values",
-        "@deepseek-ai/dsh-session/surface": "dsh-session-surface",
-        "@deepseek-ai/dsh-system-prompt": "dsh-system-prompt-values",
-        "@deepseek-ai/dsh-user-questions": "dsh-user-questions-values",
-        "@deepseek-ai/dsh-credentials": "dsh-credentials",
-        "@deepseek-ai/dsh-settings": "dsh-settings",
-        "@deepseek-ai/dsh-home-paths": "dsh-home-paths",
-        "@deepseek-ai/dsh-atomic-write": "dsh-atomic-write",
-        "@deepseek-ai/dsh-skill": "dsh-skill",
-        "@deepseek-ai/dsh-typert-protocol": "dsh-typert-protocol",
-        "@deepseek-ai/dsh-workspace": "dsh-workspace",
-        "@deepseek-ai/dsh-subagent": "dsh-subagent"
-      },
-      definition_api: {
-        package: "@deepseek-ai/dsh-tools",
-        version: "0.2.2-rc.1",
-        license: "MIT",
-        tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-tools/-/dsh-tools-0.2.2-rc.1.tgz",
-        integrity: "sha512-svB49dLPCHkKHgGwik3dTvEH0sL1vKwIzlQgqjE4qzEqFbSEROW8fByk3g2y2lxDv8TqgEUa0Vp2qFrVbm2lfw==",
-        license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-        tarball_sha256: "bb94ee037bd7d3efe2d0654c6a1fa7084b268b895fa0ca6ceeb7e65d4fd6da72",
-        sources: [
-          {
-            file: "lib/shared-DTdn5dXO.js",
-            sha256: "d02f0d8f36878313b0dae3a1bba5b77f7db4cffc77a0b72772048a36bacf2cf0",
-            lines: [
-              [
-                22,
-                548
-              ]
-            ]
-          },
-          {
-            file: "lib/index.js",
-            sha256: "1889cbf718d64518dd83245d4dba1e1f080b2c5326259c3ed5b1be7a7666a2bd",
-            lines: [
-              [
-                7,
-                377
-              ]
-            ]
-          },
-          {
-            file: "lib/shared-DTdn5dXO.js",
-            sha256: "d02f0d8f36878313b0dae3a1bba5b77f7db4cffc77a0b72772048a36bacf2cf0",
-            lines: [
-              [
-                566,
-                596
-              ]
-            ]
-          }
-        ]
-      },
-      command_followup: "one-text-message-submit-on-success",
-      pure_api: {
-        file: "src/dsh/dsh-message-compat.js",
-        source_sha256: "018236676c31a588543e69d09821c53bc1138d14f4520b92ceba0e122cc8de78",
-        exports: {
-          "@deepseek-ai/dsh-llm": [
-            "createUserMessage",
-            "createAssistantMessage",
-            "createSystemMessage",
-            "createToolResultMessage",
-            "freezeMessage",
-            "contentHasImage",
-            "ReasoningEffortId",
-            "MessageId",
-            "ToolCallId",
-            "isAgentLoopRequest",
-            "resolveRetryPolicy",
-            "boundContextSummary",
-            "BlockAssembler",
-            "LlmAdapter",
-            "LlmError",
-            "HarnessError"
-          ],
-          "@deepseek-ai/dsh-session": [
-            "SessionId",
-            "SESSION_FORMAT_VERSION",
-            "KNOWN_SESSION_EVENT_TYPES",
-            "deriveEventMessage"
-          ],
-          "@deepseek-ai/dsh-system-prompt": [
-            "PERSONA_PREFIX_SECTION"
-          ],
-          "@deepseek-ai/dsh-user-questions": [
-            "UserQuestionError"
-          ]
-        },
-        packages: [
-          {
-            package: "@deepseek-ai/dsh-brand",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-brand/-/dsh-brand-0.2.2-rc.1.tgz",
-            integrity: "sha512-ShGNEmNuEQA+bfkspWC2kGrdbrM4dFNhqlrNHIWsHO+PgVH1KoTKTLSraT1pt0A8YYk/moKE0gL2gY9dNBU+rw==",
-            tarball_sha256: "d953cb5e8dcd69be0b0347ce9a3b36421eefa751820cbe909f4a185348ad5530",
-            source_file: "lib/index.js",
-            source_sha256: "14feb59256b891982b2017d73ed03ee65e2a7365f48e4902a856acb0e52d5eb0",
-            excerpts: [
-              {
-                name: "brandString",
-                lines: [
-                  20,
-                  22
-                ],
-                sha256: "2f0b62ba6507db54836a99e24d1d219e598b6140e575d2cf5c63d86a18e5e8ac"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          },
-          {
-            package: "@deepseek-ai/dsh-util-crypto",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-crypto/-/dsh-util-crypto-0.2.2-rc.1.tgz",
-            integrity: "sha512-I9Nhh3/64HPzjdR/mUt0J534FYHgodMUe0coXtA91+kxGcJQcSHOYouewv4hf0NWw0BuLh5zihTdtldZtobOWA==",
-            tarball_sha256: "c9ef0dfed280c83202f1d7bd5d32b1139a92a2fc375da62962ef709c3d1e4a6a",
-            source_file: "lib/index.js",
-            source_sha256: "640b26c8e5a1156c6c8e8749a22f805c9c0e34444778eb4ee9529be3e88ec862",
-            excerpts: [
-              {
-                name: "randomUUID",
-                lines: [
-                  27,
-                  33
-                ],
-                sha256: "e6c3b47d5cf366a149204c36d1697e658f61c48bfd96e66ec1c96deec3a8f4e2"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          },
-          {
-            package: "@deepseek-ai/dsh-llm",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-llm/-/dsh-llm-0.2.2-rc.1.tgz",
-            integrity: "sha512-XeEvH+6bpkjx0E2P1B5ZE+WWa+VHp4DimQaJDKNUZEFouqHMuN1B61TIz6IzUquRxa/6X4yJy+qXQ9WwAeMw5w==",
-            tarball_sha256: "cbf45039d3ef63e26987de514928a847a8c2d0b049df8fb24c11684e203b05d4",
-            source_file: "lib/index.js",
-            source_sha256: "8e541fc98a11897706a122fde1db42f8b2a41b3b354ba3fcb932e9a16929ac6a",
-            excerpts: [
-              {
-                name: "createMessage",
-                lines: [
-                  37,
-                  42
-                ],
-                sha256: "74baa44c9dea1821d97bd4fe592b21baf31f60eaf06962a269fcf2ec88e352ae"
-              },
-              {
-                name: "createUserMessage",
-                lines: [
-                  59,
-                  64
-                ],
-                sha256: "2c4929c2c18e511aa0fefe216eb50e703191057bb15ba1412ddcfdcc8bfc020f"
-              },
-              {
-                name: "HarnessError declaration",
-                lines: [
-                  126,
-                  126
-                ],
-                sha256: "d260a23e0a20850d3b623cbeed54626b47d43fa74e000c5d529dc0a341ab63ee"
-              },
-              {
-                name: "HarnessError body",
-                lines: [
-                  128,
-                  134
-                ],
-                sha256: "30ee24ef29e412b1ab2f0ca89ab600bb0260022d1479d43ca2ad21173b774ccf"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          },
-          {
-            package: "@deepseek-ai/dsh-session",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-session/-/dsh-session-0.2.2-rc.1.tgz",
-            integrity: "sha512-e0zx9HFNn8EyqrymGQS85SjKOyr61//ChTgIVDlCBSZvBB723fuXyi9LiHIIuPTlkgmWJl3gm5J51ebEXew7PQ==",
-            tarball_sha256: "b8b1b4a7b9c8efbdbe4c134ed3b18cddf11842b62ad7675c21c05b3afef1cfb5",
-            source_file: "lib/index.js",
-            source_sha256: "6fad466aa1f7aa64bfa038681ead5721f66c88e9891e25d357d2b8edbccd5494",
-            excerpts: [
-              {
-                name: "SessionId",
-                lines: [
-                  13,
-                  15
-                ],
-                sha256: "68a5778f0586d4e1c219ce6ae3cec3120a57446bbb91f371b4ba208533f48996"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          },
-          {
-            package: "@deepseek-ai/dsh-system-prompt",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-system-prompt/-/dsh-system-prompt-0.2.2-rc.1.tgz",
-            integrity: "sha512-1p9imdrenPnJTkLb6Coq+ELBDjngblM/YGP1Pa/xf1oisjLHcCoK2n9kkOUTIfgvoFtqWfxZJNZeKef71ZmlrA==",
-            tarball_sha256: "5ecb3f2ff2f0c037287c22c1ef917f1ce5cdd4c8055d51da6646ed5a39fe02a9",
-            source_file: "lib/index.js",
-            source_sha256: "18b692b03bbb717589085f63b126cbcf22963763c5a0565bb3a7a5d254e8e4a7",
-            excerpts: [
-              {
-                name: "PERSONA_PREFIX_SECTION",
-                lines: [
-                  61,
-                  61
-                ],
-                sha256: "11338254c278626eea6887b9cb5dc94d16f2ab4dae4bd7e555ea608c4b15648f"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          },
-          {
-            package: "@deepseek-ai/dsh-util-values",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-values/-/dsh-util-values-0.2.2-rc.1.tgz",
-            integrity: "sha512-UN4B/Fa9zAunYN3UuXDQ3QknxF/lMKNwTu2WxXKKEC+Ejz745po7I/JmsVFVa7+socfuwwTmVrfSsddRVU+lew==",
-            tarball_sha256: "e5de9a3c2600c70d72dba702cd0dfc8097264b7b6a7f393f4cfa799c81ecf759",
-            source_file: "lib/index.js",
-            source_sha256: "8b4ffdf40126d48bd22017b4671f7e90612d01833fc865f7a0b60d3de4183e8b",
-            excerpts: [
-              {
-                name: "deepFreeze",
-                lines: [
-                  809,
-                  845
-                ],
-                sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: false
-          },
-          {
-            package: "@deepseek-ai/dsh-user-questions",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-user-questions/-/dsh-user-questions-0.2.2-rc.1.tgz",
-            integrity: "sha512-COY40boWZ7XEszSvMGZ4CY5ze5ujCdA+Trtqx5C6ioqWzH9e8YbkY7AxyCOadxVO++5zAsqvsAfq65cZUPIMGA==",
-            tarball_sha256: "e7c1c38234fea9c0634ec95272bd1005c48ce890d2b935c8442b4ae7fee1b51e",
-            source_file: "lib/index.js",
-            source_sha256: "69fee77aa57cc43de583d53a4877394c4cf3b5d58b8d7579fd8095c0a015bfbd",
-            excerpts: [
-              {
-                name: "UserQuestionError",
-                lines: [
-                  430,
-                  435
-                ],
-                sha256: "5d49a4ecdf40039b26824f3575a79820b48ed011f90641870f44fe5a41bf5ced"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          }
-        ],
-        reuse: {
-          package: "@deepseek-ai/dsh-util-values",
-          version: "0.2.2-rc.1",
-          file: "lib/index.js",
-          symbol: "deepFreeze",
-          lines: [
-            809,
-            845
-          ],
-          sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
-        },
-        constructor_names: [
-          "HarnessError",
-          "UserQuestionError"
-        ]
-      },
-      tool_caller_projection: "readonly-id-session-header-cwd",
-      session_methods: {
-        flush: "invocation-bound-acknowledged-checkpoint-with-host-redaction-policy"
-      },
-      user_question_methods: {
-        ask: "invocation-bound-root-agent-typed-answers-no-wait"
-      },
-      subagent_methods: {
-        getProvider: "spawn-only-independent-context",
-        startActivation: "invocation-bound-caller-or-parent-delivery-text-prompt-model-persona-deny",
-        result: "text-output-typed-stop-reason",
-        dispose: "exact-activation"
-      },
-      agents_methods: {},
-      system_prompt_methods: {
-        section: "child-persona-slot-in-agent-created-only"
-      },
-      tool_definition_fields: {
-        deferLoading: "boolean-presentation-noop-engine-controls-loading"
-      }
-    };
+    dshAppBootModule = Object.freeze({
+      getDshRuntimeVersion,
+      loadProfileDirectory,
+      resolveBundleDir,
+      createRuntimeResolution
+    });
   }
 });
 
@@ -17216,7 +17247,7 @@ var init_attachments = __esm({
 });
 
 // src/dsh/host-services.ts
-var agentPresetsAdapter, agentDefaultModelAdapter, sessionProjectionsAdapter, workspaceRegistryAdapter, typertGatewayAdapter, webAdapter, DSH_HOST_SERVICE_ADAPTERS;
+var agentPresetsAdapter, agentDefaultModelAdapter, sessionProjectionsAdapter, workspaceRegistryAdapter, typertGatewayAdapter, webAdapter, MAX_STORAGE_DOMAINS_PER_OWNER, MAX_STORAGE_TABLES_PER_DOMAIN, MAX_STORAGE_ENTRIES_PER_TABLE, MAX_STORAGE_VALUE_BYTES, sessionPersistenceAdapter, storageDomainAdapter, invariantsAdapter, READONLY_PERMISSION_PRESET_NAMES, READONLY_PERMISSION_PRESETS, permissionPresetsAdapter, DSH_HOST_SERVICE_ADAPTERS;
 var init_host_services = __esm({
   "src/dsh/host-services.ts"() {
     "use strict";
@@ -17493,13 +17524,272 @@ var init_host_services = __esm({
         return WebService;
       }
     };
+    MAX_STORAGE_DOMAINS_PER_OWNER = 16;
+    MAX_STORAGE_TABLES_PER_DOMAIN = 32;
+    MAX_STORAGE_ENTRIES_PER_TABLE = 512;
+    MAX_STORAGE_VALUE_BYTES = 64 * 1024;
+    sessionPersistenceAdapter = {
+      service: "sessionPersistence",
+      define() {
+        class SessionPersistenceService extends Service {
+          constructor(ctx) {
+            super(ctx, "sessionPersistence");
+          }
+          async findLog(_id) {
+            return void 0;
+          }
+          async listLogs() {
+            return Object.freeze([]);
+          }
+          async readLog(_id) {
+            return void 0;
+          }
+          artifactDirectory(_headerOrId) {
+            return void 0;
+          }
+          async deleteLog() {
+            throw new RpcError(ErrorCode.Refused, "sessionPersistence mutations are refused in Codewhale");
+          }
+          async removeLog() {
+            throw new RpcError(ErrorCode.Refused, "sessionPersistence mutations are refused in Codewhale");
+          }
+          async writeLog() {
+            throw new RpcError(ErrorCode.Refused, "sessionPersistence mutations are refused in Codewhale");
+          }
+        }
+        Object.freeze(SessionPersistenceService.prototype);
+        return SessionPersistenceService;
+      }
+    };
+    storageDomainAdapter = {
+      service: "storageDomain",
+      define(host) {
+        const ownerDomains = /* @__PURE__ */ new Map();
+        function makeDomainHandle(token, domainName, tables) {
+          let closed = false;
+          const ensureOpen = () => {
+            if (closed) throw new RpcError(ErrorCode.NotAvailable, `storageDomain \`${domainName}\` is closed`);
+          };
+          return Object.freeze({
+            name: domainName,
+            table(tableName) {
+              ensureOpen();
+              if (typeof tableName !== "string" || tableName.trim().length === 0 || tableName.length > 128) {
+                throw new RpcError(ErrorCode.InvalidParams, "storageDomain table name must be a non-empty string");
+              }
+              const key = tableName.trim();
+              let rows = tables.get(key);
+              if (!rows) {
+                if (tables.size >= MAX_STORAGE_TABLES_PER_DOMAIN) {
+                  throw new RpcError(ErrorCode.Refused, "storageDomain table limit reached");
+                }
+                rows = /* @__PURE__ */ new Map();
+                tables.set(key, rows);
+              }
+              const store = rows;
+              return Object.freeze({
+                async get(rowKey) {
+                  ensureOpen();
+                  if (typeof rowKey !== "string") return void 0;
+                  const val = store.get(rowKey);
+                  return val === void 0 ? void 0 : structuredClone(val);
+                },
+                async set(rowKey, value) {
+                  ensureOpen();
+                  if (typeof rowKey !== "string" || rowKey.length === 0 || rowKey.length > 256) {
+                    throw new RpcError(ErrorCode.InvalidParams, "storageDomain row key must be a non-empty string");
+                  }
+                  if (!store.has(rowKey) && store.size >= MAX_STORAGE_ENTRIES_PER_TABLE) {
+                    throw new RpcError(ErrorCode.Refused, "storageDomain table entry limit reached");
+                  }
+                  const serialized = JSON.stringify(value);
+                  if (serialized !== void 0 && Buffer.byteLength(serialized, "utf8") > MAX_STORAGE_VALUE_BYTES) {
+                    throw new RpcError(ErrorCode.InvalidParams, "storageDomain value exceeds size limit");
+                  }
+                  store.set(rowKey, structuredClone(value));
+                },
+                async delete(rowKey) {
+                  ensureOpen();
+                  return typeof rowKey === "string" ? store.delete(rowKey) : false;
+                },
+                async has(rowKey) {
+                  ensureOpen();
+                  return typeof rowKey === "string" && store.has(rowKey);
+                },
+                async keys() {
+                  ensureOpen();
+                  return Object.freeze([...store.keys()]);
+                },
+                async list() {
+                  ensureOpen();
+                  return Object.freeze([...store.values()].map((v) => structuredClone(v)));
+                },
+                async entries() {
+                  ensureOpen();
+                  return Object.freeze([...store.entries()].map(([k, v]) => [k, structuredClone(v)]));
+                },
+                async clear() {
+                  ensureOpen();
+                  store.clear();
+                }
+              });
+            },
+            async close() {
+              closed = true;
+              const domains = ownerDomains.get(token);
+              if (domains?.get(domainName) === tables) {
+                domains.delete(domainName);
+                if (domains.size === 0) ownerDomains.delete(token);
+              }
+            }
+          });
+        }
+        class StorageDomainService extends Service {
+          constructor(ctx) {
+            super(ctx, "storageDomain");
+          }
+          async open(spec) {
+            const owner = host.ownerOf(this.ctx);
+            if (!owner) throw new RpcError(ErrorCode.NotAvailable, "storageDomain.open requires an active owner");
+            const rawName = typeof spec === "string" ? spec : spec && typeof spec === "object" && !Array.isArray(spec) ? spec.name ?? spec.id : void 0;
+            if (typeof rawName !== "string" || rawName.trim().length === 0 || rawName.length > 128) {
+              throw new RpcError(ErrorCode.InvalidParams, "storageDomain spec requires a non-empty name");
+            }
+            const domainName = rawName.trim();
+            const token = owner.ref.owner_token;
+            let domains = ownerDomains.get(token);
+            if (!domains) {
+              domains = /* @__PURE__ */ new Map();
+              ownerDomains.set(token, domains);
+            }
+            let tables = domains.get(domainName);
+            if (!tables) {
+              if (domains.size >= MAX_STORAGE_DOMAINS_PER_OWNER) {
+                throw new RpcError(ErrorCode.Refused, "storageDomain owner domain limit reached");
+              }
+              tables = /* @__PURE__ */ new Map();
+              domains.set(domainName, tables);
+              const ownedTables = tables;
+              this.ctx.effect(() => () => {
+                const current2 = ownerDomains.get(token);
+                if (current2?.get(domainName) === ownedTables) {
+                  current2.delete(domainName);
+                  if (current2.size === 0) ownerDomains.delete(token);
+                }
+              }, `storageDomain.open(${JSON.stringify(domainName)})`);
+            }
+            return makeDomainHandle(token, domainName, tables);
+          }
+          get(name) {
+            if (typeof name !== "string" || name.trim().length === 0) return void 0;
+            const owner = host.ownerOf(this.ctx);
+            if (!owner) return void 0;
+            const token = owner.ref.owner_token;
+            const tables = ownerDomains.get(token)?.get(name.trim());
+            return tables ? makeDomainHandle(token, name.trim(), tables) : void 0;
+          }
+          list() {
+            const owner = host.ownerOf(this.ctx);
+            const domains = owner ? ownerDomains.get(owner.ref.owner_token) : void 0;
+            return Object.freeze(domains ? [...domains.keys()] : []);
+          }
+        }
+        Object.freeze(StorageDomainService.prototype);
+        return StorageDomainService;
+      }
+    };
+    invariantsAdapter = {
+      service: "invariants",
+      define(host) {
+        const ownerInvariants = /* @__PURE__ */ new Map();
+        class InvariantsService extends Service {
+          constructor(ctx) {
+            super(ctx, "invariants");
+          }
+          register(name, install) {
+            const owner = host.ownerOf(this.ctx);
+            if (!owner) throw new RpcError(ErrorCode.NotAvailable, "invariants.register requires an active owner");
+            if (typeof name !== "string" || name.trim().length === 0 || name.length > 128) {
+              throw new RpcError(ErrorCode.InvalidParams, "invariant name must be a non-empty string");
+            }
+            const key = name.trim();
+            const token = owner.ref.owner_token;
+            return this.ctx.effect(() => {
+              let table = ownerInvariants.get(token);
+              if (!table) {
+                table = /* @__PURE__ */ new Map();
+                ownerInvariants.set(token, table);
+              }
+              table.set(key, install);
+              return () => {
+                const current2 = ownerInvariants.get(token);
+                current2?.delete(key);
+                if (current2 && current2.size === 0) ownerInvariants.delete(token);
+              };
+            }, `invariants.register(${JSON.stringify(key)})`);
+          }
+          list() {
+            const owner = host.ownerOf(this.ctx);
+            const table = owner ? ownerInvariants.get(owner.ref.owner_token) : void 0;
+            return Object.freeze(table ? [...table.keys()] : []);
+          }
+        }
+        Object.freeze(InvariantsService.prototype);
+        return InvariantsService;
+      }
+    };
+    READONLY_PERMISSION_PRESET_NAMES = Object.freeze(["ask", "accept-edits", "auto-review", "full-access"]);
+    READONLY_PERMISSION_PRESETS = Object.freeze(
+      READONLY_PERMISSION_PRESET_NAMES.map((name) => Object.freeze({ name, readonly: true }))
+    );
+    permissionPresetsAdapter = {
+      service: "permissionPresets",
+      define() {
+        class PermissionPresetsService extends Service {
+          constructor(ctx) {
+            super(ctx, "permissionPresets");
+          }
+          get availability() {
+            return "readonly";
+          }
+          get defaultPreset() {
+            return "ask";
+          }
+          get names() {
+            return READONLY_PERMISSION_PRESET_NAMES;
+          }
+          list() {
+            return READONLY_PERMISSION_PRESETS;
+          }
+          get(name) {
+            if (typeof name !== "string") return void 0;
+            return READONLY_PERMISSION_PRESETS.find((preset) => preset.name === name);
+          }
+          apply() {
+            throw new RpcError(ErrorCode.Refused, "permissionPresets is read-only in Codewhale; Core owns approval posture");
+          }
+          set() {
+            throw new RpcError(ErrorCode.Refused, "permissionPresets is read-only in Codewhale; Core owns approval posture");
+          }
+          register() {
+            throw new RpcError(ErrorCode.Refused, "permissionPresets is read-only in Codewhale; Core owns approval posture");
+          }
+        }
+        Object.freeze(PermissionPresetsService.prototype);
+        return PermissionPresetsService;
+      }
+    };
     DSH_HOST_SERVICE_ADAPTERS = Object.freeze([
       agentPresetsAdapter,
       agentDefaultModelAdapter,
       sessionProjectionsAdapter,
       workspaceRegistryAdapter,
       typertGatewayAdapter,
-      webAdapter
+      webAdapter,
+      sessionPersistenceAdapter,
+      storageDomainAdapter,
+      invariantsAdapter,
+      permissionPresetsAdapter
     ]);
   }
 });
