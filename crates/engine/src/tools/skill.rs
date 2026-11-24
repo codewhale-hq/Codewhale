@@ -630,36 +630,46 @@ pub(crate) fn bundled_creator_skill_body(name: &str) -> Option<String> {
     codewhale_skills::bundled_creator_skill(name).map(|skill| format_skill_body(&skill))
 }
 
-/// List sibling files of `SKILL.md` in the skill's own directory.
-/// Skips the `SKILL.md` itself and any nested directories so the
-/// listing stays focused on at-hand resources. Sorted lexically for
-/// deterministic output (matters for transcript diffing in tests).
+const MAX_COMPANION_DEPTH: usize = 8;
+const MAX_COMPANION_FILES: usize = 256;
+
 fn collect_companion_files(skill: &Skill) -> Vec<std::path::PathBuf> {
     if matches!(&skill.source, SkillSource::Plugin { .. }) {
         // Companion files remain hashed, but exposing their mutable on-disk
         // paths would let content change after review and bypass the snapshot.
         return Vec::new();
     }
-    let Some(dir) = skill.path.parent() else {
+    let Some(root) = skill.path.parent() else {
         return Vec::new();
     };
-    let mut entries: Vec<std::path::PathBuf> = match std::fs::read_dir(dir) {
-        Ok(rd) => rd
-            .flatten()
-            .filter_map(|entry| {
-                let path = entry.path();
-                let is_file = entry.file_type().is_ok_and(|ft| ft.is_file());
-                let is_skill_md = path.file_name().and_then(|s| s.to_str()) == Some("SKILL.md");
-                if is_file && !is_skill_md {
-                    Some(path)
-                } else {
-                    None
+    let mut entries = Vec::new();
+    let mut pending = vec![(root.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = pending.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            let name = path.file_name().and_then(|s| s.to_str());
+            if ft.is_dir() {
+                if depth < MAX_COMPANION_DEPTH && name != Some(".git") {
+                    pending.push((path, depth + 1));
                 }
-            })
-            .collect(),
-        Err(_) => Vec::new(),
-    };
+                continue;
+            }
+            if ft.is_file() && !(depth == 0 && name == Some("SKILL.md")) {
+                entries.push(path);
+            }
+        }
+    }
     entries.sort();
+    entries.truncate(MAX_COMPANION_FILES);
     entries
 }
 
@@ -712,7 +722,6 @@ mod tests {
         .unwrap();
         fs::write(skill_dir.join("script.py"), "print('hi')").unwrap();
         fs::write(skill_dir.join("data.json"), "{}").unwrap();
-        // Nested directory — skipped by collect_companion_files.
         fs::create_dir_all(skill_dir.join("subdir")).unwrap();
 
         let registry = SkillRegistry::discover(tmp.path());
@@ -725,6 +734,50 @@ mod tests {
         assert_eq!(
             names,
             vec!["data.json".to_string(), "script.py".to_string()]
+        );
+    }
+
+    #[test]
+    fn collect_companion_files_traverses_subdirectories_deterministically() {
+        let tmp = tempdir().unwrap();
+        let skill_dir = tmp.path().join("nested-skill");
+        fs::create_dir_all(skill_dir.join("references/deep")).unwrap();
+        fs::create_dir_all(skill_dir.join("scripts")).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: nested-skill\ndescription: x\n---\nbody\n",
+        )
+        .unwrap();
+        fs::write(skill_dir.join("notes.md"), "top").unwrap();
+        fs::write(skill_dir.join("scripts/run.py"), "print(1)").unwrap();
+        fs::write(skill_dir.join("references/guide.md"), "guide").unwrap();
+        fs::write(skill_dir.join("references/deep/spec.txt"), "spec").unwrap();
+        #[cfg(unix)]
+        {
+            let outside = tmp.path().join("outside.txt");
+            fs::write(&outside, "secret").unwrap();
+            std::os::unix::fs::symlink(&outside, skill_dir.join("references/escape.txt")).unwrap();
+        }
+
+        let registry = SkillRegistry::discover(tmp.path());
+        let skill = registry.get("nested-skill").unwrap();
+        let rel: Vec<String> = collect_companion_files(skill)
+            .into_iter()
+            .map(|p| {
+                p.strip_prefix(&skill_dir)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        assert_eq!(
+            rel,
+            vec![
+                "notes.md".to_string(),
+                "references/deep/spec.txt".to_string(),
+                "references/guide.md".to_string(),
+                "scripts/run.py".to_string(),
+            ]
         );
     }
 
