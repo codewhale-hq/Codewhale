@@ -7,8 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Serve the shared web app build from `codewhale web`:** `codewhale web` now serves a built `codewhale-app/apps/web/dist` directory when `CODEWHALE_WEB_DIST` points to a valid directory containing `index.html`, including `/plugin-host.html` (with sandboxed `connect-src 'none'` / `frame-ancestors 'self'` CSP), immutable `/static/*` hashed assets, bounded SPA route fallback, path-traversal/symlink refusal, and preserved auth-bootstrap cookie sessions; falls back to the embedded web client when unset. (#7237)
 ### Fixed
 
+- **Environment overrides and `approval_policy` consistency:** `CODEWHALE_ALLOW_SHELL` (along with `CODEWHALE_YOLO`, `CODEWHALE_SANDBOX_NETWORK_ACCESS`, and `CODEWHALE_PREFER_BWRAP`) now accepts `yes` and `on` in addition to `1` and `true`; an unknown `CODEWHALE_PROVIDER` now warns and skips only provider-scoped overrides instead of dropping every subsequent environment override; `CODEWHALE_MAX_SUBAGENTS` and project/overlay `max_subagents` now take precedence over a file's `[subagents] max_concurrent`; and `approval_policy` now accepts `ask` and `auto-review` in `codewhale config set`, `config.toml` validation, and project-config tightening.
 - **Skills discovery, triggers, and config validation:** `load_skill` companion file lists now include files inside subdirectories (bounded depth/count, skipping hidden files and symlinks), `split_trigger` recognizes localized trigger clauses (such as Russian `Триггеры:` and Chinese `触发条件：`), the names-only skill index tier preserves skill paths whenever budget allows, and unknown keys under `[skills]` are rejected during config parsing instead of silently ignored. (#7432)
 
 ### Added
@@ -27,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **MCP stdio shutdown kills the process group before reaping a timed-out leader:** when a stdio MCP server ignores `SIGTERM` past the shutdown grace period, `process_broker` now signals its `ProcessTree` before reaping the leader child so descendants are terminated while the process group ID is still pinned. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Refs #6558)
 - **Settings schema `allow_shell` matches interactive threads and reports `persisted`:** `/v1/settings/schema` now resolves `allow_shell` using the interactive default (`interactive_allow_shell()` gated by shell-access policy, matching new interactive threads) instead of the headless `false` default, and populates `persisted` for config.toml-owned `RUNTIME_CONFIG_KEYS` rows so Desktop Settings › Trust can distinguish an unset default from an explicit `allow_shell = false`. (CW-8386)
+### Added
+
+- **Choose an external ACP agent in the terminal:** `/model` now lists installed external ACP agents (`antigravity`, `opencode`, `copilot`, `dsh`, and others) alongside Codewhale models, showing why non-runnable agents are blocked and what to run, and `codewhale --agent <id>` / `codewhale exec --agent <id>` starts an interactive or headless session through the Engine ACP executor. (CW-8361)
 
 ## [0.10.4] - 2026-11-23
 

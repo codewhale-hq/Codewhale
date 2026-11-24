@@ -3096,6 +3096,12 @@ pub(crate) async fn handle_view_events(
                 previous_effort,
                 save_as_startup_default,
             } => {
+                let was_external = app.external_agent.is_some();
+                if was_external && (app.is_loading || app.dispatch_in_flight) {
+                    let message = app.tr(MessageId::ExternalAgentSwitchBusy).into_owned();
+                    app.push_status_toast(message, StatusToastLevel::Warning, Some(6_000));
+                    continue;
+                }
                 if let (Some(selection), Some(identity)) = (route_selection, identity.as_ref())
                     && let Err(error) =
                         codewhale_engine::model_inventory::validate_inventory_selection(
@@ -3105,6 +3111,19 @@ pub(crate) async fn handle_view_events(
                 {
                     app.push_status_toast(error, StatusToastLevel::Error, Some(12_000));
                     continue;
+                }
+                if was_external {
+                    crate::tui::external_agent::clear_external_agent(app);
+                    if !app.history.is_empty() {
+                        app.history.clear();
+                        app.streaming_message_index = None;
+                        app.streaming_thinking_active_entry = None;
+                        app.mark_history_updated();
+                    }
+                    let notice = app
+                        .tr(MessageId::ExternalAgentSessionSwitchedBack)
+                        .replace("{model}", &model);
+                    app.add_message(HistoryCell::System { content: notice });
                 }
                 apply_model_picker_choice(
                     app,
@@ -3120,6 +3139,15 @@ pub(crate) async fn handle_view_events(
                 .await;
                 refresh_parked_fleet_roster(app, config);
             }
+            ViewEvent::ExternalAgentSelected {
+                agent_id,
+                agent_name,
+            } => {
+                crate::tui::external_agent::switch_to_external_agent(
+                    app, config, agent_id, agent_name,
+                )
+                .await;
+            }
             ViewEvent::ModelPickerDismissed {
                 catalog_view,
                 view,
@@ -3134,10 +3162,8 @@ pub(crate) async fn handle_view_events(
                 refresh_parked_fleet_roster(app, config);
             }
             ViewEvent::ModelPickerRefresh => {
-                // Re-resolve readiness from the live credential state and
-                // rebuild catalog rows. Non-destructive: never clears the list
-                // when a refresh fails; just re-project from current config.
                 sync_config_provider_from_app(config, app);
+                crate::tui::external_agent::start_external_agent_discovery(app);
                 let refreshed =
                     tr(app.ui_locale, MessageId::ModelPickerReadinessRefreshed).into_owned();
                 let notice = Some((refreshed.clone(), StatusToastLevel::Info));
@@ -3243,6 +3269,7 @@ pub(crate) async fn handle_view_events(
             }
             ViewEvent::TopbarModelPickerRequested => {
                 if app.view_stack.top_kind() != Some(ModalKind::ModelPicker) {
+                    crate::tui::external_agent::start_external_agent_discovery(app);
                     app.view_stack
                         .push(crate::tui::model_picker::ModelPickerView::new(app, config));
                 }

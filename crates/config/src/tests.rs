@@ -10398,6 +10398,34 @@ api_key = "sk-table"
         // endpoint sits in a table nothing merges into the user's routing.
         assert_eq!(project_config.approval_policy.as_deref(), Some("never"));
     }
+
+    #[test]
+    fn approval_policy_accepts_ask_and_auto_review_in_config_and_project_tightening() {
+        assert!(crate::check_config_toml_choice("approval_policy", "ask").is_ok());
+        assert!(crate::check_config_toml_choice("approval_policy", "auto-review").is_ok());
+        assert!(crate::check_config_toml_choice("approval_policy", "full-access").is_err());
+
+        assert!(crate::project_approval_policy_is_allowed(
+            Some("auto-review"),
+            "ask"
+        ));
+        assert!(crate::project_approval_policy_is_allowed(
+            Some("auto"),
+            "auto-review"
+        ));
+        assert!(crate::project_approval_policy_is_allowed(
+            Some("accept-edits"),
+            "ask"
+        ));
+        assert!(!crate::project_approval_policy_is_allowed(
+            Some("ask"),
+            "auto-review"
+        ));
+        assert!(!crate::project_approval_policy_is_allowed(
+            Some("never"),
+            "ask"
+        ));
+    }
 }
 
 #[test]
