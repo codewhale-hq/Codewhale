@@ -1894,7 +1894,6 @@
   "SidebarTodoLabel": "Pendientes",
   "WorkSurfaceTodoProgress": "{label} {completed}/{total} · {remaining} restantes",
   "SidebarStopControl": "detener",
-  "SidebarDestructiveArmed": "Acción destructiva armada — presiona Enter para confirmar o limpia el borrador para cancelar",
   "WorkSurfaceStopConfirmHint": "confirmar detención · Esc cancela",
   "CoordinationWorkTitle": "Trabajo de coordinación",
   "CoordinationSummaryDecisions": "{count} decisiones",

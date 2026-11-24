@@ -895,13 +895,6 @@ pub(crate) fn apply_sidebar_row_action(app: &mut App, action: SidebarRowAction) 
                 action: CommandPaletteAction::ExecuteCommand { command },
             }]
         }
-        SidebarRowAction::PrefillCommand(command) => {
-            app.input = command;
-            app.cursor_position = app.input.len();
-            app.status_message = Some(app.tr(MessageId::SidebarDestructiveArmed).into_owned());
-            app.needs_redraw = true;
-            Vec::new()
-        }
         SidebarRowAction::ShowSubagentsPanel => {
             use crate::tui::work_surface::RailPanel;
             // The register header is a two-way door: opening the Agents panel
@@ -1638,19 +1631,6 @@ fn push_work_row_entries(app: &App, mouse: MouseEvent, entries: &mut Vec<Context
                 .tr(MessageId::CtxMenuRunCommand)
                 .replace("{command}", &command);
             entries.push(row(label, SidebarRowAction::Command(command)).primary());
-        }
-        // Stages a destructive command in the composer; Enter there runs it.
-        Some(SidebarRowAction::PrefillCommand(command)) => {
-            let label = app
-                .tr(MessageId::CtxMenuRunCommand)
-                .replace("{command}", &command);
-            entries.push(
-                row(
-                    format!("{label}…"),
-                    SidebarRowAction::PrefillCommand(command),
-                )
-                .primary(),
-            );
         }
         None => {}
     }
