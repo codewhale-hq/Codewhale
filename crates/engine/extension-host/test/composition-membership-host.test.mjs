@@ -7,12 +7,18 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { activate, startHost } from './harness.mjs'
 
+const STATIC_SCOPED_SOURCE =
+  "export const inject=['tools','prompt'];export function apply(ctx,config){const value=String(config.echo);ctx.tools.register({name:'scoped_echo',description:'Entry echo',parameters:{type:'object',properties:{}},execute(){return value}});ctx.prompt.registerSection({id:'note',text:value})}"
+const STATIC_KEPT_SOURCE =
+  "export const inject=['tools','prompt'];export function apply(ctx){ctx.tools.register({name:'kept_echo',description:'kept',parameters:{type:'object',properties:{}},execute(){return 'kept'}})}"
+const STATIC_FAIL_SOURCE =
+  "export const inject=['tools','prompt'];export function apply(ctx){ctx.prompt.registerSection({id:'partial',text:'must retire'});throw new Error('intentional scoped failure')}"
+
 function entries(t) {
   const root=mkdtempSync(join(tmpdir(),'cw-entry-scopes-'))
   t.after(()=>rmSync(root,{recursive:true,force:true}))
-  const make=(name,body)=>{
+  const make=(name,source=STATIC_SCOPED_SOURCE)=>{
     const path=join(root,`${name}.mjs`)
-    const source=`export const inject=['tools','prompt'];export function apply(ctx) { ${body} }`
     writeFileSync(path,source)
     return {path,sha256:createHash('sha256').update(source).digest('hex')}
   }
@@ -22,11 +28,10 @@ function entries(t) {
 test('one owner can mount two scoped entries with equal names and dispose only one',async t=>{
   const host=await startHost();t.after(()=>host.stop())
   const {root,make}=entries(t)
-  const body=value=>`ctx.tools.register({name:'scoped_echo',description:'Entry echo',parameters:{type:'object',properties:{}},execute(){return ${JSON.stringify(value)}}});ctx.prompt.registerSection({id:'note',text:${JSON.stringify(value)}})`
-  const a=make('a',body('A')),b=make('b',body('B'))
-  const first=await activate(host,'scoped-entries',a.path,{scope:a,data_dir:root})
+  const a=make('a'),b=make('b')
+  const first=await activate(host,'scoped-entries',a.path,{scope:a,data_dir:root,config:{echo:'A'}})
   assert.equal(first.result.status,'ok',first.result.diagnostic)
-  const second=await host.call('ext/activate',{owner:first.ref,plugin_name:'scoped-entries',entry:b,scope:b,config:{},data_dir:root})
+  const second=await host.call('ext/activate',{owner:first.ref,plugin_name:'scoped-entries',entry:b,scope:b,config:{echo:'B'},data_dir:root})
   assert.equal(second.status,'ok',second.diagnostic)
   const tools=host.registry.filter(row=>row.op==='register' && row.kind==='tool')
   assert.equal(tools.length,2)
@@ -47,8 +52,8 @@ test('one owner can mount two scoped entries with equal names and dispose only o
 test('failed scoped activation keeps the same owner sibling live and mismatched scopes refuse',async t=>{
   const host=await startHost();t.after(()=>host.stop())
   const {root,make}=entries(t)
-  const good=make('good',"ctx.tools.register({name:'kept_echo',description:'kept',parameters:{type:'object',properties:{}},execute(){return 'kept'}})")
-  const bad=make('bad',"ctx.prompt.registerSection({id:'partial',text:'must retire'});throw new Error('intentional scoped failure')")
+  const good=make('good',STATIC_KEPT_SOURCE)
+  const bad=make('bad',STATIC_FAIL_SOURCE)
   const first=await activate(host,'scoped-failure',good.path,{scope:good,data_dir:root})
   assert.equal(first.result.status,'ok',first.result.diagnostic)
   const refused=await host.call('ext/activate',{owner:first.ref,plugin_name:'scoped-failure',entry:bad,scope:good,config:{},data_dir:root})

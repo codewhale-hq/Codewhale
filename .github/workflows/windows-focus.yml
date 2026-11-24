@@ -31,8 +31,23 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.expected_sha }}
           fetch-depth: 1
+      - name: Verify exact commit SHA
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${#EXPECTED_SHA}" -ne 40 || "${EXPECTED_SHA}" =~ [^0-9a-fA-F] ]]; then
+            echo "::error::expected_sha must be a full 40-character commit SHA." >&2
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          expected_normalized="$(printf '%s' "${EXPECTED_SHA}" | tr '[:upper:]' '[:lower:]')"
+          if [[ "${actual}" != "${expected_normalized}" ]]; then
+            echo "::error::Dispatch resolved to ${actual}, not requested ${EXPECTED_SHA}." >&2
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@1.100.0
       - uses: taiki-e/install-action@b6620ca104fb7b50dafa1109be9622abc1fdd381
         with:
