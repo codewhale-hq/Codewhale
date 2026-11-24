@@ -20,6 +20,7 @@ import { DISCORD_URL, REPO_URL } from "./i18n/links";
 import { buildInstallMarkdown, buildLlmsTxt } from "./llms-txt";
 import { SITE_NAME, SITE_URL } from "./page-meta";
 import { REDIRECTED_ROUTES } from "./route-redirects";
+import { extractHtmlText } from "./test-html-text";
 
 const release = FACTS.latestPublishedRelease!;
 
@@ -92,7 +93,7 @@ describe("llms.txt", () => {
 
   it("gives every install command and the same steps as the install page", async () => {
     const html = renderToStaticMarkup(await InstallPage({ params: Promise.resolve({ locale: "en" }) }));
-    const page = html.replace(/<[^>]+>/g, "").replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&#x27;", "'").replaceAll("&amp;", "&");
+    const page = extractHtmlText(html, { tagReplacement: "", decodeEntities: true });
     const stated = [
       ...Object.values(INSTALL_COPY).map((copy) => fill(copy.en, { version: release.version }).replaceAll("`", "")),
       ...Object.values(INSTALL_COMMANDS),
