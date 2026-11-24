@@ -1875,7 +1875,6 @@
   "SidebarTodoLabel": "Сделать",
   "WorkSurfaceTodoProgress": "{label} {completed}/{total} · осталось {remaining}",
   "SidebarStopControl": "стоп",
-  "SidebarDestructiveArmed": "Разрушительное действие готово — Enter подтверждает, очистка черновика отменяет",
   "WorkSurfaceStopConfirmHint": "подтвердить остановку · Esc отменяет",
   "CoordinationWorkTitle": "Координационная работа",
   "CoordinationSummaryDecisions": "решений: {count}",
