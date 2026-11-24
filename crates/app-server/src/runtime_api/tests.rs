@@ -14015,6 +14015,22 @@ async fn settings_schema_allow_shell_reports_interactive_default_and_explicit_op
         .expect("allow_shell row present");
     assert_eq!(explicit_row["value"], "false");
     assert_eq!(explicit_row["persisted"], true);
+
+    // Default-config launch (state.config_path == None, discovered via CODEWHALE_CONFIG_PATH)
+    // must still detect persisted config.toml entries.
+    let Some((addr3, _runtime_threads3, handle3)) = spawn_test_server().await? else {
+        return Ok(());
+    };
+    let default_launch_body = get_settings_schema(&client, &addr3).await;
+    handle3.abort();
+    let default_launch_row = default_launch_body["settings"]
+        .as_array()
+        .expect("settings array")
+        .iter()
+        .find(|row| row["key"] == "allow_shell")
+        .expect("allow_shell row present");
+    assert_eq!(default_launch_row["value"], "false");
+    assert_eq!(default_launch_row["persisted"], true);
     Ok(())
 }
 
