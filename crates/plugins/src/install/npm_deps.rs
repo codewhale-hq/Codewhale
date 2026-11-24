@@ -508,7 +508,7 @@ async fn fetch_verified_tarball(
     Ok(arc)
 }
 
-fn read_capped_scan_text(path: &Path, max_bytes: usize) -> Result<Option<String>> {
+fn read_capped_scan_text(path: &Path, max_bytes: usize) -> Result<String> {
     let file = codewhale_util::bundle_file::open_bundle_file(path)
         .with_context(|| format!("failed to open DSH file `{}`", path.display()))?;
     let mut buf = Vec::new();
@@ -520,7 +520,7 @@ fn read_capped_scan_text(path: &Path, max_bytes: usize) -> Result<Option<String>
             path.display()
         );
     }
-    Ok(String::from_utf8(buf).ok())
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 fn has_clean_bundled_package_json(root: &Path, dep_name: &str) -> Result<bool> {
@@ -658,11 +658,10 @@ fn scan_dir(cur: &Path, depth: usize, state: &mut ScanState<'_>) -> Result<()> {
             .extension()
             .map(|e| e.to_string_lossy().to_ascii_lowercase());
         if state.has_roster && matches!(ext.as_deref(), Some("yml" | "yaml")) {
-            if let Some(text) = read_capped_scan_text(&path, MAX_SCAN_FILE_BYTES)? {
-                for dep in state.declared.keys() {
-                    if text.contains(dep.as_str()) {
-                        state.referenced.insert(dep.clone());
-                    }
+            let text = read_capped_scan_text(&path, MAX_SCAN_FILE_BYTES)?;
+            for dep in state.declared.keys() {
+                if text.contains(dep.as_str()) {
+                    state.referenced.insert(dep.clone());
                 }
             }
             continue;
@@ -687,8 +686,8 @@ fn scan_dir(cur: &Path, depth: usize, state: &mut ScanState<'_>) -> Result<()> {
                     )
                 })
             })
-            && let Some(text) = read_capped_scan_text(&path, MAX_SCAN_FILE_BYTES)?
         {
+            let text = read_capped_scan_text(&path, MAX_SCAN_FILE_BYTES)?;
             for cap in state.import_re.captures_iter(&text) {
                 if let Some(spec) = cap.get(1).map(|m| m.as_str())
                     && let Some(pkg) = bare_package_name(spec)
