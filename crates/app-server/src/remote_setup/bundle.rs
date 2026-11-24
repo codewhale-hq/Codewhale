@@ -151,6 +151,7 @@ pub fn write_bundle(inputs: &BundleInputs, out_dir: &Path) -> Result<Vec<PathBuf
     let mut written = Vec::new();
     for file in render_bundle(inputs) {
         let path = out_dir.join(&file.relative_path);
+        #[cfg(unix)]
         let is_secret_env = file.relative_path.ends_with(".env");
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create(true).truncate(true);
