@@ -47,7 +47,6 @@ use windows::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleMo
 
 use crate::commands;
 use crate::tui::auto_router;
-use crate::tui::clipboard::ClipboardContent;
 use crate::tui::color_compat::ColorCompatBackend;
 use crate::tui::command_palette::{
     CommandPaletteView, build_entries_with_plugins as build_command_palette_entries,

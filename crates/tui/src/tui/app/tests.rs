@@ -1,6 +1,6 @@
 use super::*;
 use crate::test_support::{EnvVarGuard, lock_test_env};
-use crate::tui::clipboard::{ClipboardHandler, PastedImage};
+use crate::tui::clipboard::{ClipboardContent, ClipboardHandler, PastedImage};
 use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus};
 use crate::tui::motion::MotionMode;
 use codewhale_config::ProviderKind;
@@ -5685,14 +5685,25 @@ fn enter_with_paste_burst_detection_disabled_submits_normally() {
     assert_eq!(result.as_deref(), Some("ship it"));
 }
 
+fn clipboard_paste(app: &mut App, content: ClipboardContent) -> bool {
+    app.clipboard = ClipboardHandler::with_content_for_test(content);
+    crate::tui::paste::handle_paste(app, crate::tui::paste::PasteSource::Shortcut)
+}
+
 #[test]
 fn clipboard_text_paste_matches_bracketed_paste_state() {
     let text = "alpha\r\nbeta";
     let mut bracketed = App::new(test_options(false), &Config::default());
     let mut clipboard = App::new(test_options(false), &Config::default());
 
-    bracketed.insert_paste_text(text);
-    clipboard.apply_clipboard_content(ClipboardContent::Text(text.to_string()));
+    crate::tui::paste::handle_paste(
+        &mut bracketed,
+        crate::tui::paste::PasteSource::Terminal(text),
+    );
+    assert!(clipboard_paste(
+        &mut clipboard,
+        ClipboardContent::Text(text.to_string())
+    ));
 
     assert_eq!(clipboard.input, bracketed.input);
     assert_eq!(clipboard.cursor_position, bracketed.cursor_position);
@@ -5702,13 +5713,14 @@ fn clipboard_text_paste_matches_bracketed_paste_state() {
 
 #[test]
 fn release_only_paste_edge_leaves_text_to_the_terminal_and_still_attaches_an_image() {
+    use crate::tui::paste::{PasteSource, handle_paste};
+
     let mut app = App::new(test_options(false), &Config::default());
     app.clipboard = ClipboardHandler::with_content_for_test(ClipboardContent::Text(
         "already pasted".to_string(),
     ));
-    app.insert_paste_text("already pasted");
-
-    assert!(!app.attach_clipboard_image());
+    handle_paste(&mut app, PasteSource::Terminal("already pasted"));
+    handle_paste(&mut app, PasteSource::ReleaseOnly);
     assert_eq!(app.input, "already pasted");
 
     let mut app = App::new(test_options(false), &Config::default());
@@ -5721,9 +5733,11 @@ fn release_only_paste_edge_leaves_text_to_the_terminal_and_still_attaches_an_ima
         },
     ));
 
-    assert!(app.attach_clipboard_image());
+    handle_paste(&mut app, PasteSource::ReleaseOnly);
     assert!(app.input.contains("pasted.png"), "{}", app.input);
-    assert!(!app.attach_clipboard_image());
+    // The other edge of the same chord does not attach it twice.
+    handle_paste(&mut app, PasteSource::Shortcut);
+    assert_eq!(app.input.matches("pasted.png").count(), 1, "{}", app.input);
 }
 
 #[test]
@@ -5733,7 +5747,7 @@ fn ssh_direct_clipboard_paste_points_to_terminal_owned_bracketed_paste() {
     app.cursor_position = app.input.chars().count();
     app.clipboard = ClipboardHandler::for_test(true, true);
 
-    assert!(!app.paste_from_clipboard());
+    crate::tui::paste::handle_paste(&mut app, crate::tui::paste::PasteSource::Shortcut);
     assert_eq!(app.input, "keep this draft");
     let hint = app
         .status_message
@@ -5751,12 +5765,15 @@ fn clipboard_image_paste_keeps_adjacent_text_and_concise_status() {
     app.input = "before after".to_string();
     app.cursor_position = "before".chars().count();
 
-    app.apply_clipboard_content(ClipboardContent::Image(PastedImage {
-        path: PathBuf::from("/tmp/pasted.png"),
-        width: 8,
-        height: 4,
-        byte_len: 2048,
-    }));
+    assert!(clipboard_paste(
+        &mut app,
+        ClipboardContent::Image(PastedImage {
+            path: PathBuf::from("/tmp/pasted.png"),
+            width: 8,
+            height: 4,
+            byte_len: 2048,
+        })
+    ));
 
     assert!(
         app.input

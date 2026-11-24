@@ -1042,7 +1042,10 @@ fn bracketed_paste_returns_dock_focus_to_the_visible_composer() {
         crate::tui::work_surface::RailPanel::Context,
     );
     assert!(app.work_surface.focused);
-    handle_bracketed_paste(&mut app, "/pet status");
+    crate::tui::paste::handle_paste(
+        &mut app,
+        crate::tui::paste::PasteSource::Terminal("/pet status"),
+    );
     assert_eq!(app.input, "/pet status");
     assert!(!app.work_surface.focused);
     assert!(app.composer_enter_would_submit(true, Instant::now()));
@@ -1068,7 +1071,7 @@ fn empty_bracketed_paste_attaches_the_clipboard_image() {
         }),
     );
 
-    handle_bracketed_paste(&mut app, "");
+    crate::tui::paste::handle_paste(&mut app, crate::tui::paste::PasteSource::Terminal(""));
 
     assert!(
         app.input
@@ -6202,7 +6205,10 @@ fn credential_paste_content_never_enters_traces_or_rendered_status() {
         app.onboarding = onboarding_state;
         app.view_stack.push(picker);
         let logs = CapturedTrace::default().record(|| {
-            handle_bracketed_paste(&mut app, &secret);
+            crate::tui::paste::handle_paste(
+                &mut app,
+                crate::tui::paste::PasteSource::Terminal(&secret),
+            );
         });
         assert!(app.bracketed_paste_seen, "{label}");
         for (width, height) in [(80, 24), (120, 32)] {
@@ -6245,8 +6251,14 @@ fn ordinary_clipboard_text_routes_to_provider_picker_without_typing_shortcut_or_
     app.onboarding = OnboardingState::Provider;
     app.view_stack.push(picker);
 
+    app.clipboard = crate::tui::clipboard::ClipboardHandler::with_content_for_test(
+        crate::tui::clipboard::ClipboardContent::Text(secret.clone()),
+    );
     let logs = CapturedTrace::default().record(|| {
-        assert!(paste_text_into_provider_picker(&mut app, &secret));
+        assert!(crate::tui::paste::handle_paste(
+            &mut app,
+            crate::tui::paste::PasteSource::Shortcut
+        ));
     });
 
     assert!(
@@ -6276,7 +6288,10 @@ fn ordinary_bracketed_paste_keeps_content_but_logs_only_metadata() {
     let ordinary = ["ordinary", "composer", "paste", "7361"].join(" ");
 
     let logs = CapturedTrace::default().record(|| {
-        handle_bracketed_paste(&mut app, &ordinary);
+        crate::tui::paste::handle_paste(
+            &mut app,
+            crate::tui::paste::PasteSource::Terminal(&ordinary),
+        );
     });
 
     assert_eq!(app.input, ordinary);
@@ -7638,7 +7653,10 @@ fn paste_burst_does_not_leak_into_composer_while_a_modal_owns_keys() {
     );
     app.start_history_search();
     let query = app.history_search_query().unwrap().to_owned();
-    handle_bracketed_paste(&mut app, "中文输入");
+    crate::tui::paste::handle_paste(
+        &mut app,
+        crate::tui::paste::PasteSource::Terminal("中文输入"),
+    );
     assert_eq!(app.history_search_query(), Some(query.as_str()));
     let before = app.input.clone();
     route_key_to_view_stack(
@@ -34717,7 +34735,7 @@ fn startup_terminal_replies_allow_a_fresh_long_paste_to_send_once() {
     let mut app = App::new(create_test_options(), &Config::default());
     app.startup_input_unproven = !receipt.whole_line_proven();
     let prompt = "Keep the complete pasted draft: 日本語, café, العربية.\n".repeat(30);
-    handle_bracketed_paste(&mut app, &prompt);
+    crate::tui::paste::handle_paste(&mut app, crate::tui::paste::PasteSource::Terminal(&prompt));
     assert!(app.composer_enter_would_submit(true, Instant::now()));
     assert_eq!(
         app.handle_composer_enter(true, Instant::now()),

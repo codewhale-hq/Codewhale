@@ -3633,7 +3633,10 @@ mod pet_main_tests {
                 Instant::now()
             ));
             assert_eq!(app.cursor_position, app.input.chars().count());
-            handle_bracketed_paste(&mut app, " pasted");
+            crate::tui::paste::handle_paste(
+                &mut app,
+                crate::tui::paste::PasteSource::Terminal(" pasted"),
+            );
             assert!(app.input.ends_with(" pasted"));
             assert!(app.view_stack.is_empty());
         }
