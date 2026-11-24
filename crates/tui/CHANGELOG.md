@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Windows desktop-shell exclusion (`ShellExperienceHost.exe`):** matched `ShellExperienceHost.exe` case-insensitively in the Windows desktop-shell filter. Thanks [@deosiree](https://github.com/deosiree). (#7513, Refs #7474)
 - **Background shell ambient scene & idle CPU:** fixed ambient scene polling when background shells are active. (#7518, Refs #6728)
 - **Contributor fixes & CI stability:** landed community fix from [@WTFitsmemyself](https://github.com/WTFitsmemyself) (#7496) and tuned Windows CI linker/test ceilings (#7512).
+### Security
+
+- Hardened shell execution-policy deny matching across seven bypass classes: `ssh -o ProxyCommand`/`LocalCommand` (including under `-N`), `screen -X`/`-Q` (including with `-r`/`-R`/`-d`), `kubectl exec`/`run`/`debug`, `docker`/`podman` `container`/`compose` groups (`run`/`exec`/`create`, `buildx bake --call`, `--health-cmd`), `parallel --compress-program`/`--decompress-program` and `bwrap --args`, shell `-c` aliases (`oil`, `ysh`, `pdksh`, `loksh`, `rksh`, `ion`, `ngs`) plus `gawk -i`/`-l` and `pwsh -`/piped stdin, and quoted dynamic words in `find`/`docker`/non-inert `--` tails plus separated `nix -c` shell-string payloads. (#7397)
 
 ## [0.10.4] - 2026-11-23
 
