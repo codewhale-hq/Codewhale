@@ -715,6 +715,10 @@ fn ui_asset_response(bytes: Vec<u8>, content_type: &'static str) -> Response {
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
     if content_type == "image/svg+xml" {
         headers.insert(
             header::CONTENT_SECURITY_POLICY,
@@ -723,9 +727,7 @@ fn ui_asset_response(bytes: Vec<u8>, content_type: &'static str) -> Response {
     } else {
         headers.insert(
             header::CONTENT_SECURITY_POLICY,
-            HeaderValue::from_static(
-                "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'",
-            ),
+            HeaderValue::from_static("default-src 'none'; sandbox"),
         );
     }
     response
@@ -1920,61 +1922,24 @@ pub(super) async fn get_plugin_ui(
     }))
 }
 
-const PLUGIN_UI_REVISION_QUERY: &str = "cw_rev";
-
-fn revision_from_query(raw_query: Option<&str>) -> Option<String> {
-    let query = raw_query?;
-    let mut found = None;
-    for pair in query.split('&') {
-        let Some((key, value)) = pair.split_once('=') else {
-            continue;
-        };
-        if key == PLUGIN_UI_REVISION_QUERY {
-            if found.is_some() {
-                return None;
-            }
-            let decoded = urlencoding::decode(value).ok()?;
-            found = Some(decoded.into_owned());
-        }
-    }
-    found
-}
-
-fn strip_revision_query(raw_query: Option<&str>) -> Option<String> {
-    let query = raw_query?;
-    let kept: Vec<&str> = query
-        .split('&')
-        .filter(|pair| {
-            !pair.is_empty()
-                && pair
-                    .split_once('=')
-                    .is_none_or(|(key, _)| key != PLUGIN_UI_REVISION_QUERY)
-        })
-        .collect();
-    (!kept.is_empty()).then(|| kept.join("&"))
-}
+const MAX_PLUGIN_ROUTE_RESPONSE_HEADERS: usize = 64;
+const MAX_PLUGIN_ROUTE_HEADER_VALUE_BYTES: usize = 8 * 1024;
 
 fn grant_for_request(
     state: &RuntimeApiState,
     selector: &str,
     headers: &HeaderMap,
-    raw_query: Option<&str>,
 ) -> Result<(PluginUiGrant, String), ApiError> {
     let mut values = headers.get_all(header::IF_MATCH).iter();
-    let revision = if let Some(first) = values.next() {
-        if values.next().is_some() {
-            return Err(ui_stale_revision());
-        }
-        first.to_str().map_err(|_| ui_stale_revision())?.to_string()
-    } else if let Some(from_query) = revision_from_query(raw_query) {
-        from_query
-    } else {
-        return Err(ApiError {
-            status: StatusCode::PRECONDITION_REQUIRED,
-            message: "plugin UI revision is required".into(),
-            code: None,
-        });
-    };
+    let first = values.next().ok_or_else(|| ApiError {
+        status: StatusCode::PRECONDITION_REQUIRED,
+        message: "plugin UI revision is required".into(),
+        code: None,
+    })?;
+    if values.next().is_some() {
+        return Err(ui_stale_revision());
+    }
+    let revision = first.to_str().map_err(|_| ui_stale_revision())?.to_string();
     let grant = state
         .plugin_ui_grants
         .get(&revision)
@@ -2014,8 +1979,13 @@ fn is_stripped_plugin_route_response_header(name: &str) -> bool {
     matches!(
         lower.as_str(),
         "set-cookie"
+            | "authorization"
+            | "cookie"
+            | "www-authenticate"
+            | "proxy-authenticate"
             | "content-security-policy"
             | "content-security-policy-report-only"
+            | "referrer-policy"
             | "location"
             | "content-length"
             | "transfer-encoding"
@@ -2043,7 +2013,7 @@ pub(super) async fn plugin_route_bridge(
             "plugin routes are available only from loopback",
         ));
     }
-    let (grant, revision) = grant_for_request(&state, &selector, &headers, raw_query.as_deref())?;
+    let (grant, revision) = grant_for_request(&state, &selector, &headers)?;
     let authority = grant.authority.clone();
     let state_for_route = state.clone();
     let policy = codewhale_plugins::activation::extension_host_policy_enabled();
@@ -2082,7 +2052,7 @@ pub(super) async fn plugin_route_bridge(
     let request = codewhale_engine::extension_host::PluginRouteRequest {
         method: method.as_str().to_string(),
         path: format!("/{}", ui_relative_display(&relative)),
-        query: strip_revision_query(raw_query.as_deref()),
+        query: raw_query.filter(|q| !q.is_empty()),
         headers: allowlisted_plugin_route_request_headers(&headers),
         body: body_bytes.to_vec(),
     };
@@ -2125,8 +2095,14 @@ pub(super) async fn plugin_route_bridge(
     let mut response = Response::new(Body::from(result.body));
     *response.status_mut() = status;
     let out_headers = response.headers_mut();
+    let mut forwarded_count = 0usize;
     for (name, value) in result.headers {
-        if is_stripped_plugin_route_response_header(&name) {
+        if forwarded_count >= MAX_PLUGIN_ROUTE_RESPONSE_HEADERS {
+            break;
+        }
+        if value.len() > MAX_PLUGIN_ROUTE_HEADER_VALUE_BYTES
+            || is_stripped_plugin_route_response_header(&name)
+        {
             continue;
         }
         let Ok(header_name) = HeaderName::from_bytes(name.as_bytes()) else {
@@ -2136,11 +2112,20 @@ pub(super) async fn plugin_route_bridge(
             continue;
         };
         out_headers.append(header_name, header_value);
+        forwarded_count += 1;
     }
     out_headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     out_headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
+    );
+    out_headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; sandbox"),
+    );
+    out_headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
     );
     Ok(response)
 }
@@ -2149,7 +2134,6 @@ pub(super) async fn get_plugin_ui_asset(
     State(state): State<RuntimeApiState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path((selector, path)): Path<(String, String)>,
-    RawQuery(raw_query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     if !peer.ip().is_loopback() {
@@ -2157,7 +2141,7 @@ pub(super) async fn get_plugin_ui_asset(
             "plugin UI assets are available only from loopback",
         ));
     }
-    let (grant, revision) = grant_for_request(&state, &selector, &headers, raw_query.as_deref())?;
+    let (grant, revision) = grant_for_request(&state, &selector, &headers)?;
     let relative = ui_relative_path(&path).map_err(|reason| {
         ApiError::bad_request(format!("plugin UI path '{path}' is invalid: {reason}"))
     })?;
@@ -3053,5 +3037,59 @@ exports.apply = function () {
         assert_eq!(review.url, None);
         assert_eq!(review.command, stdio.command);
         assert_eq!(review.args, stdio.args);
+    }
+
+    #[test]
+    fn plugin_route_header_allowlist_and_stripping() {
+        for stripped in [
+            "set-cookie",
+            "Set-Cookie",
+            "authorization",
+            "cookie",
+            "www-authenticate",
+            "proxy-authenticate",
+            "content-security-policy",
+            "content-security-policy-report-only",
+            "referrer-policy",
+            "location",
+            "access-control-allow-origin",
+            "access-control-allow-credentials",
+            "x-frame-options",
+            "strict-transport-security",
+        ] {
+            assert!(
+                is_stripped_plugin_route_response_header(stripped),
+                "expected response header '{stripped}' to be stripped"
+            );
+        }
+        assert!(!is_stripped_plugin_route_response_header("content-type"));
+        assert!(!is_stripped_plugin_route_response_header("x-plugin-echo"));
+
+        let mut req_headers = HeaderMap::new();
+        req_headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        req_headers.insert(header::ACCEPT, HeaderValue::from_static("application/json"));
+        req_headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer secret"),
+        );
+        req_headers.insert(header::COOKIE, HeaderValue::from_static("sid=secret"));
+        req_headers.insert(
+            HeaderName::from_static("x-codewhale-runtime-token"),
+            HeaderValue::from_static("secret"),
+        );
+        req_headers.insert(
+            HeaderName::from_static("x-plugin-trace"),
+            HeaderValue::from_static("ok"),
+        );
+        let forwarded = allowlisted_plugin_route_request_headers(&req_headers);
+        assert!(forwarded.contains(&("content-type".into(), "application/json".into())));
+        assert!(forwarded.contains(&("accept".into(), "application/json".into())));
+        assert!(forwarded.contains(&("x-plugin-trace".into(), "ok".into())));
+        assert!(!forwarded.iter().any(|(k, _)| {
+            k == "authorization" || k == "cookie" || k == "x-codewhale-runtime-token"
+        }));
     }
 }

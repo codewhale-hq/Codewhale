@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Engine-brokered plugin web server and DSH client asset/route runtime:** added the sandboxed `plugin_route/dispatch` extension-host RPC, owner-isolated `webServer` / `connection` / `sessionTitle` / `profileContext` adapters (`DSH_WEBSERVER_ADAPTERS`), bounded Runtime API route forwarding (`/v1/apps/plugins/{selector}/routes/{*path}` returning `404 plugin_route_not_found` or `503 plugin_host_unavailable` instead of `501`), sanitized response headers, safe plugin UI CSP, and `?cw_rev=` browser revision fallback for reviewed CSS/image/font/JSON assets.
+- **Engine-brokered plugin web server and DSH client asset/route runtime:** added the sandboxed `plugin_route/dispatch` extension-host RPC, owner-isolated `webServer` / `connection` / `sessionTitle` / `profileContext` adapters (`DSH_WEBSERVER_ADAPTERS`), bounded Runtime API route forwarding (`/v1/apps/plugins/{selector}/route/{*path}` and `/routes/{*path}` returning `404 plugin_route_not_found` or `503 plugin_host_unavailable` instead of `501`), strict `If-Match` revision binding, sanitized/bounded response headers with sandbox CSP, and expanded reviewed DSH static UI assets (`gif`, `ico`, non-manifest `json`).
 
 ## [0.10.4] - 2026-11-23
 
