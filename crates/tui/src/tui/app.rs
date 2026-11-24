@@ -2281,10 +2281,6 @@ pub struct App {
     pub auto_review_reviewer_model: Option<String>,
     pub exec_policy_engine: codewhale_execpolicy::ExecPolicyEngine,
     pub auto_review_broad_allow_warnings: Vec<String>,
-    /// True when the interactive shell switch is user-owned (unset or root
-    /// config.toml). Profile / env / managed / project owners stay in charge
-    /// even when a YOLO entry point asks for Full Access.
-    shell_access_editable: bool,
     // Clipboard handler
     pub clipboard: ClipboardHandler,
     // Tool approval session allowlist

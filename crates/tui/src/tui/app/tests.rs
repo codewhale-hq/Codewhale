@@ -4713,7 +4713,7 @@ fn yolo_entry_points_honor_a_locked_approval_policy() {
     let mut options = test_options(false);
     options.yolo = true;
     options.allow_shell = false;
-    let mut app = App::new(options, &config);
+    let app = App::new(options, &config);
 
     assert!(app.approval_policy_locked());
     assert_eq!(app.approval_mode, ApprovalMode::Suggest);

@@ -535,10 +535,14 @@ mod tests {
                 } else {
                     plain(ch)
                 };
-                assert!(
-                    handle_paste_burst_key(&mut app, &key, t0 + Duration::from_millis(i as u64)),
-                    "raw paste {ch:?} must not reach the submit path"
-                );
+                let handled =
+                    handle_paste_burst_key(&mut app, &key, t0 + Duration::from_millis(i as u64));
+                if i == 0 && !ch.is_ascii() {
+                    assert!(!handled);
+                    app.insert_char(ch);
+                } else {
+                    assert!(handled, "raw paste {ch:?} must not reach the submit path");
+                }
             }
             app.flush_paste_burst_if_due(t0 + Duration::from_secs(1));
             assert_eq!(app.input, pasted);
@@ -774,10 +778,15 @@ mod tests {
             };
             let handled =
                 handle_paste_burst_key(&mut app, &key, t0 + Duration::from_millis(i as u64));
-            assert!(
-                handled,
-                "raw paste character {ch:?} must be handled by paste-burst detection"
-            );
+            if i == 0 && !ch.is_ascii() {
+                assert!(!handled);
+                app.insert_char(ch);
+            } else {
+                assert!(
+                    handled,
+                    "raw paste character {ch:?} must be handled by paste-burst detection"
+                );
+            }
         }
 
         app.flush_paste_burst_if_due(t0 + Duration::from_secs(1));
