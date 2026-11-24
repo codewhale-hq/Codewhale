@@ -9,7 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Updated vendored `codewhale-ratatui` to `codewhale-design` 5.5.0 (Obsidian/Porcelain tokens) from upstream `f268539`, retiring the four now-upstreamed Engine adaptations (`posture.rs`, `native_composer.rs`, `motion.rs`, `native_chrome.rs`) from `UPSTREAM.json`.
+- **Full Access is selected through `Shift+Tab` instead of the legacy yolo-compat funnel:** removed `Alt+Y`, `Alt+Shift+Y`, and the `/mode yolo|bypass|4` permission shortcut; `/mode yolo` now points to `Shift+Tab` (or `/auto`), and `/zidong` is now an alias for `/auto` (Auto-Review). Launch flags (`--yolo`, `--full-access`, `CODEWHALE_YOLO`, `default_mode = "yolo"`) keep their startup behavior.
+
+### Fixed
+
+- **Composer vim mode no longer swallows typing after pressing `v`:** removed the unfinished `VimMode::Visual` state that absorbed all keys until `Esc` with no on-screen indicator or operators.
+- **Lone non-ASCII keys now reach normal key routing on untrusted terminals:** single IME/non-ASCII commits in paste-burst detection keep their Enter-suppression window while falling through to the main key match (vim Normal mode, Esc-Esc backtrack reset, and ordinary insertion) instead of bypassing it.
+- **Launch-card resume always opens confirmation from mouse and keyboard:** unified mouse and keyboard launch-action dispatchers into one `apply_launch_action` path and removed the unreachable direct-resume mouse arm.
 ### Added
 
 - **Serve the shared web app build from `codewhale web`:** `codewhale web` now serves a built `codewhale-app/apps/web/dist` directory when `CODEWHALE_WEB_DIST` points to a valid directory containing `index.html`, including `/plugin-host.html` (with sandboxed `connect-src 'none'` / `frame-ancestors 'self'` CSP), immutable `/static/*` hashed assets, bounded SPA route fallback, path-traversal/symlink refusal, and preserved auth-bootstrap cookie sessions; falls back to the embedded web client when unset. (#7237)
@@ -24,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Sub-agent terminal status, budget recovery, mailbox fidelity, and default spawn depth:** interrupted and cancelled sub-agents now emit distinct `subagent.interrupted` and `subagent.cancelled` sentinel events instead of plain `subagent.done`; `repair_stopped_tool_calls` now runs in production budget-stop finalization before checkpointing and transcript persistence so unanswered final tool calls record explicit budget-stop tool results; `MailboxMessage::BudgetExhausted` preserves budget-exhausted status across the mailbox and TUI projections instead of collapsing to `Failed`; and `DEFAULT_SPAWN_DEPTH` is now bounded to `3` instead of `u32::MAX` (still configurable via `[subagents] max_depth`). Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Closes #7434)
 - **Avoid holding the MCP pool lock across desktop-browser admission checks:** `McpToolAdapter::execute_rich` now runs `admit_desktop_browser_call` before acquiring the shared MCP pool mutex. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Refs #7461)
 - **Stale pet telemetry and corrupt history lines no longer drop state:** `PetLiveTape` now ignores non-zero out-of-order telemetry sequence regressions without lowering its high-water mark (preserving sequence `0` as an in-place producer restart baseline), and composer history loading skips invalid UTF-8 lines instead of discarding all remaining history entries. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Refs #6557, #6559)
 ### Changed
@@ -33,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **MCP stdio shutdown kills the process group before reaping a timed-out leader:** when a stdio MCP server ignores `SIGTERM` past the shutdown grace period, `process_broker` now signals its `ProcessTree` before reaping the leader child so descendants are terminated while the process group ID is still pinned. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Refs #6558)
+- **Settings schema `allow_shell` matches interactive threads and reports `persisted`:** `/v1/settings/schema` now resolves `allow_shell` using the interactive default (`interactive_allow_shell()` gated by shell-access policy, matching new interactive threads) instead of the headless `false` default, and populates `persisted` for config.toml-owned `RUNTIME_CONFIG_KEYS` rows so Desktop Settings › Trust can distinguish an unset default from an explicit `allow_shell = false`. (CW-8386)
 ### Added
 
 - **Choose an external ACP agent in the terminal:** `/model` now lists installed external ACP agents (`antigravity`, `opencode`, `copilot`, `dsh`, and others) alongside Codewhale models, showing why non-runnable agents are blocked and what to run, and `codewhale --agent <id>` / `codewhale exec --agent <id>` starts an interactive or headless session through the Engine ACP executor. (CW-8361)
