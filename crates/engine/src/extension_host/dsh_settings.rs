@@ -8,7 +8,7 @@ use codewhale_runtime::config_persistence::{
     mutate_config_document, set_document_value, unset_document_value,
 };
 use codewhale_sandbox::SandboxPolicy;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
@@ -612,6 +612,151 @@ fn write(
             })
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginSettingsSnapshot {
+    pub value: Map<String, Value>,
+    pub revision: String,
+    pub writable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginSettingsWriteOutcome {
+    pub written: bool,
+    pub conflict: bool,
+    pub revision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginSettingsError {
+    Invalid(&'static str),
+    Store,
+}
+
+fn depth_ok(value: &Value, depth: usize) -> bool {
+    if depth > MAX_PATH_DEPTH {
+        return false;
+    }
+    match value {
+        Value::Object(map) => map.values().all(|item| depth_ok(item, depth + 1)),
+        Value::Array(items) => items.iter().all(|item| depth_ok(item, depth + 1)),
+        _ => true,
+    }
+}
+
+pub async fn read_plugin_config_settings(
+    source: PathBuf,
+    plugin_name: String,
+) -> Result<PluginSettingsSnapshot, PluginSettingsError> {
+    if !key_ok(&plugin_name) {
+        return Err(PluginSettingsError::Invalid("invalid plugin name"));
+    }
+    let turn = Arc::clone(&TURN).lock_owned().await;
+    let saved = tokio::task::spawn_blocking(move || {
+        let _turn = turn;
+        let settings = codewhale_runtime::config::read_plugin_settings(&source)?;
+        plugin_config::convert(
+            &plugin_name,
+            &settings.get(&plugin_name).cloned().unwrap_or_default(),
+        )
+    })
+    .await
+    .map_err(|_| PluginSettingsError::Store)?
+    .map_err(|_| PluginSettingsError::Store)?;
+    let value = saved.value.as_object().cloned().unwrap_or_default();
+    Ok(PluginSettingsSnapshot {
+        value,
+        revision: saved.hash,
+        writable: true,
+    })
+}
+
+pub async fn write_plugin_config_settings(
+    source: PathBuf,
+    plugin_name: String,
+    value: Map<String, Value>,
+    expected_revision: Option<String>,
+) -> Result<PluginSettingsWriteOutcome, PluginSettingsError> {
+    if !key_ok(&plugin_name) {
+        return Err(PluginSettingsError::Invalid("invalid plugin name"));
+    }
+    let next_value = Value::Object(value);
+    if !fits(&next_value, &mut { MAX_INPUT_BYTES }) {
+        return Err(PluginSettingsError::Invalid(
+            "the settings input is too large",
+        ));
+    }
+    if !storable(&next_value) {
+        return Err(PluginSettingsError::Invalid(
+            "settings hold strings, finite numbers, booleans, arrays and tables under plain keys",
+        ));
+    }
+    if !depth_ok(&next_value, 0) {
+        return Err(PluginSettingsError::Invalid(
+            "settings nesting exceeds the maximum depth of 16",
+        ));
+    }
+    let turn = Arc::clone(&TURN).lock_owned().await;
+    let outcome = tokio::task::spawn_blocking(move || {
+        let _turn = turn;
+        let mut result: Result<PluginSettingsWriteOutcome, PluginSettingsError> =
+            Err(PluginSettingsError::Store);
+        let stored = mutate_config_document(&source, |doc| {
+            let current = saved(doc, &plugin_name).map_err(anyhow::Error::msg)?;
+            if expected_revision
+                .as_deref()
+                .is_some_and(|expected| expected != current.hash)
+            {
+                result = Ok(PluginSettingsWriteOutcome {
+                    written: false,
+                    conflict: true,
+                    revision: current.hash,
+                });
+                return Ok(());
+            }
+            if current.value == next_value {
+                result = Ok(PluginSettingsWriteOutcome {
+                    written: false,
+                    conflict: false,
+                    revision: current.hash,
+                });
+                return Ok(());
+            }
+            let mut path = vec!["plugins".to_string(), plugin_name.clone(), "config".into()];
+            store(doc, &mut path, Some(&current.value), Some(&next_value))?;
+            match saved(doc, &plugin_name) {
+                Ok(after) if after.value == next_value => {
+                    result = Ok(PluginSettingsWriteOutcome {
+                        written: true,
+                        conflict: false,
+                        revision: after.hash,
+                    });
+                    Ok(())
+                }
+                Ok(_) => anyhow::bail!("the stored settings differ from the requested ones"),
+                Err(reason) => {
+                    result = Err(PluginSettingsError::Invalid(
+                        "the settings would not be a valid plugin configuration",
+                    ));
+                    anyhow::bail!(reason)
+                }
+            }
+        });
+        match stored {
+            Ok(()) => result,
+            Err(error) => {
+                tracing::warn!(target: LOG, error = %error, "plugin settings were not saved");
+                Err(match result {
+                    Err(err) => err,
+                    Ok(_) => PluginSettingsError::Store,
+                })
+            }
+        }
+    })
+    .await
+    .map_err(|_| PluginSettingsError::Store)?;
+    outcome
 }
 
 #[cfg(test)]
@@ -1366,5 +1511,97 @@ model = "theirs"
                 ("settings", "update", "allowed", NAME),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn shared_plugin_config_settings_round_trip_conflicts_and_bounds() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            "api_key = \"sk-super-secret\"\n\n[plugins.sibling.config]\ntoken = \"sibling-secret\"\n",
+        )
+        .unwrap();
+
+        let initial = read_plugin_config_settings(config_path.clone(), "demo".to_string())
+            .await
+            .expect("read empty plugin config");
+        assert!(initial.value.is_empty());
+        assert!(initial.writable);
+        assert!(!initial.value.contains_key("api_key"));
+        assert!(!initial.value.contains_key("sibling"));
+
+        let mut next = Map::new();
+        next.insert("theme".to_string(), json!("ocean"));
+        next.insert("nested".to_string(), json!({ "count": 2 }));
+        let saved = write_plugin_config_settings(
+            config_path.clone(),
+            "demo".to_string(),
+            next.clone(),
+            Some(initial.revision.clone()),
+        )
+        .await
+        .expect("write plugin config");
+        assert!(saved.written);
+        assert!(!saved.conflict);
+        assert_ne!(saved.revision, initial.revision);
+
+        let reread = read_plugin_config_settings(config_path.clone(), "demo".to_string())
+            .await
+            .expect("re-read plugin config");
+        assert_eq!(reread.value, next);
+        assert_eq!(reread.revision, saved.revision);
+
+        let mut stale = Map::new();
+        stale.insert("theme".to_string(), json!("forest"));
+        let conflict = write_plugin_config_settings(
+            config_path.clone(),
+            "demo".to_string(),
+            stale,
+            Some(initial.revision),
+        )
+        .await
+        .expect("conflict returns outcome");
+        assert!(!conflict.written);
+        assert!(conflict.conflict);
+        assert_eq!(conflict.revision, saved.revision);
+
+        let mut oversized = Map::new();
+        oversized.insert("blob".to_string(), json!("x".repeat(MAX_INPUT_BYTES + 1)));
+        assert_eq!(
+            write_plugin_config_settings(config_path.clone(), "demo".to_string(), oversized, None)
+                .await,
+            Err(PluginSettingsError::Invalid(
+                "the settings input is too large"
+            ))
+        );
+
+        let mut bad_key = Map::new();
+        bad_key.insert("bad\nkey".to_string(), json!("v"));
+        assert!(matches!(
+            write_plugin_config_settings(config_path.clone(), "demo".to_string(), bad_key, None)
+                .await,
+            Err(PluginSettingsError::Invalid(_))
+        ));
+
+        let mut deep = json!("leaf");
+        for _ in 0..=MAX_PATH_DEPTH {
+            deep = json!({ "k": deep });
+        }
+        let Value::Object(deep_map) = deep else {
+            unreachable!()
+        };
+        assert_eq!(
+            write_plugin_config_settings(config_path.clone(), "demo".to_string(), deep_map, None)
+                .await,
+            Err(PluginSettingsError::Invalid(
+                "settings nesting exceeds the maximum depth of 16"
+            ))
+        );
+
+        let sibling = read_plugin_config_settings(config_path, "sibling".to_string())
+            .await
+            .expect("sibling untouched");
+        assert_eq!(sibling.value.get("token"), Some(&json!("sibling-secret")));
     }
 }

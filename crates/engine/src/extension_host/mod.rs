@@ -133,7 +133,7 @@ mod dsh_plugins;
 mod dsh_remote;
 pub(crate) use dsh_remote::end_remote_session;
 pub use dsh_remote::{RemoteClient, RemoteDenial, RemotePairing, RemoteSecret, RemoteState};
-mod dsh_settings;
+pub mod dsh_settings;
 pub(crate) mod dsh_terminal;
 pub mod dsh_webserver;
 mod dsh_workspace;

@@ -747,3 +747,158 @@ exports.apply = function (ctx) {
     handle.abort();
     Ok(())
 }
+
+#[tokio::test]
+async fn plugin_settings_round_trip_conflicts_and_security_boundaries() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().join("runtime");
+    let workspace = tmp.path().join("ws");
+    fs::create_dir_all(&root)?;
+    fs::write(
+        root.join("config.toml"),
+        "api_key = \"sk-host-secret\"\n\n[plugins.other.config]\nsecret = \"sibling-only\"\n",
+    )?;
+
+    let no_settings_pkg = write_dsh_package(tmp.path(), "nosettings", DSH_CLIENT)?;
+    let settings_pkg = tmp.path().join("withsettings");
+    fs::create_dir_all(&settings_pkg)?;
+    fs::write(
+        settings_pkg.join("package.json"),
+        serde_json::json!({
+            "name": "dsh-with-settings",
+            "version": "1.0.0",
+            "main": "./index.js",
+            "dsh": { "engines": { "dsh": "^0.2.2-rc.1" }, "bundle": { "patch": "./cordis.patch.yml" } }
+        })
+        .to_string(),
+    )?;
+    fs::write(
+        settings_pkg.join("cordis.patch.yml"),
+        "- insert:\n  - id: main\n    name: \"./index.js\"\n",
+    )?;
+    fs::write(
+        settings_pkg.join("index.js"),
+        "export const name = 'with-settings';\nexport const inject = ['settings'];\nexport function apply() {}\n",
+    )?;
+
+    let Some((addr, handle)) = spawn_plugin_api_server(root.clone(), workspace).await? else {
+        return Ok(());
+    };
+    let client = codewhale_release::tls::reqwest_client();
+    let base = format!("http://{addr}/v1/apps/plugins");
+
+    // 1. Active plugin WITHOUT `settings` host-service grant is refused (403).
+    let no_settings =
+        install_active(&client, &base, format!("dsh:{}", no_settings_pkg.display())).await?;
+    let no_settings_name = no_settings["name"].as_str().unwrap().to_string();
+    let denied_grant = client
+        .get(format!("{base}/{no_settings_name}/settings"))
+        .send()
+        .await?;
+    assert_eq!(denied_grant.status(), StatusCode::FORBIDDEN);
+    let denied_grant_body: serde_json::Value = denied_grant.json().await?;
+    assert_eq!(
+        denied_grant_body["error"]["code"],
+        "plugin_settings_not_granted"
+    );
+
+    // 2. Installed but untrusted/disabled plugin with `settings` is refused (403).
+    let installed = send_json_ok(
+        client
+            .post(format!("{base}/install"))
+            .json(&serde_json::json!({ "source": format!("dsh:{}", settings_pkg.display()) })),
+        "install settings plugin",
+    )
+    .await?;
+    let name = installed["name"].as_str().unwrap().to_string();
+    let denied_untrusted = client.get(format!("{base}/{name}/settings")).send().await?;
+    assert_eq!(denied_untrusted.status(), StatusCode::FORBIDDEN);
+    let denied_untrusted_body: serde_json::Value = denied_untrusted.json().await?;
+    assert_eq!(
+        denied_untrusted_body["error"]["code"],
+        "plugin_settings_not_admitted"
+    );
+
+    // 3. Trust with host_services_token and enable.
+    let detail = send_json_ok(client.get(format!("{base}/{name}")), "detail").await?;
+    let review_token = detail["review"]["token"].as_str().unwrap().to_string();
+    let hs_token = detail["review"]["host_services"]["token"]
+        .as_str()
+        .expect("settings host_services token")
+        .to_string();
+    let _ = send_json_ok(
+        client
+            .post(format!("{base}/{name}/trust"))
+            .json(&serde_json::json!({ "token": review_token, "host_services_token": hs_token })),
+        "trust settings plugin",
+    )
+    .await?;
+    let _ = send_json_ok(client.post(format!("{base}/{name}/enable")), "enable").await?;
+
+    // 4. GET returns empty namespace with zero host/sibling leakage.
+    let initial =
+        send_json_ok(client.get(format!("{base}/{name}/settings")), "get initial").await?;
+    assert_eq!(initial["value"], serde_json::json!({}));
+    assert_eq!(initial["writable"], true);
+    let rev1 = initial["revision"].as_str().unwrap().to_string();
+
+    // 5. PUT persists and GET reads back.
+    let written = send_json_ok(
+        client
+            .put(format!("{base}/{name}/settings"))
+            .json(&serde_json::json!({
+                "value": { "theme": "ocean", "nested": { "count": 2 } },
+                "expected_revision": rev1,
+            })),
+        "put settings",
+    )
+    .await?;
+    assert_eq!(written["written"], true);
+    assert_eq!(written["conflict"], false);
+    let rev2 = written["revision"].as_str().unwrap().to_string();
+    assert_ne!(rev1, rev2);
+
+    let reread = send_json_ok(client.get(format!("{base}/{name}/settings")), "get reread").await?;
+    assert_eq!(
+        reread["value"],
+        serde_json::json!({ "theme": "ocean", "nested": { "count": 2 } })
+    );
+    assert_eq!(reread["revision"], rev2);
+
+    // 6. Stale expected_revision reports conflict without overwriting.
+    let conflict = send_json_ok(
+        client
+            .put(format!("{base}/{name}/settings"))
+            .json(&serde_json::json!({
+                "value": { "theme": "forest" },
+                "expected_revision": rev1,
+            })),
+        "put stale",
+    )
+    .await?;
+    assert_eq!(conflict["written"], false);
+    assert_eq!(conflict["conflict"], true);
+    assert_eq!(conflict["revision"], rev2);
+
+    // 7. Oversized payload and invalid key return 400.
+    let oversized = client
+        .put(format!("{base}/{name}/settings"))
+        .json(&serde_json::json!({ "value": { "blob": "x".repeat(70 * 1024) } }))
+        .send()
+        .await?;
+    assert_eq!(oversized.status(), StatusCode::BAD_REQUEST);
+    let bad_key = client
+        .put(format!("{base}/{name}/settings"))
+        .json(&serde_json::json!({ "value": { "bad\nkey": "v" } }))
+        .send()
+        .await?;
+    assert_eq!(bad_key.status(), StatusCode::BAD_REQUEST);
+
+    // 8. Disabling the plugin immediately revokes settings access.
+    let _ = send_json_ok(client.post(format!("{base}/{name}/disable")), "disable").await?;
+    let after_disable = client.get(format!("{base}/{name}/settings")).send().await?;
+    assert_eq!(after_disable.status(), StatusCode::FORBIDDEN);
+
+    handle.abort();
+    Ok(())
+}

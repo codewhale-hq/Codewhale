@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Persisted per-plugin settings API for DSH plugins:** added `GET` and `PUT /v1/apps/plugins/{selector}/settings` backed by the same `[plugins.<name>.config]` store, 64 KiB/key/depth bounds, and optimistic `expected_revision` checks used by server-side `dsh_settings`, gated to trusted, enabled plugins granted the `settings` host service.
 - **Verified candidate evaluator for experimental search workflows:** `workflows/operate_best_of_n.workflow.js` now supports an optional host-owned `args.evaluator` (`task.verifyCandidate`) that freezes a clean Git baseline, seals candidate diffs, and replays public and held-out gates inside Linux bubblewrap with `proposal_only` receipts. Thanks [@axobase001](https://github.com/axobase001). (#7294)
 ### Changed
 
