@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Avoid holding the MCP pool lock across desktop-browser admission checks:** `McpToolAdapter::execute_rich` now runs `admit_desktop_browser_call` before acquiring the shared MCP pool mutex. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Refs #7461)
 - **Stale pet telemetry and corrupt history lines no longer drop state:** `PetLiveTape` now ignores non-zero out-of-order telemetry sequence regressions without lowering its high-water mark (preserving sequence `0` as an in-place producer restart baseline), and composer history loading skips invalid UTF-8 lines instead of discarding all remaining history entries. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Refs #6557, #6559)
+### Changed
+
+- **Test-only Fleet methods gated behind `#[cfg(test)]`:** gated the five remaining test-only `pub` methods in `crates/engine/src/fleet/` (`FleetLedger::{claim_next,record_alert,mark_task_terminal_status_if_unchanged}`, `FleetScheduler::cancel_run`, `FleetExecutor::all_terminal`) under `#[cfg(test)]` so production builds expose no unused Fleet helpers. Thanks [@luochen211](https://github.com/luochen211). (Refs #7270)
+
+### Fixed
+
+- **MCP stdio shutdown kills the process group before reaping a timed-out leader:** when a stdio MCP server ignores `SIGTERM` past the shutdown grace period, `process_broker` now signals its `ProcessTree` before reaping the leader child so descendants are terminated while the process group ID is still pinned. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Refs #6558)
 
 ## [0.10.4] - 2026-11-23
 
