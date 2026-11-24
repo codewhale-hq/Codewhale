@@ -1,7 +1,7 @@
 //! Pure reviewed model facts in the existing catalog owner.
 //!
-//! The seed renderer copies the committed `catalog_corrections.json.reviewed`
-//! data into the bundled Models.dev asset. Live/config/account rows never enter
+//! `catalog_corrections.json.reviewed` is the only owner of these facts; the
+//! bundled Models.dev seed carries none. Live/config/account rows never enter
 //! this projection. An intrinsic fact or alias is metadata, not route authority;
 //! executable requests still pass through the existing scoped RouteResolver.
 

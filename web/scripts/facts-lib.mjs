@@ -82,7 +82,7 @@ export function deriveNodeEngines() {
 // Public model identities, labels and source-support dates share the reviewed
 // Engine catalog owner. A malformed source cannot become a partial/empty list.
 export function deriveModels() {
-  const models = parseModelCatalog(read("crates/config/assets/models_dev.bundled.json"));
+  const models = parseModelCatalog(read("crates/config/assets/catalog_corrections.json"));
   if (!models) throw new Error("missing or malformed reviewed model catalog");
   return models;
 }

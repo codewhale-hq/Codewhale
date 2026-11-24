@@ -561,12 +561,12 @@ static BUNDLED_MODELS_DEV_CATALOG: OnceLock<ModelsDevCatalog> = OnceLock::new();
 #[must_use]
 pub fn bundled_models_dev_catalog() -> &'static ModelsDevCatalog {
     BUNDLED_MODELS_DEV_CATALOG.get_or_init(|| {
-        let catalog = ModelsDevCatalog::parse_json(BUNDLED_MODELS_DEV_JSON)
+        let mut catalog = ModelsDevCatalog::parse_json(BUNDLED_MODELS_DEV_JSON)
             .expect("committed bundled Models.dev asset must be valid JSON");
-        catalog
-            .reviewed
-            .validate()
-            .expect("committed reviewed catalog must be valid");
+        catalog.reviewed =
+            corrections::CatalogCorrections::parse(corrections::CATALOG_CORRECTIONS_JSON)
+                .expect("committed catalog corrections must be valid")
+                .reviewed;
         catalog
     })
 }
