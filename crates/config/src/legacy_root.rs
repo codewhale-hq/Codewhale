@@ -27,7 +27,11 @@
 //! sent) but disk never does: both keys stay where they are until the user
 //! runs `codewhale config migrate --prefer ...` or writes that value.
 
+use std::collections::HashSet;
 use std::fmt;
+use std::sync::{Mutex, OnceLock};
+
+use anyhow::{Context as _, Result};
 
 use crate::ProviderKind;
 
@@ -304,6 +308,12 @@ enum Op {
     Remove(Vec<String>),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct PlannedOp {
+    op: Op,
+    note: Option<LegacyRootNote>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Memory,
@@ -435,9 +445,8 @@ impl Scope<'_> {
     }
 }
 
-fn plan(root: &toml::Table, mode: Mode) -> (Vec<Op>, LegacyRootMigration) {
+fn plan(root: &toml::Table, mode: Mode) -> Vec<PlannedOp> {
     let mut ops = Vec::new();
-    let mut receipt = LegacyRootMigration::default();
     plan_scope(
         &Scope {
             name: None,
@@ -447,7 +456,6 @@ fn plan(root: &toml::Table, mode: Mode) -> (Vec<Op>, LegacyRootMigration) {
         },
         mode,
         &mut ops,
-        &mut receipt,
     );
     if let Some(profiles) = table_at(root, "profiles") {
         for (name, profile) in profiles {
@@ -463,14 +471,13 @@ fn plan(root: &toml::Table, mode: Mode) -> (Vec<Op>, LegacyRootMigration) {
                 },
                 mode,
                 &mut ops,
-                &mut receipt,
             );
         }
     }
-    (ops, receipt)
+    ops
 }
 
-fn plan_scope(scope: &Scope<'_>, mode: Mode, ops: &mut Vec<Op>, receipt: &mut LegacyRootMigration) {
+fn plan_scope(scope: &Scope<'_>, mode: Mode, ops: &mut Vec<PlannedOp>) {
     let base_url = root_entry(scope.table, &BASE_URL_KEYS);
     let api_key = root_entry(scope.table, &API_KEY_KEYS);
     if base_url.is_none() && api_key.is_none() {
@@ -494,13 +501,15 @@ fn plan_scope(scope: &Scope<'_>, mode: Mode, ops: &mut Vec<Op>, receipt: &mut Le
             None
         };
         if let Some(provider) = guess {
-            ops.push(Op::Set(
-                scope.path(&["provider"]),
-                toml::Value::String(provider.to_string()),
-            ));
-            receipt.notes.push(LegacyRootNote::GuessedProvider {
-                scope: name.clone(),
-                provider,
+            ops.push(PlannedOp {
+                op: Op::Set(
+                    scope.path(&["provider"]),
+                    toml::Value::String(provider.to_string()),
+                ),
+                note: Some(LegacyRootNote::GuessedProvider {
+                    scope: name.clone(),
+                    provider,
+                }),
             });
         }
     }
@@ -529,7 +538,6 @@ fn plan_scope(scope: &Scope<'_>, mode: Mode, ops: &mut Vec<Op>, receipt: &mut Le
             LegacyRootField::BaseUrl,
             &base_url_dest,
             ops,
-            receipt,
         );
     }
 
@@ -557,12 +565,11 @@ fn plan_scope(scope: &Scope<'_>, mode: Mode, ops: &mut Vec<Op>, receipt: &mut Le
             && let Some(vision) = table_at(scope.table, "vision_model")
             && vision.get("api_key").is_none()
         {
-            ops.push(Op::Set(
-                scope.path(&["vision_model", "api_key"]),
-                value.clone(),
-            ));
-            receipt.notes.push(LegacyRootNote::CopiedToVision {
-                scope: name.clone(),
+            ops.push(PlannedOp {
+                op: Op::Set(scope.path(&["vision_model", "api_key"]), value.clone()),
+                note: Some(LegacyRootNote::CopiedToVision {
+                    scope: name.clone(),
+                }),
             });
         }
 
@@ -574,7 +581,6 @@ fn plan_scope(scope: &Scope<'_>, mode: Mode, ops: &mut Vec<Op>, receipt: &mut Le
             LegacyRootField::ApiKey,
             &key_dest,
             ops,
-            receipt,
         );
     }
 
@@ -595,12 +601,14 @@ fn plan_scope(scope: &Scope<'_>, mode: Mode, ops: &mut Vec<Op>, receipt: &mut Le
             .and_then(|table| table.get("model"))
             .is_none()
     {
-        ops.push(Op::SetIfAbsent(
-            scope.path(&["providers", "custom", "model"]),
-            toml::Value::String(model.to_string()),
-        ));
-        receipt.notes.push(LegacyRootNote::CopiedModel {
-            scope: name.clone(),
+        ops.push(PlannedOp {
+            op: Op::SetIfAbsent(
+                scope.path(&["providers", "custom", "model"]),
+                toml::Value::String(model.to_string()),
+            ),
+            note: Some(LegacyRootNote::CopiedModel {
+                scope: name.clone(),
+            }),
         });
     }
 
@@ -608,10 +616,13 @@ fn plan_scope(scope: &Scope<'_>, mode: Mode, ops: &mut Vec<Op>, receipt: &mut Le
     // top-level shape it replaces always was one.
     let moved_key = api_key.is_some_and(|(_, value)| !is_blank(value));
     if literal_custom && (base_url_str.is_some() || moved_key) {
-        ops.push(Op::SetIfAbsent(
-            scope.path(&["providers", "custom", "kind"]),
-            toml::Value::String("openai-compatible".to_string()),
-        ));
+        ops.push(PlannedOp {
+            op: Op::SetIfAbsent(
+                scope.path(&["providers", "custom", "kind"]),
+                toml::Value::String("openai-compatible".to_string()),
+            ),
+            note: None,
+        });
     }
 }
 
@@ -623,18 +634,17 @@ fn plan_move(
     value: &toml::Value,
     field: LegacyRootField,
     dest: &str,
-    ops: &mut Vec<Op>,
-    receipt: &mut LegacyRootMigration,
+    ops: &mut Vec<PlannedOp>,
 ) {
     let name = scope.name.clone();
     let root_path = scope.path(&[key]);
     let dest_path = scope.path(&["providers", dest, field.key()]);
     let dest_label = scope.label(&["providers", dest]);
     if is_blank(value) {
-        ops.push(Op::Remove(root_path));
-        receipt
-            .notes
-            .push(LegacyRootNote::DroppedEmpty { scope: name, field });
+        ops.push(PlannedOp {
+            op: Op::Remove(root_path),
+            note: Some(LegacyRootNote::DroppedEmpty { scope: name, field }),
+        });
         return;
     }
     let existing = scope
@@ -642,15 +652,17 @@ fn plan_move(
         .and_then(|table| table.get(field.key()))
         .filter(|existing| !is_blank(existing));
     let Some(existing) = existing else {
-        ops.push(Op::Move {
-            from: root_path,
-            to: dest_path,
-            value: value.clone(),
-        });
-        receipt.notes.push(LegacyRootNote::Moved {
-            scope: name,
-            field,
-            to: dest_label,
+        ops.push(PlannedOp {
+            op: Op::Move {
+                from: root_path,
+                to: dest_path,
+                value: value.clone(),
+            },
+            note: Some(LegacyRootNote::Moved {
+                scope: name,
+                field,
+                to: dest_label,
+            }),
         });
         return;
     };
@@ -659,11 +671,13 @@ fn plan_move(
         _ => existing == value,
     };
     if same {
-        ops.push(Op::Remove(root_path));
-        receipt.notes.push(LegacyRootNote::Merged {
-            scope: name,
-            field,
-            to: dest_label,
+        ops.push(PlannedOp {
+            op: Op::Remove(root_path),
+            note: Some(LegacyRootNote::Merged {
+                scope: name,
+                field,
+                to: dest_label,
+            }),
         });
         return;
     }
@@ -675,23 +689,26 @@ fn plan_move(
         Mode::Document(Some(LegacyRootPrefer::Table)) => Some(false),
         Mode::Document(None) => None,
     };
-    match top_level_wins {
-        Some(true) => ops.push(Op::Move {
+    let op = match top_level_wins {
+        Some(true) => Op::Move {
             from: root_path,
             to: dest_path,
             value: value.clone(),
-        }),
-        Some(false) => ops.push(Op::Remove(root_path)),
-        None => ops.push(Op::KeepConflict {
+        },
+        Some(false) => Op::Remove(root_path),
+        None => Op::KeepConflict {
             root: root_path,
             table: dest_path,
+        },
+    };
+    ops.push(PlannedOp {
+        op,
+        note: Some(LegacyRootNote::Conflict {
+            scope: name,
+            field,
+            table: dest_label,
+            resolved: matches!(mode, Mode::Document(Some(_))),
         }),
-    }
-    receipt.notes.push(LegacyRootNote::Conflict {
-        scope: name,
-        field,
-        table: dest_label,
-        resolved: matches!(mode, Mode::Document(Some(_))),
     });
 }
 
@@ -699,9 +716,17 @@ fn plan_move(
 /// (and of profile, managed and imported configs) runs this before
 /// deserializing, so no reader ever sees a top-level `base_url` or `api_key`.
 pub fn apply_to_table(root: &mut toml::Table) -> LegacyRootMigration {
-    let (ops, receipt) = plan(root, Mode::Memory);
-    for op in ops {
-        apply_op_to_table(root, op);
+    apply_planned_to_table(root, plan(root, Mode::Memory))
+}
+
+fn apply_planned_to_table(root: &mut toml::Table, planned: Vec<PlannedOp>) -> LegacyRootMigration {
+    let mut receipt = LegacyRootMigration::default();
+    for PlannedOp { op, note } in planned {
+        if apply_op_to_table(root, op)
+            && let Some(note) = note
+        {
+            receipt.notes.push(note);
+        }
     }
     receipt
 }
@@ -731,23 +756,28 @@ pub fn canonicalize_text(
             LegacyRootMigration::default(),
         ));
     }
-    let (ops, receipt) = plan(&table, Mode::Memory);
+    let planned = plan(&table, Mode::Memory);
     match contents.parse::<toml_edit::DocumentMut>() {
         Ok(mut doc) => {
-            for op in ops {
-                apply_op_to_document(&mut doc, op);
-            }
+            let receipt = apply_planned_to_document(&mut doc, planned);
             Ok((std::borrow::Cow::Owned(doc.to_string()), receipt))
         }
         Err(_) => {
             let mut table = table;
-            for op in ops {
-                apply_op_to_table(&mut table, op);
-            }
+            let receipt = apply_planned_to_table(&mut table, planned);
             let text = toml::to_string(&table).unwrap_or_else(|_| contents.to_string());
             Ok((std::borrow::Cow::Owned(text), receipt))
         }
     }
+}
+
+/// What [`try_apply_to_document`] would do, without doing it.
+pub fn try_preview_document(
+    doc: &toml_edit::DocumentMut,
+    prefer: Option<LegacyRootPrefer>,
+) -> Result<LegacyRootMigration> {
+    let mut cloned = doc.clone();
+    try_apply_to_document(&mut cloned, prefer)
 }
 
 /// What [`apply_to_document`] would do, without doing it.
@@ -756,9 +786,7 @@ pub fn preview_document(
     doc: &toml_edit::DocumentMut,
     prefer: Option<LegacyRootPrefer>,
 ) -> LegacyRootMigration {
-    document_table(doc)
-        .map(|table| plan(&table, Mode::Document(prefer)).1)
-        .unwrap_or_default()
+    try_preview_document(doc, prefer).unwrap_or_default()
 }
 
 /// Canonicalize a document on disk, keeping comments and layout. Conflicting
@@ -770,9 +798,69 @@ pub fn apply_to_document(
     let Some(table) = document_table(doc) else {
         return LegacyRootMigration::default();
     };
-    let (ops, receipt) = plan(&table, Mode::Document(prefer));
-    for op in ops {
-        apply_op_to_document(doc, op);
+    apply_planned_to_document(doc, plan(&table, Mode::Document(prefer)))
+}
+
+pub fn try_apply_to_document(
+    doc: &mut toml_edit::DocumentMut,
+    prefer: Option<LegacyRootPrefer>,
+) -> Result<LegacyRootMigration> {
+    let Some(table) = document_table(doc) else {
+        return Ok(LegacyRootMigration::default());
+    };
+    let mut staged = doc.clone();
+    let mut receipt = LegacyRootMigration::default();
+    for PlannedOp { op, note } in plan(&table, Mode::Document(prefer)) {
+        if apply_op_to_document(&mut staged, op)?
+            && let Some(note) = note
+        {
+            receipt.notes.push(note);
+        }
+    }
+    *doc = staged;
+    Ok(receipt)
+}
+
+fn warn_once_skipped_migration_op(err: &anyhow::Error) {
+    static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    const MAX_WARNED_ENTRIES: usize = 64;
+    let message = format!("{err:#}");
+    let seen = WARNED
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .map(|mut set| {
+            if set.contains(&message) {
+                true
+            } else {
+                if set.len() < MAX_WARNED_ENTRIES {
+                    set.insert(message.clone());
+                }
+                false
+            }
+        })
+        .unwrap_or(false);
+    if !seen {
+        tracing::warn!("skipping legacy root migration op: {message}");
+    }
+}
+
+fn apply_planned_to_document(
+    doc: &mut toml_edit::DocumentMut,
+    planned: Vec<PlannedOp>,
+) -> LegacyRootMigration {
+    let mut receipt = LegacyRootMigration::default();
+    for PlannedOp { op, note } in planned {
+        match apply_op_to_document(doc, op) {
+            Ok(true) => {
+                if let Some(note) = note {
+                    receipt.notes.push(note);
+                }
+            }
+            Ok(false) => {}
+            Err(err) => {
+                warn_once_skipped_migration_op(&err);
+            }
+        }
     }
     receipt
 }
@@ -809,32 +897,30 @@ pub fn has_legacy_root_keys(root: &toml::Table) -> bool {
         })
 }
 
-fn apply_op_to_table(root: &mut toml::Table, op: Op) {
+fn apply_op_to_table(root: &mut toml::Table, op: Op) -> bool {
     match op {
-        Op::Set(path, value) => {
-            set_in_table(root, &path, value, true);
-        }
-        Op::SetIfAbsent(path, value) => {
-            set_in_table(root, &path, value, false);
-        }
-        Op::KeepConflict { .. } => {}
+        Op::Set(path, value) => set_in_table(root, &path, value, true),
+        Op::SetIfAbsent(path, value) => set_in_table(root, &path, value, false),
+        Op::KeepConflict { .. } => true,
         Op::Move { from, to, value } => {
             if set_in_table(root, &to, value, true) {
-                apply_op_to_table(root, Op::Remove(from));
+                apply_op_to_table(root, Op::Remove(from))
+            } else {
+                false
             }
         }
         Op::Remove(path) => {
             let Some((last, parents)) = path.split_last() else {
-                return;
+                return false;
             };
             let mut current = root;
             for part in parents {
                 match current.get_mut(part).and_then(toml::Value::as_table_mut) {
                     Some(next) => current = next,
-                    None => return,
+                    None => return false,
                 }
             }
-            current.remove(last);
+            current.remove(last).is_some()
         }
     }
 }
@@ -855,58 +941,59 @@ fn set_in_table(
             .or_insert_with(|| toml::Value::Table(toml::Table::new()));
         match entry.as_table_mut() {
             Some(next) => current = next,
-            // A non-table where a table belongs: leave the document alone and
-            // let the typed parse report it.
             None => return false,
         }
     }
     if overwrite || !current.contains_key(last) {
         current.insert(last.clone(), value);
+        true
+    } else {
+        false
     }
-    true
 }
 
-fn apply_op_to_document(doc: &mut toml_edit::DocumentMut, op: Op) {
+fn apply_op_to_document(doc: &mut toml_edit::DocumentMut, op: Op) -> Result<bool> {
     let (path, value) = match op {
         Op::Move { from, to, value } => {
-            let carried = comment_travelling_with(doc, &from);
             // Move the value as written, trailing comment included.
-            let written = document_value(doc, &from).or_else(|| toml_value_to_edit(&value));
+            let carried = comment_travelling_with(doc, &from);
+            let written = document_value(doc, &from)
+                .or_else(|| toml_value_to_edit(&value))
+                .with_context(|| format!("cannot represent `{}` as a TOML value", to.join(".")))?;
             let segments: Vec<&str> = to.iter().map(String::as_str).collect();
-            let landed = written.is_some_and(|value| {
-                crate::set_config_document_value(doc, &segments, value).is_ok()
-            });
-            if landed {
-                apply_op_to_document(doc, Op::Remove(from));
-                if let Some(comment) = carried {
-                    set_key_comment(doc, &to, &comment);
-                }
+            crate::set_config_document_value(doc, &segments, written).with_context(|| {
+                format!("cannot move `{}` to `{}`", from.join("."), to.join("."))
+            })?;
+            apply_op_to_document(doc, Op::Remove(from))?;
+            if let Some(comment) = carried {
+                set_key_comment(doc, &to, &comment);
             }
-            return;
+            return Ok(true);
         }
         Op::Set(path, value) => (path, value),
         Op::SetIfAbsent(path, value) if !document_has(doc, &path) => (path, value),
-        Op::SetIfAbsent(..) | Op::KeepConflict { .. } => return,
+        Op::SetIfAbsent(..) => return Ok(false),
+        Op::KeepConflict { .. } => return Ok(true),
         Op::Remove(path) => {
             let segments: Vec<&str> = path.iter().map(String::as_str).collect();
-            let _ = crate::unset_config_document_value(doc, &segments);
-            return;
+            crate::unset_config_document_value(doc, &segments)
+                .with_context(|| format!("cannot remove `{}`", path.join(".")))?;
+            return Ok(true);
         }
     };
     let segments: Vec<&str> = path.iter().map(String::as_str).collect();
-    if let Some(value) = toml_value_to_edit(&value) {
-        // An error means a non-table sits where a table belongs; the typed
-        // parse reports that shape, so the document is left as it is.
-        let _ = crate::set_config_document_value(doc, &segments, value);
-    }
+    let value = toml_value_to_edit(&value)
+        .with_context(|| format!("cannot represent `{}` as a TOML value", path.join(".")))?;
+    crate::set_config_document_value(doc, &segments, value)
+        .with_context(|| format!("cannot set `{}`", path.join(".")))?;
+    Ok(true)
 }
 
 /// Conflicting pairs `(root path, table path)` a document still holds.
 fn conflict_sites(root: &toml::Table) -> Vec<(Vec<String>, Vec<String>)> {
     plan(root, Mode::Document(None))
-        .0
         .into_iter()
-        .filter_map(|op| match op {
+        .filter_map(|planned| match planned.op {
             Op::KeepConflict { root, table } => Some((root, table)),
             _ => None,
         })
@@ -998,8 +1085,10 @@ pub(crate) fn settle_conflicts_after_write(
         return;
     };
     for (root_path, table_path, before) in snapshot {
-        if value_at(&current, &table_path) != before.as_ref() {
-            apply_op_to_document(doc, Op::Remove(root_path));
+        if value_at(&current, &table_path) != before.as_ref()
+            && let Err(err) = apply_op_to_document(doc, Op::Remove(root_path))
+        {
+            tracing::warn!("failed to remove settled legacy conflict key: {err:#}");
         }
     }
 }
