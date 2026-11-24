@@ -1154,6 +1154,11 @@ impl Git {
         "--ignore-submodules=dirty",
     ];
 
+    #[cfg(windows)]
+    pub const INERT_HELPER: &'static str = "cmd.exe /d /c exit 1";
+    #[cfg(not(windows))]
+    pub const INERT_HELPER: &'static str = "/usr/bin/false";
+
     const REVIEW_CONFIG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
     /// Construct a read-only review command with content conversion disabled.
@@ -1293,6 +1298,55 @@ impl Git {
         workspace: &Path,
     ) -> anyhow::Result<Vec<(String, &'static str)>> {
         Self::filter_overrides(workspace, false)
+    }
+
+    pub fn review_shell_config_overrides(
+        workspace: &Path,
+    ) -> anyhow::Result<Vec<(String, &'static str)>> {
+        use anyhow::{Context, bail};
+
+        let mut command = Self::review_base(workspace)?;
+        command.args([
+            "config",
+            "--null",
+            "--name-only",
+            "--get-regexp",
+            r"^(filter\..*\.(clean|smudge|process|required)|diff\..*\.(command|textconv)|gpg\..*\.program|credential\..*\.helper)$",
+        ]);
+        let output =
+            run_bounded_git_with_timeout(&mut command, "config", Self::REVIEW_CONFIG_TIMEOUT)
+                .context("Failed to inspect Git review configuration")?;
+        let no_matches =
+            output.status.code() == Some(1) && output.stdout.is_empty() && output.stderr.is_empty();
+        if (!output.status.success() && !no_matches)
+            || (!output.stdout.is_empty() && !output.stdout.ends_with(&[0]))
+        {
+            bail!("Cannot safely inspect Git review configuration");
+        }
+        let mut overrides = std::collections::BTreeMap::<String, &'static str>::new();
+        for field in output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|field| !field.is_empty())
+        {
+            let key =
+                std::str::from_utf8(field).context("Git review config key is not valid UTF-8")?;
+            let lower = key.to_ascii_lowercase();
+            if lower.starts_with("filter.") {
+                let (driver, _) = key
+                    .rsplit_once('.')
+                    .context("Invalid Git review filter key")?;
+                overrides.insert(format!("{driver}.clean"), "");
+                overrides.insert(format!("{driver}.smudge"), "");
+                overrides.insert(format!("{driver}.process"), "");
+                overrides.insert(format!("{driver}.required"), "false");
+            } else if lower.starts_with("diff.") || lower.starts_with("credential.") {
+                overrides.insert(key.to_string(), "");
+            } else if lower.starts_with("gpg.") {
+                overrides.insert(key.to_string(), Self::INERT_HELPER);
+            }
+        }
+        Ok(overrides.into_iter().collect())
     }
 
     pub fn defines_repository_filters(workspace: &Path) -> anyhow::Result<bool> {
