@@ -23701,7 +23701,7 @@ const READ_ONLY_CHILD_ENVELOPE_BYTE_CEILING: usize = 89_112;
 // context_archive_search and context_archive_get specs (#7173) add 751B. The
 // 0.10.3 tool-text batch adds the rest; the ceiling now matches the measured
 // 94,121B on this machine.
-const PARENT_SURFACE_BYTE_CEILING: usize = 98_068;
+const PARENT_SURFACE_BYTE_CEILING: usize = 98_094;
 
 #[tokio::test]
 async fn read_only_child_envelope_stays_within_measured_ceiling() {

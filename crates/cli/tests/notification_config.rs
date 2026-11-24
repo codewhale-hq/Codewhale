@@ -7,19 +7,24 @@ use std::{
 };
 
 fn run(root: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_codewhale"))
-        .env_clear()
-        .env("HOME", root)
-        .env("USERPROFILE", root)
-        .env("CODEWHALE_HOME", root.join("state"))
-        .env("CODEWHALE_SECRET_BACKEND", "file")
-        .current_dir(root)
-        .arg("--config")
-        .arg(root.join("config.toml"))
-        .arg("config")
-        .args(args)
-        .output()
-        .unwrap()
+    Command::new(
+        std::env::var_os("CARGO_BIN_EXE_codewhale")
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_BIN_EXE_codewhale"))),
+    )
+    .env_clear()
+    .env("HOME", root)
+    .env("USERPROFILE", root)
+    .env("CODEWHALE_HOME", root.join("state"))
+    .env("CODEWHALE_SECRET_BACKEND", "file")
+    .current_dir(root)
+    .arg("--config")
+    .arg(root.join("config.toml"))
+    .arg("config")
+    .args(args)
+    .output()
+    .unwrap()
 }
 fn ok(root: &Path, args: &[&str]) -> String {
     let out = run(root, args);

@@ -40,7 +40,12 @@ impl Fixture {
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_codewhale"));
+        let mut command = Command::new(
+            std::env::var_os("CARGO_BIN_EXE_codewhale")
+                .filter(|value| !value.is_empty())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_BIN_EXE_codewhale"))),
+        );
         command.current_dir(self.path("work")).env_clear();
         for name in ["PATH", "SystemRoot", "WINDIR"] {
             if let Some(value) = std::env::var_os(name) {
