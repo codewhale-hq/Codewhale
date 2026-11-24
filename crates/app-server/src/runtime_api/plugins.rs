@@ -57,13 +57,16 @@ const PLUGIN_UI_SEATS: [&str; 6] = [
     "command.row",
 ];
 const DSH_BOOTSTRAP_ENTRY: &str = "__codewhale_dsh_bootstrap.js";
-const DSH_FRAME_MODULES: [&str; 6] = [
+const DSH_FRAME_MODULES: [&str; 9] = [
     "react",
     "react-dom",
     "react-dom/client",
     "react/jsx-runtime",
     "@deepseek-ai/dsh-client-store",
     "@deepseek-ai/dsh-client-ui-primitives",
+    "@deepseek-ai/dsh-settings",
+    "@deepseek-ai/dsh-tools",
+    "@deepseek-ai/dsh-credentials",
 ];
 const DSH_ROUTE_METHODS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
@@ -72,7 +75,7 @@ enum DshSeat {
     Unsupported(&'static str),
 }
 
-const DSH_SEAT_TABLE: [(&str, DshSeat); 33] = [
+const DSH_SEAT_TABLE: [(&str, DshSeat); 41] = [
     ("plugins.bundle.config", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("plugins.row.config", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("plugins.tab", DshSeat::Seat(PLUGIN_UI_SLOT)),
@@ -81,9 +84,11 @@ const DSH_SEAT_TABLE: [(&str, DshSeat); 33] = [
     ("plugins.detail.actions", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("plugins.detail.badge", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("settings.section", DshSeat::Seat(PLUGIN_UI_SLOT)),
+    ("settings.section.icon", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("settings.plugin.item", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("settings.general.item", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("settings.plugins.tab", DshSeat::Seat(PLUGIN_UI_SLOT)),
+    ("web-ui.plugin.item", DshSeat::Seat(PLUGIN_UI_SLOT)),
     (
         "conversation.chat.node",
         DshSeat::Seat("conversation.chat.node"),
@@ -94,6 +99,10 @@ const DSH_SEAT_TABLE: [(&str, DshSeat); 33] = [
     ),
     (
         "conversation.chat.assistant-actions",
+        DshSeat::Seat("conversation.chat.node"),
+    ),
+    (
+        "conversation.chat.commandview",
         DshSeat::Seat("conversation.chat.node"),
     ),
     (
@@ -126,9 +135,16 @@ const DSH_SEAT_TABLE: [(&str, DshSeat); 33] = [
         DshSeat::Seat("conversation.composer.dock"),
     ),
     ("sidebar.right.pane.tab", DshSeat::Seat("workpane.panel")),
+    (
+        "sidebar.right.pane.tab.title",
+        DshSeat::Seat("workpane.panel"),
+    ),
+    ("shell.overlay", DshSeat::Seat("workpane.panel")),
+    ("main", DshSeat::Seat("workpane.panel")),
     ("main.conversation", DshSeat::Seat("workpane.panel")),
     ("main.page-menu", DshSeat::Seat("workpane.panel")),
     ("sidebar.panellist", DshSeat::Seat("sidebar.section")),
+    ("sidebar.channels", DshSeat::Seat("sidebar.section")),
     ("sidebar.workspaces", DshSeat::Seat("sidebar.section")),
     ("sidebar.footer.action", DshSeat::Seat("sidebar.section")),
     (
@@ -141,11 +157,15 @@ const DSH_SEAT_TABLE: [(&str, DshSeat); 33] = [
     ),
     (
         "conversation.session.header.actions",
-        DshSeat::Unsupported("no ADE seat yet"),
+        DshSeat::Seat("command.row"),
+    ),
+    (
+        "conversation.session.header.lineage",
+        DshSeat::Seat("command.row"),
     ),
     (
         "conversation.session.header.utilities",
-        DshSeat::Unsupported("no ADE seat yet"),
+        DshSeat::Seat("command.row"),
     ),
     ("contextMenu.icon", DshSeat::Unsupported("no ADE seat yet")),
 ];
@@ -2207,7 +2227,8 @@ pub(super) async fn install_plugin_api(
         codewhale_plugins::install::PluginInstallSource::parse(&req.source).map_err(|error| {
             ApiError::bad_request(format!(
                 "invalid plugin install source '{}': {error:#}; expected a local \
-                 path, github:owner/repo, or an HTTPS tarball URL",
+                 path, github:owner/repo, npm:<pkg>, git:<url>, dsh:<pkg-or-path>, \
+                 or an HTTPS tarball URL",
                 req.source
             ))
         })?;
@@ -3062,6 +3083,9 @@ exports.apply = function () {
             "react",
             "@deepseek-ai/dsh-client-store",
             "@deepseek-ai/dsh-client-ui-primitives",
+            "@deepseek-ai/dsh-settings",
+            "@deepseek-ai/dsh-tools",
+            "@deepseek-ai/dsh-credentials",
         ]))
         .unwrap();
         assert_eq!(dsh_closure_unsupported(&admitted, &verified), None);
@@ -3070,6 +3094,30 @@ exports.apply = function () {
             dsh_closure_unsupported(&refused, &verified)
                 .is_some_and(|reason| reason.contains("@deepseek-ai/dsh-client-api"))
         );
+
+        let seat_script = vec![(
+            "client.js".to_string(),
+            br#"exports.slots = ["shell.overlay", "main", "sidebar.channels", "conversation.session.header.actions", "conversation.session.header.lineage", "conversation.session.header.utilities", "settings.section.icon", "web-ui.plugin.item", "conversation.chat.commandview", "sidebar.right.pane.tab.title"];"#.to_vec(),
+        )];
+        let declared = declared_dsh_keys(&seat_script);
+        for (slot, expected_seat) in [
+            ("shell.overlay", "workpane.panel"),
+            ("main", "workpane.panel"),
+            ("sidebar.right.pane.tab.title", "workpane.panel"),
+            ("sidebar.channels", "sidebar.section"),
+            ("conversation.session.header.actions", "command.row"),
+            ("conversation.session.header.lineage", "command.row"),
+            ("conversation.session.header.utilities", "command.row"),
+            ("settings.section.icon", PLUGIN_UI_SLOT),
+            ("web-ui.plugin.item", PLUGIN_UI_SLOT),
+            ("conversation.chat.commandview", "conversation.chat.node"),
+        ] {
+            assert!(
+                declared.iter().any(|(key, seat)| *key == slot
+                    && matches!(seat, DshSeat::Seat(s) if *s == expected_seat)),
+                "expected '{slot}' to map to '{expected_seat}'"
+            );
+        }
     }
 
     #[test]

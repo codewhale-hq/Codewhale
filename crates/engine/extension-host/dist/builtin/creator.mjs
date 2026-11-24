@@ -3795,6 +3795,11 @@ var inspect_catalog_default = {
         supported: true
       },
       {
+        slot: "settings.section.icon",
+        seat: "customize.plugins.detail",
+        supported: true
+      },
+      {
         slot: "settings.plugin.item",
         seat: "customize.plugins.detail",
         supported: true
@@ -3810,6 +3815,11 @@ var inspect_catalog_default = {
         supported: true
       },
       {
+        slot: "web-ui.plugin.item",
+        seat: "customize.plugins.detail",
+        supported: true
+      },
+      {
         slot: "conversation.chat.node",
         seat: "conversation.chat.node",
         supported: true
@@ -3821,6 +3831,11 @@ var inspect_catalog_default = {
       },
       {
         slot: "conversation.chat.assistant-actions",
+        seat: "conversation.chat.node",
+        supported: true
+      },
+      {
+        slot: "conversation.chat.commandview",
         seat: "conversation.chat.node",
         supported: true
       },
@@ -3870,6 +3885,21 @@ var inspect_catalog_default = {
         supported: true
       },
       {
+        slot: "sidebar.right.pane.tab.title",
+        seat: "workpane.panel",
+        supported: true
+      },
+      {
+        slot: "shell.overlay",
+        seat: "workpane.panel",
+        supported: true
+      },
+      {
+        slot: "main",
+        seat: "workpane.panel",
+        supported: true
+      },
+      {
         slot: "main.conversation",
         seat: "workpane.panel",
         supported: true
@@ -3881,6 +3911,11 @@ var inspect_catalog_default = {
       },
       {
         slot: "sidebar.panellist",
+        seat: "sidebar.section",
+        supported: true
+      },
+      {
+        slot: "sidebar.channels",
         seat: "sidebar.section",
         supported: true
       },
@@ -3906,15 +3941,18 @@ var inspect_catalog_default = {
       },
       {
         slot: "conversation.session.header.actions",
-        seat: null,
-        supported: false,
-        reason: "no ADE seat yet"
+        seat: "command.row",
+        supported: true
+      },
+      {
+        slot: "conversation.session.header.lineage",
+        seat: "command.row",
+        supported: true
       },
       {
         slot: "conversation.session.header.utilities",
-        seat: null,
-        supported: false,
-        reason: "no ADE seat yet"
+        seat: "command.row",
+        supported: true
       },
       {
         slot: "contextMenu.icon",
