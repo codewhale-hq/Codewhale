@@ -2894,20 +2894,42 @@ async fn admit_plugin_settings(
     let policy = codewhale_plugins::activation::extension_host_policy_enabled();
     let plugin_name = tokio::task::spawn_blocking(move || {
         let _scope = codewhale_plugins::activation::PolicyScope::propagate(policy);
-        let plugin = find_plugin(&state_for_check, &selector)?;
+        let registry = registry_for_state(&state_for_check);
+        let plugin = registry
+            .get(&selector)
+            .cloned()
+            .ok_or_else(|| ApiError::not_found(format!("plugin '{selector}' not found")))?;
         if !plugin.active() {
             return Err(ApiError::forbidden(
                 "plugin must be trusted and enabled to access settings",
             )
             .with_code("plugin_settings_not_admitted"));
         }
-        if !plugin.host_services.contains(&HostService::Settings) {
-            return Err(ApiError::forbidden(
-                "plugin has not been granted the settings host service",
-            )
-            .with_code("plugin_settings_not_granted"));
+        let service = codewhale_plugins::host_services::HostService::Settings;
+        let entry = offered(service)
+            .then(|| {
+                summary_host_services(&plugin, Some(&registry))
+                    .into_iter()
+                    .find(|entry| entry.service == service.name())
+            })
+            .flatten();
+        match entry {
+            Some(entry) if entry.state == HostServiceWireState::CanUse => {
+                if !entry.withheld_by.is_empty() {
+                    return Err(ApiError::forbidden(
+                        "settings host service is withheld while another active plugin lacks that grant",
+                    )
+                    .with_code("plugin_settings_withheld"));
+                }
+            }
+            _ => {
+                return Err(ApiError::forbidden(
+                    "plugin has not been granted the settings host service",
+                )
+                .with_code("plugin_settings_not_granted"));
+            }
         }
-        Ok(plugin.name)
+        Ok(plugin.name().to_string())
     })
     .await
     .map_err(|_| ApiError::internal("plugin settings check failed"))??;
