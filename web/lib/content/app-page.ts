@@ -74,8 +74,8 @@ export const APP_COPY = {
         zh: "桌面应用请求运行针对 tests/test_core.py 的 python3 -m pytest，提供 Allow 和 Deny 按钮；一项修复 tally/core.py 中失败测试的任务正在 Accept Edits 模式下进行。",
       },
       caption: {
-        en: "In Accept Edits, edits go through on their own, and the test command waits for your answer with the exact command in view.",
-        zh: "在 Accept Edits 模式下，修改会直接应用，测试命令则等待你的回答，并展示完整命令。",
+        en: "Accept Edits lets most file edits through without asking; the test command waits for your answer with the exact command in view.",
+        zh: "Accept Edits 模式会直接放行大多数文件修改；测试命令则等待你的回答，并展示完整命令。",
       },
     },
     {
