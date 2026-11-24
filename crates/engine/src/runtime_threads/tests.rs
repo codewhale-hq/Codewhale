@@ -29063,6 +29063,7 @@ async fn retry_captures_admitted_prompt_and_images_and_rejects_changed_source() 
 /// ```
 #[test]
 #[ignore]
+#[allow(clippy::print_stdout)]
 fn bench_item_index_against_a_real_store() {
     let root = PathBuf::from(
         std::env::var("CODEWHALE_BENCH_STORE").expect("CODEWHALE_BENCH_STORE names a store"),

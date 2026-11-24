@@ -4000,10 +4000,10 @@ impl RuntimeThreadStore {
 
     /// Forget the index kept on disk, so the next process rebuilds it.
     fn drop_persisted_item_index(&self) {
-        if let Some(path) = self.item_index_path() {
-            if let Err(error) = remove_file_if_exists(&path) {
-                tracing::debug!(%error, "runtime item index cache could not be dropped");
-            }
+        if let Some(path) = self.item_index_path()
+            && let Err(error) = remove_file_if_exists(&path)
+        {
+            tracing::debug!(%error, "runtime item index cache could not be dropped");
         }
     }
 
