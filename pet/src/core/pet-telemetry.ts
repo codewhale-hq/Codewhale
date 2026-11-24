@@ -53,8 +53,11 @@ export class PetLiveTape {
     let packet: unknown;
     try { packet = JSON.parse(line); validatePetBucket(packet); }
     catch (error) { this.reset(); throw error; }
-    const previous = this.sequence; this.sequence = packet.sequence;
-    if (previous === undefined || packet.sequence <= previous) return;
+    const previous = this.sequence;
+    if (previous === undefined) { this.sequence = packet.sequence; return; }
+    if (packet.sequence === 0 && previous > 0) { this.sequence = 0; return; }
+    if (packet.sequence <= previous) return;
+    this.sequence = packet.sequence;
     return packet;
   }
 }

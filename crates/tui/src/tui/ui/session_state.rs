@@ -361,6 +361,9 @@ pub(crate) fn reconcile_turn_liveness_supervised(
     heartbeat: &codewhale_engine::core::engine::turn_heartbeat::HeartbeatSnapshot,
     engine: &EngineHandle,
 ) -> bool {
+    if app.external_agent.is_some() {
+        return false;
+    }
     let turn_in_progress = matches!(app.runtime_turn_status.as_deref(), Some("in_progress"));
     if (app.is_loading || matches!(app.runtime_turn_status.as_deref(), Some("in_progress")))
         && let Some(stall) = heartbeat.stall.as_ref()
@@ -394,9 +397,9 @@ pub(crate) fn reconcile_turn_liveness_with(
     has_running_agents: bool,
     heartbeat: Option<&codewhale_engine::core::engine::turn_heartbeat::HeartbeatSnapshot>,
 ) -> bool {
-    // The engine is inside a wait it bounds itself and has not reported as
-    // overdue (a quiet model, a live stream). Its watchdog owns that bound;
-    // the UI does not second-guess it with a timer of its own.
+    if app.external_agent.is_some() {
+        return false;
+    }
     let engine_owns_wait = heartbeat.is_some_and(|snapshot| snapshot.engine_owns_live_wait());
     // #6872: human decisions can wait indefinitely. Their configured timeout,
     // answer or withdrawal owns the wait, including buried or hidden cards.

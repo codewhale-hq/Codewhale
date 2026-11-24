@@ -3087,3 +3087,63 @@ fn creator_skills_are_hidden_by_default_and_found_when_the_input_is_set() {
     std::fs::write(development.path.clone(), "my own copy").unwrap();
     assert!(super::bundled_skill_load_context(&development.name, &development.path).is_none());
 }
+
+#[test]
+fn split_trigger_recognizes_multilingual_markers() {
+    let (ru_summary, ru_trigger) =
+        super::split_trigger("Помощник ревью кода. Триггеры: код-ревью, проверка PR.");
+    assert_eq!(ru_summary, "Помощник ревью кода");
+    assert_eq!(ru_trigger.as_deref(), Some("код-ревью, проверка PR"));
+
+    let (zh_summary, zh_trigger) =
+        super::split_trigger("发布检查工具。触发条件：准备打标签或发版。");
+    assert_eq!(zh_summary, "发布检查工具");
+    assert_eq!(zh_trigger.as_deref(), Some("准备打标签或发版"));
+}
+
+#[test]
+fn tier3_names_only_preserves_skill_paths_when_budget_allows() {
+    let tmpdir = TempDir::new().unwrap();
+    let mut registry = super::SkillRegistry::default();
+    let desc = "d".repeat(100);
+    for i in 0..45 {
+        registry.skills.push(super::Skill {
+            legacy_activation_name: None,
+            name: format!("skill-{i:02}"),
+            description: desc.clone(),
+            localized_descriptions: std::collections::HashMap::new(),
+            invocation: super::SkillInvocation::ModelAndUser,
+            aliases: Vec::new(),
+            argument_hint: None,
+            body: "body".to_string(),
+            path: tmpdir.path().join(format!("skills/skill-{i:02}/SKILL.md")),
+            source: super::SkillSource::Native,
+        });
+    }
+    let rendered = super::render_skills_block_with_configured_root(
+        &registry,
+        "en",
+        tmpdir.path(),
+        None,
+        super::SkillListingConfig::default(),
+        3_000,
+    )
+    .expect("skill context");
+    for i in 0..45 {
+        let expected = format!("- skill-{i:02} (file: skills/skill-{i:02}/SKILL.md)");
+        assert!(
+            rendered.contains(&expected),
+            "missing {expected}:\n{rendered}"
+        );
+    }
+}
+
+#[test]
+fn skills_config_rejects_unknown_keys() {
+    let err = toml::from_str::<codewhale_runtime::config::SkillsConfig>("prompt_index = true\n")
+        .expect_err("unknown [skills] keys must be rejected");
+    assert!(
+        err.to_string().contains("unknown field `prompt_index`"),
+        "unexpected error: {err}"
+    );
+}

@@ -1060,6 +1060,10 @@ pub enum ViewEvent {
         previous_effort: codewhale_engine::reasoning_preference::ReasoningEffort,
         save_as_startup_default: bool,
     },
+    ExternalAgentSelected {
+        agent_id: String,
+        agent_name: String,
+    },
     /// Emitted by the `/model` picker on Esc so the next open can restore
     /// the browsing context — view mode and highlighted row (#4109 / #4115).
     ModelPickerDismissed {
