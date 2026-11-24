@@ -3254,6 +3254,28 @@
       }
     },
     {
+      "id": "atmorouter",
+      "label": "AtmoRouter",
+      "wire": "openai-compatible",
+      "base_url": "https://atmorouter.dev/v1",
+      "api_key_env": "ATMOROUTER_API_KEY",
+      "default_model": "zai/glm-5.3",
+      "discovery": "models_endpoint",
+      "docs_url": "https://atmorouter.dev/docs/quickstart",
+      "credential_url": "https://atmorouter.dev/dashboard/keys",
+      "guidance": "OpenAI-compatible gateway (Chat Completions + GET /v1/models). Model ids are namespaced vendor/model values such as zai/glm-5.3 or zai/glm-5.3-flash, as listed at atmorouter.dev/models. Live /v1/models is the model authority. Store ATMOROUTER_API_KEY, not a raw key.",
+      "aliases": [
+        "atmo-router"
+      ],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
+    },
+    {
       "id": "baseten",
       "label": "Baseten",
       "wire": "openai-compatible",
