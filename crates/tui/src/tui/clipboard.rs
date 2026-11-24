@@ -374,10 +374,13 @@ pub struct ClipboardHandler {
         )
     ))]
     clipboard_init_attempted: bool,
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "windows",
-        all(target_os = "linux", not(target_env = "ohos"))
+    #[cfg(all(
+        not(test),
+        any(
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        )
     ))]
     clipboard_init_pending: Option<std::sync::mpsc::Receiver<Option<Clipboard>>>,
     #[cfg(test)]
@@ -431,10 +434,13 @@ impl ClipboardHandler {
                 )
             ))]
             clipboard_init_attempted: false,
-            #[cfg(any(
-                target_os = "macos",
-                target_os = "windows",
-                all(target_os = "linux", not(target_env = "ohos"))
+            #[cfg(all(
+                not(test),
+                any(
+                    target_os = "macos",
+                    target_os = "windows",
+                    all(target_os = "linux", not(target_env = "ohos"))
+                )
             ))]
             clipboard_init_pending: None,
             #[cfg(test)]
