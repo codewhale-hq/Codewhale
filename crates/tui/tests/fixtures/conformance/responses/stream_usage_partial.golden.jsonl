@@ -1,0 +1,4 @@
+{"profile_id":"standard","request":[{"method":"POST","path":"/v1/responses"}]}
+{"type":"message_start","message":{"id":"","type":"message","role":"assistant","content":[],"model":"gpt-5.6","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}
+{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":12,"output_tokens":0,"prompt_cache_write_tokens":3}}
+{"type":"message_stop"}

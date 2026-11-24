@@ -1,0 +1,2 @@
+data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":12,"input_tokens_details":{"cache_write_tokens":3}}}}
+
