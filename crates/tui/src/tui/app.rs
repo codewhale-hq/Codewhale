@@ -2082,6 +2082,13 @@ pub struct App {
     /// restores the view mode and highlighted row instead of resetting to the
     /// top (#4109 picker memory). Session-scoped, never persisted.
     pub model_picker_memory: Option<ModelPickerMemory>,
+    pub external_agents: Vec<codewhale_app_server::runtime_api::ExternalAgentDiscoveryRow>,
+    pub external_agents_rx: Option<
+        tokio::sync::oneshot::Receiver<
+            Vec<codewhale_app_server::runtime_api::ExternalAgentDiscoveryRow>,
+        >,
+    >,
+    pub external_agent: Option<crate::tui::external_agent::ExternalAgentSession>,
     /// Browsing context from the last dismissed `/provider` picker.
     pub provider_picker_memory: Option<ProviderPickerMemory>,
     /// Last known mouse position for tooltip placement.
@@ -8205,6 +8212,9 @@ impl App {
     }
 
     pub fn model_display_label(&self) -> String {
+        if let Some(session) = self.external_agent.as_ref() {
+            return session.agent_name.clone();
+        }
         if self.auto_model {
             if let Some(effective) = self.last_effective_model.as_deref()
                 && effective != "auto"
@@ -8237,6 +8247,9 @@ impl App {
     /// Exact non-secret route label for user-visible status surfaces.
     #[must_use]
     pub fn effective_route_identity_display(&self) -> (String, String) {
+        if let Some(session) = self.external_agent.as_ref() {
+            return ("ACP".to_string(), session.agent_name.clone());
+        }
         let (provider, model) = self.effective_route_display();
         let identity = if provider == ProviderKind::Custom {
             if self.pending_turn_route.is_none() && self.auto_model {
@@ -8408,6 +8421,9 @@ impl App {
     /// full via [`Self::reasoning_effort_display_label`].
     #[must_use]
     pub(crate) fn provable_reasoning_effort_label(&self) -> Option<String> {
+        if self.external_agent.is_some() {
+            return None;
+        }
         (self.effective_reasoning_effort_for_active_route(self.reasoning_effort)
             != EffectiveReasoningEffort::Unavailable)
             .then(|| self.reasoning_effort_display_label())

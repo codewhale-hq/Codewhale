@@ -160,6 +160,12 @@ struct Cli {
     /// `creator`). With `--resume` or `--continue` it must match the saved mode.
     #[arg(long = "conversation-mode", value_name = "MODE")]
     conversation_mode: Option<String>,
+    #[arg(
+        long = "agent",
+        value_name = "AGENT_ID",
+        help = "Run this session with an installed external ACP agent (for example `antigravity`, `opencode`, `copilot`, or `dsh`)"
+    )]
+    agent: Option<String>,
     /// Per-run config override (`KEY=VALUE`), repeatable, never saved.
     /// Runtime keys: provider, model/default_text_model, verbosity,
     /// approval_policy, sandbox_mode, telemetry. Dedicated flags win;
@@ -2661,8 +2667,23 @@ fn run() -> Result<()> {
         }
         Some(Commands::Exec(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
-            run_tui_in_process(&cli, &resolved_runtime, tui_args("exec", args))
+            let mut exec_args = tui_args("exec", args);
+            let has_agent_flag = cli.agent.is_some()
+                || exec_args
+                    .iter()
+                    .any(|arg| arg == "--agent" || arg.starts_with("--agent="));
+            if !has_agent_flag {
+                ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
+            }
+            if let Some(agent) = cli.agent.as_deref()
+                && !exec_args
+                    .iter()
+                    .any(|arg| arg == "--agent" || arg.starts_with("--agent="))
+            {
+                exec_args.insert(1, agent.to_string());
+                exec_args.insert(1, "--agent".to_string());
+            }
+            run_tui_in_process(&cli, &resolved_runtime, exec_args)
         }
         Some(Commands::Fleet(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
@@ -2988,6 +3009,9 @@ fn run() -> Result<()> {
 }
 
 fn ensure_dispatch_model_valid(cli: &Cli, resolved: &ResolvedRuntimeOptions) -> Result<()> {
+    if cli.agent.is_some() {
+        return Ok(());
+    }
     if cli.profile.is_none() || cli.model.is_some() {
         resolved.ensure_valid_model()?;
     }
@@ -3022,6 +3046,10 @@ fn root_tui_passthrough(cli: &Cli) -> Result<Vec<String>> {
     if let Some(mode) = cli.conversation_mode.as_deref() {
         forwarded.push("--conversation-mode".to_string());
         forwarded.push(mode.to_string());
+    }
+    if let Some(agent) = cli.agent.as_deref() {
+        forwarded.push("--agent".to_string());
+        forwarded.push(agent.to_string());
     }
 
     let prompt =
@@ -7775,7 +7803,7 @@ mod tests {
         let bytes_before = std::fs::read(&path).unwrap();
         let token = ["sk-live-", "Z7qX4mNb2Vc9Lk3PwR8t"].concat();
         for (key, value) in [
-            ("approval_policy", "ask"),
+            ("approval_policy", "full-access"),
             ("sandbox_mode", "full"),
             ("verbosity", "quiet"),
             ("approval_policy", token.as_str()),
@@ -13690,6 +13718,28 @@ verbosity = "concise"
             root_tui_passthrough(&cli).unwrap(),
             vec!["--conversation-mode", "creator", "--prompt", "hello"]
         );
+    }
+
+    #[test]
+    fn top_level_agent_flag_is_forwarded_and_is_not_prompt_text() {
+        let cli = parse_ok(&["codewhale", "--agent", "opencode"]);
+        assert_eq!(cli.agent.as_deref(), Some("opencode"));
+        assert!(cli.prompt.is_empty());
+        assert_eq!(
+            root_tui_passthrough(&cli).unwrap(),
+            vec!["--agent", "opencode"]
+        );
+
+        let cli = parse_ok(&["codewhale", "--agent", "antigravity", "hello"]);
+        assert_eq!(
+            root_tui_passthrough(&cli).unwrap(),
+            vec!["--agent", "antigravity", "--prompt", "hello"]
+        );
+        let invalid_model = ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides {
+            model: Some("nonexistent-model-id".to_string()),
+            ..CliRuntimeOverrides::default()
+        });
+        assert!(ensure_dispatch_model_valid(&cli, &invalid_model).is_ok());
     }
 
     #[test]

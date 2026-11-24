@@ -2865,5 +2865,18 @@
   "CtxMenuCellHidden": "已隐藏条目",
   "CtxMenuCellShown": "已显示条目",
   "CtxMenuHiddenCellsRestored": "已恢复 {count} 个隐藏条目",
-  "CtxMenuNoSelectionToCopy": "没有可复制的所选内容"
+  "CtxMenuNoSelectionToCopy": "没有可复制的所选内容",
+  "ModelPickerSectionExternalAgents": "其他代理 (ACP)",
+  "ModelPickerExternalAgentRoute": "ACP 代理",
+  "ModelPickerExternalAgentRunnableHint": "通过 ACP 使用其自有账号运行",
+  "ModelPickerExternalAgentSignInHint": "登录: {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} 尚未就绪: {reason}",
+  "ExternalAgentSessionStarted": "已使用 {agent} (ACP) 开始会话。Codewhale 保留线程、记录和审批。",
+  "ExternalAgentSessionSwitchedBack": "已切换回 Codewhale ({model})。",
+  "ExternalAgentSwitchBusy": "请等待当前回合完成后再切换代理。",
+  "ModelPickerExternalAgentNotReady": "尚未就绪",
+  "ExternalAgentThinkingStatus": "{agent} 正在思考...",
+  "ExternalAgentToolCallFallback": "外部代理工具调用",
+  "ExternalAgentTurnFailedFallback": "外部代理回合失败",
+  "ExternalAgentTurnInterruptedStatus": "{agent} 回合已中断"
 }

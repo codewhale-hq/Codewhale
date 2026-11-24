@@ -1024,6 +1024,7 @@ pub async fn run_tui(
     pending_telemetry_notice: Option<codewhale_engine::telemetry_notice::PendingTelemetryNotice>,
     launch_conversation_mode: Option<String>,
     permission_mode: Option<codewhale_engine::runtime_options::PermissionMode>,
+    launch_external_agent: Option<crate::tui::external_agent::ExternalAgentSession>,
 ) -> Result<()> {
     // Install notification, sound, category, and attention policy before any
     // producer (including the model-facing notify tool) can emit an event.
@@ -1201,6 +1202,16 @@ pub async fn run_tui(
     let config = &mut config;
     let mut app = App::new_with_plugin_registry(options.clone(), config, plugin_registry);
     app.install_conversation_mode(launch_conversation_mode, None);
+    if let Some(session) = launch_external_agent {
+        let notice = app
+            .tr(MessageId::ExternalAgentSessionStarted)
+            .replace("{agent}", &session.agent_name);
+        app.external_agent = Some(session);
+        app.add_message(HistoryCell::System {
+            content: notice.clone(),
+        });
+        app.status_message = Some(notice);
+    }
     app.apply_cli_permission_mode(permission_mode);
     let _cursor_accent_guard = codewhale_tui_kit::cursor_accent::CursorAccentGuard::install(
         app.low_motion || !app.fancy_animations,
@@ -1549,6 +1560,19 @@ pub async fn run_tui(
         && let Err(error) = current_tasks.shutdown_and_wait().await
     {
         tracing::error!(%error, "Task manager shutdown remains incomplete");
+    }
+    if let Some(session) = app.external_agent.take() {
+        match tokio::time::timeout(Duration::from_secs(5), session.runtime.shutdown_and_wait())
+            .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "External agent shutdown remains incomplete");
+            }
+            Err(_) => {
+                tracing::warn!("External agent shutdown timed out");
+            }
+        }
     }
 
     // Join the startup-default writer before anything else tears down.
@@ -2769,6 +2793,12 @@ pub(crate) async fn run_event_loop(
         }
 
         if drain_remote_control_events(app, config, &engine_handle).await? {
+            app.needs_redraw = true;
+        }
+        if crate::tui::external_agent::poll_external_agent_discovery(app, config) {
+            app.needs_redraw = true;
+        }
+        if crate::tui::external_agent::drain_external_agent_events(app) {
             app.needs_redraw = true;
         }
 
@@ -7359,7 +7389,9 @@ pub(crate) async fn run_event_loop(
                                 }
                             }
                             let was_waiting = app.goal_continuation_waiting;
-                            engine_handle.cancel();
+                            if !crate::tui::external_agent::interrupt_external_turn(app) {
+                                engine_handle.cancel();
+                            }
                             if was_waiting {
                                 app.goal_continuation_waiting = false;
                                 app.status_message =
