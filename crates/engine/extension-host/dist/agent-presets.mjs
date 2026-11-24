@@ -13621,7 +13621,13 @@ var init_settings = __esm({
             try {
               host.brokerTicket(this.ctx, "settings");
             } catch {
-              return [localeDescriptor()];
+              const forms = [localeDescriptor()];
+              Object.defineProperty(forms, "then", {
+                value(onFulfilled, onRejected) {
+                  return Promise.resolve([localeDescriptor()]).then(onFulfilled, onRejected);
+                }
+              });
+              return forms;
             }
             return host.broker(this.ctx, "settings", "describe", {}).then((row) => {
               const desc = descriptor(row);
@@ -13658,7 +13664,7 @@ var init_settings = __esm({
 
 // src/dsh/dsh-shims.ts
 import { randomBytes } from "node:crypto";
-import { mkdir, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
+import { lstat, mkdir, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
 import { dirname as dirname2, isAbsolute as isAbsolute2, join as join2, resolve as resolve2 } from "node:path";
 function activeDataDir(operation) {
   const owner = ownerStorage.getStore();
@@ -13667,6 +13673,34 @@ function activeDataDir(operation) {
   }
   return canonicalPath(owner.dataDir);
 }
+function assertNoEscapingAncestor(dataRoot, target, operation) {
+  let current2 = target;
+  while (current2.length >= dataRoot.length) {
+    if (current2 === dataRoot) break;
+    try {
+      const canonical = canonicalPath(current2);
+      const key = insideKey(dataRoot, current2);
+      if (key === void 0 || key === "") {
+        if (canonical !== dataRoot) {
+          throw new Error(`${operation} refused symlink escaping plugin dataDir`);
+        }
+        break;
+      }
+      if (!unlinkedKeyMatches(dataRoot, key, canonical)) {
+        throw new Error(`${operation} refused symlink escaping plugin dataDir`);
+      }
+      break;
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        const next = dirname2(current2);
+        if (next === current2) break;
+        current2 = next;
+        continue;
+      }
+      throw error;
+    }
+  }
+}
 function confinePathToDataDir(targetPath, operation) {
   if (typeof targetPath !== "string" || targetPath.length === 0 || /[\x00-\x1f\x7f]/.test(targetPath)) {
     throw new TypeError(`${operation} requires a valid file path string`);
@@ -13674,35 +13708,10 @@ function confinePathToDataDir(targetPath, operation) {
   const dataRoot = activeDataDir(operation);
   const resolved = isAbsolute2(targetPath) ? resolve2(targetPath) : resolve2(dataRoot, targetPath);
   const rel = insideKey(dataRoot, resolved);
-  if (rel === void 0) {
+  if (rel === void 0 || rel === "") {
     throw new Error(`${operation} refused path outside plugin dataDir`);
   }
-  let ancestor = dirname2(resolved);
-  while (ancestor.length >= dataRoot.length) {
-    if (ancestor === dataRoot) break;
-    try {
-      const canonicalAncestor = canonicalPath(ancestor);
-      const ancestorKey = insideKey(dataRoot, ancestor);
-      if (ancestorKey === void 0 || ancestorKey === "") {
-        if (canonicalAncestor !== dataRoot) {
-          throw new Error(`${operation} refused symlink escaping plugin dataDir`);
-        }
-        break;
-      }
-      if (!unlinkedKeyMatches(dataRoot, ancestorKey, canonicalAncestor)) {
-        throw new Error(`${operation} refused symlink escaping plugin dataDir`);
-      }
-      break;
-    } catch (error) {
-      if (error?.code === "ENOENT") {
-        const next = dirname2(ancestor);
-        if (next === ancestor) break;
-        ancestor = next;
-        continue;
-      }
-      throw error;
-    }
-  }
+  assertNoEscapingAncestor(dataRoot, dirname2(resolved), operation);
   return resolved;
 }
 function credentialRef(value) {
@@ -13747,6 +13756,9 @@ function resolveDshHome(...segments) {
   if (rel === void 0) {
     throw new Error("resolveDshHome refused path escaping plugin dataDir");
   }
+  if (rel !== "") {
+    assertNoEscapingAncestor(dataRoot, target, "resolveDshHome");
+  }
   return target;
 }
 async function withFileLock(targetPath, fn) {
@@ -13769,16 +13781,33 @@ async function withFileLock(targetPath, fn) {
   }
 }
 async function writeFileAtomic(targetPath, data2, options) {
+  const dataRoot = activeDataDir("writeFileAtomic");
   const confined = confinePathToDataDir(targetPath, "writeFileAtomic");
   const bytes = typeof data2 === "string" ? Buffer.from(data2, options?.encoding ?? "utf8") : Buffer.from(data2.buffer, data2.byteOffset, data2.byteLength);
   if (bytes.byteLength > MAX_ATOMIC_WRITE_BYTES) {
     throw new RangeError(`writeFileAtomic exceeds the ${MAX_ATOMIC_WRITE_BYTES} byte limit`);
   }
+  try {
+    const existing = await lstat(confined);
+    if (existing.isSymbolicLink()) {
+      throw new Error("writeFileAtomic refused symlink target");
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
   const parent = dirname2(confined);
   await mkdir(parent, { recursive: true });
-  const tmpPath = join2(parent, `.cw-atomic-${process.pid}-${randomBytes(8).toString("hex")}.tmp`);
+  const canonicalParent = canonicalPath(parent);
+  const parentKey = insideKey(dataRoot, parent);
+  if (parentKey === void 0 || (parentKey === "" ? canonicalParent !== dataRoot : !unlinkedKeyMatches(dataRoot, parentKey, canonicalParent))) {
+    throw new Error("writeFileAtomic refused symlink escaping plugin dataDir");
+  }
+  const tmpPath = join2(canonicalParent, `.cw-atomic-${process.pid}-${randomBytes(8).toString("hex")}.tmp`);
   try {
-    await writeFile2(tmpPath, bytes, options?.mode !== void 0 ? { mode: options.mode } : void 0);
+    await writeFile2(tmpPath, bytes, {
+      flag: "wx",
+      ...options?.mode !== void 0 ? { mode: options.mode } : {}
+    });
     await rename2(tmpPath, confined);
   } catch (error) {
     await rm2(tmpPath, { force: true }).catch(() => void 0);
@@ -14032,6 +14061,7 @@ var init_compatibility = __esm({
         "deepseekAccount",
         "terminal",
         "attachments",
+        "agentPresets",
         "agentDefaultModel",
         "sessionProjections",
         "workspaceRegistry",
@@ -16202,10 +16232,9 @@ function defineSubagents(host) {
               for (const name of value.deny) denied.add(name);
               return () => void 0;
             },
-            guard(guardFn) {
+            guard() {
               sealed();
-              if (typeof guardFn !== "function") throw new RpcError(ErrorCode.InvalidParams, "tools.guard requires a guard function");
-              return () => void 0;
+              throw new RpcError(ErrorCode.NotAvailable, "child tools.guard is not supported; use child.ctx.tools.restrict({ deny }) or root ctx.tools.guard");
             }
           })
         })
@@ -17599,6 +17628,7 @@ var init_root = __esm({
   "src/root.ts"() {
     "use strict";
     init_composition();
+    init_agent_presets();
     init_adapters();
     init_protocol();
     init_rpc();
@@ -18162,7 +18192,7 @@ function revokePresetReceipt(receipt) {
   activePresetReceipts.delete(receipt);
 }
 function defineReviewedAgentPresets(mount) {
-  return class ReviewedAgentPresets extends Service {
+  class ReviewedAgentPresets extends Service {
     static inject = ["loader"];
     snapshot;
     selfCtx;
@@ -18237,9 +18267,11 @@ function defineReviewedAgentPresets(mount) {
     remove() {
       fail("delete through Core file/install/review/reload authority");
     }
-  };
+  }
+  Object.defineProperty(ReviewedAgentPresets.prototype, REVIEWED_AGENT_PRESETS_BRAND, { value: true });
+  return ReviewedAgentPresets;
 }
-var AGENT_PRESETS, MAX_PRESETS, hash, SHA, activePresetReceipts;
+var AGENT_PRESETS, MAX_PRESETS, hash, SHA, activePresetReceipts, REVIEWED_AGENT_PRESETS_BRAND;
 var init_agent_presets = __esm({
   "src/dsh/agent-presets.ts"() {
     init_persona();
@@ -18254,11 +18286,13 @@ var init_agent_presets = __esm({
     hash = (bytes) => createHash3("sha256").update(bytes).digest("hex");
     SHA = /^[a-f0-9]{64}$/;
     activePresetReceipts = /* @__PURE__ */ new Map();
+    REVIEWED_AGENT_PRESETS_BRAND = /* @__PURE__ */ Symbol("codewhale.reviewedAgentPresets");
   }
 });
 init_agent_presets();
 export {
   AGENT_PRESETS,
+  REVIEWED_AGENT_PRESETS_BRAND,
   containedPackageModule,
   defineReviewedAgentPresets,
   issuePresetReceipt,

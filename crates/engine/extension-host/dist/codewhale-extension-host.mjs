@@ -19,7 +19,7 @@ var __export = (target, all) => {
 var define_BUILTIN_MODULE_DIGESTS_default;
 var init_define_BUILTIN_MODULE_DIGESTS = __esm({
   "<define:__BUILTIN_MODULE_DIGESTS__>"() {
-    define_BUILTIN_MODULE_DIGESTS_default = { creator: "53ab3a0b4ecad7b50440052b7df2975afcaf2a04caee665b98bc8f5e655a152d", harness: "7e93989b2ff84394ab841e28577f6661ea2f01f1b30905ea6ce54857ef7f5e34", mcp: "f9735707e49e349ee38f791fa3c6f3379fde43cad5044f381f8e313286ea3d39" };
+    define_BUILTIN_MODULE_DIGESTS_default = { creator: "6ef992669e5a814d820ef30e8cb28101aaa1d6f264bbeec32d6bab27d7556fb5", harness: "7e93989b2ff84394ab841e28577f6661ea2f01f1b30905ea6ce54857ef7f5e34", mcp: "f9735707e49e349ee38f791fa3c6f3379fde43cad5044f381f8e313286ea3d39" };
   }
 });
 
@@ -15908,6 +15908,341 @@ var init_bun_closure = __esm({
   }
 });
 
+// src/shims/prompt.ts
+function normalizePromptSection(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("prompt section must be an object with id and text");
+  }
+  if (Object.keys(value).some((key) => key !== "id" && key !== "text" && key !== "interpolate")) {
+    throw new TypeError("prompt section supports only id and text, plus optional model-cwd interpolation");
+  }
+  const { id, text: text3, interpolate: interpolate2 } = value;
+  if (typeof id !== "string" || !SECTION_ID.test(id)) {
+    throw new TypeError("prompt section id must be lower case, start with a letter, and use a-z, 0-9, _ or - (at most 64 characters)");
+  }
+  if (typeof text3 !== "string" || text3.trim().length === 0) {
+    throw new TypeError(`prompt section "${id}" needs non-empty text`);
+  }
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text3)) {
+    throw new TypeError(`prompt section "${id}" text contains control characters`);
+  }
+  if (Buffer.byteLength(text3, "utf8") > MAX_PROMPT_SECTION_BYTES) {
+    throw new RangeError(`prompt section "${id}" exceeds ${MAX_PROMPT_SECTION_BYTES} UTF-8 bytes`);
+  }
+  if (interpolate2 !== void 0 && interpolate2 !== "model-cwd") throw new TypeError("prompt interpolation supports only model-cwd");
+  if (interpolate2 !== void 0) validatePromptTemplate(text3);
+  return Object.freeze({ id, text: text3, ...interpolate2 === void 0 ? {} : { interpolate: interpolate2 } });
+}
+function validatePromptTemplate(text3) {
+  for (let open2 = text3.indexOf("{{"); open2 >= 0; ) {
+    const group = /^\{\{([^{}]*)\}\}/u.exec(text3.slice(open2));
+    if (!group) {
+      if (text3.indexOf("}}", open2 + 2) >= 0) throw new TypeError("malformed prompt variable reference");
+      open2 = text3.indexOf("{{", open2 + 2);
+      continue;
+    }
+    if (!/^[a-z][a-z0-9_]*$/u.test(group[1])) throw new TypeError("malformed prompt variable reference");
+    if (group[1] !== "model" && group[1] !== "cwd") throw new TypeError(`unknown Core prompt variable "{{${group[1]}}}"; supported variables: model, cwd`);
+    open2 = text3.indexOf("{{", open2 + group[0].length);
+  }
+}
+function definePromptService(host2) {
+  class PromptShim extends Service {
+    constructor(ctx) {
+      super(ctx, "prompt");
+    }
+    registerSection(definition) {
+      const ctx = this.ctx;
+      const owner = host2.ownerOf(ctx);
+      if (!owner) throw new Error("prompt.registerSection called outside an extension owner");
+      const section = normalizePromptSection(definition);
+      return ctx.effect(() => host2.promptSections.register(owner, section), `prompt.registerSection(${JSON.stringify(section.id)})`);
+    }
+  }
+  Object.freeze(PromptShim.prototype);
+  return PromptShim;
+}
+var MAX_PROMPT_SECTION_BYTES, MAX_PROMPT_OWNER_BYTES, MAX_PROMPT_HOST_BYTES, MAX_PROMPT_SECTIONS_PER_OWNER, MAX_PROMPT_SECTIONS_PER_HOST, SECTION_ID, PromptSections;
+var init_prompt = __esm({
+  "src/shims/prompt.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_lib2();
+    init_owned();
+    MAX_PROMPT_SECTION_BYTES = 4 * 1024;
+    MAX_PROMPT_OWNER_BYTES = 32 * 1024;
+    MAX_PROMPT_HOST_BYTES = 128 * 1024;
+    MAX_PROMPT_SECTIONS_PER_OWNER = 128;
+    MAX_PROMPT_SECTIONS_PER_HOST = 1024;
+    SECTION_ID = /^[a-z][a-z0-9_-]{0,63}$/u;
+    PromptSections = class {
+      registrations;
+      templates;
+      owners = /* @__PURE__ */ new Map();
+      bytes = 0;
+      count = 0;
+      constructor(rpc2, ownedBy, warn) {
+        this.registrations = new OwnedRegistrations(rpc2, "prompt_section", ownedBy, warn);
+        this.templates = new OwnedRegistrations(rpc2, "prompt_template", ownedBy, warn);
+      }
+      register(owner, definition) {
+        if (owner.state !== "activating" && owner.state !== "active") throw new Error("prompt owner is not live");
+        const section = normalizePromptSection(definition);
+        const sections = this.owners.get(owner) ?? /* @__PURE__ */ new Map();
+        if (sections.has(section.id)) throw new Error(`prompt section "${section.id}" is already registered; dispose it before registering it again`);
+        const bytes = Buffer.byteLength(section.text, "utf8");
+        const ownerBytes = [...sections.values()].reduce((sum, item) => sum + item.bytes, 0);
+        if (ownerBytes + bytes > MAX_PROMPT_OWNER_BYTES || this.bytes + bytes > MAX_PROMPT_HOST_BYTES) {
+          throw new RangeError("prompt section owner or host UTF-8 byte limit reached");
+        }
+        if (sections.size >= MAX_PROMPT_SECTIONS_PER_OWNER || this.count >= MAX_PROMPT_SECTIONS_PER_HOST) {
+          throw new RangeError("prompt section owner or host registration limit reached");
+        }
+        const entry = { owner, name: section.id, definition: section, disposed: false };
+        const undo = (section.interpolate === void 0 ? this.registrations : this.templates).add(entry, { name: section.id, description: section.text });
+        const record4 = { entry, bytes, dispose: () => {
+          if (sections.get(section.id) !== record4) return;
+          sections.delete(section.id);
+          this.bytes -= bytes;
+          this.count -= 1;
+          if (sections.size === 0) this.owners.delete(owner);
+          undo();
+        } };
+        sections.set(section.id, record4);
+        this.owners.set(owner, sections);
+        this.bytes += bytes;
+        this.count += 1;
+        return record4.dispose;
+      }
+      /** Release reservations even after a plugin fails or times out during teardown. */
+      forget(owner) {
+        for (const record4 of [...this.owners.get(owner)?.values() ?? []]) record4.dispose();
+        this.registrations.forget(owner);
+        this.templates.forget(owner);
+      }
+    };
+  }
+});
+
+// src/dsh/persona.ts
+function normalizePersonaConfig(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("persona config must be plain data");
+  const config = value;
+  if (Object.keys(config).some((key) => !["prefix", "suffix", "complete", "includeRuntimeContext"].includes(key))) throw new TypeError("persona config has an unsupported field");
+  if (config.complete !== void 0 && config.complete !== false) throw new TypeError("persona replacement belongs to the Core prompt and cannot be imported");
+  if (config.includeRuntimeContext !== void 0 && config.includeRuntimeContext !== true) throw new TypeError("persona runtime-context suppression belongs to the Core prompt and cannot be imported");
+  if (typeof config.prefix !== "string" || config.suffix !== void 0 && typeof config.suffix !== "string") throw new TypeError("persona prefix and suffix must be text");
+  const result = { prefix: config.prefix, suffix: config.suffix ?? "" };
+  for (const [position, text3] of Object.entries(result)) {
+    if (Buffer.byteLength(text3, "utf8") > MAX_PROMPT_SECTION_BYTES) throw new RangeError("persona text exceeds 4096 UTF-8 bytes");
+    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text3)) throw new TypeError("persona text contains control characters");
+    validatePromptTemplate(text3);
+    if (text3.trim().length > 0) normalizePromptSection({ id: `persona-${position}`, text: text3, interpolate: "model-cwd" });
+  }
+  return Object.freeze(result);
+}
+var PERSONA, reviewedPersonaModule;
+var init_persona = __esm({
+  "src/dsh/persona.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_prompt();
+    init_root();
+    PERSONA = "@deepseek-ai/dsh-persona";
+    reviewedPersonaModule = Object.freeze({
+      name: "persona",
+      inject: ["prompt"],
+      apply(ctx, value) {
+        if (!ownerStorage.getStore()?.scope) throw new Error("persona requires an exact Core-selected entry scope");
+        const config = normalizePersonaConfig(value);
+        for (const [position, text3] of Object.entries(config)) {
+          if (text3.trim().length > 0) ctx.prompt.registerSection({ id: `persona-${position}`, text: text3, interpolate: "model-cwd" });
+        }
+      }
+    });
+  }
+});
+
+// src/dsh/upstream/agent-presets/metadata.ts
+var init_metadata = __esm({
+  "src/dsh/upstream/agent-presets/metadata.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_js_yaml();
+  }
+});
+
+// src/dsh/upstream/agent-presets/preset.ts
+var init_preset = __esm({
+  "src/dsh/upstream/agent-presets/preset.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+  }
+});
+
+// src/dsh/upstream/agent-presets/specifier.ts
+var init_specifier = __esm({
+  "src/dsh/upstream/agent-presets/specifier.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+  }
+});
+
+// src/dsh/upstream/agent-presets/discovery.ts
+import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL3 } from "node:url";
+var SHIPPED_PRESET_ROOT;
+var init_discovery = __esm({
+  "src/dsh/upstream/agent-presets/discovery.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_js_yaml();
+    init_src2();
+    init_metadata();
+    init_preset();
+    init_specifier();
+    SHIPPED_PRESET_ROOT = fileURLToPath2(new URL("../presets/", import.meta.url));
+  }
+});
+
+// src/dsh/upstream/agent-presets/composition-inventory.ts
+function mountedCompositionRows(tree) {
+  const found = [];
+  for (const entry of tree.entries()) {
+    if (entry.options.group) continue;
+    found.push({
+      entryId: entry.id,
+      moduleName: entry.options.name,
+      enabled: !entry.disabled,
+      ...isJsExpr(entry.options.disabled) ? { condition: entry.options.disabled.__jsExpr } : {},
+      ...entry.fiber === void 0 ? {} : { fiberState: entry.fiber.state }
+    });
+  }
+  return found;
+}
+var init_composition_inventory = __esm({
+  "src/dsh/upstream/agent-presets/composition-inventory.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_js_yaml();
+    init_src();
+    init_src2();
+    init_discovery();
+  }
+});
+
+// src/dsh/agent-presets.ts
+import { createHash as createHash2, randomBytes } from "node:crypto";
+import { fileURLToPath as fileURLToPath3, pathToFileURL as pathToFileURL4 } from "node:url";
+function fail(message) {
+  throw new Error(`agent-presets: ${message}`);
+}
+function issuePresetReceipt(snapshot3) {
+  const payload = JSON.stringify(snapshot3);
+  const receipt = createHash2("sha256").update(randomBytes(32)).update(payload).digest("hex");
+  activePresetReceipts.set(receipt, payload);
+  return receipt;
+}
+function revokePresetReceipt(receipt) {
+  activePresetReceipts.delete(receipt);
+}
+function defineReviewedAgentPresets(mount) {
+  class ReviewedAgentPresets extends Service {
+    static inject = ["loader"];
+    snapshot;
+    selfCtx;
+    constructor(ctx, config) {
+      super(ctx, "agentPresets");
+      this.selfCtx = ctx;
+      if (config?.codewhale_reviewed !== void 0 || config?.codewhale_receipt !== void 0) {
+        const snapshot3 = config.codewhale_reviewed;
+        const receipt = typeof config.codewhale_receipt === "string" ? config.codewhale_receipt : "";
+        const expected = receipt ? activePresetReceipts.get(receipt) : void 0;
+        activePresetReceipts.delete(receipt);
+        if (!snapshot3 || !expected || expected !== JSON.stringify(snapshot3) || snapshot3.catalog?.version !== 1 || !snapshot3.catalog.presets.some((p) => p.id === snapshot3.selected?.metadata.id && !p.broken)) fail("raw roster needs an installer-minted preset receipt");
+        this.snapshot = structuredClone(snapshot3);
+      }
+    }
+    mounting;
+    mounted;
+    mountSelected() {
+      const snapshot3 = this.snapshot;
+      if (!snapshot3) return Promise.resolve(void 0);
+      return this.mounting ??= mount(this.selfCtx, snapshot3.base_url, snapshot3.selected.composition).then((result) => this.mounted = result);
+    }
+    async list() {
+      const snapshot3 = this.snapshot;
+      if (!snapshot3) return [];
+      return snapshot3.catalog.presets.map((row) => ({ ...structuredClone(row), path: fileURLToPath3(new URL(snapshot3.catalog.inventory[row.id].path, snapshot3.base_url)) }));
+    }
+    async remoteExportList() {
+      const snapshot3 = this.snapshot;
+      if (!snapshot3) return { presets: [], authorable: false, defaultId: void 0, modeSelectionEnabled: false };
+      return { presets: snapshot3.catalog.presets.map(({ is_default, entry, ...row }) => ({ ...structuredClone(row), isDefault: is_default })), authorable: false, defaultId: this.defaultId, modeSelectionEnabled: snapshot3.catalog.mode_selection_enabled };
+    }
+    get defaultId() {
+      return this.snapshot?.catalog.default;
+    }
+    get authorable() {
+      return false;
+    }
+    async resolve(id = this.defaultId) {
+      const row = (await this.list()).find((p) => p.id === id);
+      if (!row) fail("preset not found");
+      return row;
+    }
+    composedPreset() {
+      return this.snapshot?.selected.metadata.id;
+    }
+    async compositionInventory() {
+      const snapshot3 = this.snapshot;
+      if (!snapshot3) return [];
+      return snapshot3.catalog.presets.map((row) => {
+        const identity = { id: row.id, trust: row.trust, ...row.name === void 0 ? {} : { name: row.name }, isDefault: row.id === this.defaultId };
+        if (row.id === this.composedPreset() && this.mounted) return { ...identity, rows: mountedCompositionRows(this.mounted.tree) };
+        const read = snapshot3.catalog.inventory[row.id];
+        if (row.broken || "broken" in read) return { ...identity, broken: row.broken ?? ("broken" in read ? read.broken : void 0), rows: [] };
+        return { ...identity, rows: structuredClone(read.rows) };
+      });
+    }
+    async readDocument(id) {
+      const snapshot3 = this.snapshot;
+      if (!snapshot3 || id !== this.composedPreset()) fail("read another preset through Core file authority");
+      return { agentPreset: id, trust: snapshot3.selected.metadata.trust, content: snapshot3.selected.source };
+    }
+    select() {
+      fail("select through Core AgentProfile/native preset selection before a turn");
+    }
+    recompose() {
+      fail("Core owns the captured agent selection and blank-session check");
+    }
+    copy() {
+      fail("copy through Core file/install/review/reload authority");
+    }
+    remove() {
+      fail("delete through Core file/install/review/reload authority");
+    }
+  }
+  Object.defineProperty(ReviewedAgentPresets.prototype, REVIEWED_AGENT_PRESETS_BRAND, { value: true });
+  return ReviewedAgentPresets;
+}
+var AGENT_PRESETS, activePresetReceipts, REVIEWED_AGENT_PRESETS_BRAND;
+var init_agent_presets = __esm({
+  "src/dsh/agent-presets.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_persona();
+    init_lib2();
+    init_discovery();
+    init_preset();
+    init_specifier();
+    init_composition_inventory();
+    init_src();
+    AGENT_PRESETS = "@deepseek-ai/dsh-agent-presets";
+    activePresetReceipts = /* @__PURE__ */ new Map();
+    REVIEWED_AGENT_PRESETS_BRAND = /* @__PURE__ */ Symbol("codewhale.reviewedAgentPresets");
+  }
+});
+
 // src/protocol.generated.ts
 var PROTOCOL_VERSION, MAGIC_ASCII, HEADER_LEN, MAX_FRAME, MAX_INFLIGHT, IMAGE_LIMITS, ErrorCode, METHODS, SHAPES;
 var init_protocol_generated = __esm({
@@ -16650,10 +16985,9 @@ function defineSubagents(host2) {
               for (const name of value.deny) denied2.add(name);
               return () => void 0;
             },
-            guard(guardFn) {
+            guard() {
               sealed();
-              if (typeof guardFn !== "function") throw new RpcError(ErrorCode.InvalidParams, "tools.guard requires a guard function");
-              return () => void 0;
+              throw new RpcError(ErrorCode.NotAvailable, "child tools.guard is not supported; use child.ctx.tools.restrict({ deny }) or root ctx.tools.guard");
             }
           })
         })
@@ -17218,7 +17552,13 @@ var init_settings = __esm({
             try {
               host2.brokerTicket(this.ctx, "settings");
             } catch {
-              return [localeDescriptor()];
+              const forms = [localeDescriptor()];
+              Object.defineProperty(forms, "then", {
+                value(onFulfilled, onRejected) {
+                  return Promise.resolve([localeDescriptor()]).then(onFulfilled, onRejected);
+                }
+              });
+              return forms;
             }
             return host2.broker(this.ctx, "settings", "describe", {}).then((row) => {
               const desc = descriptor(row);
@@ -18346,6 +18686,7 @@ var init_compatibility = __esm({
         "deepseekAccount",
         "terminal",
         "attachments",
+        "agentPresets",
         "agentDefaultModel",
         "sessionProjections",
         "workspaceRegistry",
@@ -19016,127 +19357,11 @@ var init_hooks = __esm({
   }
 });
 
-// src/shims/prompt.ts
-function normalizePromptSection(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError("prompt section must be an object with id and text");
-  }
-  if (Object.keys(value).some((key) => key !== "id" && key !== "text" && key !== "interpolate")) {
-    throw new TypeError("prompt section supports only id and text, plus optional model-cwd interpolation");
-  }
-  const { id, text: text3, interpolate: interpolate2 } = value;
-  if (typeof id !== "string" || !SECTION_ID.test(id)) {
-    throw new TypeError("prompt section id must be lower case, start with a letter, and use a-z, 0-9, _ or - (at most 64 characters)");
-  }
-  if (typeof text3 !== "string" || text3.trim().length === 0) {
-    throw new TypeError(`prompt section "${id}" needs non-empty text`);
-  }
-  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text3)) {
-    throw new TypeError(`prompt section "${id}" text contains control characters`);
-  }
-  if (Buffer.byteLength(text3, "utf8") > MAX_PROMPT_SECTION_BYTES) {
-    throw new RangeError(`prompt section "${id}" exceeds ${MAX_PROMPT_SECTION_BYTES} UTF-8 bytes`);
-  }
-  if (interpolate2 !== void 0 && interpolate2 !== "model-cwd") throw new TypeError("prompt interpolation supports only model-cwd");
-  if (interpolate2 !== void 0) validatePromptTemplate(text3);
-  return Object.freeze({ id, text: text3, ...interpolate2 === void 0 ? {} : { interpolate: interpolate2 } });
-}
-function validatePromptTemplate(text3) {
-  for (let open2 = text3.indexOf("{{"); open2 >= 0; ) {
-    const group = /^\{\{([^{}]*)\}\}/u.exec(text3.slice(open2));
-    if (!group) {
-      if (text3.indexOf("}}", open2 + 2) >= 0) throw new TypeError("malformed prompt variable reference");
-      open2 = text3.indexOf("{{", open2 + 2);
-      continue;
-    }
-    if (!/^[a-z][a-z0-9_]*$/u.test(group[1])) throw new TypeError("malformed prompt variable reference");
-    if (group[1] !== "model" && group[1] !== "cwd") throw new TypeError(`unknown Core prompt variable "{{${group[1]}}}"; supported variables: model, cwd`);
-    open2 = text3.indexOf("{{", open2 + group[0].length);
-  }
-}
-function definePromptService(host2) {
-  class PromptShim extends Service {
-    constructor(ctx) {
-      super(ctx, "prompt");
-    }
-    registerSection(definition) {
-      const ctx = this.ctx;
-      const owner = host2.ownerOf(ctx);
-      if (!owner) throw new Error("prompt.registerSection called outside an extension owner");
-      const section = normalizePromptSection(definition);
-      return ctx.effect(() => host2.promptSections.register(owner, section), `prompt.registerSection(${JSON.stringify(section.id)})`);
-    }
-  }
-  Object.freeze(PromptShim.prototype);
-  return PromptShim;
-}
-var MAX_PROMPT_SECTION_BYTES, MAX_PROMPT_OWNER_BYTES, MAX_PROMPT_HOST_BYTES, MAX_PROMPT_SECTIONS_PER_OWNER, MAX_PROMPT_SECTIONS_PER_HOST, SECTION_ID, PromptSections;
-var init_prompt = __esm({
-  "src/shims/prompt.ts"() {
-    "use strict";
-    init_define_BUILTIN_MODULE_DIGESTS();
-    init_lib2();
-    init_owned();
-    MAX_PROMPT_SECTION_BYTES = 4 * 1024;
-    MAX_PROMPT_OWNER_BYTES = 32 * 1024;
-    MAX_PROMPT_HOST_BYTES = 128 * 1024;
-    MAX_PROMPT_SECTIONS_PER_OWNER = 128;
-    MAX_PROMPT_SECTIONS_PER_HOST = 1024;
-    SECTION_ID = /^[a-z][a-z0-9_-]{0,63}$/u;
-    PromptSections = class {
-      registrations;
-      templates;
-      owners = /* @__PURE__ */ new Map();
-      bytes = 0;
-      count = 0;
-      constructor(rpc2, ownedBy, warn) {
-        this.registrations = new OwnedRegistrations(rpc2, "prompt_section", ownedBy, warn);
-        this.templates = new OwnedRegistrations(rpc2, "prompt_template", ownedBy, warn);
-      }
-      register(owner, definition) {
-        if (owner.state !== "activating" && owner.state !== "active") throw new Error("prompt owner is not live");
-        const section = normalizePromptSection(definition);
-        const sections = this.owners.get(owner) ?? /* @__PURE__ */ new Map();
-        if (sections.has(section.id)) throw new Error(`prompt section "${section.id}" is already registered; dispose it before registering it again`);
-        const bytes = Buffer.byteLength(section.text, "utf8");
-        const ownerBytes = [...sections.values()].reduce((sum, item) => sum + item.bytes, 0);
-        if (ownerBytes + bytes > MAX_PROMPT_OWNER_BYTES || this.bytes + bytes > MAX_PROMPT_HOST_BYTES) {
-          throw new RangeError("prompt section owner or host UTF-8 byte limit reached");
-        }
-        if (sections.size >= MAX_PROMPT_SECTIONS_PER_OWNER || this.count >= MAX_PROMPT_SECTIONS_PER_HOST) {
-          throw new RangeError("prompt section owner or host registration limit reached");
-        }
-        const entry = { owner, name: section.id, definition: section, disposed: false };
-        const undo = (section.interpolate === void 0 ? this.registrations : this.templates).add(entry, { name: section.id, description: section.text });
-        const record4 = { entry, bytes, dispose: () => {
-          if (sections.get(section.id) !== record4) return;
-          sections.delete(section.id);
-          this.bytes -= bytes;
-          this.count -= 1;
-          if (sections.size === 0) this.owners.delete(owner);
-          undo();
-        } };
-        sections.set(section.id, record4);
-        this.owners.set(owner, sections);
-        this.bytes += bytes;
-        this.count += 1;
-        return record4.dispose;
-      }
-      /** Release reservations even after a plugin fails or times out during teardown. */
-      forget(owner) {
-        for (const record4 of [...this.owners.get(owner)?.values() ?? []]) record4.dispose();
-        this.registrations.forget(owner);
-        this.templates.forget(owner);
-      }
-    };
-  }
-});
-
 // src/shims/storage.ts
 import { constants as constants2 } from "node:fs";
 import { lstat, mkdir, open, readdir, rename as rename2, unlink } from "node:fs/promises";
 import { isAbsolute as isAbsolute2, join as join2 } from "node:path";
-import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 function checkKey(key) {
   if (typeof key !== "string" || !key.length || key.includes("\0") || Buffer.byteLength(key) > STORAGE_LIMITS.keyBytes) {
@@ -19150,7 +19375,7 @@ function snapshot2(value) {
   return JSON.parse(encoded);
 }
 function recordName(key) {
-  return `${createHash2("sha256").update(key).digest("hex")}.json`;
+  return `${createHash3("sha256").update(key).digest("hex")}.json`;
 }
 function fsCode(error) {
   return error?.code;
@@ -19618,10 +19843,10 @@ var init_commands = __esm({
 });
 
 // src/root.ts
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import { readFile as readFile2 } from "node:fs/promises";
 import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
-import { pathToFileURL as pathToFileURL3 } from "node:url";
+import { pathToFileURL as pathToFileURL5 } from "node:url";
 function describeError2(error) {
   if (error instanceof Error) return `${error.name}: ${error.message}`;
   return String(error);
@@ -19714,8 +19939,11 @@ function validateDefinition(definition) {
     }
     assertSupportedJsonSchema(definition.output.schema);
   }
-  for (const field of ["when", "projectContent", "finalizeContent", "timeoutMs"]) {
+  for (const field of ["when", "projectContent", "finalizeContent"]) {
     if (definition[field] !== void 0) throw new TypeError(`tool \`${definition.name}\` requires unsupported DSH execution field \`${field}\``);
+  }
+  if (definition.timeoutMs !== void 0 && (typeof definition.timeoutMs !== "number" || !Number.isFinite(definition.timeoutMs) || definition.timeoutMs <= 0)) {
+    throw new TypeError(`tool \`${definition.name}\` timeoutMs must be a finite positive number`);
   }
   if (definition.deferLoading !== void 0 && typeof definition.deferLoading !== "boolean") throw new TypeError(`tool \`${definition.name}\` deferLoading must be boolean`);
 }
@@ -19752,6 +19980,7 @@ var init_root = __esm({
     "use strict";
     init_define_BUILTIN_MODULE_DIGESTS();
     init_composition();
+    init_agent_presets();
     init_adapters();
     init_lib2();
     init_protocol();
@@ -19848,10 +20077,11 @@ var init_root = __esm({
           if (REFUSED_SERVICES.has(name)) {
             const shim = shimClasses.get(name);
             const hostShim = shim !== void 0 && !shimsProvided.has(name) && value instanceof shim;
-            if (!hostShim) {
+            const reviewedPreset = name === "agentPresets" && value !== null && typeof value === "object" && value[REVIEWED_AGENT_PRESETS_BRAND] === true;
+            if (!hostShim && !reviewedPreset) {
               throw new Error(`extension may not provide core service \`${name}\`: the Codewhale core owns it`);
             }
-            shimsProvided.add(name);
+            if (hostShim) shimsProvided.add(name);
           }
           return originalProvide.call(this, name, value, ...rest);
         };
@@ -20223,11 +20453,11 @@ var init_root = __esm({
         owner.entries.add(params.entry.path);
         try {
           const bytes = await readFile2(params.entry.path);
-          const digest2 = createHash3("sha256").update(bytes).digest("hex");
+          const digest2 = createHash4("sha256").update(bytes).digest("hex");
           if (digest2 !== params.entry.sha256) {
             throw new Error(`entry ${params.entry.path} changed after review (sha256 ${digest2.slice(0, 12)}…)`);
           }
-          const module = await ownerStorage.run(owner, () => import(pathToFileURL3(params.entry.path).href)).catch((error) => {
+          const module = await ownerStorage.run(owner, () => import(pathToFileURL5(params.entry.path).href)).catch((error) => {
             throw explainImportError(error);
           });
           if (this.tier === "builtin" && owner.ref.plugin_id === "host:harness") {
@@ -20474,8 +20704,8 @@ var init_root = __esm({
 });
 
 // src/dsh/dsh-shims.ts
-import { randomBytes } from "node:crypto";
-import { mkdir as mkdir2, rename as rename3, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
+import { randomBytes as randomBytes2 } from "node:crypto";
+import { lstat as lstat2, mkdir as mkdir2, rename as rename3, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
 import { dirname as dirname2, isAbsolute as isAbsolute3, join as join3, resolve as resolve4 } from "node:path";
 function activeDataDir(operation) {
   const owner = ownerStorage.getStore();
@@ -20484,6 +20714,34 @@ function activeDataDir(operation) {
   }
   return canonicalPath(owner.dataDir);
 }
+function assertNoEscapingAncestor(dataRoot, target, operation) {
+  let current2 = target;
+  while (current2.length >= dataRoot.length) {
+    if (current2 === dataRoot) break;
+    try {
+      const canonical = canonicalPath(current2);
+      const key = insideKey(dataRoot, current2);
+      if (key === void 0 || key === "") {
+        if (canonical !== dataRoot) {
+          throw new Error(`${operation} refused symlink escaping plugin dataDir`);
+        }
+        break;
+      }
+      if (!unlinkedKeyMatches(dataRoot, key, canonical)) {
+        throw new Error(`${operation} refused symlink escaping plugin dataDir`);
+      }
+      break;
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        const next = dirname2(current2);
+        if (next === current2) break;
+        current2 = next;
+        continue;
+      }
+      throw error;
+    }
+  }
+}
 function confinePathToDataDir(targetPath, operation) {
   if (typeof targetPath !== "string" || targetPath.length === 0 || /[\x00-\x1f\x7f]/.test(targetPath)) {
     throw new TypeError(`${operation} requires a valid file path string`);
@@ -20491,35 +20749,10 @@ function confinePathToDataDir(targetPath, operation) {
   const dataRoot = activeDataDir(operation);
   const resolved = isAbsolute3(targetPath) ? resolve4(targetPath) : resolve4(dataRoot, targetPath);
   const rel = insideKey(dataRoot, resolved);
-  if (rel === void 0) {
+  if (rel === void 0 || rel === "") {
     throw new Error(`${operation} refused path outside plugin dataDir`);
   }
-  let ancestor = dirname2(resolved);
-  while (ancestor.length >= dataRoot.length) {
-    if (ancestor === dataRoot) break;
-    try {
-      const canonicalAncestor = canonicalPath(ancestor);
-      const ancestorKey = insideKey(dataRoot, ancestor);
-      if (ancestorKey === void 0 || ancestorKey === "") {
-        if (canonicalAncestor !== dataRoot) {
-          throw new Error(`${operation} refused symlink escaping plugin dataDir`);
-        }
-        break;
-      }
-      if (!unlinkedKeyMatches(dataRoot, ancestorKey, canonicalAncestor)) {
-        throw new Error(`${operation} refused symlink escaping plugin dataDir`);
-      }
-      break;
-    } catch (error) {
-      if (error?.code === "ENOENT") {
-        const next = dirname2(ancestor);
-        if (next === ancestor) break;
-        ancestor = next;
-        continue;
-      }
-      throw error;
-    }
-  }
+  assertNoEscapingAncestor(dataRoot, dirname2(resolved), operation);
   return resolved;
 }
 function credentialRef2(value) {
@@ -20564,6 +20797,9 @@ function resolveDshHome(...segments) {
   if (rel === void 0) {
     throw new Error("resolveDshHome refused path escaping plugin dataDir");
   }
+  if (rel !== "") {
+    assertNoEscapingAncestor(dataRoot, target, "resolveDshHome");
+  }
   return target;
 }
 async function withFileLock(targetPath, fn) {
@@ -20586,16 +20822,33 @@ async function withFileLock(targetPath, fn) {
   }
 }
 async function writeFileAtomic(targetPath, data2, options) {
+  const dataRoot = activeDataDir("writeFileAtomic");
   const confined = confinePathToDataDir(targetPath, "writeFileAtomic");
   const bytes = typeof data2 === "string" ? Buffer.from(data2, options?.encoding ?? "utf8") : Buffer.from(data2.buffer, data2.byteOffset, data2.byteLength);
   if (bytes.byteLength > MAX_ATOMIC_WRITE_BYTES) {
     throw new RangeError(`writeFileAtomic exceeds the ${MAX_ATOMIC_WRITE_BYTES} byte limit`);
   }
+  try {
+    const existing = await lstat2(confined);
+    if (existing.isSymbolicLink()) {
+      throw new Error("writeFileAtomic refused symlink target");
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
   const parent = dirname2(confined);
   await mkdir2(parent, { recursive: true });
-  const tmpPath = join3(parent, `.cw-atomic-${process.pid}-${randomBytes(8).toString("hex")}.tmp`);
+  const canonicalParent = canonicalPath(parent);
+  const parentKey = insideKey(dataRoot, parent);
+  if (parentKey === void 0 || (parentKey === "" ? canonicalParent !== dataRoot : !unlinkedKeyMatches(dataRoot, parentKey, canonicalParent))) {
+    throw new Error("writeFileAtomic refused symlink escaping plugin dataDir");
+  }
+  const tmpPath = join3(canonicalParent, `.cw-atomic-${process.pid}-${randomBytes2(8).toString("hex")}.tmp`);
   try {
-    await writeFile2(tmpPath, bytes, options?.mode !== void 0 ? { mode: options.mode } : void 0);
+    await writeFile2(tmpPath, bytes, {
+      flag: "wx",
+      ...options?.mode !== void 0 ? { mode: options.mode } : {}
+    });
     await rename3(tmpPath, confined);
   } catch (error) {
     await rm2(tmpPath, { force: true }).catch(() => void 0);
@@ -20775,8 +21028,8 @@ var init_dsh_shims = __esm({
 
 // src/dsh/resolve-hooks.ts
 import * as nodeModule2 from "node:module";
-import { createHash as createHash4 } from "node:crypto";
-import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL4 } from "node:url";
+import { createHash as createHash5 } from "node:crypto";
+import { fileURLToPath as fileURLToPath4, pathToFileURL as pathToFileURL6 } from "node:url";
 import { resolve as resolve5, isAbsolute as isAbsolute4, dirname as dirname3 } from "node:path";
 import { readFileSync as readFileSync2 } from "node:fs";
 function packageName(specifier) {
@@ -20842,7 +21095,7 @@ function installBunResolver(modules) {
       build.onLoad({ filter: new RegExp(`${PEER_PATH.source}|\\.(?:mjs|js|cjs|mts|cts|ts|tsx|jsx|json)$`) }, (args) => {
         const match = PEER_PATH.exec(args.path);
         if (match) throw new UnsupportedPeerError(match[1].replaceAll("\\", "/"));
-        const closure = closureAt(pathToFileURL4(args.path).href);
+        const closure = closureAt(pathToFileURL6(args.path).href);
         if (!closure) {
           const extension = args.path.split(".").at(-1);
           if (extension === "json") return { contents: `export default JSON.parse(${JSON.stringify(readFileSync2(args.path, "utf8"))});`, loader: "js" };
@@ -20851,11 +21104,11 @@ function installBunResolver(modules) {
         }
         if (!(closure.path in closure.receipt.files) || !unlinkedInside(closure.receipt, closure.path, args.path)) throw new Error("module was absent from reviewed composition closure or contains a symbolic link");
         const bytes = readFileSync2(args.path);
-        if (bytes.length > 256 * 1024 * 1024 || createHash4("sha256").update(bytes).digest("hex") !== closure.receipt.files[closure.path]) throw new Error("composition module bytes changed after review");
+        if (bytes.length > 256 * 1024 * 1024 || createHash5("sha256").update(bytes).digest("hex") !== closure.receipt.files[closure.path]) throw new Error("composition module bytes changed after review");
         if (closure.path.endsWith(".json")) return { contents: `export default JSON.parse(${JSON.stringify(bytes.toString("utf8"))});`, loader: "js" };
         let source;
         try {
-          source = prepareBunSource(bytes.toString("utf8"), args.path, (specifier, require3) => checkedBunSpecifier(specifier, closure.receipt, pathToFileURL4(args.path).href, require3));
+          source = prepareBunSource(bytes.toString("utf8"), args.path, (specifier, require3) => checkedBunSpecifier(specifier, closure.receipt, pathToFileURL6(args.path).href, require3));
         } catch (error) {
           if (error instanceof SyntaxError) throw new Error("reviewed composition module has unsupported JavaScript syntax");
           throw error;
@@ -20872,16 +21125,16 @@ function checkedBunSpecifier(specifier, closure, caller, require3) {
     return specifier;
   }
   if (nodeModule2.isBuiltin(specifier)) return specifier.startsWith("node:") ? specifier : `node:${specifier}`;
-  const callerPath = fileURLToPath2(caller);
+  const callerPath = fileURLToPath4(caller);
   const file = specifier.startsWith("file:") || specifier.startsWith(".") || isAbsolute4(specifier) ? new URL(specifier, caller) : void 0;
   if (file?.search || file?.hash) throw new Error('Bun does not preserve reviewed module query or fragment identity; select [extension_host] runtime = "node" for this composition');
   let path2;
-  if (file) path2 = require3 && !specifier.startsWith("file:") ? resolve5(dirname3(callerPath), specifier) : resolve5(fileURLToPath2(file));
+  if (file) path2 = require3 && !specifier.startsWith("file:") ? resolve5(dirname3(callerPath), specifier) : resolve5(fileURLToPath4(file));
   else if (require3) path2 = nodeModule2.createRequire(caller).resolve(specifier);
   else path2 = bunResolve(specifier, dirname3(callerPath), caller);
   const inside = keyIn(closure, path2);
   if (inside === void 0 || !(inside in closure.files) || !unlinkedInside(closure, inside, path2)) throw new Error("composition import escapes the reviewed file closure");
-  return require3 ? path2 : file ? file.href : pathToFileURL4(path2).href;
+  return require3 ? path2 : file ? file.href : pathToFileURL6(path2).href;
 }
 function bunResolve(specifier, from2, caller) {
   const bun = globalThis.Bun;
@@ -20911,7 +21164,7 @@ function unlinkedInside(closure, key, path2) {
   return unlinkedKeyMatches(closure.canonicalRoot, key, canonical);
 }
 function admitReviewedClosure(baseUrl, files) {
-  const rawRoot = resolve5(fileURLToPath2(baseUrl));
+  const rawRoot = resolve5(fileURLToPath4(baseUrl));
   const canonicalRoot = canonicalPath(rawRoot);
   const id = pathKey(canonicalRoot);
   const accepted = /* @__PURE__ */ Object.create(null);
@@ -20936,18 +21189,18 @@ function admitReviewedClosure(baseUrl, files) {
   };
 }
 async function importReviewedModule(baseUrl, path2) {
-  const rawRoot = resolve5(fileURLToPath2(baseUrl));
+  const rawRoot = resolve5(fileURLToPath4(baseUrl));
   const id = pathKey(canonicalPath(rawRoot));
   const receipt = reviewedClosures.get(id);
   if (!receipt) throw new Error("composition module closure is no longer admitted");
   const entry = resolve5(rawRoot, path2);
-  const admitted = closureAt(pathToFileURL4(entry).href);
+  const admitted = closureAt(pathToFileURL6(entry).href);
   if (!admitted || admitted.root !== id || !(admitted.path in receipt.files)) throw new Error("composition module is absent from reviewed closure");
-  return import(pathToFileURL4(entry).href);
+  return import(pathToFileURL6(entry).href);
 }
 function closureAt(url) {
   if (!url?.startsWith("file:")) return;
-  const path2 = resolve5(fileURLToPath2(url));
+  const path2 = resolve5(fileURLToPath4(url));
   for (const [root, receipt] of reviewedClosures) {
     const inside = keyIn(receipt, path2);
     if (inside !== void 0) return { root, receipt, path: inside };
@@ -21015,7 +21268,7 @@ function installResolveHooks(modules) {
       if (caller) {
         if (result.url.startsWith("file:")) {
           const target = closureAt(result.url);
-          if (!target || target.root !== caller.root || !(target.path in caller.receipt.files) || !unlinkedInside(caller.receipt, target.path, fileURLToPath2(result.url))) throw new Error("composition import escapes the reviewed file closure");
+          if (!target || target.root !== caller.root || !(target.path in caller.receipt.files) || !unlinkedInside(caller.receipt, target.path, fileURLToPath4(result.url))) throw new Error("composition import escapes the reviewed file closure");
         } else if (bare) {
           throw new Error("composition import escapes the reviewed file closure");
         }
@@ -21031,9 +21284,9 @@ function installResolveHooks(modules) {
       const closure = closureAt(url);
       if (closure) {
         if (!(closure.path in closure.receipt.files) || result.source === void 0 || result.source === null) throw new Error("module was absent from reviewed composition closure");
-        if (!unlinkedInside(closure.receipt, closure.path, fileURLToPath2(url))) throw new Error("module was absent from reviewed composition closure or contains a symbolic link");
+        if (!unlinkedInside(closure.receipt, closure.path, fileURLToPath4(url))) throw new Error("module was absent from reviewed composition closure or contains a symbolic link");
         const source = typeof result.source === "string" ? Buffer.from(result.source) : Buffer.from(result.source);
-        if (source.length > 256 * 1024 * 1024 || createHash4("sha256").update(source).digest("hex") !== closure.receipt.files[closure.path]) throw new Error("composition module bytes changed after review");
+        if (source.length > 256 * 1024 * 1024 || createHash5("sha256").update(source).digest("hex") !== closure.receipt.files[closure.path]) throw new Error("composition module bytes changed after review");
       }
       return result;
     }
@@ -21064,222 +21317,6 @@ var init_resolve_hooks = __esm({
     PEER_PATH = /[\\/]node_modules[\\/]((?:@deepseek-ai[\\/](?:dsh-[^\\/]+|cordis(?:-[^\\/]+)?|schemastery|cosmokit))|cosmokit)[\\/]/;
     reviewedClosures = /* @__PURE__ */ new Map();
     installed2 = false;
-  }
-});
-
-// src/dsh/persona.ts
-function normalizePersonaConfig(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("persona config must be plain data");
-  const config = value;
-  if (Object.keys(config).some((key) => !["prefix", "suffix", "complete", "includeRuntimeContext"].includes(key))) throw new TypeError("persona config has an unsupported field");
-  if (config.complete !== void 0 && config.complete !== false) throw new TypeError("persona replacement belongs to the Core prompt and cannot be imported");
-  if (config.includeRuntimeContext !== void 0 && config.includeRuntimeContext !== true) throw new TypeError("persona runtime-context suppression belongs to the Core prompt and cannot be imported");
-  if (typeof config.prefix !== "string" || config.suffix !== void 0 && typeof config.suffix !== "string") throw new TypeError("persona prefix and suffix must be text");
-  const result = { prefix: config.prefix, suffix: config.suffix ?? "" };
-  for (const [position, text3] of Object.entries(result)) {
-    if (Buffer.byteLength(text3, "utf8") > MAX_PROMPT_SECTION_BYTES) throw new RangeError("persona text exceeds 4096 UTF-8 bytes");
-    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text3)) throw new TypeError("persona text contains control characters");
-    validatePromptTemplate(text3);
-    if (text3.trim().length > 0) normalizePromptSection({ id: `persona-${position}`, text: text3, interpolate: "model-cwd" });
-  }
-  return Object.freeze(result);
-}
-var PERSONA, reviewedPersonaModule;
-var init_persona = __esm({
-  "src/dsh/persona.ts"() {
-    "use strict";
-    init_define_BUILTIN_MODULE_DIGESTS();
-    init_prompt();
-    init_root();
-    PERSONA = "@deepseek-ai/dsh-persona";
-    reviewedPersonaModule = Object.freeze({
-      name: "persona",
-      inject: ["prompt"],
-      apply(ctx, value) {
-        if (!ownerStorage.getStore()?.scope) throw new Error("persona requires an exact Core-selected entry scope");
-        const config = normalizePersonaConfig(value);
-        for (const [position, text3] of Object.entries(config)) {
-          if (text3.trim().length > 0) ctx.prompt.registerSection({ id: `persona-${position}`, text: text3, interpolate: "model-cwd" });
-        }
-      }
-    });
-  }
-});
-
-// src/dsh/upstream/agent-presets/metadata.ts
-var init_metadata = __esm({
-  "src/dsh/upstream/agent-presets/metadata.ts"() {
-    "use strict";
-    init_define_BUILTIN_MODULE_DIGESTS();
-    init_js_yaml();
-  }
-});
-
-// src/dsh/upstream/agent-presets/preset.ts
-var init_preset = __esm({
-  "src/dsh/upstream/agent-presets/preset.ts"() {
-    "use strict";
-    init_define_BUILTIN_MODULE_DIGESTS();
-  }
-});
-
-// src/dsh/upstream/agent-presets/specifier.ts
-var init_specifier = __esm({
-  "src/dsh/upstream/agent-presets/specifier.ts"() {
-    "use strict";
-    init_define_BUILTIN_MODULE_DIGESTS();
-  }
-});
-
-// src/dsh/upstream/agent-presets/discovery.ts
-import { fileURLToPath as fileURLToPath3, pathToFileURL as pathToFileURL5 } from "node:url";
-var SHIPPED_PRESET_ROOT;
-var init_discovery = __esm({
-  "src/dsh/upstream/agent-presets/discovery.ts"() {
-    "use strict";
-    init_define_BUILTIN_MODULE_DIGESTS();
-    init_js_yaml();
-    init_src2();
-    init_metadata();
-    init_preset();
-    init_specifier();
-    SHIPPED_PRESET_ROOT = fileURLToPath3(new URL("../presets/", import.meta.url));
-  }
-});
-
-// src/dsh/upstream/agent-presets/composition-inventory.ts
-function mountedCompositionRows(tree) {
-  const found = [];
-  for (const entry of tree.entries()) {
-    if (entry.options.group) continue;
-    found.push({
-      entryId: entry.id,
-      moduleName: entry.options.name,
-      enabled: !entry.disabled,
-      ...isJsExpr(entry.options.disabled) ? { condition: entry.options.disabled.__jsExpr } : {},
-      ...entry.fiber === void 0 ? {} : { fiberState: entry.fiber.state }
-    });
-  }
-  return found;
-}
-var init_composition_inventory = __esm({
-  "src/dsh/upstream/agent-presets/composition-inventory.ts"() {
-    "use strict";
-    init_define_BUILTIN_MODULE_DIGESTS();
-    init_js_yaml();
-    init_src();
-    init_src2();
-    init_discovery();
-  }
-});
-
-// src/dsh/agent-presets.ts
-import { createHash as createHash5, randomBytes as randomBytes2 } from "node:crypto";
-import { fileURLToPath as fileURLToPath4, pathToFileURL as pathToFileURL6 } from "node:url";
-function fail(message) {
-  throw new Error(`agent-presets: ${message}`);
-}
-function issuePresetReceipt(snapshot3) {
-  const payload = JSON.stringify(snapshot3);
-  const receipt = createHash5("sha256").update(randomBytes2(32)).update(payload).digest("hex");
-  activePresetReceipts.set(receipt, payload);
-  return receipt;
-}
-function revokePresetReceipt(receipt) {
-  activePresetReceipts.delete(receipt);
-}
-function defineReviewedAgentPresets(mount) {
-  return class ReviewedAgentPresets extends Service {
-    static inject = ["loader"];
-    snapshot;
-    selfCtx;
-    constructor(ctx, config) {
-      super(ctx, "agentPresets");
-      this.selfCtx = ctx;
-      if (config?.codewhale_reviewed !== void 0 || config?.codewhale_receipt !== void 0) {
-        const snapshot3 = config.codewhale_reviewed;
-        const receipt = typeof config.codewhale_receipt === "string" ? config.codewhale_receipt : "";
-        const expected = receipt ? activePresetReceipts.get(receipt) : void 0;
-        activePresetReceipts.delete(receipt);
-        if (!snapshot3 || !expected || expected !== JSON.stringify(snapshot3) || snapshot3.catalog?.version !== 1 || !snapshot3.catalog.presets.some((p) => p.id === snapshot3.selected?.metadata.id && !p.broken)) fail("raw roster needs an installer-minted preset receipt");
-        this.snapshot = structuredClone(snapshot3);
-      }
-    }
-    mounting;
-    mounted;
-    mountSelected() {
-      const snapshot3 = this.snapshot;
-      if (!snapshot3) return Promise.resolve(void 0);
-      return this.mounting ??= mount(this.selfCtx, snapshot3.base_url, snapshot3.selected.composition).then((result) => this.mounted = result);
-    }
-    async list() {
-      const snapshot3 = this.snapshot;
-      if (!snapshot3) return [];
-      return snapshot3.catalog.presets.map((row) => ({ ...structuredClone(row), path: fileURLToPath4(new URL(snapshot3.catalog.inventory[row.id].path, snapshot3.base_url)) }));
-    }
-    async remoteExportList() {
-      const snapshot3 = this.snapshot;
-      if (!snapshot3) return { presets: [], authorable: false, defaultId: void 0, modeSelectionEnabled: false };
-      return { presets: snapshot3.catalog.presets.map(({ is_default, entry, ...row }) => ({ ...structuredClone(row), isDefault: is_default })), authorable: false, defaultId: this.defaultId, modeSelectionEnabled: snapshot3.catalog.mode_selection_enabled };
-    }
-    get defaultId() {
-      return this.snapshot?.catalog.default;
-    }
-    get authorable() {
-      return false;
-    }
-    async resolve(id = this.defaultId) {
-      const row = (await this.list()).find((p) => p.id === id);
-      if (!row) fail("preset not found");
-      return row;
-    }
-    composedPreset() {
-      return this.snapshot?.selected.metadata.id;
-    }
-    async compositionInventory() {
-      const snapshot3 = this.snapshot;
-      if (!snapshot3) return [];
-      return snapshot3.catalog.presets.map((row) => {
-        const identity = { id: row.id, trust: row.trust, ...row.name === void 0 ? {} : { name: row.name }, isDefault: row.id === this.defaultId };
-        if (row.id === this.composedPreset() && this.mounted) return { ...identity, rows: mountedCompositionRows(this.mounted.tree) };
-        const read = snapshot3.catalog.inventory[row.id];
-        if (row.broken || "broken" in read) return { ...identity, broken: row.broken ?? ("broken" in read ? read.broken : void 0), rows: [] };
-        return { ...identity, rows: structuredClone(read.rows) };
-      });
-    }
-    async readDocument(id) {
-      const snapshot3 = this.snapshot;
-      if (!snapshot3 || id !== this.composedPreset()) fail("read another preset through Core file authority");
-      return { agentPreset: id, trust: snapshot3.selected.metadata.trust, content: snapshot3.selected.source };
-    }
-    select() {
-      fail("select through Core AgentProfile/native preset selection before a turn");
-    }
-    recompose() {
-      fail("Core owns the captured agent selection and blank-session check");
-    }
-    copy() {
-      fail("copy through Core file/install/review/reload authority");
-    }
-    remove() {
-      fail("delete through Core file/install/review/reload authority");
-    }
-  };
-}
-var AGENT_PRESETS, activePresetReceipts;
-var init_agent_presets = __esm({
-  "src/dsh/agent-presets.ts"() {
-    "use strict";
-    init_define_BUILTIN_MODULE_DIGESTS();
-    init_persona();
-    init_lib2();
-    init_discovery();
-    init_preset();
-    init_specifier();
-    init_composition_inventory();
-    init_src();
-    AGENT_PRESETS = "@deepseek-ai/dsh-agent-presets";
-    activePresetReceipts = /* @__PURE__ */ new Map();
   }
 });
 

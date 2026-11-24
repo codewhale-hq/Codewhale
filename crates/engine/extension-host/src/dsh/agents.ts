@@ -96,10 +96,9 @@ function defineSubagents(host: AdapterHost): new (ctx: any) => Service {
               for (const name of value.deny as string[]) denied.add(name)
               return () => undefined
             },
-            guard(guardFn: unknown) {
+            guard() {
               sealed()
-              if (typeof guardFn !== 'function') throw new RpcError(ErrorCode.InvalidParams, 'tools.guard requires a guard function')
-              return () => undefined
+              throw new RpcError(ErrorCode.NotAvailable, 'child tools.guard is not supported; use child.ctx.tools.restrict({ deny }) or root ctx.tools.guard')
             },
           }),
         }),
