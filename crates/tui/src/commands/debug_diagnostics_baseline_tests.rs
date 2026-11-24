@@ -171,7 +171,7 @@ fn tools_snapshot_branches_match_baseline() {
 }
 
 /// `/system` Text/Blocks/None and the UTF-8-safe 500-byte truncation boundary
-/// are frozen exactly, including the existing total-length wording.
+/// are frozen, with the footer reporting the trimmed prompt's char count.
 #[test]
 fn system_prompt_branches_match_baseline() {
     let mut harness = DiagnosticsHarness::new();
@@ -233,7 +233,7 @@ fn system_alias_and_truncation_boundary_are_preserved() {
     assert_eq!(render(&canonical), render(&alias));
     let message = canonical.message.expect("system message");
     assert!(
-        message.contains("(truncated, 525 chars total)"),
+        message.contains("(truncated, 522 chars total)"),
         "{message}"
     );
     // The cut lands before the two multibyte characters, so no replacement
