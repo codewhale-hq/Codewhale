@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Serve the shared web app build from `codewhale web`:** `codewhale web` now serves a built `codewhale-app/apps/web/dist` directory when `CODEWHALE_WEB_DIST` points to a valid directory containing `index.html`, including `/plugin-host.html` (with sandboxed `connect-src 'none'` / `frame-ancestors 'self'` CSP), immutable `/static/*` hashed assets, bounded SPA route fallback, path-traversal/symlink refusal, and preserved auth-bootstrap cookie sessions; falls back to the embedded web client when unset. (#7237)
 ### Fixed
 
 - **Skills discovery, triggers, and config validation:** `load_skill` companion file lists now include files inside subdirectories (bounded depth/count, skipping hidden files and symlinks), `split_trigger` recognizes localized trigger clauses (such as Russian `Триггеры:` and Chinese `触发条件：`), the names-only skill index tier preserves skill paths whenever budget allows, and unknown keys under `[skills]` are rejected during config parsing instead of silently ignored. (#7432)
