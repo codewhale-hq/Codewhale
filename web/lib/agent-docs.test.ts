@@ -12,9 +12,9 @@ import { REPO_URL } from "./i18n/links";
 const release = FACTS.latestPublishedRelease!;
 const SNAPSHOT: typeof RELEASE_DOCS = JSON.parse(readFileSync(new URL("../data/agent-docs.release.json", import.meta.url), "utf8"));
 const SERVED = SNAPSHOT.topics.filter((topic) => topic.slug !== "install");
-const releasedLines = new Set(SNAPSHOT.topics.flatMap((topic) => topic.sources.flatMap((source) => source.content.split("\n"))));
+const releasedText = SNAPSHOT.topics.flatMap((topic) => topic.sources.map((source) => source.content)).join("\n");
 const mainOnly = [...new Set(AGENT_DOCS.filter((topic) => topic.slug !== "install").flatMap((topic) => topic.sources.flatMap((source) => source.content.split("\n"))))]
-  .filter((line) => line.trim().length >= 40 && !releasedLines.has(line));
+  .filter((line) => line.trim().length >= 40 && !releasedText.includes(line));
 
 async function topicBody(slug: string): Promise<string> {
   const topic = `${slug}.md`;

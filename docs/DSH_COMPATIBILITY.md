@@ -1,39 +1,52 @@
 # Published DeepSeek Harness packages in Codewhale
 
-Of the 32 published DeepSeek Harness packages we tried unmodified, 2
-activate in the Codewhale terminal with the default network policy.
-`@michengai/dsh-code-review` 1.0.9 registers its `dsh_code_review` tool and
-three commands, and its tool ran end to end in one terminal turn against a
-scripted local model: the plugin was called, started its reviewer sub-agent
-and returned its report. Review quality with a real model was not tested.
-`dsh-anchored-standard` 1.2.1 activates and registers nothing. A third,
-`dsh-plugin-model-proxy` 0.1.6, activates once `registry.npmjs.org` is allowed
-and registers nothing. The other 29 do not activate; each now reports the
-service, module or export it is missing, or stops at import review and says
-why.
+On the `0.10.5` source build (`6f093967ae3`, macOS arm64, default network
+policy, no model provider calls):
 
-This page lists every published DeepSeek Harness (DSH) package we tried,
-unmodified, in the terminal. The services and limits behind each row are in
+- **Pinned 33-row Engine lifecycle (`dsh_acceptance.py run`):** **13 of 33**
+  packages pass every local Engine lifecycle step (`admission.preview`,
+  `install`, `trust`, `enable`, `restart_retained`, `revoke`, `uninstall`, and
+  `security.no_key_leak`; provider and desktop slot steps remain `UNAVAILABLE`),
+  **3 of 33** match their pinned `BLOCKED` admission refusals
+  (`dsh-agent-squad`, `dsh-im`, `dsh-archive-manager`), and **17 of 33** stop
+  cleanly at `registry.npmjs.org` network approval (**0** stop at the 2 MiB
+  scan limit).
+- **Direct extension-host cold-activate (all 36 surveyed tarballs, without
+  `npm install`):** **15 of 36** activate cleanly in the extension host,
+  registering **18 tools**, **9 commands**, and **2 hooks** (`dsh-image-gen` 6
+  tools, `dsh-client-ui-task-board` 8 tools + 1 hook, `modsearch` 2 tools,
+  `modlens` 1 tool, `dsh-code-review` 1 tool + 3 commands, `dsh-btw` 3 commands
+  + 1 hook, `dsh-pet` 3 commands, plus 8 zero-registration plugins). Of the
+  remaining 21: **14** fail only on missing third-party npm packages in the raw
+  tarball (zero missing `@deepseek-ai/*` peers prior to npm staging), **6** hit
+  explicit policy or runtime boundaries, and **1** (`dsh-web-ui`) has no server
+  entry.
+- **Prior `0.10.3` scripted-turn check:** `@michengai/dsh-code-review` 1.0.9
+  ran its `dsh_code_review` tool end to end in one terminal turn against a
+  scripted local model (starting its reviewer sub-agent and returning its
+  report). Review quality with a real model was not tested.
+
+This page lists the published DeepSeek Harness (DSH) packages we qualified,
+unmodified, in Codewhale. The services and limits behind each row are in
 [DSH plugin compatibility](DSH_PLUGIN_COMPAT.md).
 
 ## How this was tested
 
-Built from source on 2026-11-22 (codewhale 0.10.3 dev build of this change,
-macOS arm64, Node 26.10). Each package got its own throwaway Codewhale home
-with `[features] extension_host = true`, telemetry and update checks off, and
-the provider pointed at a closed local port, so no model provider was called.
-For each package: `codewhale plugins import dsh <dir>`, `plugins import dsh
-approve <dir> <hash>`, `plugins trust <name> --review-token <token> --yes`,
-`plugins enable <name>`, then the terminal UI was started once and the
-extension host's line for the plugin was read from the log. Packages marked
-"npm approved" were run again with `registry.npmjs.org` in `allow` under
-`[network]`, which fetches their declared npm dependencies. For
-`dsh-code-review`, the terminal UI was then pointed at a local scripted
-OpenAI-compatible endpoint that asks for one `dsh_code_review` call and
-answers the reviewer sub-agent with fixed text; both approval cards (the
-plugin tool and the sub-agent start) were approved by hand. The packages are
-the SHA-256-pinned tarballs of the 0.10.3 survey. Nothing here was run on
-Windows, Linux, Bun or the desktop app.
+Built from source on 2026-11-24 (`0.10.5` wave-3 build `6f093967ae3`, macOS
+arm64, Node runtime). Two checks ran with zero model-provider calls:
+
+1. **Pinned 33-row Engine lifecycle:** `scripts/dsh-plugin-acceptance/dsh_acceptance.py`
+   (`selftest` 15/15 passed; `pins` 33/33 SHA-256 verified) drove every pinned
+   row through `/v1/apps/plugins` on a throwaway `CODEWHALE_HOME` with
+   `--enable extension_host` and default network policy (no `--allow-provider`).
+2. **Direct extension-host cold-activate:** each of the 36 SHA-256-pinned
+   survey tarballs was extracted without `npm install` and activated directly
+   against `crates/engine/extension-host/dist/codewhale-extension-host.mjs`
+   with an isolated `data_dir`.
+
+Earlier `0.10.3` npm-approved terminal checks and the scripted local-model turn
+for `dsh-code-review` are marked where carried forward. Nothing here was run on
+Windows, Linux, Bun, or live Desktop slot mounts.
 
 ## What the columns mean
 
@@ -67,45 +80,53 @@ predicted from the code.
 
 ## Packages
 
-Counts, by status with the default network policy: 2 activate, 10 fail at
-activation, 20 stop at import review (17 at npm network approval, 3 at the
-scan limit). By where they belong: 3 terminal, 10 desktop or web only, 4
-refused by policy, 15 need a host service not built yet.
+Counts on `0.10.5` (`6f093967ae3`, default network policy, no provider calls):
+in the pinned 33-row Engine lifecycle, **13** pass full local lifecycle, **3**
+match pinned `BLOCKED` admission refusals (`dsh-agent-squad`, `dsh-im`,
+`dsh-archive-manager`), and **17** stop cleanly at `registry.npmjs.org` network
+approval (**0** at the 2 MiB scan limit). In direct extension-host
+cold-activate across all 36 tarballs (no `npm install`), **15** activate,
+**14** fail only on missing third-party npm packages, **6** hit explicit
+policy/runtime boundaries, and **1** (`dsh-web-ui`) has no server entry.
 
-| Package | Version | Status in the terminal | Where it belongs | Checked |
+| Package | Version | Status in `0.10.5` (default network policy) | Where it belongs | Checked |
 | --- | --- | --- | --- | --- |
-| `@michengai/dsh-code-review` | 1.0.9 | activates (tool `dsh_code_review`; commands `/plugin-dsh-code-review-review`, `/review-cancel`, `/review-status`); its text is Chinese because Codewhale exposes no host language setting, and `/review` is renamed because a built-in command has that name | terminal | this build, including one tool call in a turn |
-| `dsh-anchored-standard` | 1.2.1 | activates; registers no tools or commands (a preset installer); whether its preset changes anything in Codewhale was not checked | terminal | this build |
-| `dsh-plugin-model-proxy` | 0.1.6 | stops at import review: npm network approval. With npm approved: activates and registers nothing; whether its proxy routing affects Codewhale's model requests was not tested | terminal | this build (npm approved) |
-| `@michengai/dsh-btw` | 1.3.7 | fails: `ctx.tools.guard is not a function` | needs a host service not built yet: `tools.guard`, the `fork` sub-agent provider, and a session on command invocations | this build |
-| `@linxin666/dsh-liangshen` | 0.4.16 | fails: waits on `agentPresets` (the DSH 0.2.2 agent-preset registry is not adopted) | needs a host service not built yet: the agent-preset registry | this build |
-| `@michengai/dsh-automation` | 1.0.22 | fails: composition row `dsh-automation` failed activation: requires `@deepseek-ai/dsh-workspace` | refused by policy: its scheduled runs set the approval policy to `never`, and approval authority stays with the Codewhale core | this build |
-| `@nanmicoder/dsh-agent-teams` | 0.1.29 | fails: composition row `agent-teams` failed activation: requires `@deepseek-ai/dsh-subagent` | refused by policy: it patches the shared `subagents` service, which plugins may not do; it also needs the DSH sub-agent message delivery runtime | this build |
-| `dsh-context` | 0.83.0 | stops at import review: npm network approval (`zod`). With npm approved: fails: composition row `dsh-context` failed activation: `@deepseek-ai/dsh-session` does not provide an export named `deriveEventMessage` | needs a host service not built yet: `sessionProjections`, after the missing `dsh-session` export | this build (default and npm approved) |
-| `dsh-whale-widget` | 0.4.2 | fails: waits on `webServer`, `connection` (DSH Web UI services; Codewhale has no plugin web server) | desktop or web only: a balance widget injected into the DSH web page | this build |
-| `@michengai/dsh-codex-ui` | 2.0.21 | fails: composition row `codex-ui-session-title` requires `sessionTitle`; reading its source, its other rows also need `webServer` and `profileContext` | desktop or web only: a UI skin for the DSH desktop and web client | this build |
-| `@linxin666/dsh-client-ui-skill-explorer` | 0.4.16 | fails: composition row `ui-skill-explorer` requires `webServer` | desktop or web only: its server half only serves its web panel | this build |
-| `@linxin666/dsh-client-ui-git-graph` | 0.4.14 | fails: composition row `ui-git-graph` requires `webServer`, `subprocess`, `workspaceRegistry`; `subprocess` belongs to the Codewhale core | refused by policy: `subprocess` is core-owned (and its web panel needs a plugin web server) | this build |
-| `@linxin666/dsh-client-ui-task-board` | 0.4.16 | fails: composition row `ui-task-board` failed activation: `@deepseek-ai/dsh-llm` does not provide an export named `ReasoningEffortId` | desktop or web only: a web panel; behind the export it waits on `typertGateway`, `workspaceRegistry`, `webServer` | this build |
-| `dsh-image-gen` | 0.11.1 | fails: composition row `image-gen` requires `attachments` | needs a host service not built yet: `attachments` (built, not switched on), a root `systemPrompt.context`, and its nested `connection`/`webServer` waits | this build |
-| `dsh-cost-meter` | 1.9.62 | stops at import review: npm network approval. With npm approved: fails: composition row `cost-meter` failed activation: requires `@deepseek-ai/dsh-credentials` | needs a host service not built yet: the `@deepseek-ai/dsh-credentials` module | this build (default and npm approved) |
-| `@anionex/dsh-vision-toolkit` | 0.1.49 | stops at import review: npm network approval. With npm approved (0.10.3): fails on `@deepseek-ai/dsh-credentials` | needs a host service not built yet: the `@deepseek-ai/dsh-credentials` module | 0.10.3 survey |
-| `@dfy-plugins/dsh-image-generation` | 0.1.4 | stops at import review: npm network approval. With npm approved (0.10.3): fails on `@deepseek-ai/dsh-credentials` | needs a host service not built yet: the `@deepseek-ai/dsh-credentials` module | 0.10.3 survey |
-| `@goodandready/dsh-image-gen` | 0.12.27 | stops at import review: npm network approval. With npm approved (0.10.3): fails on `@deepseek-ai/dsh-credentials` | needs a host service not built yet: the `@deepseek-ai/dsh-credentials` module | 0.10.3 survey |
-| `@michengai/dsh-agency-agents` | 1.2.27 | stops at import review: npm network approval. With npm approved (0.10.3): fails on `@deepseek-ai/dsh-typert-protocol` | needs a host service not built yet: the `@deepseek-ai/dsh-typert-protocol` module | 0.10.3 survey |
-| `@liustack/modsearch` | 5.10.12 | stops at import review: npm network approval. With npm approved (0.10.3): a row waits on `web`, `webServer` and `settings` | needs a host service not built yet: `web` | 0.10.3 survey |
-| `@liustack/modlens` | 3.27.3 | stops at import review: npm network approval. With npm approved (0.10.3): a row waits on `attachments`, `llm`, `webServer` | needs a host service not built yet: `attachments` (built, not switched on) | 0.10.3 survey |
-| `@michengai/dsh-im-connect` | 1.0.34 | stops at import review: npm network approval. With npm approved (0.10.3): a row waits on `webServer`, `agentPresets`, `agentDefaultModel` and others | needs a host service not built yet: `webServer`, the agent-preset registry, `agentDefaultModel` | 0.10.3 survey |
-| `dsh-mnemon` | 0.5.43 | stops at import review: npm network approval. With npm approved (0.10.3): its row `dsh-mnemon/bundle` is absent from the reviewed module closure | needs a host service not built yet: child-scoped `tools.guard`; the closure error may be an import converter gap and was not investigated | 0.10.3 survey |
-| `@deepseek-harness-tui/dsh-tui` | 0.19.0 | stops at import review: npm network approval. With npm approved (0.10.3): refused peers `@deepseek-ai/dsh-atomic-write` and `@deepseek-ai/dsh-llm-pi-ai`, a missing `KNOWN_SESSION_EVENT_TYPES` export, and `dshHomePath is not defined` | needs a host service not built yet: those modules and exports | 0.10.3 survey |
-| `@michengai/dsh-skills-manager` | 1.4.0 | stops at import review: npm network approval. With npm approved (0.10.3): a row waits on `connection` | desktop or web only: a skills management page | 0.10.3 survey |
-| `dsh-pocket` | 2.12.0 | stops at import review: npm network approval. With npm approved (0.10.3): a row waits on `connection`, `webServer` | desktop or web only: serves the DSH web client to a phone | 0.10.3 survey |
-| `dshmarket` | 1.73.17 | stops at import review: npm network approval. With npm approved (0.10.3): waits on `webServer`, `loader` | desktop or web only: a visual plugin market | 0.10.3 survey |
-| `dsh-better-sidebar` | 0.30.1 | stops at import review: npm network approval. With npm approved (0.10.3): fails on `@deepseek-ai/dsh-settings` | desktop or web only: a sidebar for the DSH client | 0.10.3 survey |
-| `@linxin666/dsh-web-all` | 0.4.16 | stops at import review: npm network approval. With npm approved (0.10.3): refused peers `dsh-settings`, `dsh-credentials`, `dsh-subagent`, a missing `ReasoningEffortId` export, and `agentPresets` | desktop or web only: a bundle of DSH Web UI plugins | 0.10.3 survey |
-| `dsh-pet` | 0.4.7 | stops at import review: `lib/app.js` exceeds the 2,097,152-byte scan limit; behind it, npm approval and refused peers `@deepseek-ai/dsh-home-paths`, `@deepseek-ai/dsh-credentials` (read, not run) | desktop or web only: an animated desktop pet | 0.10.3 survey |
-| `dsh-univer-office` | 0.4.0 | stops at import review: `lib/index.js` exceeds the 2,097,152-byte scan limit; behind it, npm approval and the refused peer `@deepseek-ai/dsh-skill` (read, not run) | needs a host service not built yet: the `@deepseek-ai/dsh-skill` module (its viewer is a web window) | 0.10.3 survey |
-| `@changfenhuang/dsh-genui` | 0.16.0 | stops at import review: `lib/assets/mermaid.js` exceeds the 2,097,152-byte scan limit; with that file stubbed (0.10.3), activation is refused: system prompt sections are only available on a child agent | refused by policy: root-agent system prompt sections | 0.10.3 survey |
+| `@michengai/dsh-code-review` | 1.0.9 | passes local Engine lifecycle; cold-activates (1 tool `dsh_code_review`, 3 commands; `/review` renamed to avoid built-in collision; Chinese UI because no host language setting is exposed) | terminal | 0.10.5 build (+ 0.10.3 scripted tool turn) |
+| `dsh-anchored-standard` | 1.2.1 | passes local Engine lifecycle; cold-activates and registers nothing (preset installer) | terminal | 0.10.5 build |
+| `dsh-plugin-model-proxy` | 0.1.6 | stops at import review: npm network approval (`undici` missing offline). With npm approved (0.10.3): activates and registers nothing | terminal | 0.10.5 build + 0.10.3 npm approved |
+| `@michengai/dsh-btw` | 1.3.7 | passes local Engine lifecycle; cold-activates registering 3 commands and 1 hook (`ctx.tools.guard` blocker cleared; `fork` sub-agent provider still not implemented) | terminal | 0.10.5 build |
+| `@linxin666/dsh-liangshen` | 0.4.16 | passes local Engine lifecycle; cold-activates (`agentPresets` service now provided; registers no tools/commands) | terminal | 0.10.5 build |
+| `@michengai/dsh-automation` | 1.0.22 | passes local Engine lifecycle; direct cold-activate fails on `@deepseek-ai/dsh-user-approval` (`@deepseek-ai/dsh-workspace` blocker cleared) | refused by policy: scheduled runs set approval policy to `never`, and approval authority stays with Codewhale core | 0.10.5 build |
+| `@nanmicoder/dsh-agent-teams` | 0.1.29 | passes local Engine lifecycle; direct cold-activate fails: unsupported Harness subagent contract (cannot install retired-member guard) | refused by policy: patches the shared `subagents` service, which plugins may not do | 0.10.5 build |
+| `dsh-context` | 0.83.0 | stops at import review: npm network approval (`zod` missing offline). Pure `deriveEventMessage` export is now provided in `0.10.5` | needs npm approval (`zod`) | 0.10.5 build |
+| `dsh-whale-widget` | 0.4.2 | passes local Engine lifecycle; cold-activates (0 tools/commands; balance widget UI still requires desktop/web client slot) | desktop or web only | 0.10.5 build |
+| `@michengai/dsh-codex-ui` | 2.0.21 | passes local Engine lifecycle; cold-activates (0 tools/commands; UI skin requires desktop/web client slot) | desktop or web only | 0.10.5 build |
+| `@linxin666/dsh-client-ui-skill-explorer` | 0.4.16 | passes local Engine lifecycle; cold-activates (0 tools/commands; web panel requires desktop/web client slot) | desktop or web only | 0.10.5 build |
+| `@linxin666/dsh-client-ui-git-graph` | 0.4.14 | passes local Engine lifecycle; direct cold-activate fails: requires `subprocess` (core-owned) | refused by policy: `subprocess` belongs to Codewhale core | 0.10.5 build |
+| `@linxin666/dsh-client-ui-task-board` | 0.4.16 | passes local Engine lifecycle; cold-activates registering **8 tools** and **1 hook** (`ReasoningEffortId` and `typertGateway`/`workspaceRegistry` blockers cleared) | terminal + desktop/web panel | 0.10.5 build |
+| `dsh-image-gen` | 0.11.1 | passes local Engine lifecycle; cold-activates registering **6 tools** (`attachments` blocker cleared) | terminal | 0.10.5 build |
+| `dsh-cost-meter` | 1.9.62 | stops at import review: npm network approval (`acorn` missing offline) | needs npm approval | 0.10.5 build |
+| `@anionex/dsh-vision-toolkit` | 0.1.49 | stops at import review: npm network approval (`tar` missing offline) | needs npm approval | 0.10.5 build |
+| `@dfy-plugins/dsh-image-generation` | 0.1.4 | stops at import review: npm network approval (`@dfy-plugins/resource-core` missing offline) | needs npm approval | 0.10.5 build |
+| `@goodandready/dsh-image-gen` | 0.12.27 | stops at import review: npm network approval (`sharp` missing offline) | needs npm approval | 0.10.5 build |
+| `@michengai/dsh-agency-agents` | 1.2.27 | stops at import review: npm network approval (`zod` missing offline) | needs npm approval | 0.10.5 build |
+| `@liustack/modsearch` | 5.10.12 | stops at import review: npm network approval; direct cold-activate passes registering **2 tools** | terminal (needs npm approval on import) | 0.10.5 build |
+| `@liustack/modlens` | 3.27.3 | stops at import review: npm network approval; direct cold-activate passes registering **1 tool** | terminal (needs npm approval on import) | 0.10.5 build |
+| `@michengai/dsh-im-connect` | 1.0.34 | stops at import review: npm network approval (`undici` missing offline) | needs npm approval | 0.10.5 build |
+| `dsh-mnemon` | 0.5.43 | stops at import review: npm network approval (`dsh-mnemon-source-memory-spaces` missing offline) | needs npm approval | 0.10.5 build |
+| `@deepseek-harness-tui/dsh-tui` | 0.19.0 | stops at import review: npm network approval (`emoji-regex` missing offline) | needs npm approval | 0.10.5 build |
+| `@michengai/dsh-skills-manager` | 1.4.0 | stops at import review: npm network approval (`fflate` missing offline) | desktop or web only | 0.10.5 build |
+| `dsh-pocket` | 2.12.0 | stops at import review: npm network approval; direct cold-activate passes (0 tools/commands) | desktop or web only | 0.10.5 build |
+| `dshmarket` | 1.73.17 | stops at import review: npm network approval (`js-yaml` missing offline) | desktop or web only | 0.10.5 build |
+| `dsh-better-sidebar` | 0.30.1 | stops at import review: npm network approval (`ws` missing offline) | desktop or web only | 0.10.5 build |
+| `@linxin666/dsh-web-all` | 0.4.16 | direct cold-activate passes (0 tools/commands; not in 33-row `pins.json`) | desktop or web only | 0.10.5 build |
+| `dsh-pet` | 0.4.7 | stops at import review: npm network approval (2 MiB scan-limit refusal cleared); direct cold-activate passes registering **3 commands** | desktop or web only | 0.10.5 build |
+| `dsh-univer-office` | 0.4.0 | stops at import review: npm network approval (2 MiB scan-limit refusal cleared; `@puppeteer/browsers` missing offline) | desktop or web only | 0.10.5 build |
+| `@changfenhuang/dsh-genui` | 0.16.0 | passes local Engine lifecycle (2 MiB scan-limit refusal cleared); direct cold-activate fails: system prompt sections are only available on a child agent's `agent/created` context | refused by policy: root-agent system prompt sections | 0.10.5 build |
 
-Not tried: `dsh-agent-squad`, `dsh-im` and `dsh-archive-manager`, which the
-acceptance pins mark as refused, and `DamonKoy-dsh-web-ui`.
+Pinned `BLOCKED` admission refusals (all 3 verified matching exact pinned basis
+in `0.10.5`): `dsh-agent-squad` (direct cold-activate also refused on root
+`systemPrompt.section`), `dsh-im` (direct cold-activate passes with 0
+registrations), and `dsh-archive-manager` (direct cold-activate throws
+`TypeError`). Client-only without server entry: `DamonKoy-dsh-web-ui`
+(`dsh-web-ui` 0.1.1).

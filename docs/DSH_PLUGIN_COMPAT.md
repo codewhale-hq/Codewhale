@@ -102,6 +102,9 @@ walkthroughs below.
 | `subagents.getProvider('fork')`, `inheritsParentContext`, command `invocation.agent.session` | not provided | Not implemented |
 | `agents`, `systemPrompt` | injectable so plugins that name them activate; `agents` offers nothing and `systemPrompt` methods refuse outside a child's `agent/created` context | Verified with the child-agent probe |
 | `llm`, `credentials` | grant-gated brokered host services in `compatibility.json` v3 | Grant-gated brokered |
+| `sessionPersistence`, `storageDomain`, `invariants`, `permissionPresets` | read-only / owner-scoped `0.10.5` P1/P2 host services (bounded JSON-serializable `storageDomain` values at 64 KiB, 64-entry per-owner `invariants` cap, fail-closed on mutating/escalation paths; all 4 in `refused_services` so plugins cannot override them) | Verified by focused extension-host tests (`e42ec6f09f0`, `e5571935a95`) |
+| `@deepseek-ai/dsh-agent`, `@deepseek-ai/dsh-app-boot` | `0.10.5` P1/P2 module singletons (`assembleContextFor`, `installModelSelection`, `getDshRuntimeVersion`; fail-closed `loadProfileDirectory`, `resolveBundleDir`, `createRuntimeResolution`) | Verified by focused extension-host tests (`e42ec6f09f0`) |
+| `agentPresets`, `agentDefaultModel`, `sessionProjections`, `workspaceRegistry`, `typertGateway`, `web` | `0.10.5` read-only/scoped adapters plus pure-API module exports (`ReasoningEffortId`, `deriveEventMessage`, `KNOWN_SESSION_EVENT_TYPES`, `credentialRef`, `settingsNamespace`, `resolveDshHome`, `writeFileAtomic`, `Remote`, `TypertRemoteService`) | Verified by focused extension-host tests and `0.10.5` 36-tarball cold-activate survey (15/36 pass) |
 | `approval`, `fs`, `subprocess` | refused by design until each maps to Engine authority | Not implemented |
 | Rich or media tool output | dropped | Not implemented |
 | Git review scopes | Bounded `execFile` metadata requests use the Engine Git tool and its approval path; the Native host still cannot read the repository directly | Current-source qualification pending |
@@ -110,11 +113,13 @@ walkthroughs below.
 
 The same DSH-format probe plugin (a tool that saves the session and asks one
 question, plus two commands), run against a local fake model provider on
-macOS with no account or spend:
+macOS with no account or spend, plus the `0.10.5` loopback `codewhale web`
+dist check (`6f093967ae3`):
 
 | Surface | What was seen | Status |
 | --- | --- | --- |
-| Runtime API | preview → exact-hash install → review → trust → enable; first-turn tool; approval; question answered through `POST /v1/user-input`; command result | Verified |
+| Runtime API | preview → exact-hash install → review → trust → enable; first-turn tool; approval; question answered through `POST /v1/user-input`; command result; plus `0.10.5` pinned 33-row lifecycle (`13` full local lifecycle pass, `3` pinned `BLOCKED`, `17` npm-approval gated) | Verified |
+| `codewhale web` (`CODEWHALE_WEB_DIST`) | `GET /` HTTP 200 (byte-for-byte match with `codewhale-app/apps/web/dist/index.html`) and `GET /v1/apps/plugins` HTTP 200 on loopback (`6f093967ae3`) | Verified |
 | `codewhale exec --auto` | first-turn tool runs and saves the session; the plugin's question is refused with `NO_PROVIDER` because no person is present to answer | Verified |
 | Desktop app | the tool's approval card; the plugin's question rendered as a native card (option descriptions, your own answer, Skip, Send answers); the answer reaches the plugin; `/probe-count` in the command palette with plugin attribution | Verified (plugin installed through the Runtime API, not the app's own settings flow) |
 | Terminal UI (interactive) | — | Not walked through; its question and approval code is covered by focused tests only |
@@ -154,8 +159,11 @@ An imported DSH plugin's client UI is served, on the seats the Engine admits.
 The importer retains the reviewed client closure; at serve time the Engine
 re-verifies it byte for byte against the reviewed hashes, maps each declared
 slot key to a seat, and loads one Engine-generated bootstrap built from those
-bytes. A native client is admitted only on `customize.plugins.detail`. A slot
-key with no seat answers `plugin_ui_seat_unsupported`; several keys on one seat
+bytes. A native client is admitted only on `customize.plugins.detail`. In `0.10.5`,
+`DSH_FRAME_MODULES` admits `@deepseek-ai/dsh-settings`,
+`@deepseek-ai/dsh-tools`, and `@deepseek-ai/dsh-credentials`, and
+`DSH_SEAT_TABLE` is synced to 41 entries matching desktop `DSH_SLOT_ALIASES`
+(`5cdf092bc77`). A slot key with no seat answers `plugin_ui_seat_unsupported`; several keys on one seat
 need the caller to name one (`plugin_ui_dsh_slot_required`). A closure that needs
 a host module the frame does not provide, uses ES module syntax or is not valid
 JSON answers `plugin_ui_unsupported`. Code Review 1.0.8's client decorates

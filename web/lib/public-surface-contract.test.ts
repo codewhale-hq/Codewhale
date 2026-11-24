@@ -498,7 +498,7 @@ done
     // published release's earlier opt-in behavior is named, not blurred.
     expect(matrix.trust.telemetry).toContain(`Codewhale ${matrix.sourceCandidate.version} counts anonymous usage by default`);
     expect(matrix.trust.telemetry).toContain("discloses it at first launch");
-    expect(matrix.trust.telemetry).toContain("policy notice version 5");
+    expect(matrix.trust.telemetry).toContain("policy notice version 6");
     expect(matrix.trust.telemetry).toContain("Codewhale as the sole first-party collector");
     expect(matrix.trust.telemetry).not.toMatch(/PostHog/i);
     expect(matrix.trust.telemetry).toContain("earlier 0.9.11 release asked first");
