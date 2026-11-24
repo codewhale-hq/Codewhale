@@ -7,7 +7,9 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::task::JoinSet;
 
-const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_CONCURRENT_PROBES: usize = 4;
+static PROBES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(MAX_CONCURRENT_PROBES);
 const MAX_PROBE_LINE_BYTES: usize = 256 * 1024;
 const MAX_TEXT_CHARS: usize = 80;
 const MAX_AUTH_METHODS: usize = 8;
@@ -180,6 +182,7 @@ async fn describe_custom(agent: CustomExternalAgent) -> Value {
         });
     };
     let arg_refs: Vec<&str> = agent.args.iter().map(String::as_str).collect();
+    let _permit = PROBES.acquire().await;
     let (version, handshake) = tokio::join!(
         cli_version_with_env(&path, &agent.env),
         acp_initialize(&path, &arg_refs, &agent.env),
@@ -256,6 +259,7 @@ async fn describe(agent: &'static ExternalAgent) -> Value {
         });
     };
     let env = agent.process_env();
+    let _permit = PROBES.acquire().await;
     let (version, handshake, adapter_installed) = tokio::join!(
         cli_version_with_env(&path, &env),
         async {
@@ -296,6 +300,15 @@ async fn describe(agent: &'static ExternalAgent) -> Value {
                 "Version {} is installed; Codewhale needs {} or newer to drive it.",
                 version.as_deref().unwrap_or("unknown"),
                 agent.min_version.unwrap_or("a newer one")
+            )),
+        )
+    } else if version.is_none() && agent.min_version.is_some() && acp == "unreachable" {
+        (
+            Some(ExecutorUnavailable::VERSION_UNKNOWN),
+            Some(format!(
+                "Codewhale could not read its version, so it cannot check the {} minimum. {}",
+                agent.min_version.unwrap_or_default(),
+                refusal.unwrap_or_else(|| SILENT_HANDSHAKE.to_string())
             )),
         )
     } else if acp == "unreachable" {
