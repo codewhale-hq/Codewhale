@@ -880,6 +880,19 @@ impl CodewhaleClient {
                                         },
                                         usage: usage_data.take(),
                                     });
+                                } else {
+                                    yield Ok(StreamEvent::MessageDelta {
+                                        delta: MessageDelta {
+                                            stop_reason: Some(
+                                                "incomplete:unknown_status".to_string(),
+                                            ),
+                                            stop_sequence: None,
+                                            title: None,
+                                            stop_details: None,
+                                            refusal: None,
+                                        },
+                                        usage: usage_data.take(),
+                                    });
                                 }
                                 // DeepSeek terminates semantic Responses
                                 // streams with this event and deliberately does
@@ -1641,14 +1654,15 @@ fn responses_event_error_details(event: &Value) -> (String, String) {
 }
 
 fn responses_stop_reason(response: &Value, saw_tool_call: bool) -> String {
-    match string_at(response, "/status").unwrap_or("completed") {
-        "completed" if saw_tool_call => "tool_use".to_string(),
-        "completed" => "end_turn".to_string(),
-        "incomplete" => format!(
+    match string_at(response, "/status") {
+        Some("completed") if saw_tool_call => "tool_use".to_string(),
+        Some("completed") => "end_turn".to_string(),
+        Some("incomplete") => format!(
             "incomplete:{}",
             string_at(response, "/incomplete_details/reason").unwrap_or("max_tokens")
         ),
-        _ => "end_turn".to_string(),
+        Some(other) => format!("incomplete:unknown_status:{other}"),
+        None => "incomplete:unknown_status".to_string(),
     }
 }
 

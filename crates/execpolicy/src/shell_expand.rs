@@ -3483,8 +3483,25 @@ impl Expander {
             }
             if matches!(
                 tokens[index].as_str(),
-                "-exec" | "-execdir" | "-ok" | "-okdir"
+                "-exec" | "-execdir" | "-ok" | "-okdir" | "-delete"
             ) {
+                // `-delete` is a standalone destructive action (equivalent to `-exec rm {} +`)
+                // with no command payload. Treat it as a nested destructive action by creating
+                // a synthetic `rm` payload.
+                if tokens[index] == "-delete" {
+                    self.nested = true;
+                    let payload = Line {
+                        words: vec!["rm".to_string()],
+                        dynamic: vec![false],
+                        odd: vec![false],
+                        quoted: vec![WordQuote::Unquoted],
+                        heredoc: false,
+                        stdin_piped: line.stdin_piped || line.heredoc,
+                    };
+                    self.record(&payload, depth + 1);
+                    index += 1;
+                    continue;
+                }
                 let start = index + 1;
                 let mut end = start;
                 while end < tokens.len() && !matches!(tokens[end].as_str(), ";" | "+") {
