@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **One paste path in the terminal and off-thread clipboard reads:** simplified Ctrl+V handling to a single press/release edge rule and moved clipboard file reads off the UI thread. (#7516)
+- **`/model` splits use-now from saving the default:** pressing `Enter` switches the current session's model immediately while `Shift+D` saves it as the default route. (#7517)
+- **Standalone `/pet` dot whale:** every terminal draws the dot whale directly from its own session activity without depending on the companion source session. (#7514)
+- **Removed confirmed dead-code candidates:** deleted unused TUI, Fleet, and skills items identified in the dead-code sweep. Thanks [@luochen211](https://github.com/luochen211). (#7491, Refs #7270)
+- **Single owned `TaskManager` slot:** routed TUI `TaskManager` consumers through `App`'s single slot ahead of session-switch store adoption. Thanks [@Serendo](https://github.com/Serendo). (#7507)
+- **Website & docs refresh:** updated real desktop screenshots, contributor wall, and `/settings` + slash-command documentation. (#7511)
+
+### Fixed
+
+- **Engine, app-server, extension host, fleet, subagent, RLM, config, hooks, and VS Code/bridge hardening:** addressed public audit findings across engine core, subagents, app-server lease rollback, extension host, fleet work graph, RLM batch guards, config, skills/plugins/secrets, bridges, and component hardening. Thanks [@NieZhuZhu](https://github.com/NieZhuZhu) (#7481, #7483, #7484, #7489, #7492, #7493, #7495, #7501). (#7498, #7499, #7503, #7515)
+- **ACP Ask-posture enforcement & discovery hardening:** enforced host-side Ask approval gating for external ACP agents and hardened external-agent discovery. (#7504)
+- **Windows desktop-shell exclusion (`ShellExperienceHost.exe`):** matched `ShellExperienceHost.exe` case-insensitively in the Windows desktop-shell filter. Thanks [@deosiree](https://github.com/deosiree). (#7513, Refs #7474)
+- **Background shell ambient scene & idle CPU:** fixed ambient scene polling when background shells are active. (#7518, Refs #6728)
+- **Contributor fixes & CI stability:** landed community fix from [@WTFitsmemyself](https://github.com/WTFitsmemyself) (#7496) and tuned Windows CI linker/test ceilings (#7512).
+
 ## [0.10.4] - 2026-11-23
 
 Codewhale v0.10.4 is a hotfix release. Ctrl+V no longer pastes text twice in Windows Terminal, which also doubled API keys pasted into `/provider`; the fix was checked on a real Windows Terminal. `codewhale update` no longer refuses a release binary because an unrelated `cargo install` left a Cargo record beside it. The refusal happens inside the installed 0.10.3, so an install it affects cannot update itself to 0.10.4: rerun the installer once (`curl -fsSL https://codewhale.net/install.sh | sh` on macOS and Linux, or `install.bat` from the 0.10.4 Windows archive), and later updates work. `/provider` now works for projects on a second Windows drive such as D:, Computer Use installs from the Marketplace, and every terminal draws the dot whale in `/pet`. `url` is updated to 2.5.9 for RUSTSEC-2026-0592. DeepSeek Harness compatibility is limited: of 32 published packages tried unmodified, 2 activate in the terminal; [DSH compatibility](docs/DSH_COMPATIBILITY.md) lists each one.
