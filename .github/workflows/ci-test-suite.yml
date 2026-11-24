@@ -185,6 +185,8 @@ jobs:
       - name: Build canonical executable for acceptance tests
         shell: bash
         run: sh scripts/with-hermetic-test-home.sh cargo test --workspace --all-features --locked --no-run --test help_dispatch
+        env:
+          RUSTC_WRAPPER: ${{ inputs.os != 'windows-latest' && env.RUSTC_WRAPPER || '' }}
       - name: Windows Terminal clipboard-to-draft acceptance
         if: inputs.os == 'windows-latest'
         timeout-minutes: 5
@@ -212,6 +214,8 @@ jobs:
           exe=codewhale
           if [ "$RUNNER_OS" = Windows ]; then exe=codewhale.exe; fi
           cp "${CARGO_TARGET_DIR:-target}/debug/$exe" "$RUNNER_TEMP/test-archive/$exe"
+        env:
+          RUSTC_WRAPPER: ${{ inputs.os != 'windows-latest' && env.RUSTC_WRAPPER || '' }}
       - name: Count the tests the archive selects
         shell: bash
         run: |
@@ -227,6 +231,7 @@ jobs:
         shell: bash
         run: sh scripts/with-hermetic-test-home.sh cargo test --workspace --all-features --locked --doc
         env:
+          RUSTC_WRAPPER: ${{ inputs.os != 'windows-latest' && env.RUSTC_WRAPPER || '' }}
           RUST_MIN_STACK: '16777216'
       - name: Lockfile drift guard
         run: git diff --exit-code -- Cargo.lock
