@@ -905,7 +905,7 @@ mod tests {
             path: path.clone(),
             webhook: None,
             next_seq: 0,
-            recovered: false,
+            fallback_nonce: "test-nonce".to_string(),
             receiver: tokio::sync::mpsc::channel(OUTBOX_QUEUE_CAPACITY).1,
         };
         deliver_all(&mut state, vec![event("turn_start", "turn.started")]).await;
@@ -935,7 +935,7 @@ mod tests {
             path: path.clone(),
             webhook: None,
             next_seq: 0,
-            recovered: false,
+            fallback_nonce: "test-nonce".to_string(),
             receiver: tokio::sync::mpsc::channel(OUTBOX_QUEUE_CAPACITY).1,
         };
         let workspace = "/home/cw/wt-lane";
@@ -1050,7 +1050,7 @@ mod tests {
             path: path.clone(),
             webhook: None,
             next_seq: 0,
-            recovered: false,
+            fallback_nonce: "test-nonce".to_string(),
             receiver: tokio::sync::mpsc::channel(OUTBOX_QUEUE_CAPACITY).1,
         };
         deliver_all(
@@ -1068,7 +1068,7 @@ mod tests {
             path: path.clone(),
             webhook: None,
             next_seq: 0,
-            recovered: false,
+            fallback_nonce: "test-nonce".to_string(),
             receiver: tokio::sync::mpsc::channel(OUTBOX_QUEUE_CAPACITY).1,
         };
         deliver_all(&mut reopened, vec![event("turn_start", "turn.started")]).await;
@@ -1264,13 +1264,13 @@ mod tests {
         let outbox_b = LifecycleOutbox::new(Some(path.clone()), None, None);
 
         outbox_a.emit(event("a_1", "turn.started"));
-        assert!(outbox_a.flush(Duration::from_secs(5)).await);
+        outbox_a.flush(Duration::from_secs(5)).await.expect("flush");
         outbox_b.emit(event("b_1", "turn.started"));
-        assert!(outbox_b.flush(Duration::from_secs(5)).await);
+        outbox_b.flush(Duration::from_secs(5)).await.expect("flush");
         outbox_a.emit(event("a_2", "turn.completed"));
-        assert!(outbox_a.flush(Duration::from_secs(5)).await);
+        outbox_a.flush(Duration::from_secs(5)).await.expect("flush");
         outbox_b.emit(event("b_2", "turn.completed"));
-        assert!(outbox_b.flush(Duration::from_secs(5)).await);
+        outbox_b.flush(Duration::from_secs(5)).await.expect("flush");
 
         let raw = std::fs::read_to_string(&path).expect("read outbox");
         let seqs: Vec<u64> = raw
@@ -1291,7 +1291,7 @@ mod tests {
 
         let first = LifecycleOutbox::new(Some(path.clone()), None, None);
         first.emit(event("turn_start", "turn.started"));
-        assert!(first.flush(Duration::from_secs(5)).await);
+        first.flush(Duration::from_secs(5)).await.expect("flush");
 
         // Simulate a crash leaving an unterminated torn JSON fragment at EOF.
         let mut file = std::fs::OpenOptions::new()
@@ -1304,9 +1304,9 @@ mod tests {
 
         let second = LifecycleOutbox::new(Some(path.clone()), None, None);
         second.emit(event("turn_end", "turn.completed"));
-        assert!(second.flush(Duration::from_secs(5)).await);
+        second.flush(Duration::from_secs(5)).await.expect("flush");
         second.emit(event("turn_end_2", "turn.completed"));
-        assert!(second.flush(Duration::from_secs(5)).await);
+        second.flush(Duration::from_secs(5)).await.expect("flush");
 
         let raw = std::fs::read_to_string(&path).expect("read outbox");
         let parsed: Vec<RuntimeEventEnvelope> = raw
@@ -1337,7 +1337,7 @@ mod tests {
             None,
         );
         outbox.emit(event("turn_start", "turn.started"));
-        assert!(outbox.flush(Duration::from_secs(5)).await);
+        outbox.flush(Duration::from_secs(5)).await.expect("flush");
 
         let requests = server.received_requests().await.expect("requests");
         assert_eq!(
@@ -1377,12 +1377,12 @@ mod tests {
             None,
         );
         outbox.emit(event("turn_start", "turn.started"));
-        assert!(outbox.flush(Duration::from_secs(5)).await);
+        outbox.flush(Duration::from_secs(5)).await.expect("flush");
 
         // Rotate/remove the outbox file; seq restarts at 1 with a fresh nonce.
         std::fs::remove_file(&path).expect("rotate outbox file");
         outbox.emit(event("turn_start", "turn.started"));
-        assert!(outbox.flush(Duration::from_secs(5)).await);
+        outbox.flush(Duration::from_secs(5)).await.expect("flush");
 
         let requests = server.received_requests().await.expect("requests");
         assert_eq!(
