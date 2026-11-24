@@ -20,10 +20,10 @@ use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
 use axum::Json;
-use axum::body::Body;
-use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::body::{Body, to_bytes};
+use axum::extract::{ConnectInfo, Path, Query, RawQuery, State};
 use axum::http::uri::Authority;
-use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, header};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -679,6 +679,8 @@ fn ui_content_type(path: &FsPath) -> &'static str {
         Some("png") => "image/png",
         Some("jpg" | "jpeg") => "image/jpeg",
         Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        Some("ico") => "image/x-icon",
         Some("woff") => "font/woff",
         Some("woff2") => "font/woff2",
         Some("ttf") => "font/ttf",
@@ -687,13 +689,21 @@ fn ui_content_type(path: &FsPath) -> &'static str {
 }
 
 fn is_dsh_static_ui_asset(path: &FsPath) -> bool {
-    matches!(
-        path.extension()
-            .and_then(std::ffi::OsStr::to_str)
-            .map(str::to_ascii_lowercase)
-            .as_deref(),
-        Some("css" | "svg" | "png" | "jpg" | "jpeg" | "webp" | "woff" | "woff2" | "ttf")
-    )
+    let ext = path
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_ascii_lowercase);
+    match ext.as_deref() {
+        Some(
+            "css" | "svg" | "png" | "jpg" | "jpeg" | "webp" | "gif" | "ico" | "woff" | "woff2"
+            | "ttf",
+        ) => true,
+        Some("json") => !matches!(
+            path.file_name().and_then(std::ffi::OsStr::to_str),
+            Some("package.json" | "CONVERSION.json")
+        ),
+        _ => false,
+    }
 }
 
 fn ui_asset_response(bytes: Vec<u8>, content_type: &'static str) -> Response {
@@ -709,6 +719,13 @@ fn ui_asset_response(bytes: Vec<u8>, content_type: &'static str) -> Response {
         headers.insert(
             header::CONTENT_SECURITY_POLICY,
             HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'; sandbox"),
+        );
+    } else {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'",
+            ),
         );
     }
     response
@@ -1903,21 +1920,61 @@ pub(super) async fn get_plugin_ui(
     }))
 }
 
+const PLUGIN_UI_REVISION_QUERY: &str = "cw_rev";
+
+fn revision_from_query(raw_query: Option<&str>) -> Option<String> {
+    let query = raw_query?;
+    let mut found = None;
+    for pair in query.split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        if key == PLUGIN_UI_REVISION_QUERY {
+            if found.is_some() {
+                return None;
+            }
+            let decoded = urlencoding::decode(value).ok()?;
+            found = Some(decoded.into_owned());
+        }
+    }
+    found
+}
+
+fn strip_revision_query(raw_query: Option<&str>) -> Option<String> {
+    let query = raw_query?;
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|pair| {
+            !pair.is_empty()
+                && pair
+                    .split_once('=')
+                    .is_none_or(|(key, _)| key != PLUGIN_UI_REVISION_QUERY)
+        })
+        .collect();
+    (!kept.is_empty()).then(|| kept.join("&"))
+}
+
 fn grant_for_request(
     state: &RuntimeApiState,
     selector: &str,
     headers: &HeaderMap,
+    raw_query: Option<&str>,
 ) -> Result<(PluginUiGrant, String), ApiError> {
     let mut values = headers.get_all(header::IF_MATCH).iter();
-    let first = values.next().ok_or_else(|| ApiError {
-        status: StatusCode::PRECONDITION_REQUIRED,
-        message: "plugin UI revision is required".into(),
-        code: None,
-    })?;
-    if values.next().is_some() {
-        return Err(ui_stale_revision());
-    }
-    let revision = first.to_str().map_err(|_| ui_stale_revision())?.to_string();
+    let revision = if let Some(first) = values.next() {
+        if values.next().is_some() {
+            return Err(ui_stale_revision());
+        }
+        first.to_str().map_err(|_| ui_stale_revision())?.to_string()
+    } else if let Some(from_query) = revision_from_query(raw_query) {
+        from_query
+    } else {
+        return Err(ApiError {
+            status: StatusCode::PRECONDITION_REQUIRED,
+            message: "plugin UI revision is required".into(),
+            code: None,
+        });
+    };
     let grant = state
         .plugin_ui_grants
         .get(&revision)
@@ -1928,19 +1985,66 @@ fn grant_for_request(
     Ok((grant, revision))
 }
 
+fn allowlisted_plugin_route_request_headers(headers: &HeaderMap) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (name, value) in headers {
+        let lower = name.as_str().to_ascii_lowercase();
+        let allowed = matches!(
+            lower.as_str(),
+            "content-type" | "accept" | "accept-language"
+        ) || (lower.starts_with("x-")
+            && !lower.starts_with("x-codewhale-")
+            && !lower.starts_with("x-deepseek-")
+            && !lower.starts_with("x-forwarded-")
+            && !lower.starts_with("x-auth-")
+            && lower != "x-real-ip"
+            && lower != "x-api-key");
+        if !allowed {
+            continue;
+        }
+        if let Ok(text) = value.to_str() {
+            out.push((lower, text.to_string()));
+        }
+    }
+    out
+}
+
+fn is_stripped_plugin_route_response_header(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "set-cookie"
+            | "content-security-policy"
+            | "content-security-policy-report-only"
+            | "location"
+            | "content-length"
+            | "transfer-encoding"
+            | "connection"
+            | "keep-alive"
+            | "upgrade"
+            | "strict-transport-security"
+            | "x-frame-options"
+            | "cache-control"
+            | "x-content-type-options"
+    ) || lower.starts_with("access-control-")
+}
+
 pub(super) async fn plugin_route_bridge(
     State(state): State<RuntimeApiState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path((selector, path)): Path<(String, String)>,
+    RawQuery(raw_query): RawQuery,
     method: axum::http::Method,
     headers: HeaderMap,
+    body: Body,
 ) -> Result<Response, ApiError> {
     if !peer.ip().is_loopback() {
         return Err(ApiError::forbidden(
             "plugin routes are available only from loopback",
         ));
     }
-    let (grant, revision) = grant_for_request(&state, &selector, &headers)?;
+    let (grant, revision) = grant_for_request(&state, &selector, &headers, raw_query.as_deref())?;
+    let authority = grant.authority.clone();
     let state_for_route = state.clone();
     let policy = codewhale_plugins::activation::extension_host_policy_enabled();
     tokio::task::spawn_blocking(move || {
@@ -1961,7 +2065,7 @@ pub(super) async fn plugin_route_bridge(
     })
     .await
     .map_err(|_| ApiError::internal("plugin route check failed"))??;
-    ui_relative_path(&path).map_err(|reason| {
+    let relative = ui_relative_path(&path).map_err(|reason| {
         ApiError::bad_request(format!("plugin route path '{path}' is invalid: {reason}"))
     })?;
     if !DSH_ROUTE_METHODS.contains(&method.as_str()) {
@@ -1971,16 +2075,81 @@ pub(super) async fn plugin_route_bridge(
             code: None,
         });
     }
-    Err(ApiError::not_implemented(
-        "this Engine has no plugin web server to forward the route to yet",
-    )
-    .with_code("plugin_route_not_served"))
+    let max_req = codewhale_engine::extension_host::MAX_PLUGIN_ROUTE_REQUEST_BYTES;
+    let body_bytes = to_bytes(body, max_req).await.map_err(|_| {
+        ApiError::payload_too_large("plugin route request body exceeds the 4 MiB limit")
+    })?;
+    let request = codewhale_engine::extension_host::PluginRouteRequest {
+        method: method.as_str().to_string(),
+        path: format!("/{}", ui_relative_display(&relative)),
+        query: strip_revision_query(raw_query.as_deref()),
+        headers: allowlisted_plugin_route_request_headers(&headers),
+        body: body_bytes.to_vec(),
+    };
+    let result = codewhale_engine::extension_host::dispatch_plugin_route(&authority, request)
+        .await
+        .map_err(|error| match error {
+            codewhale_engine::extension_host::PluginRouteError::NotFound => {
+                ApiError::not_found("plugin did not register a handler for this route")
+                    .with_code("plugin_route_not_found")
+            }
+            codewhale_engine::extension_host::PluginRouteError::HostUnavailable(reason) => {
+                ApiError {
+                    status: StatusCode::SERVICE_UNAVAILABLE,
+                    message: format!("plugin extension host is unavailable: {reason}"),
+                    code: Some("plugin_host_unavailable"),
+                }
+            }
+            codewhale_engine::extension_host::PluginRouteError::RequestTooLarge => {
+                ApiError::payload_too_large("plugin route request body exceeds the 4 MiB limit")
+            }
+            codewhale_engine::extension_host::PluginRouteError::ResponseTooLarge => ApiError {
+                status: StatusCode::BAD_GATEWAY,
+                message: "plugin route response body exceeds the 8 MiB limit".into(),
+                code: Some("plugin_route_response_too_large"),
+            },
+            codewhale_engine::extension_host::PluginRouteError::Timeout => ApiError {
+                status: StatusCode::GATEWAY_TIMEOUT,
+                message: "plugin route timed out".into(),
+                code: Some("plugin_route_timeout"),
+            },
+            codewhale_engine::extension_host::PluginRouteError::ExecutionFailed(reason) => {
+                ApiError {
+                    status: StatusCode::BAD_GATEWAY,
+                    message: format!("plugin route failed: {reason}"),
+                    code: Some("plugin_route_failed"),
+                }
+            }
+        })?;
+    let status = StatusCode::from_u16(result.status).unwrap_or(StatusCode::BAD_GATEWAY);
+    let mut response = Response::new(Body::from(result.body));
+    *response.status_mut() = status;
+    let out_headers = response.headers_mut();
+    for (name, value) in result.headers {
+        if is_stripped_plugin_route_response_header(&name) {
+            continue;
+        }
+        let Ok(header_name) = HeaderName::from_bytes(name.as_bytes()) else {
+            continue;
+        };
+        let Ok(header_value) = HeaderValue::from_str(&value) else {
+            continue;
+        };
+        out_headers.append(header_name, header_value);
+    }
+    out_headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    out_headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    Ok(response)
 }
 
 pub(super) async fn get_plugin_ui_asset(
     State(state): State<RuntimeApiState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path((selector, path)): Path<(String, String)>,
+    RawQuery(raw_query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     if !peer.ip().is_loopback() {
@@ -1988,7 +2157,7 @@ pub(super) async fn get_plugin_ui_asset(
             "plugin UI assets are available only from loopback",
         ));
     }
-    let (grant, revision) = grant_for_request(&state, &selector, &headers)?;
+    let (grant, revision) = grant_for_request(&state, &selector, &headers, raw_query.as_deref())?;
     let relative = ui_relative_path(&path).map_err(|reason| {
         ApiError::bad_request(format!("plugin UI path '{path}' is invalid: {reason}"))
     })?;

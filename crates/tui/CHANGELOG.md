@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Engine-brokered plugin web server and DSH client asset/route runtime:** added the sandboxed `plugin_route/dispatch` extension-host RPC, owner-isolated `webServer` / `connection` / `sessionTitle` / `profileContext` adapters (`DSH_WEBSERVER_ADAPTERS`), bounded Runtime API route forwarding (`/v1/apps/plugins/{selector}/routes/{*path}` returning `404 plugin_route_not_found` or `503 plugin_host_unavailable` instead of `501`), sanitized response headers, safe plugin UI CSP, and `?cw_rev=` browser revision fallback for reviewed CSS/image/font/JSON assets.
+
 ## [0.10.4] - 2026-11-23
 
 Codewhale v0.10.4 is a hotfix release. Ctrl+V no longer pastes text twice in Windows Terminal, which also doubled API keys pasted into `/provider`; the fix was checked on a real Windows Terminal. `codewhale update` no longer refuses a release binary because an unrelated `cargo install` left a Cargo record beside it. The refusal happens inside the installed 0.10.3, so an install it affects cannot update itself to 0.10.4: rerun the installer once (`curl -fsSL https://codewhale.net/install.sh | sh` on macOS and Linux, or `install.bat` from the 0.10.4 Windows archive), and later updates work. `/provider` now works for projects on a second Windows drive such as D:, Computer Use installs from the Marketplace, and every terminal draws the dot whale in `/pet`. `url` is updated to 2.5.9 for RUSTSEC-2026-0592. DeepSeek Harness compatibility is limited: of 32 published packages tried unmodified, 2 activate in the terminal; [DSH compatibility](docs/DSH_COMPATIBILITY.md) lists each one.
