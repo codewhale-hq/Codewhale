@@ -727,6 +727,165 @@ mod recovery {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn damaged_thread_record_rebuilds_from_event_log_on_load_and_list() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let manager = RuntimeThreadManager::open(
+            config(),
+            dir.path().to_path_buf(),
+            test_manager_config(dir.path().join("runtime")),
+        )?;
+        let thread = manager
+            .create_thread(CreateThreadRequest {
+                ..CreateThreadRequest::default()
+            })
+            .await?;
+        let thread_path = dir
+            .path()
+            .join("runtime")
+            .join("threads")
+            .join(format!("{}.json", thread.id));
+
+        std::fs::write(&thread_path, b"{{{corrupt thread record")?;
+        let loaded = manager.store.load_thread(&thread.id)?;
+        assert_eq!(loaded.id, thread.id);
+        assert_eq!(loaded.workspace, thread.workspace);
+        assert_eq!(loaded.title.as_deref(), Some("Recovered session"));
+        assert_eq!(
+            serde_json::from_str::<ThreadRecord>(&std::fs::read_to_string(&thread_path)?)?.id,
+            thread.id
+        );
+
+        std::fs::write(&thread_path, b"truncated-garbage")?;
+        let (threads, skipped) = manager.store.list_threads_lenient()?;
+        assert!(
+            skipped.is_empty(),
+            "expected rebuild, got skipped={skipped:?}"
+        );
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].id, thread.id);
+        assert_eq!(threads[0].title.as_deref(), Some("Recovered session"));
+
+        std::fs::write(
+            dir.path()
+                .join("runtime")
+                .join("threads")
+                .join("thr_mismatched.json"),
+            b"not-json",
+        )?;
+        let wrong_event = serde_json::json!({
+            "seq": 1,
+            "thread_id": "thr_mismatched",
+            "kind": "thread.started",
+            "payload": { "thread": thread },
+            "created_at": Utc::now(),
+        });
+        std::fs::write(
+            dir.path()
+                .join("runtime")
+                .join("events")
+                .join("thr_mismatched.jsonl"),
+            format!("{wrong_event}\n"),
+        )?;
+        assert!(manager.store.load_thread("thr_mismatched").is_err());
+        let (_, skipped) = manager.store.list_threads_lenient()?;
+        assert_eq!(skipped.len(), 1);
+
+        #[cfg(unix)]
+        {
+            let target = dir.path().join("outside-symlink-target.json");
+            std::fs::write(&target, b"{}")?;
+            let symlink_path = dir
+                .path()
+                .join("runtime")
+                .join("threads")
+                .join("thr_symlink.json");
+            std::os::unix::fs::symlink(&target, &symlink_path)?;
+            let symlink_event = serde_json::json!({
+                "seq": 1,
+                "thread_id": "thr_symlink",
+                "kind": "thread.started",
+                "payload": { "thread": {
+                    "schema_version": 1,
+                    "id": "thr_symlink",
+                    "created_at": thread.created_at,
+                    "updated_at": thread.updated_at,
+                    "model": thread.model,
+                    "workspace": thread.workspace,
+                    "mode": thread.mode,
+                    "allow_shell": thread.allow_shell,
+                    "trust_mode": thread.trust_mode,
+                    "auto_approve": thread.auto_approve,
+                } },
+                "created_at": Utc::now(),
+            });
+            std::fs::write(
+                dir.path()
+                    .join("runtime")
+                    .join("events")
+                    .join("thr_symlink.jsonl"),
+                format!("{symlink_event}\n"),
+            )?;
+            let (listed, skipped) = manager.store.list_threads_lenient()?;
+            assert!(listed.iter().all(|t| t.id != "thr_symlink"));
+            assert_eq!(skipped.len(), 2);
+            assert!(
+                std::fs::symlink_metadata(&symlink_path)?
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(std::fs::read_to_string(&target)?, "{}");
+        }
+
+        let future_path = dir
+            .path()
+            .join("runtime")
+            .join("threads")
+            .join("thr_future.json");
+        let future_raw = format!(
+            "{{\"schema_version\":{},\"id\":\"thr_future\"}}",
+            MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION + 1
+        );
+        std::fs::write(&future_path, &future_raw)?;
+        let future_event = serde_json::json!({
+            "seq": 1,
+            "thread_id": "thr_future",
+            "kind": "thread.started",
+            "payload": { "thread": {
+                "schema_version": 1,
+                "id": "thr_future",
+                "created_at": thread.created_at,
+                "updated_at": thread.updated_at,
+                "model": thread.model,
+                "workspace": thread.workspace,
+                "mode": thread.mode,
+                "allow_shell": thread.allow_shell,
+                "trust_mode": thread.trust_mode,
+                "auto_approve": thread.auto_approve,
+            } },
+            "created_at": Utc::now(),
+        });
+        std::fs::write(
+            dir.path()
+                .join("runtime")
+                .join("events")
+                .join("thr_future.jsonl"),
+            format!("{future_event}\n"),
+        )?;
+        let err = manager.store.load_thread("thr_future").unwrap_err();
+        assert!(
+            err.to_string().contains("is newer than supported"),
+            "{err:#}"
+        );
+        let err = manager.store.list_threads_lenient().unwrap_err();
+        assert!(
+            err.to_string().contains("is newer than supported"),
+            "{err:#}"
+        );
+        assert_eq!(std::fs::read_to_string(&future_path)?, future_raw);
+        Ok(())
+    }
+
     /// A thread can carry `session_id` without a checkpoint: the binding
     /// outlived the field that records where its prefix ends (45 of 124 threads
     /// in one real store). Such a thread resolves its prefix by walking turn
