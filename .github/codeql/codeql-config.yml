@@ -21,7 +21,7 @@ paths-ignore:
   - "**/*_tests.rs"
   - "**/test_support.rs"
   - "**/*_test_support.rs"
-  # JavaScript / TypeScript test suites.
+  # JavaScript / TypeScript test suites and built vendor bundles.
   - "**/test/**"
   - "**/__tests__/**"
   - "**/*.test.js"
@@ -31,3 +31,4 @@ paths-ignore:
   - "**/*.spec.js"
   - "**/*.spec.ts"
   - "**/*.spec.tsx"
+  - "crates/engine/extension-host/dist/**"
