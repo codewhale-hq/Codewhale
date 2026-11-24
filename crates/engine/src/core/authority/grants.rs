@@ -917,6 +917,7 @@ fn hex_digest(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn sample_workspace_grant(effect: GrantEffect, grouping_key: &str) -> NewGrant {
         NewGrant {
             effect,
@@ -939,6 +940,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn query_for(grouping_key: &str) -> GrantQuery<'_> {
         GrantQuery {
             thread_id: "thr_1",
