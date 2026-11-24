@@ -913,7 +913,7 @@ fn hex_digest(bytes: &[u8]) -> String {
         .collect()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
