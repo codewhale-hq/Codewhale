@@ -445,17 +445,32 @@ fn native_real_owner_automation_destination_and_revision_are_preserved() -> Resu
             .unwrap_err(),
             403,
         );
-        let mut elevated = body(&id);
-        elevated["auto_approve"] = json!(true);
-        status(
-            rig.call(
-                "runtime/automation/create",
-                json!({"operation_key":"elevated-auto","body":elevated}),
-            )
-            .await
-            .unwrap_err(),
-            400,
-        );
+        for (op_key, field) in [
+            ("elevated-auto", "auto_approve"),
+            ("elevated-trust", "trust_mode"),
+            ("elevated-shell", "allow_shell"),
+        ] {
+            let mut elevated = body(&id);
+            elevated[field] = json!(true);
+            let err = rig
+                .call(
+                    "runtime/automation/create",
+                    json!({"operation_key": op_key, "body": elevated}),
+                )
+                .await
+                .unwrap_err();
+            if field == "allow_shell" {
+                assert!(
+                    err.to_string().contains("unknown field")
+                        || err
+                            .to_string()
+                            .contains("automation permissions may not be elevated"),
+                    "{err}"
+                );
+            } else {
+                status(err, 400);
+            }
+        }
         let created = rig
             .call(
                 "runtime/automation/create",
