@@ -220,6 +220,7 @@ pub struct ModelPickerView {
     initial_provider: ProviderKind,
     initial_provider_identity: String,
     initial_identity: Option<codewhale_runtime::config::ProviderIdentity>,
+    initial_external_agent_id: Option<String>,
     /// Raw preference before the picker opened. An absent explicit preference
     /// is represented by Auto so applying a visible fixed-route tier is still
     /// recognized as an intentional picker choice.
@@ -328,6 +329,16 @@ impl std::ops::Index<usize> for VisibleModelRows<'_> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct ExternalAgentRowInfo {
+    agent_id: String,
+    agent_name: String,
+    runnable: bool,
+    version: Option<String>,
+    reason: Option<String>,
+    login: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ModelPickerRow {
     id: String,
     provider: Option<ProviderKind>,
@@ -351,6 +362,7 @@ struct ModelPickerRow {
     credentialed: bool,
     /// The route's fresh live roster does not list this id.
     not_listed: Option<NotListed>,
+    external_agent: Option<ExternalAgentRowInfo>,
 }
 
 /// Sections of the default view, in display order (#6533).
@@ -361,6 +373,7 @@ enum DefaultSection {
     Recent,
     ProviderDefault,
     Roster,
+    ExternalAgent,
 }
 
 /// Most rows the default view's recent section shows.
@@ -562,7 +575,7 @@ impl ModelPickerView {
             );
         }
         self.model_rows
-            .retain(|row| allow_inherit || row.id != "auto");
+            .retain(|row| row.external_agent.is_none() && (allow_inherit || row.id != "auto"));
         for row in &mut self.model_rows {
             if row.id == "auto" && row.provider.is_none() {
                 row.hint = format!("{}/{}", app.provider_identity_for_persistence(), app.model);
@@ -618,15 +631,30 @@ impl ModelPickerView {
             ModelListView::Configured,
             &pins,
         );
-        let mut selected_model_idx = default_visible_rows.iter().position(|row| {
-            row.id == initial_model
-                && model_row_matches_route(
-                    row,
-                    app.api_provider,
-                    app.provider_identity_for_persistence(),
-                )
-        });
-        let show_custom_model_row = selected_model_idx.is_none();
+        let initial_external_agent_id = app
+            .external_agent
+            .as_ref()
+            .map(|session| session.agent_id.clone());
+        let mut selected_model_idx =
+            if let Some(active_agent) = initial_external_agent_id.as_deref() {
+                default_visible_rows.iter().position(|row| {
+                    row.external_agent
+                        .as_ref()
+                        .is_some_and(|agent| agent.agent_id == active_agent)
+                })
+            } else {
+                default_visible_rows.iter().position(|row| {
+                    row.external_agent.is_none()
+                        && row.id == initial_model
+                        && model_row_matches_route(
+                            row,
+                            app.api_provider,
+                            app.provider_identity_for_persistence(),
+                        )
+                })
+            };
+        let show_custom_model_row =
+            initial_external_agent_id.is_none() && selected_model_idx.is_none();
         if show_custom_model_row {
             selected_model_idx = Some(default_visible_rows.len());
         }
@@ -669,6 +697,7 @@ impl ModelPickerView {
             initial_provider: app.api_provider,
             initial_provider_identity: app.provider_identity_for_persistence().to_string(),
             initial_identity: app.admitted_provider_identity().ok().cloned(),
+            initial_external_agent_id,
             initial_effort,
             selected_effort_request,
             active_accepts_custom_model_ids: app.accepts_custom_model_ids(),
@@ -846,15 +875,18 @@ impl ModelPickerView {
             .iter()
             .map(|row| (row, pin_for_row(&self.pinned_models, row)))
             .map(|(row, pin)| {
-                let route = row
-                    .provider
-                    .map(|provider| {
-                        route_labels
-                            .get(row_provider_identity(row).unwrap_or(provider.as_str()))
-                            .cloned()
-                            .unwrap_or_else(|| row_provider_label(row).to_string())
-                    })
-                    .unwrap_or_default();
+                let route = if row.external_agent.is_some() {
+                    tr(self.locale, MessageId::ModelPickerExternalAgentRoute).into_owned()
+                } else {
+                    row.provider
+                        .map(|provider| {
+                            route_labels
+                                .get(row_provider_identity(row).unwrap_or(provider.as_str()))
+                                .cloned()
+                                .unwrap_or_else(|| row_provider_label(row).to_string())
+                        })
+                        .unwrap_or_default()
+                };
                 let (group, group_scoped_by_route) = if provider_groups {
                     (Some(route.clone()), true)
                 } else if configured_sections {
@@ -864,6 +896,9 @@ impl ModelPickerView {
                         DefaultSection::Recent => MessageId::ModelPickerSectionRecent,
                         DefaultSection::ProviderDefault => MessageId::ModelPickerSectionProviders,
                         DefaultSection::Roster => MessageId::ModelPickerSectionMore,
+                        DefaultSection::ExternalAgent => {
+                            MessageId::ModelPickerSectionExternalAgents
+                        }
                     });
                     let label = label.map(|id| tr(self.locale, id).into_owned());
                     (label, false)
@@ -871,16 +906,26 @@ impl ModelPickerView {
                     (
                         (grouped && pin.is_none())
                             .then(|| {
-                                row.provider.and_then(|provider| {
-                                    catalog_family_for_identity(
-                                        provider,
-                                        row.provider_identity.as_deref(),
-                                        &row.id,
+                                if row.external_agent.is_some() {
+                                    Some(
+                                        tr(
+                                            self.locale,
+                                            MessageId::ModelPickerSectionExternalAgents,
+                                        )
+                                        .into_owned(),
                                     )
-                                })
+                                } else {
+                                    row.provider.and_then(|provider| {
+                                        catalog_family_for_identity(
+                                            provider,
+                                            row.provider_identity.as_deref(),
+                                            &row.id,
+                                        )
+                                    })
+                                }
                             })
                             .flatten(),
-                        true,
+                        row.external_agent.is_none(),
                     )
                 };
                 PaneRow {
@@ -897,7 +942,7 @@ impl ModelPickerView {
                             .unwrap_or_else(|| row.id.clone())
                     },
                     route,
-                    meta: if row.provider.is_none() {
+                    meta: if row.external_agent.is_some() || row.provider.is_none() {
                         vec![row.hint.clone()]
                     } else {
                         let mut chips = model_row_meta_chips(row);
@@ -921,12 +966,17 @@ impl ModelPickerView {
                     },
                     group,
                     group_scoped_by_route,
-                    active: row.id == self.initial_model
-                        && model_row_matches_route(
-                            row,
-                            self.initial_provider,
-                            &self.initial_provider_identity,
-                        ),
+                    active: if let Some(agent) = row.external_agent.as_ref() {
+                        self.initial_external_agent_id.as_deref() == Some(agent.agent_id.as_str())
+                    } else {
+                        self.initial_external_agent_id.is_none()
+                            && row.id == self.initial_model
+                            && model_row_matches_route(
+                                row,
+                                self.initial_provider,
+                                &self.initial_provider_identity,
+                            )
+                    },
                     locked: !row.selectable,
                     dim: row.not_listed.is_some(),
                 }
@@ -1002,6 +1052,9 @@ impl ModelPickerView {
         }
         let rows = self.visible_model_rows();
         if let Some(row) = rows.get(self.selected_model_idx) {
+            if let Some(agent) = row.external_agent.as_ref() {
+                return agent.runnable;
+            }
             return row.selectable
                 && row.admitted_identity.as_ref().is_some_and(|identity| {
                     self.route_config.verify_provider_identity(identity).is_ok()
@@ -1021,11 +1074,40 @@ impl ModelPickerView {
     /// Feedback when Enter/apply is pressed on a locked (unauthenticated) model.
     /// Surfaces the readiness reason instead of a silent no-op, and routes the
     /// user toward provider authentication/setup when possible.
-    fn explain_unselectable_selection(&self) -> ViewAction {
+    fn explain_unselectable_selection(&mut self) -> ViewAction {
         let rows = self.visible_model_rows();
         let Some(row) = rows.get(self.selected_model_idx) else {
             return ViewAction::None;
         };
+        if let Some(agent) = row.external_agent.as_ref() {
+            let mut detail = agent
+                .reason
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("not ready")
+                .to_string();
+            if let Some(login) = agent
+                .login
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                && !detail.contains(login)
+            {
+                let sign_in = tr(self.locale, MessageId::ModelPickerExternalAgentSignInHint)
+                    .replace("{command}", login);
+                detail.push_str(&format!(" · {sign_in}"));
+            }
+            let message = tr(
+                self.locale,
+                MessageId::ModelPickerExternalAgentBlockedNotice,
+            )
+            .replace("{agent}", &agent.agent_name)
+            .replace("{reason}", &detail);
+            drop(rows);
+            self.notice = Some((message.clone(), StatusToastLevel::Warning));
+            return ViewAction::Emit(ViewEvent::StatusMessage { message });
+        }
         let reason = if row.hint.trim().is_empty() {
             "This model is not available with the current provider credentials.".to_string()
         } else {
@@ -1372,6 +1454,16 @@ impl ModelPickerView {
     fn build_apply_event(&self, save_as_startup_default: bool) -> ViewEvent {
         let (initial_reasoning, allow_inherit) = match self.purpose {
             ModelPickerPurpose::Session => {
+                if let Some(agent) = self
+                    .visible_model_rows()
+                    .get(self.selected_model_idx)
+                    .and_then(|row| row.external_agent.as_ref())
+                {
+                    return ViewEvent::ExternalAgentSelected {
+                        agent_id: agent.agent_id.clone(),
+                        agent_name: agent.agent_name.clone(),
+                    };
+                }
                 return self.build_event_with_startup_default(save_as_startup_default);
             }
             ModelPickerPurpose::FleetRoute {
@@ -1430,6 +1522,13 @@ impl ModelPickerView {
     }
 
     fn can_edit_effort(&self) -> bool {
+        if self
+            .visible_model_rows()
+            .get(self.selected_model_idx)
+            .is_some_and(|row| row.external_agent.is_some())
+        {
+            return false;
+        }
         match self.purpose {
             ModelPickerPurpose::Session => true,
             ModelPickerPurpose::FleetProfileRoute { .. } => self.resolved_model() != "auto",
@@ -2354,6 +2453,7 @@ fn picker_model_rows_for_app(app: &App, config: &Config) -> Vec<ModelPickerRow> 
             default_rank: None,
             credentialed: false,
             not_listed: None,
+            external_agent: None,
         });
     }
 
@@ -2364,7 +2464,105 @@ fn picker_model_rows_for_app(app: &App, config: &Config) -> Vec<ModelPickerRow> 
         )
     });
     assign_default_sections(&mut rows, app, config, current, &pins);
+    push_external_agent_rows(&mut rows, app);
     rows
+}
+
+fn push_external_agent_rows(rows: &mut Vec<ModelPickerRow>, app: &App) {
+    let active_agent_id = app
+        .external_agent
+        .as_ref()
+        .map(|session| session.agent_id.as_str());
+    if active_agent_id.is_some() {
+        for row in rows.iter_mut() {
+            if matches!(row.default_rank, Some((DefaultSection::Current, _))) {
+                row.default_rank = Some((DefaultSection::ProviderDefault, 0));
+            }
+        }
+    }
+    for (idx, agent) in app.external_agents.iter().enumerate() {
+        let is_active = active_agent_id == Some(agent.id.as_str());
+        let is_installed = agent.state == "installed" || agent.runnable || agent.custom;
+        let mut hint_parts = Vec::new();
+        if let Some(version) = agent
+            .version
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            hint_parts.push(format!("v{version}"));
+        }
+        if agent.runnable {
+            hint_parts.push(
+                tr(
+                    app.ui_locale,
+                    MessageId::ModelPickerExternalAgentRunnableHint,
+                )
+                .into_owned(),
+            );
+        } else if let Some(reason) = agent
+            .reason
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            hint_parts.push(reason.to_string());
+        } else {
+            hint_parts.push("not ready".to_string());
+        }
+        if let Some(login) = agent
+            .login
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            && !hint_parts.iter().any(|part| part.contains(login))
+        {
+            hint_parts.push(
+                tr(app.ui_locale, MessageId::ModelPickerExternalAgentSignInHint)
+                    .replace("{command}", login),
+            );
+        }
+        let default_rank = if is_active {
+            Some((DefaultSection::Current, 0))
+        } else if is_installed {
+            Some((DefaultSection::ExternalAgent, idx))
+        } else {
+            None
+        };
+        let blocked_reason = if agent.runnable {
+            None
+        } else {
+            agent
+                .reason
+                .clone()
+                .or_else(|| Some("not ready".to_string()))
+        };
+        rows.push(ModelPickerRow {
+            id: agent.id.clone(),
+            provider: None,
+            provider_identity: None,
+            admitted_identity: None,
+            route_selection: None,
+            hint: hint_parts.join(" · "),
+            metadata: EffectivePickerMetadata {
+                display_name: Some(agent.name.clone()),
+                ..EffectivePickerMetadata::default()
+            },
+            selectable: agent.runnable,
+            blocked_reason,
+            default_rank,
+            credentialed: agent.runnable,
+            not_listed: None,
+            external_agent: Some(ExternalAgentRowInfo {
+                agent_id: agent.id.clone(),
+                agent_name: agent.name.clone(),
+                runnable: agent.runnable,
+                version: agent.version.clone(),
+                reason: agent.reason.clone(),
+                login: agent.login.clone(),
+            }),
+        });
+    }
 }
 
 /// Place rows into the default view's sections (#6533): the current route,
@@ -3010,6 +3208,7 @@ fn push_model_row(
         default_rank: None,
         credentialed: false,
         not_listed: None,
+        external_agent: None,
     });
 }
 
@@ -3058,6 +3257,14 @@ fn model_row_matches_query(
             || normalize_picker_search_text(&candidate).contains(&normalized_query)
             || (!compact_query.is_empty() && compact(&candidate).contains(&compact_query))
     };
+    if let Some(agent) = row.external_agent.as_ref() {
+        return matches(&agent.agent_id)
+            || matches(&agent.agent_name)
+            || matches("acp")
+            || matches("external agent")
+            || agent.reason.as_deref().is_some_and(matches)
+            || agent.login.as_deref().is_some_and(matches);
+    }
     let provider_matches = row.provider.is_some_and(|provider| {
         row.provider_identity.as_deref().is_some_and(matches)
             || matches(provider.as_str())
@@ -3351,9 +3558,9 @@ fn model_row_visible_in_view(row: &ModelPickerRow, view: ModelListView) -> bool 
         | ModelListView::Coding
         | ModelListView::Cheap
         | ModelListView::LongContext => {
-            // Discoverability views browse the full lake but hide the synthetic
-            // `auto` row — it is not a catalog offering.
-            (row.provider.is_some() || row.id != "auto") && !model_is_non_language(row)
+            row.external_agent.is_none()
+                && (row.provider.is_some() || row.id != "auto")
+                && !model_is_non_language(row)
         }
     }
 }
@@ -3367,10 +3574,10 @@ fn model_is_non_language(row: &ModelPickerRow) -> bool {
     )
 }
 
-/// Whether a model row shows up without the user typing a search query:
-/// `auto` and every row placed in a default-view section (#6533). The rest of
-/// every roster, the active one included, is one search or ⇧A away.
 fn model_row_visible_by_default(row: &ModelPickerRow) -> bool {
+    if row.external_agent.is_some() {
+        return row.default_rank.is_some();
+    }
     row.provider.is_none() || row.default_rank.is_some()
 }
 
@@ -4211,6 +4418,10 @@ impl ModelPickerView {
             });
         self.provider_health = app.provider_health.clone();
         self.route_config = config.clone();
+        self.initial_external_agent_id = app
+            .external_agent
+            .as_ref()
+            .map(|session| session.agent_id.clone());
         self.pinned_models = picker_pins_for_app(app);
         self.model_rows = picker_model_rows_for_app(app, config);
         self.apply_fleet_route_rows(app, config);
@@ -5297,6 +5508,7 @@ mod tests {
             default_rank: in_default_view.then_some((DefaultSection::Current, 0)),
             credentialed: false,
             not_listed: None,
+            external_agent: None,
         }
     }
 
@@ -5416,6 +5628,7 @@ mod tests {
                     .builtin_provider_identity(ProviderKind::Openai)
                     .unwrap(),
             ),
+            initial_external_agent_id: None,
             initial_effort: ReasoningEffort::Auto,
             selected_effort_request: ReasoningEffort::Auto,
             active_accepts_custom_model_ids: false,
@@ -6314,6 +6527,7 @@ mod tests {
             default_rank: None,
             credentialed: false,
             not_listed: None,
+            external_agent: None,
         };
         let labels = route_labels_for_rows(&[&row]);
         // No compiled display names: the route label is the table key itself.
@@ -7121,5 +7335,161 @@ api_key = "fixture-xai-key"
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    #[test]
+    fn external_agents_appear_in_model_picker_with_runnable_and_blocked_reasons() {
+        use codewhale_app_server::runtime_api::ExternalAgentDiscoveryRow;
+        let temp = tempfile::tempdir().unwrap();
+        let config = Config::default();
+        let options = crate::tui::app::TuiOptions {
+            model: "deepseek-chat".to_string(),
+            workspace: temp.path().to_path_buf(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            screen_mode: crate::tui::app::ScreenMode::Fullscreen,
+            use_mouse_capture: false,
+            mouse_capture_preference: false,
+            use_bracketed_paste: false,
+            max_subagents: 1,
+            skills_dir: temp.path().join("skills"),
+            memory_path: temp.path().join("memory"),
+            notes_path: temp.path().join("notes"),
+            mcp_config_path: temp.path().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: false,
+            skip_onboarding: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+            startup_notice: None,
+        };
+        let mut app = App::new(options, &config);
+        app.external_agents = vec![
+            ExternalAgentDiscoveryRow {
+                id: "opencode".to_string(),
+                name: "OpenCode".to_string(),
+                state: "installed".to_string(),
+                version: Some("1.20.0".to_string()),
+                acp: Some("native".to_string()),
+                website: "https://opencode.ai".to_string(),
+                min_version: Some("1.15.5".to_string()),
+                upgrade: Some("npm i -g opencode-ai@latest".to_string()),
+                login: Some("opencode auth login".to_string()),
+                adapter: None,
+                adapter_installed: false,
+                needs_update: false,
+                runnable: true,
+                custom: false,
+                reason_code: None,
+                reason: None,
+            },
+            ExternalAgentDiscoveryRow {
+                id: "claude".to_string(),
+                name: "Claude Agent".to_string(),
+                state: "installed".to_string(),
+                version: Some("2.2.0".to_string()),
+                acp: Some("adapter".to_string()),
+                website: "https://github.com/agentclientprotocol/claude-agent-acp".to_string(),
+                min_version: Some("2.1.226".to_string()),
+                upgrade: None,
+                login: Some("claude auth login".to_string()),
+                adapter: Some("@agentclientprotocol/claude-agent-acp".to_string()),
+                adapter_installed: false,
+                needs_update: false,
+                runnable: false,
+                custom: false,
+                reason_code: Some("adapter_missing".to_string()),
+                reason: Some(
+                    "It runs through the ACP adapter @agentclientprotocol/claude-agent-acp, which is not installed."
+                        .to_string(),
+                ),
+            },
+            ExternalAgentDiscoveryRow {
+                id: "copilot".to_string(),
+                name: "GitHub Copilot CLI".to_string(),
+                state: "not_installed".to_string(),
+                version: None,
+                acp: None,
+                website: "https://docs.github.com/copilot".to_string(),
+                min_version: None,
+                upgrade: None,
+                login: Some("copilot login".to_string()),
+                adapter: None,
+                adapter_installed: false,
+                needs_update: false,
+                runnable: false,
+                custom: false,
+                reason_code: Some("not_installed".to_string()),
+                reason: Some("GitHub Copilot CLI is not installed.".to_string()),
+            },
+        ];
+
+        let mut picker = ModelPickerView::new(&app, &config);
+        let visible_ids: Vec<String> = picker
+            .visible_model_rows()
+            .iter()
+            .map(|row| row.id.clone())
+            .collect();
+        assert!(visible_ids.contains(&"opencode".to_string()));
+        assert!(visible_ids.contains(&"claude".to_string()));
+        assert!(!visible_ids.contains(&"copilot".to_string()));
+
+        let opencode_idx = visible_ids.iter().position(|id| id == "opencode").unwrap();
+        picker.selected_model_idx = opencode_idx;
+        assert!(picker.selected_model_is_selectable());
+        assert!(!picker.can_edit_effort());
+        let action = picker.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ExternalAgentSelected {
+                ref agent_id,
+                ref agent_name,
+            }) if agent_id == "opencode" && agent_name == "OpenCode"
+        ));
+
+        let claude_idx = visible_ids.iter().position(|id| id == "claude").unwrap();
+        picker.selected_model_idx = claude_idx;
+        assert!(!picker.selected_model_is_selectable());
+        let blocked = picker.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        match blocked {
+            ViewAction::Emit(ViewEvent::StatusMessage { message }) => {
+                assert!(message.contains("Claude Agent"), "{message}");
+                assert!(
+                    message.contains("@agentclientprotocol/claude-agent-acp"),
+                    "{message}"
+                );
+                assert!(message.contains("claude auth login"), "{message}");
+            }
+            other => panic!("expected StatusMessage for blocked external agent, got {other:?}"),
+        }
+
+        picker.update_query("copilot".to_string());
+        let searched: Vec<String> = picker
+            .visible_model_rows()
+            .iter()
+            .map(|row| row.id.clone())
+            .collect();
+        assert!(searched.contains(&"copilot".to_string()));
+
+        let fleet_picker = ModelPickerView::new_for_fleet_route(
+            &app,
+            &config,
+            FleetRouteTarget::Member(0),
+            uuid::Uuid::new_v4(),
+            FleetRouteSelection {
+                provider: None,
+                model: None,
+                reasoning: None,
+                allow_inherit: true,
+            },
+        );
+        assert!(
+            fleet_picker
+                .model_rows
+                .iter()
+                .all(|row| row.external_agent.is_none())
+        );
     }
 }

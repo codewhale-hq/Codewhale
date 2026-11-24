@@ -2856,5 +2856,13 @@
   "OnboardingMarkFailed": "온보딩 진행 상황을 저장하지 못했습니다: {error}",
   "FeatureIntroFlagSaveFailed": "기능 팁 설정을 저장하지 못했습니다: {error}",
   "QueueFullNotice": "후속 메시지 대기열이 가득 찼습니다({max}개). 메시지를 입력창으로 되돌렸습니다.",
-  "ConfigLookupFailed": "`{key}`을(를) 읽을 수 없습니다: 설정을 불러오지 못했습니다 ({error})"
+  "ConfigLookupFailed": "`{key}`을(를) 읽을 수 없습니다: 설정을 불러오지 못했습니다 ({error})",
+  "ModelPickerSectionExternalAgents": "다른 에이전트 (ACP)",
+  "ModelPickerExternalAgentRoute": "ACP 에이전트",
+  "ModelPickerExternalAgentRunnableHint": "ACP를 통해 자체 계정으로 실행",
+  "ModelPickerExternalAgentSignInHint": "로그인: {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} 준비되지 않음: {reason}",
+  "ExternalAgentSessionStarted": "{agent} (ACP)로 세션을 시작했습니다. Codewhale이 스레드, 기록 및 승인을 보관합니다.",
+  "ExternalAgentSessionSwitchedBack": "Codewhale({model})로 다시 전환했습니다.",
+  "ExternalAgentSwitchBusy": "에이전트를 전환하기 전에 현재 턴이 끝날 때까지 기다려 주세요."
 }

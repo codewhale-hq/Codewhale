@@ -2856,5 +2856,13 @@
   "OnboardingMarkFailed": "No s'ha pogut desar el progrés de la configuració inicial: {error}",
   "FeatureIntroFlagSaveFailed": "No s'ha pogut desar el paràmetre del consell de funcions: {error}",
   "QueueFullNotice": "La cua de seguiment és plena ({max} missatges); el teu missatge ha tornat a l'editor.",
-  "ConfigLookupFailed": "No s'ha pogut llegir `{key}`: la configuració no s'ha pogut carregar ({error})"
+  "ConfigLookupFailed": "No s'ha pogut llegir `{key}`: la configuració no s'ha pogut carregar ({error})",
+  "ModelPickerSectionExternalAgents": "Altres agents (ACP)",
+  "ModelPickerExternalAgentRoute": "Agent ACP",
+  "ModelPickerExternalAgentRunnableHint": "S'executa amb el seu propi compte via ACP",
+  "ModelPickerExternalAgentSignInHint": "Inicia sessió: {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} no està preparat: {reason}",
+  "ExternalAgentSessionStarted": "Sessió iniciada amb {agent} (ACP). Codewhale conserva el fil, la transcripció i les aprovacions.",
+  "ExternalAgentSessionSwitchedBack": "S'ha tornat a Codewhale ({model}).",
+  "ExternalAgentSwitchBusy": "Espera que acabi el torn actual abans de canviar d'agent."
 }

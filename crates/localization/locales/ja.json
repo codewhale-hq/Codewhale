@@ -2856,5 +2856,13 @@
   "OnboardingMarkFailed": "オンボーディングの進行状況を保存できませんでした: {error}",
   "FeatureIntroFlagSaveFailed": "機能ヒントの設定を保存できませんでした: {error}",
   "QueueFullNotice": "フォローアップのキューが満杯です（{max} 件）。メッセージは入力欄に戻されました。",
-  "ConfigLookupFailed": "`{key}` を読み取れませんでした: 設定の読み込みに失敗しました ({error})"
+  "ConfigLookupFailed": "`{key}` を読み取れませんでした: 設定の読み込みに失敗しました ({error})",
+  "ModelPickerSectionExternalAgents": "その他のエージェント (ACP)",
+  "ModelPickerExternalAgentRoute": "ACP エージェント",
+  "ModelPickerExternalAgentRunnableHint": "ACP 経由で自身のアカウントで実行",
+  "ModelPickerExternalAgentSignInHint": "サインイン: {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} は準備できていません: {reason}",
+  "ExternalAgentSessionStarted": "{agent} (ACP) でセッションを開始しました。Codewhale がスレッド、記録、承認を保持します。",
+  "ExternalAgentSessionSwitchedBack": "Codewhale ({model}) に戻しました。",
+  "ExternalAgentSwitchBusy": "エージェントを切り替える前に現在のターンが完了するのを待ってください。"
 }

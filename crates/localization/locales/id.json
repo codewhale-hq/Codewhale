@@ -2856,5 +2856,13 @@
   "OnboardingMarkFailed": "Tidak dapat menyimpan progres orientasi: {error}",
   "FeatureIntroFlagSaveFailed": "Tidak dapat menyimpan pengaturan tips fitur: {error}",
   "QueueFullNotice": "Antrean pesan lanjutan penuh ({max} pesan); pesan Anda dikembalikan ke kolom tulis.",
-  "ConfigLookupFailed": "Tidak dapat membaca `{key}`: konfigurasi gagal dimuat ({error})"
+  "ConfigLookupFailed": "Tidak dapat membaca `{key}`: konfigurasi gagal dimuat ({error})",
+  "ModelPickerSectionExternalAgents": "Agen lain (ACP)",
+  "ModelPickerExternalAgentRoute": "Agen ACP",
+  "ModelPickerExternalAgentRunnableHint": "Berjalan dengan akunnya sendiri melalui ACP",
+  "ModelPickerExternalAgentSignInHint": "Masuk: {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} belum siap: {reason}",
+  "ExternalAgentSessionStarted": "Sesi dimulai dengan {agent} (ACP). Codewhale menyimpan utas, transkrip, dan persetujuan.",
+  "ExternalAgentSessionSwitchedBack": "Kembali ke Codewhale ({model}).",
+  "ExternalAgentSwitchBusy": "Tunggu giliran saat ini selesai sebelum mengganti agen."
 }

@@ -2856,5 +2856,13 @@
   "OnboardingMarkFailed": "無法儲存導覽進度：{error}",
   "FeatureIntroFlagSaveFailed": "無法儲存功能提示設定：{error}",
   "QueueFullNotice": "後續訊息佇列已滿（{max} 則）；你的訊息已放回輸入框。",
-  "ConfigLookupFailed": "無法讀取 `{key}`：設定載入失敗（{error}）"
+  "ConfigLookupFailed": "無法讀取 `{key}`：設定載入失敗（{error}）",
+  "ModelPickerSectionExternalAgents": "其他代理 (ACP)",
+  "ModelPickerExternalAgentRoute": "ACP 代理",
+  "ModelPickerExternalAgentRunnableHint": "透過 ACP 使用其自有帳號執行",
+  "ModelPickerExternalAgentSignInHint": "登入: {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} 尚未就緒: {reason}",
+  "ExternalAgentSessionStarted": "已使用 {agent} (ACP) 開始工作階段。Codewhale 保留執行緒、紀錄和核准。",
+  "ExternalAgentSessionSwitchedBack": "已切換回 Codewhale ({model})。",
+  "ExternalAgentSwitchBusy": "請等待目前回合完成後再切換代理。"
 }

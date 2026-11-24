@@ -2856,5 +2856,13 @@
   "OnboardingMarkFailed": "Не удалось сохранить прогресс первоначальной настройки: {error}",
   "FeatureIntroFlagSaveFailed": "Не удалось сохранить настройку подсказки: {error}",
   "QueueFullNotice": "Очередь последующих сообщений заполнена ({max} сообщений); ваше сообщение возвращено в поле ввода.",
-  "ConfigLookupFailed": "Не удалось прочитать `{key}`: не удалось загрузить конфигурацию ({error})"
+  "ConfigLookupFailed": "Не удалось прочитать `{key}`: не удалось загрузить конфигурацию ({error})",
+  "ModelPickerSectionExternalAgents": "Другие агенты (ACP)",
+  "ModelPickerExternalAgentRoute": "ACP-агент",
+  "ModelPickerExternalAgentRunnableHint": "Работает через ACP со своей учётной записью",
+  "ModelPickerExternalAgentSignInHint": "Вход: {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} не готов: {reason}",
+  "ExternalAgentSessionStarted": "Сессия начата с {agent} (ACP). Codewhale сохраняет тред, историю и подтверждения.",
+  "ExternalAgentSessionSwitchedBack": "Возврат к Codewhale ({model}).",
+  "ExternalAgentSwitchBusy": "Дождитесь завершения текущего хода перед сменой агента."
 }

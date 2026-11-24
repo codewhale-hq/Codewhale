@@ -2856,5 +2856,13 @@
   "OnboardingMarkFailed": "Không thể lưu tiến trình giới thiệu: {error}",
   "FeatureIntroFlagSaveFailed": "Không thể lưu cài đặt mẹo tính năng: {error}",
   "QueueFullNotice": "Hàng đợi tin nhắn tiếp theo đã đầy ({max} tin); tin nhắn của bạn đã được đưa lại vào ô soạn.",
-  "ConfigLookupFailed": "Không thể đọc `{key}`: không tải được cấu hình ({error})"
+  "ConfigLookupFailed": "Không thể đọc `{key}`: không tải được cấu hình ({error})",
+  "ModelPickerSectionExternalAgents": "Tác nhân khác (ACP)",
+  "ModelPickerExternalAgentRoute": "Tác nhân ACP",
+  "ModelPickerExternalAgentRunnableHint": "Chạy bằng tài khoản riêng qua ACP",
+  "ModelPickerExternalAgentSignInHint": "Đăng nhập: {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} chưa sẵn sàng: {reason}",
+  "ExternalAgentSessionStarted": "Đã bắt đầu phiên với {agent} (ACP). Codewhale giữ luồng, bản ghi và phê duyệt.",
+  "ExternalAgentSessionSwitchedBack": "Đã chuyển lại sang Codewhale ({model}).",
+  "ExternalAgentSwitchBusy": "Chờ lượt hiện tại hoàn tất trước khi chuyển tác nhân."
 }

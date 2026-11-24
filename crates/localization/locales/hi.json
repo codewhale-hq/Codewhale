@@ -2856,5 +2856,13 @@
   "OnboardingMarkFailed": "ऑनबोर्डिंग प्रगति सहेजी नहीं जा सकी: {error}",
   "FeatureIntroFlagSaveFailed": "फ़ीचर टिप सेटिंग सहेजी नहीं जा सकी: {error}",
   "QueueFullNotice": "फ़ॉलो-अप कतार भर गई है ({max} संदेश); आपका संदेश वापस कंपोज़र में है।",
-  "ConfigLookupFailed": "`{key}` नहीं पढ़ा जा सका: कॉन्फ़िग लोड नहीं हो सका ({error})"
+  "ConfigLookupFailed": "`{key}` नहीं पढ़ा जा सका: कॉन्फ़िग लोड नहीं हो सका ({error})",
+  "ModelPickerSectionExternalAgents": "अन्य एजेंट (ACP)",
+  "ModelPickerExternalAgentRoute": "ACP एजेंट",
+  "ModelPickerExternalAgentRunnableHint": "ACP के माध्यम से अपने खाते पर चलता है",
+  "ModelPickerExternalAgentSignInHint": "साइन इन: {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} तैयार नहीं है: {reason}",
+  "ExternalAgentSessionStarted": "{agent} (ACP) के साथ सत्र शुरू हुआ। Codewhale थ्रेड, ट्रांसक्रिप्ट और स्वीकृतियाँ रखता है।",
+  "ExternalAgentSessionSwitchedBack": "Codewhale ({model}) पर वापस स्विच किया गया।",
+  "ExternalAgentSwitchBusy": "एजेंट बदलने से पहले वर्तमान टर्न पूरा होने की प्रतीक्षा करें।"
 }

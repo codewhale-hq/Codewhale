@@ -2856,5 +2856,13 @@
   "OnboardingMarkFailed": "No se pudo guardar el progreso de la configuración inicial: {error}",
   "FeatureIntroFlagSaveFailed": "No se pudo guardar la configuración del consejo de funciones: {error}",
   "QueueFullNotice": "La cola de seguimiento está llena ({max} mensajes); tu mensaje volvió al editor.",
-  "ConfigLookupFailed": "No se pudo leer `{key}`: la configuración no se pudo cargar ({error})"
+  "ConfigLookupFailed": "No se pudo leer `{key}`: la configuración no se pudo cargar ({error})",
+  "ModelPickerSectionExternalAgents": "Otros agentes (ACP)",
+  "ModelPickerExternalAgentRoute": "Agente ACP",
+  "ModelPickerExternalAgentRunnableHint": "Se ejecuta con su propia cuenta mediante ACP",
+  "ModelPickerExternalAgentSignInHint": "Iniciar sesión: {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} no está listo: {reason}",
+  "ExternalAgentSessionStarted": "Sesión iniciada con {agent} (ACP). Codewhale conserva el hilo, la transcripción y las aprobaciones.",
+  "ExternalAgentSessionSwitchedBack": "Se volvió a Codewhale ({model}).",
+  "ExternalAgentSwitchBusy": "Espera a que termine el turno actual antes de cambiar de agente."
 }

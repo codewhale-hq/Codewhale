@@ -2805,11 +2805,9 @@ async fn apply_command_result_inner(
             }
             AppAction::OpenModelPicker => {
                 if app.view_stack.top_kind() != Some(ModalKind::ModelPicker) {
-                    // Slash `/model` and the picker share one grammar: the
-                    // composer must not keep a leftover `/model` buffer
-                    // (or a held paste-burst) under the picker query.
                     app.clear_input();
                     app.paste_burst.clear_after_explicit_paste();
+                    crate::tui::external_agent::start_external_agent_discovery(app);
                     app.view_stack
                         .push(crate::tui::model_picker::ModelPickerView::new(app, config));
                 }
@@ -3719,6 +3717,13 @@ pub(crate) async fn apply_approval_decision(
     config: &mut Config,
     event: ApprovalDecisionEvent,
 ) -> bool {
+    if let Some(handled) = crate::tui::external_agent::handle_external_approval_decision(
+        app,
+        &event.tool_id,
+        &event.decision,
+    ) {
+        return handled;
+    }
     let approved = matches!(
         event.decision,
         ReviewDecision::Approved | ReviewDecision::ApprovedForSession

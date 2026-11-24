@@ -2856,5 +2856,13 @@
   "OnboardingMarkFailed": "Impossible d'enregistrer la progression de l'accueil : {error}",
   "FeatureIntroFlagSaveFailed": "Impossible d'enregistrer le paramètre de l'astuce : {error}",
   "QueueFullNotice": "La file de suivi est pleine ({max} messages) ; votre message est revenu dans la zone de saisie.",
-  "ConfigLookupFailed": "Impossible de lire `{key}` : le chargement de la configuration a échoué ({error})"
+  "ConfigLookupFailed": "Impossible de lire `{key}` : le chargement de la configuration a échoué ({error})",
+  "ModelPickerSectionExternalAgents": "Autres agents (ACP)",
+  "ModelPickerExternalAgentRoute": "Agent ACP",
+  "ModelPickerExternalAgentRunnableHint": "S'exécute via ACP avec son propre compte",
+  "ModelPickerExternalAgentSignInHint": "Connexion : {command}",
+  "ModelPickerExternalAgentBlockedNotice": "{agent} n'est pas prêt : {reason}",
+  "ExternalAgentSessionStarted": "Session démarrée avec {agent} (ACP). Codewhale conserve le fil, la transcription et les approbations.",
+  "ExternalAgentSessionSwitchedBack": "Retour à Codewhale ({model}).",
+  "ExternalAgentSwitchBusy": "Attendez la fin du tour en cours avant de changer d'agent."
 }
