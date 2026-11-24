@@ -187,6 +187,9 @@ pub(crate) fn expect_fresh_session(app: &mut App, id: &str) -> Result<(), String
 }
 
 pub(crate) async fn persist_pending_work_checkpoint(app: &mut App) -> Result<bool, String> {
+    if app.dispatch_in_flight {
+        return Ok(false);
+    }
     let Some(work) = app.runtime_services.work.clone() else {
         return Ok(false);
     };
