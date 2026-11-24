@@ -599,10 +599,16 @@ mod tests {
             } else {
                 plain(ch)
             };
-            assert!(
-                handle_paste_burst_key(&mut app, &key, now),
-                "char {index} {ch:?} not handled"
-            );
+            let handled = handle_paste_burst_key(&mut app, &key, now);
+            if ch == '\n' || ch.is_ascii() {
+                assert!(handled, "char {index} {ch:?} not handled");
+            } else {
+                assert!(
+                    !handled,
+                    "char {index} {ch:?} should route through direct insert"
+                );
+                app.insert_char(ch);
+            }
         }
         app.flush_paste_burst_if_due(start + Duration::from_secs(60));
         assert_eq!(app.input, expected);
