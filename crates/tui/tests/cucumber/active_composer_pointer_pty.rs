@@ -54,13 +54,8 @@ fn active_composer_pointer_submit_queues_without_provider() {
 fn run_pointer_submit_case(rows: u16, cols: u16) {
     let size = format!("{cols}x{rows}");
     let workspace = make_sealed_workspace().expect("sealed workspace");
-    // Seed only the two first-run markers: prior onboarding completed
-    // ($HOME/.codewhale/.onboarded) and this workspace is trusted
-    // (<workspace>/.deepseek/trusted). No provider, key, or route is seeded.
     std::fs::write(workspace.home().join(".codewhale/.onboarded"), "").expect("onboarded marker");
-    let trust_dir = workspace.workspace().join(".deepseek");
-    std::fs::create_dir_all(&trust_dir).expect("workspace trust dir");
-    std::fs::write(trust_dir.join("trusted"), "").expect("workspace trust marker");
+    workspace.trust_workspace().expect("trust workspace");
 
     let mut tui = Harness::builder(Harness::codewhale_binary())
         .cwd(workspace.workspace())

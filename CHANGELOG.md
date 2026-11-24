@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`/rlm` now reaches the discoverable `rlm` tool:** `/rlm` no longer tells the model to emit ```` ```repl ```` fences or forbid `rlm` actions, and the canonical `rlm` tool (`open`, `eval`, `configure`, `close`, `session_objects`) is discoverable via `tool_search` while legacy `rlm_*` aliases stay hidden. (CW-8360)
 - **Removed duplicate TUI `login` and `logout` subcommands reachable through `codewhale run`:** `codewhale run logout` no longer clears saved provider API keys and `codewhale run login` is removed; use `codewhale login`, `codewhale logout`, and `codewhale auth ...` instead. (CW-8360)
 - **`codewhale model resolve` agrees with turns:** removed the reviewed-selection admission gate (`admit_reviewed_selection`) so `codewhale model resolve` no longer refuses model IDs that `/model` lists and turns accept; live-catalog refusals (`fetched_at > 0`) and Ollama's placeholder default refusal stay in place. (CW-8360)
+- **User config is now the single source of workspace trust:** removed repository self-trust markers (`.deepseek/trusted` and `.deepseek/trust.json`) from trust checks and project context loading so a repository cannot hide the trust prompt or make `doctor`/`setup` report it as trusted while hooks, MCP, and skills remain off. Workspaces that relied only on those markers will prompt for trust once. (CW-8360)
 
 ## [0.10.4] - 2026-11-23
 

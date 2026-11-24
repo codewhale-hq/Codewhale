@@ -487,9 +487,6 @@ fn tui_auto_review_end_to_end_person_messages_block_and_retry() {
         "permission_posture = \"auto_review\"\n",
     )
     .expect("settings");
-    let trust = workspace.workspace().join(".deepseek");
-    std::fs::create_dir_all(&trust).expect("trust dir");
-    std::fs::write(trust.join("trusted"), "").expect("trusted");
     let config = format!(
         r#"provider = "fixture"
 default_text_model = "{MODEL}"
@@ -520,6 +517,7 @@ path = {outbox}
         outbox = json!(outbox),
     );
     std::fs::write(workspace.home().join(".codewhale/config.toml"), config).expect("config");
+    workspace.trust_workspace().expect("trust workspace");
 
     let mut tui = Harness::builder(crate::binary::codewhale())
         .cwd(workspace.workspace())
