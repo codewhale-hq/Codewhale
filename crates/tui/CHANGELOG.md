@@ -52,6 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`/effort` and the reasoning-effort picker now accept `low` and `medium` on Ollama Cloud:** removed the picker's duplicate catalog effort parser in favor of `ReasoningEffort::catalog_effort_values_for_offering` and `from_catalog_token`, and aligned Ollama Cloud's picker ladder (`auto`, `off`, `low`, `medium`, `high`, `max`) with the engine. (CW-8360)
+- **Skill companion discovery includes subdirectories and non-English trigger clauses:** `load_skill` now recursively lists companion files inside skill subdirectories (sorted deterministically, skipping symlinks) and skill index shortening recognizes non-English trigger prefixes such as `Триггеры:` and `触发条件:`. (Refs #7432)
 
 ## [0.10.4] - 2026-11-23
 

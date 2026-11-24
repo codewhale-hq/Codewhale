@@ -2860,6 +2860,22 @@ fn when_to_use_merged_into_trigger() {
 }
 
 #[test]
+fn split_trigger_recognizes_non_english_clauses() {
+    let (summary, trigger) =
+        super::split_trigger("Проверка диффа PR. Триггеры: ревью, проверка кода.");
+    assert_eq!(summary, "Проверка диффа PR");
+    assert_eq!(trigger.as_deref(), Some("ревью, проверка кода"));
+
+    let (summary, trigger) = super::split_trigger("构建诊断助手。触发条件：构建失败或依赖冲突。");
+    assert_eq!(summary, "构建诊断助手");
+    assert_eq!(trigger.as_deref(), Some("构建失败或依赖冲突"));
+
+    let (summary, trigger) = super::split_trigger("日志分析工具。触发: 排查线上报错");
+    assert_eq!(summary, "日志分析工具");
+    assert_eq!(trigger.as_deref(), Some("排查线上报错"));
+}
+
+#[test]
 fn frontmatter_warnings_reach_registry_once() {
     let tmp = TempDir::new().unwrap();
     create_skill_dir(

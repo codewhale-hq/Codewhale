@@ -1910,26 +1910,74 @@ impl IndexRow<'_> {
     }
 }
 
-/// Split a description into its summary and `Use when:` trigger phrase, so
-/// shortening can favour the half the model routes on.
+fn find_marker_case_insensitive(haystack: &str, marker: &str) -> Option<(usize, usize)> {
+    let marker_chars: Vec<char> = marker.chars().collect();
+    if marker_chars.is_empty() {
+        return None;
+    }
+    for (start, _) in haystack.char_indices() {
+        let mut iter = haystack[start..].char_indices();
+        let mut matched_end = start;
+        let mut matched = true;
+        for &m in &marker_chars {
+            let Some((offset, ch)) = iter.next() else {
+                matched = false;
+                break;
+            };
+            if !ch.to_lowercase().eq(m.to_lowercase()) {
+                matched = false;
+                break;
+            }
+            matched_end = start + offset + ch.len_utf8();
+        }
+        if matched {
+            return Some((start, matched_end));
+        }
+    }
+    None
+}
+
 fn split_trigger(description: &str) -> (String, Option<String>) {
     let single_line = description.split_whitespace().collect::<Vec<_>>().join(" ");
-    let lower = single_line.to_ascii_lowercase();
     for marker in [
         "use when:",
         "use when ",
         "use this when ",
         "use this skill when ",
+        "triggers:",
+        "trigger:",
+        "триггеры:",
+        "триггер:",
+        "используй когда:",
+        "используйте когда:",
+        "использовать когда:",
+        "используй, когда ",
+        "используйте, когда ",
+        "触发条件:",
+        "触发条件：",
+        "触发:",
+        "触发：",
+        "适用场景:",
+        "适用场景：",
+        "使用场景:",
+        "使用场景：",
+        "トリガー:",
+        "トリガー：",
+        "使用条件:",
+        "使用条件：",
+        "트리거:",
+        "사용 시점:",
+        "usar cuando:",
+        "utiliser quand:",
+        "verwenden wenn:",
     ] {
-        if let Some(pos) = lower.find(marker) {
-            let (head, tail) = single_line.split_at(pos);
-            let trigger = tail[marker.len()..]
-                .trim()
-                .trim_end_matches('.')
-                .to_string();
+        if let Some((start, end)) = find_marker_case_insensitive(&single_line, marker) {
+            let head = &single_line[..start];
+            let tail = &single_line[end..];
+            let trigger = tail.trim().trim_end_matches(['.', '。']).trim().to_string();
             let summary = head
                 .trim()
-                .trim_end_matches(['.', ';', ',', '—', '-'])
+                .trim_end_matches(['.', ';', ',', '—', '-', '。', '；', '，'])
                 .trim();
             if !trigger.is_empty() {
                 return (summary.to_string(), Some(trigger));
