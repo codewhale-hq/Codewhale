@@ -1,9 +1,9 @@
 //! Modal for request_user_input tool prompts.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
-use crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
-use ratatui::layout::{Alignment, Rect};
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::{Alignment, Position, Rect};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget};
 
@@ -100,6 +100,7 @@ pub struct UserInputView {
     manual_scroll: bool,
     scroll_offset: Cell<usize>,
     max_scroll: Cell<usize>,
+    option_hitboxes: RefCell<Vec<Rect>>,
 }
 
 impl UserInputView {
@@ -126,6 +127,7 @@ impl UserInputView {
             manual_scroll: false,
             scroll_offset: Cell::new(0),
             max_scroll: Cell::new(0),
+            option_hitboxes: RefCell::new(Vec::new()),
         }
     }
 
@@ -288,6 +290,10 @@ impl UserInputView {
             let start = self.content_line_count().saturating_sub(4);
             return (start, start.saturating_add(1));
         }
+        self.option_line_range(self.selected)
+    }
+
+    fn option_line_range(&self, index: usize) -> (usize, usize) {
         let question = self.current_question();
         let detail_lines = question
             .detail
@@ -296,14 +302,14 @@ impl UserInputView {
         let option_lines = question
             .options
             .iter()
-            .take(self.selected)
+            .take(index)
             .map(|option| 1 + usize::from(!option.description.is_empty()))
             .sum::<usize>();
-        let extra_rows = self.selected.saturating_sub(question.options.len());
+        let extra_rows = index.saturating_sub(question.options.len());
         let start = 5 + detail_lines + option_lines + extra_rows * 2;
         let height = question
             .options
-            .get(self.selected)
+            .get(index)
             .map_or(2, |option| 1 + usize::from(!option.description.is_empty()));
         (start, start.saturating_add(height - 1))
     }
@@ -506,6 +512,19 @@ impl ModalView for UserInputView {
         let scroll = match mouse.kind {
             MouseEventKind::ScrollUp => self.scroll_offset.get().saturating_sub(3),
             MouseEventKind::ScrollDown => self.scroll_offset.get().saturating_add(3),
+            MouseEventKind::Down(MouseButton::Left) if self.mode == InputMode::Selecting => {
+                let position = Position::new(mouse.column, mouse.row);
+                let clicked = self
+                    .option_hitboxes
+                    .borrow()
+                    .iter()
+                    .position(|rect| rect.contains(position));
+                let Some(index) = clicked else {
+                    return ViewAction::None;
+                };
+                self.selected = index;
+                return self.handle_key(KeyEvent::new(KeyCode::Enter, mouse.modifiers));
+            }
             _ => return ViewAction::None,
         };
         self.manual_scroll = true;
@@ -707,6 +726,23 @@ impl ModalView for UserInputView {
         };
         self.scroll_offset.set(scroll);
         self.max_scroll.set(max_scroll);
+        let inner = modal_block(&header).inner(popup_area);
+        let window = scroll..scroll + inner_h;
+        *self.option_hitboxes.borrow_mut() = (0..self.option_count())
+            .map(|index| {
+                let (start, end) = self.option_line_range(index);
+                let (first, last, ..) =
+                    PagerRows::line_range(&lines, usize::from(width), start, end);
+                let top = first.clamp(window.start, window.end);
+                let bottom = (last + 1).clamp(window.start, window.end);
+                Rect {
+                    x: inner.x,
+                    y: inner.y + u16::try_from(top - scroll).unwrap_or(u16::MAX),
+                    width: inner.width,
+                    height: u16::try_from(bottom - top).unwrap_or(u16::MAX),
+                }
+            })
+            .collect();
         let rows = PagerRows::wrap_lines_window(&lines, usize::from(width), scroll);
         let notice = rows.display_notice(locale, true);
         let mut visible: Vec<_> = rows.styled.into_iter().take(inner_h).collect();
@@ -845,6 +881,27 @@ mod tests {
         assert!(rendered.contains("quick pick"));
         // allow_free_text=true surfaces the Other row.
         assert!(rendered.contains("Other"));
+    }
+
+    #[test]
+    fn clicking_a_painted_option_submits_it() {
+        let mut view = sample_view();
+        let rendered = render_view(&view, 110, 36);
+        let row = rendered
+            .lines()
+            .position(|line| line.contains("2) Revise it"))
+            .expect("option row painted");
+        let action = view.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 20,
+            row: u16::try_from(row).unwrap(),
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        });
+        let ViewAction::EmitAndClose(ViewEvent::UserInputSubmitted { response, .. }) = action
+        else {
+            panic!("click must submit the clicked option")
+        };
+        assert_eq!(response.answers[0].label, "Revise it");
     }
 
     #[test]

@@ -694,7 +694,10 @@ fn macos_display_notification(payload: &NotificationPayload) -> DeliveryOutcome 
                 subtitle,
             ];
 
-            match std::process::Command::new("osascript").args(&args).output() {
+            match std::process::Command::new("/usr/bin/osascript")
+                .args(&args)
+                .output()
+            {
                 Ok(output) if !output.status.success() => {
                     tracing::warn!("osascript notification failed");
                 }
