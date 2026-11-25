@@ -3,8 +3,19 @@
 //! This module owns approval-card interaction and event emission. Risk policy,
 //! persistent rules, preview formatting, and sandbox elevation remain separate
 //! authority boundaries.
+//!
+//! Enter allows the highlighted action by default, so an Enter that approves
+//! is admitted only after the card has been the answerable prompt for
+//! `ENTER_ARMING_DELAY`, that long after the previous Enter on any approval
+//! card, and `ENTER_QUIET_GAP` after the last character key. Known limits:
+//! a key-repeat delay longer than the arming delay, a repeat slower than the
+//! quiet gap, an Enter held on a non-approval prompt that closes onto an
+//! older approval card, and the letter shortcuts (`y`, `a`, `1`) are not
+//! covered by this guard. Unit tests answer a card the instant it is built,
+//! so the guard starts off under `cfg(test)` and a test turns it on.
 
 use std::cell::{Cell, RefCell};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use codewhale_config::ToolAskRule;
@@ -23,6 +34,25 @@ use super::previews::exact_edit_file_preview_lines;
 use super::{ApprovalRequest, ReviewDecision};
 #[cfg(test)]
 use codewhale_engine::core::authority::RiskLevel;
+
+pub(super) const ENTER_ARMING_DELAY: Duration = Duration::from_millis(750);
+pub(super) const ENTER_QUIET_GAP: Duration = Duration::from_millis(200);
+
+static LAST_APPROVAL_ENTER: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn replace_last_approval_enter(at: Option<Instant>) -> Option<Instant> {
+    std::mem::replace(
+        &mut *LAST_APPROVAL_ENTER
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner),
+        at,
+    )
+}
+
+#[cfg(test)]
+pub(super) fn clear_last_approval_enter() {
+    replace_last_approval_enter(None);
+}
 
 /// Indices into the option list shared by both variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +119,13 @@ impl ApprovalOption {
             ApprovalOption::OpenPermissions => return None,
         })
     }
+
+    fn grants(self) -> bool {
+        matches!(
+            self.decision(),
+            Some(ReviewDecision::Approved | ReviewDecision::ApprovedForSession)
+        )
+    }
 }
 
 /// Approval overlay state managed by the modal view stack
@@ -112,6 +149,9 @@ pub struct ApprovalView {
     pub(super) requested_at: Instant,
     pub(crate) scopes_open: bool,
     pub(crate) details_expanded: bool,
+    pub(super) answerable_since: Option<Instant>,
+    pub(super) last_char_key_at: Option<Instant>,
+    pub(super) enter_guard: bool,
 }
 
 impl ApprovalView {
@@ -125,9 +165,9 @@ impl ApprovalView {
         Self::new_with_default_selection(request, locale, ApprovalDefaultSelection::default())
     }
 
-    /// `default_selection` is `[approval] default_selection` (#5293). Deny
-    /// stays the default so a fresh card never turns a reflexive Enter into
-    /// authorization; `allow_once` is a user opting out of that guard.
+    /// `default_selection` is `[approval] default_selection` (#5293). The
+    /// default highlights "allow once", so Enter allows the one action shown;
+    /// `deny` is a user opting into Enter refusing it.
     pub fn new_with_default_selection(
         request: ApprovalRequest,
         locale: Locale,
@@ -155,6 +195,9 @@ impl ApprovalView {
             requested_at: Instant::now(),
             scopes_open: false,
             details_expanded: false,
+            answerable_since: None,
+            last_char_key_at: None,
+            enter_guard: !cfg!(test),
         }
     }
 
@@ -333,6 +376,23 @@ impl ApprovalView {
         self.locale
     }
 
+    fn enter_may_commit(&mut self, option: ApprovalOption, now: Instant) -> bool {
+        if !self.enter_guard {
+            return true;
+        }
+        let answerable_since = *self.answerable_since.get_or_insert(now);
+        let previous_enter = replace_last_approval_enter(Some(now));
+        if !option.grants() {
+            return true;
+        }
+        now.saturating_duration_since(answerable_since) >= ENTER_ARMING_DELAY
+            && previous_enter
+                .is_none_or(|at| now.saturating_duration_since(at) >= ENTER_ARMING_DELAY)
+            && self
+                .last_char_key_at
+                .is_none_or(|at| now.saturating_duration_since(at) >= ENTER_QUIET_GAP)
+    }
+
     /// Commit the given option and close the approval modal.
     fn commit_option(&mut self, option: ApprovalOption) -> ViewAction {
         if !self.offers(option) {
@@ -487,6 +547,18 @@ impl ModalView for ApprovalView {
         if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
             return ViewAction::None;
         }
+        let now = Instant::now();
+        if key.code == KeyCode::Enter {
+            let option = self.current_option();
+            if !self.enter_may_commit(option, now) {
+                return ViewAction::None;
+            }
+            return self.commit_option(option);
+        }
+        self.answerable_since.get_or_insert(now);
+        if matches!(key.code, KeyCode::Char(_)) {
+            self.last_char_key_at = Some(now);
+        }
         match key.code {
             KeyCode::Tab | KeyCode::Char('d') | KeyCode::Char('D') => {
                 self.toggle_details();
@@ -504,7 +576,6 @@ impl ModalView for ApprovalView {
                 self.select_next();
                 ViewAction::None
             }
-            KeyCode::Enter => self.commit_option(self.current_option()),
             // Direct shortcuts; '1' / '2' map to the first two options
             // so a numeric pad still works for approve flows.
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Char('1') => {
@@ -639,6 +710,7 @@ impl ModalView for ApprovalView {
     }
 
     fn tick(&mut self) -> ViewAction {
+        self.answerable_since.get_or_insert_with(Instant::now);
         if self.is_timed_out() {
             return self.emit_decision(ReviewDecision::Denied, true);
         }

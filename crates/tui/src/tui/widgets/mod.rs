@@ -2062,36 +2062,65 @@ impl<'a> ApprovalWidget<'a> {
         };
 
         let selected_pill = menu_style::selected_row_style().add_modifier(Modifier::REVERSED);
+        let wide = bar_area.width >= 72;
+        let padded = bar_area.width >= 56;
         let allow_text = if workflow_plan {
             "Approve"
-        } else if bar_area.width >= 56 {
+        } else if wide {
             if ascii { "v Allow" } else { "✓ Allow" }
         } else {
             "Allow"
         };
         let deny_text = if workflow_plan {
             "Edit"
-        } else if bar_area.width >= 56 {
+        } else if wide {
             if ascii { "x Deny" } else { "✕ Deny" }
         } else {
             "Deny"
         };
+        let keyed = |text: &str, option: ApprovalOption, key: &str| {
+            let key = if selected_option == Some(option) {
+                "Enter"
+            } else {
+                key
+            };
+            if padded {
+                format!(" {text} [{key}] ")
+            } else {
+                format!("{text} [{key}]")
+            }
+        };
 
-        let allow_label = format!(" {allow_text} ");
-        let deny_label = format!(" {deny_text} ");
+        let allow_label = keyed(allow_text, ApprovalOption::ApproveOnce, "y");
+        let deny_label = keyed(
+            deny_text,
+            ApprovalOption::Deny,
+            if workflow_plan { "e" } else { "n" },
+        );
         let m_label = if workflow_plan {
             String::new()
+        } else if !padded {
+            "[m]".to_string()
         } else if self.view.scopes_open {
             if ascii { "[^ m]" } else { "[▴ m]" }.to_string()
         } else {
             if ascii { "[v m]" } else { "[▾ m]" }.to_string()
         };
-        let d_label = if self.view.details_expanded {
+        let d_key = if self.view.details_expanded {
             if ascii { "[^ d]" } else { "[▴ d]" }
         } else {
             "[d]"
         };
-        let cancel_label = if workflow_plan { " Cancel " } else { "" };
+        let d_label = if wide {
+            format!("Details {d_key}")
+        } else {
+            d_key.to_string()
+        };
+        let cancel_label = if workflow_plan {
+            keyed("Cancel", ApprovalOption::Abort, "n")
+        } else {
+            String::new()
+        };
 
         struct ControlSpec {
             text: String,
@@ -2111,6 +2140,17 @@ impl<'a> ApprovalWidget<'a> {
         } else {
             palette::WHALE_ACTION
         };
+        controls.push(ControlSpec {
+            text: d_label,
+            style: if self.view.details_expanded {
+                Style::default()
+                    .fg(palette::WHALE_HUMAN)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(palette::TEXT_MUTED)
+            },
+            kind: ControlKind::Details,
+        });
         controls.push(ControlSpec {
             text: allow_label,
             style: if selected_option == Some(ApprovalOption::ApproveOnce) {
@@ -2147,7 +2187,7 @@ impl<'a> ApprovalWidget<'a> {
         });
         if workflow_plan {
             controls.push(ControlSpec {
-                text: cancel_label.to_string(),
+                text: cancel_label,
                 style: if selected_option == Some(ApprovalOption::Abort) {
                     selected_pill
                 } else {
@@ -2156,17 +2196,6 @@ impl<'a> ApprovalWidget<'a> {
                 kind: ControlKind::OptionIndex(2),
             });
         }
-        controls.push(ControlSpec {
-            text: d_label.to_string(),
-            style: if self.view.details_expanded {
-                Style::default()
-                    .fg(palette::WHALE_HUMAN)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(palette::TEXT_MUTED)
-            },
-            kind: ControlKind::Details,
-        });
 
         let controls_width: usize = controls
             .iter()

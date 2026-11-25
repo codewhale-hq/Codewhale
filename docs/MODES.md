@@ -264,6 +264,32 @@ narrowed before metadata is built and cannot invent approval authority. An
 explicit Full Access sub-agent handoff preserves the parent's standing posture
 so ordinary child work does not begin prompting again.
 
+### Answering an approval
+
+When a call needs your say, the terminal shows a one-line approval bar: what
+will run, then `Details [d]`, `Allow [Enter]`, `[▾ m]` and `Deny [n]`.
+
+- `Enter` commits the highlighted control, which is the one tagged `[Enter]`.
+  A new bar highlights **Allow**, so `Enter` allows the one action shown,
+  once. `y` allows once wherever the highlight is.
+- `n` denies the action and the turn carries on. `Esc` refuses it too and
+  stops the turn; on a sub-agent's card `Esc` only hides the card and the
+  request stays pending.
+- The arrow keys move the highlight between Allow and Deny.
+- `d` or `Tab` opens the details. `m` opens the scope menu, whose rows keep
+  their numbers: `[1] Allow once`, `[2] Allow in this conversation` and, where
+  it is offered, `[3] Always allow in this repo`.
+- An `Enter` that would allow is ignored for the first three quarters of a
+  second the bar is the prompt in front of you, for the same time after
+  another `Enter` on an approval, and straight after typed characters. A key
+  already in flight, a held key or text pasted into the terminal therefore
+  does not approve. Denying is never delayed, and `y` answers at once.
+- To make `Enter` deny instead, set `[approval] default_selection = "deny"`
+  (see [Configuration](CONFIGURATION.md)).
+
+The sandbox elevation prompt is a separate card. It still starts on the
+option that skips the call, and takes no letter shortcuts.
+
 ### Children (sub-agents and fleet workers)
 
 Children inherit the session posture faithfully rather than a bare

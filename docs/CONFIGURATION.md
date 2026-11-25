@@ -2473,17 +2473,22 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   to expose shell. Plan mode always hides shell; Full Access enables shell and
   auto-approval.
 - `approval_policy` (string, optional): `on-request`, `untrusted`, `accept-edits`, or `never`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases. A project file may set only a value that tightens the user's posture; the order from loosest is `auto`, `accept-edits`, `on-request`, `never`.
-- `[approval] default_selection` (string, optional): which option an approval
-  card highlights when it first appears — `deny` (default) or `allow_once`.
-  `deny` means a reflexive Enter on a card you have not read refuses the call.
-  The highlighted row is tagged `(Enter)`; press `y` to allow once.
-  Set `allow_once` to restore the pre-v0.9.6 Enter-to-approve muscle memory
-  (#5293). It moves the highlight only: which calls are prompted for is still
-  `approval_policy` plus the rules in `permissions.toml`.
+- `[approval] default_selection` (string, optional): which control the
+  terminal approval bar highlights when it first appears — `allow_once`
+  (default) or `deny`. Enter commits the highlighted control, which is tagged
+  `[Enter]`, so by default Enter allows the one action shown, once; `n` denies
+  and `Esc` refuses the action and stops the turn. An Enter that would allow
+  is ignored for the first three quarters of a second and straight after
+  another Enter or typed characters, so a key in flight, a held key or pasted
+  text does not approve. Set `deny` to make Enter refuse the call instead
+  (the earlier default, #5293); `y` still allows once. It moves the
+  highlight only: which calls are prompted for is still `approval_policy`
+  plus the rules in `permissions.toml`. The sandbox elevation prompt is not
+  affected and still starts on the option that skips the call.
 
   ```toml
   [approval]
-  default_selection = "allow_once"
+  default_selection = "deny"
   ```
 - `[approval] timeout_seconds` (integer, optional): bound how long an
   approval may wait — the TUI card and the Runtime API approvals the desktop

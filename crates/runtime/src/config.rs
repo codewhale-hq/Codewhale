@@ -1571,10 +1571,10 @@ impl CloudFactsConfig {
 #[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalDefaultSelection {
-    /// Highlight the deny option, so a reflexive Enter refuses the call.
-    #[default]
+    /// Highlight the deny option, so Enter refuses the call.
     Deny,
-    /// Highlight "allow once", restoring the pre-v0.9.6 Enter-to-approve flow.
+    /// Highlight "allow once", so Enter allows the one action shown.
+    #[default]
     AllowOnce,
 }
 
@@ -1584,7 +1584,7 @@ pub enum ApprovalDefaultSelection {
 #[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
 pub struct ApprovalConfig {
     /// Option highlighted when an approval card first appears (#5293).
-    /// Default: `deny`.
+    /// Default: `allow_once`.
     #[serde(default)]
     pub default_selection: ApprovalDefaultSelection,
     /// Seconds an interactive approval card may wait before it resolves
