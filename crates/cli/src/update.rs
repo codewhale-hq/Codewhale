@@ -292,7 +292,7 @@ fn divergent_aliases(plan: &UpdatePlan, identity: &UpdateExecutableIdentity) -> 
             };
             meta.is_file()
                 && same_owner(&meta, &identity.path)
-                && InstallMethod::from_path(target).supports_self_update()
+                && InstallMethod::owner(target).supports_self_update()
                 && std::fs::read(target).is_ok_and(|bytes| sha256_hex(&bytes) != identity.file_hash)
                 && installs::is_codewhale_binary(target)
         })
@@ -1126,7 +1126,7 @@ fn validate_primary_update_identity(identity: &UpdateExecutableIdentity) -> Resu
 /// Only the running binary and copies of those exact bytes are ours to update.
 /// Command names alone do not establish ownership of an existing sibling.
 fn validate_update_target(target: &Path, identity: &UpdateExecutableIdentity) -> Result<()> {
-    if !InstallMethod::from_path(target).supports_self_update() {
+    if !InstallMethod::owner(target).supports_self_update() {
         bail!(
             "Refusing to replace managed/system path {}.\n\n{GITHUB_MIGRATION_HELP}",
             target.display()
@@ -3450,6 +3450,68 @@ mod tests {
         assert!(error.to_string().contains("bytes differ"), "{error:#}");
         assert_eq!(std::fs::read(primary).unwrap(), b"running bytes");
         assert_eq!(std::fs::read(alias).unwrap(), b"unrelated executable");
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn cargo_bin_write_follows_the_cargo_record_like_detection() {
+        let _env = UpdateEnvGuard::clear();
+        let root = tempfile::TempDir::new().unwrap();
+        let cargo = root.path().join(".cargo");
+        let bin = cargo.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let primary = bin.join("codewhale");
+        let sibling = bin.join("codew");
+        for path in [&primary, &sibling] {
+            std::fs::write(path, b"running bytes").unwrap();
+        }
+        let identity = test_update_identity(&primary);
+        let agrees = |target: &Path| {
+            let writable = validate_update_target(target, &identity).is_ok();
+            assert_eq!(
+                writable,
+                InstallMethod::detect(target).supports_self_update(),
+                "{}",
+                target.display()
+            );
+            writable
+        };
+
+        assert!(
+            !agrees(&primary),
+            "no Cargo record: a .cargo/bin file stays Cargo's"
+        );
+
+        std::fs::write(
+            cargo.join(".crates.toml"),
+            b"[v1]\n\"ripgrep 14.1.0 (registry+https://github.com/rust-lang/crates.io-index)\" = [\"rg\"]\n",
+        )
+        .unwrap();
+        assert!(agrees(&primary), "a record that lists only other crates");
+        assert!(agrees(&sibling));
+
+        std::fs::write(
+            cargo.join(".crates.toml"),
+            b"[v1]\n\"codewhale-cli 0.10.5 (registry+https://github.com/rust-lang/crates.io-index)\" = [\"codewhale\"]\n",
+        )
+        .unwrap();
+        assert!(!agrees(&primary), "Cargo lists this command");
+        let error = replace_verified_downloads(
+            &[sibling.clone(), primary.clone()],
+            b"new bytes",
+            |target| validate_update_target(target, &identity),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("managed/system path"),
+            "{error:#}"
+        );
+        assert_eq!(std::fs::read(&primary).unwrap(), b"running bytes");
+        assert_eq!(std::fs::read(&sibling).unwrap(), b"running bytes");
+
+        std::fs::remove_file(cargo.join(".crates.toml")).unwrap();
+        std::fs::create_dir(cargo.join(".crates.toml")).unwrap();
+        assert!(!agrees(&primary), "an unreadable record fails closed");
     }
 
     #[cfg(not(target_os = "android"))]
