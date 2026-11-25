@@ -5113,14 +5113,6 @@ impl ModelPickerView {
             })
             .collect();
         let detail_pane = if show_advanced_hints && layout.detail.height >= 4 {
-            let hint_height = 2u16;
-            let body_height = layout.detail.height.saturating_sub(hint_height);
-            let hint_area = Rect::new(
-                layout.detail.x,
-                layout.detail.y.saturating_add(body_height),
-                layout.detail.width,
-                hint_height,
-            );
             let sep = if crate::tui::color_compat::ascii_safe_enabled() {
                 " - "
             } else {
@@ -5164,15 +5156,30 @@ impl ModelPickerView {
                     tr(self.locale, MessageId::PickerActionPin)
                 ));
             }
-            Paragraph::new(Line::from(Span::styled(
+            let hint_paragraph = Paragraph::new(Line::from(Span::styled(
                 parts.join(sep),
                 Style::default().fg(palette::TEXT_DIM),
             )))
-            .wrap(ratatui::widgets::Wrap { trim: true })
-            .render(hint_area, buf);
-            Rect {
-                height: body_height,
-                ..layout.detail
+            .wrap(ratatui::widgets::Wrap { trim: true });
+            let max_hint_height = layout.detail.height.saturating_sub(3).min(4);
+            let hint_height = u16::try_from(hint_paragraph.line_count(layout.detail.width.max(1)))
+                .unwrap_or(max_hint_height)
+                .clamp(1, max_hint_height.max(1));
+            if layout.detail.height >= hint_height.saturating_add(2) {
+                let body_height = layout.detail.height.saturating_sub(hint_height);
+                let hint_area = Rect::new(
+                    layout.detail.x,
+                    layout.detail.y.saturating_add(body_height),
+                    layout.detail.width,
+                    hint_height,
+                );
+                hint_paragraph.render(hint_area, buf);
+                Rect {
+                    height: body_height,
+                    ..layout.detail
+                }
+            } else {
+                layout.detail
             }
         } else {
             layout.detail

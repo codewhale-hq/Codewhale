@@ -2550,9 +2550,12 @@ impl ProviderPickerView {
             .iter()
             .position(|row| row.identity.as_ref() == Some(target))?;
         picker.selected_idx = idx;
-        // The target may be an unconfigured catalog row; show the catalog so
-        // it is visible, then jump into key entry for it.
         picker.view = ProviderListView::Catalog;
+        if !picker.rows[idx].is_configured
+            && suggested_provider_rank(&picker.rows[idx].provider_id).is_none()
+        {
+            picker.show_all_providers = true;
+        }
         picker.begin_setup();
         Some(picker)
     }
@@ -2630,9 +2633,15 @@ impl ProviderPickerView {
     fn toggle_view(&mut self) {
         self.toggle_row_selected = false;
         self.view = match self.view {
-            ProviderListView::Configured => ProviderListView::Catalog,
+            ProviderListView::Configured => {
+                self.show_all_providers = true;
+                ProviderListView::Catalog
+            }
             ProviderListView::Catalog => ProviderListView::Configured,
-            ProviderListView::Local => ProviderListView::Catalog,
+            ProviderListView::Local => {
+                self.show_all_providers = true;
+                ProviderListView::Catalog
+            }
         };
         if !self.rows.is_empty() && !self.row_visible(self.selected_idx) {
             self.selected_idx = (0..self.rows.len())
@@ -3612,12 +3621,6 @@ impl ProviderPickerView {
         } else {
             ListDetailLayout::split(content, 34)
         };
-        if layout.stacked && filtered.len() < usize::from(layout.list.height) {
-            layout.list.height = filtered.len() as u16;
-            let detail_y = layout.list.bottom().saturating_add(1).min(content.bottom());
-            layout.detail.y = detail_y;
-            layout.detail.height = content.bottom().saturating_sub(detail_y);
-        }
 
         enum DisplayRow<'a> {
             Header(Cow<'static, str>),
@@ -3654,6 +3657,12 @@ impl ProviderPickerView {
         }
         if hidden_count > 0 {
             display.push(DisplayRow::ShowAllToggle(hidden_count));
+        }
+        if layout.stacked && display.len() < usize::from(layout.list.height) {
+            layout.list.height = display.len() as u16;
+            let detail_y = layout.list.bottom().saturating_add(1).min(content.bottom());
+            layout.detail.y = detail_y;
+            layout.detail.height = content.bottom().saturating_sub(detail_y);
         }
 
         let selected_display_pos = if self.toggle_row_selected && hidden_count > 0 {
@@ -3938,7 +3947,7 @@ impl ProviderPickerView {
     }
 
     fn open_provider_details(&self) -> ViewAction {
-        if !self.row_visible(self.selected_idx) {
+        if self.toggle_row_selected || !self.row_visible(self.selected_idx) {
             return ViewAction::None;
         }
         let row = &self.rows[self.selected_idx];
@@ -4837,7 +4846,7 @@ impl ProviderPickerView {
             buf,
             &[
                 ActionHint::new("↑↓", "choose"),
-                ActionHint::new("Enter", self.tr(MessageId::SetupActionContinue)),
+                ActionHint::new("Enter", "save & switch"),
                 ActionHint::new("Esc", self.tr(MessageId::SetupActionBack)),
             ],
         );
@@ -5356,6 +5365,7 @@ impl ModalView for ProviderPickerView {
                     if key.modifiers.is_empty()
                         && !self.onboarding_mode
                         && !self.search_mode
+                        && !self.toggle_row_selected
                         && self.query.is_empty()
                         && c.eq_ignore_ascii_case(&'x')
                         && self.row_visible(self.selected_idx)
@@ -5370,6 +5380,7 @@ impl ModalView for ProviderPickerView {
                     if key.modifiers.is_empty()
                         && !self.onboarding_mode
                         && !self.search_mode
+                        && !self.toggle_row_selected
                         && c.eq_ignore_ascii_case(&'e')
                         && self.query.is_empty()
                         && self.row_visible(self.selected_idx)
@@ -5386,6 +5397,7 @@ impl ModalView for ProviderPickerView {
                     if key.modifiers.is_empty()
                         && !self.onboarding_mode
                         && !self.search_mode
+                        && !self.toggle_row_selected
                         && c.eq_ignore_ascii_case(&'r')
                         && self.query.is_empty()
                         && self.row_visible(self.selected_idx) =>
@@ -5445,6 +5457,7 @@ impl ModalView for ProviderPickerView {
                 }
                 KeyCode::Char(c)
                     if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !self.toggle_row_selected
                         && c.eq_ignore_ascii_case(&'t')
                         && self.row_visible(self.selected_idx) =>
                 {
@@ -5460,6 +5473,7 @@ impl ModalView for ProviderPickerView {
                     if key.modifiers.is_empty()
                         && !self.onboarding_mode
                         && !self.search_mode
+                        && !self.toggle_row_selected
                         && self.query.is_empty()
                         && c.eq_ignore_ascii_case(&'m')
                         && self.row_visible(self.selected_idx) =>
@@ -9223,6 +9237,21 @@ mod tests {
             .find(|&index| picker.row_visible(index))
             .expect("a filter matching something");
         assert_eq!(picker.selected_idx, last_visible);
+
+        let mut collapsed =
+            ProviderPickerView::new_for_setup(ProviderKind::Deepseek, None, &config, None);
+        assert!(collapsed.hidden_catalog_provider_count() > 0);
+        collapsed.handle_key(key(KeyCode::End));
+        assert!(collapsed.toggle_row_selected);
+        assert!(matches!(
+            collapsed.handle_key(key(KeyCode::Char('r'))),
+            ViewAction::None
+        ));
+        assert_eq!(collapsed.stage, Stage::List);
+        assert!(matches!(
+            collapsed.open_provider_details(),
+            ViewAction::None
+        ));
         picker.handle_key(key(KeyCode::Home));
         let first_visible = (0..picker.rows.len())
             .find(|&index| picker.row_visible(index))
