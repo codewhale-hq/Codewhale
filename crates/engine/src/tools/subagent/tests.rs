@@ -23700,8 +23700,9 @@ const READ_ONLY_CHILD_ENVELOPE_BYTE_CEILING: usize = 89_112;
 // schema edits, plus 112B for the display-only bash description. The
 // context_archive_search and context_archive_get specs (#7173) add 751B. The
 // 0.10.3 tool-text batch adds the rest; the ceiling now matches the measured
-// 94,121B on this machine.
-const PARENT_SURFACE_BYTE_CEILING: usize = 98_094;
+// 94,121B on this machine. The finance description's `quote_age_seconds`
+// sentence adds 45B.
+const PARENT_SURFACE_BYTE_CEILING: usize = 98_139;
 
 #[tokio::test]
 async fn read_only_child_envelope_stays_within_measured_ceiling() {

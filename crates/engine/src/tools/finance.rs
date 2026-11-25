@@ -227,7 +227,7 @@ impl ToolSpec for FinanceTool {
     }
 
     fn description(&self) -> &'static str {
-        "Fetch live stock, ETF or crypto quotes via Yahoo-style endpoints under the session network policy."
+        "Fetch live stock, ETF or crypto quotes via Yahoo-style endpoints under the session network policy. quote_age_seconds is the age of market_time."
     }
 
     fn input_schema(&self) -> Value {
@@ -322,9 +322,7 @@ impl ToolSpec for FinanceTool {
             fetch_quote_endpoint(&self.client, timeout, &self.endpoints, &request).await
         };
         match quote_result {
-            Ok(result) => {
-                ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))
-            }
+            Ok(result) => quote_tool_result(&result),
             Err(first_failure) => {
                 let remaining = deadline.saturating_duration_since(std::time::Instant::now());
                 let chart_result = if remaining.is_zero() {
@@ -348,8 +346,7 @@ impl ToolSpec for FinanceTool {
                     }
                 };
                 match chart_result {
-                    Ok(result) => ToolResult::json(&result)
-                        .map_err(|e| ToolError::execution_failed(e.to_string())),
+                    Ok(result) => quote_tool_result(&result),
                     Err(second_failure) => Err(finalize_failure(
                         &request,
                         timeout_ms,
@@ -478,7 +475,7 @@ async fn fetch_host_endpoint(
         .metadata
         .ok_or_else(|| ToolError::execution_failed("Host finance result omitted metadata"))?;
     if result.success {
-        let quote: FinanceQuoteResponse = serde_json::from_value(metadata)
+        let mut quote: FinanceQuoteResponse = serde_json::from_value(metadata)
             .map_err(|_| ToolError::execution_failed("Host finance result malformed"))?;
         if quote.requested_ticker != request.requested_ticker
             || quote.source != endpoint
@@ -489,6 +486,12 @@ async fn fetch_host_endpoint(
                 "Host finance result changed its captured request",
             ));
         }
+        quote.change = quote.change.filter(|v| v.is_finite()).map(round_decimals);
+        quote.change_percent = quote
+            .change_percent
+            .filter(|v| v.is_finite())
+            .map(round_decimals);
+        quote.previous_close = quote.previous_close.filter(|v| v.is_finite());
         Ok(Ok(quote))
     } else {
         if metadata.get("endpoint").and_then(Value::as_str) != Some(endpoint) {
@@ -757,8 +760,49 @@ fn finalize_failure(
     ))
 }
 
+const COMPUTED_DECIMALS: f64 = 1_000_000.0;
+
+fn round_decimals(value: f64) -> f64 {
+    let scaled = value * COMPUTED_DECIMALS;
+    if scaled.is_finite() {
+        scaled.round() / COMPUTED_DECIMALS
+    } else {
+        value
+    }
+}
+
+fn quote_age_seconds(market_time: Option<i64>, now: i64) -> Option<i64> {
+    market_time
+        .map(|time| now.saturating_sub(time))
+        .filter(|age| *age >= 0)
+}
+
+fn quote_json_with_age(quote: &FinanceQuoteResponse, now: i64) -> Result<Value, serde_json::Error> {
+    let mut value = serde_json::to_value(quote)?;
+    if let (Some(age), Some(object)) = (
+        quote_age_seconds(quote.market_time, now),
+        value.as_object_mut(),
+    ) {
+        object.insert("quote_age_seconds".to_string(), json!(age));
+    }
+    Ok(value)
+}
+
+fn quote_tool_result(quote: &FinanceQuoteResponse) -> Result<ToolResult, ToolError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or(0);
+    let value =
+        quote_json_with_age(quote, now).map_err(|e| ToolError::execution_failed(e.to_string()))?;
+    ToolResult::json(&value).map_err(|e| ToolError::execution_failed(e.to_string()))
+}
+
 fn compute_change(price: f64, previous_close: Option<f64>) -> Option<f64> {
-    previous_close.map(|prev| price - prev)
+    previous_close
+        .map(|prev| price - prev)
+        .filter(|change| change.is_finite())
+        .map(round_decimals)
 }
 
 fn compute_change_percent(price: f64, previous_close: Option<f64>) -> Option<f64> {
@@ -767,6 +811,8 @@ fn compute_change_percent(price: f64, previous_close: Option<f64>) -> Option<f64
             None
         } else {
             Some(((price - prev) / prev) * 100.0)
+                .filter(|percent| percent.is_finite())
+                .map(round_decimals)
         }
     })
 }
@@ -901,6 +947,58 @@ mod tests {
         let path = tmp.path().to_path_buf();
         let ctx = ToolContext::new(path);
         (ctx, tmp)
+    }
+
+    fn sample_quote(market_time: Option<i64>) -> FinanceQuoteResponse {
+        FinanceQuoteResponse {
+            requested_ticker: "AAPL".into(),
+            ticker: "AAPL".into(),
+            name: None,
+            price: 1.0,
+            currency: None,
+            change: None,
+            change_percent: None,
+            previous_close: None,
+            market_state: None,
+            quote_type: None,
+            exchange: None,
+            market_time,
+            source: QUOTE_SOURCE.into(),
+            fallback_used: false,
+        }
+    }
+
+    #[test]
+    fn quote_age_is_derived_and_omitted_for_future_time() {
+        let value = quote_json_with_age(&sample_quote(Some(1_000)), 1_090).unwrap();
+        assert_eq!(value["quote_age_seconds"], 90);
+        let future = quote_json_with_age(&sample_quote(Some(2_000)), 1_090).unwrap();
+        assert!(future.get("quote_age_seconds").is_none());
+        let missing = quote_json_with_age(&sample_quote(None), 1_090).unwrap();
+        assert!(missing.get("quote_age_seconds").is_none());
+    }
+
+    #[test]
+    fn computed_change_is_rounded() {
+        assert_eq!(compute_change(0.3, Some(0.1)), Some(0.2));
+        assert_eq!(compute_change_percent(0.3, Some(0.1)), Some(200.0));
+        assert_eq!(compute_change(1e308, Some(-1e308)), None);
+        assert_eq!(compute_change_percent(1e308, Some(-1e308)), None);
+        assert_eq!(round_decimals(-1e308), -1e308);
+    }
+
+    #[test]
+    fn non_finite_host_optionals_are_not_finite_after_parse() {
+        let parsed: FinanceQuoteResponse = serde_json::from_value(json!({
+            "requested_ticker": "AAPL", "ticker": "AAPL", "price": "1.5",
+            "change": "NaN", "source": QUOTE_SOURCE, "fallback_used": false
+        }))
+        .unwrap();
+        assert!(parsed.change.is_some_and(|v| !v.is_finite()));
+        assert_eq!(
+            Some(f64::NAN).filter(|v| v.is_finite()).map(round_decimals),
+            None
+        );
     }
 
     #[tokio::test]
