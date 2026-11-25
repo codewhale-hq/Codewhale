@@ -22,6 +22,33 @@
       "signed": true,
       "notarized": true,
       "url": "https://downloads.codewhale.net/desktop/Codewhale-0.10.4-x64.dmg"
+    },
+    {
+      "name": "codewhale-desktop_0.10.4_amd64.deb",
+      "platform": "linux",
+      "kind": "deb",
+      "arch": "x64",
+      "size": 155293392,
+      "sha256": "36625c6e96f5ec06a7bc0a1cc96f4e3c48a4e25fd5934dab1051d0927e3a7734",
+      "url": "https://downloads.codewhale.net/desktop/apt/pool/main/c/codewhale-desktop/codewhale-desktop_0.10.4_amd64.deb",
+      "apt": {
+        "repository": "https://downloads.codewhale.net/desktop/apt",
+        "keyUrl": "https://downloads.codewhale.net/desktop/apt/codewhale-archive-keyring.asc",
+        "suite": "stable",
+        "component": "main",
+        "architecture": "amd64",
+        "package": "codewhale-desktop",
+        "keyFingerprint": "FE6EED0815F6796F0617D07A8D1B59648C382CE9"
+      }
+    },
+    {
+      "name": "Codewhale-0.10.4-x86_64.AppImage",
+      "platform": "linux",
+      "kind": "appimage",
+      "arch": "x64",
+      "size": 181892911,
+      "sha256": "6e2169ffbe14971fa27ae74fd1ad5f09d813ec08608554d5588e104c2d267f0e",
+      "url": "https://downloads.codewhale.net/desktop/Codewhale-0.10.4-x86_64.AppImage"
     }
   ]
 }
