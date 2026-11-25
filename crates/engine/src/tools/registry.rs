@@ -2119,32 +2119,50 @@ impl ToolSpec for McpToolAdapter {
             context.account_fence.as_deref(),
         )
         .await?;
-        let mut pool = self.pool.lock().await;
-        if let Some(plugins) = context.plugin_registry.as_ref() {
-            pool.bind_caller_plugins(Arc::clone(plugins))
-                .map_err(|error| ToolError::not_available(error.to_string()))?;
-        }
-        pool.validate_native_caller(context.plugin_registry.as_deref())
-            .map_err(|error| ToolError::not_available(error.to_string()))?;
+        let mut refused = false;
+        let admit = |pool: &mut crate::mcp::McpPool| {
+            let admitted = match context.plugin_registry.as_ref() {
+                Some(plugins) => pool.bind_caller_plugins(Arc::clone(plugins)),
+                None => Ok(()),
+            }
+            .and_then(|()| pool.validate_native_caller(context.plugin_registry.as_deref()));
+            refused = admitted.is_err();
+            admitted
+        };
         if context.child_host.is_some()
             && let Some(grant) = &self.delegated_read
         {
-            let result = pool
-                .call_delegated_read(grant, &self.name, input, &context.disallowed_tools)
-                .await
-                .map_err(|error| ToolError::permission_denied(error.to_string()))?;
-            return Ok(mcp_result_to_bounded_rich_tool_result(result));
-        }
-        let result = pool
-            .call_tool_with_disallowed(
+            let result = crate::mcp::call_delegated_read_unlocked(
+                &self.pool,
+                grant,
                 &self.name,
                 input,
                 &context.disallowed_tools,
-                context.human_decision.as_ref(),
+                admit,
             )
-            .await
-            .map_err(|e| ToolError::execution_failed(format!("MCP tool failed: {e}")))?;
-        Ok(mcp_result_to_bounded_rich_tool_result(result))
+            .await;
+            return match result {
+                Ok(result) => Ok(mcp_result_to_bounded_rich_tool_result(result)),
+                Err(error) if refused => Err(ToolError::not_available(error.to_string())),
+                Err(error) => Err(ToolError::permission_denied(error.to_string())),
+            };
+        }
+        let result = crate::mcp::call_tool_unlocked(
+            &self.pool,
+            &self.name,
+            input,
+            &context.disallowed_tools,
+            context.human_decision.as_ref(),
+            admit,
+        )
+        .await;
+        match result {
+            Ok(result) => Ok(mcp_result_to_bounded_rich_tool_result(result)),
+            Err(error) if refused => Err(ToolError::not_available(error.to_string())),
+            Err(error) => Err(ToolError::execution_failed(format!(
+                "MCP tool failed: {error}"
+            ))),
+        }
     }
 }
 

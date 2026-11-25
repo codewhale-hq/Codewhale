@@ -3313,6 +3313,7 @@ fn test_connection(transport: Box<dyn McpTransport>) -> McpConnection {
         catalog_fresh_until: None,
         catalog_stale: false,
         decision_key: None,
+        call_lane: None,
     }
 }
 
@@ -11818,5 +11819,257 @@ async fn converted_dsh_mcp_template_with_required_connector_boots_and_surfaces_f
     assert!(
         row.error.is_some(),
         "required connector failure must appear in snapshot row: {row:?}"
+    );
+}
+
+struct GatedTransport {
+    sent: Arc<Mutex<Vec<serde_json::Value>>>,
+    gate: Arc<tokio::sync::Semaphore>,
+    drops: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl McpTransport for GatedTransport {
+    async fn send(&mut self, msg: Vec<u8>) -> Result<()> {
+        self.sent
+            .lock()
+            .unwrap()
+            .push(serde_json::from_slice(&msg)?);
+        Ok(())
+    }
+
+    async fn recv(&mut self) -> Result<Vec<u8>> {
+        self.gate.acquire().await?.forget();
+        let id = self
+            .sent
+            .lock()
+            .unwrap()
+            .last()
+            .and_then(|request| request.get("id").cloned())
+            .context("gated transport has no request to answer")?;
+        Ok(json_frame(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {"content": [{"type": "text", "text": "done"}]}
+        })))
+    }
+}
+
+impl Drop for GatedTransport {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, AtomicOrdering::SeqCst);
+    }
+}
+
+struct GatedServer {
+    sent: Arc<Mutex<Vec<serde_json::Value>>>,
+    gate: Arc<tokio::sync::Semaphore>,
+    drops: Arc<AtomicUsize>,
+}
+
+impl GatedServer {
+    fn new() -> Self {
+        Self {
+            sent: Arc::new(Mutex::new(Vec::new())),
+            gate: Arc::new(tokio::sync::Semaphore::new(0)),
+            drops: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn connection(&self, name: &str) -> McpConnection {
+        call_lane_connection(
+            name,
+            Box::new(GatedTransport {
+                sent: Arc::clone(&self.sent),
+                gate: Arc::clone(&self.gate),
+                drops: Arc::clone(&self.drops),
+            }),
+        )
+    }
+
+    async fn requests(&self, count: usize) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while self.sent.lock().unwrap().len() < count {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the MCP request reaches the transport");
+    }
+}
+
+fn call_lane_connection(name: &str, transport: Box<dyn McpTransport>) -> McpConnection {
+    let mut connection = test_connection(transport);
+    connection.name = name.to_string();
+    connection.tools = vec![McpTool {
+        name: "run".to_string(),
+        description: None,
+        input_schema: json!({"type": "object"}),
+        annotations: None,
+    }];
+    connection
+}
+
+fn answering_connection(name: &str, result: serde_json::Value) -> McpConnection {
+    call_lane_connection(
+        name,
+        Box::new(ScriptedValueTransport {
+            sent: Arc::new(Mutex::new(Vec::new())),
+            responses: VecDeque::from([json_frame(json!({
+                "jsonrpc": "2.0", "id": 1, "result": result
+            }))]),
+        }),
+    )
+}
+
+fn call_lane_pool(connections: Vec<McpConnection>) -> Arc<tokio::sync::Mutex<McpPool>> {
+    let mut pool = McpPool::new(McpConfig {
+        delegated_operations: Default::default(),
+        servers: connections
+            .iter()
+            .map(|connection| (connection.name.clone(), test_server_config()))
+            .collect(),
+        timeouts: McpTimeouts::default(),
+    })
+    .with_backend(McpBackend::Rust);
+    for connection in connections {
+        pool.connections.insert(connection.name.clone(), connection);
+    }
+    Arc::new(tokio::sync::Mutex::new(pool))
+}
+
+fn spawn_unlocked_call(
+    pool: &Arc<tokio::sync::Mutex<McpPool>>,
+    name: &'static str,
+) -> tokio::task::JoinHandle<Result<serde_json::Value>> {
+    let pool = Arc::clone(pool);
+    tokio::spawn(
+        async move { call_tool_unlocked(&pool, name, json!({}), &[], None, |_| Ok(())).await },
+    )
+}
+
+#[tokio::test]
+async fn a_slow_mcp_call_does_not_hold_the_pool_or_block_another_server() -> Result<()> {
+    let slow_server = GatedServer::new();
+    let pool = call_lane_pool(vec![
+        slow_server.connection("slow"),
+        answering_connection("fast", json!({"fast": true})),
+    ]);
+
+    let slow = spawn_unlocked_call(&pool, "mcp_slow_run");
+    slow_server.requests(1).await;
+    assert!(
+        pool.try_lock().is_ok(),
+        "the pool lock must be free while a tool call waits on its server"
+    );
+
+    let fast = tokio::time::timeout(
+        Duration::from_secs(5),
+        call_tool_unlocked(&pool, "mcp_fast_run", json!({}), &[], None, |_| Ok(())),
+    )
+    .await
+    .expect("a call on another server must not wait for the slow one")?;
+    assert_eq!(fast["fast"], true);
+    assert!(!slow.is_finished(), "the slow call is still in flight");
+
+    slow_server.gate.add_permits(1);
+    let slow = slow.await.expect("slow call task")?;
+    assert_eq!(slow["content"][0]["text"], "done");
+    Ok(())
+}
+
+#[tokio::test]
+async fn calls_to_one_mcp_server_take_turns_without_holding_the_pool() -> Result<()> {
+    let server = GatedServer::new();
+    let pool = call_lane_pool(vec![server.connection("slow")]);
+
+    let first = spawn_unlocked_call(&pool, "mcp_slow_run");
+    server.requests(1).await;
+    let second = spawn_unlocked_call(&pool, "mcp_slow_run");
+    for _ in 0..64 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        server.sent.lock().unwrap().len(),
+        1,
+        "the second call must not write while the first awaits its reply"
+    );
+    assert!(
+        pool.try_lock().is_ok(),
+        "a queued call must not wait while holding the pool lock"
+    );
+
+    server.gate.add_permits(1);
+    let first = first.await.expect("first call task")?;
+    assert_eq!(first["content"][0]["text"], "done");
+    server.requests(2).await;
+    server.gate.add_permits(1);
+    let second = second.await.expect("second call task")?;
+    assert_eq!(second["content"][0]["text"], "done");
+
+    let sent = server.sent.lock().unwrap();
+    assert_ne!(sent[0]["id"], sent[1]["id"], "request ids stay unique");
+    Ok(())
+}
+
+#[tokio::test]
+async fn replacing_a_connection_during_a_call_fails_that_call_and_serves_the_next() -> Result<()> {
+    let old_server = GatedServer::new();
+    let pool = call_lane_pool(vec![old_server.connection("slow")]);
+
+    let in_flight = spawn_unlocked_call(&pool, "mcp_slow_run");
+    old_server.requests(1).await;
+    pool.lock().await.connections.insert(
+        "slow".to_string(),
+        answering_connection("slow", json!({"fresh": true})),
+    );
+
+    let error = tokio::time::timeout(Duration::from_secs(5), in_flight)
+        .await
+        .expect("a call on a replaced connection must end promptly")
+        .expect("in-flight call task")
+        .expect_err("a call on a replaced connection must fail visibly");
+    assert!(
+        format!("{error:#}").contains("was cancelled"),
+        "unexpected error: {error:#}"
+    );
+    assert_eq!(
+        old_server.drops.load(AtomicOrdering::SeqCst),
+        1,
+        "the replaced transport is released once its call ends"
+    );
+
+    let fresh = call_tool_unlocked(&pool, "mcp_slow_run", json!({}), &[], None, |_| Ok(())).await?;
+    assert_eq!(fresh["fresh"], true);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_call_abandoned_mid_send_retires_the_connection_for_the_next_caller() {
+    struct StalledSend;
+    #[async_trait::async_trait]
+    impl McpTransport for StalledSend {
+        async fn send(&mut self, _msg: Vec<u8>) -> Result<()> {
+            std::future::pending().await
+        }
+        async fn recv(&mut self) -> Result<Vec<u8>> {
+            std::future::pending().await
+        }
+    }
+    let pool = call_lane_pool(vec![call_lane_connection("slow", Box::new(StalledSend))]);
+
+    let abandoned = spawn_unlocked_call(&pool, "mcp_slow_run");
+    for _ in 0..64 {
+        tokio::task::yield_now().await;
+    }
+    abandoned.abort();
+    let _ = abandoned.await;
+
+    let pool = pool.lock().await;
+    let connection = pool.connections.get("slow").expect("connection is kept");
+    assert_eq!(connection.state(), ConnectionState::Disconnected);
+    assert!(
+        !connection.is_transport_ready(),
+        "a transport abandoned mid-write must be rebuilt, not reused"
     );
 }
