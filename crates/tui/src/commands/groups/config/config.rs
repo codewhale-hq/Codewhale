@@ -8,8 +8,8 @@
 //! `crate::commands::config_main_host`, reached only through the host adapters.
 
 use codewhale_command_contract::config::{
-    CommandAccountState, CommandPetBodyStyle, CommandPetControl, CommandPetLabel,
-    CommandWorkSurfaceContext, CommandWorkflowSummary, ConfigMessage, ConfigReply, TrustPathError,
+    CommandAccountState, CommandPetContext, CommandPetLabel, CommandWorkSurfaceContext,
+    CommandWorkflowSummary, ConfigMessage, ConfigReply, TrustPathError,
 };
 use codewhale_command_contract::facets::CommandModeSelection;
 use codewhale_command_contract::handler::{CommandCapabilities, CommandContexts};
@@ -29,8 +29,8 @@ pub const CONFIG_PRESENTATION_CAPS: CommandCapabilities =
 /// Commands that observe config and render only literals
 /// (`/settings`, `/verbose`, `/fullscreen`, `/inline`, `/import-claude`).
 pub const CONFIG_ONLY_CAPS: CommandCapabilities = CommandCapabilities::CONFIG;
-/// Capabilities declared by `/pet`.
-pub const PET_CAPS: CommandCapabilities = CommandCapabilities::PET;
+/// Capabilities declared by `/whale`.
+pub const WHALE_CAPS: CommandCapabilities = CommandCapabilities::PET;
 /// Capabilities declared by `/trust`.
 pub const TRUST_CAPS: CommandCapabilities = CommandCapabilities::TRUST;
 /// Capabilities declared by `/login` and `/logout`.
@@ -618,8 +618,9 @@ fn is_conversation_mode_word(arg: &str) -> bool {
 /// `/mode` usage, shared with the registration metadata.
 pub(super) const MODE_USAGE: &str = "/mode [work|plan|1|2|<conversation mode>]";
 
-/// `/pet` usage, shared with the registration metadata.
-pub const PET_USAGE: &str = "/pet [on|off|inspect|status|appearance|style [smooth|pixel]|source|export|sound [on|off]|avatar [whale|cove|braille|pixels|particles|whale-girl|key]|action [name|live]|view [name|live]]";
+/// `/whale` usage, shared with the registration metadata.
+pub const WHALE_USAGE: &str = "/whale [full|still|name <text>|color <#rrggbb|default>]";
+const WHALE_NAME_MAX_CHARS: usize = 32;
 
 pub fn connect(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandResult {
     let raw = arg.map(str::trim).unwrap_or("");
@@ -1024,115 +1025,89 @@ pub fn import_claude(contexts: CommandContexts<'_>, arg: Option<&str>) -> Config
     ConfigCommandResult::message(message)
 }
 
-/// `/pet [on|off|...]`.
-/// `/pet [on|off|inspect|status|appearance|source|export|sound on|off|avatar [key]|action [name|live]|view [name|live]]`.
-/// The command owns the verb parsing and message composition; the pet facet
-/// observes and mutates the pet state and resolves the localized labels.
-pub fn pet(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandResult {
-    let words = arg
-        .map(str::trim)
-        .unwrap_or("")
-        .split_whitespace()
-        .map(str::to_ascii_lowercase)
-        .collect::<Vec<_>>();
-    let words = words.iter().map(String::as_str).collect::<Vec<_>>();
+/// `/whale [full|still|name <text>|color <#rrggbb|default>]`.
+/// Bare `/whale` and `full` toggle the whale view; `on` and `off` set it.
+/// The command owns the verb parsing and message composition; the whale facet
+/// observes and mutates the whale state and resolves the localized labels.
+pub fn whale(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandResult {
+    let raw = arg.map(str::trim).unwrap_or("");
+    let (verb, rest) = match raw.split_once(char::is_whitespace) {
+        Some((verb, rest)) => (verb, rest.trim()),
+        None => (raw, ""),
+    };
+    let verb = verb.to_ascii_lowercase();
     let mut parts = contexts.into_parts();
     let Some(facet) = parts.pet.as_deref_mut() else {
-        return missing("pet");
+        return missing("whale");
     };
-    let usage = || ConfigCommandResult::error(format!("Usage: {PET_USAGE}"));
-    let queued = |facet: &mut dyn codewhale_command_contract::config::CommandPetContext,
-                  control: CommandPetControl|
-     -> ConfigCommandResult {
-        if facet.queue(control) {
-            ConfigCommandResult::message(facet.label(CommandPetLabel::HabitatQueued))
+    let usage = || ConfigCommandResult::error(format!("Usage: {WHALE_USAGE}"));
+    let view = |facet: &mut dyn CommandPetContext, enabled: bool| -> ConfigCommandResult {
+        facet.set_enabled(enabled, true);
+        ConfigCommandResult::message(facet.label(if enabled {
+            CommandPetLabel::ModeOn
         } else {
-            ConfigCommandResult::error(facet.label(CommandPetLabel::WatchUnavailable))
-        }
+            CommandPetLabel::ModeOff
+        }))
     };
-    match words.as_slice() {
-        ["inspect"] => {
-            facet.open_habitat();
-            ConfigCommandResult::ok()
-        }
-        [] => {
+    match (verb.as_str(), rest) {
+        ("" | "full", "") => {
             let enabled = !facet.enabled();
-            facet.set_enabled(enabled, true);
-            ConfigCommandResult::message(facet.label(if enabled {
-                CommandPetLabel::ModeOn
+            view(facet, enabled)
+        }
+        ("on", "") => view(facet, true),
+        ("off", "") => view(facet, false),
+        ("still", "") => {
+            let still = !facet.still();
+            facet.set_still(still);
+            ConfigCommandResult::message(facet.label(if still {
+                CommandPetLabel::StillOn
             } else {
-                CommandPetLabel::ModeOff
+                CommandPetLabel::StillOff
             }))
         }
-        ["on"] => {
-            facet.set_enabled(true, true);
-            ConfigCommandResult::message(facet.label(CommandPetLabel::ModeOn))
-        }
-        ["off"] => {
-            facet.set_enabled(false, true);
-            ConfigCommandResult::message(facet.label(CommandPetLabel::ModeOff))
-        }
-        ["status"] => ConfigCommandResult::message(format!(
-            "{} · {} · {}",
-            facet.label(if facet.enabled() {
-                CommandPetLabel::ModeOnLabel
-            } else {
-                CommandPetLabel::ModeOffLabel
-            }),
-            facet.label(if facet.is_open() {
-                CommandPetLabel::ViewOpen
-            } else {
-                CommandPetLabel::ViewClosed
-            }),
-            facet.status()
-        )),
-        ["avatar"] => ConfigCommandResult::message(facet.avatar_choices()),
-        ["avatar", key] => {
-            if !facet.select_avatar(key) {
-                return usage();
-            }
-            ConfigCommandResult::message(format!("/pet avatar {key}"))
-        }
-        [kind @ ("action" | "view"), name] => {
-            if !facet.preview_avatar(name, *kind == "view") {
-                return usage();
-            }
-            ConfigCommandResult::message(format!("/pet {kind} {name}"))
-        }
-        ["appearance"] => queued(facet, CommandPetControl::Browser),
-        ["style", value] => {
-            let Some(body) = CommandPetBodyStyle::parse(value) else {
+        ("name", text) => {
+            let Some(name) = whale_name(text) else {
                 return usage();
             };
-            queued(facet, CommandPetControl::Appearance { body })
+            facet.set_name(&name);
+            ConfigCommandResult::message(
+                facet.label(CommandPetLabel::Named).replace("{name}", &name),
+            )
         }
-        ["source"] => queued(facet, CommandPetControl::Select),
-        ["export"] => {
-            if facet.export() {
-                ConfigCommandResult::message(facet.label(CommandPetLabel::ExportQueued))
-            } else {
-                ConfigCommandResult::error(facet.label(CommandPetLabel::ExportUnavailable))
-            }
+        ("color" | "colour", value) if value.eq_ignore_ascii_case("default") => {
+            facet.set_color(None);
+            ConfigCommandResult::message(facet.label(CommandPetLabel::ColorReset))
         }
-        ["sound", rest @ ..] => {
-            let enabled = match rest {
-                [] => None,
-                ["on"] => Some(true),
-                ["off"] => Some(false),
-                _ => return usage(),
+        ("color" | "colour", value) => {
+            let Some([r, g, b]) = whale_color(value) else {
+                return usage();
             };
-            if let Some(enabled) = enabled {
-                facet.set_sound(enabled);
-            }
-            let label = if enabled == Some(true) {
-                facet.label(CommandPetLabel::SoundOn)
-            } else {
-                facet.sound_label()
-            };
-            ConfigCommandResult::message(format!("{label} · /pet sound on|off"))
+            facet.set_color(Some([r, g, b]));
+            ConfigCommandResult::message(
+                facet
+                    .label(CommandPetLabel::Colored)
+                    .replace("{color}", &format!("#{r:02x}{g:02x}{b:02x}")),
+            )
         }
         _ => usage(),
     }
+}
+
+fn whale_name(text: &str) -> Option<String> {
+    let name = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!name.is_empty()
+        && name.chars().count() <= WHALE_NAME_MAX_CHARS
+        && !name.chars().any(char::is_control))
+    .then_some(name)
+}
+
+fn whale_color(value: &str) -> Option<[u8; 3]> {
+    let hex = value.strip_prefix('#').unwrap_or(value);
+    if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let channel = |at: usize| u8::from_str_radix(&hex[at..at + 2], 16).ok();
+    Some([channel(0)?, channel(2)?, channel(4)?])
 }
 
 /// `/trust [on|off|add|remove|list]` (alias `/xinren`).
@@ -1449,7 +1424,7 @@ mod tests {
     fn missing_facets_fail_safely_with_the_inherited_error_contract() {
         for (name, result) in [
             ("config", config(CommandContexts::empty(), Some("model"))),
-            ("pet", pet(CommandContexts::empty(), None)),
+            ("whale", whale(CommandContexts::empty(), None)),
             ("trust", trust(CommandContexts::empty(), None)),
         ] {
             assert!(result.is_error, "{name} must fail without its facet");
@@ -1459,6 +1434,153 @@ mod tests {
             );
             assert!(result.action.is_none(), "no action may cross on failure");
         }
+    }
+
+    #[derive(Default)]
+    struct Whale {
+        enabled: bool,
+        saved: Vec<bool>,
+        still: bool,
+        name: Option<String>,
+        color: Option<[u8; 3]>,
+    }
+
+    impl CommandPetContext for Whale {
+        fn enabled(&self) -> bool {
+            self.enabled
+        }
+        fn set_enabled(&mut self, enabled: bool, persist: bool) {
+            self.enabled = enabled;
+            if persist {
+                self.saved.push(enabled);
+            }
+        }
+        fn still(&self) -> bool {
+            self.still
+        }
+        fn set_still(&mut self, still: bool) {
+            self.still = still;
+        }
+        fn set_name(&mut self, name: &str) {
+            self.name = Some(name.to_owned());
+        }
+        fn set_color(&mut self, color: Option<[u8; 3]>) {
+            self.color = color;
+        }
+        fn label(&self, which: CommandPetLabel) -> String {
+            match which {
+                CommandPetLabel::Named => "named {name}".into(),
+                CommandPetLabel::Colored => "colored {color}".into(),
+                other => format!("{other:?}"),
+            }
+        }
+    }
+
+    fn run_whale(facet: &mut Whale, arg: Option<&str>) -> ConfigCommandResult {
+        whale(CommandContexts::empty().with_pet(facet), arg)
+    }
+
+    #[test]
+    fn whale_toggles_the_view_and_takes_only_its_four_subcommands() {
+        let mut facet = Whale::default();
+        assert_eq!(
+            run_whale(&mut facet, None).message.as_deref(),
+            Some("ModeOn")
+        );
+        assert_eq!(
+            run_whale(&mut facet, Some(" FULL ")).message.as_deref(),
+            Some("ModeOff")
+        );
+        assert!(!run_whale(&mut facet, Some("on")).is_error);
+        assert!(!run_whale(&mut facet, Some("on")).is_error);
+        assert!(facet.enabled);
+        assert!(!run_whale(&mut facet, Some("off")).is_error);
+        assert_eq!(facet.saved, [true, false, true, true, false]);
+
+        assert_eq!(
+            run_whale(&mut facet, Some("still")).message.as_deref(),
+            Some("StillOn")
+        );
+        assert!(facet.still);
+        assert_eq!(
+            run_whale(&mut facet, Some("still")).message.as_deref(),
+            Some("StillOff")
+        );
+
+        for removed in [
+            "inspect",
+            "status",
+            "appearance",
+            "style pixel",
+            "source",
+            "export",
+            "sound on",
+            "avatar",
+            "avatar cove",
+            "action greet",
+            "view live",
+            "on extra",
+            "still on",
+            "bogus",
+        ] {
+            let result = run_whale(&mut facet, Some(removed));
+            assert!(result.is_error, "{removed}");
+            assert_eq!(
+                result.message.as_deref(),
+                Some(format!("Usage: {WHALE_USAGE}").as_str())
+            );
+        }
+        assert!(!facet.enabled && !facet.still);
+    }
+
+    #[test]
+    fn whale_name_and_colour_validate_before_they_reach_the_host() {
+        let mut facet = Whale::default();
+        assert_eq!(
+            run_whale(&mut facet, Some("name  Moby   Dick "))
+                .message
+                .as_deref(),
+            Some("named Moby Dick")
+        );
+        assert_eq!(facet.name.as_deref(), Some("Moby Dick"));
+        let too_long = format!("name {}", "x".repeat(33));
+        for rejected in ["name", "name \u{1b}[31m", too_long.as_str()] {
+            assert!(
+                run_whale(&mut facet, Some(rejected)).is_error,
+                "{rejected:?}"
+            );
+        }
+        assert_eq!(facet.name.as_deref(), Some("Moby Dick"));
+        let longest = format!("name {}", "鲸".repeat(32));
+        assert!(!run_whale(&mut facet, Some(longest.as_str())).is_error);
+
+        assert_eq!(
+            run_whale(&mut facet, Some("color #7FB2E0"))
+                .message
+                .as_deref(),
+            Some("colored #7fb2e0")
+        );
+        assert_eq!(facet.color, Some([0x7f, 0xb2, 0xe0]));
+        assert!(!run_whale(&mut facet, Some("colour 000000")).is_error);
+        assert_eq!(facet.color, Some([0, 0, 0]));
+        for rejected in [
+            "color",
+            "color blue",
+            "color #12345",
+            "color #12345g",
+            "color #1234567",
+            "color +12345",
+        ] {
+            assert!(run_whale(&mut facet, Some(rejected)).is_error, "{rejected}");
+            assert_eq!(facet.color, Some([0, 0, 0]));
+        }
+        assert_eq!(
+            run_whale(&mut facet, Some("color DEFAULT"))
+                .message
+                .as_deref(),
+            Some("ColorReset")
+        );
+        assert_eq!(facet.color, None);
     }
 
     #[test]
@@ -1472,8 +1594,8 @@ mod tests {
         assert!(!CONFIG_ONLY_CAPS.contains(CommandCapabilities::PERMISSIONS));
         assert!(CONFIG_PRESENTATION_CAPS.contains(CommandCapabilities::PRESENTATION));
         assert!(!CONFIG_PRESENTATION_CAPS.contains(CommandCapabilities::PERMISSIONS));
-        assert!(PET_CAPS.contains(CommandCapabilities::PET));
-        assert!(!PET_CAPS.contains(CommandCapabilities::CONFIG));
+        assert!(WHALE_CAPS.contains(CommandCapabilities::PET));
+        assert!(!WHALE_CAPS.contains(CommandCapabilities::CONFIG));
         assert!(TRUST_CAPS.contains(CommandCapabilities::TRUST));
         assert!(!TRUST_CAPS.contains(CommandCapabilities::WORKSPACE));
         assert!(!TRUST_CAPS.contains(CommandCapabilities::PRESENTATION));

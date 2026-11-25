@@ -1,7 +1,6 @@
-//! The actual `/pet on` surface over the foreground Engine session. This
-//! replaces the old full-screen tank layout; the companion still owns its
-//! durable world and audio. No prompt, worker or execution authority lives here.
-use super::{PetWatch, avatars, habitat};
+//! The `/whale` surface over the foreground Engine session. No prompt, worker
+//! or execution authority lives here.
+use super::PetWatch;
 use crate::tui::{
     app::App,
     history::HistoryCell,
@@ -13,12 +12,10 @@ use codewhale_engine::{
     tools::subagent::AgentWorkerStatus,
 };
 use codewhale_localization::{Locale, MessageId, tr};
-use codewhale_protocol::engine_owner::{OwnerActivityKind, OwnerFreshness, OwnerPresence};
 use codewhale_ratatui::{
     AgentCard, Caps, DotWhale, MotionMode, PetMode, PetModeAreas, PetStyle, State, StatusMark,
     Subagent, SubagentControls, SubagentUsage, SubagentViewWords, Theme, WhalePet,
-    color::ColorDepth,
-    whale_motion::{Activity, Context, Inputs, Presence, Span},
+    whale_motion::{Context, Inputs, Presence},
 };
 use ratatui::{Frame, layout::Rect, text::Line};
 use std::{
@@ -26,98 +23,23 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(super) fn canonical(state: &PetWatch) -> bool {
-    matches!(state.avatars.current(), "whale" | "cove" | "braille")
-        && state.avatars.action.is_none()
-        && state.avatars.view.is_none()
-}
 fn needs(
     watch: &PetWatch,
-    synchronized: bool,
     theme: &Theme,
-    pet: Rect,
-    live: bool,
-    missing_atlas: bool,
     locale: Locale,
 ) -> Option<(Cow<'static, str>, Cow<'static, str>)> {
-    let colour = || match theme.depth() {
-        ColorDepth::Monochrome => tr(locale, MessageId::PetNeedsColor),
-        ColorDepth::Ansi16 => Cow::Borrowed("COLORTERM=truecolor"),
-        _ => Cow::Borrowed("CODEWHALE_APPEARANCE=dark|light"),
-    };
-    let art = WhalePet::art_area(pet);
-    let local = |style: PetStyle| {
-        if theme.ascii() {
-            Err((
-                tr(locale, MessageId::PetNeedsUnicode),
-                tr(locale, MessageId::PetWords),
-            ))
-        } else if art.width < 16 || art.height < 8 {
-            Err((
-                tr(locale, MessageId::PetNeedsArtSize),
-                tr(locale, MessageId::PetWords),
-            ))
-        } else if style == PetStyle::Braille || !theme.paints_grounds() {
-            Ok(Cow::Borrowed("braille"))
-        } else {
-            Ok(Cow::Borrowed("cove"))
-        }
-    };
-    match watch.avatars.current() {
-        "whale" if theme.ascii() => Some((
+    if theme.ascii() {
+        Some((
             tr(locale, MessageId::PetNeedsUnicode),
             tr(locale, MessageId::PetWords),
-        )),
-        "whale"
-            if !live
-                && watch.dots_frame.is_none()
-                && watch.dots.as_ref().is_some_and(|dots| !dots.failed())
-                && local(PetStyle::Color).is_ok() =>
-        {
-            None
-        }
-        "whale" if !live => {
-            let requirement = if watch.unavailable || watch.failed {
-                Some("codewhale pet serve")
-            } else {
-                watch.session.as_deref().and_then(|session| {
-                    watch
-                        .raster
-                        .as_ref()
-                        .filter(|r| {
-                            r.scene.source != "unattached"
-                                && r.scene.source != super::live::session_source(session)
-                        })
-                        .map(|_| "/pet source")
-                })
-            };
-            requirement.map(|requirement| {
-                (
-                    Cow::Borrowed(requirement),
-                    local(PetStyle::Color).unwrap_or_else(|(_, shown)| shown),
-                )
-            })
-        }
-        "cove" => match local(PetStyle::Color) {
-            Ok(shown) if shown == "braille" => Some((colour(), shown)),
-            Ok(_) => None,
-            Err(need) => Some(need),
-        },
-        "braille" => local(PetStyle::Braille).err(),
-        "pixels" => super::pixels_need(synchronized)
-            .map(|need| (tr(locale, need), Cow::Borrowed("particles"))),
-        "whale-girl" if theme.ascii() => Some((
-            tr(locale, MessageId::PetNeedsUnicode),
-            tr(locale, MessageId::PetAscii),
-        )),
-        "whale-girl" if !theme.paints_grounds() => {
-            Some((colour(), tr(locale, MessageId::PetAscii)))
-        }
-        _ if missing_atlas => Some((
-            tr(locale, MessageId::PetNeedsAtlas),
-            Cow::Borrowed("particles"),
-        )),
-        _ => None,
+        ))
+    } else if watch.dots.as_ref().is_some_and(|dots| dots.failed()) {
+        Some((
+            tr(locale, MessageId::PetNeedsDots),
+            tr(locale, MessageId::PetFallbackWhale),
+        ))
+    } else {
+        None
     }
 }
 pub(super) fn theme(app: &App) -> Theme {
@@ -241,38 +163,7 @@ pub(super) fn agents(app: &App) -> Vec<Subagent<'static>> {
         })
         .collect()
 }
-pub(super) fn presentation<'a>(
-    raster: Option<&'a super::live::Presentation>,
-    session: Option<&str>,
-    now: Instant,
-) -> Option<&'a super::live::Presentation> {
-    let source = session.map(super::live::session_source);
-    raster.filter(|r| {
-        r.scene.producer_connected
-            && now.saturating_duration_since(r.frame_changed) < Duration::from_millis(800)
-            && Some(r.scene.source.as_str()) == source.as_deref()
-    })
-}
-fn activity_words(kind: OwnerActivityKind, locale: Locale) -> std::borrow::Cow<'static, str> {
-    tr(
-        locale,
-        match kind {
-            OwnerActivityKind::Reading => MessageId::ToolFamilyRead,
-            OwnerActivityKind::Editing => MessageId::ToolFamilyPatch,
-            OwnerActivityKind::Searching => MessageId::ToolFamilyFind,
-            OwnerActivityKind::Testing => MessageId::ToolFamilyVerify,
-            OwnerActivityKind::Executing => MessageId::ToolFamilyRun,
-            OwnerActivityKind::Browsing => MessageId::PetActivityBrowsing,
-            OwnerActivityKind::Computer => MessageId::PetActivityComputer,
-            OwnerActivityKind::Memory => MessageId::PetActivityMemory,
-            OwnerActivityKind::Tool => MessageId::ToolFamilyGeneric,
-            OwnerActivityKind::Thinking => MessageId::ToolFamilyThink,
-            OwnerActivityKind::Responding => MessageId::PetModeReplyTitle,
-            OwnerActivityKind::Delegating => MessageId::PhaseSubagents,
-        },
-    )
-}
-fn inputs(app: &App, now: Instant) -> Inputs {
+fn inputs(app: &App) -> Inputs {
     let presence = match ShellPhase::from_app(app) {
         ShellPhase::Working | ShellPhase::Verifying => Presence::Working,
         ShellPhase::Waiting | ShellPhase::Approval => Presence::NeedsYou,
@@ -280,39 +171,12 @@ fn inputs(app: &App, now: Instant) -> Inputs {
         ShellPhase::Done => Presence::Done,
         ShellPhase::Idle | ShellPhase::Failed => Presence::Idle,
     };
-    let raster = presentation(
-        app.pet_watch.raster.as_ref(),
-        app.current_session_id.as_deref(),
-        now,
-    );
-    let owner = raster.and_then(|r| {
-        r.scene.activity.as_ref().filter(|a| {
-            a.observed
-                && a.freshness == OwnerFreshness::Fresh
-                && a.session_id.as_deref() == Some(r.scene.source.as_str())
-        })
-    });
     Inputs {
         presence,
-        activity: owner.map(|a| Activity {
-            kind: a.activity_kind.map(|k| k.as_str().into()),
-            observed: true,
-            parallel: Some(f64::from(a.parallel_agent_count)),
-            active: a
-                .active_spans
-                .iter()
-                .map(|s| Span {
-                    kind: s.activity_kind.as_str().into(),
-                    since_ms: s.started_at_ms,
-                })
-                .collect(),
-        }),
+        activity: None,
         context: Context {
-            live: owner.is_some(),
             turn_id: app.runtime_turn_id.clone(),
             status: app.runtime_turn_status.clone(),
-            // Only owner time, never a local timer pretending to be an error receipt.
-            now_ms: raster.map(|r| r.scene.time_ms),
             ..Default::default()
         },
     }
@@ -321,6 +185,9 @@ pub(super) fn motion(app: &App) -> MotionMode {
     // The habitat owns the viewport through the modal stack. The ordinary
     // shell's ambient helper intentionally stops under every modal, so using
     // it here would freeze the pet simply because its own view is open.
+    if app.pet_watch.still() {
+        return MotionMode::Still;
+    }
     match app.motion_policy().mode() {
         crate::tui::motion::MotionMode::Still => MotionMode::Still,
         crate::tui::motion::MotionMode::Reduced => MotionMode::Reduced,
@@ -356,27 +223,15 @@ pub(super) fn tick(app: &mut App, visible: bool, now: Instant) {
     {
         *selected = None;
     }
-    let inputs = inputs(app, now);
+    let inputs = inputs(app);
     let changed = app.pet_watch.full_inputs.as_ref().is_none_or(|old| {
         old.presence != inputs.presence
-            || old.activity != inputs.activity
-            || old.context.live != inputs.context.live
             || old.context.turn_id != inputs.context.turn_id
             || old.context.status != inputs.context.status
     });
     let motion = motion(app);
     let theme = theme(app);
-    let prepared = app.pet_watch.avatars.current() == "whale"
-        && presentation(
-            app.pet_watch.raster.as_ref(),
-            app.current_session_id.as_deref(),
-            now,
-        )
-        .is_some_and(|r| r.scene.materials.is_some());
-    let painted_local = app.pet_watch.dots_frame.is_some()
-        && app.pet_watch.avatars.current() == "whale"
-        && !prepared
-        && app.pet_watch.dots_area.is_some();
+    let painted_local = app.pet_watch.dots_frame.is_some() && app.pet_watch.dots_area.is_some();
     let local = app
         .pet_watch
         .dots_frame
@@ -403,9 +258,7 @@ pub(super) fn tick(app: &mut App, visible: bool, now: Instant) {
             s
         }
     });
-    if prepared {
-        state.full_next = None;
-    } else if let Some(interval) = [local, stage].into_iter().flatten().min() {
+    if let Some(interval) = [local, stage].into_iter().flatten().min() {
         if state.full_next.is_none_or(|deadline| now >= deadline) {
             state.full_next = now.checked_add(interval);
             app.needs_redraw |= stage.is_some();
@@ -436,29 +289,7 @@ fn render(frame: &mut Frame, area: Rect, app: &mut App, inspect: bool) {
             codewhale_palette::chrome_style(&app.ui_theme, toast.level.ink()),
         )
     });
-    let now = Instant::now();
-    let prepared = presentation(
-        app.pet_watch.raster.as_ref(),
-        app.current_session_id.as_deref(),
-        now,
-    )
-    .filter(|r| r.scene.materials.is_some());
-    let activity = prepared.and_then(|r| {
-        r.scene.activity.as_ref().filter(|a| {
-            a.observed
-                && a.freshness == OwnerFreshness::Fresh
-                && a.session_id.as_deref() == Some(r.scene.source.as_str())
-        })
-    });
-    let words = if matches!(phase, ShellPhase::Working | ShellPhase::Verifying) {
-        activity
-            .filter(|a| a.authoritative_presence == OwnerPresence::Working)
-            .and_then(|a| a.activity_kind)
-            .map(|kind| activity_words(kind, app.ui_locale))
-            .unwrap_or_else(|| phase.label(app.ui_locale))
-    } else {
-        phase.label(app.ui_locale)
-    };
+    let words = phase.label(app.ui_locale);
     let mark = StatusMark::new(match phase {
         ShellPhase::Working | ShellPhase::Verifying => State::Working,
         ShellPhase::Approval | ShellPhase::Waiting => State::NeedsYou,
@@ -493,63 +324,25 @@ fn render(frame: &mut Frame, area: Rect, app: &mut App, inspect: bool) {
         response.is_some(),
         app.pet_watch.full.focus_agents,
     );
-    let owner = inputs(app, Instant::now());
+    let owner = inputs(app);
     let motion = motion(app);
-    let view_key = app.pet_watch.avatars.current().to_owned();
-    let dot_whale = prepared.filter(|_| view_key == "whale").and_then(|r| {
-        let (points, materials, hollow) = if motion.animates() {
-            (
-                &r.scene.points,
-                r.scene.materials.as_ref(),
-                r.scene.style.hollow,
-            )
-        } else {
-            (
-                &r.scene.still.points,
-                r.scene.still.materials.as_ref(),
-                r.scene.still.style.hollow,
-            )
-        };
-        materials.map(|materials| {
-            DotWhale::new(points, materials)
-                .caption(&words)
-                .hollow(hollow)
-        })
+    let tinted = app
+        .pet_watch
+        .color()
+        .zip(app.pet_watch.dots_frame.as_ref())
+        .map(|(color, f)| tint(&f.materials, color));
+    let dot_whale = app.pet_watch.dots_frame.as_ref().map(|f| {
+        DotWhale::new(&f.points, tinted.as_deref().unwrap_or(&f.materials))
+            .caption(&words)
+            .hollow(f.hollow)
     });
-    let dot_whale = dot_whale.or_else(|| {
-        app.pet_watch
-            .dots_frame
-            .as_ref()
-            .filter(|_| view_key == "whale" && prepared.is_none())
-            .map(|f| {
-                DotWhale::new(&f.points, &f.materials)
-                    .caption(&words)
-                    .hollow(f.hollow)
-            })
-    });
-    let (act, clock) = avatars::act(app.pet_watch.raster.as_ref(), app.is_loading);
-    let missing_atlas = !plan.pet.is_empty()
-        && app
-            .pet_watch
-            .avatars
-            .missing_atlas(act, clock, !motion.animates());
-    let missing = (!plan.pet.is_empty())
-        .then(|| {
-            needs(
-                &app.pet_watch,
-                app.synchronized_output_enabled,
-                &theme,
-                plan.pet,
-                dot_whale.is_some(),
-                missing_atlas,
-                app.ui_locale,
-            )
-        })
+    let missing = (!plan.pet.is_empty() && dot_whale.is_none())
+        .then(|| needs(&app.pet_watch, &theme, app.ui_locale))
         .flatten()
         .map(|(requirement, shown)| {
             Line::styled(
                 tr(app.ui_locale, MessageId::PetViewNeeds)
-                    .replace("{view}", &view_key)
+                    .replace("{view}", "whale")
                     .replace("{requirement}", requirement.as_ref())
                     .replace("{shown}", shown.as_ref()),
                 codewhale_palette::chrome_style(
@@ -631,12 +424,6 @@ fn render(frame: &mut Frame, area: Rect, app: &mut App, inspect: bool) {
             )
         ));
     }
-    let companion = if area.width >= 100 {
-        format!(" · {}", habitat::companion_hints(app.ui_locale))
-    } else {
-        String::new()
-    };
-    hints.push_str(&companion);
     let arrows = format!(
         "{}{}",
         shell_key_routing::binding(Id::PetResultUp).footer_chord,
@@ -667,15 +454,16 @@ fn render(frame: &mut Frame, area: Rect, app: &mut App, inspect: bool) {
         };
     }
     let mut view = PetMode::new(&theme, mark);
-    view.style = if view_key == "braille" {
-        PetStyle::Braille
-    } else {
-        PetStyle::Color
-    };
+    view.style = PetStyle::Color;
     view.cove = false;
     view.dot_whale = dot_whale;
     view.notice = notice.or(missing);
-    view.title = "Codewhale".into();
+    view.title = app
+        .pet_watch
+        .name()
+        .unwrap_or("Codewhale")
+        .to_owned()
+        .into();
     view.agents = if inspect { &agents } else { &[] };
     view.agent_words = SubagentViewWords {
         title: tr(app.ui_locale, MessageId::ConfigChoiceRailAgents),
@@ -714,18 +502,15 @@ fn render(frame: &mut Frame, area: Rect, app: &mut App, inspect: bool) {
     );
     let inspect_hint = tr(app.ui_locale, MessageId::PetModeInspectHint)
         .replace("{inspect}", &chord(Id::PetInspect));
-    let view_hint = tr(app.ui_locale, MessageId::PetModeViewHint)
-        .replace("{cycle}", &chord(Id::ViewCycle))
-        .replace("{view}", &view_key);
     view.pane_hints = if inspect {
         pane_hints.into()
     } else {
-        view_hint.clone().into()
+        Cow::Borrowed("")
     };
     view.hints = if inspect {
         hints.into()
     } else {
-        format!("{inspect_hint}{companion}").into()
+        inspect_hint.clone().into()
     };
     app.pet_watch
         .full
@@ -777,17 +562,23 @@ fn render(frame: &mut Frame, area: Rect, app: &mut App, inspect: bool) {
             plan.footer.height.min(1),
         )
     });
-    let width = codewhale_ratatui::text::width(&view_hint);
-    app.pet_watch.view_area =
-        (!inspect && plan.footer.height > 1 && width <= usize::from(plan.footer.width))
-            .then(|| Rect::new(plan.footer.x, plan.footer.y + 1, width as u16, 1));
-    if canonical(&app.pet_watch) {
-        app.pet_watch.area = Some(plan.pet);
+    app.pet_watch.area = Some(plan.pet);
+}
+fn tint(materials: &[[f64; 4]], color: [u8; 3]) -> Vec<[f64; 4]> {
+    let [r, g, b] = color.map(f64::from);
+    let peak = r.max(g).max(b);
+    let hue = if peak > 0.0 {
+        [r / peak, g / peak, b / peak]
     } else {
-        // Existing reviewed avatar packs and explicit action/view previews keep
-        // their renderer and permissions; only the full-screen layout is shared.
-        super::render_tank(frame, plan.pet, app);
-    }
+        [1.0; 3]
+    };
+    materials
+        .iter()
+        .map(|m| {
+            let value = m[0].max(m[1]).max(m[2]);
+            [hue[0] * value, hue[1] * value, hue[2] * value, m[3]]
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -859,7 +650,7 @@ mod tests {
         assert_eq!(motion(&app), MotionMode::Still);
     }
     #[test]
-    fn a_terminal_that_is_not_the_companion_source_draws_its_own_dot_whale() {
+    fn a_terminal_draws_its_own_dot_whale_from_its_own_session() {
         let projector = super::super::dots::Projector::new().expect("committed bundle loads");
         assert!(projector.observe(
             r#"[{"event":"turn_started","turn_id":"t"},
@@ -867,31 +658,33 @@ mod tests {
             0.0
         ));
         let frame = projector
-            .frame(100.0, false, false, "smooth")
+            .frame(100.0, false, false)
             .unwrap()
             .expect("a moving frame");
         assert_eq!(frame.points.len(), 980);
         assert_eq!(frame.materials.len(), 980);
         assert!(!frame.hollow);
         let still = projector
-            .frame(3000.0, true, false, "smooth")
+            .frame(3000.0, true, false)
             .unwrap()
             .expect("a still frame");
         assert_eq!(still.points.len(), 980);
-        assert_eq!(projector.frame(3100.0, true, false, "smooth"), Ok(None));
+        assert_eq!(projector.frame(3100.0, true, false), Ok(None));
         assert!(projector.reset());
         let rest = projector
-            .frame(3200.0, true, false, "smooth")
+            .frame(3200.0, true, false)
             .unwrap()
             .expect("a still rest frame");
         assert!(rest.hollow);
         assert_ne!(rest.points, still.points, "editing reshapes the dots");
 
         let mut app = app();
-        assert!(paint(&mut app, 100, 32).contains(" needs "));
+        assert!(!paint(&mut app, 100, 32).contains(" needs "));
         app.pet_watch.dots_frame = Some(frame);
+        app.pet_watch.set_name(Some("Moby".into()));
         let painted = paint(&mut app, 100, 32);
         assert!(!painted.contains(" needs "), "{painted}");
+        assert!(painted.contains("Moby"), "{painted}");
         assert!(
             painted
                 .chars()
@@ -899,7 +692,26 @@ mod tests {
         );
     }
     #[test]
-    fn a_local_whale_that_cannot_start_falls_back_to_the_previous_whale_and_notice() {
+    fn hold_still_stops_the_stage_and_a_colour_keeps_each_dot_s_brightness() {
+        let mut app = app();
+        app.low_motion = false;
+        app.fancy_animations = true;
+        assert_eq!(motion(&app), MotionMode::Full);
+        app.pet_watch.set_still(true);
+        assert_eq!(motion(&app), MotionMode::Still);
+
+        let tinted = tint(
+            &[[40.0, 80.0, 120.0, 0.5], [120.0, 200.0, 240.0, 0.9]],
+            [255, 0, 0],
+        );
+        assert_eq!(tinted, [[120.0, 0.0, 0.0, 0.5], [240.0, 0.0, 0.0, 0.9]]);
+        assert_eq!(
+            tint(&[[10.0, 20.0, 30.0, 1.0]], [0, 0, 0])[0][..3],
+            [30.0; 3]
+        );
+    }
+    #[test]
+    fn a_dot_whale_that_cannot_start_falls_back_to_the_block_whale_and_says_so() {
         let mut starting = app();
         starting.pet_watch.dots = Some(super::super::dots::Dots::start());
         assert!(!paint(&mut starting, 100, 32).contains(" needs "));
@@ -1104,7 +916,6 @@ mod tests {
         assert!(paint(&mut app, 40, 12).contains("Actual failure receipt"));
         assert_eq!(app.input, "retained draft");
         assert_eq!(app.current_session_id, session);
-        assert!(app.pet_watch.worker.is_none());
     }
     #[test]
     fn reduced_completed_view_reuses_the_response_and_does_not_schedule_paints() {

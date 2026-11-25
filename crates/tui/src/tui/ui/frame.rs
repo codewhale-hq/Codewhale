@@ -2428,7 +2428,6 @@ pub(crate) fn draw_app_frame_inner(
             frame_area = f.area();
             cursor_pos = render(f, app, config);
         })?;
-        app.pet_watch.present(terminal.backend_mut())?;
         finish_frame_cursor(terminal, cursor_pos)?;
         if cursor_pos.is_none()
             && let Some(anchor) = app.view_stack.cursor_anchor(frame_area)

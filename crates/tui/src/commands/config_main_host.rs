@@ -1793,7 +1793,7 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                     ));
                 }
             };
-            // /pet and the settings editor share the ordered background writer.
+            // /whale and the settings editor share the ordered background writer.
             // A failed save is reported by the existing warning mailbox.
             return select_pet_mode(app, enabled, persist);
         }
@@ -3078,12 +3078,12 @@ mod tests {
             is_error: result.is_error,
         }
     }
-    /// Invoke the portable `/pet` handler through the real PET envelope and
+    /// Invoke the portable `/whale` handler through the real PET envelope and
     /// convert the contract result back.
-    fn pet_command(app: &mut App, arg: Option<&str>) -> CommandResult {
-        let result = crate::commands::groups::config::config::pet(
+    fn whale_command(app: &mut App, arg: Option<&str>) -> CommandResult {
+        let result = crate::commands::groups::config::config::whale(
             app.command_contexts_with_config(None)
-                .contexts(crate::commands::groups::config::config::PET_CAPS),
+                .contexts(crate::commands::groups::config::config::WHALE_CAPS),
             arg,
         );
         CommandResult {
@@ -3641,31 +3641,14 @@ mod tests {
     }
 
     #[test]
-    fn pet_sound_command_is_opt_in_and_rejects_invalid_changes() {
-        let mut app = create_test_app();
-        let status = pet_command(&mut app, Some("sound"));
-        assert!(!status.is_error);
-        assert_eq!(app.pet_watch.sound_label(), MessageId::PetWatchSoundOff);
-
-        assert!(!pet_command(&mut app, Some(" SOUND ON ")).is_error);
-        assert_eq!(app.pet_watch.sound_label(), MessageId::PetWatchSoundPaused);
-        for invalid in ["sound yes", "sound off extra", "sound on --save"] {
-            assert!(pet_command(&mut app, Some(invalid)).is_error, "{invalid}");
-            assert_eq!(app.pet_watch.sound_label(), MessageId::PetWatchSoundPaused);
-        }
-        assert!(!pet_command(&mut app, Some("sound off")).is_error);
-        assert_eq!(app.pet_watch.sound_label(), MessageId::PetWatchSoundOff);
-    }
-
-    #[test]
-    fn pet_command_selects_the_main_view_without_taking_composer_focus() {
+    fn whale_command_selects_the_main_view_without_taking_composer_focus() {
         let mut app = create_test_app();
         app.onboarding = crate::tui::app::OnboardingState::None;
         app.redaction_gate = false;
         app.input = "kept draft".into();
         app.pet_watch.detach_for_test();
 
-        let on = pet_command(&mut app, None);
+        let on = whale_command(&mut app, None);
         assert!(!on.is_error);
         assert!(app.pet_watch.enabled);
         assert!(crate::tui::pet_watch::is_open(&app));
@@ -3675,11 +3658,11 @@ mod tests {
         );
         assert!(app.view_stack.is_empty());
         // Repeating `on` leaves the composer in the same shell focus.
-        assert!(!pet_command(&mut app, Some(" ON ")).is_error);
+        assert!(!whale_command(&mut app, Some(" ON ")).is_error);
         assert!(app.pet_watch.enabled);
         assert!(crate::tui::pet_watch::is_open(&app));
 
-        let off = pet_command(&mut app, Some("off"));
+        let off = whale_command(&mut app, Some("off"));
         assert!(!off.is_error);
         assert!(!app.pet_watch.enabled);
         assert!(!crate::tui::pet_watch::is_open(&app));
@@ -3690,21 +3673,50 @@ mod tests {
             Some(&*tr(app.ui_locale, MessageId::PetModeOff))
         );
 
-        // Bare /pet toggles back on; unknown verbs are refused with usage.
-        app.pet_watch.detach_for_test();
-        assert!(!pet_command(&mut app, None).is_error);
+        // Bare /whale toggles back on; removed verbs are refused with usage.
+        assert!(!whale_command(&mut app, None).is_error);
         assert!(app.pet_watch.enabled);
-        assert!(pet_command(&mut app, Some("bogus")).is_error);
-        let status = pet_command(&mut app, Some("status"));
-        assert!(!status.is_error);
-        let message = status.message.unwrap_or_default();
+        for removed in ["bogus", "status", "sound on", "export", "avatar"] {
+            assert!(whale_command(&mut app, Some(removed)).is_error, "{removed}");
+        }
+        assert!(app.pet_watch.enabled);
+    }
+
+    #[test]
+    fn whale_still_name_and_colour_reach_this_terminal_s_whale() {
+        let mut app = create_test_app();
+        app.pet_watch.detach_for_test();
+        assert!(!whale_command(&mut app, Some("still")).is_error);
+        assert!(app.pet_watch.still());
+        assert!(!whale_command(&mut app, Some("name Moby")).is_error);
+        assert_eq!(app.pet_watch.name(), Some("Moby"));
+        assert!(!whale_command(&mut app, Some("color #7fb2e0")).is_error);
+        assert_eq!(app.pet_watch.color(), Some([0x7f, 0xb2, 0xe0]));
+        assert!(!whale_command(&mut app, Some("color default")).is_error);
+        assert_eq!(app.pet_watch.color(), None);
+        assert!(!whale_command(&mut app, Some("still")).is_error);
+        assert!(!app.pet_watch.still());
+    }
+
+    #[test]
+    fn pet_is_an_unlisted_alias_that_runs_whale() {
+        let mut app = create_test_app();
+        app.onboarding = crate::tui::app::OnboardingState::None;
+        app.redaction_gate = false;
+        app.pet_watch.detach_for_test();
+        assert!(!crate::commands::execute("/pet", &mut app).is_error);
+        assert!(app.pet_watch.enabled);
+        assert!(!crate::commands::execute("/PET still", &mut app).is_error);
+        assert!(app.pet_watch.still());
+        assert!(!crate::commands::execute("/whale", &mut app).is_error);
+        assert!(!app.pet_watch.enabled);
+        let infos = crate::commands::command_infos();
+        assert!(infos.iter().any(|info| info.name == "whale"));
         assert!(
-            message.contains(&*tr(app.ui_locale, MessageId::PetModeOnLabel)),
-            "{message}"
-        );
-        assert!(
-            message.contains(&*tr(app.ui_locale, MessageId::PetViewOpen)),
-            "{message}"
+            infos
+                .iter()
+                .all(|info| info.name != "pet" && !info.aliases.contains(&"pet")),
+            "/pet is not listed"
         );
     }
 

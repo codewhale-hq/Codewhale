@@ -67,7 +67,7 @@ impl CommandGroup for ConfigCommands {
                     registration::<5>(),  // /disconnect
                     registration::<6>(),  // /auth
                     registration::<7>(),  // /workbar (+ /rail, /sidebar)
-                    registration::<8>(),  // /pet
+                    registration::<8>(),  // /whale
                     registration::<9>(),  // /settings
                     registration::<10>(), // /status
                     registration::<11>(), // /statusline

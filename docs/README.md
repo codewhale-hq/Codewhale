@@ -10,7 +10,7 @@ is the source. Translations live in [`id/`](id) and [`zh_hans/`](zh_hans).
 - [User guide](GUIDE.md): first run, sessions, commands, everyday workflows
 - [Sign in to a Codewhale account](ACCOUNT.md)
 - [Keybindings](KEYBINDINGS.md)
-- [Pet mode](PET_MODE.md): a glanceable whale view per terminal, with replies and agents on demand
+- [The whale view](PET_MODE.md): `/whale` shows a glanceable whale per terminal, with replies and agents on demand
 - [Modes and permission postures](MODES.md), [Auto-Review](AUTO_REVIEW.md), and [Creator mode](CREATOR_MODE.md)
 - [Configuration](CONFIGURATION.md)
 - [Providers and local models](PROVIDERS.md), [models and providers](MODELS_AND_PROVIDERS.md), and the [Model Lab roadmap](MODEL_LAB.md)

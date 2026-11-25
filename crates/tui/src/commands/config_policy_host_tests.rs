@@ -20,7 +20,7 @@ fn config_policy_keeps_host_registry_order_metadata_and_exact_capabilities() {
             "disconnect",
             "auth",
             "workbar",
-            "pet",
+            "whale",
             "settings",
             "status",
             "statusline",

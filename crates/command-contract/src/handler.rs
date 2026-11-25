@@ -93,7 +93,7 @@ impl CommandCapabilities {
     /// audit and login/logout observations for the config command group. It does
     /// not grant pet, trust, mode, or workspace authority.
     pub const CONFIG: Self = Self(1 << 25);
-    /// Pet presence/mode/sound/habitat host data (FEAT-028 D3), independent of
+    /// Whale view, stillness, name and colour host data (FEAT-028 D3), independent of
     /// general configuration and system settings.
     pub const PET: Self = Self(1 << 26);
     /// Workspace trust and trusted-path allow-list host data (FEAT-028 D3),

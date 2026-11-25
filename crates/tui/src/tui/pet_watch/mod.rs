@@ -1,49 +1,23 @@
-//! Views of one durable local pet. Engine events are projected here once;
-//! the companion owns simulation, persistence and the sole audio output.
-use crate::tui::{
-    app::{App, StatusToastLevel},
-    underwater::ShellPhase,
-    views::ModalKind,
-};
+//! The whale view of one terminal. Engine events from this terminal's own
+//! session are projected here once and drawn locally as the dot whale; no
+//! other process takes part.
+//!
+//! Known limits: the name, colour and hold-still choices last until this
+//! terminal closes; only `pet_mode` is saved.
+use crate::tui::{app::App, underwater::ShellPhase, views::ModalKind};
 use codewhale_engine::core::events::{Event, TurnOutcomeStatus};
-use codewhale_localization::{MessageId, tr};
-use codewhale_palette::{ChromeInk, chrome_style};
-use ratatui::{
-    Frame,
-    layout::Rect,
-    style::{Color, Style},
-    widgets::{Block, Clear, Paragraph},
-};
+use ratatui::layout::Rect;
 use serde_json::json;
 use std::{
-    io::{self, Write},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-mod appearance;
-pub use appearance::BodyStyle;
-mod audio;
-mod audio_cursor;
-mod avatars;
 mod dots;
 mod full;
-mod graphics;
 mod habitat;
 pub use full::{render_full, render_main};
-mod live;
-pub(crate) mod owner;
-mod persistence;
-mod runtime;
-pub use runtime::observe_runtime;
-#[cfg(test)]
-mod worker;
-use live::{Command, Notice, Presentation, Worker};
 #[derive(Clone, Copy)]
 pub enum Control {
-    Appearance { body: BodyStyle },
-    Sound,
-    Browser,
-    Select,
     Scroll(i16),
     FocusAgents,
     ScrollEnd(bool),
@@ -51,35 +25,20 @@ pub enum Control {
 }
 #[derive(Default)]
 pub struct PetWatch {
-    avatars: avatars::Avatars,
-    worker: Option<Worker>,
     session: Option<String>,
     active_turn_id: Option<String>,
-    last_tick: Option<Instant>,
-    failed: bool,
-    /// The companion said it cannot be reached. Cleared by the next frame.
-    unavailable: bool,
-    exporting: bool,
-    sound_requested: bool,
     pub(crate) area: Option<Rect>,
     pub(crate) inspect_area: Option<Rect>,
-    pub(crate) view_area: Option<Rect>,
     copy_area: Arc<Mutex<Option<Rect>>>,
-    raster: Option<Presentation>,
     dots: Option<dots::Dots>,
     dots_frame: Option<dots::Frame>,
     dots_area: Option<Rect>,
     controls: Arc<Mutex<Vec<Control>>>,
-    desired: Option<Rect>,
-    painted: Option<Rect>,
-    sent: Option<Instant>,
-    started: Option<Instant>,
-    frames: u64,
-    bytes: u64,
-    render_ms: f64,
-    output_ms: f64,
-    /// `/pet on`: the native pet replaces the ordinary shell backdrop.
+    /// `/whale`: the whale replaces the ordinary shell backdrop.
     pub(crate) enabled: bool,
+    still: bool,
+    name: Option<String>,
+    color: Option<[u8; 3]>,
     work_history_start: usize,
     full: codewhale_ratatui::PetModeState,
     full_next: Option<Instant>,
@@ -91,41 +50,31 @@ pub struct PetWatch {
     detached: bool,
 }
 impl PetWatch {
-    pub fn avatar_choices(&self) -> String {
-        self.avatars.choices()
+    pub fn still(&self) -> bool {
+        self.still
     }
-    pub fn select_avatar(&mut self, key: &str) -> bool {
-        self.avatars.select(key)
+    pub fn set_still(&mut self, still: bool) {
+        self.still = still;
     }
-    pub fn preview_avatar(&mut self, name: &str, view: bool) -> bool {
-        self.avatars.preview(name, view)
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
-    pub fn set_sound(&mut self, enabled: bool) {
-        self.sound_requested = enabled;
+    pub fn set_name(&mut self, name: Option<String>) {
+        self.name = name;
     }
-    pub fn sound_label(&self) -> MessageId {
-        if !self.sound_requested {
-            MessageId::PetWatchSoundOff
-        } else if self.raster.as_ref().is_some_and(|r| {
-            r.scene.audio_owner.as_deref() == Some(r.client.as_str()) && !r.scene.audio_unavailable
-        }) {
-            MessageId::PetWatchSoundOn
-        } else {
-            MessageId::PetWatchSoundPaused
-        }
+    pub fn color(&self) -> Option<[u8; 3]> {
+        self.color
+    }
+    pub fn set_color(&mut self, color: Option<[u8; 3]>) {
+        self.color = color;
     }
     fn reset(&mut self, session: Option<String>) {
-        self.worker = None;
         self.session = session;
         self.active_turn_id = None;
-        self.raster = None;
         if let Some(dots) = &self.dots {
             dots.reset();
         }
         self.dots_frame = None;
-        self.failed = false;
-        self.unavailable = false;
-        self.last_tick = None;
         self.work_history_start = 0;
         self.full = codewhale_ratatui::PetModeState::default();
         self.full_next = None;
@@ -135,23 +84,6 @@ impl PetWatch {
         if let Ok(mut selection) = self.selection.lock() {
             *selection = None;
         }
-        self.avatars.view = None;
-        self.avatars.action = None;
-    }
-    fn ensure(&mut self, session: Option<String>) {
-        if self.session != session {
-            self.reset(session)
-        }
-        #[cfg(test)]
-        if self.detached {
-            return;
-        }
-        if self.worker.is_none() && !self.failed {
-            match Worker::start(self.session.clone()) {
-                Ok(worker) => self.worker = Some(worker),
-                Err(_) => self.failed = true,
-            }
-        }
     }
     fn start_dots(&mut self) {
         #[cfg(test)]
@@ -160,69 +92,26 @@ impl PetWatch {
         }
         self.dots = Some(dots::Dots::start());
     }
-    pub fn export(&mut self) -> bool {
-        if self.worker.is_none() || self.exporting {
-            return false;
-        }
-        self.send(Command::Export);
-        self.exporting = !self.failed;
-        self.exporting
-    }
-    /// Tests drive the shell without a companion: never start a view worker.
+    /// Tests drive the shell without the dot whale's thread.
     #[cfg(test)]
     pub(crate) fn detach_for_test(&mut self) {
-        self.worker = None;
-        self.failed = true;
+        self.dots = None;
         self.detached = true;
     }
-    fn revive(&mut self) {
-        if self.worker.as_ref().is_some_and(|w| {
-            matches!(
-                w.tx.try_send(Command::Wake),
-                Err(std::sync::mpsc::TrySendError::Disconnected(_))
-            )
-        }) {
-            self.worker = None;
-            self.raster = None;
-        }
-        self.failed = false;
-    }
-    pub fn observe(&mut self, event: &Event, session: Option<&str>, _now: Instant) {
+    pub fn observe(&mut self, event: &Event, session: Option<&str>) {
         if self.session.as_deref() != session {
-            // A live view follows the session switch: restart it for the new
-            // session and forward the event that switched, so the reducer
-            // sees the turn that opened it. Without a live view, the next
-            // tick that needs one starts it; turn tracking below still records the turn.
-            let had_worker = self.worker.is_some();
             self.reset(session.map(str::to_owned));
-            if had_worker {
-                self.ensure(self.session.clone());
-            }
         }
         if let Event::TurnStarted { turn_id, .. } = event {
             self.active_turn_id = Some(turn_id.clone());
         }
-        if let Some(text) = metadata(event, self.active_turn_id.as_deref()) {
-            if let Some(dots) = &self.dots {
-                dots.observe(text.clone());
-            }
-            self.send(Command::Observe(text));
+        if let Some(text) = metadata(event, self.active_turn_id.as_deref())
+            && let Some(dots) = &self.dots
+        {
+            dots.observe(text);
         }
         if matches!(event, Event::TurnComplete { .. }) {
             self.active_turn_id = None;
-        }
-    }
-    fn send(&mut self, command: Command) {
-        if self
-            .worker
-            .as_ref()
-            .is_some_and(|w| w.tx.try_send(command).is_err())
-        {
-            // A gap drops this producer lease. Restart from a fresh unobserved
-            // handshake; never infer continuity from events we could not queue.
-            self.worker = None;
-            self.raster = None;
-            self.failed = true;
         }
     }
     /// Wake the existing terminal loop for the native stage, even at idle.
@@ -233,73 +122,13 @@ impl PetWatch {
     }
     pub fn prepare_frame(&mut self) {
         self.inspect_area = None;
-        self.view_area = None;
         if let Ok(mut area) = self.copy_area.lock() {
             *area = None;
         }
-        self.desired = None;
-    }
-    pub fn present(&mut self, output: &mut impl Write) -> io::Result<()> {
-        let raster = self
-            .raster
-            .as_ref()
-            .filter(|r| r.frame_changed.elapsed() < Duration::from_millis(800));
-        let desired = self.desired.filter(|a| {
-            raster.is_some_and(|r| r.image.is_some() && r.width == a.width && r.height == a.height)
-        });
-        if desired.is_none() {
-            if self.painted.take().is_some() {
-                graphics::clear(output)?;
-            }
-            self.sent = None;
-            return Ok(());
-        }
-        let area = desired.unwrap();
-        let raster = raster.unwrap();
-        if self.painted == Some(area) && self.sent == Some(raster.created) {
-            return Ok(());
-        }
-        let began = Instant::now();
-        // Within the existing synchronized frame: delete this process's one
-        // image, replace it, restore the cursor. No terminal-side frame queue.
-        graphics::clear(output)?;
-        write!(output, "\x1b7\x1b[{};{}H", area.y + 1, area.x + 1)?;
-        output.write_all(raster.image.as_ref().unwrap())?;
-        output.write_all(b"\x1b8")?;
-        self.painted = Some(area);
-        self.sent = Some(raster.created);
-        self.started.get_or_insert(began);
-        self.frames += 1;
-        self.bytes += raster.bytes as u64;
-        self.render_ms += raster.render_ms;
-        self.output_ms += began.elapsed().as_secs_f64() * 1000.0;
-        Ok(())
-    }
-    pub fn status(&self) -> String {
-        let seconds = self.started.map_or(0.0, |s| s.elapsed().as_secs_f64());
-        let identity = self
-            .raster
-            .as_ref()
-            .map(|r| {
-                format!(
-                    "{} · tick {} · {} · {}",
-                    r.scene.identity, r.scene.tick, r.scene.digest, r.scene.source
-                )
-            })
-            .unwrap_or_default();
-        format!(
-            "{identity} · {} pixel frames / {:.1}s · {:.1} fps · {:.2} MiB/s · render {:.2}ms · write {:.2}ms",
-            self.frames,
-            seconds,
-            self.frames as f64 / seconds.max(0.001),
-            self.bytes as f64 / 1048576.0 / seconds.max(0.001),
-            self.render_ms / self.frames.max(1) as f64,
-            self.output_ms / self.frames.max(1) as f64
-        )
     }
 }
 /// Existing protocol projection defines the variant names. This allowlist
-/// removes payloads before the bounded worker queue; no model text escapes.
+/// removes payloads before the dot whale's bounded queue; no model text escapes.
 fn metadata(event: &Event, turn_id: Option<&str>) -> Option<String> {
     let mut value = match event {
         Event::TurnStarted { turn_id, .. } => json!({"event":"turn_started","turn_id":turn_id}),
@@ -399,54 +228,20 @@ fn metadata(event: &Event, turn_id: Option<&str>) -> Option<String> {
 }
 
 pub fn command(app: &mut App, control: Control) -> bool {
-    if matches!(
-        control,
-        Control::Appearance { .. } | Control::Browser | Control::Select
-    ) {
-        app.pet_watch.revive();
-    }
-    let local = matches!(
-        control,
-        Control::Scroll(_) | Control::FocusAgents | Control::ScrollEnd(_) | Control::Mouse(_)
-    );
-    if !local {
-        app.pet_watch.ensure(app.current_session_id.clone());
-    }
     let agents = full::agents(app);
-    apply(&mut app.pet_watch, control, &agents);
-    app.needs_redraw = true;
-    local || app.pet_watch.worker.is_some()
-}
-fn wants_companion(app: &App) -> bool {
-    let state = &app.pet_watch;
-    state.worker.is_some()
-        || state.sound_requested
-        || state.avatars.current() != "whale"
-        || state.dots.as_ref().is_some_and(|dots| dots.failed())
-        || app.view_stack.contains_kind(ModalKind::PetHabitat)
-}
-pub fn cycle_view(app: &mut App, forward: bool) {
-    app.pet_watch.avatars.cycle(forward);
-    app.needs_redraw = true;
-}
-fn apply(state: &mut PetWatch, control: Control, agents: &[codewhale_ratatui::Subagent<'_>]) {
+    let state = &mut app.pet_watch;
     match control {
-        Control::Appearance { body } => {
-            state.send(Command::Appearance { body });
-        }
-        Control::Browser => state.send(Command::Browser),
-        Control::Select => state.send(Command::Select),
-        Control::Sound => state.sound_requested = !state.sound_requested,
-        Control::Scroll(delta) => state.full.scroll(agents, delta),
-        Control::FocusAgents => state.full.toggle_agents(agents),
-        Control::ScrollEnd(end) => state.full.scroll_end(agents, end),
+        Control::Scroll(delta) => state.full.scroll(&agents, delta),
+        Control::FocusAgents => state.full.toggle_agents(&agents),
+        Control::ScrollEnd(end) => state.full.scroll_end(&agents, end),
         Control::Mouse(mouse) => {
-            state.full.handle_mouse(agents, mouse);
+            state.full.handle_mouse(&agents, mouse);
         }
     }
+    app.needs_redraw = true;
+    true
 }
 pub fn open_habitat(app: &mut App) {
-    app.pet_watch.ensure(app.current_session_id.clone());
     if app.view_stack.top_kind() != Some(ModalKind::PetHabitat) {
         app.view_stack.push(habitat::Habitat::new(
             app.pet_watch.controls.clone(),
@@ -467,7 +262,7 @@ pub fn is_open(app: &App) -> bool {
     app.view_stack.top_kind() == Some(ModalKind::PetHabitat)
         || (main_view(app) && app.view_stack.is_empty())
 }
-/// `/pet on|off` selects the shell backdrop without taking composer focus.
+/// `/whale` selects the shell backdrop without taking composer focus.
 /// Drafts, history, selection and the active Engine turn retain their owners.
 pub fn set_enabled(app: &mut App, enabled: bool) {
     app.pet_watch.enabled = enabled;
@@ -480,7 +275,6 @@ pub fn set_enabled(app: &mut App, enabled: bool) {
         crate::tui::agent_focus::exit_focus(app);
         app.file_tree = None;
         app.file_tree_visible = false;
-        app.pet_watch.revive();
     } else {
         let session = app.pet_watch.session.clone();
         app.pet_watch.reset(session);
@@ -489,40 +283,24 @@ pub fn set_enabled(app: &mut App, enabled: bool) {
     }
     app.needs_redraw = true;
 }
-/// F5 and `/pet inspect` enter the same existing modal stack. Printable keys,
-/// paste, submit and editing remain with the normal composer on the main view.
+/// F5 enters the existing modal stack. Printable keys, paste, submit and
+/// editing remain with the normal composer on the main view.
 pub fn handle_key(app: &mut App, key: &crossterm::event::KeyEvent) -> bool {
     use crate::tui::shell_key_routing::{self, ShellBindingId as Id};
     if !app.pet_watch.enabled {
         return false;
     }
-    let showing = main_view(app) && app.view_stack.is_empty();
-    match shell_key_routing::route(app.focus(), key) {
-        Some(Id::PetInspect) => open_habitat(app),
-        Some(Id::ViewCycle) if showing => cycle_view(app, true),
-        Some(Id::ViewCycleBack) if showing => cycle_view(app, false),
-        Some(Id::PetSound) if showing => {
-            command(app, Control::Sound);
-            let label = if app.pet_watch.sound_requested {
-                MessageId::PetWatchSoundOn
-            } else {
-                MessageId::PetWatchSoundOff
-            };
-            let text = tr(app.ui_locale, label).into_owned();
-            app.push_status_toast(text, StatusToastLevel::Info, Some(4000));
-        }
-        Some(Id::PetBrowser) if showing => {
-            command(app, Control::Browser);
-        }
-        _ => return false,
+    if shell_key_routing::route(app.focus(), key) != Some(Id::PetInspect) {
+        return false;
     }
+    open_habitat(app);
     true
 }
 /// The existing Engine determines work boundaries. Only the shell reads the
-/// answer; no conversation text enters the pet owner or recording.
-pub fn observe(app: &mut App, event: &Event, now: Instant) {
+/// answer; no conversation text enters the whale's projection.
+pub fn observe(app: &mut App, event: &Event, _now: Instant) {
     app.pet_watch
-        .observe(event, app.current_session_id.as_deref(), now);
+        .observe(event, app.current_session_id.as_deref());
     if matches!(event, Event::TurnStarted { .. }) {
         app.pet_watch.work_history_start = app.history.len();
         app.pet_watch.full.reset_output();
@@ -542,13 +320,6 @@ pub fn tick(app: &mut App, now: Instant) {
         ShellPhase::Waiting | ShellPhase::Approval
     );
     let keep_dots = app.pet_watch.enabled || app.view_stack.contains_kind(ModalKind::PetHabitat);
-    if visible && app.pet_watch.avatars.refresh(&app.workspace, now) {
-        app.needs_redraw = true;
-    }
-    let sound_allowed = visible
-        && app.onboarding == crate::tui::app::OnboardingState::None
-        && !app.notification_settings.quiet
-        && !app.notification_settings.event_sound.quiet;
     let controls = app
         .pet_watch
         .controls
@@ -558,43 +329,11 @@ pub fn tick(app: &mut App, now: Instant) {
     for control in controls {
         command(app, control);
     }
-    let companion = visible && wants_companion(app);
     let state = &mut app.pet_watch;
     if state.session != app.current_session_id {
         state.reset(app.current_session_id.clone());
     }
-    if companion {
-        state.ensure(app.current_session_id.clone());
-    }
-    if let Some(update) = state
-        .worker
-        .as_ref()
-        .and_then(|w| w.latest.lock().ok().and_then(|mut s| s.take()))
-    {
-        if update.scene.audio_unavailable {
-            state.sound_requested = false;
-        }
-        state.raster = Some(update);
-        state.unavailable = false;
-        if visible {
-            app.needs_redraw = true;
-        }
-    }
-    if state.raster.as_ref().is_some_and(|r| {
-        now.saturating_duration_since(r.frame_changed) > Duration::from_millis(800)
-    }) {
-        state.raster = None;
-        if visible {
-            app.needs_redraw = true;
-        }
-    }
-    let own = full::presentation(
-        state.raster.as_ref(),
-        app.current_session_id.as_deref(),
-        now,
-    )
-    .is_some_and(|r| r.scene.materials.is_some());
-    let want = visible && state.avatars.current() == "whale" && !own && state.dots_area.is_some();
+    let want = visible && state.dots_area.is_some();
     if !keep_dots {
         state.dots = None;
         state.dots_frame = None;
@@ -602,14 +341,7 @@ pub fn tick(app: &mut App, now: Instant) {
         state.start_dots();
     }
     if let Some(dots) = &state.dots {
-        let body = state
-            .raster
-            .as_ref()
-            .map(|r| match r.scene.appearance.body_style {
-                BodyStyle::Smooth => "smooth",
-                BodyStyle::Pixel => "pixel",
-            });
-        dots.set_view(want, motion, waiting, body);
+        dots.set_view(want, motion, waiting);
         if dots.failed() {
             state.dots_frame = None;
         } else if let Some(frame) = dots.take() {
@@ -619,290 +351,7 @@ pub fn tick(app: &mut App, now: Instant) {
             }
         }
     }
-    if state
-        .last_tick
-        .is_none_or(|t| now.saturating_duration_since(t) >= Duration::from_millis(30))
-    {
-        state.last_tick = Some(now);
-        let state = &app.pet_watch;
-        if let Some(worker) = &state.worker {
-            let a = state.area.unwrap_or(Rect::new(0, 0, 40, 8));
-            let cell = cell_pixels().unwrap_or((8.0, 16.0));
-            let next = live::View {
-                locale: app.ui_locale.tag().into(),
-                width: a.width.clamp(1, 512),
-                height: a.height.saturating_sub(1).clamp(1, 256),
-                cell_width: cell.0,
-                cell_height: cell.1,
-                motion,
-                pixels: state.avatars.current() == "pixels"
-                    && pixels_need(app.synchronized_output_enabled).is_none(),
-                visible,
-                waiting,
-                sound: state.sound_requested && sound_allowed,
-            };
-            let woke = worker.view.lock().is_ok_and(|mut view| {
-                let woke = view.visible != next.visible;
-                *view = next;
-                woke
-            });
-            if woke {
-                let _ = worker.tx.try_send(Command::Wake);
-            }
-        }
-    }
-    let notices: Vec<_> = app
-        .pet_watch
-        .worker
-        .as_ref()
-        .map(|w| w.notices.try_iter().take(16).collect())
-        .unwrap_or_default();
-    for notice in notices {
-        let recorded = !matches!(notice, Notice::Opened);
-        app.pet_watch.exporting &= !recorded;
-        let (text, level) = match notice {
-            Notice::Opened => (
-                tr(app.ui_locale, MessageId::PetViewOpen).into_owned(),
-                StatusToastLevel::Info,
-            ),
-            Notice::AppearanceLegacy => (
-                tr(app.ui_locale, MessageId::PetAppearanceLegacy).into_owned(),
-                StatusToastLevel::Warning,
-            ),
-            Notice::Exported(path) => (
-                tr(app.ui_locale, MessageId::PetWatchExported)
-                    .replace("{path}", &path.display().to_string()),
-                StatusToastLevel::Info,
-            ),
-            // A refused action (select, export, open) leaves a reachable
-            // companion and the habitat as they are.
-            Notice::Message(message) => (message, StatusToastLevel::Warning),
-            Notice::Unreachable(message) => {
-                app.pet_watch.unavailable = true;
-                if app.is_loading
-                    && app.view_stack.top_kind() == Some(ModalKind::PetHabitat)
-                    && !full::canonical(&app.pet_watch)
-                {
-                    app.view_stack.pop();
-                }
-                (
-                    format!(
-                        "{} · {message}",
-                        tr(app.ui_locale, MessageId::PetWatchUnavailable)
-                    ),
-                    StatusToastLevel::Warning,
-                )
-            }
-        };
-        if recorded {
-            app.add_message(crate::tui::history::HistoryCell::System {
-                content: text.clone(),
-            });
-        }
-        app.push_status_toast(text, level, Some(if recorded { 12000 } else { 4000 }));
-        app.needs_redraw = true;
-    }
     full::tick(app, visible, now);
-}
-fn render_tank(frame: &mut Frame, area: Rect, app: &mut App) {
-    app.pet_watch.area = Some(area);
-    let raster = app.pet_watch.raster.as_ref();
-    let hollow = raster.is_none_or(|r| !r.scene.producer_connected || r.scene.style.hollow);
-    let scene = raster
-        .map(|r| {
-            let mut text = format!(
-                "{} · {} · {}",
-                r.scene.style.channel, r.scene.style.arch, r.scene.behaviour
-            );
-            if let Some(activity) = &r.scene.activity
-                && activity.observed
-                && activity.freshness == codewhale_protocol::engine_owner::OwnerFreshness::Fresh
-                && r.frame_changed.elapsed().as_millis() < 800
-            {
-                if let Some(action) = activity.action_id.as_deref() {
-                    text = format!("{action} · {text}");
-                } else if let Some(kind) = activity.activity_kind {
-                    text = format!("{} · {}", kind.as_str(), text);
-                }
-                if activity.parallel_agent_count > 0 {
-                    text.push_str(&format!(" · ×{}", activity.parallel_agent_count));
-                }
-            }
-            text
-        })
-        .unwrap_or_default();
-    // With no companion frame the tank still paints the resting whale and
-    // says why, instead of a blank tank under an orphan separator.
-    let label = if raster.is_none() && app.pet_watch.unavailable {
-        tr(app.ui_locale, MessageId::PetOffline).into_owned()
-    } else {
-        let presence = hollow.then(|| tr(app.ui_locale, MessageId::PetUnobserved));
-        let sound = tr(app.ui_locale, app.pet_watch.sound_label());
-        [
-            Some(scene.as_str()),
-            presence.as_deref(),
-            Some(sound.as_ref()),
-        ]
-        .into_iter()
-        .flatten()
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(" · ")
-    };
-    let image = (app.view_stack.is_empty()
-        || app.view_stack.top_kind() == Some(ModalKind::PetHabitat))
-        && raster.is_some_and(|r| {
-            r.image.is_some() && r.width == area.width && r.height == area.height.saturating_sub(1)
-        })
-        && area.height >= 4;
-    let bg = raster
-        .map(|r| r.scene.appearance.background)
-        .unwrap_or([8, 15, 21]);
-    let ink = raster
-        .map(|r| {
-            Color::Rgb(
-                r.scene.style.r.clamp(0.0, 255.0) as u8,
-                r.scene.style.g.clamp(0.0, 255.0) as u8,
-                r.scene.style.b.clamp(0.0, 255.0) as u8,
-            )
-        })
-        .unwrap_or(Color::Rgb(180, 210, 216));
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Block::default().style(Style::default().bg(Color::Rgb(bg[0], bg[1], bg[2]))),
-        area,
-    );
-    let (act, clock) = avatars::act(raster, app.is_loading);
-    let reduced = !full::motion(app).animates();
-    let theme = full::theme(app);
-    let tank = Rect {
-        height: area.height.saturating_sub(1),
-        ..area
-    };
-    if app
-        .pet_watch
-        .avatars
-        .paint(tank, frame.buffer_mut(), act, clock, reduced, &theme)
-    {
-        let preview = app.pet_watch.avatars.action.as_deref().or(app
-            .pet_watch
-            .avatars
-            .view
-            .as_deref());
-        let label = preview.map_or(label.clone(), |p| format!("/pet action {p} · {label}"));
-        frame.render_widget(
-            Paragraph::new(label).style(chrome_style(&app.ui_theme, ChromeInk::Metadata)),
-            Rect {
-                y: area.bottom().saturating_sub(1),
-                height: 1,
-                ..area
-            },
-        );
-        return;
-    }
-    if image {
-        let tank = Rect {
-            height: area.height.saturating_sub(1),
-            ..area
-        };
-        app.pet_watch.desired = Some(tank);
-        frame.render_widget(
-            Paragraph::new(label).style(chrome_style(&app.ui_theme, ChromeInk::Metadata)),
-            Rect {
-                y: area.bottom() - 1,
-                height: 1,
-                ..area
-            },
-        );
-    } else {
-        crate::tui::ambient_life::pet_widget::render_grid(
-            area,
-            frame.buffer_mut(),
-            raster
-                .filter(|r| r.width == area.width && r.height == area.height.saturating_sub(1))
-                .map_or(&[], |r| r.cells.as_slice()),
-            &label,
-            Style::default().fg(ink),
-        );
-        if let Some(raster) = raster.filter(|r| r.width == area.width && r.height == tank.height)
-            && area.height >= 4
-            && unicode_width::UnicodeWidthStr::width(label.as_str()) <= usize::from(area.width)
-        {
-            for y in tank.y..tank.bottom() {
-                for x in tank.x..tank.right() {
-                    let index =
-                        usize::from(y - tank.y) * usize::from(tank.width) + usize::from(x - tank.x);
-                    if raster.cells.get(index).is_some_and(|bits| *bits != 0)
-                        && let Some(rgb) = raster.colors.get(index)
-                        && let Some(cell) = frame.buffer_mut().cell_mut((x, y))
-                    {
-                        cell.set_fg(Color::Rgb(rgb[0], rgb[1], rgb[2]));
-                    }
-                }
-            }
-        }
-        if raster.is_none() {
-            paint_resting_whale(frame, area, Style::default().fg(ink));
-        }
-    }
-}
-
-/// The launch screen's braille whale, centred in the tank above its caption,
-/// at the largest rung that fits. Static: it rests until the companion's own
-/// frames take over the tank.
-fn paint_resting_whale(frame: &mut Frame, area: Rect, style: Style) {
-    use codewhale_tui_kit::mark::MarkSize;
-    let tank_height = area.height.saturating_sub(1);
-    let Some(size) = [MarkSize::Large, MarkSize::Small, MarkSize::Tiny]
-        .into_iter()
-        .find(|size| {
-            let (cols, rows) = size.cells();
-            cols <= area.width && rows <= tank_height
-        })
-    else {
-        return;
-    };
-    let (cols, rows) = size.cells();
-    let x0 = area.x + (area.width - cols) / 2;
-    let y0 = area.y + (tank_height - rows) / 2;
-    let buf = frame.buffer_mut();
-    for (dy, row) in size.rows().iter().enumerate() {
-        for (dx, ch) in row.chars().enumerate() {
-            if ch == ' ' {
-                continue;
-            }
-            if let Some(cell) = buf.cell_mut((x0 + dx as u16, y0 + dy as u16)) {
-                cell.set_char(ch).set_style(style);
-            }
-        }
-    }
-}
-pub(crate) fn clear_images(output: &mut impl Write) -> io::Result<()> {
-    graphics::clear(output)
-}
-fn cell_pixels() -> Option<(f64, f64)> {
-    crossterm::terminal::window_size()
-        .ok()
-        .filter(|s| s.columns > 0 && s.rows > 0 && s.width > 0 && s.height > 0)
-        .map(|s| {
-            (
-                f64::from(s.width) / f64::from(s.columns),
-                f64::from(s.height) / f64::from(s.rows),
-            )
-        })
-}
-fn pixels_need(synchronized: bool) -> Option<MessageId> {
-    if !codewhale_tui_kit::mark::kitty_graphics_supported() {
-        Some(MessageId::PetNeedsKittyGraphics)
-    } else if !synchronized {
-        Some(MessageId::PetNeedsSynchronizedOutput)
-    } else if std::env::var("CODEWHALE_PET_GRAPHICS").as_deref() == Ok("braille") {
-        Some(MessageId::PetNeedsGraphicsAllowed)
-    } else if cell_pixels().is_none() {
-        Some(MessageId::PetNeedsCellPixels)
-    } else {
-        None
-    }
 }
 
 #[cfg(test)]
@@ -910,30 +359,49 @@ mod tests {
     use super::*;
     use serde_json::Value;
 
-    #[test]
-    fn work_completion_reveals_existing_answer_without_sending_text_to_owner() {
-        use codewhale_engine::core::events::TurnOutcomeStatus;
+    fn app() -> App {
         let mut app = crate::tui::test_support::test_app_with_options(
             crate::tui::test_support::test_tui_options("."),
         );
         app.onboarding = crate::tui::app::OnboardingState::None;
         app.redaction_gate = false;
+        app.pet_watch.session = app.current_session_id.clone();
+        app.pet_watch.detach_for_test();
+        app
+    }
+    fn turn_started(turn_id: &str) -> Event {
+        Event::TurnStarted {
+            previous_source: None,
+            turn_id: turn_id.into(),
+            created_at: chrono::Utc::now(),
+            route: None,
+            submission_id: None,
+        }
+    }
+    fn turn_completed() -> Event {
+        Event::TurnComplete {
+            source_accounting: false,
+
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            usage: Default::default(),
+            parent_route_usage: Default::default(),
+            routed_usage_dropped_records: 0,
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        }
+    }
+
+    #[test]
+    fn work_completion_reveals_existing_answer_and_keeps_the_draft() {
+        let mut app = app();
         assert!(app.view_stack.is_empty());
         app.input = "retained draft".into();
-        app.pet_watch.session = app.current_session_id.clone();
-        app.pet_watch.failed = true; // No connection or provider for this shell test.
         app.pet_watch.enabled = true;
-        observe(
-            &mut app,
-            &Event::TurnStarted {
-                previous_source: None,
-                turn_id: "preview-turn".into(),
-                created_at: chrono::Utc::now(),
-                route: None,
-                submission_id: None,
-            },
-            Instant::now(),
-        );
+        observe(&mut app, &turn_started("preview-turn"), Instant::now());
         tick(&mut app, Instant::now());
         assert!(
             app.view_stack.is_empty(),
@@ -944,24 +412,7 @@ mod tests {
             content: "Prepared result stays in the transcript".into(),
             streaming: false,
         });
-        observe(
-            &mut app,
-            &Event::TurnComplete {
-                source_accounting: false,
-
-                turn_id: None,
-                submission_id: None,
-                compaction_id: None,
-                usage: Default::default(),
-                parent_route_usage: Default::default(),
-                routed_usage_dropped_records: 0,
-                status: TurnOutcomeStatus::Completed,
-                error: None,
-                tool_catalog: None,
-                base_url: None,
-            },
-            Instant::now(),
-        );
+        observe(&mut app, &turn_completed(), Instant::now());
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 40)).unwrap();
         terminal.draw(|frame| render_full(frame, &mut app)).unwrap();
@@ -974,162 +425,33 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("Prepared result stays in the transcript"));
         assert_eq!(app.input, "retained draft");
-        assert!(app.pet_watch.worker.is_none());
     }
 
     #[test]
-    fn unavailable_companion_keeps_legacy_fallback_and_native_response_available() {
-        let mut app = crate::tui::test_support::test_app_with_options(
-            crate::tui::test_support::test_tui_options("."),
-        );
-        app.onboarding = crate::tui::app::OnboardingState::None;
-        app.redaction_gate = false;
-        app.pet_watch.session = app.current_session_id.clone();
-        app.pet_watch.detach_for_test();
-        app.pet_watch.unavailable = true;
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 16)).unwrap();
-        terminal
-            .draw(|frame| render_tank(frame, frame.area(), &mut app))
-            .unwrap();
-        let text = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        assert!(
-            text.contains(codewhale_tui_kit::mark::MarkSize::Large.rows()[3].trim()),
-            "the tank paints the resting whale: {text}"
-        );
-        assert!(
-            text.contains("offline — codewhale pet serve wakes it"),
-            "{text}"
-        );
-        assert!(!text.contains(" · offline"), "no orphan separator: {text}");
-
-        app.pet_watch.enabled = true;
-        app.is_loading = true;
-        observe(
-            &mut app,
-            &Event::TurnStarted {
-                previous_source: None,
-                turn_id: "turn".into(),
-                created_at: chrono::Utc::now(),
-                route: None,
-                submission_id: None,
-            },
-            Instant::now(),
-        );
-        app.add_message(crate::tui::history::HistoryCell::Assistant {
-            content: "Fixture response while telemetry reconnects".into(),
-            streaming: true,
-        });
-        tick(&mut app, Instant::now());
-        assert!(
-            is_open(&app),
-            "native pet mode keeps the actual turn available without a companion raster"
-        );
-        terminal.draw(|frame| render_full(frame, &mut app)).unwrap();
-        let text: String = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect();
-        assert!(text.contains("Fixture response while telemetry reconnects"));
-        assert!(app.pet_watch.worker.is_none());
-    }
-
-    #[test]
-    fn a_refused_pet_action_keeps_the_habitat_and_only_unreachable_marks_offline() {
-        let mut app = crate::tui::test_support::test_app_with_options(
-            crate::tui::test_support::test_tui_options("."),
-        );
-        app.onboarding = crate::tui::app::OnboardingState::None;
-        app.redaction_gate = false;
-        app.pet_watch.session = app.current_session_id.clone();
-        app.pet_watch.detach_for_test();
-        let (tx, _commands) = std::sync::mpsc::sync_channel(4);
-        let (notices_tx, notices) = std::sync::mpsc::sync_channel(4);
-        app.pet_watch.worker = Some(Worker {
-            tx,
-            latest: std::sync::Arc::new(std::sync::Mutex::new(None)),
-            view: std::sync::Arc::new(std::sync::Mutex::new(live::View::default())),
-            notices,
-        });
-        open_habitat(&mut app);
-        app.is_loading = true;
-
-        notices_tx
-            .send(Notice::Message(
-                "Save the terminal session before exporting".into(),
-            ))
-            .unwrap();
-        tick(&mut app, Instant::now());
-        assert!(is_open(&app), "a refused export must not close pet mode");
-        assert!(
-            !app.pet_watch.unavailable,
-            "a refused export is not offline"
-        );
-
-        notices_tx
-            .send(Notice::Unreachable("Shared pet reconnecting".into()))
-            .unwrap();
-        tick(&mut app, Instant::now());
-        assert!(app.pet_watch.unavailable);
-        assert!(
-            is_open(&app),
-            "the canonical whale and Engine response remain available while telemetry reconnects"
-        );
-    }
-
-    #[test]
-    fn the_default_whale_view_starts_no_shared_companion() {
-        let mut app = crate::tui::test_support::test_app_with_options(
-            crate::tui::test_support::test_tui_options("."),
-        );
-        app.onboarding = crate::tui::app::OnboardingState::None;
-        app.redaction_gate = false;
-        app.pet_watch.session = app.current_session_id.clone();
-        app.pet_watch.detach_for_test();
+    fn the_whale_view_draws_from_this_terminal_and_the_inspector_needs_no_other_process() {
+        let mut app = app();
         set_enabled(&mut app, true);
         assert!(is_open(&app));
-        assert_eq!(app.pet_watch.avatars.current(), "whale");
-        assert!(!wants_companion(&app));
         assert!(command(&mut app, Control::FocusAgents));
-        assert!(!wants_companion(&app));
-        app.pet_watch.set_sound(true);
-        assert!(wants_companion(&app));
-        app.pet_watch.set_sound(false);
         open_habitat(&mut app);
-        assert!(wants_companion(&app));
+        assert_eq!(app.view_stack.top_kind(), Some(ModalKind::PetHabitat));
+        assert!(is_open(&app));
+        tick(&mut app, Instant::now());
+        assert!(
+            app.pet_watch.dots.is_none(),
+            "detached tests start no thread"
+        );
+        set_enabled(&mut app, false);
+        assert!(app.view_stack.is_empty());
+        assert!(!is_open(&app));
     }
 
     #[test]
-    fn pet_off_restores_the_shell_and_keeps_the_draft() {
-        let mut app = crate::tui::test_support::test_app_with_options(
-            crate::tui::test_support::test_tui_options("."),
-        );
-        app.onboarding = crate::tui::app::OnboardingState::None;
-        app.redaction_gate = false;
+    fn whale_off_restores_the_shell_and_keeps_the_draft() {
+        let mut app = app();
         app.input = "kept draft".into();
-        app.pet_watch.session = app.current_session_id.clone();
-        app.pet_watch.detach_for_test();
         app.pet_watch.enabled = true;
-        observe(
-            &mut app,
-            &Event::TurnStarted {
-                previous_source: None,
-                turn_id: "turn".into(),
-                created_at: chrono::Utc::now(),
-                route: None,
-                submission_id: None,
-            },
-            Instant::now(),
-        );
+        observe(&mut app, &turn_started("turn"), Instant::now());
         assert!(main_view(&app));
         assert!(app.view_stack.is_empty());
         set_enabled(&mut app, false);
@@ -1137,7 +459,20 @@ mod tests {
         assert!(!app.pet_watch.enabled);
         assert!(app.view_stack.is_empty());
         assert_eq!(app.input, "kept draft");
-        assert!(app.pet_watch.worker.is_none());
+        assert!(app.pet_watch.dots.is_none());
+    }
+
+    #[test]
+    fn name_colour_and_stillness_survive_a_session_switch() {
+        let mut watch = PetWatch::default();
+        watch.detach_for_test();
+        watch.set_name(Some("Moby".into()));
+        watch.set_color(Some([10, 20, 30]));
+        watch.set_still(true);
+        watch.observe(&turn_started("turn"), Some("another-session"));
+        assert_eq!(watch.name(), Some("Moby"));
+        assert_eq!(watch.color(), Some([10, 20, 30]));
+        assert!(watch.still());
     }
 
     #[test]
@@ -1149,47 +484,15 @@ mod tests {
         watch.full.output_scroll = 100;
         watch.work_history_start = 50;
 
-        watch.observe(
-            &Event::TurnStarted {
-                previous_source: None,
-                turn_id: "turn-b".into(),
-                created_at: chrono::Utc::now(),
-                route: None,
-                submission_id: None,
-            },
-            Some("session-b"),
-            Instant::now(),
-        );
+        watch.observe(&turn_started("turn-b"), Some("session-b"));
         assert_eq!(watch.session.as_deref(), Some("session-b"));
         // The event that switched sessions is not dropped: its turn is the
         // one a later `turn_complete` must carry to claim Done.
         assert_eq!(watch.active_turn_id.as_deref(), Some("turn-b"));
         assert_eq!(watch.full.output_scroll, 0);
         assert_eq!(watch.work_history_start, 0);
-        assert!(!watch.failed, "a switch clears a prior failure");
-        assert!(
-            watch.worker.is_none(),
-            "with no live view running, an Engine event never starts one"
-        );
 
-        let done = metadata(
-            &Event::TurnComplete {
-                source_accounting: false,
-
-                turn_id: None,
-                submission_id: None,
-                compaction_id: None,
-                usage: Default::default(),
-                parent_route_usage: Default::default(),
-                routed_usage_dropped_records: 0,
-                status: TurnOutcomeStatus::Completed,
-                error: None,
-                tool_catalog: None,
-                base_url: None,
-            },
-            watch.active_turn_id.as_deref(),
-        )
-        .unwrap();
+        let done = metadata(&turn_completed(), watch.active_turn_id.as_deref()).unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&done).unwrap(),
             json!({"event":"turn_complete","turn_id":"turn-b","turn_outcome":"completed"})

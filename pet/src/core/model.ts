@@ -7,7 +7,6 @@ export type Category = typeof CATEGORIES[number];
 export type Status = 'pending' | 'running' | 'success' | 'error' | 'unknown';
 export type PrivacyMode = 'redact' | 'metadata' | 'retain';
 export interface WhaleEvent {
-  observation?: import('./evidence.js').Observation;
   schemaVersion: 1;
   id: string; traceId: string; parentId?: string;
   startTime: number; endTime: number; openEnded?: boolean;

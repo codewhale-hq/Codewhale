@@ -27,8 +27,8 @@ Global key chords are not yet user-configurable — tracked for a future release
 | `Ctrl-Alt-O`         | Open the whole-turn Turn Inspector, regardless of composer contents |
 | `Alt-V` / `Option-V` (macOS) | Open the details pager for the selected tool/sub-agent card; with nothing selected, the newest visible error, else the first visible card with details, else the most recent one. Click a card first to keep Alt-V on it while newer cards arrive. Terminals that emit the legacy Option-V glyph are also handled |
 | `Ctrl-Shift-E` / `Cmd-Shift-E` | Toggle the file tree in the workbar                   |
-| `Ctrl-]` or `Ctrl-Tab` | Cycle the pet view while the pet main view is showing; otherwise cycle the work dock: TODO → Agents → Jobs → Background. `Ctrl-]` is portable; `Ctrl-Tab` requires the kitty keyboard protocol. Terminal.app uses it to switch terminal tabs |
-| `Ctrl-Shift-Tab`     | Cycle the pet view or work dock backwards where the terminal sends the kitty keyboard chord. Terminal.app uses it to switch terminal tabs |
+| `Ctrl-]` or `Ctrl-Tab` | Cycle the work dock: TODO → Agents → Jobs → Background. `Ctrl-]` is portable; `Ctrl-Tab` requires the kitty keyboard protocol. Terminal.app uses it to switch terminal tabs |
+| `Ctrl-Shift-Tab`     | Cycle the work dock backwards where the terminal sends the kitty keyboard chord. Terminal.app uses it to switch terminal tabs |
 | `Alt-G` / `Alt-Shift-G` | Scroll transcript to top / bottom when the composer is empty |
 | `Alt-1`-`Alt-8`      | Dispatch Hotbar slots 1-8 when no modal or inline picker is open |
 | `Alt-!` / `Alt-@` / `Alt-#` / `Alt-$` | Select the workbar panel: Tasks / Agents / Context / Files |

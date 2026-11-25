@@ -227,9 +227,9 @@ pub(crate) struct CommandTable;
 
 impl codewhale_engine::command_catalog::CommandCatalog for CommandTable {
     fn answers_to(&self, name: &str) -> bool {
-        // `jihua` and `zidong` are mode aliases the dispatcher answers ahead
-        // of the registry.
-        matches!(name, "jihua") || registry().get(name).is_some()
+        // `jihua` and `zidong` are mode aliases, and `pet` is the former name
+        // of `/whale`; the dispatcher answers them ahead of the registry.
+        matches!(name, "jihua" | "pet") || registry().get(name).is_some()
     }
 
     fn builtins(&self) -> Vec<codewhale_engine::command_catalog::BuiltinCommand> {
@@ -449,6 +449,11 @@ fn execute_in_context(
     if command == "jihua" {
         return config_group::mode_alias(app, "plan");
     }
+    let command = if command == "pet" {
+        "whale".to_string()
+    } else {
+        command
+    };
 
     if let Some(command_object) = registry().get(command.as_str()) {
         let command_arg = if matches!(command_object.info().name, "preview-request" | "plugin") {
@@ -750,13 +755,17 @@ mod tests {
     }
 
     #[test]
-    fn pet_command_is_registered_and_the_workbar_no_longer_advertises_watch() {
-        let pet = command_infos()
+    fn whale_command_is_registered_and_the_workbar_no_longer_advertises_watch() {
+        let whale = command_infos()
             .into_iter()
-            .find(|cmd| cmd.name == "pet")
-            .expect("pet command should exist");
-        assert_eq!(pet.description_id, MessageId::CmdPetDescription);
-        assert!(pet.usage.starts_with("/pet"));
+            .find(|cmd| cmd.name == "whale")
+            .expect("whale command should exist");
+        assert_eq!(whale.description_id, MessageId::CmdPetDescription);
+        assert!(whale.usage.starts_with("/whale"));
+        for verb in ["full", "still", "color"] {
+            assert!(whale.subcommands().contains(&verb), "{verb}");
+        }
+        assert!(get_command_info("pet").is_none(), "/pet is unlisted");
         let rail = command_infos()
             .into_iter()
             .find(|cmd| cmd.name == "workbar")
@@ -2583,7 +2592,7 @@ mod tests {
             "disconnect",
             "auth",
             "workbar",
-            "pet",
+            "whale",
             "settings",
             "statusline",
             "mode",

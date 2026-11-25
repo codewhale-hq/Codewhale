@@ -14,11 +14,11 @@ crates/engine/src/prompts/*.txt text eol=lf
 # serde_json::to_string_pretty output, which always emits LF, so Windows CI
 # failed `golden_payload_v1` with a pure \r\n diff.
 crates/telemetry/tests/golden/*.json text eol=lf
-# Generated pet native artifacts are regenerated in memory and compared byte
+# The generated pet native bundle is regenerated in memory and compared byte
 # for byte by `npm --prefix pet run check` (pet/scripts/build-pet.mjs), and the
-# TUI copy is embedded with include_str!() (pet_watch/owner.rs). The generator
-# emits LF, so a CRLF Windows checkout reported all three as stale and would
-# embed different bytes.
+# TUI copy is embedded with include_str!() (pet_watch/dots.rs). The generator
+# emits LF, so a CRLF Windows checkout reported it as stale and would embed
+# different bytes.
 crates/tui/src/tui/pet_watch/pet-native.js text eol=lf
 # Tideline component goldens (crates/tui/src/tui/goldens/*.txt) are
 # fs::read_to_string'd and compared byte for byte against buffer dumps that

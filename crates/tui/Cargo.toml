@@ -38,7 +38,6 @@ exclude = [
   "src/pricing/default_coverage_unpriced.json",
   "src/tui/golden_harness.rs",
   "src/tui/goldens/**",
-  "src/tui/pet_watch/worker.rs",
   "src/tui/widgets/pending_input_preview/legacy_fixture.rs",
   "assets/mark-*.png",
   "assets/skills-catalog-matrix.json",

@@ -1,9 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { projectDotField } from '../dist/core/dot-field.js';
 import { getFormLayout } from '../dist/core/dot-forms.js';
-import { ACTIVITY_LABELS } from '../dist/core/activity-labels.js';
 
 const KINDS = ['reading', 'editing', 'searching', 'testing', 'executing', 'browsing', 'computer', 'memory',
   'tool', 'thinking', 'responding', 'delegating'];
@@ -39,17 +37,6 @@ test('every activity forms its own moving shape from all 980 dots, deterministic
     projectDotField(activity('delegating'), 3000, true).points);
   for (const unobserved of [{ observed: false }, { freshness: 'stale' }, { authoritativePresence: 'idle' }])
     assert.equal(projectDotField(activity('reading', unobserved), 3000, false).morph, 0);
-});
-
-test('activity captions are the interface labels from the locale packs', () => {
-  const ids = { reading: 'ToolFamilyRead', editing: 'ToolFamilyPatch', searching: 'ToolFamilyFind', testing: 'ToolFamilyVerify',
-    executing: 'ToolFamilyRun', browsing: 'PetActivityBrowsing', computer: 'PetActivityComputer', memory: 'PetActivityMemory',
-    tool: 'ToolFamilyGeneric', thinking: 'ToolFamilyThink', responding: 'PetModeReplyTitle', delegating: 'PhaseSubagents',
-    waiting: 'PhaseWaitingOnYou', done: 'PhaseDone' };
-  for (const [language, labels] of Object.entries(ACTIVITY_LABELS)) {
-    const pack = JSON.parse(readFileSync(new URL(`../../crates/localization/locales/${language}.json`, import.meta.url), 'utf8'));
-    assert.deepEqual(labels, Object.fromEntries(Object.entries(ids).map(([kind, id]) => [kind, pack[id]])), language);
-  }
 });
 
 test('compiled hex-lattice forms preserve 0.32 * pitch dot separation and bounds across styles', () => {

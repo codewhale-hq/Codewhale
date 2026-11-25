@@ -495,12 +495,6 @@ pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent, now: Instant)
             crate::tui::pet_watch::open_habitat(app);
             return Vec::new();
         }
-        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
-            && mouse_hits_rect(mouse, app.pet_watch.view_area)
-        {
-            crate::tui::pet_watch::cycle_view(app, true);
-            return Vec::new();
-        }
         if mouse_hits_rect(mouse, app.pet_watch.area) {
             crate::tui::pet_watch::command(app, crate::tui::pet_watch::Control::Mouse(mouse));
             return Vec::new();

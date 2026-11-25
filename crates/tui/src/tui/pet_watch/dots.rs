@@ -1,11 +1,9 @@
 //! This terminal's own dot whale, projected from its own session's typed
-//! Engine metadata by the bundled reducer and dot field. The companion keeps
-//! identity, clock, recording, sound and the browser view.
+//! Engine metadata by the bundled reducer and dot field.
 //!
-//! Known limits: events before the first `/pet` in a process are not seen;
-//! the local frame uses raw pigment, without the companion's brightness,
-//! particle colour or doze dimming; the body style follows the last companion
-//! frame this terminal received. Any failure leaves the view on its fallback.
+//! Known limits: events before the first `/whale` in a process are not seen;
+//! the frame uses the dot field's raw pigment. Any failure leaves the view on
+//! its fallback.
 use rquickjs::{Context, Function, Runtime};
 use std::sync::{
     Arc, Mutex,
@@ -16,8 +14,6 @@ use std::time::{Duration, Instant};
 
 const POINTS: usize = 980;
 const PENDING: usize = 4096;
-const ANCHOR: &str = "global.PetNative=load('pet-native').PetNative;";
-const EXPORTS: &str = "global.PetDotField=load('dot-field');global.PetEngineTelemetry=load('pet-engine').PetEngineTelemetry;";
 const PRELUDE: &str = r#"(function(){
 const F=globalThis.PetDotField,E=globalThis.PetEngineTelemetry;
 if(!F||typeof F.projectDotField!=='function'||typeof F.blendDotFields!=='function'||typeof F.dotFieldKey!=='function'||typeof E!=='function')throw Error('Pet dot field unavailable.');
@@ -37,10 +33,10 @@ const ev=JSON.parse(json);if(!Array.isArray(ev))throw Error('Invalid pet batch.'
 const n=s.engine.clone();
 try{for(const e of ev)n.observe(e,t);s.engine=n;return;}catch(_){}
 for(const e of ev){const m=s.engine.clone();try{m.observe(e,t);s.engine=m;}catch(_){}}};
-globalThis.localFrame=(t,still,waiting,body)=>{
+globalThis.localFrame=(t,still,waiting)=>{
 s.engine.confirmWaiting(t,waiting);
-const a=s.engine.activity(t),o={bodyStyle:body},hollow=!(a.observed&&a.freshness==='fresh');
-const k=F.dotFieldKey(a)+':'+body;
+const a=s.engine.activity(t),o={bodyStyle:'smooth'},hollow=!(a.observed&&a.freshness==='fresh');
+const k=F.dotFieldKey(a);
 if(k!==s.key){if(s.key&&s.last){s.from=s.last;s.at=t;}s.key=k;}
 if(still){
 const done=!hollow&&a.authoritativePresence==='done'&&t-(a.observedAtMs??t)<2600;
@@ -58,14 +54,7 @@ s.last=f;
 return flat(f,hollow,busy);};
 })();"#;
 
-fn inject(source: &str) -> Option<String> {
-    (source.matches(ANCHOR).count() == 1)
-        .then(|| source.replacen(ANCHOR, &format!("{ANCHOR}{EXPORTS}"), 1))
-}
-
-fn bundle() -> Option<String> {
-    inject(include_str!("pet-native.js"))
-}
+const BUNDLE: &str = include_str!("pet-native.js");
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Frame {
@@ -112,10 +101,10 @@ pub(super) struct Projector {
 impl Projector {
     #[cfg(test)]
     pub(super) fn new() -> Option<Self> {
-        Self::from_source(bundle()?)
+        Self::from_source(BUNDLE)
     }
 
-    fn from_source(source: String) -> Option<Self> {
+    fn from_source(source: &str) -> Option<Self> {
         let runtime = Runtime::new().ok()?;
         runtime.set_memory_limit(64 * 1024 * 1024);
         runtime.set_max_stack_size(2 * 1024 * 1024);
@@ -173,13 +162,7 @@ impl Projector {
             })
     }
 
-    pub(super) fn frame(
-        &self,
-        t: f64,
-        still: bool,
-        waiting: bool,
-        body: &str,
-    ) -> Result<Option<Frame>, ()> {
+    pub(super) fn frame(&self, t: f64, still: bool, waiting: bool) -> Result<Option<Frame>, ()> {
         if !self.arm(Duration::from_secs(60)) {
             return Err(());
         }
@@ -187,7 +170,7 @@ impl Projector {
             let result = ctx
                 .globals()
                 .get::<_, Function>("localFrame")
-                .and_then(|f| f.call::<_, Option<Vec<f64>>>((t, still, waiting, body)));
+                .and_then(|f| f.call::<_, Option<Vec<f64>>>((t, still, waiting)));
             if result.is_err() {
                 let _ = ctx.catch();
             }
@@ -237,7 +220,6 @@ struct View {
     visible: bool,
     motion: bool,
     waiting: bool,
-    body: &'static str,
 }
 
 enum Msg {
@@ -266,10 +248,10 @@ struct Shared {
 
 impl Dots {
     pub(super) fn start() -> Self {
-        Self::start_from(bundle())
+        Self::start_from(BUNDLE)
     }
 
-    fn start_from(source: Option<String>) -> Self {
+    fn start_from(source: &'static str) -> Self {
         let (tx, rx) = mpsc::channel();
         let dots = Self {
             tx,
@@ -280,7 +262,6 @@ impl Dots {
                 visible: false,
                 motion: false,
                 waiting: false,
-                body: "smooth",
             })),
             latest: Arc::new(Mutex::new(None)),
             failed: Arc::new(AtomicBool::new(false)),
@@ -298,7 +279,7 @@ impl Dots {
             .stack_size(8 * 1024 * 1024)
             .spawn(move || {
                 let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let projector = source.and_then(Projector::from_source).ok_or(())?;
+                    let projector = Projector::from_source(source).ok_or(())?;
                     run(&projector, &rx, &shared)
                 }));
                 if !matches!(ran, Ok(Ok(()))) {
@@ -328,25 +309,15 @@ impl Dots {
         let _ = self.tx.send(Msg::Reset(generation));
     }
 
-    pub(super) fn set_view(
-        &self,
-        visible: bool,
-        motion: bool,
-        waiting: bool,
-        body: Option<&'static str>,
-    ) {
+    pub(super) fn set_view(&self, visible: bool, motion: bool, waiting: bool) {
         let woke = self.view.lock().is_ok_and(|mut view| {
             let next = View {
                 visible,
                 motion,
                 waiting,
-                body: body.unwrap_or(view.body),
             };
             let woke = visible
-                && (!view.visible
-                    || view.motion != next.motion
-                    || view.waiting != next.waiting
-                    || view.body != next.body);
+                && (!view.visible || view.motion != next.motion || view.waiting != next.waiting);
             *view = next;
             woke
         });
@@ -427,7 +398,7 @@ fn run(projector: &Projector, rx: &mpsc::Receiver<Msg>, shared: &Shared) -> Resu
         let busy = if !view.visible {
             false
         } else {
-            match projector.frame(t, !view.motion, view.waiting, view.body) {
+            match projector.frame(t, !view.motion, view.waiting) {
                 Ok(Some(frame)) => {
                     errors = 0;
                     let busy = frame.busy;
@@ -459,20 +430,14 @@ fn run(projector: &Projector, rx: &mpsc::Receiver<Msg>, shared: &Shared) -> Resu
 
 #[cfg(test)]
 pub(super) fn failing_for_test() -> Dots {
-    Dots::start_from(Some(include_str!("pet-native.js").to_owned()))
+    Dots::start_from("throw Error('no dot field');")
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn the_committed_bundle_has_exactly_one_export_anchor() {
-        assert_eq!(
-            include_str!("pet-native.js").matches(super::ANCHOR).count(),
-            1
-        );
-        assert!(super::bundle().is_some_and(|source| source.contains(super::EXPORTS)));
-        let without = include_str!("pet-native.js").replace(super::ANCHOR, "");
-        assert!(super::inject(&without).is_none());
-        assert!(super::Projector::from_source(include_str!("pet-native.js").to_owned()).is_none());
+    fn the_committed_bundle_exports_the_reducer_and_the_dot_field() {
+        assert!(super::Projector::from_source(super::BUNDLE).is_some());
+        assert!(super::Projector::from_source("globalThis.PetDotField={};").is_none());
     }
 }

@@ -62,10 +62,10 @@ static RAIL_INFO: CommandInfo = CommandInfo {
     usage: "/workbar [bottom|top|left|right|off|tasks|agents|context|pinned] [--save]",
     description_key: "cmd_sidebar_description",
 };
-static PET_INFO: CommandInfo = CommandInfo {
-    name: "pet",
+static WHALE_INFO: CommandInfo = CommandInfo {
+    name: "whale",
     aliases: &[],
-    usage: config::PET_USAGE,
+    usage: config::WHALE_USAGE,
     description_key: "cmd_pet_description",
 };
 static SETTINGS_INFO: CommandInfo = CommandInfo {
@@ -163,7 +163,7 @@ pub fn portable_handlers() -> [(&'static CommandInfo, CommandHandler<ConfigComma
             &RAIL_INFO,
             contextual(config::WORK_SURFACE_CAPS, config::workbar),
         ),
-        (&PET_INFO, contextual(config::PET_CAPS, config::pet)),
+        (&WHALE_INFO, contextual(config::WHALE_CAPS, config::whale)),
         (
             &SETTINGS_INFO,
             contextual(config::CONFIG_PRESENTATION_CAPS, config::settings),

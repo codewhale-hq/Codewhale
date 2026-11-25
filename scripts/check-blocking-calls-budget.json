@@ -532,12 +532,6 @@
   "crates/tui/src/tui/onboarding/mod.rs": {
     "std_fs": 1
   },
-  "crates/tui/src/tui/pet_watch/live.rs": {
-    "thread_sleep": 1
-  },
-  "crates/tui/src/tui/pet_watch/owner.rs": {
-    "std_fs": 2
-  },
   "crates/tui/src/tui/session_picker.rs": {
     "std_fs": 1
   },

@@ -765,10 +765,10 @@ owner = "crates/engine/src/voice.rs"
 
 [[feature]]
 id = "pet"
-name = "Pet"
-summary = "Shared whale activity and reply views; desktop and app-server turns can follow an idle existing companion."
+name = "Whale view"
+summary = "/whale shows this terminal's session as a dot whale drawn locally, with replies and agents on F5; /pet is an unlisted alias."
 status = "stable"
-surfaces = { tui = "stable", api = "partial" }
+surfaces = { tui = "stable" }
 owner = "crates/tui/src/tui/pet_watch"
 docs = "docs/PET_MODE.md"
 

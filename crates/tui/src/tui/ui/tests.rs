@@ -1116,8 +1116,6 @@ fn shell_binding_probe(id: ShellBindingId) -> KeyEvent {
         ShellBindingId::PetFocusAgents => KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
         ShellBindingId::PetOpenAgent => KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
         ShellBindingId::PetCopyReply => KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
-        ShellBindingId::PetSound => KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE),
-        ShellBindingId::PetBrowser => KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE),
 
         ShellBindingId::RedactionGateConfirm => {
             KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)
