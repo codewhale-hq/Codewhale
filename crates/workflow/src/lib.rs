@@ -2008,7 +2008,11 @@ fn validate_workflow_references(
                     known_ids,
                 )?;
                 if let Some(template) = spec.template.as_deref() {
-                    validate_workflow_references(std::slice::from_ref(template), known_ids)?;
+                    let template = std::slice::from_ref(template);
+                    let mut known = BTreeSet::new();
+                    validate_workflow_nodes_inner(template, &mut known)?;
+                    known.extend(known_ids.iter().cloned());
+                    validate_workflow_references(template, &known)?;
                 }
             }
         }
@@ -3922,6 +3926,44 @@ mod tests {
                 template: None,
             }),
         ])
+    }
+
+    #[test]
+    fn expand_template_nodes_may_refer_to_each_other() {
+        let mut second = leaf_node("second");
+        let WorkflowNode::Leaf(spec) = &mut second else {
+            panic!("expected leaf");
+        };
+        spec.depends_on_results = vec!["first".to_string()];
+        let workflow = |second: WorkflowNode| {
+            workflow_spec(vec![
+                leaf_node("plan"),
+                WorkflowNode::Expand(ExpandSpec {
+                    id: "split".to_string(),
+                    source: "plan".to_string(),
+                    max_children: Some(2),
+                    template: Some(Box::new(WorkflowNode::Sequence(SequenceSpec {
+                        id: "each".to_string(),
+                        children: vec![leaf_node("first"), second],
+                    }))),
+                }),
+            ])
+        };
+        validate_workflow_nodes(&workflow(second.clone()).nodes)
+            .expect("a template node may depend on an earlier node of the same template");
+
+        let WorkflowNode::Leaf(spec) = &mut second else {
+            panic!("expected leaf");
+        };
+        spec.depends_on_results = vec!["ghost".to_string()];
+        assert_eq!(
+            validate_workflow_nodes(&workflow(second).nodes),
+            Err(WorkflowExecutionError::UnknownNodeReference {
+                node: "second".to_string(),
+                field: "depends_on_results",
+                reference: "ghost".to_string(),
+            })
+        );
     }
 
     #[test]
