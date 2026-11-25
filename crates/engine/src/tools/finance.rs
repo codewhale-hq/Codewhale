@@ -441,10 +441,24 @@ async fn fetch_host_endpoint(
         _ = async { if let Some(cancel) = context.cancel_token.as_ref() { cancel.cancelled().await } else { std::future::pending::<()>().await } } => return Err(ToolError::not_available("finance cancelled")),
         body = fetch_response_body_bounded(client, timeout, &url, endpoint) => match body { Ok(body) => body, Err(error) => return Ok(Err(error)) },
     };
+    let mut supplied = HostSuppliedChange::default();
     let parsed = if chart {
         serde_json::from_str::<ChartEndpointResponse>(&body).and_then(serde_json::to_value)
     } else {
-        serde_json::from_str::<QuoteEndpointResponse>(&body).and_then(serde_json::to_value)
+        serde_json::from_str::<QuoteEndpointResponse>(&body).and_then(|response| {
+            if let Some(item) = response
+                .quote_response
+                .result
+                .iter()
+                .find(|item| item.symbol.eq_ignore_ascii_case(&request.resolved_symbol))
+            {
+                supplied = HostSuppliedChange {
+                    change: item.regular_market_change.is_some(),
+                    change_percent: item.regular_market_change_percent.is_some(),
+                };
+            }
+            serde_json::to_value(response)
+        })
     };
     let parsed = match parsed {
         Ok(parsed) => parsed,
@@ -486,12 +500,7 @@ async fn fetch_host_endpoint(
                 "Host finance result changed its captured request",
             ));
         }
-        quote.change = quote.change.filter(|v| v.is_finite()).map(round_decimals);
-        quote.change_percent = quote
-            .change_percent
-            .filter(|v| v.is_finite())
-            .map(round_decimals);
-        quote.previous_close = quote.previous_close.filter(|v| v.is_finite());
+        sanitize_host_quote(&mut quote, supplied);
         Ok(Ok(quote))
     } else {
         if metadata.get("endpoint").and_then(Value::as_str) != Some(endpoint) {
@@ -760,12 +769,37 @@ fn finalize_failure(
     ))
 }
 
-const COMPUTED_DECIMALS: f64 = 1_000_000.0;
+#[derive(Clone, Copy, Default)]
+struct HostSuppliedChange {
+    change: bool,
+    change_percent: bool,
+}
 
-fn round_decimals(value: f64) -> f64 {
-    let scaled = value * COMPUTED_DECIMALS;
-    if scaled.is_finite() {
-        scaled.round() / COMPUTED_DECIMALS
+fn sanitize_host_quote(quote: &mut FinanceQuoteResponse, supplied: HostSuppliedChange) {
+    let finite = |value: Option<f64>, supplied: bool| {
+        value
+            .filter(|v| v.is_finite())
+            .map(|v| if supplied { v } else { round_computed(v) })
+    };
+    quote.change = finite(quote.change, supplied.change);
+    quote.change_percent = finite(quote.change_percent, supplied.change_percent);
+    quote.previous_close = quote.previous_close.filter(|v| v.is_finite());
+}
+
+fn round_computed(value: f64) -> f64 {
+    let magnitude = value.abs();
+    if !magnitude.is_finite() || magnitude == 0.0 {
+        return value;
+    }
+    let decimals = if magnitude >= 1.0 {
+        6
+    } else {
+        5 - magnitude.log10().floor() as i32
+    };
+    let scale = 10f64.powi(decimals);
+    let scaled = value * scale;
+    if scale.is_finite() && scaled.is_finite() {
+        scaled.round() / scale
     } else {
         value
     }
@@ -802,7 +836,7 @@ fn compute_change(price: f64, previous_close: Option<f64>) -> Option<f64> {
     previous_close
         .map(|prev| price - prev)
         .filter(|change| change.is_finite())
-        .map(round_decimals)
+        .map(round_computed)
 }
 
 fn compute_change_percent(price: f64, previous_close: Option<f64>) -> Option<f64> {
@@ -812,7 +846,7 @@ fn compute_change_percent(price: f64, previous_close: Option<f64>) -> Option<f64
         } else {
             Some(((price - prev) / prev) * 100.0)
                 .filter(|percent| percent.is_finite())
-                .map(round_decimals)
+                .map(round_computed)
         }
     })
 }
@@ -984,20 +1018,49 @@ mod tests {
         assert_eq!(compute_change_percent(0.3, Some(0.1)), Some(200.0));
         assert_eq!(compute_change(1e308, Some(-1e308)), None);
         assert_eq!(compute_change_percent(1e308, Some(-1e308)), None);
-        assert_eq!(round_decimals(-1e308), -1e308);
+        assert_eq!(round_computed(-1e308), -1e308);
+        assert_eq!(
+            compute_change(0.00001234, Some(0.0000126)),
+            Some(-2.6e-7),
+            "a change smaller than six decimals keeps its value"
+        );
+        assert_eq!(
+            compute_change_percent(0.00001234, Some(0.0000126)),
+            Some(-2.063492)
+        );
+        assert_eq!(round_computed(5e-324), 5e-324);
     }
 
     #[test]
     fn non_finite_host_optionals_are_not_finite_after_parse() {
-        let parsed: FinanceQuoteResponse = serde_json::from_value(json!({
-            "requested_ticker": "AAPL", "ticker": "AAPL", "price": "1.5",
-            "change": "NaN", "source": QUOTE_SOURCE, "fallback_used": false
-        }))
-        .unwrap();
-        assert!(parsed.change.is_some_and(|v| !v.is_finite()));
+        let parse = || -> FinanceQuoteResponse {
+            serde_json::from_value(json!({
+                "requested_ticker": "AAPL", "ticker": "AAPL", "price": "1.5",
+                "change": "NaN", "change_percent": "0.19999999999999998",
+                "previous_close": "inf", "source": QUOTE_SOURCE, "fallback_used": false
+            }))
+            .unwrap()
+        };
+        let mut computed = parse();
+        assert!(computed.change.is_some_and(|v| !v.is_finite()));
+        sanitize_host_quote(&mut computed, HostSuppliedChange::default());
+        assert_eq!(computed.change, None);
+        assert_eq!(computed.previous_close, None);
+        assert_eq!(computed.change_percent, Some(0.2));
+
+        let mut supplied = parse();
+        sanitize_host_quote(
+            &mut supplied,
+            HostSuppliedChange {
+                change: true,
+                change_percent: true,
+            },
+        );
+        assert_eq!(supplied.change, None);
         assert_eq!(
-            Some(f64::NAN).filter(|v| v.is_finite()).map(round_decimals),
-            None
+            supplied.change_percent,
+            Some(0.19999999999999998),
+            "a provider value is passed through as sent"
         );
     }
 
