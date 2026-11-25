@@ -653,9 +653,10 @@ fn write_atomic_scoped(
     Ok(())
 }
 
-/// Best-effort directory sync: not all platforms permit opening a directory
-/// for sync, so a failure here is never fatal.
-fn sync_directory(parent: &Path) {
+/// Best-effort directory sync: not all platforms or filesystems (for example
+/// Windows, network shares, or FUSE mounts) permit opening or fsyncing a
+/// directory handle, so a failure here is never fatal.
+pub fn sync_directory(parent: &Path) {
     if let Ok(dir) = std::fs::File::open(parent) {
         let _ = dir.sync_all();
     }
@@ -1982,5 +1983,12 @@ mod project_mapping_tests {
             .strip_prefix("Project with key files: ")
             .expect("prefix");
         assert_eq!(suffix, "Makefile, README.md");
+    }
+
+    #[test]
+    fn sync_directory_is_best_effort_for_existing_and_missing_dirs() {
+        let tmp = tempdir().expect("tempdir");
+        super::sync_directory(tmp.path());
+        super::sync_directory(&tmp.path().join("does-not-exist"));
     }
 }

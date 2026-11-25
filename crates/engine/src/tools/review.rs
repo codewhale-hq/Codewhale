@@ -1533,9 +1533,15 @@ impl ToolSpec for ReviewTool {
             )));
         }
 
-        let source =
-            resolve_review_source(target, kind.as_deref(), staged, base.as_deref(), context)
-                .await?;
+        let source = resolve_review_source(
+            target,
+            kind.as_deref(),
+            staged,
+            base.as_deref(),
+            max_chars,
+            context,
+        )
+        .await?;
         if !matches!(&source, ReviewSource::PullRequest { .. }) && max_passes != 1 {
             return Err(ToolError::invalid_input(
                 "max_passes applies only to pull request reviews",
@@ -1909,11 +1915,12 @@ async fn resolve_review_source(
     kind: Option<&str>,
     staged: bool,
     base: Option<&str>,
+    max_chars: usize,
     context: &ToolContext,
 ) -> Result<ReviewSource, ToolError> {
     if let Some(kind) = kind {
         return match kind {
-            "file" => resolve_file_target(target, context),
+            "file" => resolve_file_target_async(target, max_chars, context).await,
             "diff" => {
                 let diff = resolve_diff_target(context.workspace.as_path(), staged, base).await?;
                 Ok(ReviewSource::Diff {
@@ -1950,10 +1957,28 @@ async fn resolve_review_source(
         });
     }
 
-    resolve_file_target(target, context)
+    resolve_file_target_async(target, max_chars, context).await
 }
 
-fn resolve_file_target(target: &str, context: &ToolContext) -> Result<ReviewSource, ToolError> {
+async fn resolve_file_target_async(
+    target: &str,
+    max_chars: usize,
+    context: &ToolContext,
+) -> Result<ReviewSource, ToolError> {
+    let target = target.to_string();
+    let context = context.clone();
+    tokio::task::spawn_blocking(move || resolve_file_target(&target, max_chars, &context))
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("review file reader failed: {e}")))?
+}
+
+fn resolve_file_target(
+    target: &str,
+    max_chars: usize,
+    context: &ToolContext,
+) -> Result<ReviewSource, ToolError> {
+    use std::io::Read as _;
+
     let path = crate::tools::file::resolve_guarded_read_path(context, target, "review")?;
     if !path.is_file() {
         return Err(ToolError::invalid_input(format!(
@@ -1961,18 +1986,34 @@ fn resolve_file_target(target: &str, context: &ToolContext) -> Result<ReviewSour
             path.display()
         )));
     }
+    let max_bytes = (max_chars as u64).saturating_mul(4);
     let len = fs::metadata(&path)
         .map_err(|e| {
             ToolError::execution_failed(format!("Failed to read file {}: {e}", path.display()))
         })?
         .len();
-    if len > (MAX_MAX_CHARS as u64).saturating_mul(4) {
+    if len > max_bytes {
         return Err(ToolError::invalid_input(format!(
-            "File {} is {len} bytes, too large to review (max_chars limit is {MAX_MAX_CHARS})",
+            "File {} is {len} bytes, exceeding max_chars={max_chars}; no source was truncated and no review was run",
             path.display()
         )));
     }
-    let content = fs::read_to_string(&path).map_err(|e| {
+    let file = fs::File::open(&path).map_err(|e| {
+        ToolError::execution_failed(format!("Failed to read file {}: {e}", path.display()))
+    })?;
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|e| {
+            ToolError::execution_failed(format!("Failed to read file {}: {e}", path.display()))
+        })?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(ToolError::invalid_input(format!(
+            "File {} exceeds max_chars={max_chars}; no source was truncated and no review was run",
+            path.display()
+        )));
+    }
+    let content = String::from_utf8(bytes).map_err(|e| {
         ToolError::execution_failed(format!("Failed to read file {}: {e}", path.display()))
     })?;
     let display = path
@@ -2375,6 +2416,32 @@ mod tests {
                 std::io::ErrorKind::WouldBlock,
                 "provider must not be called"
             );
+        }
+    }
+
+    #[test]
+    fn resolve_file_target_rejects_oversized_file_against_caller_max_chars() {
+        let root = tempfile::tempdir().unwrap();
+        let payload = "a".repeat(20_000);
+        std::fs::write(root.path().join("big.txt"), &payload).unwrap();
+        let context = ToolContext::new(root.path());
+
+        let err = resolve_file_target("big.txt", 1_000, &context)
+            .err()
+            .expect("file exceeding caller max_chars * 4 must be rejected before full read");
+        assert!(matches!(err, ToolError::InvalidInput { .. }), "{err}");
+        let msg = err.to_string();
+        assert!(msg.contains("20000 bytes"), "{msg}");
+        assert!(msg.contains("no source was truncated"), "{msg}");
+
+        let ok = resolve_file_target("big.txt", 25_000, &context)
+            .expect("file within caller max_chars succeeds");
+        match ok {
+            ReviewSource::File { display, content } => {
+                assert!(display.ends_with("big.txt"), "{display}");
+                assert_eq!(content.len(), 20_000);
+            }
+            _ => panic!("expected ReviewSource::File"),
         }
     }
 
