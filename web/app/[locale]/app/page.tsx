@@ -129,7 +129,7 @@ export default async function AppPage({ params }: { params: Promise<{ locale: st
                     </td>
                     <td>
                       {view.detail}
-                      {view.download ? <DesktopDownloadBlock download={view.download} locale={locale} /> : null}
+                      {view.downloads.length > 0 ? <DesktopDownloadBlock downloads={view.downloads} locale={locale} /> : null}
                       {view.link && row.href && row.linkLabel ? (
                         <>
                           {" "}

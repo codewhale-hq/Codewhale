@@ -5,7 +5,7 @@
  * it; wording changes here change every page at once.
  */
 
-import { DESKTOP_RELEASE, desktopDownload, type DesktopDownload, type DesktopReleaseFact } from "../desktop-release";
+import { DESKTOP_RELEASE, desktopDownloads, type DesktopDownload, type DesktopReleaseFact } from "../desktop-release";
 import { stateLabel, STATE_TONE, surfaceCapabilities, surfaceState, type SurfaceId, type SurfaceState, type SurfaceTone } from "../surface-states";
 import { pickText } from "../i18n/dictionaries";
 import type { LocalizedText } from "./vocabulary";
@@ -110,7 +110,7 @@ export interface AvailabilityView {
   tone: SurfaceTone;
   detail: string;
   link: boolean;
-  download: DesktopDownload | null;
+  downloads: DesktopDownload[];
 }
 
 export function describeRow(
@@ -127,6 +127,6 @@ export function describeRow(
     tone: STATE_TONE[state],
     detail: pickText(capabilities.download && row.detailReleased ? row.detailReleased : row.detail, locale),
     link: capabilities.link && row.href !== null && row.linkLabel !== null,
-    download: capabilities.download ? desktopDownload(desktopRelease) : null,
+    downloads: capabilities.download ? desktopDownloads(desktopRelease) : [],
   };
 }

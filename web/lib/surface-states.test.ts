@@ -9,7 +9,7 @@ import { middleware } from "../middleware";
 import { footerDocsLinks, footerLegalLinks, footerProductLinks, footerProjectLinks, navLinks, signInLink } from "./i18n/links";
 import { PERMANENT_ROUTE_REDIRECTS, REDIRECTED_ROUTES } from "./route-redirects";
 import { AVAILABILITY_ROWS, describeRow } from "./content/availability";
-import { DESKTOP_RELEASE, desktopDownload, parseDesktopRelease, type DesktopReleaseFact } from "./desktop-release";
+import { DESKTOP_RELEASE, desktopDownload, desktopDownloads, parseDesktopRelease, type DesktopReleaseFact } from "./desktop-release";
 import { FOUNDER_SWITCHES, FOUNDER_SWITCH_VALUES } from "./founder-switches";
 import { STATE_CHROME_KEY, SURFACE_IDS, SURFACE_STATES, stateLabel, surfaceCapabilities, surfaceState } from "./surface-states";
 import { DesktopDownloadBlock } from "../components/desktop-download";
@@ -121,7 +121,7 @@ describe("today's surface states", () => {
     for (const row of AVAILABILITY_ROWS) {
       const view = describeRow(row, "en");
       expect(view.status).toBe(stateLabel(surfaceState(row.id), "en"));
-      expect(view.download).toBeNull();
+      expect(view.downloads).toEqual([]);
     }
   });
 
@@ -194,12 +194,26 @@ describe("the desktop download", () => {
     const view = describeRow(row, "en", fixture);
     expect(view.status).toBe("Released");
     expect(view.detail).not.toMatch(/No public download/);
-    const html = renderToStaticMarkup(DesktopDownloadBlock({ download: view.download!, locale: "en" }));
+    const html = renderToStaticMarkup(DesktopDownloadBlock({ downloads: view.downloads, locale: "en" }));
     expect(html).toContain("Download for macOS");
+    expect(html).not.toContain("Apple silicon");
     expect(html).toContain(fixture.assets[0].url);
     expect(html).toContain("Version 1.2.3");
     expect(html).toContain("123.5 MB");
     expect(html).toContain(SHA);
+  });
+
+  it("offers the Apple silicon and Intel installers separately, each with its own size and checksum", () => {
+    const arm = fixture.assets[0];
+    const intelSha = "b".repeat(64);
+    const intel = { ...arm, name: "Codewhale-1.2.3-x64.dmg", size: 234_567_890, sha256: intelSha, url: arm.url.replace("arm64", "x64") };
+    const both = { ...fixture, assets: [intel, arm] };
+    expect(desktopDownloads(both).map((download) => download.arch)).toEqual(["arm64", "x64"]);
+    expect(desktopDownload(both)?.url).toBe(arm.url);
+    const html = renderToStaticMarkup(DesktopDownloadBlock({ downloads: desktopDownloads(both), locale: "en" }));
+    expect(html.indexOf("Apple silicon")).toBeGreaterThan(-1);
+    expect(html.indexOf("Intel")).toBeGreaterThan(html.indexOf("Apple silicon"));
+    for (const expected of [arm.url, intel.url, SHA, intelSha, "123.5 MB", "234.6 MB"]) expect(html).toContain(expected);
   });
 
   it.each(["en", "zh"])("renders on /app in %s only when the release object is present", async (locale) => {

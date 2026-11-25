@@ -19,8 +19,11 @@ export interface DesktopReleaseFact {
   assets: DesktopAssetFact[];
 }
 
+export type DesktopArch = "arm64" | "x64";
+
 export interface DesktopDownload {
   version: string;
+  arch: DesktopArch | null;
   name: string;
   size: number;
   sha256: string;
@@ -77,8 +80,25 @@ export function parseDesktopRelease(value: unknown): DesktopReleaseFact | null {
 
 export const DESKTOP_RELEASE: DesktopReleaseFact | null = parseDesktopRelease(data);
 
+function assetArch(name: string): DesktopArch | null {
+  if (/[-_.]arm64[-_.]/.test(name)) return "arm64";
+  if (/[-_.]x64[-_.]/.test(name)) return "x64";
+  return null;
+}
+
+export function desktopDownloads(release: DesktopReleaseFact | null = DESKTOP_RELEASE): DesktopDownload[] {
+  if (!release) return [];
+  const seen = new Set<DesktopArch | null>();
+  const downloads: DesktopDownload[] = [];
+  for (const asset of release.assets) {
+    const arch = assetArch(asset.name);
+    if (asset.platform !== "macos" || seen.has(arch)) continue;
+    seen.add(arch);
+    downloads.push({ version: release.version, arch, name: asset.name, size: asset.size, sha256: asset.sha256, url: asset.url });
+  }
+  return downloads.sort((a, b) => Number(a.arch === "x64") - Number(b.arch === "x64"));
+}
+
 export function desktopDownload(release: DesktopReleaseFact | null = DESKTOP_RELEASE): DesktopDownload | null {
-  const asset = release?.assets.find((candidate) => candidate.platform === "macos");
-  if (!release || !asset) return null;
-  return { version: release.version, name: asset.name, size: asset.size, sha256: asset.sha256, url: asset.url };
+  return desktopDownloads(release)[0] ?? null;
 }
