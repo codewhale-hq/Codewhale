@@ -23,7 +23,7 @@ use codewhale_models::turn_classify::same_recorded_turn;
 use codewhale_models::{ContentBlock, Message, SystemPrompt};
 use codewhale_runtime::artifacts::ArtifactRecord;
 use codewhale_runtime::session_tree::{SessionEntry, SessionImportContainer, SessionJournal};
-use codewhale_util::utils::write_atomic;
+use codewhale_util::utils::{sync_directory, write_atomic};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
@@ -3745,9 +3745,8 @@ impl SessionManager {
         let Some(goal) = goal else {
             if self.checked_existing_session_goals_dir()?.is_some() && path.exists() {
                 fs::remove_file(&path)?;
-                #[cfg(unix)]
                 if let Some(parent) = path.parent() {
-                    fs::File::open(parent)?.sync_all()?;
+                    sync_directory(parent);
                 }
             }
             return Ok(());
@@ -4779,7 +4778,10 @@ impl SessionManager {
             Err(error) => return Err(error),
         }
         match fs::remove_file(journal_archive_path(&self.sessions_dir, id)?) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                sync_directory(&dir);
+                Ok(())
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error),
         }
@@ -6166,7 +6168,10 @@ impl SessionManager {
             Err(error) => return Err(error),
         }
         match fs::remove_file(dir.join(name)) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                sync_directory(&dir);
+                Ok(())
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error),
         }
@@ -6249,7 +6254,9 @@ impl SessionManager {
                 Err(error) => return Err(error),
             }
             // The pre-import copy is an older ordinary snapshot, not recovery.
-            return self.remove_import_archive_copy(&path);
+            let result = self.remove_import_archive_copy(&path);
+            sync_directory(&self.sessions_dir);
+            return result;
         }
         // The store this document is bound to is named by its binding, not by
         // its id: a host store usually sits under another conversation's
@@ -6272,13 +6279,25 @@ impl SessionManager {
             Err(error) => return Err(error),
         }
         match fs::remove_file(&late_path) {
-            Ok(()) => {}
+            Ok(()) => {
+                if let Some(parent) = late_path.parent()
+                    && parent != self.sessions_dir.as_path()
+                {
+                    sync_directory(parent);
+                }
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
         if let Some(checkpoint) = checkpoint {
-            match fs::remove_file(checkpoint) {
-                Ok(()) => {}
+            match fs::remove_file(&checkpoint) {
+                Ok(()) => {
+                    if let Some(parent) = checkpoint.parent()
+                        && parent != self.sessions_dir.as_path()
+                    {
+                        sync_directory(parent);
+                    }
+                }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error),
             }
@@ -6287,12 +6306,14 @@ impl SessionManager {
         self.remove_journal_archive(id)?;
         self.clear_session_boot_owner(id);
         let session_dir = self.sessions_dir.join(id.trim());
+        let mut removed_in_session_dir = false;
         if session_dir.exists() {
             if codewhale_util::path_identity::metadata_is_link_or_reparse(&fs::symlink_metadata(
                 &session_dir,
             )?) {
                 // Preserve remove_dir_all's existing no-follow behavior.
-                fs::remove_dir_all(session_dir)?;
+                fs::remove_dir_all(&session_dir)?;
+                sync_directory(&self.sessions_dir);
                 return Ok(());
             }
             // Other conversations and automations can share this host's Runtime
@@ -6309,14 +6330,16 @@ impl SessionManager {
                 } else {
                     fs::remove_file(entry.path())?;
                 }
+                removed_in_session_dir = true;
             }
         }
         self.retire_released_stores(id, bound_store);
         if session_dir.is_dir() && fs::read_dir(&session_dir)?.next().is_none() {
-            fs::remove_dir(session_dir)?;
+            fs::remove_dir(&session_dir)?;
+        } else if removed_in_session_dir && session_dir.is_dir() {
+            sync_directory(&session_dir);
         }
-        #[cfg(unix)]
-        fs::File::open(&self.sessions_dir)?.sync_all()?;
+        sync_directory(&self.sessions_dir);
         Ok(())
     }
 

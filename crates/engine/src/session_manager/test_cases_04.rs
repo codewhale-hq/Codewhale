@@ -831,3 +831,70 @@
             Some(&stale_obs)
         );
     }
+
+    #[test]
+    fn delete_session_removes_sidecars_and_preserves_shared_runtime_store() {
+        let tmp = tempdir().expect("tempdir");
+        let sessions_dir = tmp.path().join("sessions");
+        let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
+        let id = Uuid::new_v4().to_string();
+        write_empty_session_record(&manager, &id, tmp.path(), Utc::now());
+
+        let runtime = GoalSnapshot {
+            goal_id: None,
+            objective: Some("verify durable delete".to_string()),
+            status: "paused".to_string(),
+            token_budget: None,
+            tokens_used: 0,
+            time_used_seconds: 0,
+            continuation_count: 0,
+            elapsed_seconds: None,
+            evidence: None,
+            blocker: None,
+            pause_reason: Some(GoalPauseReason::User),
+            completion_verification: None,
+            advisories: Vec::new(),
+            last_gap_fingerprint: None,
+            repeated_gap_count: 0,
+            last_gap_pass: None,
+            progress: None,
+        };
+        let durable = SessionGoalState::from_runtime(&runtime)
+            .expect("valid runtime goal")
+            .expect("non-empty goal");
+        manager
+            .save_session_goal(&id, Some(&durable))
+            .expect("save goal");
+
+        let session_dir = sessions_dir.join(&id);
+        let shared_store = session_dir.join("runtime");
+        fs::create_dir_all(&shared_store).expect("create runtime store dir");
+        fs::write(shared_store.join("keep.txt"), "shared").expect("write store marker");
+        let sidecar = session_dir.join("ephemeral.txt");
+        fs::write(&sidecar, "remove me").expect("write sidecar");
+
+        manager.delete_session(&id).expect("delete session");
+
+        assert!(
+            !manager.validated_session_path(&id).expect("path").exists(),
+            "session document must be removed"
+        );
+        assert_eq!(
+            manager.load_session_goal(&id).expect("load goal"),
+            None,
+            "session goal sidecar must be removed"
+        );
+        assert!(!sidecar.exists(), "non-store sidecar must be removed");
+        assert!(
+            shared_store.join("keep.txt").exists(),
+            "shared runtime store directory must be preserved"
+        );
+        assert!(
+            manager
+                .list_sessions()
+                .expect("list sessions")
+                .iter()
+                .all(|session| session.id != id),
+            "deleted session must not be listed"
+        );
+    }

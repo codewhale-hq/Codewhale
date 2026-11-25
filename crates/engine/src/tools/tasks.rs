@@ -2192,6 +2192,52 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn gate_run_reports_success_only_when_gate_passes() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let context = ToolContext::new(workspace.path())
+            .with_shell_policy(codewhale_agent_contract::worker_profile::ShellPolicy::Full);
+
+        let failed = TasksTool::new("tasks")
+            .execute(
+                json!({
+                    "action": "gate_run",
+                    "gate": "test",
+                    "command": "echo failing-gate >&2; exit 1"
+                }),
+                &context,
+            )
+            .await
+            .expect("failed gate returns ToolResult");
+        assert!(
+            !failed.success,
+            "a non-zero gate exit must return ToolResult.success == false"
+        );
+        let failed_body: Value = serde_json::from_str(&failed.content).expect("json body");
+        assert_eq!(failed_body["gate"]["status"], "failed");
+        assert_eq!(failed_body["gate"]["exit_code"], 1);
+
+        let passed = TasksTool::new("tasks")
+            .execute(
+                json!({
+                    "action": "gate_run",
+                    "gate": "test",
+                    "command": "echo ok"
+                }),
+                &context,
+            )
+            .await
+            .expect("passing gate returns ToolResult");
+        assert!(
+            passed.success,
+            "a zero-exit gate must return ToolResult.success == true"
+        );
+        let passed_body: Value = serde_json::from_str(&passed.content).expect("json body");
+        assert_eq!(passed_body["gate"]["status"], "passed");
+        assert_eq!(passed_body["gate"]["exit_code"], 0);
+    }
+
     #[test]
     fn gate_command_uses_non_login_shell_invocation() {
         // A login shell would source profile files that can re-export
