@@ -318,6 +318,28 @@ impl<'a> ContextPreviewItem<'a> {
     pub fn word(&self) -> &str {
         self.state.word()
     }
+
+    /// Construct a pasted-text context chip (`Pasted text · N lines` / `1 line`).
+    #[must_use]
+    pub fn pasted_text(
+        id: impl Into<Cow<'a, str>>,
+        lines: usize,
+        state: ContextPreviewState,
+    ) -> Self {
+        Self::new(
+            id,
+            format!("Pasted text · {}", pasted_line_count(lines)),
+            state,
+        )
+    }
+}
+
+fn pasted_line_count(lines: usize) -> String {
+    if lines == 1 {
+        "1 line".to_owned()
+    } else {
+        format!("{lines} lines")
+    }
 }
 
 #[derive(Clone)]
@@ -471,6 +493,21 @@ pub struct PendingCardContext<'a> {
     pub selected: bool,
 }
 
+impl PendingCardContext<'_> {
+    /// Construct a pasted-text attachment row (`Pasted text · N lines` / `1 line`).
+    #[must_use]
+    pub fn pasted_text(lines: usize, removable: bool) -> Self {
+        Self {
+            kind: Cow::Borrowed("paste"),
+            label: Cow::Borrowed("Pasted text"),
+            detail: Some(Cow::Owned(pasted_line_count(lines))),
+            included: true,
+            removable,
+            selected: false,
+        }
+    }
+}
+
 /// The native card's five concrete style slots. Defaults come from `Theme`;
 /// a host retaining its palette grammar may provide these exact styles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -576,8 +613,9 @@ impl<'a> PendingCard<'a> {
             plan.push(controls);
             return plan;
         }
+        let header_style = self.styles.map(|s| s.context_muted);
         if !self.context.is_empty() {
-            plan.push(card_header(&self.words.context_header, theme));
+            plan.push(card_header(&self.words.context_header, header_style, theme));
             for item in &self.context {
                 let prefix_style = if item.selected {
                     styles.selected.add_modifier(Modifier::BOLD)
@@ -641,7 +679,7 @@ impl<'a> PendingCard<'a> {
             if !self.context.is_empty() {
                 plan.push(Line::from(""));
             }
-            plan.push(card_header(&self.words.inputs_header, theme));
+            plan.push(card_header(&self.words.inputs_header, header_style, theme));
             for value in &self.sending {
                 card_item(
                     &mut plan,
@@ -660,7 +698,11 @@ impl<'a> PendingCard<'a> {
                     theme,
                 );
                 plan.push(Line::from(Span::styled(
-                    card_copy(&self.words.editing_restore, theme),
+                    card_clip(
+                        &card_copy(&self.words.editing_restore, theme),
+                        usize::from(width),
+                        theme.ascii(),
+                    ),
                     styles.input,
                 )));
             }
@@ -677,7 +719,11 @@ impl<'a> PendingCard<'a> {
             }
             if !self.queued.is_empty() {
                 plan.push(Line::from(Span::styled(
-                    card_copy(&self.words.queued_controls, theme),
+                    card_clip(
+                        &card_copy(&self.words.queued_controls, theme),
+                        usize::from(width),
+                        theme.ascii(),
+                    ),
                     styles.input,
                 )));
             }
@@ -721,12 +767,16 @@ fn card_copy(value: &str, theme: &Theme) -> String {
         .collect()
 }
 
-fn card_header(value: &str, theme: &Theme) -> Line<'static> {
-    Line::from(format!(
+fn card_header(value: &str, style: Option<Style>, theme: &Theme) -> Line<'static> {
+    let text = format!(
         "{} {}",
         glyphs::pick("•", theme.ascii()),
         card_copy(value, theme)
-    ))
+    );
+    match style {
+        Some(style) => Line::from(Span::styled(text, style)),
+        None => Line::from(text),
+    }
 }
 
 fn card_clip(value: &str, width: usize, ascii: bool) -> String {
@@ -1025,10 +1075,7 @@ impl<'a> PendingInputPreview<'a> {
             Span::raw(" "),
             Span::styled(item.state.word(), theme.fg(item.state.role())),
             Span::raw(" / "),
-            Span::styled(
-                text::display_safe(&item.label).into_owned(),
-                theme.fg(Role::Foreground),
-            ),
+            Span::styled(card_copy(&item.label, theme), theme.fg(Role::Foreground)),
         ];
         if let Some(detail) = &item.detail {
             spans.push(Span::styled(

@@ -534,7 +534,9 @@ impl<R: ListRow> Paint for List<'_, R> {
             return;
         }
         let placed = self.place(area);
-        let list_w = area.width - if placed.rail { RAIL } else { 0 };
+        let list_w = area
+            .width
+            .saturating_sub(if placed.rail { RAIL } else { 0 });
         let gutter = GUTTER.min(list_w);
         let marker = glyphs::pick(glyphs::SELECTION, theme.ascii());
         for slot in &placed.slots {

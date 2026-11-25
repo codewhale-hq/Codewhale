@@ -5,6 +5,8 @@
 //! The host supplies rows and dispatches actions; the dock retains the native
 //! tab fit, row columns, placement, goal header, and overflow behavior.
 
+use std::borrow::Cow;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     buffer::Buffer,
@@ -983,11 +985,18 @@ impl Paint for Workbar {
                     status_column,
                     theme,
                 );
+                let prefix_style = match value.tone {
+                    WorkbarTone::Live
+                    | WorkbarTone::Success
+                    | WorkbarTone::Attention
+                    | WorkbarTone::Failure => normal.patch(value.tone.style(theme)),
+                    WorkbarTone::Heading | WorkbarTone::Muted => normal,
+                };
                 row(
                     target,
                     buf,
                     &Line::from(vec![
-                        Span::styled(prefix, normal),
+                        Span::styled(prefix, prefix_style),
                         Span::styled(columns.0, muted),
                         Span::styled(columns.1, normal),
                         Span::styled(columns.2, muted),
@@ -1408,5 +1417,110 @@ impl WorkbarState {
             }
             _ => WorkbarOutcome::Ignored,
         }
+    }
+}
+
+/// Compact `Tasks · done/total` header with live-green completed beads and muted open beads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskProgressHeader<'a> {
+    /// Section label shown before the completion ratio (defaults to `"Tasks"`).
+    pub label: Cow<'a, str>,
+    /// Number of completed tasks.
+    pub done: usize,
+    /// Total number of tasks.
+    pub total: usize,
+    /// Optional active step title rendered after the beads when room permits.
+    pub active: Option<Cow<'a, str>>,
+}
+
+impl<'a> TaskProgressHeader<'a> {
+    /// Construct a task progress header for `done` of `total` tasks.
+    #[must_use]
+    pub fn new(done: usize, total: usize) -> Self {
+        Self {
+            label: Cow::Borrowed("Tasks"),
+            done,
+            total,
+            active: None,
+        }
+    }
+
+    /// Override the leading label (for localization or custom headings).
+    #[must_use]
+    pub fn label(mut self, label: impl Into<Cow<'a, str>>) -> Self {
+        self.label = label.into();
+        self
+    }
+
+    /// Attach the currently active task title to display after the progress beads.
+    #[must_use]
+    pub fn active(mut self, active: impl Into<Cow<'a, str>>) -> Self {
+        self.active = Some(active.into());
+        self
+    }
+}
+
+impl Paint for TaskProgressHeader<'_> {
+    fn paint(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
+        let area = area.intersection(buf.area);
+        if area.is_empty() {
+            return;
+        }
+        let ascii = theme.ascii();
+        let sep = if ascii { " - " } else { " · " };
+        let done_bead = if ascii { "x" } else { "✓" };
+        let open_bead = if ascii { "o" } else { "○" };
+        let label = text::display_safe(self.label.as_ref());
+        let done = self.done.min(self.total);
+        let head = format!("{label}{sep}{done}/{}", self.total);
+        let width = usize::from(area.width);
+        let head_truncated = text::truncate(&head, width, ascii).into_owned();
+        let mut used = text::width(&head_truncated);
+        let mut spans = vec![Span::styled(
+            head_truncated,
+            theme.fg(Role::Foreground).add_modifier(Modifier::BOLD),
+        )];
+        let shown_beads = self.total.min(12);
+        if shown_beads > 0 && used + 2 < width {
+            let done_beads = done
+                .saturating_mul(shown_beads)
+                .checked_div(self.total)
+                .unwrap_or(0);
+            let beads_avail = width.saturating_sub(used + 2);
+            let fit_beads = shown_beads.min(beads_avail);
+            if fit_beads > 0 {
+                spans.push(Span::raw("  "));
+                used += 2;
+                let done_shown = done_beads.min(fit_beads);
+                let open_shown = fit_beads.saturating_sub(done_shown);
+                if done_shown > 0 {
+                    spans.push(Span::styled(
+                        done_bead.repeat(done_shown),
+                        theme.tui_ink(TuiInk::Success),
+                    ));
+                    used += done_shown;
+                }
+                if open_shown > 0 {
+                    spans.push(Span::styled(
+                        open_bead.repeat(open_shown),
+                        theme.fg(Role::Muted),
+                    ));
+                    used += open_shown;
+                }
+            }
+        }
+        if let Some(active) = &self.active {
+            let clean = text::display_safe(active.as_ref());
+            let sep_w = text::width(sep);
+            if !clean.is_empty() && used + sep_w + 1 < width {
+                let rem = width.saturating_sub(used + sep_w);
+                spans.push(Span::styled(sep, theme.fg(Role::Muted)));
+                spans.push(Span::styled(
+                    text::truncate(&clean, rem, ascii).into_owned(),
+                    theme.fg(Role::Muted),
+                ));
+            }
+        }
+        row(area, buf, &Line::from(spans));
     }
 }

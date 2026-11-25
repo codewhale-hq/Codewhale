@@ -332,5 +332,52 @@
     "files": {
       "src/components/workbar.rs": "2fd780b1cb80a04de8b999c5c182a9a7ff86a8c431f9606eb41f5adb3d31970d"
     }
+  },
+  "kit_upgrade_update": {
+    "commit": "1ee06f76078c6173aa7646f1c738c55f08456a99",
+    "scope": "Design 5.5.0 Whale Dark/Light palette sync, charter typographic minus, expanded State/Icon sets, Surface Depth::Tonal, Toast Wave 9 parity, new Notice/Skeleton/Count/ChecksMark primitives, and additive R1-R5 component parity (PostureBar, PendingInput, NativeComposer, Artifacts, Transcript, Receipt, List, Workspace, Approval, Attention, Verification, Workbar, DockTabs, Diff, Workbench, Settings, Picker, Subagents). Standalone tests, tools, and README assets are outside this source synchronization.",
+    "local_changes": "None on the 37 synced files (byte-for-byte match with upstream 1ee06f76); src/gallery/mod.rs adds primitives::entries() while retaining the unvendored pet gallery omission; Cargo.toml remains in retained_engine_adaptations.",
+    "files": {
+      "assets/tui-palettes.json": "1b3843f8aa97756f43181c5e9a28fc930d79bb4505091d7fc1300d532cd2176d",
+      "src/components/approval.rs": "cbb65d025cc3502be7b9d962f93dd8d206749995a12eafe9da91563a483521b2",
+      "src/components/artifacts.rs": "ca611b21e969733dcb3dde197889da976c9fc1058c218ab92120db0ff7bcffae",
+      "src/components/attention.rs": "895241f864df0718dacc4478f741ee22527bb9efeaf1c49d6f00c6e365915f75",
+      "src/components/checks.rs": "29bff46ee8d039fcea84ead6904bb5085e6c1077003e6d147eff292010a072a2",
+      "src/components/count.rs": "ba4dd6512fa6cf81e63c7a342ff2e56e29267702ff6e86f747befed8beb63d5e",
+      "src/components/diff.rs": "7709f0c95d0ff5329d356830b7244022c85fa985794a9fb065242d4b5a61adfe",
+      "src/components/dock_tabs.rs": "cc9233483698d243b8d2d4a9bc1818872c66ee7a33a587c4e83e31f6b159da6d",
+      "src/components/icons.rs": "dfc0c0610334ede5c2f193730bfef1c1735188735dbe183809177e0d4593ad90",
+      "src/components/list.rs": "ff02051145b827ed3744bd477ec4d24a1047e07efd0b082585d38a60a08f80bc",
+      "src/components/mod.rs": "255c19027e5e796cbd3beb330ca3e6d32a8b0fb065dc8e6783a6f4eab6c0e50d",
+      "src/components/native_chrome.rs": "5c4cd58a1e34bd7e0768498e619ebd60cc95c629ccb311307579d5fac5cf1a83",
+      "src/components/native_composer.rs": "54c1b6d0d37a5ee4efa1cd93a3492b8a3de0791f7533f1f372ff9075b010db35",
+      "src/components/notice.rs": "e9b96c76d6494f7cffa5fff9dc3e0a9aa0238899f25054af93587afa021d13e2",
+      "src/components/pending_input.rs": "ba62b81e5e8fc919ce14c326001d868a73c45ad82f68e73ace42f9fe09069673",
+      "src/components/picker.rs": "4c33334fd7725891e352e8d84cd6e4694a9623c9e9c1a43578f0635ffc70c520",
+      "src/components/posture.rs": "acd785253dfaa20fc866ec5b40952dd339a31d6322011c4f48a8516c4a2b375f",
+      "src/components/receipt.rs": "b168524e8b30bd3a652a1cc5d66b29c5dc1938e256b6226081d4b38fde1920d0",
+      "src/components/settings.rs": "2cd07cfa9b3d3bd43d6222ec5093f2c94049460f52f5efbd5fc1cadef4cd24df",
+      "src/components/skeleton.rs": "ae7ddbf581d7d9f2a20e4223d449457d7e48462d1dd638ffa22ad768d3e6dfb3",
+      "src/components/status.rs": "73c8419a24c3a9b81c0784e95b4e3e6751167b6907d27aaf340cb307c0da0f82",
+      "src/components/subagents.rs": "c5d150e12e744ae8167135d7d9f110fc46b025c329ae5a5f4031d348d3cd19e9",
+      "src/components/surface.rs": "70369fc11c9d708f59194fac70aefa064ab60485810d3f68805d71456391e4be",
+      "src/components/toast.rs": "0192366ccec8bec0ab08d118f88fb546d15227f43a88a902932be73550611fbe",
+      "src/components/transcript.rs": "394c5e8051a08f3db4ee05bf8614c33e08bf8a507c5a92ca3aedfb813602eaf8",
+      "src/components/verification.rs": "5091769c6a0fc91afcdc282011916a4c9112a405392edc3b288d7458284ae7c0",
+      "src/components/workbar.rs": "d597f5c7d98cf06df273673c301b89318be71ca14c9257cd72e36dcd06fc5177",
+      "src/components/workbench.rs": "4fbcb301df84b23d6cf8165fe8d7e49f3f2ad2075e8ddc6f1ec514a258c24e05",
+      "src/components/workspace.rs": "f47965cb3bca57a9855c9c5571bde3a477031e2c843e660e29b3f32d16a64d1c",
+      "src/gallery/artifacts.rs": "990df21d7fb0907d031178200ec51505dcbcd7430e9675714ff14d0f9b73e068",
+      "src/gallery/attention.rs": "7023fe907b6668406dbeb9b3fe03c012907a46afd32b6a7bff5540b1d2d2ead4",
+      "src/gallery/display.rs": "0905aa657193db695afbf122725ee0ea21c6b2a91c17d5b6836cdba8fbb6bd11",
+      "src/gallery/primitives.rs": "e4dbdf85b65da3918b42bac00211517606e9d537c887ea9b4643cb763c2cffb8",
+      "src/gallery/settings.rs": "841c9a550cc35bf59b201b83af303549e540db93fc6fecf99914e7d76cdbfd31",
+      "src/gallery/workbar.rs": "ce2dc5b87417a0b2bb5ba1f365a54094057789b858dda2897df0f2d3e25d944f",
+      "src/glyphs.rs": "db4288df36142da4f9e02c5c96217e946a842f50f5fb691bf38e32c1beef20b3",
+      "src/tui_palettes.rs": "5b6b68ca1060122b9d1fb43b542407f0f1305aa7ac6dace2ffcb2b106dae96cf"
+    },
+    "merged_exports": {
+      "src/gallery/mod.rs": "11c680975713953ef99ae57caac4ebe46bf0533cb715cd9f657dc69cfc7ebe15"
+    }
   }
 }

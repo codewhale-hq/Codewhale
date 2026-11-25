@@ -4,8 +4,8 @@ use ratatui::{buffer::Buffer, layout::Rect, text::Line};
 
 use super::Entry;
 use crate::{
-    Paint, Role, Theme, Workbar, WorkbarAgent, WorkbarPanel, WorkbarPlacement, WorkbarRow,
-    WorkbarTab, WorkbarTone,
+    DiffReviewFile, DiffReviewHeader, DiffScope, Paint, Role, TaskProgressHeader, Theme, Workbar,
+    WorkbarAgent, WorkbarPanel, WorkbarPlacement, WorkbarRow, WorkbarTab, WorkbarTone,
 };
 
 fn tabs() -> Vec<WorkbarTab> {
@@ -271,6 +271,19 @@ fn right(area: Rect, buf: &mut Buffer, theme: &Theme) {
     side_with(WorkbarPlacement::Right, area, buf, theme);
 }
 
+fn task_progress(area: Rect, buf: &mut Buffer, theme: &Theme) {
+    TaskProgressHeader::new(2, 5)
+        .active("Verify workbar snapshots")
+        .paint(area, buf, theme);
+}
+fn diff_review(area: Rect, buf: &mut Buffer, theme: &Theme) {
+    let files = [
+        DiffReviewFile::new("src/workbar.rs", 24, 6).viewed(true),
+        DiffReviewFile::new("src/diff.rs", 18, 2),
+    ];
+    DiffReviewHeader::from_files(DiffScope::Branch, &files).paint(area, buf, theme);
+}
+
 pub(crate) fn entries() -> Vec<Entry> {
     [
         (
@@ -290,6 +303,8 @@ pub(crate) fn entries() -> Vec<Entry> {
         ("workbar-narrow", 38, 8, narrow),
         ("workbar-left", 104, 12, left),
         ("workbar-right", 104, 12, right),
+        ("workbar-task-progress", 64, 1, task_progress),
+        ("diff-review-header", 48, 1, diff_review),
     ]
     .into_iter()
     .map(|(name, width, height, draw)| Entry {

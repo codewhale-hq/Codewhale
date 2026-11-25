@@ -1,4 +1,4 @@
-//! Four small marks, one cell each: sonar, tide, shell and kelp.
+//! Small marks, one cell each: sonar, tide, shell, kelp, and the v5.5.0 ADE marks.
 //!
 //! Drawn in the spirit of Susan Kare's icons: precise, friendly, and each
 //! with a word for screen readers and an ASCII form for plain terminals. They
@@ -25,6 +25,18 @@ pub enum Icon {
     Shell,
     /// A quiet divider between items on one line.
     Kelp,
+    /// Fast action or high-energy trigger (Design 5.5.0 ADE icon).
+    Bolt,
+    /// Compute, model runtime, or local engine (Design 5.5.0 ADE icon).
+    Cpu,
+    /// Stacked context, workspaces, or layers (Design 5.5.0 ADE icon).
+    Layers,
+    /// Orbiting subagents or background loop (Design 5.5.0 ADE icon).
+    Orbit,
+    /// Discovery, scan, or live telemetry sweep (Design 5.5.0 ADE icon).
+    Radar,
+    /// AI assistance or generated suggestion (Design 5.5.0 ADE icon).
+    Sparkle,
 }
 
 /// A ping widening: small ring, dotted ring, ring with its centre. None of
@@ -54,14 +66,22 @@ impl Icon {
             Icon::Tide { done, total } => format!("{done} of {total}"),
             Icon::Shell => "receipt".into(),
             Icon::Kelp => "divider".into(),
+            Icon::Bolt => "bolt".into(),
+            Icon::Cpu => "cpu".into(),
+            Icon::Layers => "layers".into(),
+            Icon::Orbit => "orbit".into(),
+            Icon::Radar => "radar".into(),
+            Icon::Sparkle => "sparkle".into(),
         }
     }
 
     #[must_use]
     pub fn role(&self) -> Role {
         match self {
-            Icon::Sonar { .. } | Icon::Tide { .. } => Role::Live,
-            Icon::Shell => Role::Muted,
+            Icon::Sonar { .. } | Icon::Tide { .. } | Icon::Radar => Role::Live,
+            Icon::Bolt => Role::Attention,
+            Icon::Orbit | Icon::Sparkle => Role::Accent,
+            Icon::Shell | Icon::Cpu | Icon::Layers => Role::Muted,
             Icon::Kelp => Role::Border,
         }
     }
@@ -99,6 +119,48 @@ impl Icon {
                     "|"
                 } else {
                     "┊"
+                }
+            }
+            Icon::Bolt => {
+                if ascii {
+                    "/"
+                } else {
+                    "↯"
+                }
+            }
+            Icon::Cpu => {
+                if ascii {
+                    "+"
+                } else {
+                    "⊞"
+                }
+            }
+            Icon::Layers => {
+                if ascii {
+                    ":"
+                } else {
+                    "≡"
+                }
+            }
+            Icon::Orbit => {
+                if ascii {
+                    "@"
+                } else {
+                    "⊕"
+                }
+            }
+            Icon::Radar => {
+                if ascii {
+                    "^"
+                } else {
+                    "⌖"
+                }
+            }
+            Icon::Sparkle => {
+                if ascii {
+                    "&"
+                } else {
+                    "✦"
                 }
             }
         }
@@ -141,7 +203,16 @@ mod tests {
             })
             .collect();
         icons.extend((0..=4).map(|done| Icon::tide(done, 4).unwrap()));
-        icons.extend([Icon::Shell, Icon::Kelp]);
+        icons.extend([
+            Icon::Shell,
+            Icon::Kelp,
+            Icon::Bolt,
+            Icon::Cpu,
+            Icon::Layers,
+            Icon::Orbit,
+            Icon::Radar,
+            Icon::Sparkle,
+        ]);
         let state_marks: Vec<&str> = crate::State::ALL
             .iter()
             .flat_map(|s| [s.glyph(), crate::glyphs::pick(s.glyph(), true)])

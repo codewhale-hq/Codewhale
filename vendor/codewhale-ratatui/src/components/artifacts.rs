@@ -499,3 +499,190 @@ fn fit(spans: Vec<Span<'static>>, width: usize, theme: &Theme) -> Vec<Span<'stat
     }
     fitted
 }
+
+/// A compact one-line artifact chip (`[File] summary.md · Done`).
+#[derive(Clone, Debug)]
+pub struct ArtifactChip<'a> {
+    pub name: Cow<'a, str>,
+    pub kind: ArtifactKind,
+    pub status: StatusMark,
+    pub words: Option<&'a ArtifactWords>,
+}
+
+impl<'a> ArtifactChip<'a> {
+    /// Construct an inline artifact chip with caller-owned name, kind, and state.
+    #[must_use]
+    pub fn new(name: impl Into<Cow<'a, str>>, kind: ArtifactKind, state: State) -> Self {
+        Self {
+            name: name.into(),
+            kind,
+            status: StatusMark::new(state),
+            words: None,
+        }
+    }
+
+    /// Override the status word displayed after the name.
+    #[must_use]
+    pub fn status_word(mut self, word: impl Into<Cow<'static, str>>) -> Self {
+        self.status = self.status.word(word);
+        self
+    }
+
+    /// Override the localized kind words.
+    #[must_use]
+    pub fn words(mut self, words: &'a ArtifactWords) -> Self {
+        self.words = Some(words);
+        self
+    }
+
+    fn spans(&self, theme: &Theme, fallback_words: &ArtifactWords) -> Vec<Span<'static>> {
+        let ascii = theme.ascii();
+        let words = self.words.unwrap_or(fallback_words);
+        let kind = safe(words.kind(self.kind), ascii);
+        let name = safe(&self.name, ascii);
+        let sep = if ascii { " - " } else { " \u{00b7} " };
+        let status_word = safe(&self.status.word, ascii);
+        let mut out = vec![
+            Span::styled(format!("[{kind}] "), theme.fg(Role::Muted)),
+            Span::styled(name, theme.fg(Role::Foreground)),
+        ];
+        if !status_word.is_empty() {
+            out.push(Span::styled(sep.to_owned(), theme.fg(Role::Dim)));
+            out.push(Span::styled(
+                status_word,
+                theme.fg(self.status.state.role()),
+            ));
+        }
+        out
+    }
+}
+
+impl Paint for ArtifactChip<'_> {
+    fn paint(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
+        let area = area.intersection(buf.area);
+        if area.is_empty() {
+            return;
+        }
+        let defaults = ArtifactWords::default();
+        let spans = fit(self.spans(theme, &defaults), usize::from(area.width), theme);
+        row(Rect { height: 1, ..area }, buf, &Line::from(spans));
+    }
+
+    fn height(&self, width: u16, _theme: &Theme) -> u16 {
+        u16::from(width > 0)
+    }
+}
+
+/// A single-line horizontal row of [`ArtifactChip`] items that appends
+/// `+{n} more` when chips overflow the available width.
+#[derive(Clone, Debug)]
+pub struct ArtifactChipRow<'a> {
+    pub chips: Vec<ArtifactChip<'a>>,
+    pub more_label: Cow<'a, str>,
+    pub words: Option<&'a ArtifactWords>,
+}
+
+impl<'a> ArtifactChipRow<'a> {
+    /// Construct a chip row from caller-owned chips.
+    #[must_use]
+    pub fn new(chips: Vec<ArtifactChip<'a>>) -> Self {
+        Self {
+            chips,
+            more_label: Cow::Borrowed("more"),
+            words: None,
+        }
+    }
+
+    /// Override the word after `+{n}` when chips overflow.
+    #[must_use]
+    pub fn more_label(mut self, label: impl Into<Cow<'a, str>>) -> Self {
+        self.more_label = label.into();
+        self
+    }
+
+    /// Override the localized kind words used by chips without their own words.
+    #[must_use]
+    pub fn words(mut self, words: &'a ArtifactWords) -> Self {
+        self.words = Some(words);
+        self
+    }
+}
+
+impl Paint for ArtifactChipRow<'_> {
+    fn paint(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
+        let area = area.intersection(buf.area);
+        if area.is_empty() || self.chips.is_empty() {
+            return;
+        }
+        let ascii = theme.ascii();
+        let defaults = ArtifactWords::default();
+        let words = self.words.unwrap_or(&defaults);
+        let budget = usize::from(area.width);
+        let more_word = safe(&self.more_label, ascii);
+        let rendered: Vec<(Vec<Span<'static>>, usize)> = self
+            .chips
+            .iter()
+            .map(|chip| {
+                let spans = chip.spans(theme, words);
+                let width = spans.iter().map(|s| text::width(&s.content)).sum();
+                (spans, width)
+            })
+            .collect();
+
+        let mut shown = 0usize;
+        let mut used = 0usize;
+        for (index, (_, chip_w)) in rendered.iter().enumerate() {
+            let gap = if shown > 0 { 2 } else { 0 };
+            let remaining = rendered.len() - (index + 1);
+            let reserve = if remaining > 0 {
+                let overflow_text = format!("+{remaining} {more_word}");
+                2 + text::width(&overflow_text)
+            } else {
+                0
+            };
+            if used + gap + *chip_w + reserve <= budget {
+                used += gap + *chip_w;
+                shown += 1;
+            } else {
+                break;
+            }
+        }
+
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        if shown == 0 {
+            let remaining = rendered.len().saturating_sub(1);
+            let overflow_text = if remaining > 0 {
+                Some(format!("+{remaining} {more_word}"))
+            } else {
+                None
+            };
+            let overflow_w = overflow_text.as_deref().map_or(0, |t| 2 + text::width(t));
+            if let Some(over) = overflow_text.filter(|_| budget > overflow_w + 4) {
+                spans.extend(fit(rendered[0].0.clone(), budget - overflow_w, theme));
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(over, theme.fg(Role::Hint)));
+            } else {
+                spans.extend(fit(rendered[0].0.clone(), budget, theme));
+            }
+        } else {
+            for (index, (chip_spans, _)) in rendered.into_iter().take(shown).enumerate() {
+                if index > 0 {
+                    spans.push(Span::raw("  "));
+                }
+                spans.extend(chip_spans);
+            }
+            let hidden = self.chips.len().saturating_sub(shown);
+            if hidden > 0 {
+                let over = format!("+{hidden} {more_word}");
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(over, theme.fg(Role::Hint)));
+            }
+        }
+        let final_spans = fit(spans, budget, theme);
+        row(Rect { height: 1, ..area }, buf, &Line::from(final_spans));
+    }
+
+    fn height(&self, width: u16, _theme: &Theme) -> u16 {
+        u16::from(width > 0 && !self.chips.is_empty())
+    }
+}

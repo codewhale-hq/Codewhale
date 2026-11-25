@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use crate::{MotionMode, Paint, Spinner, Theme, spin};
+use crate::{MotionMode, Paint, Role, Spinner, Theme, spin, text};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -25,6 +25,8 @@ pub struct VerificationSpinner {
     pub verb: String,
     pub elapsed: Duration,
     pub motion: MotionMode,
+    /// Optional detail label shown after the verb (`Checking · cargo test`).
+    pub detail: Option<String>,
 }
 
 impl VerificationSpinner {
@@ -37,7 +39,16 @@ impl VerificationSpinner {
             verb: verb.into(),
             elapsed,
             motion,
+            detail: None,
         }
+    }
+
+    /// Attach an optional detail label shown after the verb (`Checking · cargo test`).
+    #[must_use]
+    pub fn detail(mut self, detail: impl Into<String>) -> Self {
+        let value = detail.into();
+        self.detail = (!value.is_empty()).then_some(value);
+        self
     }
 
     /// Sample a verification frame without reading a clock.
@@ -56,11 +67,42 @@ impl VerificationSpinner {
         spin::next_frame_in(elapsed, motion)
     }
 
-    /// A tick, the caller's sanitized verb and the shared measured-time words.
+    /// A tick, the caller's sanitized verb, optional detail and measured-time words.
     #[must_use]
     pub fn spans(&self, theme: &Theme) -> Vec<Span<'static>> {
+        self.spans_for_width(None, theme)
+    }
+
+    fn spans_for_width(&self, max_width: Option<usize>, theme: &Theme) -> Vec<Span<'static>> {
         let mut spans = Spinner::new(&self.verb, self.elapsed, self.motion).spans(theme);
         spans[0].content = Self::frame(self.elapsed, self.motion, theme.ascii()).into();
+        let Some(raw_detail) = self.detail.as_deref() else {
+            return spans;
+        };
+        let detail = text::display_safe(raw_detail);
+        if detail.is_empty() {
+            return spans;
+        }
+        let sep = if theme.ascii() { " - " } else { " · " };
+        let sep_w = text::width(sep);
+        let fitted = match max_width {
+            Some(limit) => {
+                let base_w: usize = spans.iter().map(Span::width).sum();
+                let room = limit.saturating_sub(base_w.saturating_add(sep_w));
+                if room == 0 {
+                    return spans;
+                }
+                text::truncate(&detail, room, theme.ascii()).into_owned()
+            }
+            None => detail.into_owned(),
+        };
+        if fitted.is_empty() {
+            return spans;
+        }
+        let insert_at = 3.min(spans.len());
+        let muted = theme.fg(Role::Muted);
+        spans.insert(insert_at, Span::styled(fitted, muted));
+        spans.insert(insert_at, Span::styled(sep, muted));
         spans
     }
 }
@@ -71,7 +113,8 @@ impl Paint for VerificationSpinner {
         if !area.is_empty() {
             // Buffer::set_line also handles a right edge of u16::MAX, where
             // the widget Line renderer can overflow while clipping a span.
-            super::workbench::row(area, buf, &Line::from(self.spans(theme)));
+            let spans = self.spans_for_width(Some(usize::from(area.width)), theme);
+            super::workbench::row(area, buf, &Line::from(spans));
         }
     }
 }

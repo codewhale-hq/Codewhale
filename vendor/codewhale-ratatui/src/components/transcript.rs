@@ -481,6 +481,8 @@ pub struct CodeBlock<'a> {
     pub copy_label: Cow<'a, str>,
     /// Optional caller semantic spans over the display text.
     pub spans: Vec<TranscriptSpan<'a>>,
+    /// Render a full-width docked header (`language · N lines` left, `Copy` right).
+    pub docked_header: bool,
 }
 
 impl<'a> CodeBlock<'a> {
@@ -495,7 +497,16 @@ impl<'a> CodeBlock<'a> {
             copy: true,
             copy_label: Cow::Borrowed("Copy"),
             spans: Vec::new(),
+            docked_header: false,
         }
+    }
+
+    /// Render a full-width docked header (`language · N lines` left, `Copy`
+    /// right-aligned) instead of the default inline header.
+    #[must_use]
+    pub fn docked_header(mut self, docked: bool) -> Self {
+        self.docked_header = docked;
+        self
     }
 
     /// A separate display copy. The original `source` is still what is copied.
@@ -578,33 +589,107 @@ impl<'a> CodeBlock<'a> {
             return Vec::new();
         }
         let ascii = theme.ascii();
-        let mut out = Vec::new();
-        let language = text::display_safe(&self.language);
-        if !language.is_empty() || self.copy {
-            let mut spans: Vec<Span<'static>> = Vec::new();
-            if !language.is_empty() {
-                spans.push(Span::styled(
-                    language.into_owned(),
-                    theme.fg(Role::Muted).add_modifier(Modifier::BOLD),
-                ));
-            }
-            if self.copy {
-                if !spans.is_empty() {
-                    spans.push(Span::raw("  "));
-                }
-                spans.push(Span::styled(
-                    text::display_safe(&self.copy_label).into_owned(),
-                    theme.fg(Role::Accent),
-                ));
-            }
-            out.push(Line::from(spans));
-        }
         let logical = if self.spans.is_empty() {
             ink_atoms(self.display_text(), theme.fg(Role::Foreground))
         } else {
             span_atoms(&self.spans, theme)
         };
         let count = logical.len().max(1);
+        let mut out = Vec::new();
+        let language = text::display_safe(&self.language);
+        let copy_label = text::display_safe(&self.copy_label);
+        if self.docked_header {
+            let line_word = if count == 1 { "line" } else { "lines" };
+            let sep = if ascii { " - " } else { " · " };
+            let count_text = format!("{count} {line_word}");
+            let suffix = format!("{sep}{count_text}");
+            let fit_left = |budget: usize| -> String {
+                if language.is_empty() {
+                    text::truncate(&count_text, budget, ascii).into_owned()
+                } else {
+                    let full = format!("{language}{suffix}");
+                    if text::width(&full) <= budget {
+                        full
+                    } else if budget > text::width(&suffix) + 2 {
+                        let lang_fit =
+                            text::truncate(&language, budget - text::width(&suffix), ascii);
+                        format!("{lang_fit}{suffix}")
+                    } else {
+                        text::truncate(&full, budget, ascii).into_owned()
+                    }
+                }
+            };
+            let right_plain = if self.copy { copy_label.as_ref() } else { "" };
+            let right_w = text::width(right_plain);
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            if !right_plain.is_empty() && cells > right_w + 2 {
+                let left_fit = fit_left(cells - right_w - 1);
+                let left_w = text::width(&left_fit);
+                let pad = cells.saturating_sub(left_w + right_w);
+                spans.push(Span::styled(
+                    left_fit,
+                    theme.fg(Role::Muted).add_modifier(Modifier::BOLD),
+                ));
+                if pad > 0 {
+                    spans.push(Span::raw(" ".repeat(pad)));
+                }
+                spans.push(Span::styled(right_plain.to_owned(), theme.fg(Role::Accent)));
+            } else {
+                spans.push(Span::styled(
+                    fit_left(cells),
+                    theme.fg(Role::Muted).add_modifier(Modifier::BOLD),
+                ));
+            }
+            out.push(Line::from(spans));
+        } else if !language.is_empty() || self.copy {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            let lang_w = text::width(&language);
+            let copy_w = if self.copy {
+                text::width(&copy_label)
+            } else {
+                0
+            };
+            if !language.is_empty() && self.copy {
+                if lang_w + 2 + copy_w <= cells {
+                    spans.push(Span::styled(
+                        language.into_owned(),
+                        theme.fg(Role::Muted).add_modifier(Modifier::BOLD),
+                    ));
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(
+                        copy_label.into_owned(),
+                        theme.fg(Role::Accent),
+                    ));
+                } else if cells > copy_w + 3 {
+                    let clipped = text::truncate(&language, cells - copy_w - 2, ascii);
+                    spans.push(Span::styled(
+                        clipped.into_owned(),
+                        theme.fg(Role::Muted).add_modifier(Modifier::BOLD),
+                    ));
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(
+                        copy_label.into_owned(),
+                        theme.fg(Role::Accent),
+                    ));
+                } else {
+                    let clipped = text::truncate(&language, cells, ascii);
+                    spans.push(Span::styled(
+                        clipped.into_owned(),
+                        theme.fg(Role::Muted).add_modifier(Modifier::BOLD),
+                    ));
+                }
+            } else if !language.is_empty() {
+                let clipped = text::truncate(&language, cells, ascii);
+                spans.push(Span::styled(
+                    clipped.into_owned(),
+                    theme.fg(Role::Muted).add_modifier(Modifier::BOLD),
+                ));
+            } else if self.copy {
+                let clipped = text::truncate(&copy_label, cells, ascii);
+                spans.push(Span::styled(clipped.into_owned(), theme.fg(Role::Accent)));
+            }
+            out.push(Line::from(spans));
+        }
         let digits = count.to_string().len().max(2);
         let rail = if ascii { "| " } else { "│ " };
         let gutter = self.gutter && cells >= digits + 1 + text::width(rail) + 2;

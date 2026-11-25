@@ -658,6 +658,8 @@ pub struct NativeComposer<'a> {
     pub can_submit: bool,
     pub submit_hint: Option<Cow<'a, str>>,
     pub target: Option<Cow<'a, str>>,
+    /// Optional attachment summary chip painted in the composer top border.
+    pub attachments: Option<Cow<'a, str>>,
     /// Cursor index in graphemes of the displayed text, defaulting to its end.
     pub cursor: Option<usize>,
     pub menu_rows: usize,
@@ -673,6 +675,7 @@ impl<'a> NativeComposer<'a> {
             can_submit: false,
             submit_hint: None,
             target: None,
+            attachments: None,
             cursor: None,
             menu_rows: 0,
         }
@@ -711,6 +714,12 @@ impl<'a> NativeComposer<'a> {
     }
     pub fn target(mut self, target: impl Into<Cow<'a, str>>) -> Self {
         self.target = Some(target.into());
+        self
+    }
+    /// Attach an opt-in summary chip (e.g. from `native_composer_paste_chip`) in the top border.
+    #[must_use]
+    pub fn attachments(mut self, label: impl Into<Cow<'a, str>>) -> Self {
+        self.attachments = Some(label.into());
         self
     }
     pub fn has_panel(&self, area: Rect) -> bool {
@@ -775,7 +784,15 @@ impl<'a> NativeComposer<'a> {
             focused: self.focused,
             can_submit: self.can_submit,
             ascii: theme.is_some_and(Theme::ascii),
-            top_title: None,
+            top_title: self.attachments.as_ref().map(|label| {
+                Line::styled(
+                    title(
+                        format!(" {} ", safe(label)),
+                        width.map(|width| width.saturating_sub(2)),
+                    ),
+                    background.patch(role(Role::Muted)),
+                )
+            }),
             top_right: self.target.as_ref().map(|target| {
                 Line::styled(
                     title(

@@ -416,6 +416,8 @@ pub struct PickerTabs<'a> {
     pub of: &'a [Option<usize>],
     /// A tab that shows every item (an "All" tab), if there is one.
     pub all: Option<usize>,
+    /// Optional per-tab match counts, shown beside each tab label.
+    pub counts: Option<&'a [usize]>,
 }
 
 impl<'a> PickerTabs<'a> {
@@ -426,6 +428,7 @@ impl<'a> PickerTabs<'a> {
             active,
             of: &[],
             all: None,
+            counts: None,
         }
     }
 
@@ -440,6 +443,14 @@ impl<'a> PickerTabs<'a> {
     #[must_use]
     pub const fn all(mut self, index: usize) -> Self {
         self.all = Some(index);
+        self
+    }
+
+    /// Per-tab match counts shown beside each tab label. Tabs with a count of
+    /// zero recede while a search query is active.
+    #[must_use]
+    pub const fn counts(mut self, counts: &'a [usize]) -> Self {
+        self.counts = Some(counts);
         self
     }
 
@@ -670,6 +681,7 @@ pub struct Picker<'a> {
     preview: Option<&'a dyn PickerPreview>,
     preview_min: u16,
     words: Option<&'a PickerWords>,
+    clear_hint: Option<&'a str>,
 }
 
 impl std::fmt::Debug for Picker<'_> {
@@ -697,6 +709,7 @@ impl<'a> Picker<'a> {
             preview: None,
             preview_min: PICKER_PREVIEW_MIN_WIDTH,
             words: None,
+            clear_hint: None,
         }
     }
 
@@ -706,6 +719,22 @@ impl<'a> Picker<'a> {
     #[must_use]
     pub const fn query(mut self, text: &'a str, cursor: usize) -> Self {
         self.query = Some(PickerQuery::new(text, cursor));
+        self
+    }
+
+    /// Show a right-aligned `Esc clear` hint on the query line when `query` is
+    /// non-empty and width permits.
+    #[must_use]
+    pub const fn show_clear_hint(mut self, show: bool) -> Self {
+        self.clear_hint = if show { Some("Esc clear") } else { None };
+        self
+    }
+
+    /// Show a custom right-aligned clear hint on the query line when `query`
+    /// is non-empty and width permits.
+    #[must_use]
+    pub const fn clear_hint(mut self, hint: &'a str) -> Self {
+        self.clear_hint = if hint.is_empty() { None } else { Some(hint) };
         self
     }
 
@@ -1045,13 +1074,25 @@ impl<'a> Picker<'a> {
         }
         let active = tabs.active.min(n - 1);
         let mark = glyphs::pick(glyphs::CURRENT, ascii);
-        let labels: Vec<String> = tabs
+        let searching = self
+            .query
+            .is_some_and(|q| !text::display_safe(q.text).trim().is_empty());
+        let labels: Vec<(String, Option<usize>)> = tabs
             .labels
             .iter()
-            .map(|l| text::display_safe(l).into_owned())
+            .enumerate()
+            .map(|(i, l)| {
+                let safe = text::display_safe(l);
+                let count = tabs.counts.and_then(|c| c.get(i).copied());
+                let text = match count {
+                    Some(n) => format!("{safe} ({n})"),
+                    None => safe.into_owned(),
+                };
+                (text, count)
+            })
             .collect();
         let cost = |i: usize| {
-            text::width(&labels[i])
+            text::width(&labels[i].0)
                 + if i == active {
                     text::width(mark) + 1
                 } else {
@@ -1079,7 +1120,7 @@ impl<'a> Picker<'a> {
         if lo > 0 {
             spans.push(Span::styled(format!("{ellipsis} "), theme.fg(Role::Hint)));
         }
-        for (i, label) in labels.iter().enumerate().take(hi + 1).skip(lo) {
+        for (i, (label, count)) in labels.iter().enumerate().take(hi + 1).skip(lo) {
             if i > lo {
                 spans.push(Span::raw(" ".repeat(GAP)));
             }
@@ -1091,7 +1132,11 @@ impl<'a> Picker<'a> {
                     theme.fg(Role::Foreground).add_modifier(Modifier::BOLD),
                 ));
             } else {
-                spans.push(Span::styled(label.clone(), theme.fg(Role::Muted)));
+                let mut style = theme.fg(Role::Muted);
+                if searching && *count == Some(0) {
+                    style = style.add_modifier(Modifier::DIM);
+                }
+                spans.push(Span::styled(label.clone(), style));
             }
         }
         if hi + 1 < n {
@@ -1106,10 +1151,29 @@ impl<'a> Picker<'a> {
         let room = usize::from(width.checked_sub(QUERY_INDENT)?);
         let typed = text::display_safe(query.text);
 
-        // `3/17`, right-aligned, while there is something typed.
-        let count = (!typed.is_empty() && self.shown_len() > 0)
-            .then(|| format!("{}/{}", self.shown_len(), self.items.len()))
-            .filter(|c| text::width(c) + 2 < room);
+        let count_only = (!typed.is_empty() && self.shown_len() > 0)
+            .then(|| format!("{}/{}", self.shown_len(), self.items.len()));
+        let clear = (!typed.is_empty())
+            .then_some(self.clear_hint)
+            .flatten()
+            .map(|h| text::display_safe(h).into_owned())
+            .filter(|h| !h.is_empty());
+        let sep = if ascii { "  " } else { " · " };
+        let count = match (count_only, clear) {
+            (Some(c), Some(h)) => {
+                let combined = format!("{c}{sep}{h}");
+                if text::width(&combined) + 2 < room {
+                    Some(combined)
+                } else if text::width(&c) + 2 < room {
+                    Some(c)
+                } else {
+                    None
+                }
+            }
+            (Some(c), None) => (text::width(&c) + 2 < room).then_some(c),
+            (None, Some(h)) => (text::width(&h) + 2 < room).then_some(h),
+            (None, None) => None,
+        };
         let room = room.saturating_sub(count.as_ref().map_or(0, |c| text::width(c) + 2));
 
         let mut cursor = query.cursor.min(text::width(&typed));
@@ -1269,6 +1333,7 @@ impl ratatui::widgets::StatefulWidget for &crate::Themed<'_, Picker<'_>> {
             preview: self.component.preview,
             preview_min: self.component.preview_min,
             words: self.component.words,
+            clear_hint: self.component.clear_hint,
         };
         let viewport = view.layout(area).list;
         if !viewport.is_empty() {
@@ -1379,5 +1444,72 @@ mod tests {
         assert_eq!(s.offset, 16);
         s.home();
         assert_eq!(s.visible_offset(20, 4), 0);
+    }
+
+    #[test]
+    fn picker_tabs_counts_and_zero_match_dimming() {
+        use crate::testing::{Profile, render, text};
+        let labels = [
+            Cow::Borrowed("All"),
+            Cow::Borrowed("Dark"),
+            Cow::Borrowed("Light"),
+        ];
+        let counts = [2, 0, 2];
+        let items = [PickerItem::new("Shoreline"), PickerItem::new("Sandbar")];
+        let tabs = PickerTabs::new(&labels, 0).counts(&counts);
+        let picker = Picker::new(&items, PickerState::new(0))
+            .tabs(tabs)
+            .query("sh", 2);
+        for profile in Profile::ALL {
+            let theme = profile.theme();
+            let buf = render(48, 4, |area, buf| picker.paint(area, buf, &theme));
+            let shown = text(&buf);
+            let row0 = shown.lines().next().unwrap_or_default();
+            assert!(row0.contains("All (2)"), "{}: {row0}", profile.name());
+            assert!(row0.contains("Dark (0)"), "{}: {row0}", profile.name());
+            assert!(row0.contains("Light (2)"), "{}: {row0}", profile.name());
+            let dark_col = row0.find("Dark").expect("Dark tab painted");
+            assert!(
+                buf[(u16::try_from(dark_col).unwrap_or(0), 0)]
+                    .modifier
+                    .contains(Modifier::DIM),
+                "{}: 0-match tab dims while searching",
+                profile.name()
+            );
+        }
+    }
+
+    #[test]
+    fn picker_query_shows_clear_hint_when_enabled_and_non_empty() {
+        use crate::testing::{Profile, render, text};
+        let items = [PickerItem::new("Shoreline"), PickerItem::new("Sandbar")];
+        let matches = PickerMatches::rank(&items, "shore", None);
+        for profile in Profile::ALL {
+            let theme = profile.theme();
+            let active = Picker::new(&items, PickerState::new(0))
+                .query("shore", 5)
+                .matches(&matches)
+                .show_clear_hint(true);
+            let buf = render(48, 3, |area, buf| active.paint(area, buf, &theme));
+            let row0 = text(&buf).lines().next().unwrap_or_default().to_owned();
+            assert!(row0.contains("1/2"), "{}: {row0}", profile.name());
+            assert!(row0.contains("Esc clear"), "{}: {row0}", profile.name());
+
+            let empty = Picker::new(&items, PickerState::new(0))
+                .query("", 0)
+                .show_clear_hint(true);
+            let empty_buf = render(48, 3, |area, buf| empty.paint(area, buf, &theme));
+            let empty_row0 = text(&empty_buf)
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+            assert!(!empty_row0.contains("Esc clear"), "{empty_row0}");
+
+            let narrow = render(14, 3, |area, buf| active.paint(area, buf, &theme));
+            let narrow_row0 = text(&narrow).lines().next().unwrap_or_default().to_owned();
+            assert!(!narrow_row0.contains("Esc clear"), "{narrow_row0}");
+            assert!(narrow_row0.contains("1/2"), "{narrow_row0}");
+        }
     }
 }

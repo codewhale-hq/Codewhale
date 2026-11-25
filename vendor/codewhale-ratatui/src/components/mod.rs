@@ -94,6 +94,10 @@ pub use attention::*;
 pub use workbench::*;
 mod habitat;
 pub use habitat::*;
+mod whale_pet;
+pub use whale_pet::*;
+mod subagents;
+pub use subagents::*;
 
 mod pending_input;
 mod transcript;
@@ -120,13 +124,17 @@ pub use dock_tabs::*;
 mod braille_frame;
 pub(crate) use braille_frame::paint_braille_cells;
 pub use braille_frame::*;
-
-mod whale_pet;
-pub use whale_pet::*;
-mod subagents;
-pub use subagents::*;
 mod dot_whale;
 pub use dot_whale::*;
 
 mod pet_mode;
 pub use pet_mode::*;
+
+mod checks;
+mod count;
+mod notice;
+mod skeleton;
+pub use checks::*;
+pub use count::*;
+pub use notice::*;
+pub use skeleton::*;
