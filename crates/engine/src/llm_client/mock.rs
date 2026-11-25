@@ -35,12 +35,6 @@
 //! assert_eq!(mock.captured_requests().len(), 1);
 //! ```
 
-// This module ships methods + builder helpers that integration tests rely on
-// individually. Not every helper is exercised by unit tests — that's expected
-// (the goal is a usable mock surface for downstream tests), so we silence
-// per-item dead-code warnings at the module level.
-#![allow(dead_code)]
-
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Mutex;
