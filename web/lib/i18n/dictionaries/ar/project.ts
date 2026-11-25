@@ -1,7 +1,7 @@
 export const project = {
   oneEngineBehindEverySurface: "محرك واحد يدعم كل الواجهات",
   theTerminalCodewhaleExecTheLocalBrowser: "تشترك الطرفية وcodewhale exec وواجهة المتصفح المحلية والمحررات في محرك Rust واحد. ويصل الإصلاح فيه إلى جميع هذه الواجهات.",
-  theLargestCratesStillNeedToBe: "ما زالت الحزم البرمجية الأكبر بحاجة إلى التقسيم، ولا يتوفر بعد تنزيل عام لتطبيق سطح المكتب.",
+  theLargestCratesStillNeedToBe: "ما زالت الحزم البرمجية الأكبر بحاجة إلى التقسيم.",
   everyModelIsAPeer: "كل النماذج متساوية",
   useABuiltInProviderAnyOpenAI: "استخدم مزودًا مدمجًا أو أي نقطة اتصال متوافقة مع OpenAI أو نموذجًا محليًا. لا تُمنح الأفضلية لأي مزود.",
   providerBehaviorStillNeedsToMoveInto: "ما زال سلوك المزودين بحاجة إلى نقله إلى ملفات تعريف، ولم يختبر أحد بعد كثيرًا من المزودين والنماذج المستخدمة.",

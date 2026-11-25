@@ -2,7 +2,7 @@
   "project": {
     "oneEngineBehindEverySurface": "One engine behind every surface",
     "theTerminalCodewhaleExecTheLocalBrowser": "The terminal, codewhale exec, the local browser view and editors share one Rust engine. A fix there reaches all of them.",
-    "theLargestCratesStillNeedToBe": "The largest crates still need to be split, and the desktop app has no public download yet.",
+    "theLargestCratesStillNeedToBe": "The largest crates still need to be split.",
     "everyModelIsAPeer": "Every model is a peer",
     "useABuiltInProviderAnyOpenAI": "Use a built-in provider, any OpenAI-compatible endpoint or a local model. No provider is ranked above another.",
     "providerBehaviorStillNeedsToMoveInto": "Provider behavior still needs to move into profiles, and many providers and models that people use have not been tested by anyone yet.",
@@ -345,7 +345,7 @@
     "agentRoleReviewer": "Reads a change and grades what it finds by severity, without changing files.",
     "agentsLink": "Read how sub-agents work",
     "directionShotAlt": "The Codewhale desktop app. On the left is the session list; in the middle a task to fix a failing test waits for permission to run python3 -m pytest, with Allow and Deny.",
-    "directionShotCaption": "The desktop app in development runs on the same engine. Here, running DeepSeek V4.1 Flash in Accept Edits, it asks before running the test command.",
+    "directionShotCaption": "The desktop app runs on the same engine. Here, running DeepSeek V4.1 Flash in Accept Edits, it asks before running the test command.",
     "directionShotLink": "See the desktop app",
     "sectionDirectionHeading": "Here is where your agent is going.",
     "sectionDirectionBody": "Codewhale is becoming one environment across your terminal, a desktop app, the browser and cloud computers, all run by one engine, so your work can move between them and stay yours. Each part below says where it stands today.",

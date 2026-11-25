@@ -1,7 +1,7 @@
 export const project = {
   oneEngineBehindEverySurface: "すべての画面を一つのエンジンが支えます",
   theTerminalCodewhaleExecTheLocalBrowser: "ターミナル、codewhale exec、ローカルのブラウザー画面、エディターは一つのRustエンジンを共有します。そこでの修正がすべてに届きます。",
-  theLargestCratesStillNeedToBe: "大きなcrateの分割はまだ必要で、デスクトップアプリの公開ダウンロードもまだありません。",
+  theLargestCratesStillNeedToBe: "大きなcrateの分割はまだ必要です。",
   everyModelIsAPeer: "すべてのモデルを対等に扱います",
   useABuiltInProviderAnyOpenAI: "組み込みのプロバイダー、OpenAI互換のエンドポイント、ローカルモデルを使えます。特定のプロバイダーを優先しません。",
   providerBehaviorStillNeedsToMoveInto: "プロバイダーの動作はまだプロファイルに整理する必要があり、多くのプロバイダーやモデルはまだ誰も検証していません。",

@@ -23,7 +23,7 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
 
 /**
  * /app — the desktop app and the hosted browser app, stated as they are
- * today: a development build and a surface that is not open yet. Copy lives
+ * today: a released macOS app and a surface that is not open yet. Copy lives
  * in lib/content/app-page.ts and the surface table in
  * lib/content/availability.ts, which /product reads too.
  */

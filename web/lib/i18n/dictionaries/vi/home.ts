@@ -40,7 +40,7 @@ export const home: HomeDict = {
   agentRoleReviewer: "Đọc một thay đổi và chấm điểm những gì tìm thấy theo mức độ nghiêm trọng, không thay đổi tệp.",
   agentsLink: "Đọc cách tác tử con hoạt động",
   directionShotAlt: "Ứng dụng máy tính Codewhale. Bên trái là danh sách phiên; ở giữa, một tác vụ sửa bài kiểm thử bị lỗi đang chờ quyền chạy python3 -m pytest, với Allow và Deny.",
-  directionShotCaption: "Ứng dụng máy tính đang phát triển chạy trên cùng một engine. Ở đây, khi dùng DeepSeek V4.1 Flash ở chế độ Accept Edits, ứng dụng hỏi trước khi chạy lệnh kiểm thử.",
+  directionShotCaption: "Ứng dụng máy tính chạy trên cùng một engine. Ở đây, khi dùng DeepSeek V4.1 Flash ở chế độ Accept Edits, ứng dụng hỏi trước khi chạy lệnh kiểm thử.",
   directionShotLink: "Xem ứng dụng máy tính",
   sectionDirectionHeading: "Đây là nơi agent của bạn đang hướng tới.",
   sectionDirectionBody: "Codewhale đang trở thành một môi trường duy nhất trải khắp terminal, ứng dụng máy tính, trình duyệt và máy tính đám mây của bạn, tất cả chạy bằng một động cơ, để công việc của bạn có thể di chuyển giữa chúng và vẫn là của bạn. Mỗi phần bên dưới cho biết hôm nay nó đang ở đâu.",

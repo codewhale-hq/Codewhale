@@ -40,7 +40,7 @@ export const home: HomeDict = {
   agentRoleReviewer: "Legge una modifica e valuta ciò che trova per gravità, senza modificare file.",
   agentsLink: "Leggi come funzionano i sotto-agenti",
   directionShotAlt: "L’app desktop di Codewhale. A sinistra l’elenco delle sessioni; al centro un’attività che deve correggere un test fallito attende il permesso di eseguire python3 -m pytest, con Allow e Deny.",
-  directionShotCaption: "L’app desktop in sviluppo gira sullo stesso motore. Qui, con DeepSeek V4.1 Flash in Accept Edits, chiede conferma prima di eseguire il comando di test.",
+  directionShotCaption: "L’app desktop gira sullo stesso motore. Qui, con DeepSeek V4.1 Flash in Accept Edits, chiede conferma prima di eseguire il comando di test.",
   directionShotLink: "Guarda l’app desktop",
   sectionDirectionHeading: "Ecco dove sta andando il tuo agente.",
   sectionDirectionBody: "Codewhale sta diventando un unico ambiente che copre il tuo terminale, un’app desktop, il browser e i computer nel cloud, tutto guidato da un solo motore, così il tuo lavoro può spostarsi tra di essi e restare tuo. Ogni parte qui sotto dice a che punto si trova oggi.",

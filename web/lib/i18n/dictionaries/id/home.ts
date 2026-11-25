@@ -40,7 +40,7 @@ export const home: HomeDict = {
   agentRoleReviewer: "Membaca perubahan dan menilai temuannya menurut tingkat keparahan, tanpa mengubah file.",
   agentsLink: "Baca cara kerja sub-agen",
   directionShotAlt: "Aplikasi desktop Codewhale. Di kiri ada daftar sesi; di tengah, tugas untuk memperbaiki tes yang gagal menunggu izin menjalankan python3 -m pytest, dengan Allow dan Deny.",
-  directionShotCaption: "Aplikasi desktop yang sedang dikembangkan berjalan di mesin yang sama. Di sini, dengan DeepSeek V4.1 Flash dalam mode Accept Edits, aplikasi bertanya sebelum menjalankan perintah pengujian.",
+  directionShotCaption: "Aplikasi desktop berjalan di mesin yang sama. Di sini, dengan DeepSeek V4.1 Flash dalam mode Accept Edits, aplikasi bertanya sebelum menjalankan perintah pengujian.",
   directionShotLink: "Lihat aplikasi desktop",
   sectionDirectionHeading: "Ke sinilah agen Anda menuju.",
   sectionDirectionBody: "Codewhale sedang menjadi satu lingkungan yang mencakup terminal Anda, aplikasi desktop, browser, dan komputer cloud, semuanya dijalankan oleh satu mesin, sehingga pekerjaan Anda dapat berpindah di antaranya dan tetap milik Anda. Setiap bagian di bawah menyebutkan posisinya hari ini.",

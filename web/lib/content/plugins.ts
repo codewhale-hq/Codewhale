@@ -80,8 +80,8 @@ export const PLUGINS_COPY = {
   kindsTitle: { en: "What a plugin can add", zh: "插件能添加什么" },
   desktopTitle: { en: "Browse plugins in the desktop app", zh: "在桌面应用中浏览插件" },
   desktopLead: {
-    en: "The desktop app is in development with no download yet. Its Discover tab lists the plugins Codewhale maintains in the open.",
-    zh: "桌面应用仍在开发中，暂无下载。它的“发现”页列出了 Codewhale 公开维护的插件。",
+    en: "The desktop app's Discover tab lists the plugins Codewhale maintains in the open.",
+    zh: "桌面应用的“发现”页列出了 Codewhale 公开维护的插件。",
   },
   desktopAlt: {
     en: "The desktop app's Plugins Discover catalog under First-party Codewhale extensions, showing cards for Codewhale for Chrome, Cloudflare, Cloudflare Docs, Codewhale Skills, Computer Use, Design Review, GitHub Workflow, Hello Extension (sample) and Linear Workflow, each with an Install button.",

@@ -1,7 +1,7 @@
 export const project = {
   oneEngineBehindEverySurface: "Jeden silnik obsługuje wszystkie interfejsy",
   theTerminalCodewhaleExecTheLocalBrowser: "Terminal, codewhale exec, lokalny widok w przeglądarce i edytory korzystają z jednego silnika napisanego w Rust. Poprawka w tym silniku trafia do nich wszystkich.",
-  theLargestCratesStillNeedToBe: "Największe pakiety crate nadal wymagają podziału, a aplikacja komputerowa nie ma jeszcze publicznie dostępnej wersji do pobrania.",
+  theLargestCratesStillNeedToBe: "Największe pakiety crate nadal wymagają podziału.",
   everyModelIsAPeer: "Wszystkie modele są równorzędne",
   useABuiltInProviderAnyOpenAI: "Korzystaj z wbudowanego dostawcy, dowolnego punktu końcowego zgodnego z OpenAI lub modelu lokalnego. Żaden dostawca nie jest uprzywilejowany.",
   providerBehaviorStillNeedsToMoveInto: "Zachowanie dostawców nadal trzeba przenieść do profili, a wielu dostawców i modeli używanych przez społeczność nikt jeszcze nie przetestował.",

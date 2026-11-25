@@ -40,7 +40,7 @@ export const home: HomeDict = {
   agentRoleReviewer: "Lee un cambio y califica lo que encuentra por gravedad, sin cambiar archivos.",
   agentsLink: "Lee cómo funcionan los subagentes",
   directionShotAlt: "La aplicación de escritorio de Codewhale. A la izquierda, la lista de sesiones; en el centro, una tarea para arreglar una prueba que falla espera permiso para ejecutar python3 -m pytest, con Allow y Deny.",
-  directionShotCaption: "La aplicación de escritorio en desarrollo usa el mismo motor. Aquí, con DeepSeek V4.1 Flash en Accept Edits, pregunta antes de ejecutar el comando de prueba.",
+  directionShotCaption: "La aplicación de escritorio usa el mismo motor. Aquí, con DeepSeek V4.1 Flash en Accept Edits, pregunta antes de ejecutar el comando de prueba.",
   directionShotLink: "Ver la aplicación de escritorio",
   sectionDirectionHeading: "Hacia aquí va tu agente.",
   sectionDirectionBody: "Codewhale se está convirtiendo en un único entorno que abarca tu terminal, una aplicación de escritorio, el navegador y ordenadores en la nube, todo gobernado por un solo motor, para que tu trabajo pueda moverse entre ellos y seguir siendo tuyo. Cada parte de abajo indica en qué punto está hoy.",

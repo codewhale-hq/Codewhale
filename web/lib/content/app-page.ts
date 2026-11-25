@@ -2,11 +2,12 @@
  * app-page.ts — the copy for /app, the page about the desktop app and the
  * hosted browser app.
  *
- * TRUTH CONTRACT: the desktop app is a development build with no public
- * download, and the hosted browser app is not open yet. The terminal and the
- * local browser client (codewhale web) are released and need no account.
- * Nothing here names prices, plans, hours, dates, an auth vendor or a
- * download, and the page never links to the hosted app itself.
+ * TRUTH CONTRACT: the desktop app is released for macOS, and its download is
+ * rendered from data/desktop-published-release.json, never typed here. The
+ * hosted browser app is not open yet. The terminal and the local browser
+ * client (codewhale web) are released and need no account. Nothing here names
+ * prices, plans, hours, dates or an auth vendor, and the page never links to
+ * the hosted app itself.
  */
 
 import type { DesktopShotId } from "@/components/desktop-shot";
@@ -27,8 +28,8 @@ export const APP_COPY = {
   metadata: {
     title: { en: "Desktop and browser apps · Codewhale", zh: "桌面与浏览器应用 · Codewhale" },
     description: {
-      en: "The Codewhale desktop app is built on the same agent you can read, in development today. The terminal and the local browser client are released.",
-      zh: "Codewhale 桌面应用基于同一个可读智能体构建，目前处于开发阶段。终端与本地浏览器客户端均已发布。",
+      en: "The Codewhale desktop app is built on the same agent you can read, and it is available for macOS. The terminal and the local browser client are released too.",
+      zh: "Codewhale 桌面应用基于同一个可读智能体构建，现已提供 macOS 版。终端与本地浏览器客户端也已发布。",
     },
   },
   title: {
@@ -36,8 +37,8 @@ export const APP_COPY = {
     zh: "桌面应用基于同一个可读智能体构建。",
   },
   lede: {
-    en: "It runs the same engine as the terminal, so the app and the terminal share one agent. It is a development build today, and the browser app is not open yet.",
-    zh: "它与终端运行同一个引擎，因此应用与终端共用同一个智能体。目前它是开发版本，浏览器应用尚未开放。",
+    en: "It runs the same engine as the terminal, so the app and the terminal share one agent. The macOS app is available to download below, and the browser app is not open yet.",
+    zh: "它与终端运行同一个引擎，因此应用与终端共用同一个智能体。macOS 版可在下方下载，浏览器应用尚未开放。",
   },
   surfaces: {
     desktop: { en: "Desktop", zh: "桌面端" },
@@ -50,10 +51,10 @@ export const APP_COPY = {
   },
   guidePath: "/docs/web",
 
-  shotsHeading: { en: "What the development build looks like", zh: "开发版本长什么样" },
+  shotsHeading: { en: "What the desktop app looks like", zh: "桌面应用长什么样" },
   shotsScope: {
-    en: "These screens come from the desktop development build running the published 0.10.4 engine and a real model, DeepSeek V4.1 Flash. Details will change before a release.",
-    zh: "以下画面来自桌面开发版本，运行的是已发布的 0.10.4 引擎和真实模型 DeepSeek V4.1 Flash。发布前细节仍会变化。",
+    en: "These screens come from a development build of the desktop app running the published 0.10.4 engine and a real model, DeepSeek V4.1 Flash. The released app can differ in detail.",
+    zh: "以下画面来自桌面应用的开发版本，运行的是已发布的 0.10.4 引擎和真实模型 DeepSeek V4.1 Flash。正式发布的应用在细节上可能有所不同。",
   },
   shots: [
     {

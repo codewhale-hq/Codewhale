@@ -159,24 +159,24 @@ describe("locale prefix", () => {
 });
 
 describe("install aliases (M2, UX-13)", () => {
-  it("sends bare /download and /pricing to install, and /desktop to the app page, in one hop", () => {
+  it("sends bare /download and /desktop to the app page and /pricing to install, in one hop", () => {
     const res = middleware(request("https://codewhale.net/desktop?ref=x", "codewhale.net", { "accept-language": "ja,en;q=0.8" }));
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toBe("https://codewhale.net/ja/app?ref=x");
-    for (const path of ["/download", "/pricing"]) {
+    for (const [path, want] of [["/download", "/ja/app"], ["/pricing", "/ja/install"]]) {
       const res = middleware(
         request(`https://codewhale.net${path}?ref=x`, "codewhale.net", {
           "accept-language": "ja,en;q=0.8",
         }),
       );
       expect(res.status, path).toBe(307);
-      expect(res.headers.get("location"), path).toBe("https://codewhale.net/ja/install?ref=x");
+      expect(res.headers.get("location"), path).toBe(`https://codewhale.net${want}?ref=x`);
     }
   });
 
   it("keeps an existing locale, folding miscased prefixes in the same hop", () => {
     for (const [path, want] of [
-      ["/zh/download", "/zh/install"],
+      ["/zh/download", "/zh/app"],
       ["/en/pricing", "/en/install"],
       ["/pt-br/desktop", "/pt-BR/app"],
     ]) {

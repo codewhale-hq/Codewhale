@@ -36,18 +36,18 @@ const desktopRelease: DesktopReleaseFact = {
 const states = (rows: ReturnType<typeof productMap>) => Object.fromEntries(rows.map((row) => [row.id, row.state]));
 
 describe("the labelled product map", () => {
-  it("lists the six parts in order with the locked states today", () => {
+  it("lists the six parts in order with today's states, and drops the desktop sentence written before its release", () => {
     const rows = productMap({ capabilities: released, features: FEATURES });
     expect(rows.map((row) => row.id)).toEqual([...PRODUCT_MAP_IDS]);
     expect(states(rows)).toEqual({
       terminal: "released",
       localBrowser: "released",
       manyAgents: "released",
-      desktop: "developing",
+      desktop: "released",
       cloud: "inviteOnly",
       oneSession: "beingBuilt",
     });
-    expect(rows.every((row) => row.sentenceHolds)).toBe(true);
+    expect(rows.filter((row) => !row.sentenceHolds).map((row) => row.id)).toEqual(["desktop"]);
   });
 
   it("turns only the desktop row to released when a desktop release object is valid", () => {

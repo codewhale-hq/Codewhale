@@ -1,7 +1,7 @@
 export const project = {
   oneEngineBehindEverySurface: "हर इंटरफ़ेस के पीछे एक ही इंजन है",
   theTerminalCodewhaleExecTheLocalBrowser: "टर्मिनल, codewhale exec, स्थानीय ब्राउज़र दृश्य और संपादक एक Rust इंजन साझा करते हैं। इंजन में किया गया सुधार सभी तक पहुँचता है।",
-  theLargestCratesStillNeedToBe: "बड़े crate को अभी विभाजित करना है और डेस्कटॉप ऐप का सार्वजनिक डाउनलोड अभी उपलब्ध नहीं है।",
+  theLargestCratesStillNeedToBe: "बड़े crate को अभी विभाजित करना है।",
   everyModelIsAPeer: "हर मॉडल को बराबरी मिलती है",
   useABuiltInProviderAnyOpenAI: "अंतर्निहित प्रदाता, किसी भी OpenAI-संगत एंडपॉइंट या स्थानीय मॉडल का उपयोग करें। किसी प्रदाता को दूसरे से ऊपर नहीं रखा जाता।",
   providerBehaviorStillNeedsToMoveInto: "प्रदाताओं का व्यवहार अभी प्रोफ़ाइल में ले जाना है और उपयोग में आने वाले कई प्रदाताओं तथा मॉडलों को अभी किसी ने जाँचा नहीं है।",

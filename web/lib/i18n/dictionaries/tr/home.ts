@@ -40,7 +40,7 @@ export const home: HomeDict = {
   agentRoleReviewer: "Bir değişikliği okur ve bulduklarını önem derecesine göre puanlar, dosyaları değiştirmez.",
   agentsLink: "Alt ajanların nasıl çalıştığını okuyun",
   directionShotAlt: "Codewhale masaüstü uygulaması. Solda oturum listesi var; ortada başarısız bir testi düzeltme görevi python3 -m pytest çalıştırma izni bekliyor, Allow ve Deny düğmeleriyle.",
-  directionShotCaption: "Geliştirilmekte olan masaüstü uygulaması aynı motorla çalışır. Burada DeepSeek V4.1 Flash ile Accept Edits modunda, test komutunu çalıştırmadan önce soruyor.",
+  directionShotCaption: "Masaüstü uygulaması aynı motorla çalışır. Burada DeepSeek V4.1 Flash ile Accept Edits modunda, test komutunu çalıştırmadan önce soruyor.",
   directionShotLink: "Masaüstü uygulamasını görün",
   sectionDirectionHeading: "Ajanınız buraya gidiyor.",
   sectionDirectionBody: "Codewhale; terminalinizi, bir masaüstü uygulamasını, tarayıcıyı ve bulut bilgisayarlarını kapsayan tek bir ortam hâline geliyor; hepsi tek bir motorla çalışıyor, böylece işiniz aralarında geçebiliyor ve sizin kalıyor. Aşağıdaki her bölüm, bugün nerede durduğunu söyler.",

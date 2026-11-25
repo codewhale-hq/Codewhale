@@ -1,7 +1,7 @@
 export const project = {
   oneEngineBehindEverySurface: "Один движок поддерживает все интерфейсы",
   theTerminalCodewhaleExecTheLocalBrowser: "Терминал, codewhale exec, локальный браузерный интерфейс и редакторы используют один движок Rust. Исправление в нём достигает всех интерфейсов.",
-  theLargestCratesStillNeedToBe: "Самые крупные crate ещё нужно разделить, а приложение для компьютера пока нельзя скачать публично.",
+  theLargestCratesStillNeedToBe: "Самые крупные crate ещё нужно разделить.",
   everyModelIsAPeer: "Все модели равноправны",
   useABuiltInProviderAnyOpenAI: "Используйте встроенного провайдера, любую конечную точку с совместимостью OpenAI или локальную модель. Ни один провайдер не имеет приоритета.",
   providerBehaviorStillNeedsToMoveInto: "Поведение провайдеров ещё нужно перенести в профили, а многие провайдеры и модели пока никем не проверены.",

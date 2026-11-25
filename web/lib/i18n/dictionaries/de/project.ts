@@ -1,7 +1,7 @@
 export const project = {
   oneEngineBehindEverySurface: "Eine Engine für alle Oberflächen",
   theTerminalCodewhaleExecTheLocalBrowser: "Das Terminal, codewhale exec, die lokale Browseransicht und die Editoren nutzen dieselbe Rust-Engine. Eine Korrektur dort erreicht sie alle.",
-  theLargestCratesStillNeedToBe: "Die größten Crates müssen noch aufgeteilt werden, und für die Desktop-App gibt es noch keinen öffentlichen Download.",
+  theLargestCratesStillNeedToBe: "Die größten Crates müssen noch aufgeteilt werden.",
   everyModelIsAPeer: "Alle Modelle sind gleichberechtigt",
   useABuiltInProviderAnyOpenAI: "Nutze einen integrierten Anbieter, einen beliebigen OpenAI-kompatiblen Endpunkt oder ein lokales Modell. Kein Anbieter wird bevorzugt.",
   providerBehaviorStillNeedsToMoveInto: "Das Verhalten der Anbieter muss noch in Profile überführt werden, und viele Anbieter und Modelle, die Menschen nutzen, hat bisher niemand getestet.",

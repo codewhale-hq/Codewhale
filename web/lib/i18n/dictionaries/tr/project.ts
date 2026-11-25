@@ -1,7 +1,7 @@
 export const project = {
   oneEngineBehindEverySurface: "Tüm arayüzlerin arkasında tek motor vardır",
   theTerminalCodewhaleExecTheLocalBrowser: "Terminal, codewhale exec, yerel tarayıcı görünümü ve editörler aynı Rust motorunu paylaşır. Bu motordaki bir düzeltme hepsine ulaşır.",
-  theLargestCratesStillNeedToBe: "En büyük crate’lerin hâlâ bölünmesi gerekiyor ve masaüstü uygulamasının henüz herkese açık bir indirmesi yok.",
+  theLargestCratesStillNeedToBe: "En büyük crate’lerin hâlâ bölünmesi gerekiyor.",
   everyModelIsAPeer: "Tüm modeller eşittir",
   useABuiltInProviderAnyOpenAI: "Yerleşik bir sağlayıcıyı, OpenAI uyumlu herhangi bir uç noktayı veya yerel bir modeli kullanın. Hiçbir sağlayıcı diğerinden üstün tutulmaz.",
   providerBehaviorStillNeedsToMoveInto: "Sağlayıcı davranışlarının hâlâ profillere taşınması gerekiyor ve insanların kullandığı birçok sağlayıcı ve modeli henüz kimse test etmedi.",

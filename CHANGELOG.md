@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The website offers the macOS desktop app:** `codewhale.net/app` now has signed, notarized Desktop 0.10.4 downloads for Apple silicon and Intel Macs, each with its size and SHA-256 checksum, and `/download` goes to that page.
+
 ### Fixed
 
 - **`/config` Pet mode row shows the value you just set:** toggling Pet mode now updates the row at once, and one `Ctrl+R` resets it; the view waits for the queued startup-default save before reading saved settings.

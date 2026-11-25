@@ -20,7 +20,7 @@ const EN: DocsPageDict = {
           list: [
             "The terminal: run `codewhale` in a project folder.",
             "The local browser client: run `codewhale web` and use it in a browser tab on the same machine. See [Open the browser client](/docs/web).",
-            "Local work in the desktop app, which is a development build with no public download yet.",
+            "Local work in the desktop app, which is available for macOS from [the app page](/app).",
           ],
         },
         {
@@ -45,7 +45,7 @@ const EN: DocsPageDict = {
       title: "Sign in from the desktop app",
       blocks: [
         {
-          note: "The desktop app is a development build. There is no public download yet, and these steps describe the build as it stands today.",
+          note: "The desktop app is available for macOS. Sign-in is not available in every build yet, and these steps describe the app as it stands today.",
         },
         {
           steps: [
@@ -209,7 +209,7 @@ const ZH: DocsPageDict = {
           list: [
             "终端：在项目文件夹里运行 `codewhale`。",
             "本地浏览器客户端：运行 `codewhale web`，在同一台机器的浏览器标签页中使用。详见[打开浏览器客户端](/docs/web)。",
-            "桌面应用中的本地工作。桌面应用目前是开发版本，还没有公开下载。",
+            "桌面应用中的本地工作。桌面应用已提供 macOS 版，可在[应用页面](/app)下载。",
           ],
         },
         {
@@ -234,7 +234,7 @@ const ZH: DocsPageDict = {
       title: "从桌面应用登录",
       blocks: [
         {
-          note: "桌面应用是开发版本，目前没有公开下载。下面的步骤描述的是它今天的状态。",
+          note: "桌面应用已提供 macOS 版。并非所有版本都已提供登录，下面的步骤描述的是它今天的状态。",
         },
         {
           steps: [

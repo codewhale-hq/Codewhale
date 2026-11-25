@@ -40,7 +40,7 @@ export const home: HomeDict = {
   agentRoleReviewer: "변경을 읽고 발견한 문제를 심각도별로 평가합니다. 파일은 바꾸지 않습니다.",
   agentsLink: "서브에이전트 작동 방식 읽기",
   directionShotAlt: "Codewhale 데스크톱 앱. 왼쪽은 세션 목록이고, 가운데에서는 실패하는 테스트를 고치는 작업이 python3 -m pytest 실행 허락을 기다리며 Allow와 Deny 버튼을 보여 줍니다.",
-  directionShotCaption: "개발 중인 데스크톱 앱은 같은 엔진에서 실행됩니다. 여기서는 Accept Edits에서 DeepSeek V4.1 Flash를 사용하며 테스트 명령을 실행하기 전에 허락을 구합니다.",
+  directionShotCaption: "데스크톱 앱은 같은 엔진에서 실행됩니다. 여기서는 Accept Edits에서 DeepSeek V4.1 Flash를 사용하며 테스트 명령을 실행하기 전에 허락을 구합니다.",
   directionShotLink: "데스크톱 앱 보기",
   sectionDirectionHeading: "당신의 에이전트가 가는 곳은 여기입니다.",
   sectionDirectionBody: "Codewhale은 터미널, 데스크톱 앱, 브라우저, 클라우드 컴퓨터를 아우르는 하나의 환경이 되어 가고 있으며, 모두 하나의 엔진으로 돌아갑니다. 그래서 작업이 그 사이를 오가면서도 당신의 것으로 남습니다. 아래의 각 부분은 오늘 어느 단계에 있는지 알려 줍니다.",

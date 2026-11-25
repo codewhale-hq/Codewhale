@@ -29,7 +29,7 @@ describe("/app copy", () => {
   });
 
   it("pairs every capture with alt text and a caption, under a scope that names the build and the model", () => {
-    expect(APP_COPY.shotsScope.en).toContain("development build");
+    expect(APP_COPY.shotsScope.en).toContain("development build of the desktop app");
     expect(APP_COPY.shotsScope.en).toContain(desktopMedia.capture.provider);
     for (const shot of APP_COPY.shots) {
       expect(shot.alt.en.length).toBeGreaterThan(40);

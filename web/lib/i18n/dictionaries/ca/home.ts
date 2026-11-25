@@ -40,7 +40,7 @@ export const home: HomeDict = {
   agentRoleReviewer: "Llegeix un canvi i en qualifica les troballes per gravetat, sense canviar fitxers.",
   agentsLink: "Llegeix com funcionen els subagents",
   directionShotAlt: "L'app d'escriptori de Codewhale. A l'esquerra hi ha la llista de sessions; al mig, una tasca per arreglar una prova que falla espera permís per executar python3 -m pytest, amb Allow i Deny.",
-  directionShotCaption: "L'app d'escriptori en desenvolupament funciona amb el mateix motor. Aquí, amb DeepSeek V4.1 Flash en mode Accept Edits, pregunta abans d'executar l'ordre de prova.",
+  directionShotCaption: "L'app d'escriptori funciona amb el mateix motor. Aquí, amb DeepSeek V4.1 Flash en mode Accept Edits, pregunta abans d'executar l'ordre de prova.",
   directionShotLink: "Mira l’aplicació d’escriptori",
   sectionDirectionHeading: "Cap aquí va el teu agent.",
   sectionDirectionBody: "Codewhale s’està convertint en un únic entorn que abasta el teu terminal, una aplicació d’escriptori, el navegador i ordinadors al núvol, tot mogut per un sol motor, perquè la teva feina pugui passar de l’un a l’altre i continuar sent teva. Cada part de sota diu on es troba avui.",

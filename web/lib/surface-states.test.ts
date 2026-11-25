@@ -9,7 +9,7 @@ import { middleware } from "../middleware";
 import { footerDocsLinks, footerLegalLinks, footerProductLinks, footerProjectLinks, navLinks, signInLink } from "./i18n/links";
 import { PERMANENT_ROUTE_REDIRECTS, REDIRECTED_ROUTES } from "./route-redirects";
 import { AVAILABILITY_ROWS, describeRow } from "./content/availability";
-import { DESKTOP_RELEASE, desktopDownload, desktopDownloads, parseDesktopRelease, type DesktopReleaseFact } from "./desktop-release";
+import { desktopDownload, desktopDownloads, parseDesktopRelease, type DesktopReleaseFact } from "./desktop-release";
 import { FOUNDER_SWITCHES, FOUNDER_SWITCH_VALUES } from "./founder-switches";
 import { STATE_CHROME_KEY, SURFACE_IDS, SURFACE_STATES, stateLabel, surfaceCapabilities, surfaceState } from "./surface-states";
 import { DesktopDownloadBlock } from "../components/desktop-download";
@@ -160,11 +160,13 @@ describe("founder-set switches", () => {
 });
 
 describe("the desktop download", () => {
-  it("is absent today, so the desktop state is a development build with no download", () => {
-    expect(DESKTOP_RELEASE).toBeNull();
-    expect(readFileSync(join(WEB, "data/desktop-published-release.json"), "utf8").trim()).toBe("null");
-    expect(surfaceState("desktop")).toBe("dev");
-    expect(surfaceCapabilities("desktop").download).toBe(false);
+  it("is the published macOS release today, and without release data the desktop is a development build", () => {
+    const published = parseDesktopRelease(JSON.parse(readFileSync(join(WEB, "data/desktop-published-release.json"), "utf8")));
+    expect(published).not.toBeNull();
+    expect(desktopDownloads(published).map((download) => download.arch)).toEqual(["arm64", "x64"]);
+    expect(surfaceState("desktop", { desktopRelease: published })).toBe("released");
+    expect(surfaceCapabilities("desktop", { desktopRelease: published }).download).toBe(true);
+    expect(surfaceState("desktop", { desktopRelease: null })).toBe("dev");
     expect(desktopDownload(null)).toBeNull();
   });
 

@@ -1,7 +1,7 @@
 export const project = {
   oneEngineBehindEverySurface: "Satu mesin mendukung semua antarmuka",
   theTerminalCodewhaleExecTheLocalBrowser: "Terminal, codewhale exec, tampilan peramban lokal, dan editor berbagi satu mesin Rust. Perbaikan di sana menjangkau semuanya.",
-  theLargestCratesStillNeedToBe: "Crate terbesar masih perlu dipecah, dan aplikasi desktop belum menyediakan unduhan publik.",
+  theLargestCratesStillNeedToBe: "Crate terbesar masih perlu dipecah.",
   everyModelIsAPeer: "Semua model diperlakukan setara",
   useABuiltInProviderAnyOpenAI: "Gunakan penyedia bawaan, endpoint kompatibel OpenAI, atau model lokal. Tidak ada penyedia yang diutamakan.",
   providerBehaviorStillNeedsToMoveInto: "Perilaku penyedia masih perlu dipindahkan ke profil, dan banyak penyedia serta model yang digunakan orang belum pernah diuji siapa pun.",

@@ -38,7 +38,7 @@ export const home: HomeDict = {
   agentRoleReviewer: "Reads a change and grades what it finds by severity, without changing files.",
   agentsLink: "Read how sub-agents work",
   directionShotAlt: "The Codewhale desktop app. On the left is the session list; in the middle a task to fix a failing test waits for permission to run python3 -m pytest, with Allow and Deny.",
-  directionShotCaption: "The desktop app in development runs on the same engine. Here, running DeepSeek V4.1 Flash in Accept Edits, it asks before running the test command.",
+  directionShotCaption: "The desktop app runs on the same engine. Here, running DeepSeek V4.1 Flash in Accept Edits, it asks before running the test command.",
   directionShotLink: "See the desktop app",
   sectionDirectionHeading: "Here is where your agent is going.",
   sectionDirectionBody: "Codewhale is becoming one environment across your terminal, a desktop app, the browser and cloud computers, all run by one engine, so your work can move between them and stay yours. Each part below says where it stands today.",

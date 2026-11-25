@@ -1,7 +1,7 @@
 export const project = {
   oneEngineBehindEverySurface: "One engine behind every surface",
   theTerminalCodewhaleExecTheLocalBrowser: "The terminal, codewhale exec, the local browser view and editors share one Rust engine. A fix there reaches all of them.",
-  theLargestCratesStillNeedToBe: "The largest crates still need to be split, and the desktop app has no public download yet.",
+  theLargestCratesStillNeedToBe: "The largest crates still need to be split.",
   everyModelIsAPeer: "Every model is a peer",
   useABuiltInProviderAnyOpenAI: "Use a built-in provider, any OpenAI-compatible endpoint or a local model. No provider is ranked above another.",
   providerBehaviorStillNeedsToMoveInto: "Provider behavior still needs to move into profiles, and many providers and models that people use have not been tested by anyone yet.",

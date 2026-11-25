@@ -8,7 +8,7 @@
  * the community graphical frontend — a separate project from this repository's
  * own VS Code extension — exactly as README.md links it.
  * Nothing here claims cloud execution; the hosted web app is not open;
- * desktop is a development build.
+ * the desktop state follows data/desktop-published-release.json.
  * Counts (providers, tools, sandbox backends) come from the facts layer at
  * render time, never typed here.
  */

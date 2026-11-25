@@ -1,7 +1,7 @@
 export const project = {
   oneEngineBehindEverySurface: "Một động cơ hỗ trợ mọi giao diện",
   theTerminalCodewhaleExecTheLocalBrowser: "Terminal, codewhale exec, giao diện trình duyệt cục bộ và trình soạn thảo dùng chung một động cơ Rust. Bản sửa ở đó đến được tất cả giao diện.",
-  theLargestCratesStillNeedToBe: "Các crate lớn vẫn cần được chia nhỏ và ứng dụng máy tính chưa có bản tải xuống công khai.",
+  theLargestCratesStillNeedToBe: "Các crate lớn vẫn cần được chia nhỏ.",
   everyModelIsAPeer: "Mọi mô hình đều bình đẳng",
   useABuiltInProviderAnyOpenAI: "Bạn có thể dùng nhà cung cấp tích hợp, điểm cuối tương thích OpenAI hoặc mô hình cục bộ. Không nhà cung cấp nào được ưu tiên hơn nhà cung cấp khác.",
   providerBehaviorStillNeedsToMoveInto: "Hành vi của nhà cung cấp vẫn cần được chuyển vào hồ sơ cấu hình, và nhiều nhà cung cấp, mô hình vẫn chưa có ai kiểm thử.",

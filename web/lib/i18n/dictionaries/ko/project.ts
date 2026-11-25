@@ -1,7 +1,7 @@
 export const project = {
   oneEngineBehindEverySurface: "하나의 엔진이 모든 화면을 지원합니다",
   theTerminalCodewhaleExecTheLocalBrowser: "터미널, codewhale exec, 로컬 브라우저 화면과 편집기는 하나의 Rust 엔진을 공유합니다. 엔진을 고치면 모두에 반영됩니다.",
-  theLargestCratesStillNeedToBe: "큰 crate는 아직 분리해야 하며 데스크톱 앱은 아직 공개 다운로드를 제공하지 않습니다.",
+  theLargestCratesStillNeedToBe: "큰 crate는 아직 분리해야 합니다.",
   everyModelIsAPeer: "모든 모델을 동등하게 대합니다",
   useABuiltInProviderAnyOpenAI: "내장 공급자, OpenAI 호환 엔드포인트 또는 로컬 모델을 사용하세요. 특정 공급자를 우선하지 않습니다.",
   providerBehaviorStillNeedsToMoveInto: "공급자 동작을 프로필로 옮기는 작업이 남아 있으며 많은 공급자와 모델은 아직 아무도 검증하지 않았습니다.",

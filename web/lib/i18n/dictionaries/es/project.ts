@@ -1,7 +1,7 @@
 export const project = {
   oneEngineBehindEverySurface: "Un mismo motor para todas las interfaces",
   theTerminalCodewhaleExecTheLocalBrowser: "El terminal, codewhale exec, la vista del navegador local y los editores comparten un motor en Rust. Una corrección en ese motor llega a todos ellos.",
-  theLargestCratesStillNeedToBe: "Aún hay que dividir los crates más grandes, y la aplicación de escritorio todavía no tiene una descarga pública.",
+  theLargestCratesStillNeedToBe: "Aún hay que dividir los crates más grandes.",
   everyModelIsAPeer: "Todos los modelos están al mismo nivel",
   useABuiltInProviderAnyOpenAI: "Usa un proveedor integrado, cualquier endpoint compatible con OpenAI o un modelo local. Ningún proveedor tiene prioridad sobre otro.",
   providerBehaviorStillNeedsToMoveInto: "El comportamiento de los proveedores aún debe trasladarse a perfiles, y muchos de los proveedores y modelos que usa la comunidad todavía no los ha probado nadie.",

@@ -1,7 +1,7 @@
 export const project = {
   oneEngineBehindEverySurface: "Один рушій підтримує всі інтерфейси",
   theTerminalCodewhaleExecTheLocalBrowser: "Термінал, codewhale exec, локальний браузерний інтерфейс і редактори використовують один рушій Rust. Виправлення в ньому потрапляє до всіх інтерфейсів.",
-  theLargestCratesStillNeedToBe: "Найбільші crate ще потрібно розділити, а настільний застосунок поки не має публічного завантаження.",
+  theLargestCratesStillNeedToBe: "Найбільші crate ще потрібно розділити.",
   everyModelIsAPeer: "Усі моделі рівноправні",
   useABuiltInProviderAnyOpenAI: "Використовуйте вбудованого постачальника, будь-яку сумісну з OpenAI кінцеву точку або локальну модель. Жоден постачальник не має пріоритету.",
   providerBehaviorStillNeedsToMoveInto: "Поведінку постачальників ще треба перенести в профілі, а багато постачальників і моделей досі ніхто не перевірив.",

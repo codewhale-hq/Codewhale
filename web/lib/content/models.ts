@@ -24,8 +24,8 @@ export const MODELS_COPY = {
     zh: "桌面应用的 Models 设置：DeepSeek 已连接并就绪，新会话使用 deepseek-flash，思考级别为 Auto。",
   },
   pickerDesktopCaption: {
-    en: "The desktop app, in development with no download yet, reads the model list from each connected provider.",
-    zh: "桌面应用（开发中，暂无下载）会从每个已连接的提供商读取模型列表。",
+    en: "The desktop app reads the model list from each connected provider.",
+    zh: "桌面应用会从每个已连接的提供商读取模型列表。",
   },
   setupTitle: { en: "Connect a model in three steps", zh: "三步连接模型" },
   setupLead: { en: "The same steps work for every provider on this page.", zh: "本页的所有提供商都适用同样的步骤。" },

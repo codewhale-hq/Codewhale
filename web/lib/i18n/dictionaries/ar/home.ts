@@ -40,7 +40,7 @@ export const home: HomeDict = {
   agentRoleReviewer: "يقرأ تغييرًا ويقيّم ما يجده حسب الخطورة، من دون تغيير الملفات.",
   agentsLink: "اقرأ كيف يعمل الوكلاء الفرعيون",
   directionShotAlt: "تطبيق Codewhale لسطح المكتب. على اليسار قائمة الجلسات؛ وفي الوسط مهمة لإصلاح اختبار فاشل تنتظر الإذن بتشغيل python3 -m pytest، مع زرّي Allow وDeny.",
-  directionShotCaption: "يعمل تطبيق سطح المكتب قيد التطوير على المحرك نفسه. هنا، أثناء تشغيل DeepSeek V4.1 Flash في وضع Accept Edits، يسأل قبل تشغيل أمر الاختبار.",
+  directionShotCaption: "يعمل تطبيق سطح المكتب على المحرك نفسه. هنا، أثناء تشغيل DeepSeek V4.1 Flash في وضع Accept Edits، يسأل قبل تشغيل أمر الاختبار.",
   directionShotLink: "شاهد تطبيق سطح المكتب",
   sectionDirectionHeading: "إلى هنا يتجه وكيلك.",
   sectionDirectionBody: "يتحول Codewhale إلى بيئة واحدة تمتد عبر طرفيتك وتطبيق سطح المكتب والمتصفح وحواسيب السحابة، يديرها كلها محرك واحد، ليتنقل عملك بينها ويبقى ملكًا لك. يبيّن كل جزء أدناه أين يقف اليوم.",

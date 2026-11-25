@@ -1,7 +1,7 @@
 export const project = {
   oneEngineBehindEverySurface: "一个引擎，支撑所有入口",
   theTerminalCodewhaleExecTheLocalBrowser: "终端、codewhale exec、本地浏览器界面和编辑器共用同一个 Rust 引擎。在引擎里修好一处，所有入口都受益。",
-  theLargestCratesStillNeedToBe: "最大的几个 crate 还需要拆分，桌面应用也还没有公开下载。",
+  theLargestCratesStillNeedToBe: "最大的几个 crate 还需要拆分。",
   everyModelIsAPeer: "所有模型一视同仁",
   useABuiltInProviderAnyOpenAI: "使用内置提供商、任意 OpenAI 兼容端点或本地模型。没有哪个提供商排在别人前面。",
   providerBehaviorStillNeedsToMoveInto: "提供商的行为还需要整理成配置档，而且很多大家在用的提供商和模型还没有人验证过。",
