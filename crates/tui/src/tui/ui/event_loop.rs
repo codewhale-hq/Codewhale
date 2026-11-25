@@ -2034,7 +2034,12 @@ async fn submit_decided_composer_input(
     let selecting_inline_skill = slash_menu_open
         && partial_inline_skill_mention_at_cursor(&app.input, app.cursor_position).is_some();
     let typed_before_selection = app.input.trim().to_string();
-    if slash_menu_open && apply_slash_menu_selection(app, &slash_menu_entries, false) {
+    let typed_exact_command =
+        !selecting_inline_skill && names_a_builtin_command(&typed_before_selection);
+    if slash_menu_open
+        && !typed_exact_command
+        && apply_slash_menu_selection(app, &slash_menu_entries, false)
+    {
         app.close_slash_menu();
         let resolved = app
             .input
@@ -2165,6 +2170,29 @@ pub(crate) fn git_panel_visible(app: &App) -> bool {
     app.work_surface.panel == crate::tui::work_surface::RailPanel::Git
         && app.work_surface.effective_placement()
             != crate::tui::work_surface::WorkSurfacePlacement::Off
+}
+
+fn names_a_builtin_command(input: &str) -> bool {
+    input
+        .strip_prefix('/')
+        .and_then(|rest| rest.split_whitespace().next())
+        .is_some_and(|name| {
+            codewhale_engine::command_catalog::CommandCatalog::answers_to(
+                &crate::commands::CommandTable,
+                &name.to_ascii_lowercase(),
+            )
+        })
+}
+
+#[cfg(test)]
+mod typed_command_tests {
+    #[test]
+    fn an_exactly_typed_alias_is_not_replaced_by_the_menu_highlight() {
+        assert!(super::names_a_builtin_command("/pet"));
+        assert!(super::names_a_builtin_command("/whale"));
+        assert!(!super::names_a_builtin_command("/pe"));
+        assert!(!super::names_a_builtin_command("pet"));
+    }
 }
 
 pub(crate) async fn run_event_loop(
