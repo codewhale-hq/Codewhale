@@ -4884,63 +4884,26 @@ impl ModelPickerView {
         *self.catalog_action_hitbox.borrow_mut() = pill_hitbox;
         let searching = !self.query.is_empty();
         let show_advanced_hints = inner.width >= 88 && inner.height >= 24;
-        let mut footer_hints = vec![
-            ActionHint::new("↑↓", tr(self.locale, MessageId::PickerActionMove)),
-            ActionHint::new("Tab", tr(self.locale, MessageId::PickerActionSwitch)),
-            ActionHint::new(
-                tr(self.locale, MessageId::RouteActionType),
-                tr(self.locale, MessageId::RouteActionSearchAnyModel),
-            ),
-            ActionHint::new("Enter", tr(self.locale, self.apply_action_id())),
-        ];
+        let mut footer_hints = vec![ActionHint::new(
+            "↑↓",
+            tr(self.locale, MessageId::PickerActionMove),
+        )];
+        if self.can_edit_effort() {
+            footer_hints.push(ActionHint::new(
+                "Tab",
+                tr(self.locale, MessageId::PickerActionSwitch),
+            ));
+        }
+        footer_hints.push(ActionHint::new(
+            tr(self.locale, MessageId::RouteActionType),
+            tr(self.locale, MessageId::RouteActionSearchAnyModel),
+        ));
+        footer_hints.push(ActionHint::new(
+            "Enter",
+            tr(self.locale, self.apply_action_id()),
+        ));
         if !searching {
             footer_hints.push(ActionHint::new("⇧A", view_action));
-            footer_hints.push(ActionHint::new(
-                "⇧T",
-                match self.provider_filter.as_deref() {
-                    Some(filter) => format!(
-                        "{}: {}",
-                        tr(self.locale, MessageId::RouteProviderLabel),
-                        provider_filter_label(filter)
-                    ),
-                    None => tr(self.locale, MessageId::RouteProviderLabel).into_owned(),
-                },
-            ));
-        }
-        if show_advanced_hints {
-            footer_hints.push(ActionHint::new(
-                "Ctrl+S",
-                tr(self.locale, MessageId::SessionsActionSort),
-            ));
-        }
-        if !self.can_edit_effort() {
-            footer_hints.remove(1);
-        }
-        if self.purpose == ModelPickerPurpose::Session && show_advanced_hints && !searching {
-            footer_hints.insert(
-                4,
-                ActionHint::new(
-                    "⇧D",
-                    tr(self.locale, MessageId::PickerActionSetStartupDefault),
-                ),
-            );
-        }
-        if show_advanced_hints && self.highlighted_route().is_some() {
-            let (fleet_key, pin_key) = if searching {
-                ("Ctrl+F", "Ctrl+P")
-            } else {
-                ("⇧F", "⇧P")
-            };
-            if self.purpose == ModelPickerPurpose::Session {
-                footer_hints.push(ActionHint::new(
-                    fleet_key,
-                    tr(self.locale, MessageId::PickerActionFleet),
-                ));
-            }
-            footer_hints.push(ActionHint::new(
-                pin_key,
-                tr(self.locale, MessageId::PickerActionPin),
-            ));
         }
         footer_hints.push(ActionHint::new(
             "Esc",
@@ -5149,8 +5112,73 @@ impl ModelPickerView {
                 PaneRow::effort(label, hint)
             })
             .collect();
+        let detail_pane = if show_advanced_hints && layout.detail.height >= 4 {
+            let hint_height = 2u16;
+            let body_height = layout.detail.height.saturating_sub(hint_height);
+            let hint_area = Rect::new(
+                layout.detail.x,
+                layout.detail.y.saturating_add(body_height),
+                layout.detail.width,
+                hint_height,
+            );
+            let sep = if crate::tui::color_compat::ascii_safe_enabled() {
+                " - "
+            } else {
+                " · "
+            };
+            let mut parts = Vec::new();
+            if !searching {
+                parts.push(match self.provider_filter.as_deref() {
+                    Some(filter) => format!(
+                        "⇧T {}: {}",
+                        tr(self.locale, MessageId::RouteProviderLabel),
+                        provider_filter_label(filter)
+                    ),
+                    None => format!("⇧T {}", tr(self.locale, MessageId::RouteProviderLabel)),
+                });
+            }
+            parts.push(format!(
+                "Ctrl+S {}",
+                tr(self.locale, MessageId::SessionsActionSort)
+            ));
+            if self.purpose == ModelPickerPurpose::Session && !searching {
+                parts.push(format!(
+                    "⇧D {}",
+                    tr(self.locale, MessageId::PickerActionSetStartupDefault)
+                ));
+            }
+            if self.highlighted_route().is_some() {
+                let (fleet_key, pin_key) = if searching {
+                    ("Ctrl+F", "Ctrl+P")
+                } else {
+                    ("⇧F", "⇧P")
+                };
+                if self.purpose == ModelPickerPurpose::Session {
+                    parts.push(format!(
+                        "{fleet_key} {}",
+                        tr(self.locale, MessageId::PickerActionFleet)
+                    ));
+                }
+                parts.push(format!(
+                    "{pin_key} {}",
+                    tr(self.locale, MessageId::PickerActionPin)
+                ));
+            }
+            Paragraph::new(Line::from(Span::styled(
+                parts.join(sep),
+                Style::default().fg(palette::TEXT_DIM),
+            )))
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .render(hint_area, buf);
+            Rect {
+                height: body_height,
+                ..layout.detail
+            }
+        } else {
+            layout.detail
+        };
         self.render_pane(
-            layout.detail,
+            detail_pane,
             buf,
             "Thinking",
             &effort_rows,
@@ -6266,6 +6294,28 @@ mod tests {
         assert!(text.contains("⇧A"), "missing shifted view hint: {text}");
         assert!(text.contains("⇧P"), "missing shifted pin hint: {text}");
         assert!(text.contains("⇧F"), "missing shifted fleet hint: {text}");
+
+        let footer_line = text
+            .lines()
+            .rev()
+            .find(|line| line.contains("Esc"))
+            .expect("footer line");
+        assert!(
+            footer_line.contains("↑↓"),
+            "footer missing move: {footer_line}"
+        );
+        assert!(
+            footer_line.contains("Enter"),
+            "footer missing apply: {footer_line}"
+        );
+        assert!(
+            footer_line.contains("⇧A"),
+            "footer missing views: {footer_line}"
+        );
+        assert!(
+            !footer_line.contains("Ctrl+S") && !footer_line.contains("⇧D"),
+            "footer must stay calm at 6 core actions: {footer_line}"
+        );
     }
 
     #[test]

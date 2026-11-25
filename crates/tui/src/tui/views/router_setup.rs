@@ -555,10 +555,7 @@ impl RouterSetupView {
             tr(locale, MessageId::RouterPresetUnavailable).replace("{reason}", &reason)
         };
         let mut rows = Vec::new();
-        for route in [
-            DecisionRouterRoute::Openrouter,
-            DecisionRouterRoute::Typesafe,
-        ] {
+        let make_jev_row = |route: DecisionRouterRoute| {
             let preset = RouterPreset::Jev(Some(route));
             let mut hint =
                 tr(locale, MessageId::RouterPresetJevHint).replace("{route}", route.display_name());
@@ -572,13 +569,14 @@ impl RouterSetupView {
                     tr(locale, MessageId::RouterTypesafeSignupPaused)
                 );
             }
-            rows.push(PresetRow {
+            PresetRow {
                 preset,
                 label: format!("Jev · {}", route.display_name()),
                 hint,
                 available,
-            });
-        }
+            }
+        };
+        rows.push(make_jev_row(DecisionRouterRoute::Openrouter));
         let fast = runnable_fast_tier(config);
         rows.push(PresetRow {
             preset: RouterPreset::Fast,
@@ -591,6 +589,7 @@ impl RouterSetupView {
             },
             available: fast.is_some(),
         });
+        rows.push(make_jev_row(DecisionRouterRoute::Typesafe));
         rows.push(PresetRow {
             preset: RouterPreset::Off,
             label: tr(locale, MessageId::ConfigValueOff).into_owned(),
@@ -1096,5 +1095,24 @@ mod tests {
         let reason = preset_router_config(&config, RouterPreset::Jev(None), Locale::Ja)
             .expect_err("no decision key");
         assert_eq!(reason, tr(Locale::Ja, MessageId::RouterNeedKey));
+    }
+
+    #[test]
+    fn paused_typesafe_preset_sits_below_runnable_fast_tier() {
+        let _env = hermetic();
+        let view = RouterSetupView::picker(&deepseek_with_openrouter_key(true), Locale::En);
+        let presets: Vec<RouterPreset> = view.rows.iter().map(|row| row.preset).collect();
+        let fast_idx = presets
+            .iter()
+            .position(|preset| *preset == RouterPreset::Fast)
+            .expect("fast preset");
+        let typesafe_idx = presets
+            .iter()
+            .position(|preset| *preset == RouterPreset::Jev(Some(DecisionRouterRoute::Typesafe)))
+            .expect("typesafe preset");
+        assert!(
+            fast_idx < typesafe_idx,
+            "runnable Fast tier must appear above paused Jev · TypeSafe: {presets:?}"
+        );
     }
 }
