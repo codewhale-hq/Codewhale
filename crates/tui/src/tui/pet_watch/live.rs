@@ -427,6 +427,7 @@ fn run(
     let mut last_produce = Instant::now();
     let mut last_audio = Instant::now();
     let mut last_failure = Instant::now() - Duration::from_secs(10);
+    let mut last_producer_warn = Instant::now() - Duration::from_secs(10);
     let read_view = || {
         settings
             .lock()
@@ -635,8 +636,8 @@ fn run(
                     events.clear();
                 }
                 Err(error) => {
-                    if last_failure.elapsed() > Duration::from_secs(3) {
-                        last_failure = Instant::now();
+                    if last_producer_warn.elapsed() > Duration::from_secs(3) {
+                        last_producer_warn = Instant::now();
                         tracing::warn!(%error, seq, "pet producer post failed; restarting lease");
                     } else {
                         tracing::debug!(%error, seq, "pet producer post failed; restarting lease");
