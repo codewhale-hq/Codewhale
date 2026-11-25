@@ -183,12 +183,6 @@ impl ElevationView {
     pub fn request(&self) -> &ElevationRequest {
         &self.request
     }
-
-    /// Get the currently selected index.
-    #[expect(dead_code)]
-    pub fn selected(&self) -> usize {
-        self.selected
-    }
 }
 
 impl ModalView for ElevationView {

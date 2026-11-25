@@ -70,13 +70,13 @@ impl SettingsPickerController {
     }
 
     #[must_use]
-    #[allow(dead_code)] // tab strip for multi-tab pickers (TUI-DOG-009)
+    #[cfg_attr(not(test), expect(dead_code))] // tab strip for multi-tab pickers (TUI-DOG-009)
     pub fn tabs(&self) -> &[String] {
         &self.tabs
     }
 
     #[must_use]
-    #[allow(dead_code)] // active tab index for hosts that paint the strip (TUI-DOG-009)
+    #[cfg_attr(not(test), expect(dead_code))] // active tab index for hosts that paint the strip (TUI-DOG-009)
     pub fn active_tab(&self) -> usize {
         self.active_tab
     }
@@ -90,13 +90,13 @@ impl SettingsPickerController {
     }
 
     #[must_use]
-    #[allow(dead_code)] // search query accessor for host chrome (TUI-DOG-009)
+    #[cfg_attr(not(test), expect(dead_code))] // search query accessor for host chrome (TUI-DOG-009)
     pub fn query(&self) -> &str {
         &self.query
     }
 
     #[must_use]
-    #[allow(dead_code)] // identity accessor for the theme-picker controller test
+    #[cfg(test)]
     pub fn original_id(&self) -> &str {
         &self.original_id
     }
@@ -197,7 +197,7 @@ impl SettingsPickerController {
         }
     }
 
-    #[allow(dead_code)] // bulk query replace for search hosts (TUI-DOG-009)
+    #[cfg_attr(not(test), expect(dead_code))] // bulk query replace for search hosts (TUI-DOG-009)
     pub fn set_query(&mut self, query: impl Into<String>) {
         let keep = self.selected_id().map(str::to_string);
         self.query = query.into();

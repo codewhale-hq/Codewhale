@@ -452,7 +452,7 @@ impl QueuedMessage {
             .is_some_and(|instruction| instruction.starts_with(WORKFLOW_DRAFT_INSTRUCTION_PREFIX))
     }
 
-    #[allow(dead_code)] // Tests and queue helpers use the display-only form; send path resolves @mentions.
+    #[cfg_attr(not(test), expect(dead_code))]
     pub fn content(&self) -> String {
         if let Some(skill_instruction) = self.skill_instruction.as_ref() {
             format!(

@@ -156,7 +156,7 @@ impl DelegateCard {
     /// Project this direct sub-agent card onto the shared workflow history
     /// renderer (#4122) so collapsed/expanded concepts stay aligned.
     #[must_use]
-    #[allow(dead_code)] // public #4122 convergence API; covered by unit tests
+    #[cfg_attr(not(test), expect(dead_code))]
     pub fn as_workflow_history_panel(
         &self,
         started_at_ms: u64,

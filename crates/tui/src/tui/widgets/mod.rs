@@ -2776,16 +2776,6 @@ pub struct ElevationWidget<'a> {
 }
 
 impl<'a> ElevationWidget<'a> {
-    #[expect(dead_code)]
-    pub fn new(request: &'a ElevationRequest, selected: usize, locale: Locale) -> Self {
-        Self {
-            request,
-            selected,
-            locale,
-            hitboxes: None,
-        }
-    }
-
     pub fn new_with_hitboxes(
         request: &'a ElevationRequest,
         selected: usize,

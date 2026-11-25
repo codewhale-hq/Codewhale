@@ -22,8 +22,6 @@ pub enum BehavioralTip {
     McpValidation,
     RepeatedCommandHotbar,
     DurableStateWritten,
-    #[expect(dead_code)]
-    TodoWriteHint,
 }
 
 impl BehavioralTip {
@@ -34,7 +32,6 @@ impl BehavioralTip {
             Self::McpValidation => "mcp_validation",
             Self::RepeatedCommandHotbar => "repeated_command_hotbar",
             Self::DurableStateWritten => "durable_state_written",
-            Self::TodoWriteHint => "todo_write_hint",
         }
     }
 
@@ -45,7 +42,6 @@ impl BehavioralTip {
             Self::McpValidation => MessageId::BehavioralTipMcpValidation,
             Self::RepeatedCommandHotbar => MessageId::BehavioralTipRepeatedCommand,
             Self::DurableStateWritten => MessageId::BehavioralTipDurableStateWritten,
-            Self::TodoWriteHint => MessageId::BehavioralTipTodoWrite,
         }
     }
 
@@ -57,7 +53,6 @@ impl BehavioralTip {
             Self::McpValidation => template.replace("{command}", "codewhale mcp validate"),
             Self::RepeatedCommandHotbar => template.replace("{command}", "/hotbar"),
             Self::DurableStateWritten => template.replace("{command}", "/memory"),
-            Self::TodoWriteHint => template.replace("{command}", "todo_write"),
         }
     }
 }

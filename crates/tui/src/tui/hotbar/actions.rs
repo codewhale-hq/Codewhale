@@ -782,12 +782,6 @@ impl HotbarActionRegistry {
         self.actions.len()
     }
 
-    #[expect(dead_code)]
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.actions.is_empty()
-    }
-
     pub fn iter(&self) -> impl Iterator<Item = &dyn HotbarAction> {
         self.actions.values().map(Arc::as_ref)
     }

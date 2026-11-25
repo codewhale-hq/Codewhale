@@ -1342,7 +1342,7 @@ impl WorkflowPanel {
     /// Public convergence API for #4122 — also exercised by unit tests and
     /// `DelegateCard::as_workflow_history_panel`.
     #[must_use]
-    #[allow(dead_code)] // public API used by direct sub-agent projection + tests
+    #[cfg_attr(not(test), expect(dead_code))]
     pub fn render_history_card(
         &self,
         width: u16,
@@ -1368,7 +1368,7 @@ impl WorkflowPanel {
     /// Single-agent "mini workflow" view for direct sub-agent cards so they
     /// share the same lifecycle/elapsed/result concepts as workflow runs.
     #[must_use]
-    #[allow(dead_code)] // public API used by DelegateCard + tests
+    #[cfg_attr(not(test), expect(dead_code))]
     pub fn from_direct_subagent(
         agent_id: impl Into<String>,
         role: impl Into<String>,
