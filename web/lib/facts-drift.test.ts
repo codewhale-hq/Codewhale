@@ -49,7 +49,7 @@ function installGitHubFixture(
           providers: [{ kind: "Deepseek", id: "deepseek", label: "Remote DeepSeek", default_model: "remote-model", env_vars: ["REMOTE_KEY"], retired: false, selectable: true, web: { order: 0 }, tui_wire_tag: "deepseek", catalog_id: "deepseek", catalog_source_id: "deepseek" }],
           constant_refs: { DEFAULT_TEXT_MODEL: { provider: "deepseek", field: "default_model" } },
         }),
-        "crates/config/assets/models_dev.bundled.json": JSON.stringify({ _reviewed: {
+        "crates/config/assets/catalog_corrections.json": JSON.stringify({ reviewed: {
           revision: "remote-reviewed", intrinsic: { "deepseek-v4-pro": { source: "exact remote fixture", context_window: 1000000, max_output: 128000, reasoning: true } },
           public_models: [{ id: "deepseek-v4-pro", label: "DeepSeek", added_at: "2026-07-01", aliases: [] }],
         } }),
@@ -130,8 +130,8 @@ describe("deriveFactsFromRemote", () => {
   });
 
   it("refuses missing or malformed model metadata from the exact source revision", async () => {
-    for (const catalog of ["not json", "{}", '{"_reviewed":{"revision":"x","intrinsic":{},"public_models":[{"id":42}]}}']) {
-      installGitHubFixture(VALID_GENERATED_FACTS, undefined, { "crates/config/assets/models_dev.bundled.json": catalog });
+    for (const catalog of ["not json", "{}", '{"reviewed":{"revision":"x","intrinsic":{},"public_models":[{"id":42}]}}']) {
+      installGitHubFixture(VALID_GENERATED_FACTS, undefined, { "crates/config/assets/catalog_corrections.json": catalog });
       await expect(deriveFactsFromRemote()).resolves.toBeNull();
     }
   });

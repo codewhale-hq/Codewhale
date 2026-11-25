@@ -37,7 +37,8 @@ pub struct CatalogCorrections {
     pub about: String,
     /// Stamped as [`CatalogSource::CodewhaleBundled`] on prices it owns.
     pub revision: String,
-    /// Pure reviewed model/transport data copied into the deterministic bundled seed.
+    /// Pure reviewed model/transport data. This file is its only owner; the
+    /// bundled seed carries no copy.
     #[serde(default)]
     pub reviewed: super::reviewed::ReviewedCatalog,
     /// Rules for every row a provider serves.

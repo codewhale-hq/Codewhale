@@ -60,7 +60,7 @@ OpenCode Zen 和 OpenCode Go 是一等提供商路由，配置方式与下文其
 - `crates/config/assets/provider_descriptors.json` —— 内置与兼容主机提供商的标签、默认值、别名、密钥环境变量、配置/凭据槽位、凭据指引及每个提供商的 `models` 命名规则（`ids`、`accept`、`strip_prefixes`、`aliases`、`wire_slugs`），由 `crates/config/build.rs` 在编译期校验并生成类型视图。
 - `crates/config/src/route/resolver.rs`（`resolve_model`）与 `crates/config/src/config_resolve.rs` —— 跨 CLI、TUI 与 Runtime API 共享的唯一模型 ID 解析器及配置模型选择链。
 - `crates/config/src/provider_kind.rs` 与 `crates/runtime/src/config.rs` —— 提供商身份 serde、已捕获提供商身份、环境变量优先级以及 Rust 路由/认证行为。
-- `crates/config/assets/catalog_corrections.json` 与 `crates/config/assets/models_dev.bundled.json` —— 字段修正及已审阅的固有模型事实（`thought_signatures_required`、`thinking_can_disable`、传输元数据、参考价格与来源回执），由 `scripts/catalog_models_dev.py` 渲染进离线种子。
+- `crates/config/assets/catalog_corrections.json` 与 `crates/config/assets/models_dev.bundled.json` —— 字段修正及已审阅的固有模型事实（`thought_signatures_required`、`thinking_can_disable`、传输元数据、参考价格与来源回执），已审阅事实只在 `catalog_corrections.json` 的 `reviewed` 中，不再渲染进离线种子。
 - `crates/engine/src/provider_lake.rs`、`route_budget.rs` 与 `pricing.rs` —— 从解析后的路由和目录条目推导上下文窗口、输出上限、能力与价格。
 - `config.example.toml` 和 `docs/CONFIGURATION.md` —— 面向用户的配置示例和环境变量参考。
 - `scripts/check-provider-registry.py` —— 对规范提供商 ID、实时 TUI 提供商 ID、TOML 表名、静态注册表行和文档化默认值的漂移检查。

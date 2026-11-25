@@ -28,8 +28,8 @@ pub const MODELS_DEV_CATALOG_URL: &str = "https://models.dev/catalog.json";
 /// Combined Models.dev catalog payload.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ModelsDevCatalog {
-    /// Generated bundled presentation/transport facts; external documents cannot affect the compiled owner.
-    #[serde(default, rename = "_reviewed")]
+    /// Reviewed presentation/transport facts, filled only from `catalog_corrections.json`; external documents cannot affect the compiled owner.
+    #[serde(skip)]
     pub reviewed: crate::catalog::reviewed::ReviewedCatalog,
     #[serde(default, rename = "_meta")]
     pub meta: BTreeMap<String, serde_json::Value>,

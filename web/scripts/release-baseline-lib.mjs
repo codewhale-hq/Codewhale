@@ -40,7 +40,7 @@ export function deriveReleaseBaseline(release) {
   if (!release || !tagResolves(release.tag)) return null;
   const registry = showAtTag(release.tag, "docs/features.toml");
   const descriptors = parseProviderDescriptors(showAtTag(release.tag, "crates/config/assets/provider_descriptors.json"));
-  const models = parseModelCatalog(showAtTag(release.tag, "crates/config/assets/models_dev.bundled.json"));
+  const models = parseModelCatalog(showAtTag(release.tag, "crates/config/assets/catalog_corrections.json"));
   if (!registry || !descriptors || !models) return null;
   const features = parseFeatureRows(registry).map((row) => ({
     id: row.id,
