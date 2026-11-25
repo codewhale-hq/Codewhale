@@ -282,6 +282,48 @@ fn successful_cached_execution_updates_lru_without_granting_uncached_names() {
 }
 
 #[test]
+fn search_admissions_are_pinned_against_a_later_search_in_the_same_turn() {
+    let max = crate::core::session::TOOL_ACTIVATION_CACHE_MAX_NAMES;
+    let stale = (0..max - 4)
+        .map(|index| format!("stale_{index}"))
+        .collect::<Vec<_>>();
+    let group = |prefix: &str| (1..=4).map(|n| format!("{prefix}_{n}")).collect::<Vec<_>>();
+    let mut catalog = Vec::new();
+    for name in stale.iter().chain(&group("alpha")).chain(&group("beta")) {
+        let mut definition = tool(name);
+        definition.defer_loading = Some(true);
+        catalog.push(definition);
+    }
+    let mut active = initial_active_tools(&catalog);
+    let mut cache = ToolActivationCache::default();
+    cache.activate(&catalog, &stale);
+    for name in &stale {
+        cache.record_use(name);
+    }
+    cache.begin_turn();
+    cache.begin_turn();
+
+    for prefix in ["alpha", "beta"] {
+        execute_tool_search_with_cache(
+            codewhale_tools::names::TOOL_SEARCH_NAME,
+            &json!({"query": format!("^{prefix}_"), "match": "regex"}),
+            &catalog,
+            &mut active,
+            &mut cache,
+        )
+        .expect("tool search should succeed");
+    }
+
+    let retained = cache.names().collect::<HashSet<_>>();
+    for name in group("alpha") {
+        assert!(retained.contains(name.as_str()), "{name} was evicted");
+    }
+    for name in group("beta") {
+        assert!(retained.contains(name.as_str()), "{name} was not admitted");
+    }
+}
+
+#[test]
 fn searching_for_an_eager_tool_is_not_reported_as_cache_rejected() {
     let mut catalog = vec![tool("read")];
     catalog[0].defer_loading = Some(false);

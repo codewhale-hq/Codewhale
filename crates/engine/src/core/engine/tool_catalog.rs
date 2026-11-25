@@ -2108,6 +2108,9 @@ fn execute_tool_search_inner(
             cache_rejected = delta.rejected;
             cache_held = delta.held;
             discovered = delta.admitted;
+            for name in discovered.iter().rev() {
+                cache.record_use(name);
+            }
         }
     }
     for name in &discovered {
