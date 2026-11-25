@@ -3,6 +3,7 @@ export const FOUNDER_SWITCHES = {
   plansPublished: { value: false, decision: "CURRENT_DECISIONS §0" },
   cloudComputersBeyondInvite: { value: false, decision: "CURRENT_DECISIONS §132.1" },
   namedVendorAgentsOverAcp: { value: false, decision: "CURRENT_DECISIONS §82 and §69" },
+  accountSignInOffered: { value: false, decision: "CURRENT_DECISIONS §292.2" },
 } as const;
 
 export interface FounderSwitchValues {
@@ -10,6 +11,7 @@ export interface FounderSwitchValues {
   plansPublished: boolean;
   cloudComputersBeyondInvite: boolean;
   namedVendorAgentsOverAcp: boolean;
+  accountSignInOffered: boolean;
 }
 
 export const FOUNDER_SWITCH_VALUES: FounderSwitchValues = {
@@ -17,4 +19,5 @@ export const FOUNDER_SWITCH_VALUES: FounderSwitchValues = {
   plansPublished: FOUNDER_SWITCHES.plansPublished.value,
   cloudComputersBeyondInvite: FOUNDER_SWITCHES.cloudComputersBeyondInvite.value,
   namedVendorAgentsOverAcp: FOUNDER_SWITCHES.namedVendorAgentsOverAcp.value,
+  accountSignInOffered: FOUNDER_SWITCHES.accountSignInOffered.value,
 };

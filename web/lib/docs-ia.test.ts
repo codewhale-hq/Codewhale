@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import buildSitemap from "../app/sitemap";
 import { DOC_TOPICS, docTopicHref, getTopic } from "./docs-map";
 import { docsTopicIsCurrent } from "./docs-navigation";
+import { FOUNDER_SWITCHES } from "./founder-switches";
 import { locales } from "./i18n/config";
 import { contentLocalesForPath } from "./i18n/content-locales";
 import { getChrome, getHome } from "./i18n/dictionaries";
@@ -166,6 +167,8 @@ describe("navigation parity and accessibility", () => {
     expect(nav).toContain("links={links}");
     expect(mobileMenu).toContain("links.map");
     expect(mobileMenu).toContain("signIn.href");
+    expect(nav).toContain("FOUNDER_SWITCH_VALUES.accountSignInOffered");
+    expect(FOUNDER_SWITCHES.accountSignInOffered.value).toBe(false);
     expect(navLinks).toContain("links.map");
     // One generator feeds both surfaces — no per-locale hardcoded arrays.
     expect(nav).toContain("navLinks(locale, chrome)");
@@ -298,7 +301,7 @@ describe("navigation parity and accessibility", () => {
     // Both surfaces resolve the current page through the shared helper
     // rather than repeating the prefix test that collided.
     expect(navLinks).toContain("currentNavHref(links, pathname)");
-    expect(mobileMenu).toContain("currentNavHref([...links, signIn], pathname)");
+    expect(mobileMenu).toContain("currentNavHref(signIn ? [...links, signIn] : links, pathname)");
     expect(navLinks).not.toContain("pathname.startsWith(");
     expect(mobileMenu).not.toContain("pathname.startsWith(");
   });

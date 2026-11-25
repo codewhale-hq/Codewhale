@@ -13,7 +13,8 @@ export const INSTALL_PAGE_COMMANDS = {
   noModifyPath: "curl -fsSL https://codewhale.net/install.sh | sh -s -- --no-modify-path",
   pathBlock: '# >>> codewhale PATH >>>\nexport PATH="$HOME/.local/bin:$PATH"\n# <<< codewhale PATH <<<',
   pathNow: 'export PATH="$HOME/.local/bin:$PATH"; hash -r',
-  pathManual: "echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.zshrc",
+  pathManualBash: "echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc",
+  pathManualZsh: "echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.zshrc",
   version: "codewhale --version",
   telemetryOff: "codewhale config set telemetry false",
   installTelemetryOff: "curl -fsSL https://codewhale.net/install.sh | CODEWHALE_TELEMETRY=0 sh",
@@ -60,6 +61,19 @@ export const INSTALL_COPY = {
     en: "When it finishes, open a new window with Cmd+N, type `codewhale --version` and press Return. A version number means it worked.",
     zh: "安装完成后，按 Cmd+N 打开一个新窗口，输入 `codewhale --version` 并按回车键。显示版本号就说明安装成功了。",
   },
+  newLinuxTitle: { en: "Linux", zh: "Linux" },
+  newLinux1: {
+    en: "Open a terminal from your application launcher, or press Ctrl+Alt+T on desktops that offer it.",
+    zh: "从应用启动器打开终端；在支持的桌面环境中，也可以按 Ctrl+Alt+T。",
+  },
+  newLinux2: {
+    en: "Paste this command with Ctrl+Shift+V and press Enter:",
+    zh: "用 Ctrl+Shift+V 粘贴下面这条命令，然后按回车键：",
+  },
+  newLinux3: {
+    en: "When it finishes, open a new terminal, type `codewhale --version` and press Enter. A version number means it worked.",
+    zh: "安装完成后，打开一个新终端，输入 `codewhale --version` 并按回车键。显示版本号就说明安装成功了。",
+  },
   newWinTitle: { en: "Windows", zh: "Windows" },
   newWin1: { en: "Open the Start menu, type PowerShell and press Enter.", zh: "打开“开始”菜单，输入 PowerShell，然后按回车键。" },
   newWin2: { en: "Paste this command with Ctrl+V and press Enter:", zh: "用 Ctrl+V 粘贴下面这条命令，然后按回车键：" },
@@ -95,9 +109,11 @@ export const INSTALL_COPY = {
     zh: "如果不想让安装程序修改启动文件，请加上 `--no-modify-path` 运行，或设置 `CODEWHALE_NO_MODIFY_PATH=1`：",
   },
   pathManualIntro: {
-    en: "Then add this line to your shell's startup file yourself. Use `~/.bashrc` for bash. For fish, run `fish_add_path ~/.local/bin`.",
-    zh: "然后自行把下面这一行加入你所用 shell 的启动文件。bash 请使用 `~/.bashrc`；fish 请运行 `fish_add_path ~/.local/bin`。",
+    en: "Then add the line for your shell to its startup file yourself. For fish, run `fish_add_path ~/.local/bin`.",
+    zh: "然后自行把对应你所用 shell 的那一行加入它的启动文件。fish 请运行 `fish_add_path ~/.local/bin`。",
   },
+  pathManualBash: { en: "For bash, write it to `~/.bashrc`:", zh: "bash：写入 `~/.bashrc`：" },
+  pathManualZsh: { en: "For zsh, write it to `~/.zshrc`:", zh: "zsh：写入 `~/.zshrc`：" },
 
   verifyTitle: { en: "Check that it worked", zh: "确认安装成功" },
   verifyBody: {
@@ -110,14 +126,17 @@ export const INSTALL_COPY = {
   },
 
   firstTitle: { en: "Your first task", zh: "你的第一个任务" },
-  firstStep1: { en: "Run `codewhale` in a git repository.", zh: "在 git 仓库中运行 `codewhale`。" },
+  firstStep1: {
+    en: "Run `codewhale` in the folder you want to work in. A git repository is not required. In a git repository, edits inside it run without asking. In a folder without git, Codewhale asks before every edit.",
+    zh: "在你想工作的文件夹中运行 `codewhale`。不要求是 git 仓库。在 git 仓库中，仓库内的编辑无需询问；在没有 git 的文件夹中，Codewhale 会在每次编辑前询问你。",
+  },
   firstStep2: {
     en: "Type `/provider` before your first message and choose a provider, or paste a Custom endpoint.",
     zh: "在发送第一条消息之前输入 `/provider`，选择一个提供商，或粘贴自定义端点。",
   },
   firstStep3: {
-    en: "Give it a small task. It asks before it runs a command. Then type `/receipts` to read what it did, and `/cost` to see what it cost or why the cost is unknown.",
-    zh: "给它一个小任务。它会在运行命令之前询问你。然后输入 `/receipts` 查看它做了什么，输入 `/cost` 查看费用，或查看费用未知的原因。",
+    en: "Give it a small task. It asks before it runs a command or changes a file outside that rule. Then type `/receipts` to read what it did, and `/cost` to see what it cost or why the cost is unknown.",
+    zh: "给它一个小任务。在运行命令，或修改不符合上述规则的文件之前，它会先询问你。然后输入 `/receipts` 查看它做了什么，输入 `/cost` 查看费用，或查看费用未知的原因。",
   },
   quickstart: { en: "Read the quickstart", zh: "阅读快速入门" },
 
@@ -127,8 +146,8 @@ export const INSTALL_COPY = {
     zh: "使用统计默认开启。运行 `codewhale config set telemetry false` 可将其关闭。",
   },
   usageInstaller: {
-    en: "The installer runs `codewhale` when it finishes. To turn counting off for that run, set `CODEWHALE_TELEMETRY=0` for the installer:",
-    zh: "安装程序在结束时会运行一次 `codewhale`。要在这次运行中关闭统计，请为安装程序设置 `CODEWHALE_TELEMETRY=0`：",
+    en: "When it finishes, the installer runs a short health check, `codewhale doctor --installs --brief`, with usage counting off. It does not start Codewhale.",
+    zh: "安装程序结束时会运行一次简短的健康检查 `codewhale doctor --installs --brief`，该次运行不做使用统计，也不会启动 Codewhale。",
   },
   usageLink: { en: "What is counted", zh: "统计的内容" },
 
@@ -155,8 +174,8 @@ export const INSTALL_COPY = {
     zh: "`~/.codewhale` 保存着你的设置、会话和你保存过的密钥。只有在你想一并删除它们时才删除：",
   },
   removeGuide: {
-    en: "The v{version} guide also lists `~/.deepseek/snapshots` and each repository's `.codewhale` folder as places Codewhale writes.",
-    zh: "v{version} 的指南还列出了 `~/.deepseek/snapshots` 以及每个仓库中的 `.codewhale` 文件夹，它们也是 Codewhale 写入数据的位置。",
+    en: "The v{version} guide also lists each repository's `.codewhale` folder as a place Codewhale writes.",
+    zh: "v{version} 的指南还列出了每个仓库中的 `.codewhale` 文件夹，它也是 Codewhale 写入数据的位置。",
   },
 
   troubleTitle: { en: "If something goes wrong", zh: "遇到问题时" },
@@ -207,6 +226,10 @@ export const INSTALL_COPY = {
   npmEacces: {
     en: "If npm stops with `EACCES`, do not use sudo. Point npm at a folder you own:",
     zh: "如果 npm 因 `EACCES` 而停止，不要使用 sudo。请让 npm 使用你自己拥有的文件夹：",
+  },
+  npmScripts: {
+    en: "npm 11 may then print a notice that one package has install scripts not yet covered by `allowScripts`. The notice names `codewhale`. `codewhale --version` still works, because the first run fetches the program if the install script did not.",
+    zh: "npm 11 随后可能打印一条提示，说有一个包的安装脚本尚未被 `allowScripts` 覆盖，提示中会点名 `codewhale`。`codewhale --version` 仍然可以运行，因为即使安装脚本没有运行，首次运行时也会获取程序。",
   },
   npmUpdate: {
     en: "Update with `npm install -g codewhale@latest`. Remove the program with `npm uninstall -g codewhale`; it leaves `~/.codewhale`.",

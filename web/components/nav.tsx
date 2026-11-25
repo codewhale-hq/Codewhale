@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { Locale } from "@/lib/i18n/config";
 import { getChrome } from "@/lib/i18n/dictionaries";
+import { FOUNDER_SWITCH_VALUES } from "@/lib/founder-switches";
 import { navLinks, signInLink, REPO_URL } from "@/lib/i18n/links";
 import { formatStars, readRepoStatsSnapshot } from "@/lib/github";
 import { PROJECT_COPY } from "@/lib/content/project";
@@ -20,7 +21,7 @@ import { ArrowLabel } from "./arrow-label";
 export function Nav({ locale = "en" }: { locale?: Locale }) {
   const chrome = getChrome(locale);
   const links = navLinks(locale, chrome);
-  const signIn = signInLink(locale, chrome);
+  const signIn = FOUNDER_SWITCH_VALUES.accountSignInOffered ? signInLink(locale, chrome) : null;
   const stats = readRepoStatsSnapshot();
   const stars = stats.stars === null ? null : formatStars(stats.stars);
   const asOf = stats.fetchedAt
@@ -65,9 +66,11 @@ export function Nav({ locale = "en" }: { locale?: Locale }) {
             <Icon name="github" className="nav-icon" />
             {stars !== null && <span className="tabular text-sm">{stars}</span>}
           </Link>
-          <Link href={signIn.href} className="nav-link site-signin-link hidden lg:inline-flex px-2">
-            {signIn.label}
-          </Link>
+          {signIn ? (
+            <Link href={signIn.href} className="nav-link site-signin-link hidden lg:inline-flex px-2">
+              {signIn.label}
+            </Link>
+          ) : null}
           <Link
             href={`/${locale}/install`}
             className="paper-install-cta hidden lg:inline-flex"

@@ -165,7 +165,7 @@ describe("today's surface states", () => {
 
 describe("founder-set switches", () => {
   it("default to off, each with the decision that set it", () => {
-    expect(FOUNDER_SWITCH_VALUES).toEqual({ cloudInvitationsOpen: false, plansPublished: false, cloudComputersBeyondInvite: false, namedVendorAgentsOverAcp: false });
+    expect(FOUNDER_SWITCH_VALUES).toEqual({ cloudInvitationsOpen: false, plansPublished: false, cloudComputersBeyondInvite: false, namedVendorAgentsOverAcp: false, accountSignInOffered: false });
     for (const entry of Object.values(FOUNDER_SWITCHES)) expect(entry.decision).toMatch(/§\d/);
   });
 
