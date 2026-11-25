@@ -5573,7 +5573,7 @@ impl CodewhaleClient {
             responses_profile_id: prepared
                 .responses_profile_id
                 .map(|id| id.as_str().to_owned()),
-            tools: prepared.tool_wire_measurement(),
+            tools: prepared.tool_wire_measurement().bounded_for_receipt(),
             image_projection: prepared.image_projection.clone(),
         });
         if let Some(notice) = &prepared.image_omission_notice {

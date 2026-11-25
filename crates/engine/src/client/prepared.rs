@@ -391,6 +391,7 @@ impl PreparedOutboundRequest {
             tool_schema_sha256: view.tool_schema_sha256,
             tool_count: view.tool_count,
             omitted_tool_names: self.omitted_tool_names.clone(),
+            omitted_tool_count: self.omitted_tool_names.len(),
         }
     }
 

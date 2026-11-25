@@ -51,6 +51,18 @@ pub struct ToolWireMeasurement {
     pub tool_schema_sha256: String,
     pub tool_count: usize,
     pub omitted_tool_names: Vec<String>,
+    pub omitted_tool_count: usize,
+}
+
+impl ToolWireMeasurement {
+    #[must_use]
+    pub fn bounded_for_receipt(mut self) -> Self {
+        self.omitted_tool_names =
+            codewhale_models::tool_projection::bounded_tool_projection_warning_names(
+                &self.omitted_tool_names,
+            );
+        self
+    }
 }
 
 /// Unified interface for LLM providers.
@@ -63,7 +75,7 @@ pub struct ToolWireMeasurement {
 /// - All methods are async and require `Send + Sync` for thread safety
 /// - The `create_message_stream` method returns a pinned boxed stream for SSE
 /// - Implementations should handle their own authentication and base URL configuration
-#[allow(async_fn_in_trait, dead_code)] // Trait methods are part of the LLM provider interface
+#[allow(async_fn_in_trait)] // Trait methods are part of the LLM provider interface
 pub trait LlmClient: Send + Sync {
     /// Returns the provider name (e.g., "openai", "deepseek")
     fn provider_name(&self) -> &'static str;
