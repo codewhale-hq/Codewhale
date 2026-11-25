@@ -404,9 +404,10 @@ pub struct EngineConfig {
     /// - reports on each receipt the paths changed since the turn's previous
     ///   one.
     ///
-    /// Interactive hosts keep `false`: the TUI does not record receipts,
-    /// keeps the post-turn snapshot off its input path (#234), and snapshots
-    /// only before file-writing tools.
+    /// The TUI and `codewhale exec` set it too, so `/undo` finds each
+    /// file-writing call closed by a `post_tool` snapshot. A host that keeps
+    /// `false` takes the post-turn snapshot after `TurnComplete`, off its
+    /// input path (#234), and snapshots only before file-writing tools.
     pub record_restore_points: bool,
     /// Post-edit LSP diagnostics injection (#136). When `None`, the engine
     /// constructs a disabled manager so the field is always present.
@@ -1210,6 +1211,7 @@ pub struct Engine {
     /// turn's first snapshot and after one failed, so a span that cannot be
     /// accounted for is reported as unknown rather than folded into the next.
     restore_point_since: Option<codewhale_snapshot::SnapshotId>,
+    restore_point_landing: Option<tokio::sync::oneshot::Receiver<()>>,
     /// Post-edit LSP diagnostics injection (#136). Populated unconditionally
     /// — when LSP is disabled in config, this is an inert manager that
     /// always returns `None` from `diagnostics_for`.
@@ -2876,6 +2878,7 @@ impl Engine {
             tool_exec_lock,
             turn_counter: 0,
             restore_point_since: None,
+            restore_point_landing: None,
             lsp_manager,
             pending_lsp_blocks: Vec::new(),
             sandbox_backend,
@@ -3190,6 +3193,12 @@ impl Engine {
     /// also carries the paths changed since the turn's previous snapshot,
     /// and a failure leaves the next span unknown instead of merging it into
     /// the one before.
+    ///
+    /// A cancelled turn returns at once while the snapshot is still written
+    /// off the async runtime. A `post_tool` or `post_turn` snapshot cut short
+    /// that way stays reserved until it lands, so a `/undo` typed right after
+    /// an interrupt waits for it, and each later snapshot is written after
+    /// it, in the order the turn asked for them.
     pub async fn take_restore_point(
         &mut self,
         kind: WorkspaceSnapshotKind,
@@ -3209,18 +3218,37 @@ impl Engine {
         let workspace = self.session.workspace.clone();
         let cap = self.config.snapshots_max_workspace_bytes;
         let sid = self.session.id.clone();
+        let pending = matches!(
+            kind,
+            WorkspaceSnapshotKind::PostTool | WorkspaceSnapshotKind::PostTurn
+        )
+        .then(codewhale_snapshot::PendingPostTurnSnapshot::reserve);
+        let earlier = self.restore_point_landing.take();
+        let (landed, landing) = tokio::sync::oneshot::channel::<()>();
         #[cfg(any(test, feature = "test-support"))]
         let env_ticket = crate::test_support::env_scope_ticket();
         let snapshot = tokio::task::spawn_blocking(move || {
             #[cfg(any(test, feature = "test-support"))]
             let _membership = crate::test_support::join_env_scope(env_ticket);
-            super::turn::restore_point_snapshot(&workspace, &label, cap, Some(&sid), since.as_ref())
+            if let Some(earlier) = earlier {
+                let _ = earlier.blocking_recv();
+            }
+            let taken = super::turn::restore_point_snapshot(
+                &workspace,
+                &label,
+                cap,
+                Some(&sid),
+                since.as_ref(),
+            );
+            drop(pending);
+            drop(landed);
+            taken
         });
-        let taken = tokio::select! {
+        let (taken, detached) = tokio::select! {
             biased;
-            () = self.cancel_token.cancelled() => None,
+            () = self.cancel_token.cancelled() => (None, true),
             joined = tokio::time::timeout(RESTORE_POINT_TIMEOUT, snapshot) => match joined {
-                Ok(joined) => joined.ok().flatten(),
+                Ok(joined) => (joined.ok().flatten(), false),
                 Err(_) => {
                     tracing::warn!(
                         timeout_secs = RESTORE_POINT_TIMEOUT.as_secs(),
@@ -3232,10 +3260,13 @@ impl Engine {
                             RESTORE_POINT_TIMEOUT.as_secs()
                         )))
                         .await;
-                    None
+                    (None, true)
                 }
             },
         };
+        if detached {
+            self.restore_point_landing = Some(landing);
+        }
         let Some((taken, changed)) = taken else {
             self.restore_point_since = None;
             return false;
@@ -12631,4 +12662,78 @@ fn record_model_turn_telemetry(
         },
         turn.started_at.elapsed().as_secs(),
     );
+}
+
+#[cfg(test)]
+mod interrupted_restore_point_tests {
+    use super::*;
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    use crate::test_support::{EnvVarGuard, lock_test_env};
+
+    #[test]
+    fn interrupted_closing_restore_points_stay_reserved_and_land_in_order() {
+        let _env = lock_test_env();
+        let root = tempfile::tempdir().unwrap();
+        let _home = EnvVarGuard::set("CODEWHALE_HOME", root.path());
+        let _user_home = EnvVarGuard::set("HOME", root.path());
+        let _user_profile = EnvVarGuard::set("USERPROFILE", root.path());
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("out.md"), "out\n").unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let config = Config::default();
+            let client = Arc::new(MockLlmClient::new(vec![canned::simple_text_turn("unused")]));
+            let (mut engine, _handle) = Engine::new_with_model_client(
+                EngineConfig {
+                    workspace: workspace.clone(),
+                    session_id: Some("session-interrupted".into()),
+                    snapshots_enabled: true,
+                    snapshots_max_workspace_bytes: 0,
+                    record_restore_points: true,
+                    subagents_enabled: false,
+                    ..EngineConfig::default()
+                },
+                &config,
+                client,
+            );
+            engine.cancel_token.cancel();
+            let closed_tool = engine
+                .take_restore_point(
+                    WorkspaceSnapshotKind::PostTool,
+                    "post-tool:call-write".to_string(),
+                    Some("call-write"),
+                    None,
+                )
+                .await;
+            let closed_turn = engine
+                .take_restore_point(
+                    WorkspaceSnapshotKind::PostTurn,
+                    format_snapshot_label("post-turn", 1, Some("write out.md")),
+                    None,
+                    None,
+                )
+                .await;
+            assert!(!closed_tool && !closed_turn);
+        });
+        assert!(codewhale_snapshot::wait_for_pending_post_turn_snapshots(
+            Duration::from_secs(60)
+        ));
+        let repo = codewhale_snapshot::SnapshotRepo::open_existing(&workspace)
+            .unwrap()
+            .expect("snapshot repo");
+        let labels: Vec<String> = repo
+            .list(usize::MAX)
+            .unwrap()
+            .into_iter()
+            .map(|snapshot| snapshot.label)
+            .collect();
+        assert_eq!(labels.len(), 2, "{labels:?}");
+        assert!(labels[0].starts_with("post-turn:"), "{labels:?}");
+        assert_eq!(labels[1], "post-tool:call-write");
+        drop(runtime);
+    }
 }
