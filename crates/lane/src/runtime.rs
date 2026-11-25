@@ -676,6 +676,103 @@ fn apply_worktree(record: &mut LaneRecord, spec: &LaneStartSpec) -> Result<Optio
     Ok(Some(provisioned.path))
 }
 
+fn fail_provisioned_start(
+    backend: &dyn RuntimeBackend,
+    registry: &LaneRegistry,
+    record: &mut LaneRecord,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    let mut failed_record = record.clone();
+    let _ = registry.mark_terminal_if_active(record, LaneStatus::Failed);
+    failed_record.stopped_at = record.stopped_at.clone();
+    let _ = backend.cleanup_worktree(&failed_record);
+    error
+}
+
+fn prepare_tmux_launch(
+    registry: &LaneRegistry,
+    record: &mut LaneRecord,
+    spec: &LaneStartSpec,
+    cwd: Option<&Path>,
+    session: &str,
+    socket: &Path,
+    dry_run: bool,
+) -> Result<Option<(Command, Option<PathBuf>)>> {
+    if spec.worktree.is_some() {
+        registry.persist_worktree(record)?;
+    }
+    append_log_event(
+        &record.log_path,
+        serde_json::json!({
+            "type": "lane_started",
+            "lane_id": record.id,
+            "runtime": "tmux",
+            "session": session,
+            "workflow": record.workflow,
+            "fleet": record.fleet,
+            "issue": record.issue,
+            "dry_run": dry_run,
+        }),
+    )?;
+
+    if dry_run {
+        append_log_event(
+            &record.log_path,
+            serde_json::json!({
+                "type": "lane_log",
+                "message": "tmux dry-run: session recorded without spawning process",
+                "command": spec.command,
+                "cwd": cwd.map(|p| p.display().to_string()),
+            }),
+        )?;
+        if !registry.mark_running_if_pending(record)? {
+            bail!(
+                "lane `{}` was stopped before tmux dry-run start completed",
+                record.id
+            );
+        }
+        return Ok(None);
+    }
+
+    let log_proxy = spec
+        .log_proxy
+        .as_deref()
+        .context("tmux runtime requires a lane log proxy executable")?;
+
+    // Detached session: child output remains an operator journal only.
+    // Terminal control state goes through a separate bounded, atomically
+    // renamed receipt so child stdout cannot forge Lane completion.
+    let receipt_path = lane_exit_receipt_path(&record.log_path);
+    let receipt_tmp_path = lane_exit_receipt_tmp_path(&record.log_path);
+    let environment_path = lane_environment_path(&record.log_path);
+    remove_file_if_present(&receipt_path)?;
+    remove_file_if_present(&receipt_tmp_path)?;
+    remove_file_if_present(&environment_path)?;
+    let environment_path = if spec.environment.is_empty() {
+        None
+    } else {
+        write_lane_environment(&environment_path, &spec.environment)?;
+        Some(environment_path)
+    };
+    let shell_cmd = tmux_log_proxy_command(
+        log_proxy,
+        &spec.command,
+        &record.log_path,
+        &receipt_path,
+        &receipt_tmp_path,
+        environment_path.as_deref(),
+        &record.id,
+    );
+
+    let mut cmd = tmux_command(socket);
+    cmd.args(["new-session", "-d", "-s", session]);
+    if let Some(cwd) = cwd {
+        cmd.arg("-c").arg(cwd);
+    }
+    cmd.arg(shell_cmd);
+    Ok(Some((cmd, environment_path)))
+}
+
 /// Durable local tmux sessions + attach + stream-json log file.
 #[derive(Debug, Default)]
 pub struct TmuxRuntime;
@@ -722,75 +819,21 @@ impl RuntimeBackend for TmuxRuntime {
             shell_escape(&session)
         ));
 
-        append_log_event(
-            &record.log_path,
-            serde_json::json!({
-                "type": "lane_started",
-                "lane_id": record.id,
-                "runtime": "tmux",
-                "session": session,
-                "workflow": record.workflow,
-                "fleet": record.fleet,
-                "issue": record.issue,
-                "dry_run": dry_run,
-            }),
-        )?;
-
-        if dry_run {
-            append_log_event(
-                &record.log_path,
-                serde_json::json!({
-                    "type": "lane_log",
-                    "message": "tmux dry-run: session recorded without spawning process",
-                    "command": spec.command,
-                    "cwd": cwd.as_ref().map(|p| p.display().to_string()),
-                }),
-            )?;
-            if !registry.mark_running_if_pending(record)? {
-                bail!(
-                    "lane `{}` was stopped before tmux dry-run start completed",
-                    record.id
-                );
-            }
-            return Ok(());
-        }
-
-        let log_proxy = spec
-            .log_proxy
-            .as_deref()
-            .context("tmux runtime requires a lane log proxy executable")?;
-
-        // Detached session: child output remains an operator journal only.
-        // Terminal control state goes through a separate bounded, atomically
-        // renamed receipt so child stdout cannot forge Lane completion.
-        let receipt_path = lane_exit_receipt_path(&record.log_path);
-        let receipt_tmp_path = lane_exit_receipt_tmp_path(&record.log_path);
-        let environment_path = lane_environment_path(&record.log_path);
-        remove_file_if_present(&receipt_path)?;
-        remove_file_if_present(&receipt_tmp_path)?;
-        remove_file_if_present(&environment_path)?;
-        let environment_path = if spec.environment.is_empty() {
-            None
-        } else {
-            write_lane_environment(&environment_path, &spec.environment)?;
-            Some(environment_path)
+        let prepared = match prepare_tmux_launch(
+            registry,
+            record,
+            spec,
+            cwd.as_deref(),
+            &session,
+            &socket,
+            dry_run,
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => return Err(fail_provisioned_start(self, registry, record, error)),
         };
-        let shell_cmd = tmux_log_proxy_command(
-            log_proxy,
-            &spec.command,
-            &record.log_path,
-            &receipt_path,
-            &receipt_tmp_path,
-            environment_path.as_deref(),
-            &record.id,
-        );
-
-        let mut cmd = tmux_command(&socket);
-        cmd.args(["new-session", "-d", "-s", &session]);
-        if let Some(cwd) = cwd.as_ref() {
-            cmd.arg("-c").arg(cwd);
-        }
-        cmd.arg(shell_cmd);
+        let Some((mut cmd, environment_path)) = prepared else {
+            return Ok(());
+        };
         let proposed_record = record.clone();
         let spawned = std::cell::Cell::new(false);
         let rolled_back = std::cell::Cell::new(false);
@@ -977,19 +1020,24 @@ impl RuntimeBackend for InlineRuntime {
             bail!("inline runtime requires a non-empty command");
         }
         let cwd = apply_worktree(record, spec)?;
-        // A concurrent stop that wins `mark_running_if_pending` replaces
-        // `record` with the stored one, which never saw the worktree; keep
-        // this copy so the worktree is still cleaned up, as tmux does.
         let proposed_record = record.clone();
-        append_log_event(
-            &record.log_path,
-            serde_json::json!({
-                "type": "lane_started",
-                "lane_id": record.id,
-                "runtime": "inline",
-                "command": spec.command,
-            }),
-        )?;
+        let announced = (|| -> Result<()> {
+            if spec.worktree.is_some() {
+                registry.persist_worktree(record)?;
+            }
+            append_log_event(
+                &record.log_path,
+                serde_json::json!({
+                    "type": "lane_started",
+                    "lane_id": record.id,
+                    "runtime": "inline",
+                    "command": spec.command,
+                }),
+            )
+        })();
+        if let Err(error) = announced {
+            return Err(fail_provisioned_start(self, registry, record, error));
+        }
         if !registry.mark_running_if_pending(record)? {
             let mut stopped_record = proposed_record;
             stopped_record.stopped_at = record.stopped_at.clone();
@@ -1400,6 +1448,47 @@ mod tests {
             !wt_path.exists(),
             "the failed lane's worktree was left behind"
         );
+    }
+
+    #[test]
+    fn start_failure_after_provisioning_keeps_the_worktree_accounted_for() {
+        for ttl in [Some(0), None] {
+            let dir = tempdir().unwrap();
+            let repo = dir.path().join("repo");
+            std::fs::create_dir_all(&repo).unwrap();
+            crate::worktree::tests::init_repo(&repo);
+            let wt_path = dir.path().join("wt-unwritable-log");
+            let reg = LaneRegistry::open(dir.path().join("lanes")).unwrap();
+            let mut record = reg
+                .create_pending(None, None, None, None, RuntimeBackendKind::Inline, ttl)
+                .unwrap();
+            let id = record.id.clone();
+            record.log_path = dir.path().join("missing-dir").join("lane.ndjson");
+            let result = InlineRuntime.start(
+                &reg,
+                &mut record,
+                &LaneStartSpec {
+                    command: vec!["echo".into(), "never-runs".into()],
+                    cwd: None,
+                    environment: Vec::new(),
+                    log_proxy: None,
+                    worktree: Some(WorktreeProvision {
+                        repo_root: repo,
+                        branch: "codex/lane-log-fail".into(),
+                        path: wt_path.clone(),
+                        base_ref: Some("main".into()),
+                    }),
+                },
+            );
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("open lane log"), "ttl={ttl:?}: {error}");
+            assert_eq!(record.status, LaneStatus::Failed, "ttl={ttl:?}");
+            let stored = reg.load(&id).unwrap();
+            assert_eq!(stored.status, LaneStatus::Failed, "ttl={ttl:?}");
+            assert_eq!(stored.worktree_path.as_deref(), Some(wt_path.as_path()));
+            assert_eq!(stored.branch.as_deref(), Some("codex/lane-log-fail"));
+            assert_eq!(wt_path.exists(), ttl.is_none(), "ttl={ttl:?}");
+        }
     }
 
     #[test]
