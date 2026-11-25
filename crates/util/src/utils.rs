@@ -655,11 +655,50 @@ fn write_atomic_scoped(
 
 /// Best-effort directory sync: not all platforms or filesystems (for example
 /// Windows, network shares, or FUSE mounts) permit opening or fsyncing a
-/// directory handle, so a failure here is never fatal.
+/// directory handle, so a failure here is never fatal. Such refusals are
+/// ignored; any other sync failure is logged at warn.
 pub fn sync_directory(parent: &Path) {
-    if let Ok(dir) = std::fs::File::open(parent) {
-        let _ = dir.sync_all();
+    let Ok(dir) = std::fs::File::open(parent) else {
+        return;
+    };
+    if let Err(error) = dir.sync_all()
+        && !is_directory_sync_refusal(&error)
+    {
+        tracing::warn!(path = %parent.display(), "directory sync failed: {error}");
     }
+}
+
+fn is_directory_sync_refusal(error: &io::Error) -> bool {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::Unsupported | io::ErrorKind::InvalidInput
+    ) {
+        return true;
+    }
+    #[cfg(unix)]
+    let refusals = [
+        libc::EINVAL,
+        libc::ENOTSUP,
+        libc::EOPNOTSUPP,
+        libc::ENOSYS,
+        libc::EISDIR,
+        libc::EBADF,
+        libc::EROFS,
+    ];
+    #[cfg(windows)]
+    let refusals = [
+        windows_sys::Win32::Foundation::ERROR_INVALID_FUNCTION,
+        windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED,
+        windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE,
+        windows_sys::Win32::Foundation::ERROR_NOT_SUPPORTED,
+        windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER,
+    ]
+    .map(|code| code as i32);
+    #[cfg(not(any(unix, windows)))]
+    let refusals: [i32; 0] = [];
+    error
+        .raw_os_error()
+        .is_some_and(|code| refusals.contains(&code))
 }
 
 /// True when `dir` is under `$CODEWHALE_HOME` / `~/.codewhale`, or the ambient
@@ -1990,5 +2029,32 @@ mod project_mapping_tests {
         let tmp = tempdir().expect("tempdir");
         super::sync_directory(tmp.path());
         super::sync_directory(&tmp.path().join("does-not-exist"));
+    }
+
+    #[test]
+    fn directory_sync_refusals_are_distinguished_from_real_failures() {
+        use std::io::{Error, ErrorKind};
+        assert!(super::is_directory_sync_refusal(&Error::from(
+            ErrorKind::Unsupported
+        )));
+        assert!(super::is_directory_sync_refusal(&Error::from(
+            ErrorKind::InvalidInput
+        )));
+        assert!(!super::is_directory_sync_refusal(&Error::other(
+            "disk failure"
+        )));
+        #[cfg(unix)]
+        {
+            for code in [libc::EINVAL, libc::ENOTSUP, libc::EOPNOTSUPP, libc::EBADF] {
+                assert!(super::is_directory_sync_refusal(&Error::from_raw_os_error(
+                    code
+                )));
+            }
+            for code in [libc::EIO, libc::ENOSPC, libc::EDQUOT] {
+                assert!(!super::is_directory_sync_refusal(
+                    &Error::from_raw_os_error(code)
+                ));
+            }
+        }
     }
 }
