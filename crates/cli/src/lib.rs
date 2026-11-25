@@ -154,7 +154,7 @@ struct Cli {
         conflicts_with_all = ["continue_session", "resume"]
     )]
     session_id: Option<String>,
-    /// Prefill the initial prompt in the interactive TUI (use `codewhale exec`
+    /// Prefill the initial prompt in the interactive session (use `codewhale exec`
     /// for a non-interactive run).
     #[arg(short = 'p', long = "prompt", value_name = "PROMPT")]
     prompt_flag: Option<String>,
@@ -13610,7 +13610,7 @@ verbosity = "concise"
         assert!(help.contains("login"), "{help}");
         assert!(help.contains("models"), "{help}");
         assert!(
-            help.contains("Prefill the initial prompt in the interactive TUI"),
+            help.contains("Prefill the initial prompt in the interactive session"),
             "{help}"
         );
         assert!(!ADVANCED_COMMANDS.contains(&"login"));

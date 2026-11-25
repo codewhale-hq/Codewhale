@@ -11947,20 +11947,33 @@ fn deepseek_missing_key_message_keeps_commands_copyable_and_harness_advice_condi
 
 #[test]
 fn ambient_default_provider_detects_cloud_env_keys_in_priority_order() {
+    struct RestoreEnv(Vec<(&'static str, Option<OsString>)>);
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            for (key, value) in self.0.drain(..) {
+                unsafe { EnvGuard::restore_var(key, value) };
+            }
+        }
+    }
+
     let _guard = lock_test_env();
     let keys = [
+        "CODEWHALE_PROVIDER",
+        "DEEPSEEK_PROVIDER",
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
         "GEMINI_API_KEY",
         "DEEPSEEK_API_KEY",
         "OPENROUTER_API_KEY",
     ];
-    let previous: Vec<Option<OsString>> = keys.iter().map(env::var_os).collect();
+    let _restore = RestoreEnv(keys.iter().map(|&k| (k, env::var_os(k))).collect());
     for key in keys {
         unsafe { env::remove_var(key) };
     }
 
-    let cfg = Config::default();
+    let mut cfg = Config::default();
+    apply_env_overrides_unlocked(&mut cfg, ConfigEnvironmentPolicy::Runtime);
+    assert_eq!(cfg.provider, None);
     assert_eq!(
         cfg.active_provider_identity().expect("default").provider,
         ProviderKind::Deepseek
@@ -11968,31 +11981,37 @@ fn ambient_default_provider_detects_cloud_env_keys_in_priority_order() {
 
     unsafe { env::set_var("OPENROUTER_API_KEY", "sk-or-test") };
     assert_eq!(
-        cfg.active_provider_identity().expect("openrouter").provider,
-        ProviderKind::Openrouter
-    );
-
-    unsafe { env::set_var("ANTHROPIC_API_KEY", "sk-ant-test") };
-    assert_eq!(
-        cfg.active_provider_identity().expect("anthropic").provider,
-        ProviderKind::Anthropic
-    );
-
-    let explicit = Config {
-        provider: Some("deepseek".to_string()),
-        ..Config::default()
-    };
-    assert_eq!(
-        explicit
+        Config::default()
             .active_provider_identity()
-            .expect("explicit")
+            .expect("pure default")
             .provider,
         ProviderKind::Deepseek
     );
 
-    for (key, value) in keys.iter().zip(previous) {
-        unsafe { EnvGuard::restore_var(key, value) };
-    }
+    let mut openrouter_cfg = Config::default();
+    apply_env_overrides_unlocked(&mut openrouter_cfg, ConfigEnvironmentPolicy::Runtime);
+    assert_eq!(openrouter_cfg.provider.as_deref(), Some("openrouter"));
+    assert!(openrouter_cfg.route_provenance.provider_from_env);
+
+    unsafe { env::set_var("ANTHROPIC_API_KEY", "sk-ant-test") };
+    let mut anthropic_cfg = Config::default();
+    apply_env_overrides_unlocked(&mut anthropic_cfg, ConfigEnvironmentPolicy::Runtime);
+    assert_eq!(anthropic_cfg.provider.as_deref(), Some("anthropic"));
+    assert!(anthropic_cfg.route_provenance.provider_from_env);
+
+    let mut diagnostic_cfg = Config::default();
+    apply_env_overrides_unlocked(
+        &mut diagnostic_cfg,
+        ConfigEnvironmentPolicy::StructuralDiagnostic,
+    );
+    assert_eq!(diagnostic_cfg.provider, None);
+
+    let mut explicit_model_cfg = Config {
+        default_text_model: Some("deepseek-chat".to_string()),
+        ..Config::default()
+    };
+    apply_env_overrides_unlocked(&mut explicit_model_cfg, ConfigEnvironmentPolicy::Runtime);
+    assert_eq!(explicit_model_cfg.provider, None);
 }
 
 #[test]

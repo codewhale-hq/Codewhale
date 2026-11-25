@@ -4131,36 +4131,11 @@ impl Config {
         })
     }
 
-    fn ambient_default_provider(&self) -> Option<&'static str> {
-        if self.provider.is_some()
-            || self.api_key.is_some()
-            || self.base_url.is_some()
-            || self.providers.as_ref().is_some_and(|p| {
-                p.deepseek.api_key.is_some()
-                    || p.deepseek.base_url.is_some()
-                    || p.deepseek.api_key_env.is_some()
-            })
-        {
-            return None;
-        }
-        const AMBIENT_PRIORITY: [(&str, ProviderKind); 5] = [
-            ("ANTHROPIC_API_KEY", ProviderKind::Anthropic),
-            ("OPENAI_API_KEY", ProviderKind::Openai),
-            ("GEMINI_API_KEY", ProviderKind::Google),
-            ("DEEPSEEK_API_KEY", ProviderKind::Deepseek),
-            ("OPENROUTER_API_KEY", ProviderKind::Openrouter),
-        ];
-        AMBIENT_PRIORITY
-            .iter()
-            .find_map(|(env_var, kind)| first_nonempty_env(&[env_var]).map(|_| kind.as_str()))
-    }
-
     /// Resolve the currently selected live route, keeping its exact id.
     pub fn active_provider_identity(&self) -> std::result::Result<ProviderIdentity, String> {
         let selected = self
             .provider
             .as_deref()
-            .or_else(|| self.ambient_default_provider())
             .unwrap_or(ProviderKind::Deepseek.as_str());
         if self.migrated_legacy_ollama_cloud_route && selected == ProviderKind::OllamaCloud.as_str()
         {
@@ -8066,6 +8041,31 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
         config.route_provenance.provider_from_env = true;
         config.route_provenance.provider_from_saved_selection = false;
         config.route_provenance.provider_from_profile = false;
+    } else if policy.permits_secret_bearing_values()
+        && config.provider.is_none()
+        && config.default_text_model.is_none()
+        && config.legacy_model.is_none()
+        && config.legacy_root_custom_generation.is_none()
+        && config.legacy_root.notes.is_empty()
+        && config.base_url_env_receipt == BaseUrlEnvReceipt::NoOwner
+        && config.providers.is_none()
+    {
+        const AMBIENT_PRIORITY: [(&str, ProviderKind); 5] = [
+            ("ANTHROPIC_API_KEY", ProviderKind::Anthropic),
+            ("OPENAI_API_KEY", ProviderKind::Openai),
+            ("GEMINI_API_KEY", ProviderKind::Google),
+            ("DEEPSEEK_API_KEY", ProviderKind::Deepseek),
+            ("OPENROUTER_API_KEY", ProviderKind::Openrouter),
+        ];
+        if let Some(kind) = AMBIENT_PRIORITY
+            .iter()
+            .find_map(|(env_var, kind)| first_nonempty_env(&[env_var]).map(|_| *kind))
+        {
+            config.provider = Some(kind.as_str().to_string());
+            config.route_provenance.provider_from_env = true;
+            config.route_provenance.provider_from_saved_selection = false;
+            config.route_provenance.provider_from_profile = false;
+        }
     }
     let resolved_identity = match config.active_provider_identity() {
         Ok(identity) => {

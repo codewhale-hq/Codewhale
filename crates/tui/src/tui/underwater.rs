@@ -168,7 +168,12 @@ fn launch_recent_entries(app: &App) -> (Vec<LaunchRecentEntry>, bool) {
 }
 
 /// Both painting and input use the same primary action on revisited home.
-fn home_card_rows(app: &App, recent: &[LaunchRecentEntry], has_more: bool) -> Vec<LaunchCardRow> {
+fn home_card_rows(
+    app: &App,
+    recent: &[LaunchRecentEntry],
+    has_more: bool,
+    show_connect_model: bool,
+) -> Vec<LaunchCardRow> {
     let mut rows = launch_card_rows(app.ui_locale, recent, has_more);
     if !app.launch.recent_expanded
         && has_more
@@ -199,7 +204,7 @@ fn home_card_rows(app: &App, recent: &[LaunchRecentEntry], has_more: bool) -> Ve
                 tr(app.ui_locale, MessageId::HomeBackToConversation)
             );
         }
-    } else if app.onboarding_needs_api_key {
+    } else if show_connect_model {
         if let Some(row) = rows
             .iter_mut()
             .find(|r| r.id == crate::tui::app::LaunchRowId::NewSession)
@@ -237,7 +242,12 @@ pub fn launch_rows_for_app(app: &App) -> Vec<LaunchCardRow> {
     } else {
         &[]
     };
-    let mut superset = home_card_rows(app, recent, true);
+    let mut superset = home_card_rows(
+        app,
+        recent,
+        true,
+        app.onboarding_needs_api_key && !app.launch.return_to_session,
+    );
     superset.push(LaunchCardRow {
         id: crate::tui::app::LaunchRowId::McpManager,
         label: String::new(),
@@ -1525,7 +1535,7 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
     };
     // Nothing will answer a message until a model is connected; the card
     // says so instead of letting the first Enter fail silently (UX-3).
-    let no_model_connected = false;
+    let no_model_connected = app.onboarding_needs_api_key && !app.launch.return_to_session;
     let mcp_configured = app.mcp_configured_count > 0
         || app
             .mcp_snapshot
@@ -1568,7 +1578,7 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
         text_width.saturating_sub(mark.map_or(0, |size| text_display_width(size[0]) + 2));
     let spacious = fit.blanks == LAUNCH_SEPARATORS;
     let visible: Vec<LaunchRecentEntry> = entries.into_iter().take(fit.shown).collect();
-    let card_rows = home_card_rows(app, &visible, fit.see_all);
+    let card_rows = home_card_rows(app, &visible, fit.see_all, fit.setup);
 
     // The text column, in order. `None` is a blank row.
     let mut text: Vec<Option<Line<'static>>> = Vec::new();
@@ -1646,18 +1656,6 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
             }
             text[row] = Some(Line::from(spans));
         }
-    }
-    if fit.setup {
-        let line = format!(
-            "{}{}{}",
-            tr(locale, MessageId::LaunchNoModelConnected),
-            crate::tui::session_boot::ITEM_SEPARATOR,
-            tr(locale, MessageId::LaunchRunCommand).replace("{command}", "/provider"),
-        );
-        text.push(Some(Line::from(Span::styled(
-            semantic_truncate(&line, text_width),
-            Style::default().fg(theme.warning),
-        ))));
     }
     for (line, muted) in whats_new_lines.iter().take(fit.whats_new) {
         let ink = if *muted {
