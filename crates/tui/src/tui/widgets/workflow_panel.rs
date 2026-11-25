@@ -1368,7 +1368,7 @@ impl WorkflowPanel {
     /// Single-agent "mini workflow" view for direct sub-agent cards so they
     /// share the same lifecycle/elapsed/result concepts as workflow runs.
     #[must_use]
-    #[cfg_attr(not(test), expect(dead_code))]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn from_direct_subagent(
         agent_id: impl Into<String>,
         role: impl Into<String>,

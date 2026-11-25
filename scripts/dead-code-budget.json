@@ -3,8 +3,8 @@
   "_issue": "https://github.com/codewhale-hq/CodeWhale/issues/4785",
   "_expect_blind_spot": "Until #6241 this gate counted only the `allow` spelling, so rewriting an allow as an expect lowered the number without removing any dead code. The ceiling was re-based to the true combined count when that was fixed; it is not a regression.",
   "total": 74,
-  "allow_total": 39,
-  "expect_total": 35,
+  "allow_total": 40,
+  "expect_total": 34,
   "per_crate": {
     "app-server": {
       "allow": 1,
@@ -47,8 +47,8 @@
       "expect": 0
     },
     "tui": {
-      "allow": 18,
-      "expect": 25
+      "allow": 19,
+      "expect": 24
     }
   }
 }
