@@ -896,6 +896,25 @@ mod tests {
     }
 
     #[test]
+    fn empty_state_follows_the_ui_locale() {
+        let tmp = TempDir::new().unwrap();
+        let _home = IsolatedHome::new(&tmp);
+        let app = app_in(&tmp);
+        let mut view = SkillsManagerView::new(&app);
+        view.skills.clear();
+        view.locale = Locale::Fr;
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        view.render(area, &mut buf);
+        let text: String = (0..area.height)
+            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+            .map(|(x, y)| buf.cell((x, y)).map_or(" ", |c| c.symbol()).to_string())
+            .collect();
+        assert!(!text.contains("No skills in this scan"), "{text}");
+        assert!(text.contains("Aucune"), "{text}");
+    }
+
+    #[test]
     fn selected_skill_row_uses_charter_pointer_and_selection_bg() {
         let tmp = TempDir::new().unwrap();
         let _home = IsolatedHome::new(&tmp);

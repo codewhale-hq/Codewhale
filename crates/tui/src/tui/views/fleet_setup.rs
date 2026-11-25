@@ -103,71 +103,69 @@ const CHOICE_LIST_WIDTH: u16 = 22;
 const CHOICE_DETAIL_MIN_WIDTH: u16 = 58;
 const CHOICE_TWO_COLUMN_MIN_WIDTH: u16 = CHOICE_LIST_WIDTH + CHOICE_DETAIL_MIN_WIDTH;
 
+struct ChoiceSpec {
+    label: &'static str,
+    summary: MessageId,
+    description: MessageId,
+}
+
+impl ChoiceSpec {
+    fn resolve(&self, locale: codewhale_localization::Locale) -> Choice {
+        Choice {
+            label: Cow::Borrowed(self.label),
+            summary: tr(locale, self.summary),
+            description: tr(locale, self.description),
+        }
+    }
+}
+
 /// Agent-team roles. `label` doubles as the profile `role_hint` and file stem,
 /// so these strings are part of the generated-profile contract.
-const ROLES: [Choice; 9] = [
-    Choice {
-        label: Cow::Borrowed("manager"),
-        summary: Cow::Borrowed("Plan & split queued work"),
-        description: Cow::Borrowed(
-            "Coordinates the Fleet run: plans the work, splits it into bounded tasks, and dispatches agents.",
-        ),
+const ROLES: [ChoiceSpec; 9] = [
+    ChoiceSpec {
+        label: "manager",
+        summary: MessageId::FleetRoleManagerSummary,
+        description: MessageId::FleetRoleManagerDescription,
     },
-    Choice {
-        label: Cow::Borrowed("explore"),
-        summary: Cow::Borrowed("Read-first research"),
-        description: Cow::Borrowed(
-            "Research and evidence gathering. Reads and summarizes before anything is written.",
-        ),
+    ChoiceSpec {
+        label: "explore",
+        summary: MessageId::FleetRoleExploreSummary,
+        description: MessageId::FleetRoleExploreDescription,
     },
-    Choice {
-        label: Cow::Borrowed("implement"),
-        summary: Cow::Borrowed("Implements bounded changes"),
-        description: Cow::Borrowed(
-            "Implements changes strictly inside its assigned task scope; writes only what the slice needs.",
-        ),
+    ChoiceSpec {
+        label: "implement",
+        summary: MessageId::FleetRoleImplementSummary,
+        description: MessageId::FleetRoleImplementDescription,
     },
-    Choice {
-        label: Cow::Borrowed("reviewer"),
-        summary: Cow::Borrowed("Read-only review"),
-        description: Cow::Borrowed(
-            "Checks regressions, tests, and diffs. Read-only — it never writes.",
-        ),
+    ChoiceSpec {
+        label: "reviewer",
+        summary: MessageId::FleetRoleReviewerSummary,
+        description: MessageId::FleetRoleReviewerDescription,
     },
-    Choice {
-        label: Cow::Borrowed("test"),
-        summary: Cow::Borrowed("Bounded validation"),
-        description: Cow::Borrowed(
-            "Runs bounded validation (test/check selections) and reports receipts back to the orchestrator. Never writes — patching is denied; unbounded shell forms are refused.",
-        ),
+    ChoiceSpec {
+        label: "test",
+        summary: MessageId::FleetRoleTestSummary,
+        description: MessageId::FleetRoleTestDescription,
     },
-    Choice {
-        label: Cow::Borrowed("advisor"),
-        summary: Cow::Borrowed("Read-only second opinion"),
-        description: Cow::Borrowed(
-            "Short-lived, high-reasoning counsel for difficult decisions and overlooked risks. Read-only and shell-less.",
-        ),
+    ChoiceSpec {
+        label: "advisor",
+        summary: MessageId::FleetRoleAdvisorSummary,
+        description: MessageId::FleetRoleAdvisorDescription,
     },
-    Choice {
-        label: Cow::Borrowed("synthesizer"),
-        summary: Cow::Borrowed("Reduce receipts to handoff"),
-        description: Cow::Borrowed(
-            "Turns agent receipts into bounded handoff state instead of raw transcript replay.",
-        ),
+    ChoiceSpec {
+        label: "synthesizer",
+        summary: MessageId::FleetRoleSynthesizerSummary,
+        description: MessageId::FleetRoleSynthesizerDescription,
     },
-    Choice {
-        label: Cow::Borrowed("general"),
-        summary: Cow::Borrowed("General-purpose agent"),
-        description: Cow::Borrowed(
-            "A flexible agent with no specialized focus — use it when the task doesn't fit a named role.",
-        ),
+    ChoiceSpec {
+        label: "general",
+        summary: MessageId::FleetRoleGeneralSummary,
+        description: MessageId::FleetRoleGeneralDescription,
     },
-    Choice {
-        label: Cow::Borrowed("custom"),
-        summary: Cow::Borrowed("Author a profile by hand"),
-        description: Cow::Borrowed(
-            "Define the role yourself in a workspace agent TOML profile under .codewhale/agents/.",
-        ),
+    ChoiceSpec {
+        label: "custom",
+        summary: MessageId::FleetRoleCustomSummary,
+        description: MessageId::FleetRoleCustomDescription,
     },
 ];
 
@@ -175,57 +173,13 @@ const ROLES: [Choice; 9] = [
 /// models follow it, built per-run from EVERY configured provider's catalog
 /// (#4093), so the user picks a real route — including cross-provider ones —
 /// instead of an abstract class or only the active provider's models.
-const MODEL_INHERIT: Choice = Choice {
-    label: Cow::Borrowed("same as session"),
-    summary: Cow::Borrowed("Same model as now"),
-    description: Cow::Borrowed(
-        "Use your current model — provider and reasoning included. Recommended default.",
-    ),
+const MODEL_INHERIT: ChoiceSpec = ChoiceSpec {
+    label: "same as session",
+    summary: MessageId::FleetModelInheritSummary,
+    description: MessageId::FleetModelInheritDescription,
 };
 
-const THINKING_CHOICES: &[Choice] = &[
-    Choice {
-        label: Cow::Borrowed("inherit"),
-        summary: Cow::Borrowed("Same thinking as now"),
-        description: Cow::Borrowed(
-            "Reuse the Coordinator's current Thinking setting for this agent. Recommended default.",
-        ),
-    },
-    Choice {
-        label: Cow::Borrowed("off"),
-        summary: Cow::Borrowed("No extra thinking"),
-        description: Cow::Borrowed(
-            "Use for narrow lookups or mechanical work where speed matters.",
-        ),
-    },
-    Choice {
-        label: Cow::Borrowed("low"),
-        summary: Cow::Borrowed("Small thinking budget"),
-        description: Cow::Borrowed(
-            "Use for bounded checks that still benefit from light reasoning.",
-        ),
-    },
-    Choice {
-        label: Cow::Borrowed("medium"),
-        summary: Cow::Borrowed("Balanced thinking budget"),
-        description: Cow::Borrowed("Use for normal implementation and review work."),
-    },
-    Choice {
-        label: Cow::Borrowed("high"),
-        summary: Cow::Borrowed("Deep thinking budget"),
-        description: Cow::Borrowed("Use for harder design, debugging, and integration tasks."),
-    },
-    Choice {
-        label: Cow::Borrowed("max"),
-        summary: Cow::Borrowed("Maximum thinking budget"),
-        description: Cow::Borrowed("Use for hard release, security, and root-cause work."),
-    },
-    Choice {
-        label: Cow::Borrowed("auto"),
-        summary: Cow::Borrowed("Let Codewhale choose"),
-        description: Cow::Borrowed("Choose a Thinking level from the agent prompt at runtime."),
-    },
-];
+const THINKING_CHOICES: &[&str] = &["inherit", "off", "low", "medium", "high", "max", "auto"];
 
 #[derive(Debug, Clone)]
 pub struct FleetSetupSnapshot {
@@ -673,7 +627,10 @@ fn deterministic_composition_advisory(
         // `custom` is an invitation to author a posture, not a semantic Fleet
         // role, so it stays on the manual Model path.
         .filter(|role| role.label != "custom")
-        .map(|role| CompositionRole::new(role.label.to_string(), Some(&role.summary)))
+        .map(|role| {
+            let summary = tr(codewhale_localization::Locale::En, role.summary);
+            CompositionRole::new(role.label.to_string(), Some(&summary))
+        })
         .collect();
     let request = FleetCompositionRequest::new(pool, roles).ok()?;
     let suggestions = request
@@ -1158,7 +1115,7 @@ impl FleetSetupView {
             if let Some(effort) = saved.reasoning_effort.as_deref()
                 && let Some(idx) = THINKING_CHOICES
                     .iter()
-                    .position(|choice| choice.label.eq_ignore_ascii_case(effort))
+                    .position(|choice| choice.eq_ignore_ascii_case(effort))
             {
                 view.thinking_idx = idx;
             }
@@ -1167,7 +1124,7 @@ impl FleetSetupView {
     }
 
     fn from_snapshot(snapshot: FleetSetupSnapshot) -> Self {
-        let mut model_choices = vec![MODEL_INHERIT];
+        let mut model_choices = vec![MODEL_INHERIT.resolve(snapshot.locale)];
         // `inherit` (index 0) maps to the active route; every later row pins a
         // concrete (provider, model) drawn from all configured providers.
         let mut model_routes = vec![(snapshot.provider.clone(), snapshot.model.clone())];
@@ -1561,7 +1518,7 @@ impl FleetSetupView {
         }
         THINKING_CHOICES
             .get(self.thinking_idx)
-            .map(|choice| choice.label.to_string())
+            .map(|choice| (*choice).to_string())
     }
 
     fn selected_thinking_label(&self) -> String {
@@ -1951,9 +1908,13 @@ impl FleetSetupView {
         let role = &ROLES[self.role_idx.min(ROLES.len() - 1)];
         let route = self.selected_route();
         Box::new(codewhale_engine::fleet::profile::FleetProfileDraft {
-            id: profile_file_stem(&role.label),
+            id: profile_file_stem(role.label),
             display_name: Some(role.label.to_string()),
-            description: Some(format!("{} - {}", role.summary, role.description)),
+            description: Some(format!(
+                "{} - {}",
+                tr(codewhale_localization::Locale::En, role.summary),
+                tr(codewhale_localization::Locale::En, role.description)
+            )),
             role_hint: role.label.to_string(),
             model_class_hint: None,
             model: route.as_ref().map(|(_, model)| model.clone()),
@@ -2257,13 +2218,16 @@ impl ModalView for FleetSetupView {
 
         match self.step {
             Step::Role => {
-                let mut context = vec![
-                    "Fleet runs agents that delegate work. Pick the role this agent should play; the saved profile carries it as its role_hint.".to_string(),
-                ];
+                let mut context =
+                    vec![tr(self.snapshot.locale, MessageId::FleetSetupRoleContext).into_owned()];
                 if let Some(note) = self.roster_override_note() {
                     context.push(note);
                 }
-                render_choice_step(chunks[1], buf, &ROLES, self.role_idx, &context);
+                let roles: Vec<Choice> = ROLES
+                    .iter()
+                    .map(|role| role.resolve(self.snapshot.locale))
+                    .collect();
+                render_choice_step(chunks[1], buf, &roles, self.role_idx, &context);
                 register_choice_hitboxes(chunks[1], ROLES.len(), self.role_idx, &self.row_hitboxes);
             }
             Step::Destination => {
@@ -2293,39 +2257,38 @@ impl ModalView for FleetSetupView {
                     })
                     .collect();
                 let selected = self.model_idx.min(filtered.len().saturating_sub(1));
+                let locale = self.snapshot.locale;
                 let filter_line = if self.model_filter_active {
-                    format!("Filter: {}▏ (Enter keep · Esc clear)", self.model_query)
+                    tr(locale, MessageId::FleetModelFilterEditing)
+                        .replace("{query}", &self.model_query)
                 } else if !self.model_query.trim().is_empty() {
-                    format!(
-                        "Filter: {} ({} of {} rows · / edit)",
-                        self.model_query,
-                        filtered.len(),
-                        self.model_choices.len()
-                    )
+                    tr(locale, MessageId::FleetModelFilterActive)
+                        .replace("{query}", &self.model_query)
+                        .replace("{shown}", &filtered.len().to_string())
+                        .replace("{total}", &self.model_choices.len().to_string())
                 } else {
-                    format!(
-                        "Type / to filter {} models by provider or name",
-                        self.model_choices.len()
-                    )
+                    tr(locale, MessageId::FleetModelFilterPrompt)
+                        .replace("{count}", &self.model_choices.len().to_string())
                 };
                 let mut context = Vec::new();
                 if let Some(notice) = &self.notice {
                     context.push(notice.clone());
                 }
                 context.push(filter_line);
-                context.push(format!(
-                    "Current model: {} / {}  ·  reasoning {}",
-                    self.snapshot.provider, self.snapshot.model, self.snapshot.reasoning
-                ));
+                context.push(
+                    tr(locale, MessageId::FleetModelCurrent)
+                        .replace("{provider}", &self.snapshot.provider)
+                        .replace("{model}", &self.snapshot.model)
+                        .replace("{reasoning}", &self.snapshot.reasoning),
+                );
                 context.push(match self.selected_model() {
-                    Some(model) => format!("This member will run on {model}."),
-                    None => "This member uses your current model.".to_string(),
+                    Some(model) => {
+                        tr(locale, MessageId::FleetModelRunsOn).replace("{model}", &model)
+                    }
+                    None => tr(locale, MessageId::FleetModelInherits).into_owned(),
                 });
                 if filtered_choices.is_empty() {
-                    context.push(
-                        "No routes match this filter. Keep typing, or press Esc to clear it."
-                            .to_string(),
-                    );
+                    context.push(tr(locale, MessageId::FleetModelNoMatch).into_owned());
                 }
                 render_choice_step(chunks[1], buf, &filtered_choices, selected, &context);
                 register_choice_hitboxes(
@@ -2619,7 +2582,7 @@ impl FleetSetupView {
         section(
             &mut lines,
             "Role",
-            format!("{} — {}", role.label, role.summary),
+            format!("{} — {}", role.label, tr(locale, role.summary)),
         );
         section(
             &mut lines,
@@ -3431,6 +3394,23 @@ approval_required = true
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn model_step_context_follows_the_ui_locale() {
+        let mut view = FleetSetupView::from_snapshot(FleetSetupSnapshot {
+            locale: codewhale_localization::Locale::Fr,
+            ..snapshot()
+        });
+        view.step = Step::Model;
+        let text = rendered_text(&view, 120, 40);
+        assert!(!text.contains("Type / to filter"), "{text}");
+        assert!(
+            !text.contains("This member uses your current model"),
+            "{text}"
+        );
+        assert!(!text.contains("Same model as now"), "{text}");
+        assert!(text.contains("Tapez /"), "{text}");
     }
 
     fn workspace_snapshot(workspace: &Path) -> FleetSetupSnapshot {

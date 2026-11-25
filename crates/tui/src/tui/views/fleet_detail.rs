@@ -14,6 +14,19 @@ use std::path::PathBuf;
 const DETAIL_PAGE: usize = 10;
 const ROUTE_PICK_PAGE: usize = 10;
 
+pub(super) fn long_scope_label(
+    locale: Locale,
+    scope: FleetScope,
+) -> std::borrow::Cow<'static, str> {
+    tr(
+        locale,
+        match scope {
+            FleetScope::Personal => MessageId::FleetScopeLongUser,
+            FleetScope::Workspace => MessageId::FleetScopeLongFolder,
+        },
+    )
+}
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     buffer::Buffer,
@@ -301,7 +314,9 @@ impl FleetDetailView {
         }
         if !self.source_unchanged() {
             self.rename_mode = false;
-            return Some(self.stale_source_action("Rename refused"));
+            return Some(
+                self.stale_source_action(&tr(self.locale, MessageId::FleetRenameRefusedTitle)),
+            );
         }
         // The rename must not collide with a different Fleet of the same slug
         // in this scope (the store refuses that at save).
@@ -310,16 +325,16 @@ impl FleetDetailView {
         self.rename_mode = false;
         match save_fleet(&self.fleet, self.scope, &self.workspace) {
             Ok(path) => Some(ViewAction::EmitAndClose(ViewEvent::FleetStoreChanged {
-                message: format!(
-                    "Renamed Team `{old_name}` → `{new_name}` ({}) — wrote {}",
-                    self.scope.label(),
-                    path.display()
-                ),
+                message: tr(self.locale, MessageId::FleetRenamedNotice)
+                    .replace("{old_name}", &old_name)
+                    .replace("{new_name}", &new_name)
+                    .replace("{scope}", &long_scope_label(self.locale, self.scope))
+                    .replace("{path}", &path.display().to_string()),
             })),
             Err(err) => {
                 self.fleet.name = old_name;
                 Some(ViewAction::Emit(ViewEvent::OpenTextPager {
-                    title: "Rename failed".to_string(),
+                    title: tr(self.locale, MessageId::FleetRenameFailedTitle).into_owned(),
                     content: format!("{err:#}"),
                 }))
             }
@@ -688,7 +703,7 @@ impl FleetDetailView {
             Ok(path) => Some(ViewAction::EmitAndClose(ViewEvent::FleetStoreChanged {
                 message: tr(self.locale, MessageId::FleetSavedNotice)
                     .replace("{name}", &self.fleet.name)
-                    .replace("{scope}", self.scope.long_label())
+                    .replace("{scope}", &long_scope_label(self.locale, self.scope))
                     .replace("{path}", &path.display().to_string()),
             })),
             Err(err) => Some(ViewAction::Emit(ViewEvent::OpenTextPager {
@@ -703,15 +718,13 @@ impl FleetDetailView {
         let target = self.scope.toggled();
         match save_fleet(&self.fleet, target, &self.workspace) {
             Ok(path) => Some(ViewAction::EmitAndClose(ViewEvent::FleetStoreChanged {
-                message: format!(
-                    "Copied Team `{}` to {} scope — wrote {}",
-                    self.fleet.name,
-                    target.label(),
-                    path.display()
-                ),
+                message: tr(self.locale, MessageId::FleetCopiedNotice)
+                    .replace("{name}", &self.fleet.name)
+                    .replace("{scope}", &long_scope_label(self.locale, target))
+                    .replace("{path}", &path.display().to_string()),
             })),
             Err(err) => Some(ViewAction::Emit(ViewEvent::OpenTextPager {
-                title: "Copy failed".to_string(),
+                title: tr(self.locale, MessageId::FleetCopyFailedTitle).into_owned(),
                 content: format!("{err:#}"),
             })),
         }
@@ -720,15 +733,13 @@ impl FleetDetailView {
     fn select_scope(&self, scope: FleetScope) -> Option<ViewAction> {
         match set_selected(&self.fleet.name, scope, &self.workspace) {
             Ok(path) => Some(ViewAction::EmitAndClose(ViewEvent::FleetStoreChanged {
-                message: format!(
-                    "Selected Team `{}` as {} default — wrote {}",
-                    self.fleet.name,
-                    scope.label(),
-                    path.display()
-                ),
+                message: tr(self.locale, MessageId::FleetSelectedNotice)
+                    .replace("{name}", &self.fleet.name)
+                    .replace("{scope}", &long_scope_label(self.locale, scope))
+                    .replace("{path}", &path.display().to_string()),
             })),
             Err(err) => Some(ViewAction::Emit(ViewEvent::OpenTextPager {
-                title: "Selection failed".to_string(),
+                title: tr(self.locale, MessageId::FleetSelectFailedTitle).into_owned(),
                 content: format!("{err:#}"),
             })),
         }
@@ -2221,6 +2232,34 @@ model = "fixture-review-model"
         view.handle_key(key(KeyCode::Char('d')));
         view.handle_key(key(KeyCode::Char('y')));
         assert_eq!(view.fleet.members, fleet.members);
+    }
+
+    #[test]
+    fn stale_save_title_follows_the_ui_locale() {
+        let ws = tempfile::TempDir::new().unwrap();
+        let fleet = sample_fleet("Fleet L");
+        save_fleet(&fleet, FleetScope::Workspace, ws.path()).unwrap();
+        let mut view = FleetDetailView::open(
+            &app_in(ws.path().to_path_buf()),
+            &Config::default(),
+            "Fleet L",
+            FleetScope::Workspace,
+        )
+        .expect("open");
+        view.locale = Locale::Fr;
+        let mut newer = fleet.clone();
+        newer.operator = Some(FleetOperator {
+            provider: "openai".to_string(),
+            model: "gpt-5.6".to_string(),
+            reasoning: None,
+        });
+        save_fleet(&newer, FleetScope::Workspace, ws.path()).unwrap();
+        let action = view.save();
+        let Some(ViewAction::Emit(ViewEvent::OpenTextPager { title, .. })) = action else {
+            panic!("expected a stale-source pager, got {action:?}");
+        };
+        assert_ne!(title, "Save refused");
+        assert_eq!(title, tr(Locale::Fr, MessageId::FleetSaveRefusedTitle));
     }
 
     /// U09-01: an ordinary Save or rename never overwrites a Fleet file that

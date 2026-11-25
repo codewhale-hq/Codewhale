@@ -53,6 +53,7 @@ pub struct FleetListView {
     /// The active selection snapshot (workspace then personal).
     selected: Option<SelectedFleet>,
     summaries: Vec<String>,
+    scan_error: Option<String>,
     /// Legacy profile count (how many per-role files exist), for the banner.
     legacy_profile_count: usize,
     /// Whether a v2 Fleet named "Default" already exists (so migration is
@@ -86,27 +87,36 @@ impl FleetListView {
     pub fn new(app: &App, config: &Config) -> Self {
         let workspace = app.workspace.clone();
         let scan_root = workspace.clone();
-        let (entries, summaries, selected, legacy_profile_count) =
-            crate::commands::contract::run_owner_blocking(move || {
-                let entries = list_fleets(&scan_root);
-                let summaries: Vec<String> = entries.iter().map(entry_summary).collect();
-                Ok((
-                    entries,
-                    summaries,
-                    selected_fleet(&scan_root),
-                    legacy_profile_file_count(&scan_root),
-                ))
-            })
-            .unwrap_or_else(|error| {
+        let locale = app.ui_locale;
+        let scanned = crate::commands::contract::run_owner_blocking(move || {
+            let entries = list_fleets(&scan_root);
+            let summaries: Vec<String> = entries
+                .iter()
+                .map(|entry| entry_summary(entry, locale))
+                .collect();
+            Ok((
+                entries,
+                summaries,
+                selected_fleet(&scan_root),
+                legacy_profile_file_count(&scan_root),
+            ))
+        });
+        let (entries, summaries, selected, legacy_profile_count, scan_error) = match scanned {
+            Ok((entries, summaries, selected, legacy_profile_count)) => {
+                (entries, summaries, selected, legacy_profile_count, None)
+            }
+            Err(error) => {
                 tracing::warn!(%error, "fleet directory scan failed");
-                (Vec::new(), Vec::new(), None, 0)
-            });
+                (Vec::new(), Vec::new(), None, 0, Some(error.to_string()))
+            }
+        };
         let default_fleet_exists = entries
             .iter()
             .any(|e| e.name.eq_ignore_ascii_case("default") && !e.legacy);
         Self {
             entries,
             summaries,
+            scan_error,
             selected,
             legacy_profile_count,
             default_fleet_exists,
@@ -214,15 +224,19 @@ impl FleetListView {
         }
         match set_selected(&entry.name, scope, &self.workspace) {
             Ok(path) => Some(FleetListOutcome::Done {
-                message: format!(
-                    "Selected Team `{}` ({}) — wrote {}",
-                    entry.name,
-                    scope.long_label(),
-                    path.display()
-                ),
+                message: tr(self.locale, MessageId::FleetSelectedNotice)
+                    .replace("{name}", &entry.name)
+                    .replace(
+                        "{scope}",
+                        &super::fleet_detail::long_scope_label(self.locale, scope),
+                    )
+                    .replace("{path}", &path.display().to_string()),
             }),
             Err(err) => Some(FleetListOutcome::Done {
-                message: format!("Selection failed: {err}"),
+                message: format!(
+                    "{}: {err}",
+                    tr(self.locale, MessageId::FleetSelectFailedTitle)
+                ),
             }),
         }
     }
@@ -458,6 +472,18 @@ impl FleetListView {
         if area.width == 0 || area.height == 0 {
             return;
         }
+        if let Some(error) = &self.scan_error {
+            Paragraph::new(Line::from(Span::styled(
+                format!(
+                    "  {}",
+                    tr(self.locale, MessageId::FleetListScanFailed).replace("{error}", error)
+                ),
+                Style::default().fg(palette::WHALE_HUMAN),
+            )))
+            .wrap(Wrap { trim: false })
+            .render(area, buf);
+            return;
+        }
         if self.entries.is_empty() {
             Paragraph::new(Line::from(vec![
                 Span::styled(
@@ -597,36 +623,39 @@ fn outcome_to_action(outcome: Option<FleetListOutcome>) -> ViewAction {
     }
 }
 
-/// How many legacy per-role profile files exist across both scopes.
-fn entry_summary(entry: &FleetEntry) -> String {
+fn entry_summary(entry: &FleetEntry, locale: Locale) -> String {
     if entry.legacy {
-        return "legacy format — open for details".to_string();
+        return tr(locale, MessageId::FleetListSummaryLegacy).into_owned();
     }
     // Read the file to summarize operator + members. Parsing errors are
     // already shown on the row. Paths stay out of the primary row — they
     // belong in receipts after an explicit write/select/delete.
     let Ok(text) = std::fs::read_to_string(&entry.path) else {
-        return "unreadable".to_string();
+        return tr(locale, MessageId::FleetListSummaryUnreadable).into_owned();
     };
     match codewhale_engine::fleet::store::FleetFile::parse(&text) {
         Ok(fleet) => {
             let coordinator = match &fleet.operator {
                 Some(op) => format!("{}/{}", op.provider, op.model),
-                None => "uses the session's model".to_string(),
+                None => tr(locale, MessageId::FleetListSummarySessionModel).into_owned(),
             };
-            format!(
-                "Coordinator: {coordinator} · members: {}",
-                fleet
-                    .members
-                    .iter()
-                    .filter(|member| !member.shortlist)
-                    .count()
-            )
+            let members = fleet
+                .members
+                .iter()
+                .filter(|member| !member.shortlist)
+                .count();
+            tr(locale, MessageId::FleetListSummaryCoordinator)
+                .replace("{coordinator}", &coordinator)
+                .replace("{members}", &members.to_string())
         }
-        Err(err) => format!("unreadable: {err}"),
+        Err(err) => format!(
+            "{}: {err}",
+            tr(locale, MessageId::FleetListSummaryUnreadable)
+        ),
     }
 }
 
+/// How many legacy per-role profile files exist across both scopes.
 fn legacy_profile_file_count(workspace: &std::path::Path) -> usize {
     let mut count = 0;
     if let Ok(dir) = codewhale_engine::fleet::profile::personal_agent_profile_dir()
