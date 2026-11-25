@@ -999,7 +999,8 @@ mod tests {
         let skill = registry.get("big-skill").unwrap();
         let body = format_skill_body(skill);
         assert!(body.contains("run.sh"), "{body}");
-        assert!(body.contains("references/guide.md"), "{body}");
+        let guide = std::path::Path::new("references").join("guide.md");
+        assert!(body.contains(&*guide.to_string_lossy()), "{body}");
         assert!(!body.contains("junk.pyc"), "{body}");
         assert!(body.contains("more files not listed"), "{body}");
         let (listed, unlisted) = collect_companion_files_with_overflow(skill);
