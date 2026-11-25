@@ -4,17 +4,17 @@
  │  Search: type to filter  (18/72)                                           │ 
  │ ────────────────────────────────────────────────────────────────────────── │ 
  │   Display                                                                █ │ 
- │ ▸ Theme                              terminal                ‹ ›  SAVED  █ │ 
- │   Language                           auto                    ‹ ›  SAVED  █ │ 
- │   Background                         (default)               ✎    SAVED  █ │ 
- │   Pet mode                           ○ Off                        SAVED  █ │ 
- │   Quiet transcript                   ● On                         SAVED  █ │ 
- │   Model reasoning in chat            ● On                         SAVED  █ │ 
- │   Thinking Default Expanded          ○ Off                        SAVED  █ │ 
- │   Thinking Preview Lines             2                       ✎    SAVED  │ │ 
- │   Thinking background highlight      ● On                         SAVED  │ │ 
- │   Help Expand Groups                 ○ Off                        SAVED  │ │ 
- │   Contextual tips                    ● On                         SAVED  │ │ 
+ │ ▸ Theme                              terminal                ‹ ›  changed█ │ 
+ │   Language                           auto                    ‹ ›         █ │ 
+ │   Background                         (default)               ✎           █ │ 
+ │   Pet mode                           ○ Off                               █ │ 
+ │   Quiet transcript                   ● On                                █ │ 
+ │   Model reasoning in chat            ● On                                █ │ 
+ │   Thinking Default Expanded          ○ Off                               █ │ 
+ │   Thinking Preview Lines             2                       ✎           │ │ 
+ │   Thinking background highlight      ● On                                │ │ 
+ │   Help Expand Groups                 ○ Off                               │ │ 
+ │   Contextual tips                    ● On                                │ │ 
  │ system | terminal | shoreline | shoreline-light | underwater |…            │ 
  │ Enter or click again: Enter opens choices · Theme: current terminal ·      │ 
  │ saved terminal · applies on save                                           │ 

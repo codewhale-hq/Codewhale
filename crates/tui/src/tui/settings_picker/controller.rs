@@ -108,6 +108,31 @@ impl SettingsPickerController {
     }
 
     #[must_use]
+    pub fn tab_match_counts(&self) -> Vec<(String, usize)> {
+        let query = self.query.to_ascii_lowercase();
+        let matches = |option: &SettingOption| {
+            query.is_empty()
+                || option.id.to_ascii_lowercase().contains(&query)
+                || option.label.to_ascii_lowercase().contains(&query)
+                || option.summary.to_ascii_lowercase().contains(&query)
+                || option.detail.to_ascii_lowercase().contains(&query)
+        };
+        self.tabs
+            .iter()
+            .map(|tab| {
+                let count = self
+                    .options
+                    .iter()
+                    .filter(|option| {
+                        (tab == "all" || option.tab.as_ref() == tab) && matches(option)
+                    })
+                    .count();
+                (tab.clone(), count)
+            })
+            .collect()
+    }
+
+    #[must_use]
     pub fn selected_visible(&self) -> usize {
         self.selected_visible
     }

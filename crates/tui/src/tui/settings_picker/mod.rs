@@ -61,14 +61,28 @@ pub fn handle_nav_key(
         KeyCode::BackTab => controller.prev_tab(),
         KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => controller.prev_tab(),
         KeyCode::Tab => controller.next_tab(),
-        KeyCode::Up | KeyCode::Char('k')
+        KeyCode::Up
             if !key.modifiers.contains(KeyModifiers::CONTROL)
                 && !key.modifiers.contains(KeyModifiers::ALT) =>
         {
             controller.move_up()
         }
-        KeyCode::Down | KeyCode::Char('j')
+        KeyCode::Char('k')
+            if !allow_search_typing
+                && !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT) =>
+        {
+            controller.move_up()
+        }
+        KeyCode::Down
             if !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT) =>
+        {
+            controller.move_down()
+        }
+        KeyCode::Char('j')
+            if !allow_search_typing
+                && !key.modifiers.contains(KeyModifiers::CONTROL)
                 && !key.modifiers.contains(KeyModifiers::ALT) =>
         {
             controller.move_down()
@@ -89,7 +103,7 @@ pub fn handle_nav_key(
             if allow_search_typing
                 && !key.modifiers.contains(KeyModifiers::CONTROL)
                 && !key.modifiers.contains(KeyModifiers::ALT)
-                && !matches!(c, '1'..='9' | 'j' | 'k') =>
+                && !c.is_control() =>
         {
             controller.push_query_char(c);
             PickerNavResult::None
@@ -366,6 +380,42 @@ mod tests {
         assert_eq!(
             option.action.as_ref().map(|action| action.id.as_ref()),
             Some("swatch")
+        );
+    }
+
+    #[test]
+    fn allow_search_typing_accepts_j_k_and_digits_into_query() {
+        let mut controller = SettingsPickerController::new(sample_options(), "system");
+        for ch in ['j', 'k', '1', '9'] {
+            let result = handle_nav_key(
+                &mut controller,
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                true,
+            );
+            assert_eq!(result, PickerNavResult::None);
+        }
+        assert_eq!(controller.query(), "jk19");
+    }
+
+    #[test]
+    fn tab_match_counts_tracks_matches_per_tab() {
+        let mut controller = SettingsPickerController::new(sample_options(), "system");
+        assert_eq!(
+            controller.tab_match_counts(),
+            vec![
+                ("all".to_string(), 4),
+                ("core".to_string(), 2),
+                ("extra".to_string(), 2),
+            ]
+        );
+        controller.set_query("dracula");
+        assert_eq!(
+            controller.tab_match_counts(),
+            vec![
+                ("all".to_string(), 1),
+                ("core".to_string(), 0),
+                ("extra".to_string(), 1),
+            ]
         );
     }
 }
