@@ -10,6 +10,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **The website offers the Linux desktop app:** `codewhale.net/app` now has Desktop 0.10.4 for Linux x64: an apt repository signed with Codewhale's key (install lines and key fingerprint on the page; updates arrive through `apt`), and an AppImage download with its SHA-256 checksum. The AppImage does not update itself yet.
+- **Runtime API rejects `dynamic_tools` that reuse a built-in tool name:** a thread or turn request whose dynamic tools take the name of a built-in tool (including the sub-agent, workflow and coordination tools), or repeat a name across namespaces, now fails with an error naming the tool instead of the tool being dropped silently. (#6559)
+- **Provider receipts list at most 8 omitted tool names:** a per-request receipt now carries a short sample of the tool names left out of the request plus an `omitted_tool_count`, not every name.
+- **The finance tool reports how old a quote is:** results include `quote_age_seconds` next to `market_time`, computed price changes are rounded to six decimals, and a change value that is not a finite number is left out. (#6557)
+- **`load_skill` list honours `listing_max_description_chars`:** the list keeps a skill's trigger clause when it shortens a description, and the companion file list shows shallow files first and says how many files it left out. (#7432)
+
+### Fixed
+
+- **Contained processes are killed when Codewhale exits on a signal:** process groups started for `sandbox run`, verifier gates, hooks, MCP servers and other contained helpers are now killed on SIGINT, SIGTERM or SIGHUP, a crashed MCP server's leftover processes are killed as soon as its exit is seen, and a timed-out or stopped verifier gate kills its whole process tree on Windows. (#6558)
+- **A failed or timed-out Python REPL round no longer leaves child processes behind:** the round, and REPL shutdown, now kill every process the interpreter started, not only the interpreter. (#6559)
+- **A lane start that fails after creating its worktree no longer orphans it:** the failed lane records the worktree and branch, and the worktree TTL applies. (#6558)
+- **Workflow `expand` nodes are checked before they run:** an unknown `source`, a duplicate generated id, or a generated node that refers to an unknown or unfinished node is now rejected. (#6559)
+- **`/undo` works on a turn made by `codewhale exec --auto`:** exec turns now record restore points, so they can be undone after you resume the session in the terminal. (#6970)
+- **`/undo` right after interrupting a turn no longer refuses:** it waits for the interrupted turn's closing restore points to be written. (#6970)
+- **`tool_search` results no longer evict each other:** tools found by a search are protected from eviction for the current and next turn, so alternating searches keep their tools. (#6969)
+- **Anthropic requests no longer send `tool_choice` without tools:** when every tool is left out of a request, the tool choice is left out too.
+- **Stale approval receipts say what happened:** a stale or foreign approval is recorded as resolved only when the engine accepted the denial, and as a failed resolution otherwise. (#7464)
+- **A failed reset or recovery snapshot is shown:** the transcript gets an error cell and a sticky toast instead of a passing status line. (#7464)
+- **`/load` and `/resume <file>` refuse session files over 256 MiB** before reading them. (#7464)
+- **`/skills` changes refuse to run when the config cannot be loaded:** install, update, remove, trust, sync and registry commands no longer fall back to the default network policy, size cap and registry URL. (#7464)
+- **More of the terminal follows your UI language:** Fleet setup role and model rows, Fleet rename, copy and select notices, the Fleet list summary, the worktree manager and the command palette are now translated. (#7469)
+- **A failed Fleet list scan says so** instead of showing "No saved teams yet". (#7469)
+- **Middle-click paste goes through the shared paste path:** a PRIMARY selection pasted with the middle button now follows the same rules as any other paste.
+- **The model picker keeps model IDs that differ only in case.**
+- **Pet watch keeps the timing of delayed events:** a batch of engine events that arrives late is applied at the time each event happened, and a failed producer post is logged as a warning. (#7474)
+- **`codewhale update` and the install inventory agree on Cargo installs:** both use one rule to decide whether a file in `~/.cargo/bin` is Cargo's, and the update-check cache is written with fsync and a unique temporary file.
 
 ### Fixed
 
