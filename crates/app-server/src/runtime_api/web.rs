@@ -382,6 +382,24 @@ pub(super) fn configured_web_dist() -> Result<Option<PathBuf>, String> {
     checked_web_dist(std::env::var_os(WEB_DIST_ENV))
 }
 
+pub(super) fn attached_web_dist_mismatch(
+    requested: Option<&FsPath>,
+    served: Option<&FsPath>,
+) -> Option<String> {
+    let requested = requested?;
+    if served == Some(requested) {
+        return None;
+    }
+    let serving = match served {
+        Some(dir) => format!("the app build at {}", dir.display()),
+        None => "the embedded client".to_string(),
+    };
+    Some(format!(
+        "{WEB_DIST_ENV}={} was not applied: a Codewhale that is already running serves the web client, and it is serving {serving}. Quit the running Codewhale and start `codewhale web` again, or unset {WEB_DIST_ENV} to use what it serves.",
+        requested.display()
+    ))
+}
+
 fn checked_web_dist(raw: Option<std::ffi::OsString>) -> Result<Option<PathBuf>, String> {
     let Some(raw) = raw.filter(|raw| !raw.is_empty()) else {
         return Ok(None);
@@ -620,6 +638,20 @@ fn secure_headers_with_policy(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attaching_with_a_dist_the_running_owner_does_not_serve_is_refused() {
+        let asked = FsPath::new("/srv/app/dist");
+        let other = FsPath::new("/srv/other/dist");
+        assert_eq!(attached_web_dist_mismatch(None, None), None);
+        assert_eq!(attached_web_dist_mismatch(None, Some(other)), None);
+        assert_eq!(attached_web_dist_mismatch(Some(asked), Some(asked)), None);
+        let embedded = attached_web_dist_mismatch(Some(asked), None).expect("refused");
+        assert!(embedded.contains("CODEWHALE_WEB_DIST=/srv/app/dist was not applied"));
+        assert!(embedded.contains("the embedded client"));
+        let different = attached_web_dist_mismatch(Some(asked), Some(other)).expect("refused");
+        assert!(different.contains("the app build at /srv/other/dist"));
+    }
 
     #[test]
     fn runtime_surface_hardening_web_proof_and_ticket_expiry() {

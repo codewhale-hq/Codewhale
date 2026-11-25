@@ -69,6 +69,14 @@ A set but invalid value is not ignored: `codewhale web` refuses to start and
 prints the reason (the path is not a directory, is a symlink, or has no
 `index.html`). Fix or unset the variable and run the command again.
 
+When a Codewhale is already running (an open terminal session, for example),
+`codewhale web` attaches to it, and that running Codewhale decides which
+client is served from the environment it was started with. If the directory
+you asked for is not the one it serves, the command stops and says so instead
+of opening the other client: quit the running Codewhale and start
+`codewhale web` again, or unset the variable. When the running Codewhale
+serves a directory, the attach prints the same line naming it.
+
 What is served from the directory:
 
 - `index.html` at `/`, and for extensionless paths, so client-side routes such

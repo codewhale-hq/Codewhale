@@ -807,6 +807,8 @@ struct RuntimeFrontendReady {
     reused_owner_listener: bool,
     mobile_bootstrap_url: Option<String>,
     web_bootstrap_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    web_dist_dir: Option<PathBuf>,
 }
 fn canonical_runtime_config_source(source: Option<PathBuf>) -> Result<Option<PathBuf>> {
     let Some(source) = source else {
@@ -1091,6 +1093,7 @@ impl crate::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
                     reused_owner_listener: true,
                     mobile_bootstrap_url: None,
                     web_bootstrap_url: None,
+                    web_dist_dir: None,
                 };
                 write_frontend_ready(&mut output, ready).await?;
                 return tokio::select! {
@@ -1130,6 +1133,10 @@ impl crate::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
             } else {
                 (None, None)
             };
+            let web_dist_dir = web
+                .as_ref()
+                .and_then(|web| web.dist_dir())
+                .map(FsPath::to_path_buf);
             state.web = web;
             state.mobile = mobile;
             // The guest may drain its own streams/listener. It cannot replace
@@ -1152,6 +1159,7 @@ impl crate::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
                 reused_owner_listener: false,
                 mobile_bootstrap_url,
                 web_bootstrap_url,
+                web_dist_dir,
             };
             write_frontend_ready(&mut output, ready).await?;
             let serving = serve_runtime_api(listener, app, shutdown.clone());
@@ -2948,6 +2956,14 @@ async fn run_attached_frontend(
             "invalid selected listener readiness response"
         );
         let ready: RuntimeFrontendReady = serde_json::from_value(frame["params"].clone())?;
+        if options.web {
+            let requested = web::configured_web_dist().map_err(anyhow::Error::msg)?;
+            if let Some(reason) =
+                web::attached_web_dist_mismatch(requested.as_deref(), ready.web_dist_dir.as_deref())
+            {
+                bail!(reason);
+            }
+        }
         println!("{RUNTIME_LISTENING_PREFIX}{}", ready.endpoint);
         if ready.generated_auth {
             println!("Runtime authentication enabled; generated bearer is not printed.");
@@ -2958,6 +2974,13 @@ async fn run_attached_frontend(
                 web::BOOTSTRAP_TTL.as_secs() / 60
             );
             println!("{url}");
+            if let Some(dir) = ready.web_dist_dir.as_ref() {
+                println!(
+                    "Codewhale web is serving the app build at {} ({} of the Codewhale that is already running)",
+                    dir.display(),
+                    web::WEB_DIST_ENV
+                );
+            }
         }
         if let Some(url) = ready.mobile_bootstrap_url {
             println!("Codewhale mobile: {url}");
