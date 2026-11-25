@@ -3,6 +3,7 @@
 
 mod attachment;
 mod automation;
+pub(crate) mod background;
 mod jobs;
 mod mcp;
 mod network;

@@ -202,3 +202,10 @@ pub enum CoreNavigationAction {
 }
 
 pub type CoreNavigationCommandResult = CommandResult<CoreNavigationAction>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackgroundAction {
+    SendMessage(String),
+}
+
+pub type BackgroundCommandResult = CommandResult<BackgroundAction>;

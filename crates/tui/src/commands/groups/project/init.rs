@@ -10,6 +10,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use codewhale_command_contract::handler::CommandContexts;
+use codewhale_command_contract::outcome::{BackgroundAction, BackgroundCommandResult};
 
 use crate::tui::app::AppAction;
 use codewhale_engine::project_context;
@@ -25,6 +26,11 @@ use crate::commands::CommandResult;
 /// handler-owned (D2). `codewhale_util::utils`/`codewhale_engine::project_context` are leaf,
 /// path-parameterized helpers (no App/service state), consistent with D8.
 fn init(workspace: &Path, language: &str) -> CommandResult {
+    let (msg, prompt) = prepare_init(workspace, language);
+    CommandResult::with_message_and_action(msg, AppAction::SendMessage(prompt))
+}
+
+fn prepare_init(workspace: &Path, language: &str) -> (String, String) {
     // Ensure .deepseek/ is gitignored if we're inside a git repo.
     ensure_deepseek_gitignored(workspace);
 
@@ -61,7 +67,7 @@ fn init(workspace: &Path, language: &str) -> CommandResult {
         agents_path.display()
     );
 
-    CommandResult::with_message_and_action(msg, AppAction::SendMessage(prompt))
+    (msg, prompt)
 }
 
 /// If `workspace` is inside a git repository, ensure workspace-local CodeWhale
@@ -819,7 +825,7 @@ pub(in crate::commands) const INIT_INFO: codewhale_command_contract::metadata::C
     codewhale_command_contract::metadata::CommandInfo {
         name: "init",
         aliases: &[],
-        usage: "/init",
+        usage: "/init [cancel]",
         description_key: "cmd_init_description",
     };
 
@@ -836,7 +842,8 @@ impl codewhale_command_contract::metadata::RegisterCommand<crate::commands::Comm
     -> codewhale_command_contract::handler::CommandHandler<crate::commands::CommandResult> {
         codewhale_command_contract::handler::CommandHandler::Contextual {
             capabilities: codewhale_command_contract::handler::CommandCapabilities::WORKSPACE
-                .union(codewhale_command_contract::handler::CommandCapabilities::PRESENTATION),
+                .union(codewhale_command_contract::handler::CommandCapabilities::PRESENTATION)
+                .union(codewhale_command_contract::handler::CommandCapabilities::BACKGROUND),
             handler: init_contextual,
         }
     }
@@ -851,7 +858,10 @@ impl codewhale_command_contract::metadata::RegisterCommand<crate::commands::Comm
 /// those two (D4, least-capability — the initial PROJECT|WORKSPACE
 /// declaration was amended after the critical audit; main's model expresses
 /// the declaration as exact facet destructuring rather than a bitmask).
-fn init_contextual(contexts: CommandContexts<'_>, _arg: Option<&str>) -> CommandResult {
+/// The scan runs through the `BACKGROUND` facet when the host offers one and
+/// inline otherwise.
+fn init_contextual(mut contexts: CommandContexts<'_>, arg: Option<&str>) -> CommandResult {
+    let background = contexts.take_background();
     let parts = contexts.into_parts();
     let Some(workspace) = parts.workspace.as_deref() else {
         return crate::commands::CommandResult::error("Command capability unavailable: workspace");
@@ -863,8 +873,35 @@ fn init_contextual(contexts: CommandContexts<'_>, _arg: Option<&str>) -> Command
     };
     let workspace = workspace.workspace().to_path_buf();
     let language = presentation.language_name().to_string();
-    crate::commands::contract::run_owner_blocking(move || Ok(init(&workspace, &language)))
-        .unwrap_or_else(CommandResult::error)
+    let Some(background) = background else {
+        return crate::commands::contract::run_owner_blocking(move || {
+            Ok(init(&workspace, &language))
+        })
+        .unwrap_or_else(CommandResult::error);
+    };
+    if arg.is_some_and(|arg| arg.trim().eq_ignore_ascii_case("cancel")) {
+        return background
+            .cancel(INIT_INFO.name)
+            .map_or_else(CommandResult::error, CommandResult::message);
+    }
+    background
+        .start(
+            INIT_INFO.name,
+            Box::pin(async move {
+                match codewhale_runtime::runtime_control::owner_work(move || {
+                    Ok(prepare_init(&workspace, &language))
+                })
+                .await
+                {
+                    Ok((message, prompt)) => BackgroundCommandResult::with_message_and_action(
+                        message,
+                        BackgroundAction::SendMessage(prompt),
+                    ),
+                    Err(error) => BackgroundCommandResult::error(error.to_string()),
+                }
+            }),
+        )
+        .map_or_else(CommandResult::error, CommandResult::message)
 }
 
 // ---------------------------------------------------------------------------
@@ -952,6 +989,128 @@ mod tests {
         };
         assert!(prompt.contains("Custom instructions here"));
         assert!(prompt.contains("update it in place"));
+    }
+
+    struct Background {
+        started: Vec<codewhale_command_contract::facets::BackgroundCommandWork>,
+        cancelled: usize,
+    }
+
+    impl codewhale_command_contract::facets::CommandBackgroundContext for Background {
+        fn start(
+            &mut self,
+            command: &'static str,
+            work: codewhale_command_contract::facets::BackgroundCommandWork,
+        ) -> Result<String, String> {
+            if !self.started.is_empty() {
+                return Err(format!("/{command} is already running"));
+            }
+            self.started.push(work);
+            Ok(format!("/{command} started"))
+        }
+
+        fn cancel(&mut self, command: &'static str) -> Result<String, String> {
+            self.cancelled += 1;
+            self.started.clear();
+            Ok(format!("/{command} cancelled"))
+        }
+    }
+
+    struct Workspace(PathBuf);
+
+    impl codewhale_command_contract::facets::CommandWorkspaceContext for Workspace {
+        fn workspace(&self) -> PathBuf {
+            self.0.clone()
+        }
+        fn effective_home_dir(&self) -> Option<PathBuf> {
+            None
+        }
+        fn inspect_workspace_target(
+            &self,
+            _candidate: &Path,
+        ) -> codewhale_command_contract::navigation::WorkspaceTarget {
+            unreachable!("/init does not inspect workspace targets")
+        }
+        fn read_anchor_document(&self) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+        fn append_anchor_bytes(
+            &mut self,
+            _parts: &[&[u8]],
+        ) -> Result<PathBuf, codewhale_command_contract::navigation::AnchorWriteError> {
+            unreachable!("/init does not write anchors")
+        }
+        fn replace_anchor_document(&mut self, _bytes: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn work_state_snapshot(&self) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+        fn operation_digest(&mut self) -> Result<String, String> {
+            Ok(String::new())
+        }
+    }
+
+    struct Presentation;
+
+    impl codewhale_command_contract::facets::CommandPresentationContext for Presentation {
+        fn translate(&self, _key: &str, _replacements: &[(&str, &str)]) -> Result<String, String> {
+            Err("no catalog".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn init_returns_at_once_and_delivers_the_prompt_as_the_background_result() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut workspace = Workspace(tmpdir.path().to_path_buf());
+        let mut presentation = Presentation;
+        let mut background = Background {
+            started: Vec::new(),
+            cancelled: 0,
+        };
+
+        let started = init_contextual(
+            CommandContexts::empty()
+                .with_workspace(&mut workspace)
+                .with_presentation(&mut presentation)
+                .with_background(&mut background),
+            None,
+        );
+        assert!(!started.is_error, "{started:?}");
+        assert_eq!(started.message.as_deref(), Some("/init started"));
+        assert!(
+            started.action.is_none(),
+            "the prompt is not sent before the scan finishes"
+        );
+
+        let refused = init_contextual(
+            CommandContexts::empty()
+                .with_workspace(&mut workspace)
+                .with_presentation(&mut presentation)
+                .with_background(&mut background),
+            None,
+        );
+        assert!(refused.is_error, "{refused:?}");
+        assert!(refused.message.unwrap().contains("already running"));
+
+        let work = background.started.pop().expect("background work");
+        let finished = work.await;
+        assert!(!finished.is_error, "{finished:?}");
+        assert!(finished.message.unwrap().contains("Creating AGENTS.md"));
+        assert!(matches!(
+            finished.action,
+            Some(BackgroundAction::SendMessage(prompt)) if prompt.contains("AGENTS.md")
+        ));
+
+        let cancelled = init_contextual(
+            CommandContexts::empty()
+                .with_workspace(&mut workspace)
+                .with_presentation(&mut presentation)
+                .with_background(&mut background),
+            Some("cancel"),
+        );
+        assert_eq!(cancelled.message.as_deref(), Some("/init cancelled"));
+        assert_eq!(background.cancelled, 1);
     }
 
     #[test]

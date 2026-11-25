@@ -3050,7 +3050,7 @@ fn export_capability_is_stable_distinct_and_non_conflicting() {
     // retains its exact published identity.
     assert_eq!(
         std::mem::size_of::<CommandCapabilities>(),
-        std::mem::size_of::<u32>(),
+        std::mem::size_of::<u64>(),
         "CommandCapabilities storage must be widened for diagnostics"
     );
 }
@@ -3085,7 +3085,7 @@ fn debug_diagnostics_capability_preserves_published_bits() {
     for (index, capability) in all.iter().enumerate() {
         assert_eq!(
             capability.bits_for_test(),
-            1u32 << index,
+            1u64 << index,
             "capability {index} must occupy exactly bit {index}"
         );
         union = union.union(*capability);
@@ -3098,7 +3098,7 @@ fn debug_diagnostics_capability_preserves_published_bits() {
     );
     assert_eq!(
         union.bits_for_test(),
-        u32::from(u16::MAX) | (1u32 << 16),
+        u64::from(u16::MAX) | (1u64 << 16),
         "bits 0-15 retain their published values and diagnostics occupies bit 16"
     );
     assert!(union.contains(CommandCapabilities::DEBUG_DIAGNOSTICS));
@@ -3553,7 +3553,7 @@ fn envelope_export_slot_is_independent_and_rejects_duplicates() {
 
 #[test]
 fn whole_debug_capabilities_extend_published_bits_without_aliasing_authority() {
-    let old = (1u32 << 17) - 1;
+    let old = (1u64 << 17) - 1;
     let capabilities = [
         CommandCapabilities::DEBUG_RECEIPTS,
         CommandCapabilities::DEBUG_CHANGE,
@@ -3568,7 +3568,7 @@ fn whole_debug_capabilities_extend_published_bits_without_aliasing_authority() {
         assert!(!capability.contains(CommandCapabilities::DEBUG_DIAGNOSTICS));
         seen |= capability.bits_for_test();
     }
-    assert_eq!(seen, (1u32 << 22) - 1);
+    assert_eq!(seen, (1u64 << 22) - 1);
 }
 
 struct StructcopyFixture {
@@ -3643,7 +3643,7 @@ fn structcopy_capability_preserves_all_published_identities() {
     ];
     let exact = CommandCapabilities::SESSION_STRUCTCOPY | CommandCapabilities::PRESENTATION;
     for (index, capability) in capabilities.into_iter().enumerate() {
-        assert_eq!(capability.bits_for_test(), 1u32 << index);
+        assert_eq!(capability.bits_for_test(), 1u64 << index);
         assert_eq!(exact.contains(capability), index == 7 || index == 22);
     }
     assert!(!exact.contains(CommandCapabilities::NONE));
@@ -3943,4 +3943,128 @@ fn status_facet_is_object_safe_and_construction_never_observes_or_grants_mutatio
     assert!(parts.mode_policy.is_none());
     assert!(parts.session.is_none());
     assert!(parts.workspace.is_none());
+}
+
+#[derive(Default)]
+struct BackgroundFixture {
+    running: Vec<&'static str>,
+    parked: Vec<crate::BackgroundCommandWork>,
+}
+
+impl CommandBackgroundContext for BackgroundFixture {
+    fn start(
+        &mut self,
+        command: &'static str,
+        work: crate::BackgroundCommandWork,
+    ) -> Result<String, String> {
+        if self.running.contains(&command) {
+            return Err(format!("/{command} is already running"));
+        }
+        self.running.push(command);
+        self.parked.push(work);
+        Ok(format!("/{command} started"))
+    }
+
+    fn cancel(&mut self, command: &'static str) -> Result<String, String> {
+        let Some(index) = self.running.iter().position(|name| *name == command) else {
+            return Err(format!("/{command} is not running"));
+        };
+        self.running.remove(index);
+        drop(self.parked.remove(index));
+        Ok(format!("/{command} cancelled"))
+    }
+}
+
+struct DropFlag(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for DropFlag {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn background_work(message: &'static str) -> crate::BackgroundCommandWork {
+    Box::pin(async move { crate::outcome::BackgroundCommandResult::message(message) })
+}
+
+#[test]
+fn background_capability_takes_the_first_bit_past_the_u32_space() {
+    assert_eq!(CommandCapabilities::VOICE_INPUT.bits_for_test(), 1u64 << 31);
+    assert_eq!(CommandCapabilities::BACKGROUND.bits_for_test(), 1u64 << 32);
+    let declared = CommandCapabilities::BACKGROUND | CommandCapabilities::WORKSPACE;
+    assert!(declared.contains(CommandCapabilities::BACKGROUND));
+    assert!(declared.contains(CommandCapabilities::WORKSPACE));
+    assert!(!declared.contains(CommandCapabilities::VOICE_INPUT));
+    assert!(!CommandCapabilities::VOICE_INPUT.contains(CommandCapabilities::BACKGROUND));
+    assert!(!CommandCapabilities::SESSION.contains(CommandCapabilities::BACKGROUND));
+}
+
+#[test]
+fn background_slot_is_optional_and_taken_once() {
+    assert!(CommandContexts::empty().take_background().is_none());
+    let mut fixture = BackgroundFixture::default();
+    let mut contexts = CommandContexts::empty().with_background(&mut fixture);
+    let background = contexts.take_background().expect("selected background facet");
+    assert!(contexts.take_background().is_none());
+    let parts = contexts.into_parts();
+    assert!(parts.workspace.is_none());
+    assert!(parts.presentation.is_none());
+    assert_eq!(
+        background.start("update", background_work("done")),
+        Ok("/update started".to_string())
+    );
+}
+
+#[test]
+#[should_panic(expected = "background facet already set")]
+fn background_duplicate_slot_fails_loudly() {
+    let mut a = BackgroundFixture::default();
+    let mut b = BackgroundFixture::default();
+    let _ = CommandContexts::empty()
+        .with_background(&mut a)
+        .with_background(&mut b);
+}
+
+#[test]
+fn background_facet_refuses_a_second_run_and_cancel_drops_the_work() {
+    let mut fixture = BackgroundFixture::default();
+    let facet: &mut dyn CommandBackgroundContext = &mut fixture;
+    let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = DropFlag(dropped.clone());
+    let work: crate::BackgroundCommandWork = Box::pin(async move {
+        let _held = flag;
+        crate::outcome::BackgroundCommandResult::ok()
+    });
+    assert!(facet.start("init", work).is_ok());
+    assert_eq!(
+        facet.start("init", background_work("second")),
+        Err("/init is already running".to_string())
+    );
+    assert!(facet.start("update", background_work("other")).is_ok());
+    assert!(!dropped.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(facet.cancel("init"), Ok("/init cancelled".to_string()));
+    assert!(
+        dropped.load(std::sync::atomic::Ordering::SeqCst),
+        "cancelling drops the unfinished work"
+    );
+    assert_eq!(facet.cancel("init"), Err("/init is not running".to_string()));
+    assert!(facet.start("init", background_work("again")).is_ok());
+}
+
+#[test]
+fn background_result_carries_only_the_send_message_follow_up() {
+    use crate::outcome::{BackgroundAction, BackgroundCommandResult};
+    let result = BackgroundCommandResult::with_message_and_action(
+        "Creating AGENTS.md",
+        BackgroundAction::SendMessage("prompt".to_string()),
+    );
+    assert_eq!(result.message.as_deref(), Some("Creating AGENTS.md"));
+    assert_eq!(
+        result.action,
+        Some(BackgroundAction::SendMessage("prompt".to_string()))
+    );
+    assert!(!result.is_error);
+    let failed = BackgroundCommandResult::error("updater failed");
+    assert!(failed.is_error);
+    assert!(failed.action.is_none());
 }

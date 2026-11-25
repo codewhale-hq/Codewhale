@@ -9,6 +9,9 @@ pub use crate::config_policy::{CommandConfigStatusContext, CommandPermissionsCon
 
 use std::path::{Path, PathBuf};
 
+mod background;
+pub use background::*;
+
 mod session_structcopy;
 pub use session_structcopy::*;
 

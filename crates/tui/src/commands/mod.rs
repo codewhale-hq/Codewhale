@@ -471,8 +471,13 @@ fn execute_in_context(
                     capabilities,
                     handler: contextual,
                 } => {
+                    let mut background = groups::utility::background::host(app, capabilities);
                     let mut bundle = app.command_contexts_with_config(config);
-                    contextual(bundle.contexts(capabilities), command_arg)
+                    let mut contexts = bundle.contexts(capabilities);
+                    if let Some(background) = background.as_mut() {
+                        contexts = contexts.with_background(background);
+                    }
+                    contextual(contexts, command_arg)
                 }
             };
         }
@@ -2661,8 +2666,9 @@ mod tests {
             "{result:?}"
         );
 
-        // /update is Pure too; a bare check should reach the plan resolver and
-        // return a message (or a safe error in a test environment), never a panic.
+        // /update declares only the background facet; without a completion
+        // mailbox a bare check runs inline, reaches the plan resolver and
+        // returns a message (or a safe error in a test environment), never a panic.
         let result = execute("/update", &mut app);
         assert!(result.message.is_some() || result.is_error, "{result:?}");
     }
@@ -2724,7 +2730,9 @@ mod tests {
         for (name, expected) in [
             (
                 "init",
-                CommandCapabilities::WORKSPACE.union(CommandCapabilities::PRESENTATION),
+                CommandCapabilities::WORKSPACE
+                    .union(CommandCapabilities::PRESENTATION)
+                    .union(CommandCapabilities::BACKGROUND),
             ),
             ("lsp", CommandCapabilities::PROJECT),
             ("share", CommandCapabilities::SESSION_EXPORT),

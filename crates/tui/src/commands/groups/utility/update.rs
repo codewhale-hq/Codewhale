@@ -19,10 +19,11 @@
 //!   possible answer on Windows, where the replaced image is the one running.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
-use codewhale_command_contract::handler::CommandHandler;
+use codewhale_command_contract::handler::{CommandCapabilities, CommandContexts, CommandHandler};
 use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
+use codewhale_command_contract::outcome::BackgroundCommandResult;
 use codewhale_release::InstallMethod;
 
 use crate::commands::CommandResult;
@@ -30,7 +31,7 @@ use crate::commands::CommandResult;
 pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
     name: "update",
     aliases: &["upgrade"],
-    usage: "/update [check|install]",
+    usage: "/update [check|install|cancel]",
     description_key: "cmd_update_description",
 };
 
@@ -42,7 +43,10 @@ impl RegisterCommand<CommandResult> for UpdateCmd {
     }
 
     fn handler() -> CommandHandler<CommandResult> {
-        CommandHandler::Pure(update)
+        CommandHandler::Contextual {
+            capabilities: CommandCapabilities::BACKGROUND,
+            handler: update,
+        }
     }
 }
 
@@ -54,6 +58,10 @@ pub(super) enum UpdateMode {
     Check,
     /// Actually run the updater.
     Install,
+}
+
+fn is_cancel(arg: Option<&str>) -> bool {
+    arg.is_some_and(|arg| matches!(arg.trim().to_ascii_lowercase().as_str(), "cancel" | "stop"))
 }
 
 fn parse_mode(arg: Option<&str>) -> Result<UpdateMode, String> {
@@ -155,12 +163,22 @@ fn install_preamble(updater: &Path) -> String {
          downloads the binary for this platform, verifies its SHA256 checksum, and atomically \
          replaces {updater}.\n\
          It does not restart Codewhale — you will need to do that yourself once it finishes. \
-         The UI is paused while the updater runs.",
+         The updater runs in the background and reports here when it is done; \
+         `/update cancel` stops it.",
         updater = updater.display(),
     )
 }
 
-fn update(arg: Option<&str>) -> CommandResult {
+fn update(mut contexts: CommandContexts<'_>, arg: Option<&str>) -> CommandResult {
+    let background = contexts.take_background();
+    if is_cancel(arg) {
+        return match background {
+            Some(background) => background
+                .cancel(COMMAND_INFO.name)
+                .map_or_else(CommandResult::error, CommandResult::message),
+            None => CommandResult::error("Command capability unavailable: background"),
+        };
+    }
     let mode = match parse_mode(arg) {
         Ok(mode) => mode,
         Err(message) => return CommandResult::error(message),
@@ -177,21 +195,48 @@ fn update(arg: Option<&str>) -> CommandResult {
             CommandResult::message(managed_install_message(method, exe.as_deref()))
         }
         UpdaterPlan::NoUpdater { exe } => CommandResult::message(no_updater_message(&exe)),
-        UpdaterPlan::Run(updater) => {
-            crate::commands::contract::run_owner_blocking(move || Ok(run_updater(&updater, mode)))
-                .unwrap_or_else(CommandResult::error)
-        }
+        UpdaterPlan::Run(updater) => match background {
+            Some(background) => background
+                .start(
+                    COMMAND_INFO.name,
+                    Box::pin(run_updater_in_background(updater, mode)),
+                )
+                .map_or_else(CommandResult::error, CommandResult::message),
+            None => crate::commands::contract::run_owner_blocking(move || {
+                Ok(run_updater(&updater, mode))
+            })
+            .unwrap_or_else(CommandResult::error),
+        },
     }
 }
 
-fn run_updater(updater: &Path, mode: UpdateMode) -> CommandResult {
+fn updater_command(updater: &Path, mode: UpdateMode) -> Command {
     let mut command = Command::new(updater);
     command.arg("update");
     if mode == UpdateMode::Check {
         command.arg("--check");
     }
+    command
+}
 
-    let output = match command.output() {
+fn run_updater(updater: &Path, mode: UpdateMode) -> CommandResult {
+    updater_result(updater, mode, updater_command(updater, mode).output())
+}
+
+async fn run_updater_in_background(updater: PathBuf, mode: UpdateMode) -> BackgroundCommandResult {
+    let mut command = tokio::process::Command::from(updater_command(&updater, mode));
+    command.kill_on_drop(true);
+    updater_result(&updater, mode, command.output().await)
+}
+
+fn updater_result<A>(
+    updater: &Path,
+    mode: UpdateMode,
+    output: std::io::Result<Output>,
+) -> codewhale_command_contract::outcome::CommandResult<A> {
+    use codewhale_command_contract::outcome::CommandResult;
+
+    let output = match output {
         Ok(output) => output,
         Err(err) => {
             return CommandResult::error(format!(
@@ -384,6 +429,7 @@ mod tests {
         );
         assert!(preamble.contains("SHA256"), "{preamble}");
         assert!(preamble.contains("does not restart"), "{preamble}");
+        assert!(preamble.contains("/update cancel"), "{preamble}");
     }
 
     #[test]
@@ -401,9 +447,79 @@ mod tests {
         assert!(bounded.chars().count() < flood.chars().count());
     }
 
+    #[derive(Default)]
+    struct Background {
+        cancelled: Vec<&'static str>,
+    }
+
+    impl codewhale_command_contract::facets::CommandBackgroundContext for Background {
+        fn start(
+            &mut self,
+            command: &'static str,
+            _work: codewhale_command_contract::facets::BackgroundCommandWork,
+        ) -> Result<String, String> {
+            Err(format!("/{command} must not start in this test"))
+        }
+
+        fn cancel(&mut self, command: &'static str) -> Result<String, String> {
+            self.cancelled.push(command);
+            Ok(format!("/{command} cancelled"))
+        }
+    }
+
     #[test]
-    fn handler_is_pure_and_argument_only() {
-        assert!(matches!(UpdateCmd::handler(), CommandHandler::Pure(_)));
+    fn cancel_goes_to_the_background_facet_and_never_reaches_the_updater() {
+        assert!(is_cancel(Some(" Cancel ")));
+        assert!(is_cancel(Some("stop")));
+        assert!(!is_cancel(None));
+        assert!(!is_cancel(Some("install")));
+
+        let mut background = Background::default();
+        let result = update(
+            CommandContexts::empty().with_background(&mut background),
+            Some("cancel"),
+        );
+        assert!(!result.is_error, "{result:?}");
+        assert_eq!(result.message.as_deref(), Some("/update cancelled"));
+        assert_eq!(background.cancelled, ["update"]);
+
+        let unavailable = update(CommandContexts::empty(), Some("cancel"));
+        assert!(unavailable.is_error, "{unavailable:?}");
+    }
+
+    #[test]
+    fn an_updater_that_cannot_be_spawned_is_reported_as_the_commands_error() {
+        let result: BackgroundCommandResult = updater_result(
+            Path::new("/usr/local/bin/codewhale"),
+            UpdateMode::Install,
+            Err(std::io::Error::other("no such file")),
+        );
+        assert!(result.is_error);
+        assert!(result.action.is_none());
+        let message = result.message.expect("error message");
+        assert!(message.contains("/usr/local/bin/codewhale update"), "{message}");
+        assert!(message.contains("no such file"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn a_background_updater_run_reports_a_missing_binary_without_blocking() {
+        let missing = std::env::temp_dir().join("codewhale-update-test-missing-binary");
+        let result = run_updater_in_background(missing.clone(), UpdateMode::Check).await;
+        assert!(result.is_error);
+        assert!(
+            result
+                .message
+                .expect("error message")
+                .contains(&missing.display().to_string())
+        );
+    }
+
+    #[test]
+    fn handler_declares_only_the_background_facet() {
+        let CommandHandler::Contextual { capabilities, .. } = UpdateCmd::handler() else {
+            panic!("/update must be contextual");
+        };
+        assert_eq!(capabilities, CommandCapabilities::BACKGROUND);
         assert_eq!(UpdateCmd::info().description_key, "cmd_update_description");
         assert_eq!(UpdateCmd::info().aliases, &["upgrade"]);
     }
