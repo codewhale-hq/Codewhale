@@ -11457,7 +11457,6 @@ context_window = 131072
                 "Work",
                 "Tools & MCP",
                 "Trust",
-                "Motion",
                 "Advanced",
             ]
         );
@@ -12758,18 +12757,18 @@ context_window = 131072
         // (the previous check click is disarmed by a keyboard step first).
         let _ = key(&mut view, KeyCode::Up);
         assert!(matches!(
-            click_row(&mut view, "low_motion"),
+            click_row(&mut view, "calm_mode"),
             ViewAction::None
         ));
         assert!(matches!(
-            click_row(&mut view, "low_motion"),
+            click_row(&mut view, "calm_mode"),
             ViewAction::Emit(ViewEvent::ConfigUpdated { .. })
         ));
         // A rebuilt focus (the host re-renders after applying) is disarmed
         // even though the emitting click left the row armed.
-        view.focus_key("low_motion");
+        view.focus_key("calm_mode");
         assert!(matches!(
-            click_row(&mut view, "low_motion"),
+            click_row(&mut view, "calm_mode"),
             ViewAction::None
         ));
     }
