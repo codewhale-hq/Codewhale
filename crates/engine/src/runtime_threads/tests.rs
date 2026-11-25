@@ -750,7 +750,8 @@ mod recovery {
         let loaded = manager.store.load_thread(&thread.id)?;
         assert_eq!(loaded.id, thread.id);
         assert_eq!(loaded.workspace, thread.workspace);
-        assert_eq!(loaded.title.as_deref(), Some("Recovered session"));
+        assert_eq!(loaded.model, thread.model);
+        assert_eq!(loaded.title, thread.title);
         assert_eq!(
             serde_json::from_str::<ThreadRecord>(&std::fs::read_to_string(&thread_path)?)?.id,
             thread.id
@@ -764,7 +765,8 @@ mod recovery {
         );
         assert_eq!(threads.len(), 1);
         assert_eq!(threads[0].id, thread.id);
-        assert_eq!(threads[0].title.as_deref(), Some("Recovered session"));
+        assert_eq!(threads[0].model, thread.model);
+        assert_eq!(threads[0].title, thread.title);
 
         std::fs::write(
             dir.path()
@@ -776,9 +778,9 @@ mod recovery {
         let wrong_event = serde_json::json!({
             "seq": 1,
             "thread_id": "thr_mismatched",
-            "kind": "thread.started",
+            "event": "thread.started",
             "payload": { "thread": thread },
-            "created_at": Utc::now(),
+            "timestamp": Utc::now(),
         });
         std::fs::write(
             dir.path()
@@ -804,7 +806,7 @@ mod recovery {
             let symlink_event = serde_json::json!({
                 "seq": 1,
                 "thread_id": "thr_symlink",
-                "kind": "thread.started",
+                "event": "thread.started",
                 "payload": { "thread": {
                     "schema_version": 1,
                     "id": "thr_symlink",
@@ -817,7 +819,7 @@ mod recovery {
                     "trust_mode": thread.trust_mode,
                     "auto_approve": thread.auto_approve,
                 } },
-                "created_at": Utc::now(),
+                "timestamp": Utc::now(),
             });
             std::fs::write(
                 dir.path()
@@ -850,7 +852,7 @@ mod recovery {
         let future_event = serde_json::json!({
             "seq": 1,
             "thread_id": "thr_future",
-            "kind": "thread.started",
+            "event": "thread.started",
             "payload": { "thread": {
                 "schema_version": 1,
                 "id": "thr_future",
@@ -863,7 +865,7 @@ mod recovery {
                 "trust_mode": thread.trust_mode,
                 "auto_approve": thread.auto_approve,
             } },
-            "created_at": Utc::now(),
+            "timestamp": Utc::now(),
         });
         std::fs::write(
             dir.path()

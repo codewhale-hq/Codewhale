@@ -18,7 +18,7 @@
  │ system | terminal | shoreline | shoreline-light | underwater |…            │ 
  │ Enter or click again: Enter opens choices · Theme: current terminal ·      │ 
  │ saved terminal · applies on save                                           │ 
- │ Preview:  ● accept edits                                                   │ 
+ │ Preview:  ● Accept Edits                                                   │ 
  │ ↑↓ move · Enter Enter edits · Tab switch · Esc close                       │ 
  ╰────────────────────────────────────────────────────────────────────────────╯ 
                                                                                 
