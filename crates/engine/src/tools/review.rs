@@ -2045,10 +2045,9 @@ async fn resolve_diff_target(
             // is already one side of this diff. Preserve triple-dot semantics
             // by resolving the merge base first, then compare that tree with
             // the index (committed branch work plus the staged snapshot).
-            let output = run_review_git(
-                workspace,
+            let output = super::git::run_git_command_async(
+                workspace.to_path_buf(),
                 vec!["merge-base".to_string(), base_commit, "HEAD".to_string()],
-                "resolve staged review merge base",
             )
             .await?;
             if !output.status.success() {
@@ -2071,7 +2070,7 @@ async fn resolve_diff_target(
     }
     args.push("--".to_string());
 
-    let output = run_review_git(workspace, args, "generate review diff").await?;
+    let output = super::git::run_git_command_async(workspace.to_path_buf(), args).await?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(ToolError::execution_failed(format!(
@@ -2084,23 +2083,6 @@ async fn resolve_diff_target(
         return Err(ToolError::invalid_input("No diff to review"));
     }
     Ok(diff)
-}
-
-async fn run_review_git(
-    workspace: &Path,
-    args: Vec<String>,
-    operation: &'static str,
-) -> Result<std::process::Output, ToolError> {
-    let workspace = workspace.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let mut cmd = codewhale_dependencies::Git::review_command(&workspace)
-            .map_err(|e| ToolError::execution_failed(e.to_string()))?;
-        cmd.args(args).output().map_err(|e| {
-            ToolError::execution_failed(format!("Failed to {operation} with git: {e}"))
-        })
-    })
-    .await
-    .map_err(|e| ToolError::execution_failed(format!("git {operation} task panicked: {e}")))?
 }
 
 async fn gh_pr_source(pr: PullRequestRef, workspace: &Path) -> Result<ReviewSource, ToolError> {

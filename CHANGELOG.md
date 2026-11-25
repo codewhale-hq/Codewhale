@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The website offers the Linux desktop app:** `codewhale.net/app` now has Desktop 0.10.4 for Linux x64: an apt repository signed with Codewhale's key (install lines and key fingerprint on the page; updates arrive through `apt`), and an AppImage download with its SHA-256 checksum. The AppImage does not update itself yet.
 
+### Fixed
+
+- **Cheaper workflow progress, visible disk-sync failures, review diffs that stop when cancelled:** workflow progress and event lines no longer force a full disk flush each; the next run snapshot flushes them, and a newly created journal still syncs its directory. A directory sync that fails for any reason other than a filesystem that cannot sync directories is now logged as a warning instead of silently ignored. A cancelled or dropped review now stops its local `git` diff instead of letting it run to completion. Thanks [@NieZhuZhu](https://github.com/NieZhuZhu) for the durability and directory-sync groundwork in #7561. (Refs #7461, #6561)
+
 ## [0.10.5] - 2026-11-24
 
 Codewhale v0.10.5 simplifies the terminal and runtime, expands DeepSeek Harness 0.2.2 host compatibility (with 13/33 pinned packages passing the full local Engine lifecycle and 15/36 cold-activating in the extension host), serves the shared `codewhale-app` web build from `codewhale web`, adds external ACP agent selection in `/model`, unifies the `codewhale-design` 5.5.0 Obsidian/Porcelain Whale Dark/Light palette and Title Case permission dial across all 15 TUI locales, aligns telemetry disclosures to first-party-only collection, and lands community security and reliability fixes.
