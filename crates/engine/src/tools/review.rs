@@ -2045,9 +2045,10 @@ async fn resolve_diff_target(
             // is already one side of this diff. Preserve triple-dot semantics
             // by resolving the merge base first, then compare that tree with
             // the index (committed branch work plus the staged snapshot).
-            let output = super::git::run_git_command_async(
-                workspace.to_path_buf(),
+            let output = run_review_git(
+                workspace,
                 vec!["merge-base".to_string(), base_commit, "HEAD".to_string()],
+                "resolve staged review merge base",
             )
             .await?;
             if !output.status.success() {
@@ -2070,7 +2071,7 @@ async fn resolve_diff_target(
     }
     args.push("--".to_string());
 
-    let output = super::git::run_git_command_async(workspace.to_path_buf(), args).await?;
+    let output = run_review_git(workspace, args, "generate review diff").await?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(ToolError::execution_failed(format!(
@@ -2083,6 +2084,22 @@ async fn resolve_diff_target(
         return Err(ToolError::invalid_input("No diff to review"));
     }
     Ok(diff)
+}
+
+async fn run_review_git(
+    workspace: &Path,
+    args: Vec<String>,
+    operation: &str,
+) -> Result<std::process::Output, ToolError> {
+    super::git::run_git_command_async(workspace.to_path_buf(), args)
+        .await
+        .map_err(|error| match error {
+            ToolError::ExecutionFailed { message, metadata } => ToolError::ExecutionFailed {
+                message: format!("Failed to {operation}: {message}"),
+                metadata,
+            },
+            other => other,
+        })
 }
 
 async fn gh_pr_source(pr: PullRequestRef, workspace: &Path) -> Result<ReviewSource, ToolError> {
