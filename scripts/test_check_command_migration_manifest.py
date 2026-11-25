@@ -472,6 +472,59 @@ class DebugGroupFrontierTests(unittest.TestCase):
             self.assertEqual(mod.check_source_frontier({"debug": node}, [], root), [])
 
 
+class GateScopeTests(unittest.TestCase):
+    def _group_root(self, tmp: str, group: str, files: dict[str, str]) -> Path:
+        root = Path(tmp)
+        base = root / "crates/tui/src/commands/groups" / group
+        for name, text in files.items():
+            (base / name).parent.mkdir(parents=True, exist_ok=True)
+            (base / name).write_text(text, encoding="utf-8")
+        return root
+
+    def test_cfg_test_items_and_tests_modules_are_not_handlers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._group_root(tmp, "alpha", {"mod.rs": (
+                "use a::{b, c};\n"
+                "#[cfg(test)]\nuse x::{y, z};\n"
+                "#[cfg(test)]\nfn helper(app: &mut App) -> R { app.go() }\n"
+                "#[cfg(test)]\n#[allow(dead_code)]\nfn helper2(app: &mut App) {}\n"
+                "mod tests {\n    fn inner(app: &mut App) {}\n}\n"
+                "fn real(app: &mut App) {}\n"
+            )})
+            items, _ = mod.scan_leaf_handlers(["crates/tui/src/commands/groups/alpha/mod.rs"], root)
+            self.assertEqual([i.name for i in items if i.is_concrete_app], ["real"])
+
+    def test_every_group_directory_is_scanned_and_unlisted_handler_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._group_root(tmp, "alpha", {
+                "mod.rs": "fn ok() {}\n",
+                "extra.rs": "fn sneaky(app: &mut App) {}\n",
+            })
+            node = {"kind": "group", "scope": ["crates/tui/src/commands/groups/alpha/mod.rs"], "slices": []}
+            self.assertIn("crates/tui/src/commands/groups/alpha/extra.rs",
+                          mod.group_source_scope("alpha", node, root))
+            violations = mod.check_source_frontier({"alpha": node}, [], root)
+            self.assertTrue(any(v.category == "stale-removal" and v.location.endswith("::sneaky")
+                                for v in violations), violations)
+
+    def test_unlisted_core_files_are_assigned_to_slices(self) -> None:
+        navigation = {"name": "core::navigation", "scope": ["a.rs"]}
+        self.assertEqual(mod.slice_source_scope("core", navigation),
+                         ["a.rs", "crates/tui/src/commands/groups/core/copy.rs"])
+        self.assertEqual(mod.slice_source_scope("core", {"name": "core::policy", "scope": ["b.rs"]}),
+                         ["b.rs"])
+
+    def test_immutable_and_qualified_app_references_are_concrete(self) -> None:
+        for ty in ["&mut App", "&crate::tui::app::App", "&App", "&mut crate::tui::app::App"]:
+            self.assertTrue(mod._is_concrete_app_type(ty), ty)
+        for ty in ["Option<&str>", "&AppConfig", "&mut Vec<App>"]:
+            self.assertFalse(mod._is_concrete_app_type(ty), ty)
+
+    def test_discover_visible_skills_is_retained_host_machinery(self) -> None:
+        names = [sel["item"][-1] for sel in mod.RETAINED_HOST_MACHINERY["skills"]]
+        self.assertIn("discover_visible_skills", names)
+
+
 class SourceScanTests(unittest.TestCase):
     """Hermetic fixtures for the AST-resolved source scan (Task 3.5/3.6)."""
 
