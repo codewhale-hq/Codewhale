@@ -2190,6 +2190,7 @@ pub(crate) async fn run_event_loop(
     // Set when the telemetry disclosure cell is queued; cleared (and the
     // disclosure recorded) by the first draw that paints it.
     let mut telemetry_notice_awaiting_render = false;
+    let mut background_commands_shown: Vec<&'static str> = Vec::new();
     let mut active_translation_client = fallback_translation_client.clone();
     let mut active_translation_route: Option<codewhale_engine::core::events::TurnRoute> = None;
     let mut translation_sequence = 0_u64;
@@ -2479,7 +2480,13 @@ pub(crate) async fn run_event_loop(
             let _ = apply(app, &engine_handle, &*config);
             // Drain this completion immediately: a later completion cannot replace an edit.
             super::feedback_host::dispatch_ready(app, config, &engine_handle).await?;
+            for result in crate::commands::background_host::take_ready() {
+                if apply_command_result(terminal, app, &mut engine_handle, config, result).await? {
+                    return Ok(());
+                }
+            }
         }
+        sync_background_command_notices(app, &mut background_commands_shown);
 
         if app.onboarding == OnboardingState::Provider && app.view_stack.top_kind().is_none() {
             let recover_configured_route = app.onboarding_recovers_configured_route();
@@ -7444,7 +7451,9 @@ pub(crate) async fn run_event_loop(
                             return Ok(());
                         }
                         CtrlCDisposition::ArmExit => {
-                            app.arm_quit();
+                            if !cancel_background_commands(app) {
+                                app.arm_quit();
+                            }
                         }
                     }
                 }
@@ -7540,6 +7549,9 @@ pub(crate) async fn run_event_loop(
                             app.clear_composer_draft();
                         }
                         EscapeAction::Noop => {
+                            if cancel_background_commands(app) {
+                                continue;
+                            }
                             // Nothing else cares about this Esc — route it
                             // through the backtrack state machine. While
                             // streaming or with the live transcript already
@@ -9310,6 +9322,45 @@ mod launch_session_sync_tests {
 
         run.abort();
     }
+}
+
+fn background_command_notice_id(command: &str) -> String {
+    format!("background-command:{command}")
+}
+
+pub(crate) fn sync_background_command_notices(app: &mut App, shown: &mut Vec<&'static str>) {
+    use crate::commands::background_host as background;
+    let running = background::running();
+    if running == *shown {
+        return;
+    }
+    for command in shown.iter().filter(|command| !running.contains(command)) {
+        app.retire_event_notices(&background_command_notice_id(command));
+    }
+    for command in running.iter().filter(|command| !shown.contains(command)) {
+        app.push_status_toast_record(crate::tui::app::StatusToast::standing(
+            background::line(app.ui_locale, MessageId::CmdBackgroundWorking, command),
+            StatusToastLevel::Info,
+            background_command_notice_id(command),
+        ));
+    }
+    *shown = running;
+    app.needs_redraw = true;
+}
+
+pub(crate) fn cancel_background_commands(app: &mut App) -> bool {
+    use crate::commands::background_host as background;
+    let cancelled = background::cancel_all();
+    if cancelled.is_empty() {
+        return false;
+    }
+    let lines: Vec<String> = cancelled
+        .iter()
+        .map(|command| background::line(app.ui_locale, MessageId::CmdBackgroundCancelled, command))
+        .collect();
+    app.status_message = Some(lines.join(" "));
+    app.needs_redraw = true;
+    true
 }
 
 pub(crate) fn bank_live_turn_time(app: &mut App) {

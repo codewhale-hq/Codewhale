@@ -497,7 +497,10 @@ mod tests {
         assert!(result.is_error);
         assert!(result.action.is_none());
         let message = result.message.expect("error message");
-        assert!(message.contains("/usr/local/bin/codewhale update"), "{message}");
+        assert!(
+            message.contains("/usr/local/bin/codewhale update"),
+            "{message}"
+        );
         assert!(message.contains("no such file"), "{message}");
     }
 

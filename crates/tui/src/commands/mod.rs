@@ -6,6 +6,7 @@
 //! module keeps registry construction, user-command precedence, and the
 //! fall-through behaviour.
 
+pub(crate) mod background_host;
 mod builtin_execution;
 mod config_group;
 mod config_host;
@@ -476,7 +477,7 @@ fn execute_in_context(
                     capabilities,
                     handler: contextual,
                 } => {
-                    let mut background = groups::utility::background::host(app, capabilities);
+                    let mut background = background_host::host(app, capabilities);
                     let mut bundle = app.command_contexts_with_config(config);
                     let mut contexts = bundle.contexts(capabilities);
                     if let Some(background) = background.as_mut() {

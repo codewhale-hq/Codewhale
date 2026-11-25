@@ -57,6 +57,26 @@ impl BackgroundCommands {
         }
     }
 
+    fn cancel_all(&self) -> Vec<&'static str> {
+        let mut cancelled: Vec<&'static str> = self
+            .lock()
+            .running
+            .drain()
+            .map(|(command, running)| {
+                running.abort.abort();
+                command
+            })
+            .collect();
+        cancelled.sort_unstable();
+        cancelled
+    }
+
+    fn running(&self) -> Vec<&'static str> {
+        let mut running: Vec<&'static str> = self.lock().running.keys().copied().collect();
+        running.sort_unstable();
+        running
+    }
+
     fn push_ready(&self, result: BackgroundCommandResult) {
         self.lock().ready.push(result);
     }
@@ -86,6 +106,18 @@ pub(crate) fn take_ready() -> Vec<CommandResult> {
     shared().take_ready()
 }
 
+pub(crate) fn running() -> Vec<&'static str> {
+    shared().running()
+}
+
+pub(crate) fn cancel_all() -> Vec<&'static str> {
+    shared().cancel_all()
+}
+
+pub(crate) fn line(locale: Locale, id: MessageId, command: &str) -> String {
+    tr(locale, id).replace("{command}", command)
+}
+
 pub(in crate::commands) struct BackgroundHost {
     commands: BackgroundCommands,
     completion: tokio::sync::mpsc::Sender<DispatchApplyFn>,
@@ -112,7 +144,7 @@ pub(in crate::commands) fn host(
 
 impl BackgroundHost {
     fn line(&self, id: MessageId, command: &str) -> String {
-        tr(self.locale, id).replace("{command}", command)
+        line(self.locale, id, command)
     }
 }
 
@@ -243,7 +275,10 @@ mod tests {
 
     fn test_app(workspace: &std::path::Path) -> (App, Config) {
         let config = Config::default();
-        let app = App::new(crate::tui::test_support::test_tui_options(workspace), &config);
+        let app = App::new(
+            crate::tui::test_support::test_tui_options(workspace),
+            &config,
+        );
         (app, config)
     }
 
@@ -311,13 +346,48 @@ mod tests {
             matches!(&ready[0].action, Some(AppAction::SendMessage(prompt)) if prompt == "prompt")
         );
         assert!(!ready[0].is_error);
-        assert!(host.commands.take_ready().is_empty(), "a result is applied once");
+        assert!(
+            host.commands.take_ready().is_empty(),
+            "a result is applied once"
+        );
 
         let flag = Arc::new(AtomicBool::new(false));
         assert!(
             host.start("init", held(&flag)).is_ok(),
             "a finished command can be started again"
         );
+    }
+
+    #[tokio::test]
+    async fn a_running_command_shows_a_notice_and_an_interrupt_cancels_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut app, _config) = test_app(tmp.path());
+        let (completion, _mailbox) = tokio::sync::mpsc::channel::<DispatchApplyFn>(2);
+        app.dispatch_completion_tx = Some(completion);
+        let mut background = host(&app, CommandCapabilities::BACKGROUND).expect("background host");
+        let flag = Arc::new(AtomicBool::new(false));
+        assert!(background.start("update", held(&flag)).is_ok());
+
+        let working = super::line(app.ui_locale, MessageId::CmdBackgroundWorking, "update");
+        let mut shown = Vec::new();
+        crate::tui::ui::sync_background_command_notices(&mut app, &mut shown);
+        assert_eq!(shown, ["update"]);
+        assert!(app.status_toasts.iter().any(|toast| toast.text == working));
+
+        assert!(crate::tui::ui::cancel_background_commands(&mut app));
+        assert_eq!(
+            app.status_message,
+            Some(super::line(
+                app.ui_locale,
+                MessageId::CmdBackgroundCancelled,
+                "update"
+            ))
+        );
+        assert!(settled(&flag).await, "the cancelled work is dropped");
+        crate::tui::ui::sync_background_command_notices(&mut app, &mut shown);
+        assert!(shown.is_empty());
+        assert!(!app.status_toasts.iter().any(|toast| toast.text == working));
+        assert!(!crate::tui::ui::cancel_background_commands(&mut app));
     }
 
     #[tokio::test]
@@ -386,7 +456,10 @@ mod tests {
         );
         assert!(settled(&flag).await, "cancelled work is dropped");
         tokio::time::sleep(Duration::from_millis(20)).await;
-        assert!(mailbox.try_recv().is_err(), "a cancelled run reports nothing");
+        assert!(
+            mailbox.try_recv().is_err(),
+            "a cancelled run reports nothing"
+        );
         assert!(host.commands.take_ready().is_empty());
         assert_eq!(
             host.cancel("update"),
@@ -408,7 +481,10 @@ mod tests {
 
         assert!(host.start("update", held(&flag)).is_ok());
         drop(mailbox);
-        assert!(settled(&flag).await, "work stops when the event loop is gone");
+        assert!(
+            settled(&flag).await,
+            "work stops when the event loop is gone"
+        );
         assert!(host.commands.lock().running.is_empty());
         assert!(host.commands.take_ready().is_empty());
     }

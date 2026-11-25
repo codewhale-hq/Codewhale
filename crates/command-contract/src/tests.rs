@@ -4004,7 +4004,9 @@ fn background_slot_is_optional_and_taken_once() {
     assert!(CommandContexts::empty().take_background().is_none());
     let mut fixture = BackgroundFixture::default();
     let mut contexts = CommandContexts::empty().with_background(&mut fixture);
-    let background = contexts.take_background().expect("selected background facet");
+    let background = contexts
+        .take_background()
+        .expect("selected background facet");
     assert!(contexts.take_background().is_none());
     let parts = contexts.into_parts();
     assert!(parts.workspace.is_none());
@@ -4047,7 +4049,10 @@ fn background_facet_refuses_a_second_run_and_cancel_drops_the_work() {
         dropped.load(std::sync::atomic::Ordering::SeqCst),
         "cancelling drops the unfinished work"
     );
-    assert_eq!(facet.cancel("init"), Err("/init is not running".to_string()));
+    assert_eq!(
+        facet.cancel("init"),
+        Err("/init is not running".to_string())
+    );
     assert!(facet.start("init", background_work("again")).is_ok());
 }
 
