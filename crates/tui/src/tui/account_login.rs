@@ -28,6 +28,8 @@ use crate::tui::views::{
     render_modal_footer, render_rounded_modal,
 };
 
+pub(crate) const ACCOUNT_SIGN_IN_ENABLED: bool = false;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountOperationOutcome {
     Complete,
@@ -113,6 +115,8 @@ impl AccountLoginView {
                     } else {
                         Ok(WorkerResult::SignedIn)
                     }
+                } else if !ACCOUNT_SIGN_IN_ENABLED {
+                    Ok(WorkerResult::Failed)
                 } else {
                     client
                         .start_login_with_cancel(
@@ -238,6 +242,9 @@ impl AccountLoginView {
                     codewhale_secrets::account::AccountSessionState::Authenticated
                         | codewhale_secrets::account::AccountSessionState::OfflineCached
                 ) {
+                    if !ACCOUNT_SIGN_IN_ENABLED {
+                        return Ok(WorkerResult::ModelsFailed);
+                    }
                     return client
                         .start_login_with_cancel(
                             Duration::from_secs(
@@ -625,14 +632,14 @@ impl ConnectionSetupView {
     pub(crate) fn new(locale: Locale) -> Self {
         Self {
             locale,
-            selected: 0,
+            selected: usize::from(!ACCOUNT_SIGN_IN_ENABLED),
             buttons: RefCell::new(Vec::new()),
         }
     }
 
     fn choose(&self, selected: Option<usize>) -> ViewAction {
         ViewAction::EmitAndClose(ViewEvent::AccountConnectionChoice {
-            account: selected.map(|selected| selected == 0),
+            account: selected.map(|selected| ACCOUNT_SIGN_IN_ENABLED && selected == 0),
         })
     }
 }
@@ -666,7 +673,9 @@ impl ModalView for ConnectionSetupView {
             return ViewAction::None;
         }
         match key.code {
-            KeyCode::Up | KeyCode::Down | KeyCode::Tab | KeyCode::BackTab => {
+            KeyCode::Up | KeyCode::Down | KeyCode::Tab | KeyCode::BackTab
+                if ACCOUNT_SIGN_IN_ENABLED =>
+            {
                 self.selected = 1 - self.selected;
                 ViewAction::Redraw
             }
@@ -683,6 +692,14 @@ impl ModalView for ConnectionSetupView {
             crate::tui::mouse_ui::mouse_hits_rect(mouse, Some(*rect)).then_some(*index)
         });
         selected.map_or(ViewAction::None, |selected| self.choose(Some(selected)))
+    }
+
+    fn tick(&mut self) -> ViewAction {
+        if ACCOUNT_SIGN_IN_ENABLED {
+            ViewAction::None
+        } else {
+            self.choose(Some(1))
+        }
     }
 
     fn occupied_region(&self, area: Rect) -> Rect {
@@ -728,11 +745,16 @@ impl ModalView for ConnectionSetupView {
                 MessageId::ConnectionSetupLocalDetail,
             ),
         ];
-        let height = content.height / 2;
+        let visible = if ACCOUNT_SIGN_IN_ENABLED { 2 } else { 1 };
+        let height = content.height / visible;
         for (index, (label, detail)) in rows.into_iter().enumerate() {
+            if !ACCOUNT_SIGN_IN_ENABLED && index == 0 {
+                continue;
+            }
+            let row = index - (2 - visible as usize);
             let rect = Rect::new(
                 content.x,
-                content.y + index as u16 * height,
+                content.y + row as u16 * height,
                 content.width,
                 height,
             );
@@ -763,5 +785,29 @@ impl ModalView for ConnectionSetupView {
             .render(rect, buf);
             buttons.push((index, rect));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hidden_account_sign_in_routes_connection_setup_to_local_model() {
+        assert!(!ACCOUNT_SIGN_IN_ENABLED);
+        let mut view = ConnectionSetupView::new(Locale::En);
+        let action = view.tick();
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::AccountConnectionChoice {
+                account: Some(false)
+            })
+        ));
+        assert!(matches!(
+            view.choose(Some(0)),
+            ViewAction::EmitAndClose(ViewEvent::AccountConnectionChoice {
+                account: Some(false)
+            })
+        ));
     }
 }

@@ -237,6 +237,8 @@ pub(crate) async fn open_model_connection_setup(
 ) {
     if recover_configured_route {
         open_onboarding_provider_picker(app, config, engine_handle, true).await;
+    } else if !crate::tui::account_login::ACCOUNT_SIGN_IN_ENABLED {
+        open_provider_picker(app, config, engine_handle).await;
     } else if app.view_stack.is_empty() {
         app.view_stack
             .push(crate::tui::account_login::ConnectionSetupView::new(

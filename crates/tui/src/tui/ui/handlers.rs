@@ -2019,14 +2019,14 @@ pub(crate) async fn handle_view_events(
                     begin_first_connection_setup(app);
                 }
                 match account {
-                    Some(true) => {
+                    Some(true) if crate::tui::account_login::ACCOUNT_SIGN_IN_ENABLED => {
                         app.view_stack
                             .push(crate::tui::account_login::AccountLoginView::connect(
                                 app.config_profile.clone(),
                                 app.ui_locale,
                             ))
                     }
-                    Some(false) => Box::pin(open_provider_picker(app, config, engine_handle)).await,
+                    Some(_) => Box::pin(open_provider_picker(app, config, engine_handle)).await,
                     None if app.onboarding == OnboardingState::Provider => {
                         back_from_provider_onboarding(app)
                     }
