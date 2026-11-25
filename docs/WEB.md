@@ -46,6 +46,43 @@ The browser is another view of the same local Runtime. It does not create a
 second cloud account, copy provider credentials into browser storage, or
 weaken the configured approval and sandbox policies.
 
+## Serving the shared app build
+
+`codewhale web` serves the embedded client by default. You can instead serve
+the shared web app (the `apps/web` build from the `codewhale-app` repository)
+from a directory on disk. This is opt-in; the embedded client remains the
+default until the shared build reaches parity.
+
+1. Build `apps/web` in `codewhale-app` so it produces a `dist` directory.
+2. Point `CODEWHALE_WEB_DIST` at that directory and start the command:
+
+   ```bash
+   CODEWHALE_WEB_DIST=/path/to/codewhale-app/apps/web/dist codewhale web
+   ```
+
+The directory must contain `index.html`, and neither the directory nor
+`index.html` may be a symlink. When the variable is set to a valid directory,
+startup prints a line naming the directory being served. When the variable is
+unset or empty, the embedded client is served as before.
+
+A set but invalid value is not ignored: `codewhale web` refuses to start and
+prints the reason (the path is not a directory, is a symlink, or has no
+`index.html`). Fix or unset the variable and run the command again.
+
+What is served from the directory:
+
+- `index.html` at `/`, and for extensionless paths, so client-side routes such
+  as `/settings/plugins` load the app.
+- `/plugin-host.html`, the document the app frames for plugin UI.
+- `/static/*`, the build's hashed assets.
+
+`/v1`, `/api` and `/__codewhale` stay reserved for the Runtime API and the
+bootstrap exchange; the directory never shadows them. Other `.html` files,
+unknown file types and non-`GET`/`HEAD` requests return `404`.
+
+The authentication boundary above is unchanged. `codewhale web` requires
+Runtime authentication, and the Engine refuses `--insecure` for web.
+
 ## Authentication boundary
 
 The browser-launch URL contains a random, short-lived, one-time bootstrap

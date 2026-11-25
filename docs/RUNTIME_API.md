@@ -54,7 +54,7 @@ For the read-only record of what a thread or turn did, see
 
 | Entry | Transport | Use |
 |---|---|---|
-| `codewhale web [--port 7878]` | HTTP/SSE on `127.0.0.1:7878` + embedded client | First-class loopback-only browser client; opens the default browser |
+| `codewhale web [--port 7878]` | HTTP/SSE on `127.0.0.1:7878` + embedded client | First-class loopback-only browser client; opens the default browser. Can serve the shared app build via `CODEWHALE_WEB_DIST` ([WEB.md](WEB.md#serving-the-shared-app-build)) |
 | `codewhale app-server --http` | HTTP/SSE on `127.0.0.1:7878` | Full `/v1/*` runtime API (canonical) |
 | `codewhale app-server --mobile` | HTTP/SSE on loopback + `/mobile` | Runtime API + local mobile control page |
 | `codewhale app-server --stdio` | Initialized JSONL over stdio | Compatibility controls and explicit tool-free turns through the held manager; no hidden TCP listener or full Codex interaction channel. |
@@ -1130,6 +1130,11 @@ and asks the operating system to open that URL in the default browser. If the
 browser does not open, the printed URL remains usable for ten minutes. The
 command cannot bind to a non-loopback host and cannot run with Runtime auth
 disabled.
+
+By default the embedded client is served. Setting `CODEWHALE_WEB_DIST` to a
+built `apps/web` directory serves the shared app build instead; an invalid
+value is refused at startup with the reason. See
+[Serving the shared app build](WEB.md#serving-the-shared-app-build).
 
 The browser-launch URL contains a random, short-lived, one-time bootstrap
 capability, never the Runtime token. A loopback request exchanges that

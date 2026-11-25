@@ -1,7 +1,7 @@
 # 本地浏览器客户端
 
 > 英文原文：[WEB.md](../WEB.md)。
-> 最后与英文同步日期（last synced with English revision）：2026-09-29。
+> 最后与英文同步日期（last synced with English revision）：2026-11-25。
 
 `codewhale web` 通过统一的 Runtime API 打开 Codewhale 内嵌的浏览器客户端。
 这是一个本地界面：服务器始终绑定到 `127.0.0.1`，不能改为局域网地址，
@@ -40,6 +40,38 @@ Codewhale 会启动 Runtime API，提供已内嵌在所安装二进制文件中�
 浏览器是同一个本地 Runtime 的另一种视图。
 它不会创建第二个云账户、把提供商（provider）的凭据复制到浏览器存储中，
 也不会降低已配置的审批和沙箱策略要求。
+
+## 提供共享应用构建
+
+`codewhale web` 默认提供内嵌客户端。你也可以改为从磁盘目录提供共享网页应用
+（`codewhale-app` 仓库中 `apps/web` 的构建产物）。这是可选功能；在共享构建达到功能对等之前，
+内嵌客户端仍是默认选项。
+
+1. 在 `codewhale-app` 中构建 `apps/web`，生成 `dist` 目录。
+2. 将 `CODEWHALE_WEB_DIST` 指向该目录并启动命令：
+
+   ```bash
+   CODEWHALE_WEB_DIST=/path/to/codewhale-app/apps/web/dist codewhale web
+   ```
+
+该目录必须包含 `index.html`，且目录本身和 `index.html` 都不能是符号链接。
+当变量指向有效目录时，启动时会打印一行信息，说明正在提供的目录。
+当变量未设置或为空时，仍提供内嵌客户端。
+
+已设置但无效的值不会被忽略：`codewhale web` 会拒绝启动并打印原因
+（路径不是目录、是符号链接，或缺少 `index.html`）。请修正或取消设置该变量后重新运行命令。
+
+该目录提供的内容：
+
+- `/` 处的 `index.html`，以及所有无扩展名路径（例如 `/settings/plugins` 这类客户端路由）同样返回它。
+- `/plugin-host.html`，应用用于嵌入插件界面的文档。
+- `/static/*`，构建产生的带哈希的资源。
+
+`/v1`、`/api` 和 `/__codewhale` 仍保留给 Runtime API 和引导凭证交换，该目录不会覆盖它们。
+其他 `.html` 文件、未知文件类型以及非 `GET`/`HEAD` 请求返回 `404`。
+
+上文的身份验证边界保持不变。`codewhale web` 需要 Runtime 身份验证，
+Engine 会拒绝对 web 使用 `--insecure`。
 
 ## 身份验证边界
 
