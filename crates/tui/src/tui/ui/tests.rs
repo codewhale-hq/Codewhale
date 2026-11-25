@@ -35170,8 +35170,9 @@ async fn offline_queue_lifecycle_preserves_edits_and_explicit_reset() {
         "failed reset must retain recovery"
     );
     let failure = reset_app
-        .status_message
-        .as_deref()
+        .sticky_status
+        .as_ref()
+        .map(|toast| toast.text.as_str())
         .expect("failed reset status");
     assert!(failure.contains("could not be saved"), "{failure}");
     assert!(matches!(
