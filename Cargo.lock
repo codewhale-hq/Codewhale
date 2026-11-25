@@ -908,6 +908,7 @@ dependencies = [
  "chrono",
  "clap",
  "codewhale-config",
+ "codewhale-localization",
  "codewhale-release",
  "codewhale-runtime",
  "codewhale-secrets",

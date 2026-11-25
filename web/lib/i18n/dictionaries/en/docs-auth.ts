@@ -91,7 +91,7 @@ codewhale --provider anthropic --model claude-sonnet-5-5`,
       title: "Codewhale accounts",
       blocks: [
         {
-          p: "A provider key and a Codewhale account are different things. Local use never needs an account; anyone can sign in, and cloud computers are invite-only. Provider keys stay on your machine with `codewhale auth set`.",
+          p: "A provider key and a Codewhale account are different things. Local use never needs an account. Codewhale accounts are not open yet, and cloud computers are invite-only. Provider keys stay on your machine with `codewhale auth set`.",
         },
         {
           rows: [

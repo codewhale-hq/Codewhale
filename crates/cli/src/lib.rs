@@ -577,9 +577,7 @@ fn user_facing_command() -> clap::Command {
         if let Some(subcommand) = cmd.find_subcommand(name) {
             let canonical_name = subcommand.get_name().to_owned();
             cmd = cmd.mut_subcommand(canonical_name, |sub| sub.hide(true));
-            if accounts_open || *name != "account" {
-                listed.push(*name);
-            }
+            listed.push(*name);
         }
     }
     let mut paragraph =
@@ -4337,8 +4335,12 @@ fn auth_status_all_providers_with_runtime(
 ) -> Vec<String> {
     let active_provider = store.config.provider;
     let mut lines = Vec::new();
-    if codewhale_account_cli::ACCOUNT_SIGN_IN_OPEN {
-        lines.push(account_status_line());
+    let account = account_status_line();
+    if codewhale_account_cli::ACCOUNT_SIGN_IN_OPEN
+        || !(account.starts_with("account: not signed in")
+            || account.starts_with("account: unavailable"))
+    {
+        lines.push(account);
         lines.push(String::new());
     }
     lines.push(format!(

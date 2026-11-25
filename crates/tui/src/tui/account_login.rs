@@ -28,7 +28,7 @@ use crate::tui::views::{
     render_modal_footer, render_rounded_modal,
 };
 
-pub(crate) const ACCOUNT_SIGN_IN_ENABLED: bool = false;
+pub(crate) const ACCOUNT_SIGN_IN_ENABLED: bool = codewhale_account_cli::ACCOUNT_SIGN_IN_OPEN;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountOperationOutcome {
@@ -38,6 +38,7 @@ pub enum AccountOperationOutcome {
     ModelCancelled,
     Expired,
     Failed,
+    SignInClosed,
 }
 
 enum WorkerResult {
@@ -49,6 +50,7 @@ enum WorkerResult {
     SignedIn,
     Cancelled,
     Failed,
+    SignInClosed,
 }
 
 pub(crate) struct AccountLoginView {
@@ -116,7 +118,7 @@ impl AccountLoginView {
                         Ok(WorkerResult::SignedIn)
                     }
                 } else if !ACCOUNT_SIGN_IN_ENABLED {
-                    Ok(WorkerResult::Failed)
+                    Ok(WorkerResult::SignInClosed)
                 } else {
                     client
                         .start_login_with_cancel(
@@ -243,7 +245,7 @@ impl AccountLoginView {
                         | codewhale_secrets::account::AccountSessionState::OfflineCached
                 ) {
                     if !ACCOUNT_SIGN_IN_ENABLED {
-                        return Ok(WorkerResult::ModelsFailed);
+                        return Ok(WorkerResult::SignInClosed);
                     }
                     return client
                         .start_login_with_cancel(
@@ -597,6 +599,9 @@ impl ModalView for AccountLoginView {
                         return self.finish(AccountOperationOutcome::Cancelled);
                     }
                     WorkerResult::Failed => return self.finish(AccountOperationOutcome::Failed),
+                    WorkerResult::SignInClosed => {
+                        return self.finish(AccountOperationOutcome::SignInClosed);
+                    }
                 }
             }
             Some(Err(TryRecvError::Disconnected)) => {
@@ -794,7 +799,7 @@ mod tests {
 
     #[test]
     fn hidden_account_sign_in_routes_connection_setup_to_local_model() {
-        assert!(!ACCOUNT_SIGN_IN_ENABLED);
+        const { assert!(!ACCOUNT_SIGN_IN_ENABLED) };
         let mut view = ConnectionSetupView::new(Locale::En);
         let action = view.tick();
         assert!(matches!(

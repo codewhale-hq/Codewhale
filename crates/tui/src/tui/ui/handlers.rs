@@ -2019,13 +2019,12 @@ pub(crate) async fn handle_view_events(
                     begin_first_connection_setup(app);
                 }
                 match account {
-                    Some(true) if crate::tui::account_login::ACCOUNT_SIGN_IN_ENABLED => {
-                        app.view_stack
-                            .push(crate::tui::account_login::AccountLoginView::connect(
-                                app.config_profile.clone(),
-                                app.ui_locale,
-                            ))
-                    }
+                    Some(true) if crate::tui::account_login::ACCOUNT_SIGN_IN_ENABLED => app
+                        .view_stack
+                        .push(crate::tui::account_login::AccountLoginView::connect(
+                            app.config_profile.clone(),
+                            app.ui_locale,
+                        )),
                     Some(_) => Box::pin(open_provider_picker(app, config, engine_handle)).await,
                     None if app.onboarding == OnboardingState::Provider => {
                         back_from_provider_onboarding(app)
@@ -2056,6 +2055,9 @@ pub(crate) async fn handle_view_events(
                         MessageId::AccountModelsCancelled
                     }
                     (false, AccountOperationOutcome::Expired) => MessageId::AccountLoginExpired,
+                    (false, AccountOperationOutcome::SignInClosed) => {
+                        MessageId::AccountSignInClosed
+                    }
                     (false, _) => MessageId::AccountLoginFailed,
                 };
                 let level = match outcome {
@@ -2082,6 +2084,9 @@ pub(crate) async fn handle_view_events(
                     .tr(id)
                     .replace("{command}", if signing_out { "/logout" } else { "/login" });
                 app.push_status_toast(message, level, Some(8_000));
+                if !signing_out && outcome == AccountOperationOutcome::SignInClosed {
+                    Box::pin(open_provider_picker(app, config, engine_handle)).await;
+                }
                 if needs_model {
                     begin_first_connection_setup(app);
                     Box::pin(open_model_connection_setup(

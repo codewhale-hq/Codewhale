@@ -326,7 +326,11 @@ fn user_registry_entries(
 }
 
 pub fn command_infos() -> Vec<&'static CommandInfo> {
-    registry().infos()
+    let mut infos = registry().infos();
+    if !crate::tui::account_login::ACCOUNT_SIGN_IN_ENABLED {
+        infos.retain(|info| info.name != "login");
+    }
+    infos
 }
 
 pub fn get_command_info(name: &str) -> Option<&'static CommandInfo> {
@@ -817,7 +821,11 @@ mod tests {
         let message = status.message.expect("login status");
         assert!(message.contains("Codewhale login"), "{message}");
         assert!(message.contains("Account:"), "{message}");
-        assert!(message.contains("codewhale login"), "{message}");
+        assert_eq!(
+            message.contains("codewhale login"),
+            crate::tui::account_login::ACCOUNT_SIGN_IN_ENABLED,
+            "{message}"
+        );
         // No-brand invariant: the internal cloud-agent slot is not user
         // surface, so status never names it or teaches a set-slot command.
         assert!(!message.contains("Daytona"), "{message}");
@@ -1243,9 +1251,10 @@ mod tests {
             .iter()
             .filter(|info| info.name == "feat015ctx")
             .count();
+        let hidden_login = usize::from(!crate::tui::account_login::ACCOUNT_SIGN_IN_ENABLED);
         assert_eq!(
             total_commands + test_only_count,
-            command_infos().len(),
+            command_infos().len() + hidden_login,
             "group-iterated command count must match registry infos count"
         );
     }

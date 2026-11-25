@@ -53,8 +53,14 @@ const MAX_API_KEY_BYTES: u64 = 4096;
 const MAX_API_KEY_STDIN_BYTES: u64 = MAX_API_KEY_BYTES + 1024;
 const MAX_KEY_LABEL_CHARS: usize = 80;
 pub const ACCOUNT_SIGN_IN_OPEN: bool = false;
-pub const ACCOUNT_SIGN_IN_CLOSED_MESSAGE: &str =
-    "Codewhale accounts are not open yet; connect a model in the terminal with /provider.";
+
+pub fn account_sign_in_closed_message() -> String {
+    codewhale_localization::tr(
+        codewhale_localization::resolve_locale("auto"),
+        codewhale_localization::MessageId::AccountSignInClosed,
+    )
+    .into_owned()
+}
 pub const DEFAULT_LOGIN_TIMEOUT_SECONDS: u64 = 600;
 pub const MAX_LOGIN_TIMEOUT_SECONDS: u64 = 3600;
 
@@ -1702,6 +1708,9 @@ impl<'a, T: CloudTransport> CloudClient<'a, T> {
         snapshot: AccountSessionSnapshot,
     ) -> Result<(CloudResponse, AccountSessionSnapshot)> {
         let Some(stored) = snapshot.load()? else {
+            if !ACCOUNT_SIGN_IN_OPEN {
+                bail!(account_sign_in_closed_message());
+            }
             bail!("Not signed in. Run `codewhale login` first");
         };
         let first = self.transport.execute(CloudRequest {
@@ -3125,8 +3134,8 @@ enum KeyReadMode {
 
 pub fn run(args: CloudArgs, profile: Option<&str>, config: &mut ConfigStore) -> Result<()> {
     let machine = machine::MachineKeyEnv::from_process_env();
-    if account_command_is_closed(ACCOUNT_SIGN_IN_OPEN, &args.command, machine.is_present()) {
-        bail!(ACCOUNT_SIGN_IN_CLOSED_MESSAGE);
+    if account_command_is_closed(ACCOUNT_SIGN_IN_OPEN, &args.command) {
+        bail!(account_sign_in_closed_message());
     }
     let requested_base = machine::resolve_api_base(
         args.api_base.as_deref(),
@@ -3170,17 +3179,8 @@ pub fn run(args: CloudArgs, profile: Option<&str>, config: &mut ConfigStore) -> 
     )
 }
 
-fn account_command_is_closed(
-    sign_in_open: bool,
-    command: &CloudCommand,
-    machine_key_present: bool,
-) -> bool {
-    !sign_in_open
-        && match command {
-            CloudCommand::Logout => false,
-            CloudCommand::Login(_) | CloudCommand::ClaudeOrg(_) => true,
-            _ => !machine_key_present,
-        }
+fn account_command_is_closed(sign_in_open: bool, command: &CloudCommand) -> bool {
+    !sign_in_open && matches!(command, CloudCommand::Login(_))
 }
 
 fn cloud_session_secrets() -> Result<Secrets> {
@@ -3301,7 +3301,11 @@ fn run_with<T: CloudTransport, W: Write>(
                 writeln!(out, "Not signed in to Codewhale.")?;
                 writeln!(out, "Profile: {}", printable(profile))?;
                 writeln!(out, "API: {api_base}")?;
-                writeln!(out, "Run `codewhale login` to sign in.")?;
+                if ACCOUNT_SIGN_IN_OPEN {
+                    writeln!(out, "Run `codewhale login` to sign in.")?;
+                } else {
+                    writeln!(out, "{}", account_sign_in_closed_message())?;
+                }
                 Ok(())
             }
         },
@@ -4015,36 +4019,26 @@ mod sign_in_gate_tests {
 
     #[test]
     fn account_sign_in_defaults_to_hidden_with_one_plain_sentence() {
-        assert!(!ACCOUNT_SIGN_IN_OPEN);
-        assert!(ACCOUNT_SIGN_IN_CLOSED_MESSAGE.contains("not open yet"));
-        assert!(ACCOUNT_SIGN_IN_CLOSED_MESSAGE.contains("/provider"));
+        const { assert!(!ACCOUNT_SIGN_IN_OPEN) };
+        let english = codewhale_localization::tr(
+            codewhale_localization::Locale::En,
+            codewhale_localization::MessageId::AccountSignInClosed,
+        );
+        assert!(english.contains("not open yet"));
+        assert!(english.contains("/provider"));
     }
 
     #[test]
-    fn closed_accounts_refuse_sign_in_and_keep_logout() {
-        assert!(account_command_is_closed(false, &login(), false));
-        assert!(account_command_is_closed(false, &login(), true));
-        assert!(account_command_is_closed(
-            false,
-            &CloudCommand::Status,
-            false
-        ));
-        assert!(!account_command_is_closed(
-            false,
-            &CloudCommand::Whoami,
-            true
-        ));
-        assert!(!account_command_is_closed(
-            false,
-            &CloudCommand::Logout,
-            false
-        ));
-        assert!(!account_command_is_closed(true, &login(), false));
-        assert!(!account_command_is_closed(
-            true,
-            &CloudCommand::Status,
-            false
-        ));
+    fn closed_accounts_refuse_only_a_new_sign_in() {
+        assert!(account_command_is_closed(false, &login()));
+        for command in [
+            CloudCommand::Status,
+            CloudCommand::Whoami,
+            CloudCommand::Logout,
+        ] {
+            assert!(!account_command_is_closed(false, &command));
+        }
+        assert!(!account_command_is_closed(true, &login()));
     }
 
     #[test]
@@ -4054,6 +4048,6 @@ mod sign_in_gate_tests {
             ConfigStore::load(Some(dir.path().join("config.toml"))).expect("config should load");
         let error = run_account_login(true, 1, None, &mut config)
             .expect_err("sign-in is closed until accounts open");
-        assert_eq!(error.to_string(), ACCOUNT_SIGN_IN_CLOSED_MESSAGE);
+        assert_eq!(error.to_string(), account_sign_in_closed_message());
     }
 }

@@ -2839,14 +2839,6 @@ async fn apply_command_result_inner(
                 begin_first_connection_setup(app);
                 open_provider_picker(app, config, engine_handle).await;
             }
-            AppAction::StartAccountConnect | AppAction::StartAccountLogin
-                if !crate::tui::account_login::ACCOUNT_SIGN_IN_ENABLED =>
-            {
-                app.status_message = Some(
-                    "Account sign-in is not available yet. Connect a model on this computer with /provider."
-                        .to_string(),
-                );
-            }
             AppAction::OpenModelConnectionSetup => {
                 begin_first_connection_setup(app);
                 app.view_stack

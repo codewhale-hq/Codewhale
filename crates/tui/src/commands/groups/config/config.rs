@@ -915,10 +915,15 @@ pub fn login(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandR
                 CommandAccountState::Revoked => format!("revoked (api {})", status.api_base),
                 CommandAccountState::Unavailable(error) => format!("unavailable ({error})"),
             };
+            let sign_in = if status.sign_in_open {
+                "Sign in: `codewhale login`\n"
+            } else {
+                ""
+            };
             ConfigCommandResult::message(format!(
                 "Codewhale login\nAccount: {account}\nActive provider: {}\n\n\
-                 Sign in: `codewhale login`\n\
-                 Provider key: `codewhale auth set --provider <id>` or `/login key`\n\
+                 {sign_in}\
+                 Provider key: `codewhale auth set --provider <id>` or `/provider`\n\
                  Sign out: `/logout` or `codewhale logout`",
                 status.provider
             ))

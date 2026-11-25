@@ -295,6 +295,7 @@ impl CommandLoginContext for LoginAdapter<'_> {
                     account: CommandAccountState::Unavailable(error.to_string()),
                     api_base: String::new(),
                     provider: app.provider_identity_for_persistence().to_string(),
+                    sign_in_open: crate::tui::account_login::ACCOUNT_SIGN_IN_ENABLED,
                 };
             }
         };
@@ -319,6 +320,7 @@ impl CommandLoginContext for LoginAdapter<'_> {
             account,
             api_base,
             provider: app.provider_identity_for_persistence().to_string(),
+            sign_in_open: crate::tui::account_login::ACCOUNT_SIGN_IN_ENABLED,
         }
     }
 
@@ -338,7 +340,12 @@ impl CommandLoginContext for LoginAdapter<'_> {
                 },
             ),
             Some(other) => ConfigReply::error(format!(
-                "Usage: /connect [account|<provider>]\nUnknown or inactive plugin provider: {other}\nCodewhale account sign-in is `/login`."
+                "Usage: /connect [account|<provider>]\nUnknown or inactive plugin provider: {other}{}",
+                if crate::tui::account_login::ACCOUNT_SIGN_IN_ENABLED {
+                    "\nCodewhale account sign-in is `/login`."
+                } else {
+                    ""
+                }
             )),
         }
     }

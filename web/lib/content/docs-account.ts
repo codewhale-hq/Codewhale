@@ -65,6 +65,9 @@ const EN: DocsPageDict = {
       id: "terminal",
       title: "Sign in from the terminal",
       blocks: [
+        {
+          p: "In Codewhale 0.10.5, starting a new sign-in from the terminal is closed until accounts open: `codewhale login` and `/login` say that accounts are not open yet and point you to `/provider`. A profile that is already signed in keeps working, including `codewhale account status`, the other `codewhale account` commands and `/logout`. The rest of this section describes the sign-in as it works when accounts are open.",
+        },
         { p: "Run the login command in any terminal:" },
         { code: "codewhale login", lang: "Terminal" },
         {
@@ -254,6 +257,9 @@ const ZH: DocsPageDict = {
       id: "terminal",
       title: "从终端登录",
       blocks: [
+        {
+          p: "在 Codewhale 0.10.5 中，账户开放之前无法从终端发起新的登录：`codewhale login` 和 `/login` 会提示账户尚未开放，并引导你使用 `/provider`。已经登录的配置档继续可用，包括 `codewhale account status`、其他 `codewhale account` 命令和 `/logout`。本节其余内容描述的是账户开放后的登录方式。",
+        },
         { p: "在任意终端运行登录命令：" },
         { code: "codewhale login", lang: "终端" },
         {

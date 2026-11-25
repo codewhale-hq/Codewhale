@@ -322,6 +322,7 @@ pub struct CommandLoginStatus {
     pub account: CommandAccountState,
     pub api_base: String,
     pub provider: String,
+    pub sign_in_open: bool,
 }
 
 /// Account/provider session state for `/login` and `/logout`.
