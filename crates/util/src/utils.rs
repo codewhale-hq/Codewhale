@@ -655,16 +655,27 @@ fn write_atomic_scoped(
 
 /// Best-effort directory sync: not all platforms or filesystems (for example
 /// Windows, network shares, or FUSE mounts) permit opening or fsyncing a
-/// directory handle, so a failure here is never fatal. Such refusals are
-/// ignored; any other sync failure is logged at warn.
+/// directory handle, so a failure here is never fatal. A missing directory, an
+/// open failure outside unix and a filesystem that refuses directory sync are
+/// ignored; any other failure is logged at warn.
 pub fn sync_directory(parent: &Path) {
-    let Ok(dir) = std::fs::File::open(parent) else {
-        return;
-    };
-    if let Err(error) = dir.sync_all()
+    match std::fs::File::open(parent) {
+        Ok(dir) => report_directory_sync(parent, dir.sync_all()),
+        Err(error) if cfg!(unix) && error.kind() != io::ErrorKind::NotFound => {
+            tracing::warn!(
+                path = %parent.display(),
+                "directory sync skipped: could not open directory: {error}"
+            );
+        }
+        Err(_) => {}
+    }
+}
+
+pub fn report_directory_sync(dir: &Path, result: io::Result<()>) {
+    if let Err(error) = result
         && !is_directory_sync_refusal(&error)
     {
-        tracing::warn!(path = %parent.display(), "directory sync failed: {error}");
+        tracing::warn!(path = %dir.display(), "directory sync failed: {error}");
     }
 }
 

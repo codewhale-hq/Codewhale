@@ -136,7 +136,7 @@ pub fn append_durable(root: &Path, path: &Path, contents: &[u8]) -> io::Result<(
     file.write_all(contents)?;
     file.sync_all()?;
     if !existed {
-        let _ = target.sync_parent();
+        crate::utils::report_directory_sync(path.parent().unwrap_or(root), target.sync_parent());
         for created_dir in &missing_parents {
             if let Some(ancestor) = created_dir.parent()
                 && ancestor.starts_with(root)

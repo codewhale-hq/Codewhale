@@ -609,7 +609,10 @@ impl ApprovalReceiptStore {
         }
         file.write_all(&line)?;
         file.sync_all()?;
-        let _ = log.sync_parent();
+        codewhale_util::utils::report_directory_sync(
+            &self.sessions_dir.join(session_id),
+            log.sync_parent(),
+        );
         Ok(())
     }
 
