@@ -107,6 +107,7 @@ impl SettingsPickerController {
         &self.filtered
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn tab_match_counts(&self) -> Vec<(String, usize)> {
         let query = self.query.to_ascii_lowercase();

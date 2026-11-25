@@ -2624,6 +2624,7 @@ impl ProviderPickerView {
         }
     }
 
+    #[cfg(test)]
     fn visible_row_count(&self) -> usize {
         (0..self.rows.len())
             .filter(|idx| self.row_visible(*idx))
