@@ -52,6 +52,9 @@ const MIN_API_KEY_BYTES: usize = 8;
 const MAX_API_KEY_BYTES: u64 = 4096;
 const MAX_API_KEY_STDIN_BYTES: u64 = MAX_API_KEY_BYTES + 1024;
 const MAX_KEY_LABEL_CHARS: usize = 80;
+pub const ACCOUNT_SIGN_IN_OPEN: bool = false;
+pub const ACCOUNT_SIGN_IN_CLOSED_MESSAGE: &str =
+    "Codewhale accounts are not open yet; connect a model in the terminal with /provider.";
 pub const DEFAULT_LOGIN_TIMEOUT_SECONDS: u64 = 600;
 pub const MAX_LOGIN_TIMEOUT_SECONDS: u64 = 3600;
 
@@ -3122,6 +3125,9 @@ enum KeyReadMode {
 
 pub fn run(args: CloudArgs, profile: Option<&str>, config: &mut ConfigStore) -> Result<()> {
     let machine = machine::MachineKeyEnv::from_process_env();
+    if account_command_is_closed(ACCOUNT_SIGN_IN_OPEN, &args.command, machine.is_present()) {
+        bail!(ACCOUNT_SIGN_IN_CLOSED_MESSAGE);
+    }
     let requested_base = machine::resolve_api_base(
         args.api_base.as_deref(),
         std::env::var(machine::MACHINE_API_BASE_ENV).ok().as_deref(),
@@ -3162,6 +3168,19 @@ pub fn run(args: CloudArgs, profile: Option<&str>, config: &mut ConfigStore) -> 
         &mut opener,
         &mut sleeper,
     )
+}
+
+fn account_command_is_closed(
+    sign_in_open: bool,
+    command: &CloudCommand,
+    machine_key_present: bool,
+) -> bool {
+    !sign_in_open
+        && match command {
+            CloudCommand::Logout => false,
+            CloudCommand::Login(_) | CloudCommand::ClaudeOrg(_) => true,
+            _ => !machine_key_present,
+        }
 }
 
 fn cloud_session_secrets() -> Result<Secrets> {
@@ -3982,3 +4001,59 @@ fn printable_max(value: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod sign_in_gate_tests {
+    use super::*;
+
+    fn login() -> CloudCommand {
+        CloudCommand::Login(CloudLoginArgs {
+            no_open: true,
+            timeout_seconds: 1,
+        })
+    }
+
+    #[test]
+    fn account_sign_in_defaults_to_hidden_with_one_plain_sentence() {
+        assert!(!ACCOUNT_SIGN_IN_OPEN);
+        assert!(ACCOUNT_SIGN_IN_CLOSED_MESSAGE.contains("not open yet"));
+        assert!(ACCOUNT_SIGN_IN_CLOSED_MESSAGE.contains("/provider"));
+    }
+
+    #[test]
+    fn closed_accounts_refuse_sign_in_and_keep_logout() {
+        assert!(account_command_is_closed(false, &login(), false));
+        assert!(account_command_is_closed(false, &login(), true));
+        assert!(account_command_is_closed(
+            false,
+            &CloudCommand::Status,
+            false
+        ));
+        assert!(!account_command_is_closed(
+            false,
+            &CloudCommand::Whoami,
+            true
+        ));
+        assert!(!account_command_is_closed(
+            false,
+            &CloudCommand::Logout,
+            false
+        ));
+        assert!(!account_command_is_closed(true, &login(), false));
+        assert!(!account_command_is_closed(
+            true,
+            &CloudCommand::Status,
+            false
+        ));
+    }
+
+    #[test]
+    fn closed_login_fails_before_any_network_or_browser_work() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config =
+            ConfigStore::load(Some(dir.path().join("config.toml"))).expect("config should load");
+        let error = run_account_login(true, 1, None, &mut config)
+            .expect_err("sign-in is closed until accounts open");
+        assert_eq!(error.to_string(), ACCOUNT_SIGN_IN_CLOSED_MESSAGE);
+    }
+}

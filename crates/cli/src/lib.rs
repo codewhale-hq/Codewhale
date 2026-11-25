@@ -252,7 +252,7 @@ enum Commands {
         after_help = "Commands:\n  install <SPEC> [--json]  Install a plugin bundle without trusting or enabling it\n  import dsh <PATH> [--json]  Review a DeepSeek Harness package before importing\n  import dsh approve <PATH> <HASH> [--json]  Install an exact reviewed DeepSeek Harness package\n  status [NAME] [--json]  Inspect plugin status and diagnostics\n  list [NAME] [--json]    Alias of status\n  show <NAME> [--json]    Show the capability review without prompting or trusting\n  restage <NAME> [--json]  Restore an eligible reviewed plugin snapshot\n  trust <NAME> [--json]  Show the capability review; in a terminal, then ask\n  trust <NAME> --review-token T [--yes] [--json]  Trust exactly the content the bundle review token names\n  enable <NAME> [--json]  Enable a trusted plugin\n  disable <NAME> [--json]  Disable a plugin, keeping its trust\n  update <NAME> [--json]  Update an installed plugin bundle from its recorded source\n  uninstall <NAME> [--yes] [--json]  Disable if needed and remove an installed plugin bundle\n  revoke <NAME> [--json]  Revoke trust\n\nThe bundle review token ties trust to exact content; it does not show that anyone read the review,\nand it is not the host-service review token. A --yes trust is recorded as the command line. When\nCODEWHALE_AGENT_PROJECT marks the process, as it does every command the agent runs, trust and enable\nare the agent's, for that project only; that mark is a label the agent could remove in Full Access."
     )]
     Plugins(TuiPassthroughArgs),
-    /// Scaffold project MCP config and example skills (use `codewhale auth` or `/connect` for model setup).
+    /// Scaffold project MCP config and example skills (use `codewhale auth` or `/provider` for model setup).
     Setup(TuiPassthroughArgs),
     /// Generate a remote Codewhale agent deploy bundle (cloud + chat bridge).
     RemoteSetup(RemoteSetupArgs),
@@ -394,9 +394,7 @@ New integrations should prefer `codewhale app-server --http` for the full Engine
     )]
     Web(WebArgs),
     /// Sign in to your Codewhale account through the browser.
-    #[command(
-        after_help = "Local use does not require a Codewhale account.\nConnect a model in the TUI with /connect, or run `codewhale auth set --provider <provider>`.\nSigning in preserves your selected model and does not upload existing local keys."
-    )]
+    #[command(after_help = LOGIN_AFTER_HELP)]
     Login(LoginArgs),
     /// Sign out of Codewhale, keeping local model connections and work.
     Logout(LogoutArgs),
@@ -534,12 +532,17 @@ const COMPLETION_BIN_NAME: &str = "codewhale";
 /// types the short name.
 const COMPLETION_ALIAS_NAME: &str = "codew";
 
+const LOGIN_AFTER_HELP: &str = if codewhale_account_cli::ACCOUNT_SIGN_IN_OPEN {
+    "Local use does not require a Codewhale account.\nConnect a model in the TUI with /provider, or run `codewhale auth set --provider <provider>`.\nSigning in preserves your selected model and does not upload existing local keys."
+} else {
+    "Codewhale accounts are not open yet, so this command does not sign in.\nLocal use does not require a Codewhale account.\nConnect a model in the TUI with /provider, or run `codewhale auth set --provider <provider>`."
+};
+
 const ADVANCED_COMMANDS: &[&str] = &[
     "run",
     "model",
     "fork",
     "rc",
-    "web",
     "serve",
     "app-server",
     "mcp-server",
@@ -568,13 +571,19 @@ const ADVANCED_COMMANDS: &[&str] = &[
 ];
 
 fn user_facing_command() -> clap::Command {
+    let accounts_open = codewhale_account_cli::ACCOUNT_SIGN_IN_OPEN;
     let mut cmd = Cli::command();
+    if !accounts_open {
+        cmd = cmd.mut_subcommand("login", |sub| sub.hide(true));
+    }
     let mut listed = Vec::new();
     for name in ADVANCED_COMMANDS {
         if let Some(subcommand) = cmd.find_subcommand(name) {
             let canonical_name = subcommand.get_name().to_owned();
             cmd = cmd.mut_subcommand(canonical_name, |sub| sub.hide(true));
-            listed.push(*name);
+            if accounts_open || *name != "account" {
+                listed.push(*name);
+            }
         }
     }
     let mut paragraph =
@@ -3677,6 +3686,18 @@ fn provider_config_api_key(store: &ConfigStore, provider: ProviderKind) -> Optio
     slot.filter(|value| classify_config_api_key_value(value) == ConfigApiKeyValueKind::Literal)
 }
 
+fn provider_bound_env_value(store: &ConfigStore, provider: ProviderKind) -> Option<(&str, String)> {
+    let name = store
+        .config
+        .providers
+        .for_provider(provider)
+        .api_key_env_name()?;
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| (name, value))
+}
+
 fn provider_config_set(store: &ConfigStore, provider: ProviderKind) -> bool {
     provider_config_api_key(store, provider).is_some()
 }
@@ -4305,6 +4326,9 @@ fn auth_get_line_with_runtime(
     }
 
     let config_key = provider_config_api_key(store, provider);
+    if config_key.is_none() && provider_bound_env_value(store, provider).is_some() {
+        return format!("{slot}: set (source: env)");
+    }
     let keyring_key = config_key
         .is_none()
         .then(|| provider_keyring_api_key(secrets, provider))
@@ -4332,18 +4356,21 @@ fn auth_status_all_providers_with_runtime(
 ) -> Vec<String> {
     let active_provider = store.config.provider;
     let mut lines = Vec::new();
-    lines.push(account_status_line());
-    lines.push(String::new());
+    if codewhale_account_cli::ACCOUNT_SIGN_IN_OPEN {
+        lines.push(account_status_line());
+        lines.push(String::new());
+    }
     lines.push(format!(
         "active provider: {} (set via config or CODEWHALE_PROVIDER)",
         active_provider.as_str()
     ));
+    lines.push(format!("secret store: {}", secrets.backend_name()));
     lines.push(String::new());
     lines.push(format!(
-        "{:<14} {:<8} {:<10} {:<8} {}",
-        "provider", "config", "keyring", "env", "status"
+        "{:<14} {:<8} {:<13} {:<8} {}",
+        "provider", "config", "secret store", "env", "status"
     ));
-    lines.push("-".repeat(70));
+    lines.push("-".repeat(73));
 
     for provider in ProviderKind::ALL {
         if provider == ProviderKind::Xai {
@@ -4357,7 +4384,7 @@ fn auth_status_all_providers_with_runtime(
                 ""
             };
             lines.push(format!(
-                "{:<14} {:<8} {:<10} {:<8} {}{}",
+                "{:<14} {:<8} {:<13} {:<8} {}{}",
                 provider.as_str(),
                 xai_table_storage_status(api_key.as_ref(), RuntimeApiKeySource::ConfigFile),
                 xai_table_storage_status(api_key.as_ref(), RuntimeApiKeySource::Keyring),
@@ -4382,7 +4409,7 @@ fn auth_status_all_providers_with_runtime(
                 }
             };
             lines.push(format!(
-                "{:<14} {:<8} {:<10} {:<8} {}{}",
+                "{:<14} {:<8} {:<13} {:<8} {}{}",
                 provider.as_str(),
                 status(RuntimeApiKeySource::ConfigFile),
                 status(RuntimeApiKeySource::Keyring),
@@ -4399,20 +4426,23 @@ fn auth_status_all_providers_with_runtime(
 
         let config_key = provider_config_api_key(store, provider);
         let keyring_key = provider_keyring_api_key(secrets, provider);
-        let env_key = provider_env_value(provider);
+        let bound_env = provider_bound_env_value(store, provider).is_some();
+        let env_set = bound_env || provider_env_set(provider);
         let external_selected = external_oauth_selected(store, provider);
 
         let config_status = config_key.map(|_| "set").unwrap_or("-");
         let keyring_status = keyring_key.as_ref().map(|_| "set").unwrap_or("-");
-        let env_status = env_key.as_ref().map(|_| "set").unwrap_or("-");
+        let env_status = if env_set { "set" } else { "-" };
 
         let source = if external_selected {
             "external consent (not probed)".to_string()
         } else if config_key.is_some() {
             "config".to_string()
+        } else if bound_env {
+            "env".to_string()
         } else if keyring_key.is_some() {
-            "keyring".to_string()
-        } else if env_key.is_some() {
+            "secret store".to_string()
+        } else if env_set {
             "env".to_string()
         } else {
             "unset".to_string()
@@ -4425,7 +4455,7 @@ fn auth_status_all_providers_with_runtime(
         };
 
         lines.push(format!(
-            "{:<14} {:<8} {:<10} {:<8} {}{}",
+            "{:<14} {:<8} {:<13} {:<8} {}{}",
             provider.as_str(),
             config_status,
             keyring_status,
@@ -4438,7 +4468,9 @@ fn auth_status_all_providers_with_runtime(
     lines.push(String::new());
     lines.push("* = active provider (from config or CODEWHALE_PROVIDER)".to_string());
     lines.push("Run `codewhale auth status --provider <id>` for detailed info.".to_string());
-    lines.push("Account sign-in is `codewhale login`.".to_string());
+    if codewhale_account_cli::ACCOUNT_SIGN_IN_OPEN {
+        lines.push("Account sign-in is `codewhale login`.".to_string());
+    }
     lines
 }
 
@@ -4721,12 +4753,15 @@ fn auth_list_lines_with_runtime(
 
         let file = provider_config_set(store, provider);
         let keyring = (!file).then(|| provider_keyring_set(secrets, provider));
-        let env = provider_env_set(provider);
+        let bound_env = provider_bound_env_value(store, provider).is_some();
+        let env = bound_env || provider_env_set(provider);
         let external_selected = external_oauth_selected(store, provider);
         let active = if external_selected {
             "external-consent".to_string()
         } else if file {
             "config".to_string()
+        } else if bound_env {
+            "env".to_string()
         } else if keyring == Some(true) {
             "store".to_string()
         } else if env {
@@ -4774,7 +4809,11 @@ fn auth_status_lines_for_provider_with_runtime(
 
     let config_key = provider_config_api_key(store, provider);
     let keyring_key = provider_keyring_api_key(secrets, provider);
-    let env_key = provider_env_value(provider);
+    let bound_env_key = provider_bound_env_value(store, provider);
+    let env_key = bound_env_key
+        .as_ref()
+        .map(|(name, value)| (*name, value.clone()))
+        .or_else(|| provider_env_value(provider));
     let external = external_consent(store, provider);
     let external_selected = external_oauth_selected(store, provider);
 
@@ -4783,6 +4822,8 @@ fn auth_status_lines_for_provider_with_runtime(
             "external read-only consent (availability not probed)"
         } else if config_key.is_some() {
             "config"
+        } else if bound_env_key.is_some() {
+            "env"
         } else if keyring_key.is_some() {
             "secret store"
         } else if env_key.is_some() {
@@ -4792,6 +4833,7 @@ fn auth_status_lines_for_provider_with_runtime(
         };
         let active_last4 = config_key
             .map(last4_label)
+            .or_else(|| bound_env_key.as_ref().map(|(_, value)| last4_label(value)))
             .or_else(|| keyring_key.as_deref().map(last4_label))
             .or_else(|| env_key.as_ref().map(|(_, value)| last4_label(value)));
         active_last4
@@ -4815,7 +4857,7 @@ fn auth_status_lines_for_provider_with_runtime(
     let base_url = provider_cfg.base_url.as_deref().unwrap_or("(default)");
     let model = provider_cfg.model.as_deref().unwrap_or("(default)");
 
-    let lookup_order = "lookup order: config -> secret store -> env".to_string();
+    let lookup_order = "lookup order: config -> api_key_env -> secret store -> env".to_string();
     let auth_mode = provider_cfg
         .auth_mode
         .as_deref()
@@ -10520,12 +10562,56 @@ verbosity = "concise"
             help.contains("Local use does not require a Codewhale account"),
             "login help must explain that local use does not require an account: {help}"
         );
+        assert!(help.contains("/provider"), "{help}");
+        assert!(!help.contains("/connect"), "{help}");
+        if codewhale_account_cli::ACCOUNT_SIGN_IN_OPEN {
+            assert!(
+                help.contains(
+                    "Signing in preserves your selected model and does not upload existing local keys"
+                ),
+                "login help must explain model preservation and the local-key upload boundary: {help}"
+            );
+        } else {
+            assert!(help.contains("not open yet"), "{help}");
+        }
+    }
+
+    #[test]
+    fn auth_get_reports_the_route_bound_api_key_env() {
+        let _lock = env_lock();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "provider = \"openrouter\"\n\n[providers.openrouter]\napi_key_env = \"CODEWHALE_TEST_CLI_BOUND_OPENROUTER_KEY\"\n",
+        )
+        .expect("fixture");
+        let store = ConfigStore::load(Some(path)).expect("store");
+        let secrets = Secrets::new(std::sync::Arc::new(
+            codewhale_secrets::InMemoryKeyringStore::new(),
+        ));
+        let runtime = CliRuntimeOverrides::default();
+        let _ambient = ScopedEnvVar::remove("OPENROUTER_API_KEY");
+
+        let _unset = ScopedEnvVar::remove("CODEWHALE_TEST_CLI_BOUND_OPENROUTER_KEY");
+        let missing =
+            auth_get_line_with_runtime(&store, &secrets, ProviderKind::Openrouter, &runtime);
+        assert!(missing.ends_with("not set"), "{missing}");
+
+        let _bound = ScopedEnvVar::set("CODEWHALE_TEST_CLI_BOUND_OPENROUTER_KEY", "bound-key-7777");
+        let get = auth_get_line_with_runtime(&store, &secrets, ProviderKind::Openrouter, &runtime);
+        assert!(get.ends_with("set (source: env)"), "{get}");
+        let status =
+            auth_status_lines_for_provider(&store, &secrets, ProviderKind::Openrouter).join("\n");
         assert!(
-            help.contains(
-                "Signing in preserves your selected model and does not upload existing local keys"
-            ),
-            "login help must explain model preservation and the local-key upload boundary: {help}"
+            status.contains("active source: env (last4: ...7777)"),
+            "{status}"
         );
+        assert!(
+            status.contains("env var: CODEWHALE_TEST_CLI_BOUND_OPENROUTER_KEY"),
+            "{status}"
+        );
+        assert!(!status.contains("bound-key-7777"), "{status}");
     }
 
     /// #5198: `auth set` shares the login resolver — provider auth markers go
@@ -11469,7 +11555,7 @@ verbosity = "concise"
 
         assert!(output.contains("provider: deepseek"));
         assert!(output.contains("active source: config (last4: ...3333)"));
-        assert!(output.contains("lookup order: config -> secret store -> env"));
+        assert!(output.contains("lookup order: config -> api_key_env -> secret store -> env"));
         assert!(output.contains("config file: "));
         assert!(output.contains("set, last4: ...3333"));
         assert!(output.contains("secret store: in-memory (test) (set, last4: ...2222)"));
@@ -11501,8 +11587,14 @@ verbosity = "concise"
 
         let output = auth_status_all_providers(&store, &secrets).join("\n");
 
-        assert!(output.contains("account:"), "{output}");
-        assert!(output.contains("codewhale login"), "{output}");
+        let accounts_open = codewhale_account_cli::ACCOUNT_SIGN_IN_OPEN;
+        assert_eq!(output.contains("account:"), accounts_open, "{output}");
+        assert_eq!(
+            output.contains("codewhale login"),
+            accounts_open,
+            "{output}"
+        );
+        assert!(output.contains("secret store"), "{output}");
         assert!(!output.to_lowercase().contains("daytona"), "{output}");
         assert!(!output.contains("set-slot"), "{output}");
 
@@ -12182,7 +12274,9 @@ verbosity = "concise"
             .expect("xAI status row");
         assert!(xai_row.contains("unset"), "{xai_row}");
         assert!(
-            !xai_row.contains("config") && !xai_row.contains("keyring") && !xai_row.contains("env"),
+            !xai_row.contains("config")
+                && !xai_row.contains("secret store")
+                && !xai_row.contains("env"),
             "xAI summary must show runtime-effective sources only: {xai_row}"
         );
 
@@ -13606,8 +13700,22 @@ verbosity = "concise"
 
     #[test]
     fn top_level_help_surfaces_login_models_and_documents_prompt_flag() {
+        let command = user_facing_command();
+        assert_eq!(
+            command
+                .find_subcommand("login")
+                .expect("login command")
+                .is_hide_set(),
+            !codewhale_account_cli::ACCOUNT_SIGN_IN_OPEN
+        );
+        assert!(
+            !command
+                .find_subcommand("web")
+                .expect("web command")
+                .is_hide_set()
+        );
+        assert!(!ADVANCED_COMMANDS.contains(&"web"));
         let help = user_facing_command().render_help().to_string();
-        assert!(help.contains("login"), "{help}");
         assert!(help.contains("models"), "{help}");
         assert!(
             help.contains("Prefill the initial prompt in the interactive session"),
