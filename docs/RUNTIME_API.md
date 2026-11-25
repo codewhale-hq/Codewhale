@@ -1374,8 +1374,8 @@ Nothing is deleted. `GET /v1/sessions/repair` and `codewhale doctor` report the
 last run; `codewhale doctor --repair-sessions [--dry-run]` runs one on demand.
 
 `GET /v1/sessions/{id}?peek=true` returns a bounded, redacted, read-only view
-instead of the transcript: at most 12 entries of at most 400 characters each
-(`&entries=N` lowers the budget, never raises it past the cap), tool calls and
+instead of the transcript: 12 entries by default, of at most 400 characters
+each (`&entries=N` asks for fewer or for up to 100), tool calls and
 results summarised to a name and a size rather than inlined, and
 credential-shaped substrings masked. `omitted_before` reports how many earlier
 messages were dropped. The payload carries `"live": false` and deliberately has

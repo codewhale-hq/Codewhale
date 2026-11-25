@@ -28,6 +28,7 @@ use codewhale_models::ContentBlock;
 /// Most entries a peek carries. The dashboard shows a tail, so this is "the
 /// last N exchanges", which is what a peek is for.
 pub const MAX_PEEK_ENTRIES: usize = 100;
+pub const DEFAULT_PEEK_ENTRIES: usize = 12;
 
 /// Longest text any single entry carries.
 pub const MAX_ENTRY_CHARS: usize = 400;
@@ -135,7 +136,10 @@ pub fn build_peek(session: &SavedSession, max_entries: usize) -> SessionPeek {
     }
 }
 
-fn entry_for_message(default_kind: PeekEntryKind, message: &codewhale_models::Message) -> PeekEntry {
+fn entry_for_message(
+    default_kind: PeekEntryKind,
+    message: &codewhale_models::Message,
+) -> PeekEntry {
     let mut kind = default_kind;
     let mut parts: Vec<String> = Vec::new();
 
@@ -169,10 +173,7 @@ fn entry_for_message(default_kind: PeekEntryKind, message: &codewhale_models::Me
             | ContentBlock::WebSearchToolResult { content, .. }
             | ContentBlock::WebFetchToolResult { content, .. } => {
                 kind = PeekEntryKind::Tool;
-                parts.push(format!(
-                    "Result, {} chars",
-                    content.to_string().len()
-                ));
+                parts.push(format!("Result, {} chars", content.to_string().len()));
             }
             ContentBlock::WebSearchCall {
                 kind: call_kind, ..

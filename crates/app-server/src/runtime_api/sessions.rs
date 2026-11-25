@@ -15,7 +15,7 @@ use codewhale_engine::session_manager::{
     SavedSession, SessionListFilter, SessionManager, SessionMetadata, SessionMutator,
     create_saved_session_with_id_and_mode,
 };
-use codewhale_engine::session_peek::{MAX_PEEK_ENTRIES, SessionPeek, build_peek};
+use codewhale_engine::session_peek::{DEFAULT_PEEK_ENTRIES, SessionPeek, build_peek};
 use codewhale_engine::session_projection::{
     SessionQuery, SessionSortMode, SessionSummary, project_sessions,
 };
@@ -304,7 +304,8 @@ pub(super) struct SessionDetailQuery {
     /// both wasteful and a needless place to re-emit secrets.
     #[serde(default)]
     peek: Option<bool>,
-    /// Entry budget for the peek, clamped to [`MAX_PEEK_ENTRIES`].
+    /// Entry budget for the peek: [`DEFAULT_PEEK_ENTRIES`] when omitted, clamped
+    /// to `MAX_PEEK_ENTRIES`.
     #[serde(default)]
     entries: Option<usize>,
 }
@@ -329,7 +330,7 @@ pub(super) async fn get_session(
         .map_err(|e| map_session_err(&id, e, "read"))?;
 
     if query.peek.unwrap_or(false) {
-        let entries = query.entries.unwrap_or(MAX_PEEK_ENTRIES);
+        let entries = query.entries.unwrap_or(DEFAULT_PEEK_ENTRIES);
         return Ok(Json(SessionDetailOrPeek::Peek(Box::new(build_peek(
             &session, entries,
         )))));
