@@ -23666,8 +23666,8 @@ const READ_ONLY_CHILD_ENVELOPE_BYTE_CEILING: usize = 89_112;
 /// fetch / merge_tree verify tools (b89349286f) and this slice's grant
 /// text both in the shared catalog.
 // Re-measured when `load_skill` joined the eager catalog: +244B for its
-// name, description and schema, against the `## Skills` index the prefix
-// already carries and a `change:tool_surface` re-pin per skill use avoided.
+// name, description and schema, against a `change:tool_surface` re-pin per
+// skill use avoided.
 // Re-measured 2026-09-22 at 88,715B on Linux (88,702B on macOS), +73B: the
 // base prompt's progress-narration rule (E4, 5cf9db3d6) and the workflow
 // Fleet origin list (26cfaf8de), net of the read/bash wording trims

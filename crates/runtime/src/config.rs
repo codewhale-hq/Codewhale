@@ -2450,7 +2450,7 @@ pub struct RuntimeApiConfig {
     pub cors_origins: Option<Vec<String>>,
 }
 
-/// `[skills]` table — discovery, ambient index and installer configuration.
+/// `[skills]` table — discovery, catalog preview and installer configuration.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct SkillsConfig {

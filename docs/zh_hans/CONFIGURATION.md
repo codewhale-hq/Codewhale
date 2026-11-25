@@ -1381,7 +1381,7 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 
 - `[skills.bundled].install`（默认 `"auto"`，另可设 `"all"` 或 `"none"`）：独立控制捆绑安装。`auto` 保留删除即退出规则，设置 `skills_dir` 时停止安装；`all` 补装已启用的缺失技能，只写入 `$CODEWHALE_HOME/skills`（通常为 `~/.codewhale/skills`），不受发现目录覆盖影响；`none` 不写文件或版本标记。修改版和托管正文始终保留。
 - `[skills.bundled].selected` / `disabled` / `explicit_only`（名称数组，默认 `[]`）：空选择列表启用整个安装包，非空列表限制安装和发现。禁用优先，并允许低优先级目录的同名副本生效。显式调用保留用户调用，移除模型索引及模型加载权限。别名沿用规范名称策略；仅影响全局自有目录中可识别的发行副本，不删除文件。配置档逐字段合并，显式空列表清空继承值。`doctor` 报告未知及忽略条目，`/skills inspect` 显示路径和原因。详见 [SKILLS.md](SKILLS.md#捆绑技能)。
-- `[skills].listing_max_description_chars`（整数，默认 `120`，范围 `1..=40000`）：用于 `/context` 和 `doctor --context-json` 的技能目录预览，以及 `/skills inspect` 的描述长度提示。
+- `[skills].listing_max_description_chars`（整数，默认 `120`，范围 `1..=40000`）：用于 `/context` 和 `doctor --context-json` 的技能目录预览，`/skills inspect` 的描述长度提示，以及 `load_skill` 列表中的描述长度。`[skills]` 中的未知键会被拒绝。
 - `[skills].listing_budget_fraction`（有限数值，默认 `0.002`，大于 `0` 且不大于 `1`）：技能目录预览占路由上下文窗口的比例，按每 token 四个字符估算，并限制在 `2400..=40000` 字符。配置档中的字段分别覆盖继承值。父代理和子代理均通过 [`load_skill`](SKILLS.md#配置项) 按需发现技能。
 - `[skills].scan_codewhale_only`(bool，默认 `false`)：为 `true` 时，会话技能发现忽略跨工具根，如 `.claude/skills`、`.opencode/skills`、`.cursor/skills` 和 `~/.agents/skills`。Codewhale 仍扫描 `<workspace>/.codewhale/skills`、`~/.codewhale/skills` 和任何显式 `skills_dir` 覆盖。技能管理器仍可独立于这个运行时旋钮切换本地兼容审计扫描——见 [SKILLS.md](SKILLS.md)。
 

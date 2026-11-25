@@ -20,8 +20,8 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use codewhale_skills::{
-    DEFAULT_SKILL_DESCRIPTION_CHARS, Skill, SkillCatalogGroup, SkillDiscoveryMode,
-    SkillRootCatalog, SkillSource, discover_for_workspace, skill_directories_for_workspace_and_dir,
+    Skill, SkillCatalogGroup, SkillDiscoveryMode, SkillListingConfig, SkillRootCatalog,
+    SkillSource, discover_for_workspace, skill_directories_for_workspace_and_dir,
     skill_root_catalog_for_workspace, skills_directories_for_mode,
 };
 
@@ -142,6 +142,8 @@ impl LoadSkillTool {
                 .iter()
                 .filter(|skill| skill.invocation.model_invocable())
                 .collect();
+            let description_cap =
+                SkillListingConfig::from_config(&context.skills_config).max_description_chars();
             if !raw_query.is_empty() {
                 return Ok(ToolResult::success(render_query_results(
                     raw_query,
@@ -149,6 +151,7 @@ impl LoadSkillTool {
                     &catalog,
                     &context.workspace,
                     home.as_deref(),
+                    description_cap,
                 )));
             }
             return Ok(ToolResult::success(render_skill_listing(
@@ -157,6 +160,7 @@ impl LoadSkillTool {
                 &context.workspace,
                 home.as_deref(),
                 include_external || list_all_alias,
+                description_cap,
             )));
         }
 
@@ -247,23 +251,12 @@ impl LoadSkillTool {
     }
 }
 
-fn compact_skill_description(description: &str) -> String {
-    let single_line = description.split_whitespace().collect::<Vec<_>>().join(" ");
-    if single_line.chars().count() <= DEFAULT_SKILL_DESCRIPTION_CHARS {
-        return single_line;
-    }
-    let mut out: String = single_line
-        .chars()
-        .take(DEFAULT_SKILL_DESCRIPTION_CHARS.saturating_sub(1))
-        .collect();
-    let trimmed = out.trim_end().len();
-    out.truncate(trimmed);
-    out.push('…');
-    out
-}
-
-fn format_skill_list_line(skill: &Skill, external_source: Option<&str>) -> String {
-    let description = compact_skill_description(&skill.description);
+fn format_skill_list_line(
+    skill: &Skill,
+    external_source: Option<&str>,
+    description_cap: usize,
+) -> String {
+    let description = codewhale_skills::compact_description(&skill.description, description_cap);
     match (description.is_empty(), external_source) {
         (true, None) => format!("  - {}\n", skill.name),
         (true, Some(source)) => format!("  - {} ({source})\n", skill.name),
@@ -278,6 +271,7 @@ fn render_skill_listing(
     workspace: &std::path::Path,
     home_dir: Option<&std::path::Path>,
     include_external: bool,
+    description_cap: usize,
 ) -> String {
     if skills.is_empty() {
         return "No skills installed.".to_string();
@@ -295,7 +289,7 @@ fn render_skill_listing(
     if !primary.is_empty() {
         listing.push_str(&format!("Available skills ({}):\n", primary.len()));
         for skill in &primary {
-            listing.push_str(&format_skill_list_line(skill, None));
+            listing.push_str(&format_skill_list_line(skill, None, description_cap));
         }
     } else if !include_external {
         listing.push_str("No project or Codewhale-native skills installed.\n");
@@ -308,7 +302,11 @@ fn render_skill_listing(
         if include_external {
             listing.push_str(&format!("External harness skills ({}):\n", external.len()));
             for (skill, source_label) in &external {
-                listing.push_str(&format_skill_list_line(skill, Some(source_label)));
+                listing.push_str(&format_skill_list_line(
+                    skill,
+                    Some(source_label),
+                    description_cap,
+                ));
             }
         } else {
             let mut by_source: BTreeMap<&str, usize> = BTreeMap::new();
@@ -419,6 +417,7 @@ fn render_query_results(
     catalog: &SkillRootCatalog,
     workspace: &std::path::Path,
     home_dir: Option<&std::path::Path>,
+    description_cap: usize,
 ) -> String {
     let query_lower = raw_query.to_lowercase();
     let query_tokens = tokenize_search_terms(raw_query);
@@ -460,7 +459,11 @@ fn render_query_results(
         format!("Skills matching {query_lower:?} ({}):\n", shown.len())
     };
     for (_, _, skill, external_source) in &shown {
-        listing.push_str(&format_skill_list_line(skill, external_source.as_deref()));
+        listing.push_str(&format_skill_list_line(
+            skill,
+            external_source.as_deref(),
+            description_cap,
+        ));
     }
     if total_matches > shown.len() {
         listing.push_str(&format!(
@@ -564,10 +567,9 @@ fn ensure_reviewed_plugin_skill_is_current_for(
 }
 
 /// Render the skill body the model will see. Includes the description
-/// up top so a single tool result is self-contained — no need to
-/// cross-reference the system-prompt catalogue. Companion-file paths
+/// up top so a single tool result is self-contained. Companion-file paths
 /// land at the bottom under a clearly-named heading so the model can
-/// open them with `read_file` if they're relevant to the task.
+/// open them with `read` if they're relevant to the task.
 pub(crate) fn format_skill_body(skill: &Skill) -> String {
     let mut out = String::new();
     out.push_str(&format!("# Skill: {}\n\n", skill.name));
@@ -613,7 +615,7 @@ pub(crate) fn format_skill_body(skill: &Skill) -> String {
         }
     }
 
-    let companions = collect_companion_files(skill);
+    let (companions, unlisted) = collect_companion_files_with_overflow(skill);
     if !companions.is_empty() {
         out.push_str("\n## Companion files\n\n");
         out.push_str(
@@ -621,6 +623,11 @@ pub(crate) fn format_skill_body(skill: &Skill) -> String {
         );
         for path in &companions {
             out.push_str(&format!("- `{}`\n", path.display()));
+        }
+        if unlisted > 0 {
+            out.push_str(&format!(
+                "\n{unlisted} more files not listed (limit {MAX_COMPANION_FILES} files, {MAX_COMPANION_FILES_PER_DIR} per directory).\n"
+            ));
         }
     }
     out
@@ -632,58 +639,65 @@ pub(crate) fn bundled_creator_skill_body(name: &str) -> Option<String> {
 
 const MAX_COMPANION_DEPTH: usize = 4;
 const MAX_COMPANION_FILES: usize = 128;
+const MAX_COMPANION_FILES_PER_DIR: usize = 32;
 
-fn collect_companion_files_rec(
-    root: &std::path::Path,
-    dir: &std::path::Path,
-    depth: usize,
-    out: &mut Vec<std::path::PathBuf>,
-) {
-    if depth > MAX_COMPANION_DEPTH || out.len() >= MAX_COMPANION_FILES {
-        return;
+fn collect_companion_files_with_overflow(skill: &Skill) -> (Vec<std::path::PathBuf>, usize) {
+    if matches!(&skill.source, SkillSource::Plugin { .. }) {
+        return (Vec::new(), 0);
     }
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return;
+    let Some(root) = skill.path.parent() else {
+        return (Vec::new(), 0);
     };
-    let mut children: Vec<std::fs::DirEntry> = rd.flatten().collect();
-    children.sort_by_key(|entry| entry.file_name());
-    for entry in children {
-        if out.len() >= MAX_COMPANION_FILES {
-            break;
-        }
-        let name = entry.file_name();
-        if name.to_str().is_some_and(|s| s.starts_with('.')) {
-            continue;
-        }
-        let Ok(ft) = entry.file_type() else {
+    let mut out = Vec::new();
+    let mut overflow = 0usize;
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back((root.to_path_buf(), 0usize));
+    while let Some((dir, depth)) = queue.pop_front() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
             continue;
         };
-        if ft.is_symlink() {
-            continue;
-        }
-        let path = entry.path();
-        if ft.is_file() {
-            if dir == root && name == "SKILL.md" {
+        let mut children: Vec<std::fs::DirEntry> = rd.flatten().collect();
+        children.sort_by_key(|entry| entry.file_name());
+        let mut listed_here = 0usize;
+        for entry in children {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if name.starts_with('.') {
                 continue;
             }
-            out.push(path);
-        } else if ft.is_dir() && depth < MAX_COMPANION_DEPTH {
-            collect_companion_files_rec(root, &path, depth + 1, out);
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_symlink() {
+                continue;
+            }
+            if ft.is_file() {
+                if depth == 0 && name == "SKILL.md" {
+                    continue;
+                }
+                if out.len() < MAX_COMPANION_FILES && listed_here < MAX_COMPANION_FILES_PER_DIR {
+                    out.push(entry.path());
+                    listed_here += 1;
+                } else {
+                    overflow += 1;
+                }
+            } else if ft.is_dir()
+                && depth < MAX_COMPANION_DEPTH
+                && name != "__pycache__"
+                && name != "node_modules"
+            {
+                queue.push_back((entry.path(), depth + 1));
+            }
         }
     }
+    out.sort();
+    (out, overflow)
 }
 
 fn collect_companion_files(skill: &Skill) -> Vec<std::path::PathBuf> {
-    if matches!(&skill.source, SkillSource::Plugin { .. }) {
-        return Vec::new();
-    }
-    let Some(dir) = skill.path.parent() else {
-        return Vec::new();
-    };
-    let mut entries = Vec::new();
-    collect_companion_files_rec(dir, dir, 0, &mut entries);
-    entries.sort();
-    entries
+    collect_companion_files_with_overflow(skill).0
 }
 
 #[cfg(test)]
@@ -942,6 +956,55 @@ mod tests {
             !body.contains("File action=") && !body.contains("through Bash"),
             "{body}"
         );
+    }
+
+    #[test]
+    fn skill_list_line_keeps_localized_trigger_and_honours_cap() {
+        let tmp = tempdir().unwrap();
+        let summary = "Собирает подробный отчёт по результатам работы команды и оформляет его в виде структурированного документа с разделами и таблицами для руководства компании";
+        let description = format!("{summary}. Триггеры: когда пользователь просит собрать отчёт");
+        write_skill(tmp.path(), "report-skill", &description, "body");
+        let registry = SkillRegistry::discover(tmp.path());
+        let skill = registry.get("report-skill").unwrap();
+
+        let short = format_skill_list_line(skill, None, 120);
+        assert!(
+            short.contains("когда пользователь просит собрать отчёт"),
+            "{short}"
+        );
+        assert!(short.contains('…'), "{short}");
+        assert!(!short.contains("для руководства компании"), "{short}");
+
+        let full = format_skill_list_line(skill, None, 800);
+        assert!(full.contains(&description), "{full}");
+        assert!(!full.contains('…'), "{full}");
+    }
+
+    #[test]
+    fn format_skill_body_reports_companions_past_the_cap() {
+        let tmp = tempdir().unwrap();
+        write_skill(tmp.path(), "big-skill", "x", "body");
+        let skill_dir = tmp.path().join("big-skill");
+        fs::create_dir_all(skill_dir.join("assets")).unwrap();
+        fs::create_dir_all(skill_dir.join("references")).unwrap();
+        fs::create_dir_all(skill_dir.join("__pycache__")).unwrap();
+        for i in 0..200 {
+            fs::write(skill_dir.join(format!("assets/file-{i:03}.bin")), "x").unwrap();
+        }
+        fs::write(skill_dir.join("__pycache__/junk.pyc"), "x").unwrap();
+        fs::write(skill_dir.join("references/guide.md"), "# guide").unwrap();
+        fs::write(skill_dir.join("run.sh"), "echo").unwrap();
+
+        let registry = SkillRegistry::discover(tmp.path());
+        let skill = registry.get("big-skill").unwrap();
+        let body = format_skill_body(skill);
+        assert!(body.contains("run.sh"), "{body}");
+        assert!(body.contains("references/guide.md"), "{body}");
+        assert!(!body.contains("junk.pyc"), "{body}");
+        assert!(body.contains("more files not listed"), "{body}");
+        let (listed, unlisted) = collect_companion_files_with_overflow(skill);
+        assert!(listed.len() <= MAX_COMPANION_FILES);
+        assert_eq!(listed.len() + unlisted, 202);
     }
 
     #[test]
