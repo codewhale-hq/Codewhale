@@ -4131,11 +4131,36 @@ impl Config {
         })
     }
 
+    fn ambient_default_provider(&self) -> Option<&'static str> {
+        if self.provider.is_some()
+            || self.api_key.is_some()
+            || self.base_url.is_some()
+            || self.providers.as_ref().is_some_and(|p| {
+                p.deepseek.api_key.is_some()
+                    || p.deepseek.base_url.is_some()
+                    || p.deepseek.api_key_env.is_some()
+            })
+        {
+            return None;
+        }
+        const AMBIENT_PRIORITY: [(&str, ProviderKind); 5] = [
+            ("ANTHROPIC_API_KEY", ProviderKind::Anthropic),
+            ("OPENAI_API_KEY", ProviderKind::Openai),
+            ("GEMINI_API_KEY", ProviderKind::Google),
+            ("DEEPSEEK_API_KEY", ProviderKind::Deepseek),
+            ("OPENROUTER_API_KEY", ProviderKind::Openrouter),
+        ];
+        AMBIENT_PRIORITY
+            .iter()
+            .find_map(|(env_var, kind)| first_nonempty_env(&[env_var]).map(|_| kind.as_str()))
+    }
+
     /// Resolve the currently selected live route, keeping its exact id.
     pub fn active_provider_identity(&self) -> std::result::Result<ProviderIdentity, String> {
         let selected = self
             .provider
             .as_deref()
+            .or_else(|| self.ambient_default_provider())
             .unwrap_or(ProviderKind::Deepseek.as_str());
         if self.migrated_legacy_ollama_cloud_route && selected == ProviderKind::OllamaCloud.as_str()
         {
@@ -9332,17 +9357,8 @@ pub fn is_kimi_code_membership_model(model: &str) -> bool {
 /// advice is conditional prose: producing an error must not inspect PATH or
 /// another application's credential file on the runtime thread.
 fn deepseek_missing_key_message() -> &'static str {
-    concat!(
-        "DeepSeek API key not found.\n",
-        "Save a key for every folder:\n",
-        "  codewhale auth set --provider deepseek\n",
-        "Get a key: https://platform.deepseek.com/api_keys\n",
-        "Or export DEEPSEEK_API_KEY=<your-key> (this shell only).\n",
-        "In zsh, ~/.zshrc is read only by interactive shells.\n",
-        "Or set api_key in ~/.codewhale/config.toml.\n",
-        "If you already use DeepSeek Harness, grant read-only access:\n",
-        "  codewhale auth external-consent --provider deepseek --mode read-only"
-    )
+    "DeepSeek API key not found. Run `codewhale auth set --provider deepseek` or `codewhale login`.\n\
+     Or export DEEPSEEK_API_KEY=<your-key> (or grant DeepSeek Harness access with `codewhale auth external-consent --provider deepseek --mode read-only`)."
 }
 
 /// The Moonshot direct-platform roster, as one fact. Mirror of

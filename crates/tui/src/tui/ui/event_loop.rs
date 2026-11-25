@@ -667,6 +667,13 @@ async fn apply_launch_action(
 ) -> Result<bool> {
     match action {
         crate::tui::underwater::LaunchAction::None => {}
+        crate::tui::underwater::LaunchAction::ConnectModel => {
+            app.launch.dissolve_card(app.ambient_clock_ms);
+            app.view_stack
+                .push(crate::tui::account_login::ConnectionSetupView::new(
+                    app.ui_locale,
+                ));
+        }
         crate::tui::underwater::LaunchAction::ReturnToSession => app.launch.dismiss(),
         crate::tui::underwater::LaunchAction::NewSession => {
             let result = begin_launch_session(app, None);

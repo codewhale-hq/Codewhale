@@ -154,6 +154,8 @@ struct Cli {
         conflicts_with_all = ["continue_session", "resume"]
     )]
     session_id: Option<String>,
+    /// Prefill the initial prompt in the interactive TUI (use `codewhale exec`
+    /// for a non-interactive run).
     #[arg(short = 'p', long = "prompt", value_name = "PROMPT")]
     prompt_flag: Option<String>,
     /// Conversation mode for a new interactive session (for example
@@ -250,7 +252,7 @@ enum Commands {
         after_help = "Commands:\n  install <SPEC> [--json]  Install a plugin bundle without trusting or enabling it\n  import dsh <PATH> [--json]  Review a DeepSeek Harness package before importing\n  import dsh approve <PATH> <HASH> [--json]  Install an exact reviewed DeepSeek Harness package\n  status [NAME] [--json]  Inspect plugin status and diagnostics\n  list [NAME] [--json]    Alias of status\n  show <NAME> [--json]    Show the capability review without prompting or trusting\n  restage <NAME> [--json]  Restore an eligible reviewed plugin snapshot\n  trust <NAME> [--json]  Show the capability review; in a terminal, then ask\n  trust <NAME> --review-token T [--yes] [--json]  Trust exactly the content the bundle review token names\n  enable <NAME> [--json]  Enable a trusted plugin\n  disable <NAME> [--json]  Disable a plugin, keeping its trust\n  update <NAME> [--json]  Update an installed plugin bundle from its recorded source\n  uninstall <NAME> [--yes] [--json]  Disable if needed and remove an installed plugin bundle\n  revoke <NAME> [--json]  Revoke trust\n\nThe bundle review token ties trust to exact content; it does not show that anyone read the review,\nand it is not the host-service review token. A --yes trust is recorded as the command line. When\nCODEWHALE_AGENT_PROJECT marks the process, as it does every command the agent runs, trust and enable\nare the agent's, for that project only; that mark is a label the agent could remove in Full Access."
     )]
     Plugins(TuiPassthroughArgs),
-    /// Bootstrap MCP config and/or skills directories.
+    /// Scaffold project MCP config and example skills (use `codewhale auth` or `/connect` for model setup).
     Setup(TuiPassthroughArgs),
     /// Generate a remote Codewhale agent deploy bundle (cloud + chat bridge).
     RemoteSetup(RemoteSetupArgs),
@@ -534,7 +536,6 @@ const COMPLETION_ALIAS_NAME: &str = "codew";
 
 const ADVANCED_COMMANDS: &[&str] = &[
     "run",
-    "models",
     "model",
     "fork",
     "rc",
@@ -542,7 +543,6 @@ const ADVANCED_COMMANDS: &[&str] = &[
     "serve",
     "app-server",
     "mcp-server",
-    "login",
     "logout",
     "account",
     "dispatch",
@@ -13602,6 +13602,19 @@ verbosity = "concise"
             root_tui_passthrough(&cli).unwrap(),
             vec!["--prompt".to_string(), "Reply with exactly OK.".to_string()]
         );
+    }
+
+    #[test]
+    fn top_level_help_surfaces_login_models_and_documents_prompt_flag() {
+        let help = user_facing_command().render_help().to_string();
+        assert!(help.contains("login"), "{help}");
+        assert!(help.contains("models"), "{help}");
+        assert!(
+            help.contains("Prefill the initial prompt in the interactive TUI"),
+            "{help}"
+        );
+        assert!(!ADVANCED_COMMANDS.contains(&"login"));
+        assert!(!ADVANCED_COMMANDS.contains(&"models"));
     }
 
     #[test]

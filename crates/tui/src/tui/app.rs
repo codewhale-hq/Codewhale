@@ -327,7 +327,7 @@ pub(crate) fn is_stop_word(input: &str, stop_words: &[String]) -> Option<String>
 
 fn initial_onboarding_state(
     skip_onboarding: bool,
-    was_onboarded: bool,
+    _was_onboarded: bool,
     _needs_language: bool,
     needs_api_key: bool,
     needs_workspace_trust: bool,
@@ -336,7 +336,7 @@ fn initial_onboarding_state(
         return OnboardingState::None;
     }
 
-    if was_onboarded && needs_workspace_trust {
+    if needs_workspace_trust {
         OnboardingState::TrustDirectory
     } else {
         OnboardingState::None
@@ -345,11 +345,11 @@ fn initial_onboarding_state(
 
 fn onboarding_is_workspace_trust_gate(
     skip_onboarding: bool,
-    was_onboarded: bool,
+    _was_onboarded: bool,
     needs_api_key: bool,
     needs_workspace_trust: bool,
 ) -> bool {
-    !skip_onboarding && was_onboarded && !needs_api_key && needs_workspace_trust
+    !skip_onboarding && !needs_api_key && needs_workspace_trust
 }
 
 /// Resolve the launch onboarding state and the missing-key-recovery flag in one
@@ -678,6 +678,7 @@ pub struct LaunchRecentSession {
 /// [`crate::tui::underwater::launch_card_rows`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchRowId {
+    ConnectModel,
     NewSession,
     ReturnToSession,
     Recent(String),

@@ -11933,18 +11933,66 @@ fn config_set_provider_typo_reuses_the_invalid_provider_wording() {
 #[test]
 fn deepseek_missing_key_message_keeps_commands_copyable_and_harness_advice_conditional() {
     let plain = deepseek_missing_key_message();
+    assert_eq!(plain.lines().count(), 2, "{plain}");
     assert!(
-        plain.contains("\n  codewhale auth set --provider deepseek\n"),
+        plain.contains("codewhale auth set --provider deepseek"),
         "{plain}"
     );
+    assert!(plain.contains("codewhale login"), "{plain}");
     assert!(
-        plain.contains("If you already use DeepSeek Harness, grant read-only access:"),
+        plain.contains("codewhale auth external-consent --provider deepseek --mode read-only"),
         "{plain}"
     );
-    assert!(
-        plain.ends_with("\n  codewhale auth external-consent --provider deepseek --mode read-only"),
-        "{plain}"
+}
+
+#[test]
+fn ambient_default_provider_detects_cloud_env_keys_in_priority_order() {
+    let _guard = lock_test_env();
+    let keys = [
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "OPENROUTER_API_KEY",
+    ];
+    let previous: Vec<Option<OsString>> = keys.iter().map(env::var_os).collect();
+    for key in keys {
+        unsafe { env::remove_var(key) };
+    }
+
+    let cfg = Config::default();
+    assert_eq!(
+        cfg.active_provider_identity().expect("default").provider,
+        ProviderKind::Deepseek
     );
+
+    unsafe { env::set_var("OPENROUTER_API_KEY", "sk-or-test") };
+    assert_eq!(
+        cfg.active_provider_identity().expect("openrouter").provider,
+        ProviderKind::Openrouter
+    );
+
+    unsafe { env::set_var("ANTHROPIC_API_KEY", "sk-ant-test") };
+    assert_eq!(
+        cfg.active_provider_identity().expect("anthropic").provider,
+        ProviderKind::Anthropic
+    );
+
+    let explicit = Config {
+        provider: Some("deepseek".to_string()),
+        ..Config::default()
+    };
+    assert_eq!(
+        explicit
+            .active_provider_identity()
+            .expect("explicit")
+            .provider,
+        ProviderKind::Deepseek
+    );
+
+    for (key, value) in keys.iter().zip(previous) {
+        unsafe { EnvGuard::restore_var(key, value) };
+    }
 }
 
 #[test]

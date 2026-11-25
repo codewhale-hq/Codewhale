@@ -45,10 +45,11 @@ pub(crate) fn continue_without_trusting_directory(app: &mut App) {
 pub(crate) fn advance_after_trust_directory_choice(app: &mut App) {
     if app.onboarding_workspace_trust_gate {
         app.onboarding_workspace_trust_gate = false;
+        let _ = crate::tui::onboarding::mark_onboarded();
         app.onboarding = OnboardingState::None;
+    } else if !app.composer.input.trim().is_empty() && !app.onboarding_explore_offline {
+        app.finish_onboarding_without_feature_intro();
     } else {
-        // Both a first run and missing-key recovery end on the ready screen;
-        // a trust-gate-only launch (already onboarded) exits directly above.
         app.onboarding = OnboardingState::Ready;
     }
 }

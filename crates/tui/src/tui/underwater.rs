@@ -43,6 +43,7 @@ pub enum ShellTier {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchAction {
     None,
+    ConnectModel,
     /// The prominent new-session entry: begin a fresh session in the
     /// current workspace.
     NewSession,
@@ -169,9 +170,15 @@ fn launch_recent_entries(app: &App) -> (Vec<LaunchRecentEntry>, bool) {
 /// Both painting and input use the same primary action on revisited home.
 fn home_card_rows(app: &App, recent: &[LaunchRecentEntry], has_more: bool) -> Vec<LaunchCardRow> {
     let mut rows = launch_card_rows(app.ui_locale, recent, has_more);
-    if !app.launch.recent_expanded && has_more && !app.launch.recent.is_empty() {
-        rows[1].id = crate::tui::app::LaunchRowId::ShowRecent;
-        rows[1].label = format!(
+    if !app.launch.recent_expanded
+        && has_more
+        && !app.launch.recent.is_empty()
+        && let Some(row) = rows
+            .iter_mut()
+            .find(|r| r.id == crate::tui::app::LaunchRowId::SeeAll)
+    {
+        row.id = crate::tui::app::LaunchRowId::ShowRecent;
+        row.label = format!(
             "{}  {}",
             tr(app.ui_locale, MessageId::LaunchRecentHeading),
             if crate::tui::color_compat::ascii_safe_enabled() {
@@ -182,10 +189,31 @@ fn home_card_rows(app: &App, recent: &[LaunchRecentEntry], has_more: bool) -> Ve
         );
     }
     if app.launch.return_to_session {
-        rows[0].id = crate::tui::app::LaunchRowId::ReturnToSession;
-        rows[0].label = format!(
-            "{}  Esc",
-            tr(app.ui_locale, MessageId::HomeBackToConversation)
+        if let Some(row) = rows
+            .iter_mut()
+            .find(|r| r.id == crate::tui::app::LaunchRowId::NewSession)
+        {
+            row.id = crate::tui::app::LaunchRowId::ReturnToSession;
+            row.label = format!(
+                "{}  Esc",
+                tr(app.ui_locale, MessageId::HomeBackToConversation)
+            );
+        }
+    } else if app.onboarding_needs_api_key {
+        if let Some(row) = rows
+            .iter_mut()
+            .find(|r| r.id == crate::tui::app::LaunchRowId::NewSession)
+        {
+            row.prominent = false;
+        }
+        rows.insert(
+            0,
+            LaunchCardRow {
+                id: crate::tui::app::LaunchRowId::ConnectModel,
+                label: "Connect a model".to_string(),
+                detail: "/connect".to_string(),
+                prominent: true,
+            },
         );
     }
     rows
@@ -263,6 +291,7 @@ pub fn refresh_launch_row_hitboxes(app: &mut App, area: Rect) {
 #[must_use]
 pub fn launch_row_click_action(id: &crate::tui::app::LaunchRowId) -> LaunchAction {
     match id {
+        crate::tui::app::LaunchRowId::ConnectModel => LaunchAction::ConnectModel,
         crate::tui::app::LaunchRowId::NewSession => LaunchAction::NewSession,
         crate::tui::app::LaunchRowId::ReturnToSession => LaunchAction::ReturnToSession,
         crate::tui::app::LaunchRowId::Recent(session_id) => {
@@ -1496,7 +1525,7 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
     };
     // Nothing will answer a message until a model is connected; the card
     // says so instead of letting the first Enter fail silently (UX-3).
-    let no_model_connected = app.onboarding_needs_api_key;
+    let no_model_connected = false;
     let mcp_configured = app.mcp_configured_count > 0
         || app
             .mcp_snapshot
@@ -1698,7 +1727,7 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
                 Style::default().fg(theme.text_muted),
             ));
         }
-        if row.prominent {
+        if row.prominent && detail.is_empty() {
             spans.push(Span::styled(
                 " ".repeat(lane.saturating_sub(label_width)),
                 style,
@@ -1706,7 +1735,12 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
         }
         rows.push((row.id.clone(), text.len()));
         text.push(Some(Line::from(spans)));
-        if row.prominent && fit.heading {
+        if matches!(
+            row.id,
+            crate::tui::app::LaunchRowId::NewSession
+                | crate::tui::app::LaunchRowId::ReturnToSession
+        ) && fit.heading
+        {
             // An empty workspace needs only the invitation and composer.
             // Real history, including filtered sessions reachable via See all,
             // still gets a heading; zero counts are not content.
@@ -2289,16 +2323,18 @@ mod launch_card_tests {
     fn a_keyless_launch_says_no_model_is_connected_and_how_to_fix_it() {
         let mut app = app_with_recent(&["Fix the parser"], 1);
         app.onboarding_needs_api_key = true;
+        let ids = row_ids(&app);
+        assert_eq!(ids.first(), Some(&LaunchRowId::ConnectModel), "{ids:?}");
         let lines = painted(&app, 100, 30).join("\n");
-        assert!(lines.contains("no model connected"), "{lines}");
-        assert!(lines.contains("/provider"), "{lines}");
-        // Even a pane too short for the recent list keeps the recovery line.
+        assert!(lines.contains("Connect a model"), "{lines}");
+        assert!(lines.contains("/connect"), "{lines}");
         let short = painted(&app, 100, 3).join("\n");
-        assert!(short.contains("no model connected"), "{short}");
+        assert!(short.contains("Connect a model"), "{short}");
 
         app.onboarding_needs_api_key = false;
+        assert!(!row_ids(&app).contains(&LaunchRowId::ConnectModel));
         let lines = painted(&app, 100, 30).join("\n");
-        assert!(!lines.contains("no model connected"), "{lines}");
+        assert!(!lines.contains("Connect a model"), "{lines}");
     }
 
     #[test]

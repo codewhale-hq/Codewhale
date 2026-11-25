@@ -2958,10 +2958,10 @@ fn first_run_user_without_a_key_starts_at_composer() {
 }
 
 #[test]
-fn first_run_user_with_a_key_starts_at_composer() {
+fn first_run_user_with_a_key_gets_workspace_trust_when_needed() {
     assert_eq!(
         initial_onboarding_state(false, false, false, false, true),
-        OnboardingState::None
+        OnboardingState::TrustDirectory
     );
     assert_eq!(
         initial_onboarding_state(false, false, false, false, false),
@@ -2970,11 +2970,11 @@ fn first_run_user_with_a_key_starts_at_composer() {
 }
 
 #[test]
-fn onboarding_workspace_trust_gate_only_fires_for_onboarded_user() {
+fn onboarding_workspace_trust_gate_fires_when_key_present_and_trust_needed() {
     assert!(onboarding_is_workspace_trust_gate(false, true, false, true));
     assert!(!onboarding_is_workspace_trust_gate(true, true, false, true));
     assert!(!onboarding_is_workspace_trust_gate(false, true, true, true));
-    assert!(!onboarding_is_workspace_trust_gate(
+    assert!(onboarding_is_workspace_trust_gate(
         false, false, false, true
     ));
 }
@@ -8102,9 +8102,8 @@ fn launch_onboarding_scenario() {
         assert_eq!(keyless, OnboardingState::None);
         assert!(recovery);
 
-        // A first run with a key starts at the composer.
         let (trust, _) = launch_onboarding_decision(false, false, false, false, true, false);
-        assert_eq!(trust, OnboardingState::None);
+        assert_eq!(trust, OnboardingState::TrustDirectory);
 
         let (ready, _) = launch_onboarding_decision(false, false, false, false, false, false);
         assert_eq!(ready, OnboardingState::None);
