@@ -827,25 +827,33 @@ reported.
 
 The Engine verifies `codewhale-artifacts-sha256.txt.sig`, a base64 Ed25519
 signature over `codewhale-release-manifest-v1\n<version>\n<manifest bytes>`
-(`crates/release/src/signing.rs`). With no key configured every release reads
-as unsigned and automatic updates wait for each user's OK. One key signs both
-the CLI manifest and the desktop appcast. To turn signing on:
+(`crates/release/src/signing.rs`). Releases are signed from 0.10.5, and the
+release public key is compiled in as `TRUSTED_RELEASE_KEYS`:
 
-1. Create the key offline with OpenSSL 3 and keep the private half outside
-   any repository:
+- A build that carries the key refuses a release whose signature is missing or
+  does not verify, in `codewhale update` and in automatic updates. Nothing is
+  installed and the message names the signature file.
+- A build from before 0.10.5 trusts no key, so the update to 0.10.5 itself
+  still asks once before installing.
+- From 0.10.5 on, the next release installs without asking.
+
+Every release after 0.10.5 must therefore be signed with this key. macOS
+desktop updates do not use it: they are trusted by Developer ID signing.
+
+How the key is set up:
+
+1. The key is created offline with OpenSSL 3 and its private half stays
+   outside any repository:
    `openssl genpkey -algorithm ed25519 -out codewhale-release-ed25519.pem`
-2. Add the PEM file's contents as the GitHub Actions secret
+2. The PEM file's contents are the GitHub Actions secret
    `CODEWHALE_RELEASE_SIGNING_KEY` on the Engine repository. The release
    workflow (`release-artifacts.yml`, assemble job) then runs
    `scripts/release/sign-release-manifest.sh` and publishes the `.sig`
    beside the manifest; without the secret it skips signing and says so.
-3. Print the public key:
+3. The public key is printed with
    `CODEWHALE_RELEASE_SIGNING_KEY="$(cat codewhale-release-ed25519.pem)" scripts/release/sign-release-manifest.sh --public-key`
-   and add it to `TRUSTED_RELEASE_KEYS` in `crates/release/src/signing.rs`
-   (or set `CODEWHALE_RELEASE_PUBLIC_KEY=<hex>` when building). Add the same
-   32 bytes to the desktop app's `TRUSTED_APPCAST_KEYS`.
-4. Ship a release built with the public key first; the release after it is the
-   first one installed without asking.
+   and listed in `TRUSTED_RELEASE_KEYS` in `crates/release/src/signing.rs`
+   (a build can add one more with `CODEWHALE_RELEASE_PUBLIC_KEY=<hex>`).
 
 To rotate, add the new public key next to the old one, release, then switch
 the secret and remove the old key a release later.

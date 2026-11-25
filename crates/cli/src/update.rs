@@ -2799,7 +2799,9 @@ mod tests {
         codewhale_release::LEGACY_UPDATE_VERSION_ENV,
         codewhale_release::install::INSTALL_METHOD_ENV,
         UPDATE_ALLOWED_HOSTS_ENV,
+        TEST_RELEASE_PUBLIC_KEY_ENV,
     ];
+    const TEST_RELEASE_PUBLIC_KEY_ENV: &str = "CODEWHALE_TEST_RELEASE_PUBLIC_KEY";
 
     struct UpdateEnvGuard {
         previous: Vec<(&'static str, Option<OsString>)>,
@@ -5061,6 +5063,53 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
             "got {binary_request:?}"
         );
         handle.join().expect("test server thread");
+    }
+
+    #[test]
+    fn a_release_is_refused_unless_a_trusted_key_signed_its_manifest() {
+        const TEST_KEY: &str = "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c";
+        const TEST_KEY_SIGNATURE: &[u8] = b"vX9KZ7maFenoVCheguRaHu1npjRjKTa09ZCVvF6pbL3Yad5kNHvjWBIGZZbUQM9sO5Mnp86CxWJu82jhKZDADg==";
+        const OTHER_KEY_SIGNATURE: &[u8] = b"r34Q5uHYyc0fKHFUWH67MgTo/4o/F3V4cNM4hsgO3y/qWWZDWKMLHrElZGvApccUVItI0n+D2XTx/GyvhV5QDQ==";
+        let _env = UpdateEnvGuard::clear();
+        assert!(!signing::trusted_keys().is_empty());
+        let manifest = format!("{}  codewhale-linux-x64\n", "a".repeat(64)).into_bytes();
+        let check = |status: &'static str, signature: &[u8]| {
+            let (url, request_rx, handle) =
+                serve_http_owned_responses(vec![(status, "text/plain", signature.to_vec())]);
+            let origin = url.trim_end_matches("/release").to_string();
+            let plan = DownloadPlan {
+                source: UpdateReleaseSource::Mirror {
+                    base_url: origin.clone(),
+                },
+                binary_name: "codewhale-linux-x64".to_string(),
+                binary_url: mirror_asset_url(&origin, "codewhale-linux-x64"),
+                checksums: HashMap::from([("codewhale-linux-x64".to_string(), "a".repeat(64))]),
+                manifest_url: mirror_asset_url(&origin, CHECKSUM_MANIFEST_ASSET),
+                manifest_bytes: manifest.clone(),
+                fallback_binaries: Vec::new(),
+            };
+            let result = fetch_signature(&plan, "v9.9.9", None);
+            let request = request_rx.recv().expect("signature request");
+            assert!(
+                request.starts_with("GET /codewhale-artifacts-sha256.txt.sig "),
+                "got {request:?}"
+            );
+            handle.join().expect("test server thread");
+            result.map_err(|error| format!("{error:#}"))
+        };
+
+        let missing = check("404 Not Found", b"").expect_err("an unsigned release");
+        assert!(missing.contains("requires signed releases"), "{missing}");
+        let unknown = check("200 OK", TEST_KEY_SIGNATURE).expect_err("an untrusted signer");
+        assert!(unknown.contains("does not verify"), "{unknown}");
+
+        set_update_env(TEST_RELEASE_PUBLIC_KEY_ENV, TEST_KEY);
+        assert_eq!(
+            check("200 OK", TEST_KEY_SIGNATURE),
+            Ok(SignatureCheck::Verified)
+        );
+        let other = check("200 OK", OTHER_KEY_SIGNATURE).expect_err("another key's signature");
+        assert!(other.contains("does not verify"), "{other}");
     }
 
     #[test]
