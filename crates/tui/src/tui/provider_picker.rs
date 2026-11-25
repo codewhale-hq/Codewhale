@@ -1386,13 +1386,11 @@ impl ProviderDashboardRow {
         }
     }
 
-    /// Cross-field search (#3830 P1, #4141): match a query against the provider
-    /// name (display name, provider id, kind, provider key), the base URL, and
-    /// the default route's display model name and wire model id. Matching the
-    /// route means a model name or wire id surfaces the provider that serves it,
-    /// keeping this picker consistent with the model picker's cross-field search
-    /// (`model_row_matches_query`).
-    fn query_match_rank(&self, query: &str) -> Option<u8> {
+    /// Match a query against what the list row shows or names: the display
+    /// name, the provider id, the provider key and the row's status hint.
+    /// Fields the row does not render (protocol kind, base URL, default route
+    /// models outside the Local view) do not match.
+    fn query_match_rank(&self, query: &str, view: ProviderListView) -> Option<u8> {
         let query = query.trim().to_ascii_lowercase();
         if query.is_empty() {
             return Some(0);
@@ -1408,30 +1406,21 @@ impl ProviderDashboardRow {
         if name_fields.iter().any(|field| field.starts_with(&query)) {
             return Some(1);
         }
-        if name_fields.iter().any(|field| field.contains(&query))
-            || self.kind.to_ascii_lowercase().contains(&query)
-        {
+        if name_fields.iter().any(|field| field.contains(&query)) {
             return Some(2);
         }
-        if self.base_url.to_ascii_lowercase().contains(&query)
-            || self
-                .default_route
-                .logical_model
-                .to_ascii_lowercase()
-                .contains(&query)
-            || self
-                .default_route
-                .wire_model
-                .to_ascii_lowercase()
-                .contains(&query)
+        if self
+            .list_row_hint(view)
+            .to_ascii_lowercase()
+            .contains(&query)
         {
             return Some(3);
         }
         None
     }
 
-    fn matches_query(&self, query: &str) -> bool {
-        self.query_match_rank(query).is_some()
+    fn matches_query(&self, query: &str, view: ProviderListView) -> bool {
+        self.query_match_rank(query, view).is_some()
     }
 }
 
@@ -2604,7 +2593,7 @@ impl ProviderPickerView {
     fn row_visible(&self, idx: usize) -> bool {
         let query = self.query.trim();
         if !query.is_empty() {
-            return self.rows[idx].matches_query(query);
+            return self.rows[idx].matches_query(query, self.view);
         }
         match self.view {
             ProviderListView::Catalog => {
@@ -2678,7 +2667,9 @@ impl ProviderPickerView {
                 .filter(|idx| self.row_visible(*idx))
                 .min_by_key(|idx| {
                     (
-                        self.rows[*idx].query_match_rank(query).unwrap_or(u8::MAX),
+                        self.rows[*idx]
+                            .query_match_rank(query, self.view)
+                            .unwrap_or(u8::MAX),
                         *idx,
                     )
                 })
@@ -8020,34 +8011,36 @@ mod tests {
     }
 
     #[test]
-    fn provider_row_query_matches_default_route_model_and_wire_id() {
-        // #4141: cross-field search must also match the default route's display
-        // model name and wire model id, keeping this picker consistent with the
-        // model picker (`model_row_matches_query`). Z.ai's provider key,
-        // display name, kind, and base URL contain no "glm", so a "glm" match
-        // can only come from the route's model/wire fields.
-        let config = {
-            let __cw_config_init_17_0 = Some(codewhale_runtime::config::ProvidersConfig {
-                zai: codewhale_runtime::config::ProviderConfig {
-                    api_key: Some("zai-key".to_string()),
-                    model: Some("GLM-5.2".to_string()),
-                    ..Default::default()
-                },
-                ..Default::default()
-            });
-            let mut __cw_config_init_17_value: Config = Config::default();
-            __cw_config_init_17_value.providers = __cw_config_init_17_0;
-            __cw_config_init_17_value
-        };
-        let row = ProviderDashboardRow::from_config(ProviderKind::Zai, ProviderKind::Zai, &config);
-        assert_eq!(row.default_route.wire_model, "GLM-5.2");
-
-        // Wire model id + display model name, case-insensitively.
-        assert!(row.matches_query("glm-5.2"));
-        assert!(row.matches_query("GLM"));
-        // Provider name still matches, and an unrelated token still does not.
-        assert!(row.matches_query("zhipu"));
-        assert!(!row.matches_query("anthropic"));
+    fn provider_filter_matches_only_what_the_row_names() {
+        let config = Config::default();
+        let mut picker = ProviderPickerView::new(ProviderKind::Deepseek, &config);
+        picker.update_query("open".to_string());
+        let shown: Vec<&ProviderDashboardRow> = (0..picker.rows.len())
+            .filter(|idx| picker.row_visible(*idx))
+            .map(|idx| &picker.rows[idx])
+            .collect();
+        assert!(shown.iter().any(|row| row.provider == ProviderKind::Openai));
+        assert!(
+            shown
+                .iter()
+                .any(|row| row.provider == ProviderKind::Openrouter)
+        );
+        assert!(shown.iter().all(|row| row.provider != ProviderKind::Google));
+        for row in shown {
+            assert!(
+                [
+                    row.display_name.clone(),
+                    row.provider_id.clone(),
+                    row.provider.as_str().to_string(),
+                    row.list_row_hint(picker.view),
+                ]
+                .iter()
+                .any(|field| field.to_ascii_lowercase().contains("open")),
+                "{} ({}) matched `open` through a field its row does not show",
+                row.display_name,
+                row.provider_id
+            );
+        }
     }
 
     #[test]

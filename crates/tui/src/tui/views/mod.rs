@@ -2612,6 +2612,7 @@ impl ConfigView {
         // A store that fails to load yields no saved facts. The defaults below
         // only shape the row list; every row backed by a failed store is
         // marked unavailable before the view is returned.
+        app.startup_defaults.flush();
         let (settings, settings_error) = match Settings::load_persisted() {
             Ok(settings) => {
                 let error = settings.load_error.clone();
@@ -3679,6 +3680,9 @@ impl ConfigView {
 
     fn update_filter(&mut self, update: impl FnOnce(&mut String)) {
         update(&mut self.filter);
+        if self.filter.trim().is_empty() {
+            self.filter.clear();
+        }
         self.status = None;
         self.last_mouse_selected = None;
         self.clear_hover();
@@ -10420,7 +10424,7 @@ context_window = 131072
         }
         let mut modal = stack.pop().unwrap();
         let view = modal.as_any_mut().downcast_mut::<ConfigView>().unwrap();
-        assert_eq!(view.filter, query);
+        assert_eq!(view.filter, query.trim_start());
         assert!(
             view.editing.is_none(),
             "search text must not enter a settings editor"
@@ -10723,6 +10727,73 @@ context_window = 131072
             "Space with empty filter should toggle boolean row, got {action:?}"
         );
         assert!(view.filter.is_empty());
+    }
+
+    #[test]
+    fn config_view_space_on_a_non_boolean_row_starts_no_search() {
+        let app = create_test_app();
+        let mut view = ConfigView::new_for_app(&app);
+        view.focus_key("theme");
+        let selected = view.selected;
+
+        let action = view.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(matches!(action, ViewAction::None), "got {action:?}");
+        assert!(view.filter.is_empty(), "filter: {:?}", view.filter);
+        assert_eq!(view.selected, selected);
+
+        for ch in ['p', 'e', 't', ' ', 'm'] {
+            view.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        assert_eq!(view.filter, "pet m");
+    }
+
+    #[test]
+    fn pet_mode_row_shows_a_toggle_whose_save_is_still_queued() {
+        let _guard = ConfigSettingsEnvGuard::new("pet_mode = false\n");
+        let _writes = crate::tui::startup_defaults::allow_writes_in_tests();
+        let app = create_test_app();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .build()
+            .expect("runtime");
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let (started, running) = std::sync::mpsc::channel::<()>();
+        let blocker = runtime.spawn_blocking(move || {
+            started.send(()).ok();
+            held.recv().ok();
+        });
+        running
+            .recv()
+            .expect("the only blocking thread is occupied");
+        {
+            let _enter = runtime.enter();
+            app.startup_defaults
+                .spawn(crate::tui::startup_defaults::StartupDefaults::pet_mode(
+                    true,
+                ));
+        }
+
+        let mut view = ConfigView::new_for_app(&app);
+        release.send(()).expect("release the blocking thread");
+        runtime.block_on(blocker).expect("blocker");
+        drop(runtime);
+
+        let row = view
+            .rows
+            .iter()
+            .find(|row| row.key == "pet_mode")
+            .expect("pet view setting");
+        assert_eq!(row.value, "true");
+        view.focus_key("pet_mode");
+        let action = view.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert!(
+            matches!(
+                action,
+                ViewAction::Emit(ViewEvent::ConfigUpdated { ref key, ref value, persist: true })
+                    if key == "pet_mode" && value == "false"
+            ),
+            "got {action:?}"
+        );
     }
 
     #[test]

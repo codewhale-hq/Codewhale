@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/config` Pet mode row shows the value you just set:** toggling Pet mode now updates the row at once, and one `Ctrl+R` resets it; the view waits for the queued startup-default save before reading saved settings.
+- **`Space` on a non-boolean `/config` row no longer starts a blank search:** a Settings search can no longer begin with, or consist only of, whitespace.
+- **`/connect` filter matches the provider's name and id only:** typing `open` lists OpenAI, OpenRouter and other providers named that way, not every provider whose hidden base URL, protocol or default model contains the text.
+
 ## [0.10.5] - 2026-11-24
 
 Codewhale v0.10.5 simplifies the terminal and runtime, expands DeepSeek Harness 0.2.2 host compatibility (with 13/33 pinned packages passing the full local Engine lifecycle and 15/36 cold-activating in the extension host), serves the shared `codewhale-app` web build from `codewhale web`, adds external ACP agent selection in `/model`, unifies the `codewhale-design` 5.5.0 Obsidian/Porcelain Whale Dark/Light palette and Title Case permission dial across all 15 TUI locales, aligns telemetry disclosures to first-party-only collection, and lands community security and reliability fixes.
