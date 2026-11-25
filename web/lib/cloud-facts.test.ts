@@ -325,6 +325,16 @@ describe("facts response protocol", () => {
     expect(control).not.toContain("stale-");
     expect(Number(control.match(/s-maxage=(\d+)/)?.[1])).toBeLessThanOrEqual(90);
   });
+
+  it("gives an envelope with no signed expiry short revalidation and no stale-serving extensions", async () => {
+    const envelope = signed({ not_after: null });
+    const result = await resolveCloudFacts("stable", env, { keys: [EPHEMERAL_KEY], now: () => NOW, fetchImpl: supabaseFetch([rowFrom(envelope)]) });
+    expect(result.kind).toBe("ok");
+    const control = responseFor(result, req(), "stable", "GET").headers.get("cache-control")!;
+    expect(control).toContain("must-revalidate");
+    expect(control).not.toContain("stale-");
+    expect(Number(control.match(/s-maxage=(\d+)/)?.[1])).toBeLessThanOrEqual(300);
+  });
 });
 
 describe("facts publisher boundaries", () => {

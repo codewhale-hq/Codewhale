@@ -519,7 +519,7 @@ export async function cloudFactsSummary(env: CloudFactsEnv, channel = "stable"):
   } catch { return null; }
 }
 
-const CACHE_CONTROL = "public, max-age=300, s-maxage=300, stale-while-revalidate=3600, stale-if-error=604800";
+const CACHE_CONTROL = "public, max-age=300, s-maxage=300, must-revalidate";
 
 function cacheControl(envelope: CloudFactsEnvelope): string {
   if (envelope.not_after == null) return CACHE_CONTROL;
