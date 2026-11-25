@@ -7,17 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- **The website offers the macOS desktop app:** `codewhale.net/app` now has signed, notarized Desktop 0.10.4 downloads for Apple silicon and Intel Macs, each with its size and SHA-256 checksum, and `/download` goes to that page.
-
-### Fixed
-
-- **`/config` Pet mode row shows the value you just set:** toggling Pet mode now updates the row at once, and one `Ctrl+R` resets it; the view waits for the queued startup-default save before reading saved settings.
-- **`Space` on a non-boolean `/config` row no longer starts a blank search:** a Settings search can no longer begin with, or consist only of, whitespace.
-- **`/connect` filter no longer matches hidden fields:** typing `open` lists OpenAI, OpenRouter and other providers named that way, not every provider whose base URL or protocol contains the text. A model name still finds the provider that serves it when you type its beginning.
-- **A background job finishing no longer leaves a failed record on the session:** when a background shell job or sub-agent woke an idle session, that turn's usage was filed as a separate "Turn was not accepted" record, so the session showed a red stopped-early line and a Failed state after it was reopened. The usage now stays on the wake turn.
-
 ## [0.10.5] - 2026-11-24
 
 Codewhale v0.10.5 simplifies the terminal and runtime, expands DeepSeek Harness 0.2.2 host compatibility (with 13/33 pinned packages passing the full local Engine lifecycle and 15/36 cold-activating in the extension host), serves the shared `codewhale-app` web build from `codewhale web`, adds external ACP agent selection in `/model`, unifies the `codewhale-design` 5.5.0 Obsidian/Porcelain Whale Dark/Light palette and Title Case permission dial across all 15 TUI locales, aligns telemetry disclosures to first-party-only collection, and lands community security and reliability fixes.
@@ -55,6 +44,7 @@ Codewhale v0.10.5 simplifies the terminal and runtime, expands DeepSeek Harness 
 - **Single owned `TaskManager` slot:** routed TUI `TaskManager` consumers through `App`'s single slot ahead of session-switch store adoption. Thanks [@Serendo](https://github.com/Serendo). (#7507)
 - **Website and docs refresh:** updated real desktop screenshots, contributor wall, and `/settings` + slash-command documentation. (#7511)
 - **Test-only Fleet methods gated behind `#[cfg(test)]`:** gated the five remaining test-only `pub` methods in `crates/engine/src/fleet/` (`FleetLedger::{claim_next,record_alert,mark_task_terminal_status_if_unchanged}`, `FleetScheduler::cancel_run`, `FleetExecutor::all_terminal`) under `#[cfg(test)]` so production builds expose no unused Fleet helpers. Thanks [@luochen211](https://github.com/luochen211). (Refs #7270)
+- **The website offers the macOS desktop app:** `codewhale.net/app` now has signed, notarized Desktop 0.10.4 downloads for Apple silicon and Intel Macs, each with its size and SHA-256 checksum, and `/download` goes to that page.
 
 ### Fixed
 
@@ -87,6 +77,10 @@ Codewhale v0.10.5 simplifies the terminal and runtime, expands DeepSeek Harness 
 - **Stale pet telemetry and corrupt history lines no longer drop state:** `PetLiveTape` now ignores non-zero out-of-order telemetry sequence regressions without lowering its high-water mark (preserving sequence `0` as an in-place producer restart baseline), and composer history loading skips invalid UTF-8 lines instead of discarding all remaining history entries. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Refs #6557, #6559)
 - **MCP stdio shutdown kills the process group before reaping a timed-out leader:** when a stdio MCP server ignores `SIGTERM` past the shutdown grace period, `process_broker` now signals its `ProcessTree` before reaping the leader child so descendants are terminated while the process group ID is still pinned. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Refs #6558)
 - **Settings schema `allow_shell` matches interactive threads and reports `persisted`:** `/v1/settings/schema` now resolves `allow_shell` using the interactive default (`interactive_allow_shell()` gated by shell-access policy, matching new interactive threads) instead of the headless `false` default, and populates `persisted` for config.toml-owned `RUNTIME_CONFIG_KEYS` rows so Desktop Settings › Trust can distinguish an unset default from an explicit `allow_shell = false`. (CW-8386)
+- **`/config` Pet mode row shows the value you just set:** toggling Pet mode now updates the row at once, and one `Ctrl+R` resets it; the view waits for the queued startup-default save before reading saved settings.
+- **`Space` on a non-boolean `/config` row no longer starts a blank search:** a Settings search can no longer begin with, or consist only of, whitespace.
+- **`/connect` filter no longer matches hidden fields:** typing `open` lists OpenAI, OpenRouter and other providers named that way, not every provider whose base URL or protocol contains the text. A model name still finds the provider that serves it when you type its beginning.
+- **A background job finishing no longer leaves a failed record on the session:** when a background shell job or sub-agent woke an idle session, that turn's usage was filed as a separate "Turn was not accepted" record, so the session showed a red stopped-early line and a Failed state after it was reopened. The usage now stays on the wake turn.
 
 ### Security
 
