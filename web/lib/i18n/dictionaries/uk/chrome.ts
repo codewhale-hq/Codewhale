@@ -81,4 +81,5 @@ export const chrome: ChromeDict = {
   downloadAptTrust: "Репозиторій apt підписано ключем Codewhale, оновлення встановлюються через apt.",
   downloadAppImage: "Завантажити AppImage",
   downloadAppImageTrust: "Перевірте AppImage за показаною контрольною сумою SHA-256. Він поки що не оновлюється сам.",
+  downloadAptFingerprint: "Відбиток ключа підпису має бути {fingerprint}. Звірте його із завантаженим ключем.",
 };

@@ -84,4 +84,5 @@ export const chrome: ChromeDict = {
   downloadAptTrust: "Repositori apt ditandatangani dengan kunci Codewhale, dan pembaruan dipasang lewat apt.",
   downloadAppImage: "Unduh AppImage",
   downloadAppImageTrust: "Periksa AppImage dengan checksum SHA-256 yang ditampilkan. AppImage belum memperbarui dirinya sendiri.",
+  downloadAptFingerprint: "Sidik jari kunci penandatanganan seharusnya {fingerprint}. Bandingkan dengan kunci yang Anda unduh.",
 };

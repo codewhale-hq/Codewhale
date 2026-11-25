@@ -53,11 +53,13 @@ const fixture: DesktopReleaseFact = {
 };
 
 const APT = {
-  repository: "https://downloads.codewhale.net/apt",
-  keyUrl: "https://downloads.codewhale.net/apt/codewhale.asc",
+  repository: "https://downloads.codewhale.net/desktop/apt",
+  keyUrl: "https://downloads.codewhale.net/desktop/apt/codewhale-archive-keyring.asc",
   suite: "stable",
   component: "main",
+  architecture: "amd64",
   package: "codewhale-desktop",
+  keyFingerprint: "FE6EED0815F6796F0617D07A8D1B59648C382CE9",
 };
 const APPIMAGE_SHA = "c".repeat(64);
 const deb = {
@@ -280,6 +282,16 @@ describe("the Linux desktop download", () => {
       { ...deb, apt: { ...APT, package: "codewhale desktop" } },
       { ...deb, apt: { ...APT, suite: "$(id)" } },
       { ...deb, apt: { ...APT, extra: "x" } },
+      { ...deb, apt: { ...APT, architecture: undefined } },
+      { ...deb, apt: { ...APT, architecture: "i386" } },
+      { ...deb, apt: { ...APT, architecture: "amd64; id" } },
+      { ...deb, apt: { ...APT, keyFingerprint: undefined } },
+      { ...deb, apt: { ...APT, keyFingerprint: APT.keyFingerprint.toLowerCase() } },
+      { ...deb, apt: { ...APT, keyFingerprint: APT.keyFingerprint.slice(1) } },
+      { ...deb, apt: { ...APT, keyFingerprint: `${APT.keyFingerprint}0` } },
+      { ...deb, apt: { ...APT, keyFingerprint: `${APT.keyFingerprint.slice(0, 39)}G` } },
+      { ...deb, apt: { ...APT, keyUrl: "https://downloads.codewhale.net/desktop/apt/" } },
+      { ...deb, apt: { ...APT, keyUrl: "https://downloads.codewhale.net/desktop/apt/.asc" } },
       { ...deb, arch: "arm64" },
       { ...appImage, arch: undefined },
       { ...appImage, kind: "rpm" },
@@ -299,13 +311,17 @@ describe("the Linux desktop download", () => {
   it("renders the apt lines, the key URL and the AppImage checksum", () => {
     const linux = linuxDownloads(withLinux)!;
     const lines = aptInstallLines(linux.apt!).split("\n");
-    expect(lines).toHaveLength(3);
-    expect(lines[0]).toContain(APT.keyUrl);
-    expect(lines[1]).toContain(`signed-by=`);
-    expect(lines[1]).toContain(`${APT.repository} ${APT.suite} ${APT.component}`);
-    expect(lines[2]).toBe(`sudo apt update && sudo apt install ${APT.package}`);
+    expect(lines).toEqual([
+      "sudo install -d -m 0755 /etc/apt/keyrings",
+      "curl -fsSL https://downloads.codewhale.net/desktop/apt/codewhale-archive-keyring.asc | sudo tee /etc/apt/keyrings/codewhale-archive-keyring.asc >/dev/null",
+      'echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/codewhale-archive-keyring.asc] https://downloads.codewhale.net/desktop/apt stable main" | sudo tee /etc/apt/sources.list.d/codewhale.list >/dev/null',
+      "sudo apt update && sudo apt install codewhale-desktop",
+    ]);
+    expect(lines.join("\n")).not.toContain("gpg");
     const html = renderToStaticMarkup(LinuxDownloadBlock({ linux, locale: "en" }));
     expect(html).toContain(APT.keyUrl);
+    expect(html).toContain("FE6E ED08 15F6 796F 0617 D07A 8D1B 5964 8C38 2CE9");
+    expect(html).toContain("should have the fingerprint");
     expect(html).toContain(APPIMAGE_SHA);
     expect(html).toContain(appImage.url);
     expect(html).toContain("105.3 MB");

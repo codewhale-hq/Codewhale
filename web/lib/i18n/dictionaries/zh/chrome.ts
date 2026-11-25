@@ -78,4 +78,5 @@ export const chrome: ChromeDict = {
   downloadAptTrust: "apt 软件源使用 Codewhale 的密钥签名，更新通过 apt 安装。",
   downloadAppImage: "下载 AppImage",
   downloadAppImageTrust: "请对照所示的 SHA-256 校验和验证 AppImage。它目前不会自行更新。",
+  downloadAptFingerprint: "签名密钥的指纹应为 {fingerprint}。请与您下载的密钥核对。",
 };

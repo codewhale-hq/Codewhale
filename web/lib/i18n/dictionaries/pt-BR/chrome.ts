@@ -79,4 +79,5 @@ export const chrome: ChromeDict = {
   downloadAptTrust: "O repositório apt é assinado com a chave da Codewhale, e as atualizações são instaladas pelo apt.",
   downloadAppImage: "Baixar o AppImage",
   downloadAppImageTrust: "Confira o AppImage com o checksum SHA-256 exibido. Ele ainda não se atualiza sozinho.",
+  downloadAptFingerprint: "A impressão digital da chave de assinatura deve ser {fingerprint}. Compare-a com a chave que você baixou.",
 };

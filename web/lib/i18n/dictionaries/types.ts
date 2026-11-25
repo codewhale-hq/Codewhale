@@ -130,6 +130,7 @@ export interface ChromeDict {
   downloadAptTrust: string;
   downloadAppImage: string;
   downloadAppImageTrust: string;
+  downloadAptFingerprint: string;
 }
 
 export interface FeaturesDict {

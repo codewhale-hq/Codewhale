@@ -86,4 +86,5 @@ export const chrome: ChromeDict = {
   downloadAptTrust: "El repositorio apt está firmado con la clave de Codewhale y las actualizaciones se instalan con apt.",
   downloadAppImage: "Descargar el AppImage",
   downloadAppImageTrust: "Comprueba el AppImage con la suma de verificación SHA-256 indicada. Todavía no se actualiza solo.",
+  downloadAptFingerprint: "La huella de la clave de firma debería ser {fingerprint}. Compárala con la clave que descargaste.",
 };

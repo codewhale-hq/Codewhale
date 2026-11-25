@@ -86,4 +86,5 @@ export const chrome: ChromeDict = {
   downloadAptTrust: "Kho apt được ký bằng khóa của Codewhale, và bản cập nhật được cài qua apt.",
   downloadAppImage: "Tải AppImage",
   downloadAppImageTrust: "Hãy đối chiếu AppImage với checksum SHA-256 hiển thị. AppImage chưa tự cập nhật.",
+  downloadAptFingerprint: "Dấu vân tay của khóa ký phải là {fingerprint}. Hãy đối chiếu với khóa bạn đã tải.",
 };

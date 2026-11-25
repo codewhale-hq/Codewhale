@@ -87,4 +87,5 @@ export const chrome: ChromeDict = {
   downloadAptTrust: "apt deposu Codewhale'in anahtarıyla imzalanır ve güncellemeler apt ile kurulur.",
   downloadAppImage: "AppImage'ı indir",
   downloadAppImageTrust: "AppImage'ı gösterilen SHA-256 sağlama toplamıyla doğrulayın. Henüz kendini güncellemez.",
+  downloadAptFingerprint: "İmza anahtarının parmak izi {fingerprint} olmalıdır. İndirdiğiniz anahtarla karşılaştırın.",
 };

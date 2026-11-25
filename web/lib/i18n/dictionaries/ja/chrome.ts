@@ -85,4 +85,5 @@ export const chrome: ChromeDict = {
   downloadAptTrust: "apt リポジトリは Codewhale の鍵で署名されており、更新は apt で適用されます。",
   downloadAppImage: "AppImage をダウンロード",
   downloadAppImageTrust: "表示されている SHA-256 チェックサムで AppImage を確認してください。まだ自動更新されません。",
+  downloadAptFingerprint: "署名鍵のフィンガープリントは {fingerprint} であるはずです。ダウンロードした鍵と照合してください。",
 };

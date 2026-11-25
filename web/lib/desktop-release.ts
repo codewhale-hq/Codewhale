@@ -15,8 +15,13 @@ export interface AptSource {
   keyUrl: string;
   suite: string;
   component: string;
+  architecture: AptArchitecture;
   package: string;
+  keyFingerprint: string;
 }
+
+export const APT_ARCHITECTURES = ["amd64", "arm64"] as const;
+export type AptArchitecture = (typeof APT_ARCHITECTURES)[number];
 
 export interface LinuxDebAssetFact {
   name: string;
@@ -84,6 +89,8 @@ function isDownloadUrl(value: unknown): value is string {
 
 const SAFE_URL = /^https:\/\/[A-Za-z0-9.-]+(?::\d+)?(?:\/[A-Za-z0-9._~%+\-/]*)?$/;
 const APT_TOKEN = /^[a-z0-9][a-z0-9+.-]*$/;
+const KEY_FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const KEY_FINGERPRINT = /^[0-9A-F]{40}$/;
 const REPOSITORY_ORIGIN = "https://downloads.codewhale.net/";
 
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
@@ -104,21 +111,31 @@ function hasFileFacts(value: Record<string, unknown>): boolean {
   );
 }
 
+export function aptKeyFileName(keyUrl: string): string | null {
+  const name = keyUrl.slice(keyUrl.lastIndexOf("/") + 1);
+  return KEY_FILE_NAME.test(name) ? name : null;
+}
+
 function isAptSource(value: unknown): value is AptSource {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ["repository", "keyUrl", "suite", "component", "package"]) &&
+    hasExactKeys(value, ["repository", "keyUrl", "suite", "component", "architecture", "package", "keyFingerprint"]) &&
     typeof value.repository === "string" &&
     value.repository.startsWith(REPOSITORY_ORIGIN) &&
     SAFE_URL.test(value.repository) &&
     typeof value.keyUrl === "string" &&
     SAFE_URL.test(value.keyUrl) &&
+    aptKeyFileName(value.keyUrl) !== null &&
     typeof value.suite === "string" &&
     APT_TOKEN.test(value.suite) &&
     typeof value.component === "string" &&
     APT_TOKEN.test(value.component) &&
+    typeof value.architecture === "string" &&
+    (APT_ARCHITECTURES as readonly string[]).includes(value.architecture) &&
     typeof value.package === "string" &&
-    APT_TOKEN.test(value.package)
+    APT_TOKEN.test(value.package) &&
+    typeof value.keyFingerprint === "string" &&
+    KEY_FINGERPRINT.test(value.keyFingerprint)
   );
 }
 

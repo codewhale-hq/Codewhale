@@ -88,4 +88,5 @@ export const chrome: ChromeDict = {
   downloadAptTrust: "apt रिपॉज़िटरी पर Codewhale की कुंजी से हस्ताक्षर हैं, और अपडेट apt से इंस्टॉल होते हैं।",
   downloadAppImage: "AppImage डाउनलोड करें",
   downloadAppImageTrust: "दिखाए गए SHA-256 चेकसम से AppImage की जाँच करें। यह अभी अपने आप अपडेट नहीं होता।",
+  downloadAptFingerprint: "हस्ताक्षर कुंजी का फ़िंगरप्रिंट {fingerprint} होना चाहिए। इसे डाउनलोड की गई कुंजी से मिलाएँ।",
 };
