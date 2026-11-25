@@ -10,14 +10,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **The website offers the Linux desktop app:** `codewhale.net/app` now has Desktop 0.10.4 for Linux x64: an apt repository signed with Codewhale's key (install lines and key fingerprint on the page; updates arrive through `apt`), and an AppImage download with its SHA-256 checksum. The AppImage does not update itself yet.
-- **The website offers the macOS desktop app:** `codewhale.net/app` now has signed, notarized Desktop 0.10.4 downloads for Apple silicon and Intel Macs, each with its size and SHA-256 checksum, and `/download` goes to that page.
-
-### Fixed
-
-- **`/config` Pet mode row shows the value you just set:** toggling Pet mode now updates the row at once, and one `Ctrl+R` resets it; the view waits for the queued startup-default save before reading saved settings.
-- **`Space` on a non-boolean `/config` row no longer starts a blank search:** a Settings search can no longer begin with, or consist only of, whitespace.
-- **`/connect` filter no longer matches hidden fields:** typing `open` lists OpenAI, OpenRouter and other providers named that way, not every provider whose base URL or protocol contains the text. A model name still finds the provider that serves it when you type its beginning.
-- **A background job finishing no longer leaves a failed record on the session:** when a background shell job or sub-agent woke an idle session, that turn's usage was filed as a separate "Turn was not accepted" record, so the session showed a red stopped-early line and a Failed state after it was reopened. The usage now stays on the wake turn.
 
 ## [0.10.5] - 2026-11-24
 
