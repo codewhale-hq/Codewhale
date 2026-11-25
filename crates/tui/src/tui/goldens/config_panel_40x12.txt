@@ -1,6 +1,6 @@
-╭ Settings ──────── Appearance · 18/72 ╮
-│‹ Appearance  1/7                    ›│
-│ Search: type to filter  (18/72)      │
+╭ Settings ──────── Appearance · 20/68 ╮
+│‹ Appearance  1/6                    ›│
+│ Search: type to filter  (20/68)      │
 │  Display                            █│
 │▸ Theme  terminal               ‹ ›  █│
 │  Language  auto                ‹ ›  ││

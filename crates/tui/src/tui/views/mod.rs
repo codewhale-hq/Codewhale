@@ -2343,6 +2343,7 @@ enum ConfigSection {
     Permissions,
     Network,
     Display,
+    Motion,
     Composer,
     Sidebar,
     History,
@@ -2453,12 +2454,13 @@ impl ConfigCategory {
 }
 
 impl ConfigSection {
-    const ALL: [ConfigSection; 14] = [
+    const ALL: [ConfigSection; 15] = [
         ConfigSection::Provider,
         ConfigSection::Model,
         ConfigSection::Permissions,
         ConfigSection::Network,
         ConfigSection::Display,
+        ConfigSection::Motion,
         ConfigSection::Composer,
         ConfigSection::Sidebar,
         ConfigSection::History,
@@ -2478,6 +2480,7 @@ impl ConfigSection {
             ConfigSection::Permissions => "permissions",
             ConfigSection::Network => "network",
             ConfigSection::Display => "display",
+            ConfigSection::Motion => "motion",
             ConfigSection::Composer => "composer",
             ConfigSection::Sidebar => "workbar",
             ConfigSection::History => "history",
@@ -2503,6 +2506,7 @@ impl ConfigSection {
                 ConfigSection::Permissions => MessageId::ConfigSectionPermissions,
                 ConfigSection::Network => MessageId::ConfigSectionNetwork,
                 ConfigSection::Display => MessageId::ConfigSectionDisplay,
+                ConfigSection::Motion => MessageId::ConfigCategoryMotion,
                 ConfigSection::Composer => MessageId::ConfigSectionComposer,
                 ConfigSection::Sidebar => MessageId::ConfigSectionSidebar,
                 ConfigSection::History => MessageId::ConfigSectionHistory,
@@ -8718,7 +8722,7 @@ mod tests {
         let view = create_config_view(Locale::En);
         assert_eq!(
             visible_section_labels(&view),
-            vec!["Display"],
+            vec!["Display", "Motion"],
             "Settings opens on Appearance"
         );
     }
@@ -9414,10 +9418,15 @@ max_spawn_depth = 2
         assert_eq!(visible_section_labels(&view), vec!["Workflow"]);
         let workflow_keys = visible_row_keys(&view);
         assert_eq!(workflow_keys.first(), Some(&"workflow"));
-        assert_eq!(
-            workflow_keys.len(),
-            1 + codewhale_config::notifications::NotificationSetting::ALL.len()
-        );
+        let expected_visible_notifications =
+            codewhale_config::notifications::NotificationSetting::ALL
+                .iter()
+                .filter(|setting| {
+                    let full_key = format!("notifications.{}", setting.key());
+                    codewhale_config::setting(&full_key).is_some_and(|def| def.ui.is_some())
+                })
+                .count();
+        assert_eq!(workflow_keys.len(), 1 + expected_visible_notifications);
         assert!(workflow_keys[1..].iter().all(|key| {
             codewhale_config::notifications::NotificationSetting::parse(key).is_some()
         }));
@@ -10704,8 +10713,8 @@ context_window = 131072
         let bool_idx = view
             .rows
             .iter()
-            .position(|row| row.key == "quiet_transcript" && row.editable)
-            .expect("quiet_transcript row");
+            .position(|row| row.key == "calm_mode" && row.editable)
+            .expect("calm_mode row");
         view.category = ConfigCategory::for_row(&view.rows[bool_idx]);
         view.selected = bool_idx;
 
@@ -10713,7 +10722,7 @@ context_window = 131072
         assert!(
             matches!(
                 action,
-                ViewAction::Emit(ViewEvent::ConfigUpdated { ref key, .. }) if key == "quiet_transcript"
+                ViewAction::Emit(ViewEvent::ConfigUpdated { ref key, .. }) if key == "calm_mode"
             ),
             "Space with empty filter should toggle boolean row, got {action:?}"
         );
@@ -10804,36 +10813,28 @@ context_window = 131072
         let quiet_row = view
             .rows
             .iter()
-            .find(|row| row.key == "quiet_transcript")
-            .expect("quiet_transcript");
+            .find(|row| row.key == "calm_mode")
+            .expect("calm_mode");
         assert_eq!(view.row_status_badge(quiet_row), "");
 
-        if let Some(row) = view
-            .rows
-            .iter_mut()
-            .find(|row| row.key == "quiet_transcript")
-        {
+        if let Some(row) = view.rows.iter_mut().find(|row| row.key == "calm_mode") {
             row.scope = ConfigScope::Session;
         }
         let session_row = view
             .rows
             .iter()
-            .find(|row| row.key == "quiet_transcript")
-            .expect("quiet_transcript");
+            .find(|row| row.key == "calm_mode")
+            .expect("calm_mode");
         assert_eq!(view.row_status_badge(session_row), "session");
 
-        if let Some(row) = view
-            .rows
-            .iter_mut()
-            .find(|row| row.key == "quiet_transcript")
-        {
+        if let Some(row) = view.rows.iter_mut().find(|row| row.key == "calm_mode") {
             row.facts.authority = SettingAuthority::ManagedPolicy;
         }
         let locked_row = view
             .rows
             .iter()
-            .find(|row| row.key == "quiet_transcript")
-            .expect("quiet_transcript");
+            .find(|row| row.key == "calm_mode")
+            .expect("calm_mode");
         assert_eq!(view.row_status_badge(locked_row), "locked");
     }
 
@@ -10869,7 +10870,7 @@ context_window = 131072
             "non-preview row should omit Preview band:\n{lang_dump}"
         );
 
-        view.select_category(ConfigCategory::Models);
+        view.category = ConfigCategory::ModelsProviders;
         let mut models_buf = Buffer::empty(area);
         view.render(area, &mut models_buf);
         let models_dump = buffer_text(&models_buf, area);
@@ -11420,7 +11421,7 @@ context_window = 131072
             view.render(area, &mut buf);
 
             let hitboxes = view.last_rail_hitboxes.borrow().clone();
-            assert_eq!(hitboxes.len(), ConfigCategory::ALL.len(), "{width}");
+            assert_eq!(hitboxes.len(), view.active_categories().len(), "{width}");
             let (rect, category) = hitboxes
                 .iter()
                 .copied()

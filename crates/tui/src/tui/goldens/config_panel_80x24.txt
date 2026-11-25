@@ -1,7 +1,7 @@
                                                                                 
- ╭ Settings ────────────────────────────────────────────── Appearance · 18/72 ╮ 
- │  Appearance   Models & providers   Work   Tools & MCP   Trust   Motion   › │ 
- │  Search: type to filter  (18/72)                                           │ 
+ ╭ Settings ────────────────────────────────────────────── Appearance · 20/68 ╮ 
+ │  Appearance   Models & providers   Work   Tools & MCP   Trust   Advanced   │ 
+ │  Search: type to filter  (20/68)                                           │ 
  │ ────────────────────────────────────────────────────────────────────────── │ 
  │   Display                                                                █ │ 
  │ ▸ Theme                              terminal               ‹ ›  changed █ │ 
@@ -10,15 +10,15 @@
  │   Pet mode                           ○ Off                               █ │ 
  │   Quiet transcript                   ● On                                █ │ 
  │   Model reasoning in chat            ● On                                █ │ 
- │   Thinking Default Expanded          ○ Off                               █ │ 
- │   Thinking Preview Lines             2                      ✎            │ │ 
+ │   Expand reasoning by default        ○ Off                               │ │ 
+ │   Reasoning preview lines            2                      ✎            │ │ 
  │   Thinking background highlight      ● On                                │ │ 
- │   Help Expand Groups                 ○ Off                               │ │ 
+ │   Expand command groups in help      ○ Off                               │ │ 
  │   Contextual tips                    ● On                                │ │ 
  │ system | terminal | shoreline | shoreline-light | underwater |…            │ 
- │ Enter or click again: Enter opens choices · Theme: current terminal ·      │ 
- │ saved terminal · applies on save                                           │ 
+ │ Enter or click again: opens choices · Theme: current terminal · saved      │ 
+ │ terminal · applies on save                                                 │ 
  │ Preview:  ● Accept Edits                                                   │ 
- │ ↑↓ move · Enter Enter edits · Tab switch · Esc close                       │ 
+ │ ↑↓ move · Enter edits · Tab switch · Esc close                             │ 
  ╰────────────────────────────────────────────────────────────────────────────╯ 
                                                                                 

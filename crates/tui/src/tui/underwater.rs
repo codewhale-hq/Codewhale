@@ -2237,6 +2237,7 @@ mod launch_card_tests {
     #[test]
     fn startup_keeps_session_and_connector_details_behind_their_controls() {
         let mut app = with_mcp(app_with_recent(&["Private draft title"], 1));
+        app.onboarding_needs_api_key = false;
         app.launch.recent_expanded = false;
         for (width, height) in [(40, 8), (80, 24), (140, 36)] {
             let area = Rect::new(0, 0, width, height);
@@ -2321,6 +2322,7 @@ mod launch_card_tests {
     fn a_keyless_launch_says_no_model_is_connected_and_how_to_fix_it() {
         let mut app = app_with_recent(&["Fix the parser"], 1);
         app.onboarding_needs_api_key = true;
+        refresh_launch_row_hitboxes(&mut app, Rect::new(0, 0, 100, 30));
         let ids = row_ids(&app);
         assert_eq!(ids.first(), Some(&LaunchRowId::ConnectModel), "{ids:?}");
         let lines = painted(&app, 100, 30).join("\n");
@@ -2330,6 +2332,7 @@ mod launch_card_tests {
         assert!(short.contains("Connect a model"), "{short}");
 
         app.onboarding_needs_api_key = false;
+        refresh_launch_row_hitboxes(&mut app, Rect::new(0, 0, 100, 30));
         assert!(!row_ids(&app).contains(&LaunchRowId::ConnectModel));
         let lines = painted(&app, 100, 30).join("\n");
         assert!(!lines.contains("Connect a model"), "{lines}");

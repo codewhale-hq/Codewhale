@@ -5484,6 +5484,16 @@ impl ModalView for ProviderPickerView {
                     };
                     ViewAction::EmitAndClose(ViewEvent::ProviderPickerOpenModels { identity })
                 }
+                KeyCode::Char(c)
+                    if key.modifiers.is_empty()
+                        && !self.onboarding_mode
+                        && !self.search_mode
+                        && self.toggle_row_selected
+                        && self.query.is_empty()
+                        && matches!(c.to_ascii_lowercase(), 'r' | 'e' | 'x' | 'm') =>
+                {
+                    ViewAction::None
+                }
                 KeyCode::Backspace if !self.query.is_empty() => {
                     let mut query = self.query.clone();
                     query.pop();
@@ -6678,6 +6688,7 @@ mod tests {
         let config = Config::default();
         let mut picker = ProviderPickerView::new(ProviderKind::Deepseek, &config);
         picker.view = ProviderListView::Catalog;
+        picker.show_all_providers = true;
         picker.selected_idx = picker
             .rows
             .iter()
@@ -6718,6 +6729,7 @@ mod tests {
         let config = Config::default();
         let mut picker = ProviderPickerView::new(ProviderKind::Deepseek, &config);
         picker.view = ProviderListView::Catalog;
+        picker.show_all_providers = true;
         picker.selected_idx = picker
             .rows
             .iter()
@@ -9433,7 +9445,11 @@ mod tests {
                 assert_eq!(app.api_provider, ProviderKind::Openai);
                 assert_eq!(app.model, "fixture-model");
                 assert_eq!(app.active_route_base_url, "http://127.0.0.1:4880/v1");
-                assert_eq!(app.onboarding, crate::tui::app::OnboardingState::None);
+                assert_eq!(
+                    app.onboarding,
+                    crate::tui::app::OnboardingState::TrustDirectory
+                );
+                assert!(!app.onboarding_needs_api_key);
                 assert!(!app.should_adopt_live_local_ollama());
 
                 let runtime = tokio::runtime::Runtime::new().unwrap();

@@ -6302,26 +6302,31 @@ mod tests {
         assert!(text.contains("⇧P"), "missing shifted pin hint: {text}");
         assert!(text.contains("⇧F"), "missing shifted fleet hint: {text}");
 
-        let footer_line = text
-            .lines()
-            .rev()
-            .find(|line| line.contains("Esc"))
+        let lines: Vec<&str> = text.lines().collect();
+        let esc_idx = lines
+            .iter()
+            .rposition(|line| line.contains("Esc"))
             .expect("footer line");
+        let start_idx = lines[..=esc_idx]
+            .iter()
+            .rposition(|line| line.contains("↑↓"))
+            .unwrap_or(esc_idx);
+        let footer_block = lines[start_idx..=esc_idx].join("\n");
         assert!(
-            footer_line.contains("↑↓"),
-            "footer missing move: {footer_line}"
+            footer_block.contains("↑↓"),
+            "footer missing move: {footer_block}"
         );
         assert!(
-            footer_line.contains("Enter"),
-            "footer missing apply: {footer_line}"
+            footer_block.contains("Enter"),
+            "footer missing apply: {footer_block}"
         );
         assert!(
-            footer_line.contains("⇧A"),
-            "footer missing views: {footer_line}"
+            footer_block.contains("⇧A"),
+            "footer missing views: {footer_block}"
         );
         assert!(
-            !footer_line.contains("Ctrl+S") && !footer_line.contains("⇧D"),
-            "footer must stay calm at 6 core actions: {footer_line}"
+            !footer_block.contains("Ctrl+S") && !footer_block.contains("⇧D"),
+            "footer must stay calm at 6 core actions: {footer_block}"
         );
     }
 
