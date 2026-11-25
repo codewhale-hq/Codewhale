@@ -2717,5 +2717,10 @@ mod truncate_to_width_tests {
             truncate_to_width("e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}", 4),
             "e\u{301}e\u{301}e\u{301}…"
         );
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
+        assert_eq!(
+            truncate_to_width(&family.repeat(3), 4),
+            format!("{family}…")
+        );
     }
 }
