@@ -6878,9 +6878,20 @@ async fn doctor_short_checks(
     use crate::doctor::DoctorShortCheck::{NeedsAttention, Note, Works};
 
     let mut checks = Vec::new();
-    let install_attention = tokio::task::spawn_blocking(|| crate::doctor::installation_lines(true))
-        .await
-        .unwrap_or_default();
+    let (install_attention, recovery) = tokio::task::spawn_blocking(|| {
+        (
+            crate::doctor::install_summary_lines(true),
+            crate::doctor::recovery_lines(),
+        )
+    })
+    .await
+    .unwrap_or_default();
+    if !recovery.is_empty() {
+        checks.push(Note(
+            "An earlier cleanup is kept in the recovery folder until it expires: `codewhale doctor --installs` shows it"
+                .to_string(),
+        ));
+    }
     if install_attention.is_empty() {
         checks.push(Works(format!(
             "Codewhale {} is installed, with no leftover copies",

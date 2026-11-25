@@ -113,8 +113,8 @@ body:
   - type: textarea
     id: doctor
     attributes:
-      label: codewhale doctor (optional)
-      description: Run `codewhale doctor` and paste the relevant lines. Check it for secrets first.
+      label: codewhale doctor --full (optional)
+      description: Run `codewhale doctor --full` and paste the relevant lines. Check it for secrets first.
       render: text
 
   - type: textarea

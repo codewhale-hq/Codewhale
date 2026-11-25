@@ -884,9 +884,19 @@ pub(crate) fn update_mode_lines(update: &codewhale_runtime::config::UpdateConfig
 }
 
 pub(crate) fn installation_lines(brief: bool) -> Vec<String> {
+    let mut lines = install_summary_lines(brief);
+    lines.extend(recovery_lines());
+    lines
+}
+
+pub(crate) fn install_summary_lines(brief: bool) -> Vec<String> {
     let running = std::env::current_exe().ok();
     let inventory = codewhale_release::installs::inventory(running.as_deref());
-    let mut lines = inventory.summary_lines(brief, env!("CARGO_PKG_VERSION"));
+    inventory.summary_lines(brief, env!("CARGO_PKG_VERSION"))
+}
+
+pub(crate) fn recovery_lines() -> Vec<String> {
+    let mut lines = Vec::new();
     if let Ok(home) = codewhale_config::codewhale_home() {
         let now = codewhale_release::check::now_unix();
         for folder in codewhale_release::installs::recovery_folders(&home) {
