@@ -3662,6 +3662,19 @@ pub(crate) async fn run_event_loop(
                             app.turn_durations_revision =
                                 app.turn_durations_revision.wrapping_add(1);
                         }
+                        if status
+                            == codewhale_engine::core::events::TurnOutcomeStatus::Interrupted
+                            && !newer_dispatch_owns_turn_state
+                        {
+                            let worked = if turn_elapsed.is_zero() {
+                                completed_user_index
+                                    .and_then(|index| app.turn_work_durations.get(&index).copied())
+                                    .unwrap_or_default()
+                            } else {
+                                turn_elapsed
+                            };
+                            push_turn_interrupted_record(app, worked);
+                        }
                         app.turn_last_activity_at = None;
                         app.streaming_output_token_estimate = 0;
                         // Roll the just-finished turn's elapsed time into the
@@ -7410,6 +7423,7 @@ pub(crate) async fn run_event_loop(
                                 app.disarm_quit();
                                 continue;
                             }
+                            bank_live_turn_time(app);
                             mark_active_turn_cancelled_locally(app);
                             current_streaming_text.clear();
                             stream_display_clock.reset();
@@ -9295,6 +9309,83 @@ mod launch_session_sync_tests {
         assert!(caller_view(workspace.path(), Some("startup-session"), None).is_none());
 
         run.abort();
+    }
+}
+
+pub(crate) fn bank_live_turn_time(app: &mut App) {
+    let Some(started) = app.turn_started_at.take() else {
+        return;
+    };
+    let elapsed = started.elapsed();
+    if elapsed.is_zero() {
+        return;
+    }
+    app.cumulative_turn_duration = app.cumulative_turn_duration.saturating_add(elapsed);
+    if let Some(user_index) = app.active_turn_user_index {
+        app.turn_work_durations.insert(user_index, elapsed);
+        app.turn_durations_revision = app.turn_durations_revision.wrapping_add(1);
+    }
+}
+
+fn push_turn_interrupted_record(app: &mut App, worked: Duration) {
+    let content = if worked.as_secs() == 0 {
+        app.tr(MessageId::TurnInterruptedRecord).into_owned()
+    } else {
+        app.tr(MessageId::TurnInterruptedRecordWithWork).replace(
+            "{duration}",
+            &codewhale_command_contract::elapsed::format_elapsed_secs(worked.as_secs()),
+        )
+    };
+    app.add_message(HistoryCell::System { content });
+    app.needs_redraw = true;
+}
+
+#[cfg(test)]
+mod turn_interrupt_record_tests {
+    use super::{bank_live_turn_time, push_turn_interrupted_record};
+    use crate::tui::history::HistoryCell;
+    use std::time::{Duration, Instant};
+
+    fn app() -> (tempfile::TempDir, crate::tui::app::App) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let app = crate::tui::test_support::test_app_with_options(
+            crate::tui::test_support::test_tui_options(temp.path()),
+        );
+        (temp, app)
+    }
+
+    #[test]
+    fn interrupt_record_is_a_durable_system_cell_with_work_time() {
+        let _home = crate::test_support::SealedHome::new();
+        let (_temp, mut app) = app();
+        let before = app.history.len();
+        push_turn_interrupted_record(&mut app, Duration::from_secs(75));
+        push_turn_interrupted_record(&mut app, Duration::ZERO);
+        assert_eq!(app.history.len(), before + 2);
+        let HistoryCell::System { content } = &app.history[before] else {
+            panic!("expected HistoryCell::System");
+        };
+        assert!(content.contains("1m 15s"), "{content}");
+        let HistoryCell::System { content } = &app.history[before + 1] else {
+            panic!("expected HistoryCell::System");
+        };
+        assert!(!content.contains("{duration}"), "{content}");
+    }
+
+    #[test]
+    fn banking_the_live_turn_keeps_the_worked_total_from_dropping() {
+        let _home = crate::test_support::SealedHome::new();
+        let (_temp, mut app) = app();
+        app.cumulative_turn_duration = Duration::from_secs(30);
+        app.turn_started_at = Instant::now().checked_sub(Duration::from_secs(10));
+        app.active_turn_user_index = Some(0);
+        bank_live_turn_time(&mut app);
+        assert!(app.turn_started_at.is_none());
+        assert!(app.cumulative_turn_duration >= Duration::from_secs(40));
+        assert!(app.turn_work_durations.contains_key(&0));
+        let banked = app.cumulative_turn_duration;
+        bank_live_turn_time(&mut app);
+        assert_eq!(app.cumulative_turn_duration, banked);
     }
 }
 
