@@ -80,4 +80,9 @@ export const chrome: ChromeDict = {
   downloadSize: "الحجم {size}",
   downloadChecksum: "المجموع الاختباري SHA-256",
   downloadSigned: "موقّع وموثّق",
+  downloadLinux: "Linux",
+  downloadAptTitle: "التثبيت باستخدام apt",
+  downloadAptTrust: "مستودع apt موقّع بمفتاح Codewhale، وتُثبَّت التحديثات عبر apt.",
+  downloadAppImage: "تنزيل AppImage",
+  downloadAppImageTrust: "تحقق من AppImage باستخدام المجموع الاختباري SHA-256 المعروض. لا يحدّث نفسه بعد.",
 };

@@ -5,7 +5,7 @@
  * it; wording changes here change every page at once.
  */
 
-import { DESKTOP_RELEASE, desktopDownloads, type DesktopDownload, type DesktopReleaseFact } from "../desktop-release";
+import { DESKTOP_RELEASE, desktopDownloads, linuxDownloads, type DesktopDownload, type DesktopReleaseFact, type LinuxDownloads } from "../desktop-release";
 import { stateLabel, STATE_TONE, surfaceCapabilities, surfaceState, type SurfaceId, type SurfaceState, type SurfaceTone } from "../surface-states";
 import { pickText } from "../i18n/dictionaries";
 import type { LocalizedText } from "./vocabulary";
@@ -18,6 +18,7 @@ export interface ProductAvailabilityRow {
   pages: ReadonlyArray<"product" | "app">;
   detail: LocalizedText;
   detailReleased?: LocalizedText;
+  detailReleasedLinux?: LocalizedText;
   /** Locale-relative route with the full story, an absolute external URL, or null. */
   href: string | null;
   linkLabel: LocalizedText | null;
@@ -80,6 +81,10 @@ export const AVAILABILITY_ROWS: ProductAvailabilityRow[] = [
       en: "A desktop app on the same engine. Run several sessions side by side, set what each may do from the Permissions menu, and review and commit changes in the side panel.",
       zh: "基于同一引擎的桌面应用。可以并排运行多个会话，在 Permissions 菜单中设定每个会话无需询问即可做什么，并在侧边面板中审阅和提交修改。",
     },
+    detailReleasedLinux: {
+      en: "A desktop app on the same engine, for macOS and Linux. Run several sessions side by side, set what each may do from the Permissions menu, and review and commit changes in the side panel.",
+      zh: "基于同一引擎的桌面应用，提供 macOS 和 Linux 版。可以并排运行多个会话，在 Permissions 菜单中设定每个会话无需询问即可做什么，并在侧边面板中审阅和提交修改。",
+    },
     href: null,
     linkLabel: null,
   },
@@ -111,6 +116,7 @@ export interface AvailabilityView {
   detail: string;
   link: boolean;
   downloads: DesktopDownload[];
+  linux: LinuxDownloads | null;
 }
 
 export function describeRow(
@@ -121,12 +127,15 @@ export function describeRow(
   const context = { desktopRelease };
   const state = surfaceState(row.id, context);
   const capabilities = surfaceCapabilities(row.id, context);
+  const linux = capabilities.download ? linuxDownloads(desktopRelease) : null;
+  const released = linux && row.detailReleasedLinux ? row.detailReleasedLinux : row.detailReleased;
   return {
     state,
     status: stateLabel(state, locale),
     tone: STATE_TONE[state],
-    detail: pickText(capabilities.download && row.detailReleased ? row.detailReleased : row.detail, locale),
+    detail: pickText(capabilities.download && released ? released : row.detail, locale),
     link: capabilities.link && row.href !== null && row.linkLabel !== null,
     downloads: capabilities.download ? desktopDownloads(desktopRelease) : [],
+    linux,
   };
 }

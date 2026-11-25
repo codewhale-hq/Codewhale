@@ -82,4 +82,9 @@ export const chrome: ChromeDict = {
   downloadSize: "Boyut {size}",
   downloadChecksum: "SHA-256 sağlama toplamı",
   downloadSigned: "İmzalı ve noter onaylı",
+  downloadLinux: "Linux",
+  downloadAptTitle: "apt ile kur",
+  downloadAptTrust: "apt deposu Codewhale'in anahtarıyla imzalanır ve güncellemeler apt ile kurulur.",
+  downloadAppImage: "AppImage'ı indir",
+  downloadAppImageTrust: "AppImage'ı gösterilen SHA-256 sağlama toplamıyla doğrulayın. Henüz kendini güncellemez.",
 };

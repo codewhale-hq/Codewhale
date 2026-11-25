@@ -9,10 +9,10 @@ import { middleware } from "../middleware";
 import { footerDocsLinks, footerLegalLinks, footerProductLinks, footerProjectLinks, navLinks, signInLink } from "./i18n/links";
 import { PERMANENT_ROUTE_REDIRECTS, REDIRECTED_ROUTES } from "./route-redirects";
 import { AVAILABILITY_ROWS, describeRow } from "./content/availability";
-import { desktopDownload, desktopDownloads, parseDesktopRelease, type DesktopReleaseFact } from "./desktop-release";
+import { desktopDownload, desktopDownloads, linuxDownloads, parseDesktopRelease, type DesktopReleaseFact } from "./desktop-release";
 import { FOUNDER_SWITCHES, FOUNDER_SWITCH_VALUES } from "./founder-switches";
 import { STATE_CHROME_KEY, SURFACE_IDS, SURFACE_STATES, stateLabel, surfaceCapabilities, surfaceState } from "./surface-states";
-import { DesktopDownloadBlock } from "../components/desktop-download";
+import { DesktopDownloadBlock, LinuxDownloadBlock, aptInstallLines } from "../components/desktop-download";
 import HomePage from "../app/[locale]/page";
 import ContributePage from "../app/[locale]/contribute/page";
 import { extractHtmlText } from "./test-html-text";
@@ -52,6 +52,35 @@ const fixture: DesktopReleaseFact = {
   ],
 };
 
+const APT = {
+  repository: "https://downloads.codewhale.net/apt",
+  keyUrl: "https://downloads.codewhale.net/apt/codewhale.asc",
+  suite: "stable",
+  component: "main",
+  package: "codewhale-desktop",
+};
+const APPIMAGE_SHA = "c".repeat(64);
+const deb = {
+  name: "codewhale-desktop_1.2.3_amd64.deb",
+  platform: "linux",
+  kind: "deb",
+  arch: "x64",
+  size: 98_000_000,
+  sha256: "d".repeat(64),
+  url: "https://downloads.codewhale.net/apt/pool/main/c/codewhale-desktop/codewhale-desktop_1.2.3_amd64.deb",
+  apt: APT,
+} as const;
+const appImage = {
+  name: "Codewhale-1.2.3-x64.AppImage",
+  platform: "linux",
+  kind: "appimage",
+  arch: "x64",
+  size: 105_300_000,
+  sha256: APPIMAGE_SHA,
+  url: "https://downloads.codewhale.net/desktop/Codewhale-1.2.3-x64.AppImage",
+} as const;
+const withLinux = { ...fixture, assets: [...fixture.assets, deb, appImage] } as DesktopReleaseFact;
+
 type Page = (props: { params: Promise<{ locale: string }>; searchParams: Promise<Record<string, string>> }) => Promise<unknown> | unknown;
 const render = async (page: Page, locale = "en") =>
   renderToStaticMarkup((await page({ params: Promise.resolve({ locale }), searchParams: Promise.resolve({}) })) as never);
@@ -79,7 +108,7 @@ describe("every surface state has copy in every locale", () => {
     expect(chrome.numbersAsOf).toContain("{date}");
     expect(chrome.downloadVersion).toContain("{version}");
     expect(chrome.downloadSize).toContain("{size}");
-    for (const key of ["downloadMacos", "downloadChecksum", "downloadSigned"] as const) expect(chrome[key]).toBeTruthy();
+    for (const key of ["downloadMacos", "downloadChecksum", "downloadSigned", "downloadLinux", "downloadAptTitle", "downloadAptTrust", "downloadAppImage", "downloadAppImageTrust"] as const) expect(chrome[key]).toBeTruthy();
   });
 
   it("gives every state its own word within a locale", () => {
@@ -229,6 +258,88 @@ describe("the desktop download", () => {
       expect(html).toContain(getChrome(locale).downloadMacos);
       expect(html).toContain("1.2.3");
     }
+  });
+});
+
+describe("the Linux desktop download", () => {
+  it("parses only the exact deb and AppImage shapes", () => {
+    expect(parseDesktopRelease(withLinux)).toEqual(withLinux);
+    const bad: unknown[] = [
+      { ...deb, notarized: true },
+      { ...deb, signed: true },
+      { ...appImage, notarized: true },
+      { ...appImage, signed: true },
+      { ...appImage, apt: APT },
+      { ...appImage, sha256: undefined },
+      { ...deb, sha256: "abc" },
+      { ...deb, apt: undefined },
+      { ...deb, apt: { ...APT, repository: "https://example.com/apt" } },
+      { ...deb, apt: { ...APT, repository: "http://downloads.codewhale.net/apt" } },
+      { ...deb, apt: { ...APT, keyUrl: "http://downloads.codewhale.net/k.asc" } },
+      { ...deb, apt: { ...APT, keyUrl: "https://downloads.codewhale.net/k.asc; rm -rf ~" } },
+      { ...deb, apt: { ...APT, package: "codewhale desktop" } },
+      { ...deb, apt: { ...APT, suite: "$(id)" } },
+      { ...deb, apt: { ...APT, extra: "x" } },
+      { ...deb, arch: "arm64" },
+      { ...appImage, arch: undefined },
+      { ...appImage, kind: "rpm" },
+      { ...appImage, kind: undefined },
+      { ...appImage, url: "https://example.com/x.AppImage" },
+    ];
+    for (const asset of bad) expect(parseDesktopRelease({ ...fixture, assets: [...fixture.assets, asset] }), JSON.stringify(asset)).toBeNull();
+  });
+
+  it("leaves the macOS download and the primary download unchanged", () => {
+    expect(desktopDownloads(withLinux)).toEqual(desktopDownloads(fixture));
+    expect(desktopDownload(withLinux)).toEqual(desktopDownload(fixture));
+    expect(linuxDownloads(fixture)).toBeNull();
+    expect(linuxDownloads(null)).toBeNull();
+  });
+
+  it("renders the apt lines, the key URL and the AppImage checksum", () => {
+    const linux = linuxDownloads(withLinux)!;
+    const lines = aptInstallLines(linux.apt!).split("\n");
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toContain(APT.keyUrl);
+    expect(lines[1]).toContain(`signed-by=`);
+    expect(lines[1]).toContain(`${APT.repository} ${APT.suite} ${APT.component}`);
+    expect(lines[2]).toBe(`sudo apt update && sudo apt install ${APT.package}`);
+    const html = renderToStaticMarkup(LinuxDownloadBlock({ linux, locale: "en" }));
+    expect(html).toContain(APT.keyUrl);
+    expect(html).toContain(APPIMAGE_SHA);
+    expect(html).toContain(appImage.url);
+    expect(html).toContain("105.3 MB");
+    expect(html).toContain("does not update itself yet");
+    expect(html).not.toMatch(/notarized/i);
+  });
+
+  it("says macOS only, or macOS and Linux, from the data on the page and the row", async () => {
+    const row = AVAILABILITY_ROWS.find((candidate) => candidate.id === "desktop")!;
+    expect(describeRow(row, "en", fixture).detail).not.toContain("Linux");
+    expect(describeRow(row, "en", withLinux).detail).toContain("macOS and Linux");
+    expect(describeRow(row, "zh", withLinux).detail).toContain("Linux");
+    const { appHeaderCopy } = await import("./content/app-page");
+    expect(appHeaderCopy("en", fixture).lede).not.toContain("Linux");
+    expect(appHeaderCopy("en", fixture).description).not.toContain("Linux");
+    expect(appHeaderCopy("en", withLinux).lede).toContain("macOS and Linux");
+    expect(appHeaderCopy("en", withLinux).description).toContain("macOS and Linux");
+  });
+
+  it.each(["en", "zh"])("renders on /app in %s only when Linux assets are present, and macOS-only output is unchanged", async (locale) => {
+    const { default: AppPage } = await import("../app/[locale]/app/page");
+    holder.release = fixture;
+    const macOnly = await render(AppPage as Page, locale);
+    expect(macOnly).toContain(SHA);
+    expect(macOnly).not.toContain("apt install");
+    expect(macOnly).not.toContain(APPIMAGE_SHA);
+    holder.release = withLinux;
+    const both = await render(AppPage as Page, locale);
+    expect(both).toContain(SHA);
+    expect(both).toContain(APPIMAGE_SHA);
+    expect(both).toContain(APT.keyUrl);
+    expect(both).toContain(`sudo apt update &amp;&amp; sudo apt install ${APT.package}`);
+    holder.release = { ...fixture, assets: [deb, appImage] } as DesktopReleaseFact;
+    expect(await render(AppPage as Page, locale)).not.toContain(APPIMAGE_SHA);
   });
 });
 

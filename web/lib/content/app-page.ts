@@ -11,6 +11,9 @@
  */
 
 import type { DesktopShotId } from "@/components/desktop-shot";
+import { DESKTOP_RELEASE, linuxDownloads, type DesktopReleaseFact } from "../desktop-release";
+import { pickText } from "../i18n/dictionaries";
+import { surfaceCapabilities } from "../surface-states";
 import type { LocalizedText } from "./vocabulary";
 
 export interface AppShot {
@@ -31,6 +34,16 @@ export const APP_COPY = {
       en: "The Codewhale desktop app is built on the same agent you can read, and it is available for macOS. The terminal and the local browser client are released too.",
       zh: "Codewhale 桌面应用基于同一个可读智能体构建，现已提供 macOS 版。终端与本地浏览器客户端也已发布。",
     },
+  },
+  metadataWithLinux: {
+    description: {
+      en: "The Codewhale desktop app is built on the same agent you can read, and it is available for macOS and Linux. The terminal and the local browser client are released too.",
+      zh: "Codewhale 桌面应用基于同一个可读智能体构建，现已提供 macOS 和 Linux 版。终端与本地浏览器客户端也已发布。",
+    },
+  },
+  ledeWithLinux: {
+    en: "It runs the same engine as the terminal, so the app and the terminal share one agent. The macOS and Linux apps are available to download below, and the browser app is not open yet.",
+    zh: "它与终端运行同一个引擎，因此应用与终端共用同一个智能体。macOS 和 Linux 版可在下方下载，浏览器应用尚未开放。",
   },
   title: {
     en: "The desktop app is built on the same agent you can read.",
@@ -162,3 +175,11 @@ export const APP_COPY = {
     zh: "终端和 codewhale web 运行的，正是桌面应用所基于的智能体。登录指南会说明账户如何使用。",
   },
 } as const;
+
+export function appHeaderCopy(locale: string, release: DesktopReleaseFact | null = DESKTOP_RELEASE) {
+  const linux = surfaceCapabilities("desktop", { desktopRelease: release }).download && linuxDownloads(release) !== null;
+  return {
+    description: pickText(linux ? APP_COPY.metadataWithLinux.description : APP_COPY.metadata.description, locale),
+    lede: pickText(linux ? APP_COPY.ledeWithLinux : APP_COPY.lede, locale),
+  };
+}

@@ -85,4 +85,9 @@ export const chrome: ChromeDict = {
   downloadSize: "크기 {size}",
   downloadChecksum: "SHA-256 체크섬",
   downloadSigned: "서명 및 공증 완료",
+  downloadLinux: "Linux",
+  downloadAptTitle: "apt로 설치",
+  downloadAptTrust: "apt 저장소는 Codewhale의 키로 서명되며, 업데이트는 apt로 설치됩니다.",
+  downloadAppImage: "AppImage 다운로드",
+  downloadAppImageTrust: "표시된 SHA-256 체크섬으로 AppImage를 확인하세요. 아직 스스로 업데이트되지 않습니다.",
 };

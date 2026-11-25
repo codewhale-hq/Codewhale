@@ -80,4 +80,9 @@ export const chrome: ChromeDict = {
   downloadSize: "サイズ {size}",
   downloadChecksum: "SHA-256 チェックサム",
   downloadSigned: "署名・公証済み",
+  downloadLinux: "Linux",
+  downloadAptTitle: "apt でインストール",
+  downloadAptTrust: "apt リポジトリは Codewhale の鍵で署名されており、更新は apt で適用されます。",
+  downloadAppImage: "AppImage をダウンロード",
+  downloadAppImageTrust: "表示されている SHA-256 チェックサムで AppImage を確認してください。まだ自動更新されません。",
 };

@@ -79,4 +79,9 @@ export const chrome: ChromeDict = {
   downloadSize: "Ukuran {size}",
   downloadChecksum: "Checksum SHA-256",
   downloadSigned: "Ditandatangani dan dinotarisasi",
+  downloadLinux: "Linux",
+  downloadAptTitle: "Instal dengan apt",
+  downloadAptTrust: "Repositori apt ditandatangani dengan kunci Codewhale, dan pembaruan dipasang lewat apt.",
+  downloadAppImage: "Unduh AppImage",
+  downloadAppImageTrust: "Periksa AppImage dengan checksum SHA-256 yang ditampilkan. AppImage belum memperbarui dirinya sendiri.",
 };

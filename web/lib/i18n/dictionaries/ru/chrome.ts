@@ -79,4 +79,9 @@ export const chrome: ChromeDict = {
   downloadSize: "Размер {size}",
   downloadChecksum: "Контрольная сумма SHA-256",
   downloadSigned: "Подписано и нотаризовано",
+  downloadLinux: "Linux",
+  downloadAptTitle: "Установка через apt",
+  downloadAptTrust: "Репозиторий apt подписан ключом Codewhale, обновления устанавливаются через apt.",
+  downloadAppImage: "Скачать AppImage",
+  downloadAppImageTrust: "Проверьте AppImage по показанной контрольной сумме SHA-256. Он пока не обновляется сам.",
 };
