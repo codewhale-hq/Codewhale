@@ -296,7 +296,8 @@ jobs:
           else
             echo "failed=false" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+      - id: download
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         continue-on-error: true
         with:
           pattern: web-maintainer-*
@@ -305,7 +306,13 @@ jobs:
         id: patches
         env:
           LANES_FAILED: ${{ steps.lanes.outputs.failed }}
+          DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
         run: |
+          if [ "$DOWNLOAD_OUTCOME" = "failure" ]; then
+            echo "::error::web-maintainer patch artifacts could not be downloaded; their patches may exist but were not published."
+            echo "Patch artifact download failed; this run is not a clean no-op. No pull request was opened." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           if [ -n "$(find "$RUNNER_TEMP/patches" -name change.patch -size +0c 2>/dev/null)" ]; then
             echo "found=true" >> "$GITHUB_OUTPUT"
           else
