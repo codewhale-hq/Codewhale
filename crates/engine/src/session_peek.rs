@@ -27,7 +27,7 @@ use codewhale_models::ContentBlock;
 
 /// Most entries a peek carries. The dashboard shows a tail, so this is "the
 /// last N exchanges", which is what a peek is for.
-pub const MAX_PEEK_ENTRIES: usize = 12;
+pub const MAX_PEEK_ENTRIES: usize = 100;
 
 /// Longest text any single entry carries.
 pub const MAX_ENTRY_CHARS: usize = 400;
@@ -112,7 +112,7 @@ pub fn build_peek(session: &SavedSession, max_entries: usize) -> SessionPeek {
                 "user" => PeekEntryKind::User,
                 _ => PeekEntryKind::Assistant,
             };
-            entry_for_blocks(kind, &message.content)
+            entry_for_message(kind, message)
         })
         .collect();
 
@@ -135,13 +135,18 @@ pub fn build_peek(session: &SavedSession, max_entries: usize) -> SessionPeek {
     }
 }
 
-fn entry_for_blocks(default_kind: PeekEntryKind, blocks: &[ContentBlock]) -> PeekEntry {
+fn entry_for_message(default_kind: PeekEntryKind, message: &codewhale_models::Message) -> PeekEntry {
     let mut kind = default_kind;
     let mut parts: Vec<String> = Vec::new();
 
-    for block in blocks {
+    for (index, block) in message.content.iter().enumerate() {
         match block {
-            ContentBlock::Text { text, .. } => parts.push(text.trim().to_string()),
+            ContentBlock::Text { text, .. } => {
+                if crate::runtime_handoff::is_turn_metadata_block(message, index, text) {
+                    continue;
+                }
+                parts.push(text.trim().to_string());
+            }
             ContentBlock::Thinking { thinking, .. } => {
                 kind = PeekEntryKind::Reasoning;
                 parts.push(thinking.trim().to_string());
@@ -150,11 +155,11 @@ fn entry_for_blocks(default_kind: PeekEntryKind, blocks: &[ContentBlock]) -> Pee
             // likely carrier of both bulk output and credentials.
             ContentBlock::ToolUse { name, .. } | ContentBlock::ServerToolUse { name, .. } => {
                 kind = PeekEntryKind::Tool;
-                parts.push(format!("[tool call: {name}]"));
+                parts.push(format!("Ran {name}"));
             }
             ContentBlock::ToolResult { content, .. } => {
                 kind = PeekEntryKind::Tool;
-                parts.push(format!("[tool result: {} chars]", content.chars().count()));
+                parts.push(format!("Result, {} chars", content.chars().count()));
             }
             // Structured tool results are JSON. Report their serialized size
             // rather than their shape: the size is the honest number, and any
@@ -165,7 +170,7 @@ fn entry_for_blocks(default_kind: PeekEntryKind, blocks: &[ContentBlock]) -> Pee
             | ContentBlock::WebFetchToolResult { content, .. } => {
                 kind = PeekEntryKind::Tool;
                 parts.push(format!(
-                    "[tool result: {} chars]",
+                    "Result, {} chars",
                     content.to_string().len()
                 ));
             }
@@ -174,13 +179,13 @@ fn entry_for_blocks(default_kind: PeekEntryKind, blocks: &[ContentBlock]) -> Pee
             } => {
                 kind = PeekEntryKind::Tool;
                 parts.push(format!(
-                    "[web search call: {}]",
+                    "Ran web search ({})",
                     call_kind.as_deref().unwrap_or("search")
                 ));
             }
             ContentBlock::ServerToolCalls { steps } => {
                 kind = PeekEntryKind::Tool;
-                parts.push(format!("[server tool calls: {} steps]", steps.len()));
+                parts.push(format!("Ran {} server tool steps", steps.len()));
             }
             ContentBlock::File { file_id } => {
                 parts.push(format!("[file: {file_id}]"));
@@ -365,21 +370,21 @@ mod tests {
 
     #[test]
     fn peek_is_bounded_in_entries_and_reports_what_it_dropped() {
-        let messages: Vec<Message> = (0..40).map(|i| user(&format!("message {i}"))).collect();
+        let messages: Vec<Message> = (0..140).map(|i| user(&format!("message {i}"))).collect();
         let peek = build_peek(&session_with(messages), MAX_PEEK_ENTRIES);
 
         assert_eq!(peek.entries.len(), MAX_PEEK_ENTRIES);
-        assert_eq!(peek.message_count, 40);
-        assert_eq!(peek.omitted_before, 40 - MAX_PEEK_ENTRIES);
+        assert_eq!(peek.message_count, 140);
+        assert_eq!(peek.omitted_before, 140 - MAX_PEEK_ENTRIES);
         assert!(
-            peek.entries.last().expect("tail").text.contains("39"),
+            peek.entries.last().expect("tail").text.contains("139"),
             "the peek must be the tail, not the head"
         );
     }
 
     #[test]
     fn a_request_for_more_than_the_cap_still_gets_the_cap() {
-        let messages: Vec<Message> = (0..100).map(|i| user(&format!("m{i}"))).collect();
+        let messages: Vec<Message> = (0..300).map(|i| user(&format!("m{i}"))).collect();
         let peek = build_peek(&session_with(messages), usize::MAX);
         assert_eq!(peek.entries.len(), MAX_PEEK_ENTRIES);
     }
@@ -487,8 +492,9 @@ mod tests {
         let entry = &peek.entries[0];
 
         assert_eq!(entry.kind, PeekEntryKind::Tool);
-        assert!(entry.text.contains("[tool call: read_file]"));
-        assert!(entry.text.contains("[tool result:"));
+        assert!(entry.text.contains("Ran read_file"));
+        assert!(entry.text.contains("Result, 22 chars"));
+        assert!(!entry.text.contains('['));
         assert!(
             !entry.text.contains("verysecrethash"),
             "tool output must never be inlined into a peek: {}",
@@ -499,6 +505,20 @@ mod tests {
             "tool input must not be inlined either: {}",
             entry.text
         );
+    }
+
+    #[test]
+    fn turn_meta_envelope_is_stripped_from_user_entries() {
+        let message = Message {
+            role: Role::User,
+            content: vec![
+                text_block("fix the build"),
+                text_block("<turn_meta>\nCurrent approval mode: on-request\n</turn_meta>"),
+            ],
+        };
+        let peek = build_peek(&session_with(vec![message]), 4);
+        assert_eq!(peek.entries[0].text, "fix the build");
+        assert!(!peek.entries[0].text.contains("turn_meta"));
     }
 
     #[test]
@@ -695,14 +715,14 @@ mod tests {
         // The dashboard prints both numbers next to the rows it rendered, so a
         // count that included hidden runtime traffic would not add up.
         let mut messages = Vec::new();
-        for i in 0..20 {
+        for i in 0..130 {
             messages.push(user(&format!("m{i}")));
             messages.push(crate::runtime_handoff::waiting_for_subagents_runtime_message(1));
         }
 
         let peek = build_peek(&session_with(messages), MAX_PEEK_ENTRIES);
 
-        assert_eq!(peek.message_count, 20);
+        assert_eq!(peek.message_count, 130);
         assert_eq!(
             peek.omitted_before + peek.entries.len(),
             peek.message_count,

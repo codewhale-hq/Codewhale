@@ -4,6 +4,15 @@ import { readFile } from "node:fs/promises";
 
 import {
   NO_TARGET,
+  PEEK_DEFAULT_ENTRIES,
+  PEEK_EXPANDED_ENTRIES,
+  approvalCardCopy,
+  composerPlaceholderFor,
+  headerTitleFor,
+  peekCanShowEarlier,
+  peekOmittedLabel,
+  savedSessionNotice,
+  showNoMatchingThreads,
   STREAM_EVENT_NAMES,
   answersForUserInput,
   applyRuntimeEvent,
@@ -1281,4 +1290,44 @@ test("records workspace restore-point receipts on their turn in order", () => {
   assert.equal(applyRuntimeEvent(state, orphan), true);
   assert.equal(state.latestSeq, 10);
   assert.equal(state.turns.has("turn-9"), false);
+});
+
+test("approval card leads with the summary and keeps tool instructions out of the lead", () => {
+  const instructions = "Run a shell command. Call task_shell_wait with that task_id and do not sleep-poll with bash.";
+  assert.deepEqual(approvalCardCopy({ summary: "Run cargo test", description: instructions }), {
+    lead: "Run cargo test",
+    detail: instructions,
+  });
+  const fallback = approvalCardCopy({ description: instructions });
+  assert.equal(fallback.lead, "Run a shell command.");
+  assert.equal(fallback.detail, instructions);
+  assert.ok(approvalCardCopy({ description: "x".repeat(400) }).lead.length <= 160);
+  assert.equal(approvalCardCopy({}).detail, "");
+});
+
+test("approval card puts Allow and Deny before the request text", async () => {
+  const source = await readFile(new URL("../src/runtime_web/app.mjs", import.meta.url), "utf8");
+  const body = source.slice(source.indexOf("function renderApproval("));
+  assert.ok(body.indexOf("card.append(actions)") < body.indexOf('element("pre", "approval-request"'));
+});
+
+test("saved session view explains itself and says how many messages it shows", () => {
+  assert.match(savedSessionNotice(), /read-only/);
+  const peek = { omitted_before: 30, entries: new Array(12).fill({}) };
+  assert.equal(peekOmittedLabel(peek), "Showing the last 12 of 42 messages");
+  assert.equal(peekOmittedLabel({ omitted_before: 0, entries: [] }), "");
+  assert.equal(peekCanShowEarlier(peek, PEEK_DEFAULT_ENTRIES), true);
+  assert.equal(peekCanShowEarlier(peek, PEEK_EXPANDED_ENTRIES), false);
+  assert.match(composerPlaceholderFor(sessionTarget("s1"), "Ask"), /Resume/);
+  assert.equal(composerPlaceholderFor(NO_TARGET, "Ask"), "Ask");
+});
+
+test("header and thread rail stop contradicting an open saved session", () => {
+  assert.equal(
+    headerTitleFor({ thread: null, summary: null, target: sessionTarget("s1"), peek: { title: "Prime numbers" } }),
+    "Prime numbers",
+  );
+  assert.equal(headerTitleFor({ thread: null, summary: null, target: NO_TARGET, peek: null }), "Choose a thread");
+  assert.equal(showNoMatchingThreads([], []), true);
+  assert.equal(showNoMatchingThreads([], [{ id: "s1" }]), false);
 });
