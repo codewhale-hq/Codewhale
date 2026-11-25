@@ -693,8 +693,8 @@
                 "The download was corrupted or altered, and nothing was installed. Try again; if it repeats, do not use a mirror."
               ],
               [
-                "`The package-managed executable was not changed.`",
-                "You installed with npm, Cargo, or Homebrew. Update with that tool, for example `npm install -g codewhale`."
+                "`Not updated: use the command above.`",
+                "You installed with npm, Cargo, or Homebrew. Run the command printed above that line, for example `npm install -g codewhale`. `codewhale uninstall` ends the same way with `Not removed: use the command above.` Versions before 0.10.5 print `The package-managed executable was not changed.` instead."
               ]
             ]
           }

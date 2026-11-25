@@ -55,14 +55,16 @@ const STAGED_SIGNATURE: &str = "codewhale-artifacts-sha256.txt.sig";
 #[cfg(target_os = "android")]
 const ANDROID_PROC_SELF_MAPS: &str = "/proc/self/maps";
 
-pub(crate) const PACKAGE_MANAGED_EXIT_CODE: i32 = 1;
+#[derive(Debug)]
+pub(crate) struct PackageManaged(pub(crate) &'static str);
 
-pub(crate) fn exit_package_managed(closing_line: &str) -> ! {
-    use std::io::Write;
-    println!("{closing_line}");
-    let _ = std::io::stdout().flush();
-    std::process::exit(PACKAGE_MANAGED_EXIT_CODE)
+impl std::fmt::Display for PackageManaged {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
 }
+
+impl std::error::Error for PackageManaged {}
 
 /// Run the self-update workflow.
 ///
@@ -95,7 +97,7 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
         println!();
         println!("{}", installs::update_answer(install_method, &current_exe));
         if !check_only {
-            exit_package_managed("Not updated: use the command above.");
+            return Err(PackageManaged("Not updated: use the command above.").into());
         }
     }
 

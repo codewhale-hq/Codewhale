@@ -2213,6 +2213,11 @@ pub fn run_cli() -> std::process::ExitCode {
     match outcome {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) => {
+            #[cfg(not(target_env = "ohos"))]
+            if let Some(managed) = err.downcast_ref::<update::PackageManaged>() {
+                println!("{managed}");
+                return std::process::ExitCode::FAILURE;
+            }
             // Use the full anyhow chain so callers see the underlying
             // cause (e.g. the actual TOML parse error with line/column)
             // instead of just the top-level context message. The bare

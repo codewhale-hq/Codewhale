@@ -135,26 +135,28 @@ pub(crate) fn run(yes: bool, purge_data: bool) -> Result<()> {
     let result = remove(yes, &mut package_managed);
     report_path_copies(selected.as_deref());
     let removed = result?;
-    if package_managed {
-        super::exit_package_managed("Not removed: use the command above.");
-    }
-    if purge_data {
+    let outcome = if purge_data {
         if !yes {
-            return purge(false, selected.as_deref());
+            purge(false, selected.as_deref())
+        } else if removed {
+            purge(true, selected.as_deref())
+        } else {
+            println!(
+                "Data was not purged: this run did not remove a receipted installation. Data is shared by every install and is kept."
+            );
+            Ok(())
         }
-        if removed {
-            return purge(true, selected.as_deref());
-        }
-        println!(
-            "Data was not purged: this run did not remove a receipted installation. Data is shared by every install and is kept."
-        );
-        Ok(())
     } else {
         println!(
             "User data was not touched. To also delete Codewhale's own data directory, add --purge-data."
         );
         Ok(())
+    };
+    outcome?;
+    if package_managed {
+        return Err(super::PackageManaged("Not removed: use the command above.").into());
     }
+    Ok(())
 }
 
 fn remove(yes: bool, package_managed: &mut bool) -> Result<bool> {
