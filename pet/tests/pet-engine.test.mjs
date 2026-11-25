@@ -173,16 +173,3 @@ test('shared presentation and still projections cannot change physics, clock, jo
   }
   assert.deepEqual(JSON.parse(pet.recording(true)),JSON.parse(control.recording(true)));
 });
-
-test('delayed batch events apply at snapshot time minus their age', () => {
-  const delayed = new PetNative(points, '', '[]', true), immediate = new PetNative(points, '', '[]', true);
-  const events = JSON.stringify([{event:'turn_started',turn_id:'t'},{event:'operation_activity_started',span_id:'a',activity_kind:'computer'}]);
-  delayed.observeEngineBatch(events, 5000, JSON.stringify([4000, 3000]));
-  immediate.observeEngineBatch(events, 5000);
-  assert.equal(delayed.engine.activity(5000).observedAtMs, 2000);
-  assert.equal(immediate.engine.activity(5000).observedAtMs, 5000);
-  assert.throws(() => delayed.observeEngineBatch(events, 6000, JSON.stringify([1])));
-  assert.throws(() => delayed.observeEngineBatch(events, 6000, JSON.stringify([-1, 0])));
-  delayed.observeEngineBatch(JSON.stringify([{event:'tool_call_heartbeat'}]), 6000, JSON.stringify([60000]));
-  assert.equal(delayed.engine.activity(6000).observedAtMs, 2000);
-});

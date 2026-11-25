@@ -233,11 +233,6 @@ export class PetEngineTelemetry {
     return next;
   }
 
-  /** Applies a delayed event at its own time (now minus age) without moving the
-   * clock backwards past an earlier observation. */
-  observeAged(value: unknown, now: number, ageMs: number): void {
-    this.observe(value, Math.min(now, Math.max(now - ageMs, this.lastTime)));
-  }
   /** Mutates in place: clock, freshness and the event window change before
    * type-specific fields are checked. Callers that continue after a throw must
    * observe on a clone() and swap it in on success, as PetNative does. */

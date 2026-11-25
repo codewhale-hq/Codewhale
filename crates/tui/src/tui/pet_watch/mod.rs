@@ -187,7 +187,7 @@ impl PetWatch {
         }
         self.failed = false;
     }
-    pub fn observe(&mut self, event: &Event, session: Option<&str>, now: Instant) {
+    pub fn observe(&mut self, event: &Event, session: Option<&str>, _now: Instant) {
         if self.session.as_deref() != session {
             // A live view follows the session switch: restart it for the new
             // session and forward the event that switched, so the reducer
@@ -206,7 +206,7 @@ impl PetWatch {
             if let Some(dots) = &self.dots {
                 dots.observe(text.clone());
             }
-            self.send(Command::Observe(text, now));
+            self.send(Command::Observe(text));
         }
         if matches!(event, Event::TurnComplete { .. }) {
             self.active_turn_id = None;

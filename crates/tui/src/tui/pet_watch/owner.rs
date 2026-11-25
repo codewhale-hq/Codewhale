@@ -132,8 +132,6 @@ pub struct Producer {
     #[serde(default)]
     pub locale: Option<String>,
     pub events: Vec<Value>,
-    #[serde(default)]
-    pub ages_ms: Vec<u64>,
 }
 
 #[derive(Deserialize)]
@@ -825,8 +823,6 @@ fn run_world(
                         || request.source != saved.source
                         || request.source_revision != saved.source_revision
                         || request.events.len() > 64
-                        || (!request.ages_ms.is_empty()
-                            && request.ages_ms.len() != request.events.len())
                         || request.locale.as_ref().is_some_and(|locale| {
                             locale.len() > 35
                                 || !locale
@@ -868,10 +864,8 @@ fn run_world(
                         .with(|ctx| -> rquickjs::Result<()> {
                             ctx.globals()
                                 .set("events", serde_json::to_string(&request.events).unwrap())?;
-                            ctx.globals()
-                                .set("ages", serde_json::to_string(&request.ages_ms).unwrap())?;
                             ctx.eval::<(), _>(
-                                "pet.observeEngineBatch(events, JSON.parse(pet.snapshot()).timeMs, ages)",
+                                "pet.observeEngineBatch(events, JSON.parse(pet.snapshot()).timeMs)",
                             )
                         })
                         .map_err(|_| {

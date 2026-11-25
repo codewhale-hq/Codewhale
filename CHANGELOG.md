@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A failed Fleet list scan says so** instead of showing "No saved teams yet". (#7469)
 - **Middle-click paste goes through the shared paste path:** a PRIMARY selection pasted with the middle button now follows the same rules as any other paste.
 - **The model picker keeps model IDs that differ only in case.**
-- **Pet watch keeps the timing of delayed events:** a batch of engine events that arrives late is applied at the time each event happened, and a failed producer post is logged as a warning. (#7474)
+- **A failed pet watch producer post is logged as a warning** instead of at debug level, at most once every 3 seconds. (#7474)
 - **`codewhale update` and the install inventory agree on Cargo installs:** both use one rule to decide whether a file in `~/.cargo/bin` is Cargo's, and the update-check cache is written with fsync and a unique temporary file.
 
 ### Fixed

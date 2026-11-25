@@ -139,7 +139,7 @@ pub struct View {
 #[derive(Clone)]
 pub enum Command {
     Appearance { body: super::BodyStyle },
-    Observe(String, Instant),
+    Observe(String),
     Select,
     Browser,
     Export,
@@ -161,7 +161,6 @@ pub enum Notice {
 #[derive(Default)]
 pub(super) struct Batch {
     pub(super) events: Vec<Value>,
-    observed: Vec<Instant>,
     bytes: usize,
 }
 
@@ -172,29 +171,20 @@ impl Batch {
 
     /// Queue one event. `Ok(false)` means it does not fit: the caller drops
     /// the batch and restarts the lease rather than posting a partial one.
-    pub(super) fn push(&mut self, text: &str, at: Instant) -> io::Result<bool> {
+    pub(super) fn push(&mut self, text: &str) -> io::Result<bool> {
         // `+ 1` counts the separating comma in the posted JSON array.
         let bytes = self.bytes + text.len() + 1;
         if self.events.len() >= Self::MAX_EVENTS || bytes > Self::MAX_EVENT_BYTES {
             return Ok(false);
         }
         self.events.push(serde_json::from_str(text)?);
-        self.observed.push(at);
         self.bytes = bytes;
         Ok(true)
     }
 
     pub(super) fn clear(&mut self) {
         self.events.clear();
-        self.observed.clear();
         self.bytes = 0;
-    }
-
-    pub(super) fn ages_ms(&self, now: Instant) -> Vec<u64> {
-        self.observed
-            .iter()
-            .map(|at| now.saturating_duration_since(*at).as_millis() as u64)
-            .collect()
     }
 }
 
@@ -490,8 +480,8 @@ fn run(
         for command in commands {
             match command {
                 Command::Appearance { body } => appearance_patch = Some(body),
-                Command::Observe(text, at) => {
-                    if !events.push(&text, at)? {
+                Command::Observe(text) => {
+                    if !events.push(&text)? {
                         // Overflow is a coverage gap, never a truncated batch:
                         // restart the lease from sequence zero.
                         events.clear();
@@ -636,9 +626,6 @@ fn run(
                 events.clear();
             }
             let mut body = json!({"identity":s.identity,"epoch":s.epoch,"client":id,"source":s.source,"source_revision":s.source_revision,"seq":seq,"waiting":view.waiting,"events":events.events});
-            if !events.events.is_empty() {
-                body["ages_ms"] = json!(events.ages_ms(Instant::now()));
-            }
             if s.display_language.is_some() {
                 body["locale"] = json!(view.locale);
             }
@@ -728,7 +715,7 @@ mod tests {
         let mut batch = Batch::default();
         let large = format!("{{\"event\":\"x\",\"id\":\"{}\"}}", "a".repeat(16_000));
         let mut accepted = 0;
-        while batch.push(&large, Instant::now()).unwrap() {
+        while batch.push(&large).unwrap() {
             accepted += 1;
         }
         assert!(accepted > 0 && accepted < Batch::MAX_EVENTS, "{accepted}");
@@ -738,15 +725,8 @@ mod tests {
         batch.clear();
         let small = "{\"event\":\"tool_call_heartbeat\"}";
         for _ in 0..Batch::MAX_EVENTS {
-            assert!(batch.push(small, Instant::now()).unwrap());
+            assert!(batch.push(small).unwrap());
         }
-        assert!(
-            !batch.push(small, Instant::now()).unwrap(),
-            "the event count still bounds"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-        let ages = batch.ages_ms(Instant::now());
-        assert_eq!(ages.len(), Batch::MAX_EVENTS);
-        assert!(ages.iter().all(|age| *age >= 20), "{ages:?}");
+        assert!(!batch.push(small).unwrap(), "the event count still bounds");
     }
 }
