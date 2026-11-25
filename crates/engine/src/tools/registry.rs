@@ -950,6 +950,160 @@ pub(crate) fn mutation_target_paths(name: &str, input: &Value) -> Vec<String> {
     paths
 }
 
+pub const RESERVED_TOOL_NAMES: &[&str] = &[
+    "read",
+    "write",
+    "edit",
+    "File",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list_dir",
+    "retrieve_tool_result",
+    "present",
+    "show_data",
+    "bash",
+    "Bash",
+    "terminal_run",
+    "terminal_send",
+    "terminal_wait",
+    "terminal_cancel",
+    "terminal_reset",
+    "terminal/run",
+    "terminal/send",
+    "terminal/wait",
+    "terminal/cancel",
+    "terminal/reset",
+    "file_search",
+    "grep_files",
+    "Git",
+    "diagnostics",
+    "tui_help",
+    "pandoc_convert",
+    "image_ocr",
+    "read_media",
+    "load_skill",
+    "project_map",
+    "Run",
+    "validate_data",
+    "context_archive_get",
+    "context_archive_search",
+    "tasks",
+    "github",
+    "automation",
+    "send_later",
+    "task_shell_wait",
+    "Web",
+    "web.run",
+    "finance",
+    "image_analyze",
+    "request_user_input",
+    "apply_patch",
+    "revert_turn",
+    "speech",
+    "tts",
+    "rlm",
+    "harness",
+    "handle_read",
+    "review",
+    "verify",
+    "note",
+    "fim_edit",
+    "remember",
+    "memory_search",
+    "memory_get",
+    "session_search",
+    "session_get",
+    "lsp",
+    "notify",
+    "request_plugin_install",
+    "start_mcp_server",
+    "registry_sync",
+    "start_registry_mcp_server",
+    "todo_write",
+    "work_update",
+    "TodoWrite",
+    "todo",
+    "checklist_write",
+    "checklist_update",
+    "update_plan",
+    "create_goal",
+    "get_goal",
+    "update_goal",
+    "workflow",
+    "agent",
+    "agents/list",
+    "agents/message",
+    "agents/followup",
+    "agents/interrupt",
+    "agents/coordinate",
+    "agents/wait",
+    "tool_search",
+    "tool_search_tool_regex",
+    "tool_search_tool_bm25",
+    "multi_tool_use.parallel",
+    "code_execution",
+    "execute_tools",
+    "js_execution",
+    "authenticate",
+    "list_mcp_resources",
+    "list_mcp_resource_templates",
+    "mcp_read_resource",
+    "read_mcp_resource",
+    "mcp_get_prompt",
+];
+
+#[must_use]
+pub fn is_reserved_tool_name(name: &str) -> bool {
+    RESERVED_TOOL_NAMES
+        .iter()
+        .chain(crate::conversation_modes::CREATOR_TOOL_NAMES.iter())
+        .any(|reserved| reserved.eq_ignore_ascii_case(name))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DynamicToolNameRefusal {
+    Reserved,
+    Duplicate,
+}
+
+impl DynamicToolNameRefusal {
+    #[must_use]
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::Reserved => "a name reserved for a built-in tool",
+            Self::Duplicate => "the same name as an earlier dynamic tool in the request",
+        }
+    }
+}
+
+#[must_use]
+pub fn dynamic_tool_name_refusal(
+    name: &str,
+    earlier: &[DynamicToolSpec],
+) -> Option<DynamicToolNameRefusal> {
+    if is_reserved_tool_name(name) {
+        Some(DynamicToolNameRefusal::Reserved)
+    } else if earlier.iter().any(|spec| spec.name == name) {
+        Some(DynamicToolNameRefusal::Duplicate)
+    } else {
+        None
+    }
+}
+
+pub fn validate_dynamic_tool_names(dynamic_tools: &[DynamicToolSpec]) -> Result<(), String> {
+    for (index, spec) in dynamic_tools.iter().enumerate() {
+        if let Some(refusal) = dynamic_tool_name_refusal(&spec.name, &dynamic_tools[..index]) {
+            return Err(format!(
+                "invalid request: dynamic tool `{}` uses {}",
+                codewhale_runtime::safe_label::SafeLabel::identifier(&spec.name),
+                refusal.reason()
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Builder for constructing a `ToolRegistry` with common tools.
 pub struct ToolRegistryBuilder {
     tools: Vec<Arc<dyn ToolSpec>>,
@@ -1041,16 +1195,28 @@ impl ToolRegistryBuilder {
     /// or `read` silently take over the builtin handler and its approval
     /// policy. The model-facing name is the bare `name`, so a second dynamic
     /// tool with the same name in another namespace is refused the same way.
-    /// Both refusals are logged with the two origins.
+    /// A name in [`RESERVED_TOOL_NAMES`] is refused whether or not that tool
+    /// is registered for this turn, so a later `with_subagent_tools` or a
+    /// builtin gated off by mode cannot be shadowed. Every refusal is logged.
     ///
-    /// Known limitation: the refusal reaches the log, not the runtime client
-    /// that sent the spec; rejecting it at the API boundary, and exposing a
-    /// namespaced model-facing name, are protocol changes.
+    /// Turn and thread admission reject the same specs with
+    /// [`validate_dynamic_tool_names`] before a registry is built, so the
+    /// runtime client is told; this refusal is defence in depth. Exposing a
+    /// namespaced model-facing name is a protocol change.
     #[must_use]
     pub fn with_dynamic_tools(mut self, dynamic_tools: &[DynamicToolSpec]) -> Self {
-        for spec in dynamic_tools {
+        for (index, spec) in dynamic_tools.iter().enumerate() {
             let tool: Arc<dyn ToolSpec> =
                 Arc::new(super::dynamic::RuntimeDynamicTool::new(spec.clone()));
+            if let Some(refusal) = dynamic_tool_name_refusal(&spec.name, &dynamic_tools[..index]) {
+                tracing::warn!(
+                    refused_origin = ?tool.registration_origin(),
+                    "Refusing runtime dynamic tool with {}: {}",
+                    refusal.reason(),
+                    codewhale_runtime::safe_label::SafeLabel::identifier(tool.name())
+                );
+                continue;
+            }
             if let Some(existing) = self
                 .tools
                 .iter()
@@ -2086,3 +2252,126 @@ pub(super) fn mcp_tool_adapter_for_test(name: &str) -> Arc<dyn ToolSpec> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reserved_name_tests {
+    use super::*;
+
+    fn dynamic(namespace: &str, name: &str) -> DynamicToolSpec {
+        DynamicToolSpec {
+            namespace: Some(namespace.to_string()),
+            name: name.to_string(),
+            description: "client tool".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            defer_loading: false,
+        }
+    }
+
+    #[test]
+    fn reserved_tool_names_cover_a_fully_enabled_builder() {
+        use codewhale_agent_contract::worker_profile::ShellPolicy;
+
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let config = codewhale_runtime::config::Config::default()
+            .with_legacy_root(Some("test-key".to_string()), None);
+        let client = CodewhaleClient::new(&config).expect("stub client should construct");
+        let model = "deepseek-v4-flash".to_string();
+        let manager =
+            crate::tools::subagent::new_shared_subagent_manager(tmp.path().to_path_buf(), 2);
+        let runtime = crate::tools::subagent::SubAgentRuntime::new(
+            client.clone(),
+            model.clone(),
+            ctx,
+            true,
+            None,
+            manager.clone(),
+        );
+        let mut options = AgentToolSurfaceOptions::new(ShellPolicy::Full);
+        options.apply_patch_enabled = true;
+        options.web_search_enabled = true;
+        options.memory_tool_enabled = true;
+        options.goal_state = Some(crate::tools::goal::new_shared_goal_state());
+        options.vision_config = Some(codewhale_runtime::config::VisionModelConfig {
+            model_http_policy: None,
+            model: "vision-model".to_string(),
+            api_key: None,
+            base_url: None,
+        });
+        let pool = Arc::new(tokio::sync::Mutex::new(crate::mcp::McpPool::new(
+            codewhale_mcp::config::McpConfig::default(),
+        )));
+        let builder = ToolRegistryBuilder::new()
+            .with_full_agent_surface_options(
+                Some(client),
+                model.clone(),
+                manager,
+                runtime,
+                options,
+                crate::tools::todo::new_shared_todo_list(),
+                crate::tools::plan::new_shared_plan_state(),
+            )
+            .with_tool(Arc::new(super::super::fim::FimEditTool::new(None, model)))
+            .with_speech_tools(None, None)
+            .with_foreground_shell_tools()
+            .with_runtime_read_only_task_tools()
+            .with_read_only_file_tools()
+            .with_registry_mcp_sync_tool()
+            .with_runtime_mcp_tool(Arc::clone(&pool))
+            .with_registry_mcp_start_tool(pool);
+
+        let missing: Vec<&str> = builder
+            .tools
+            .iter()
+            .map(|tool| tool.name())
+            .filter(|name| !RESERVED_TOOL_NAMES.contains(name))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "add these builder tool names to RESERVED_TOOL_NAMES: {missing:?}"
+        );
+        for name in ["read", "agent", "workflow", "agents/wait", "apply_patch"] {
+            assert!(RESERVED_TOOL_NAMES.contains(&name), "{name}");
+        }
+    }
+
+    #[test]
+    fn dynamic_tool_names_are_refused_when_reserved_or_repeated() {
+        assert_eq!(
+            dynamic_tool_name_refusal("agent", &[]),
+            Some(DynamicToolNameRefusal::Reserved)
+        );
+        assert_eq!(
+            dynamic_tool_name_refusal("READ", &[]),
+            Some(DynamicToolNameRefusal::Reserved)
+        );
+        assert_eq!(
+            dynamic_tool_name_refusal("plugin_manager", &[]),
+            Some(DynamicToolNameRefusal::Reserved)
+        );
+        assert_eq!(
+            dynamic_tool_name_refusal("lookup", &[dynamic("first", "lookup")]),
+            Some(DynamicToolNameRefusal::Duplicate)
+        );
+        assert_eq!(dynamic_tool_name_refusal("lookup", &[]), None);
+
+        let err = validate_dynamic_tool_names(&[dynamic("a", "lookup"), dynamic("b", "agent")])
+            .expect_err("reserved name");
+        assert!(err.contains("`agent`"), "{err}");
+        let err = validate_dynamic_tool_names(&[dynamic("a", "lookup"), dynamic("b", "lookup")])
+            .expect_err("duplicate name");
+        assert!(err.contains("`lookup`"), "{err}");
+        assert!(validate_dynamic_tool_names(&[dynamic("a", "lookup")]).is_ok());
+    }
+
+    #[test]
+    fn a_dynamic_tool_cannot_take_a_name_registered_after_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let registry = ToolRegistryBuilder::new()
+            .with_dynamic_tools(&[dynamic("client", "agent"), dynamic("client", "lookup")])
+            .build(ToolContext::new(tmp.path().to_path_buf()));
+        assert!(!registry.contains("agent"));
+        assert!(registry.contains("lookup"));
+    }
+}

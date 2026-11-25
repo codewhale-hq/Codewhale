@@ -8557,6 +8557,8 @@ impl RuntimeThreadManager {
             }
             None => None,
         };
+        crate::tools::registry::validate_dynamic_tool_names(&req.dynamic_tools)
+            .map_err(anyhow::Error::msg)?;
         let executor = match req.executor.as_ref() {
             Some(requested) => {
                 anyhow::ensure!(
@@ -15237,6 +15239,7 @@ impl RuntimeThreadManager {
         if prompt.trim().is_empty() {
             bail!("prompt is required");
         }
+        crate::tools::registry::validate_dynamic_tool_names(&req.dynamic_tools).map_err(anyhow::Error::msg)?;
 
         let thread = self.get_thread(thread_id).await?;
         if let Some(environment) = thread.environment.as_ref() {
@@ -21668,4 +21671,97 @@ pub async fn install_mock_engine(
         .await
         .expect("install mock engine");
     harness
+}
+
+#[cfg(test)]
+mod dynamic_tool_admission_tests {
+    use super::*;
+
+    fn open_manager() -> Result<RuntimeThreadManager> {
+        let data_dir = crate::test_support::test_scratch_dir("codewhale-dynamic-tool-admission");
+        RuntimeThreadManager::open(
+            Config::default(),
+            PathBuf::from("."),
+            RuntimeThreadManagerConfig {
+                mcp_auth_context: Default::default(),
+                task_data_dir: data_dir.clone(),
+                sessions_dir: None,
+                data_dir,
+                max_active_threads: 4,
+            },
+        )
+    }
+
+    fn dynamic_tool(namespace: Option<&str>, name: &str) -> DynamicToolSpec {
+        DynamicToolSpec {
+            namespace: namespace.map(str::to_string),
+            name: name.to_string(),
+            description: "client tool".to_string(),
+            input_schema: json!({"type": "object"}),
+            defer_loading: false,
+        }
+    }
+
+    async fn start_turn_error(dynamic_tools: Vec<DynamicToolSpec>) -> Result<String> {
+        let manager = open_manager()?;
+        let thread = manager
+            .create_thread(CreateThreadRequest::default())
+            .await?;
+        let error = manager
+            .start_turn(
+                &thread.id,
+                StartTurnRequest {
+                    prompt: "use the client tool".to_string(),
+                    dynamic_tools,
+                    ..StartTurnRequest::default()
+                },
+            )
+            .await
+            .expect_err("a refused dynamic tool must fail the request")
+            .to_string();
+        assert!(manager.store.list_turns_for_thread(&thread.id)?.is_empty());
+        Ok(error)
+    }
+
+    #[tokio::test]
+    async fn start_turn_rejects_a_dynamic_tool_named_like_a_builtin() -> Result<()> {
+        let error = start_turn_error(vec![dynamic_tool(Some("client"), "read")]).await?;
+        assert!(error.contains("invalid request"), "{error}");
+        assert!(error.contains("`read`"), "{error}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn start_turn_rejects_a_dynamic_tool_named_like_a_subagent_tool() -> Result<()> {
+        let error = start_turn_error(vec![dynamic_tool(None, "agent")]).await?;
+        assert!(error.contains("`agent`"), "{error}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn start_turn_rejects_duplicate_dynamic_tool_names_across_namespaces() -> Result<()> {
+        let error = start_turn_error(vec![
+            dynamic_tool(Some("first"), "lookup"),
+            dynamic_tool(Some("second"), "lookup"),
+        ])
+        .await?;
+        assert!(error.contains("`lookup`"), "{error}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_thread_rejects_a_reserved_dynamic_tool_name() -> Result<()> {
+        let manager = open_manager()?;
+        let error = manager
+            .create_thread(CreateThreadRequest {
+                dynamic_tools: vec![dynamic_tool(Some("client"), "bash")],
+                ..CreateThreadRequest::default()
+            })
+            .await
+            .expect_err("a refused dynamic tool must fail the request")
+            .to_string();
+        assert!(error.contains("`bash`"), "{error}");
+        assert!(manager.store.list_threads()?.is_empty());
+        Ok(())
+    }
 }
