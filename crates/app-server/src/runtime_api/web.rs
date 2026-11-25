@@ -35,7 +35,7 @@ pub(super) const WEB_STREAM_TICKET_QUERY: &str = "web_stream_ticket";
 pub(super) const WEB_SESSION_COOKIE_NAME: &str = "codewhale_web_session";
 const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'";
 const APP_WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; media-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'self'; frame-ancestors 'none'";
-const PLUGIN_HOST_CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; frame-ancestors 'self'";
+const PLUGIN_HOST_CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; frame-ancestors 'self'; sandbox allow-scripts";
 const SVG_CONTENT_SECURITY_POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
 
 #[derive(Clone)]
@@ -62,7 +62,11 @@ pub(super) enum BootstrapError {
 
 impl RuntimeWebState {
     pub(super) fn new() -> (Self, String) {
-        Self::new_with_dist(resolve_web_dist_from_env())
+        Self::new_with_dist(configured_web_dist().ok().flatten())
+    }
+
+    pub(super) fn dist_dir(&self) -> Option<&FsPath> {
+        self.web_dist_dir.as_deref().map(PathBuf::as_path)
     }
 
     pub(super) fn new_with_dist(web_dist_dir: Option<PathBuf>) -> (Self, String) {
@@ -87,7 +91,7 @@ impl RuntimeWebState {
         );
         let validated_dist = web_dist_dir
             .as_deref()
-            .and_then(validate_web_dist_dir)
+            .and_then(|dir| validate_web_dist_dir(dir).ok())
             .map(Arc::new);
         let state = Self {
             bootstrap: Arc::new(Mutex::new(Some(BootstrapCapability {
@@ -291,6 +295,10 @@ pub(super) async fn web_fallback(State(state): State<RuntimeApiState>, req: Requ
     let Some(dist_dir) = state.web.as_ref().and_then(|web| web.web_dist_dir.clone()) else {
         return not_found();
     };
+    serve_web_dist_request(dist_dir, req).await
+}
+
+async fn serve_web_dist_request(dist_dir: Arc<PathBuf>, req: Request) -> Response {
     if !matches!(*req.method(), Method::GET | Method::HEAD) {
         return not_found();
     }
@@ -352,6 +360,12 @@ pub(super) async fn web_fallback(State(state): State<RuntimeApiState>, req: Requ
                     "no-store"
                 },
             );
+            if is_immutable {
+                response.headers_mut().insert(
+                    header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                    HeaderValue::from_static("*"),
+                );
+            }
             return response;
         }
         return not_found();
@@ -364,26 +378,42 @@ pub(super) async fn web_fallback(State(state): State<RuntimeApiState>, req: Requ
     not_found()
 }
 
-fn resolve_web_dist_from_env() -> Option<PathBuf> {
-    let raw = std::env::var_os(WEB_DIST_ENV)?;
-    if raw.is_empty() {
-        return None;
-    }
-    Some(PathBuf::from(raw))
+pub(super) fn configured_web_dist() -> Result<Option<PathBuf>, String> {
+    checked_web_dist(std::env::var_os(WEB_DIST_ENV))
 }
 
-fn validate_web_dist_dir(dir: &FsPath) -> Option<PathBuf> {
-    let meta = fs::symlink_metadata(dir).ok()?;
-    if meta.file_type().is_symlink() || !meta.is_dir() {
-        return None;
+fn checked_web_dist(raw: Option<std::ffi::OsString>) -> Result<Option<PathBuf>, String> {
+    let Some(raw) = raw.filter(|raw| !raw.is_empty()) else {
+        return Ok(None);
+    };
+    let dir = PathBuf::from(raw);
+    validate_web_dist_dir(&dir).map(Some).map_err(|reason| {
+        format!(
+            "{WEB_DIST_ENV}={} cannot be served: {reason}. Point it at a built web app directory, or unset it to use the embedded client.",
+            dir.display()
+        )
+    })
+}
+
+fn validate_web_dist_dir(dir: &FsPath) -> Result<PathBuf, String> {
+    let meta = fs::symlink_metadata(dir).map_err(|error| format!("cannot read it ({error})"))?;
+    if meta.file_type().is_symlink() {
+        return Err("it is a symbolic link; give the real directory".to_string());
     }
-    let canonical = fs::canonicalize(dir).ok()?;
-    let index = canonical.join("index.html");
-    let index_meta = fs::symlink_metadata(&index).ok()?;
-    if index_meta.file_type().is_symlink() || !index_meta.is_file() {
-        return None;
+    if !meta.is_dir() {
+        return Err("it is not a directory".to_string());
     }
-    Some(canonical)
+    let canonical =
+        fs::canonicalize(dir).map_err(|error| format!("cannot resolve it ({error})"))?;
+    let index_meta = fs::symlink_metadata(canonical.join("index.html"))
+        .map_err(|error| format!("it has no readable index.html ({error})"))?;
+    if index_meta.file_type().is_symlink() {
+        return Err("its index.html is a symbolic link".to_string());
+    }
+    if !index_meta.is_file() {
+        return Err("its index.html is not a file".to_string());
+    }
+    Ok(canonical)
 }
 
 fn is_reserved_runtime_path(path: &str) -> bool {
@@ -840,7 +870,151 @@ mod tests {
 
         let missing = dir.path().join("no-index");
         fs::create_dir_all(&missing).unwrap();
-        assert!(validate_web_dist_dir(&missing).is_none());
+        assert!(validate_web_dist_dir(&missing).is_err());
+    }
+
+    #[test]
+    fn invalid_web_dist_is_refused_with_the_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(checked_web_dist(None), Ok(None));
+        assert_eq!(checked_web_dist(Some(std::ffi::OsString::new())), Ok(None));
+
+        let absent = dir.path().join("absent");
+        let error = checked_web_dist(Some(absent.clone().into_os_string())).unwrap_err();
+        assert!(error.starts_with(WEB_DIST_ENV), "{error}");
+        assert!(error.contains(&absent.display().to_string()), "{error}");
+        assert!(error.contains("cannot read it"), "{error}");
+
+        let file = dir.path().join("file");
+        fs::write(&file, "x").unwrap();
+        let error = checked_web_dist(Some(file.into_os_string())).unwrap_err();
+        assert!(error.contains("it is not a directory"), "{error}");
+
+        let empty = dir.path().join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        let error = checked_web_dist(Some(empty.into_os_string())).unwrap_err();
+        assert!(error.contains("no readable index.html"), "{error}");
+
+        let dist = dir.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+        fs::write(dist.join("index.html"), "<!doctype html>").unwrap();
+        assert_eq!(
+            checked_web_dist(Some(dist.clone().into_os_string())),
+            Ok(Some(fs::canonicalize(&dist).unwrap()))
+        );
+
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(&dist, &link).unwrap();
+            let error = checked_web_dist(Some(link.into_os_string())).unwrap_err();
+            assert!(error.contains("symbolic link"), "{error}");
+
+            let linked_index = dir.path().join("linked-index");
+            fs::create_dir_all(&linked_index).unwrap();
+            std::os::unix::fs::symlink(dist.join("index.html"), linked_index.join("index.html"))
+                .unwrap();
+            let error = checked_web_dist(Some(linked_index.into_os_string())).unwrap_err();
+            assert!(error.contains("index.html is a symbolic link"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn web_dist_router_serves_the_app_and_keeps_cors_to_static_build_assets() {
+        use tower::ServiceExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dist = dir.path().join("dist");
+        fs::create_dir_all(dist.join("static")).unwrap();
+        fs::write(dist.join("index.html"), "<!doctype html>app-index").unwrap();
+        fs::write(dist.join("plugin-host.html"), "<!doctype html>host").unwrap();
+        fs::write(dist.join("other.html"), "<!doctype html>other").unwrap();
+        fs::write(dist.join("static/app-abc.js"), "export const ok = true;").unwrap();
+        fs::write(dist.join("robots.txt"), "User-agent: *").unwrap();
+
+        let (web_state, _nonce) = RuntimeWebState::new_with_dist(Some(dist));
+        let root = web_state.web_dist_dir.clone().expect("dist dir attached");
+        assert_eq!(web_state.dist_dir(), Some(root.as_path()));
+        let app = axum::Router::new()
+            .fallback(move |req: Request| serve_web_dist_request(Arc::clone(&root), req))
+            .layer(super::super::cors_layer(&[]));
+
+        async fn send(
+            app: &axum::Router,
+            method: Method,
+            path: &str,
+        ) -> (StatusCode, axum::http::HeaderMap, String) {
+            let request = axum::http::Request::builder()
+                .method(method)
+                .uri(path)
+                .header(header::ORIGIN, "null")
+                .body(Body::empty())
+                .unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            let (parts, body) = response.into_parts();
+            let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+            (
+                parts.status,
+                parts.headers,
+                String::from_utf8_lossy(&bytes).into_owned(),
+            )
+        }
+
+        let (status, headers, body) = send(&app, Method::GET, "/settings/plugins").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "<!doctype html>app-index");
+        assert_eq!(
+            headers[header::CONTENT_SECURITY_POLICY],
+            APP_WEB_CONTENT_SECURITY_POLICY
+        );
+        assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+        assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+
+        let (status, headers, body) = send(&app, Method::GET, "/static/app-abc.js").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "export const ok = true;");
+        assert_eq!(
+            headers[header::CACHE_CONTROL],
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+        assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_CREDENTIALS));
+
+        let (status, headers, body) = send(&app, Method::GET, "/plugin-host.html").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "<!doctype html>host");
+        assert_eq!(
+            headers[header::CONTENT_SECURITY_POLICY],
+            PLUGIN_HOST_CONTENT_SECURITY_POLICY
+        );
+        let host_csp = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+        assert!(host_csp.ends_with("; sandbox allow-scripts"));
+        assert!(!host_csp.contains("allow-same-origin"));
+        assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+
+        let (status, headers, _) = send(&app, Method::GET, "/robots.txt").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+        assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+
+        for (method, path) in [
+            (Method::GET, "/other.html"),
+            (Method::GET, "/v1/nope"),
+            (Method::GET, "/api/x"),
+            (Method::GET, "/__codewhale/bootstrap/x"),
+            (Method::GET, "/missing.js"),
+            (Method::GET, "/static/missing.js"),
+            (Method::POST, "/settings"),
+            (Method::POST, "/static/app-abc.js"),
+        ] {
+            let (status, headers, body) = send(&app, method.clone(), path).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}");
+            assert!(!body.contains("app-index"), "{method} {path}");
+            assert!(
+                !headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+                "{method} {path}"
+            );
+        }
     }
 
     #[tokio::test]

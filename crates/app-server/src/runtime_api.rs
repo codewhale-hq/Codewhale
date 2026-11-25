@@ -2515,6 +2515,10 @@ pub async fn run_http_server(
     } else {
         (None, None)
     };
+    let web_dist_dir = web
+        .as_ref()
+        .and_then(|web| web.dist_dir())
+        .map(FsPath::to_path_buf);
     let (mobile, mobile_bootstrap) = if options.mobile && auth_enabled {
         let (mobile, bootstrap) = mobile::RuntimeMobileState::new();
         (Some(mobile), Some(bootstrap))
@@ -2640,12 +2644,22 @@ pub async fn run_http_server(
             );
         }
         if let Some(bootstrap) = web_bootstrap {
-            println!("Codewhale web enabled at http://{bound_addr}/");
             let bootstrap_url = web::bootstrap_url(bound_addr, &bootstrap);
             println!(
-                "Codewhale web bootstrap (single-use, expires in {} min): {bootstrap_url}",
+                "Codewhale web: open this link once in your browser (single-use, expires in {} min):",
                 web::BOOTSTRAP_TTL.as_secs() / 60
             );
+            println!("{bootstrap_url}");
+            println!(
+                "After that, http://{bound_addr}/ works in the same browser. Opened before the link, it reports that it is not authenticated."
+            );
+            if let Some(dir) = web_dist_dir.as_ref() {
+                println!(
+                    "Codewhale web is serving the app build at {} ({})",
+                    dir.display(),
+                    web::WEB_DIST_ENV
+                );
+            }
             if let Some(warning) =
                 web_launcher_warning(codewhale_runtime::browser::open_url(&bootstrap_url))
             {
@@ -2946,7 +2960,11 @@ async fn run_attached_frontend(
             println!("Runtime authentication enabled; generated bearer is not printed.");
         }
         if let Some(url) = ready.web_bootstrap_url {
-            println!("Codewhale web: {url}");
+            println!(
+                "Codewhale web: open this link once in your browser (single-use, expires in {} min):",
+                web::BOOTSTRAP_TTL.as_secs() / 60
+            );
+            println!("{url}");
         }
         if let Some(url) = ready.mobile_bootstrap_url {
             println!("Codewhale mobile: {url}");
@@ -2998,6 +3016,11 @@ fn validate_runtime_listener_security(options: &RuntimeApiOptions) -> Result<()>
     }
     if options.web && options.insecure_no_auth {
         bail!("Codewhale web requires Runtime authentication; remove --insecure");
+    }
+    if options.web
+        && let Err(reason) = web::configured_web_dist()
+    {
+        bail!(reason);
     }
     if options.mobile && !is_loopback_bind_host(&options.host) {
         bail!(
