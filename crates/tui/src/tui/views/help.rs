@@ -1177,7 +1177,6 @@ impl ModalView for HelpView {
             &[
                 ActionHint::new("", self.tr(MessageId::HelpFooterMove)),
                 ActionHint::new("", self.tr(MessageId::HelpFooterJump)),
-                ActionHint::new("←/→", ""),
                 ActionHint::new("", self.tr(MessageId::HelpFooterClose)),
             ],
         );

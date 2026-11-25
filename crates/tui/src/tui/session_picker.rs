@@ -1884,8 +1884,7 @@ fn build_preview_lines(session: &SavedSession, locale: Locale) -> Vec<String> {
     // empty-session tests key on it), not a display one.
     //
     // Known limitation: the list row still shows the persisted total, because
-    // rows are rendered from the session index without loading messages. For
-    // an Operate session the row can therefore read higher than the preview.
+    // rows are rendered from the session index without loading messages.
     out.push(
         tr(locale, MessageId::SessionsPreviewMessagesModel)
             .replace("{count}", &rendered_turns.to_string())
@@ -1915,42 +1914,30 @@ fn message_text_for_history(message: &codewhale_models::Message, locale: Locale)
                 }
             }
             codewhale_models::ContentBlock::Thinking { .. } => String::new(),
-            codewhale_models::ContentBlock::ToolUse { name, input, .. } => {
+            codewhale_models::ContentBlock::ToolUse { name, .. } => {
                 tr(locale, MessageId::SessionsToolCall)
                     .replace("{name}", name)
-                    .replace("{input}", &truncate(&input.to_string(), 180))
+                    .replace("{input}", "")
             }
-            codewhale_models::ContentBlock::ToolResult {
-                content, is_error, ..
-            } => {
-                let id = if is_error.unwrap_or(false) {
-                    MessageId::SessionsToolError
-                } else {
-                    MessageId::SessionsToolResult
-                };
-                tr(locale, id).replace("{content}", &truncate(&content.replace('\n', " "), 220))
-            }
-            codewhale_models::ContentBlock::ServerToolUse { name, input, .. } => {
+            codewhale_models::ContentBlock::ServerToolUse { name, .. } => {
                 tr(locale, MessageId::SessionsServerTool)
                     .replace("{name}", name)
-                    .replace("{input}", &truncate(&input.to_string(), 180))
+                    .replace("{input}", "")
             }
-            codewhale_models::ContentBlock::ToolSearchToolResult { content, .. }
-            | codewhale_models::ContentBlock::CodeExecutionToolResult { content, .. }
-            | codewhale_models::ContentBlock::WebSearchToolResult { content, .. }
-            | codewhale_models::ContentBlock::WebFetchToolResult { content, .. } => {
-                tr(locale, MessageId::SessionsToolResult)
-                    .replace("{content}", &truncate(&content.to_string(), 220))
-            }
+            codewhale_models::ContentBlock::ToolResult { .. }
+            | codewhale_models::ContentBlock::ToolSearchToolResult { .. }
+            | codewhale_models::ContentBlock::CodeExecutionToolResult { .. }
+            | codewhale_models::ContentBlock::WebSearchToolResult { .. }
+            | codewhale_models::ContentBlock::WebFetchToolResult { .. } => String::new(),
             codewhale_models::ContentBlock::WebSearchCall { kind, .. } => {
                 tr(locale, MessageId::SessionsServerTool)
                     .replace("{name}", kind.as_deref().unwrap_or("web_search"))
                     .replace("{input}", "")
             }
-            codewhale_models::ContentBlock::ServerToolCalls { steps } => {
+            codewhale_models::ContentBlock::ServerToolCalls { .. } => {
                 tr(locale, MessageId::SessionsServerTool)
                     .replace("{name}", "server_tool_calls")
-                    .replace("{input}", &steps.len().to_string())
+                    .replace("{input}", "")
             }
             codewhale_models::ContentBlock::File { file_id } => format!("[file: {file_id}]"),
             codewhale_models::ContentBlock::ImageUrl { .. } => {
@@ -2646,6 +2633,49 @@ mod tests {
             .filter(|line| *line == "USER:" || *line == "ASSISTANT:")
             .count();
         assert_eq!(drawn, 2, "header count must equal drawn turns: {preview}");
+    }
+
+    #[test]
+    fn preview_omits_tool_results_and_tool_call_json() {
+        let tool_use: codewhale_models::Message = serde_json::from_value(serde_json::json!({
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "t1",
+                "name": "bash",
+                "input": {"command": "ls -la /secret"}
+            }]
+        }))
+        .expect("tool use message");
+        let tool_result: codewhale_models::Message = serde_json::from_value(serde_json::json!({
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "t1",
+                "content": "file-listing-output"
+            }]
+        }))
+        .expect("tool result message");
+        let saved = saved_session_with_messages(vec![
+            text_message("user", "list files"),
+            tool_use,
+            tool_result,
+            text_message("assistant", "done"),
+        ]);
+
+        let preview = build_preview_lines(&saved, Locale::En).join("\n");
+
+        assert!(!preview.contains("ls -la"), "tool input leaked: {preview}");
+        assert!(
+            !preview.contains("file-listing-output"),
+            "tool result leaked: {preview}"
+        );
+        assert!(preview.contains("bash"), "tool name stays: {preview}");
+        assert_eq!(
+            preview.lines().filter(|l| *l == "USER:").count(),
+            1,
+            "a tool result is not a USER turn: {preview}"
+        );
     }
 
     #[test]
