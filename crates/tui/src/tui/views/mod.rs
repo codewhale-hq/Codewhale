@@ -2433,6 +2433,7 @@ impl ConfigCategory {
         Self::for_row(row) == self
     }
 
+    #[cfg(test)]
     fn position(self) -> usize {
         Self::ALL
             .iter()
@@ -2440,10 +2441,12 @@ impl ConfigCategory {
             .unwrap_or(0)
     }
 
+    #[cfg(test)]
     fn next(self) -> Self {
         Self::ALL[(self.position() + 1) % Self::ALL.len()]
     }
 
+    #[cfg(test)]
     fn prev(self) -> Self {
         Self::ALL[(self.position() + Self::ALL.len() - 1) % Self::ALL.len()]
     }
@@ -2596,7 +2599,7 @@ pub struct ConfigView {
 const CONFIG_MIN_KEY_COLUMN_WIDTH: usize = 19;
 const CONFIG_VALUE_COLUMN_WIDTH: usize = 44;
 const CONFIG_MIN_VALUE_COLUMN_WIDTH: usize = 10;
-const CONFIG_SCOPE_COLUMN_WIDTH: usize = 7;
+const CONFIG_SCOPE_COLUMN_WIDTH: usize = 8;
 const CONFIG_ROW_PREFIX_WIDTH: usize = 2;
 /// The two two-column gaps painted between key, value, and affordance.
 const CONFIG_COLUMN_GAPS_WIDTH: usize = 4;
@@ -3845,7 +3848,10 @@ impl ConfigView {
 
     fn reset_selected_to_default(&self) -> Option<ViewAction> {
         let row = self.rows.get(self.selected_row_index()?)?;
-        if !row.editable || row.facts.kind != ConfigRowKind::Setting {
+        if !row.editable
+            || row.facts.kind != ConfigRowKind::Setting
+            || row.facts.authority == SettingAuthority::ManagedPolicy
+        {
             return None;
         }
         let def = codewhale_config::setting(&row.key)?;
@@ -10735,6 +10741,14 @@ context_window = 131072
                     if key == "theme" && value == codewhale_config::settings_schema::DEFAULT_TUI_THEME
             ),
             "Ctrl+R on modified theme should reset to schema default, got {action:?}"
+        );
+
+        view.rows[theme_idx].facts.authority = SettingAuthority::ManagedPolicy;
+        let locked_action =
+            view.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert!(
+            matches!(locked_action, ViewAction::None),
+            "Ctrl+R on a ManagedPolicy row must be ignored, got {locked_action:?}"
         );
     }
 

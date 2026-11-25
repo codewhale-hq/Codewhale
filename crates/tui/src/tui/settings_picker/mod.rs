@@ -45,9 +45,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Map a key event onto the shared picker navigation contract.
 ///
-/// Search typing (`Char` that is not a digit shortcut / vim key) is left to
-/// the host when `allow_search_typing` is true so theme-style digit jumps stay
-/// intact for non-search pickers.
+/// When `allow_search_typing` is true, plain printable characters (including
+/// `j`, `k`, and `1`–`9`) append to the search query instead of firing vim
+/// navigation or digit jumps.
 pub fn handle_nav_key(
     controller: &mut SettingsPickerController,
     key: KeyEvent,
