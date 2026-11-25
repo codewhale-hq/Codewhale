@@ -1169,6 +1169,7 @@ fn mark_active_turn_cancelled_locally(app: &mut App) {
     // after its 60 s bound; its closure retires `dispatch_in_flight`.
     app.cancel_in_flight_dispatch();
     app.dispatch_started_at = None;
+    event_loop::bank_live_turn_time(app);
     app.turn_started_at = None;
     app.turn_last_activity_at = None;
     app.runtime_turn_id = None;

@@ -3672,8 +3672,7 @@ pub(crate) async fn run_event_loop(
                             app.turn_durations_revision =
                                 app.turn_durations_revision.wrapping_add(1);
                         }
-                        if status
-                            == codewhale_engine::core::events::TurnOutcomeStatus::Interrupted
+                        if status == codewhale_engine::core::events::TurnOutcomeStatus::Interrupted
                             && !newer_dispatch_owns_turn_state
                         {
                             let worked = if turn_elapsed.is_zero() {
