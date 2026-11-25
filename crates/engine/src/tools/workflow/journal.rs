@@ -5,7 +5,7 @@ use super::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::BufRead;
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use tracing::warn;
@@ -302,7 +302,15 @@ impl WorkflowRunJournal {
         let mut line =
             serde_json::to_string(record).map_err(|err| std::io::Error::other(err.to_string()))?;
         line.push('\n');
-        codewhale_util::fs_confined::append_durable(&self.root, &self.ledger_path, line.as_bytes())
+        if matches!(record, WorkflowJournalRecord::Snapshot { .. }) || !self.ledger_path.exists() {
+            return codewhale_util::fs_confined::append_durable(
+                &self.root,
+                &self.ledger_path,
+                line.as_bytes(),
+            );
+        }
+        codewhale_util::fs_confined::open_append(&self.root, &self.ledger_path)?
+            .write_all(line.as_bytes())
     }
 
     fn append_snapshot(&self, record: &WorkflowRunRecord) -> std::io::Result<()> {
