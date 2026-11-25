@@ -106,6 +106,7 @@ const SUBAGENT_COMPLETION_CHANNEL_CAPACITY: usize = 256;
 const MCP_BOOT_CHANNEL_CAPACITY: usize = 64;
 const EXTENSION_FIRST_SYNC_WAIT: Duration = Duration::from_secs(10);
 const RESTORE_POINT_TIMEOUT: Duration = Duration::from_secs(180);
+const RESTORE_POINT_ORDER_WAIT: Duration = Duration::from_secs(30);
 const TURN_META_GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const TURN_POOL_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const GOAL_CONTINUATION_FAILURE_DETAIL_MAX_BYTES: usize = 512;
@@ -3197,8 +3198,9 @@ impl Engine {
     /// A cancelled turn returns at once while the snapshot is still written
     /// off the async runtime. A `post_tool` or `post_turn` snapshot cut short
     /// that way stays reserved until it lands, so a `/undo` typed right after
-    /// an interrupt waits for it, and each later snapshot is written after
-    /// it, in the order the turn asked for them.
+    /// an interrupt waits for it, and the next snapshot is written after it,
+    /// or skipped when it has not landed within `RESTORE_POINT_ORDER_WAIT`.
+    /// A snapshot that timed out is not waited for.
     pub async fn take_restore_point(
         &mut self,
         kind: WorkspaceSnapshotKind,
@@ -3230,8 +3232,17 @@ impl Engine {
         let snapshot = tokio::task::spawn_blocking(move || {
             #[cfg(any(test, feature = "test-support"))]
             let _membership = crate::test_support::join_env_scope(env_ticket);
-            if let Some(earlier) = earlier {
-                let _ = earlier.blocking_recv();
+            if let Some(mut earlier) = earlier {
+                let deadline = std::time::Instant::now() + RESTORE_POINT_ORDER_WAIT;
+                while matches!(
+                    earlier.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                ) {
+                    if std::time::Instant::now() >= deadline {
+                        return None;
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
             }
             let taken = super::turn::restore_point_snapshot(
                 &workspace,
@@ -3260,7 +3271,7 @@ impl Engine {
                             RESTORE_POINT_TIMEOUT.as_secs()
                         )))
                         .await;
-                    (None, true)
+                    (None, false)
                 }
             },
         };
