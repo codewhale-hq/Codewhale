@@ -2247,23 +2247,6 @@ fn run_with_args(options: RuntimeOptions, args: Vec<String>) -> Result<()> {
     codewhale_sandbox::process_hardening::apply_process_hardening(startup_sandbox_mode.as_deref());
     codewhale_app_server::runtime_api::capture_runtime_token_environment();
 
-    if args.get(1).is_some_and(|arg| arg == "pet") {
-        let root = crate::tui::pet_watch::owner::directory()?;
-        match args.get(2).map(String::as_str) {
-            Some("serve") if args.len() == 3 => {
-                return crate::tui::pet_watch::owner::serve(
-                    root,
-                    std::env::var("CODEWHALE_PET_PORT")
-                        .ok()
-                        .map(|p| p.parse::<u16>())
-                        .transpose()?
-                        .unwrap_or(4633),
-                );
-            }
-            _ => anyhow::bail!("Usage: codewhale pet serve"),
-        }
-    }
-
     // ── Fatal-signal terminal guard (#5424) ───────────────────────────────
     // Abort-class deaths (stack overflow, allocation failure, double panic)
     // skip the panic hook AND every Drop guard, leaving mouse capture and
@@ -3524,7 +3507,6 @@ async fn run_async_main_dispatch(
                             config_path: cli.config.clone(),
                             config_profile,
                             control_frontend: cli.control_frontend.clone(),
-                            runtime_event_tap: Some(crate::tui::pet_watch::observe_runtime),
                         },
                     )
                     .await

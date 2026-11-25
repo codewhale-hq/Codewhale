@@ -298,7 +298,7 @@ pub fn handle_key(app: &mut App, key: &crossterm::event::KeyEvent) -> bool {
 }
 /// The existing Engine determines work boundaries. Only the shell reads the
 /// answer; no conversation text enters the whale's projection.
-pub fn observe(app: &mut App, event: &Event, _now: Instant) {
+pub fn observe(app: &mut App, event: &Event) {
     app.pet_watch
         .observe(event, app.current_session_id.as_deref());
     if matches!(event, Event::TurnStarted { .. }) {
@@ -401,7 +401,7 @@ mod tests {
         assert!(app.view_stack.is_empty());
         app.input = "retained draft".into();
         app.pet_watch.enabled = true;
-        observe(&mut app, &turn_started("preview-turn"), Instant::now());
+        observe(&mut app, &turn_started("preview-turn"));
         tick(&mut app, Instant::now());
         assert!(
             app.view_stack.is_empty(),
@@ -412,7 +412,7 @@ mod tests {
             content: "Prepared result stays in the transcript".into(),
             streaming: false,
         });
-        observe(&mut app, &turn_completed(), Instant::now());
+        observe(&mut app, &turn_completed());
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 40)).unwrap();
         terminal.draw(|frame| render_full(frame, &mut app)).unwrap();
@@ -451,7 +451,7 @@ mod tests {
         let mut app = app();
         app.input = "kept draft".into();
         app.pet_watch.enabled = true;
-        observe(&mut app, &turn_started("turn"), Instant::now());
+        observe(&mut app, &turn_started("turn"));
         assert!(main_view(&app));
         assert!(app.view_stack.is_empty());
         set_enabled(&mut app, false);

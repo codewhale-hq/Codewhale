@@ -355,10 +355,6 @@ lifecycle generation you observed.
         after_help = codewhale_tui::mcp_subcommand_help()
     )]
     Mcp(TuiPassthroughArgs),
-    /// Run the shared ambient pet owner (`pet serve`). Internal: spawned
-    /// lazily by clients when no owner is running.
-    #[command(name = "pet", hide = true)]
-    Pet(TuiPassthroughArgs),
     /// Inspect feature flags.
     #[command(
         override_usage = "codewhale features <COMMAND>",
@@ -2755,21 +2751,6 @@ fn run() -> Result<()> {
         Some(Commands::Mcp(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             run_tui_in_process(&cli, &resolved_runtime, tui_args("mcp", args))
-        }
-        Some(Commands::Pet(args)) => {
-            // The pet owner is a delegated Engine service, with no separate
-            // process or argument owner. Keep its narrow command contract.
-            let mut argv = vec!["pet".to_string()];
-            argv.extend(args.args);
-            let code = codewhale_tui::run(
-                codewhale_engine::runtime_options::RuntimeOptions::default(),
-                argv,
-            );
-            std::process::exit(if code == std::process::ExitCode::SUCCESS {
-                0
-            } else {
-                1
-            });
         }
         Some(Commands::Integrations(args)) => {
             // Integrations only need route *identity*. Do not recover or

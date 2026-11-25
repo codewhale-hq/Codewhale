@@ -173,7 +173,9 @@ one shared Cordis and the supported DSH compatibility services. The example's
 supplied service names are `tools`, `commands`, `prompt`, `storage`, `skills`, `shellHooks`, `avatars`, `mcp`, `logger`,
 `events`, `reflect` and `registry`. `ctx.avatars.registerPack({path})` registers a
 reviewed bundle-relative avatar pack; see
-[the whale-avatar example](examples/plugins/whale-avatar/README.md). A tool can ask the core to run a core tool through
+[the whale-avatar example](examples/plugins/whale-avatar/README.md). Since
+0.10.5 the terminal's whale view no longer draws registered packs; the
+registration and the Runtime API that lists packs are unchanged. A tool can ask the core to run a core tool through
 `exec.core` (see [Asking the core to run a tool](#asking-the-core-to-run-a-tool));
 Reviewed Native entries can propose MCP definitions through `ctx.mcp` as
 described below. Programmable pre-execute listeners use `ctx.on` as described below. A required

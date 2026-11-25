@@ -2973,7 +2973,7 @@ pub(crate) async fn run_event_loop(
                     _ => true,
                 };
                 if pet_event_applies {
-                    crate::tui::pet_watch::observe(app, &event, Instant::now());
+                    crate::tui::pet_watch::observe(app, &event);
                 }
                 record_turn_activity(app, &event, Instant::now());
                 let turn_end_lifecycle = TurnEndLifecycleReceipt::capture(&event);

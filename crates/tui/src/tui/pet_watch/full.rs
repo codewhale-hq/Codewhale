@@ -361,6 +361,7 @@ fn render(frame: &mut Frame, area: Rect, app: &mut App, inspect: bool) {
             index >= app.history.len(),
         )
     });
+    let title = app.pet_watch.name().unwrap_or("Codewhale").to_owned();
     if inspect && app.pet_watch.full_response_key != key {
         app.pet_watch.full_response = None;
         app.pet_watch.full_response_key = key;
@@ -458,12 +459,7 @@ fn render(frame: &mut Frame, area: Rect, app: &mut App, inspect: bool) {
     view.cove = false;
     view.dot_whale = dot_whale;
     view.notice = notice.or(missing);
-    view.title = app
-        .pet_watch
-        .name()
-        .unwrap_or("Codewhale")
-        .to_owned()
-        .into();
+    view.title = title.into();
     view.agents = if inspect { &agents } else { &[] };
     view.agent_words = SubagentViewWords {
         title: tr(app.ui_locale, MessageId::ConfigChoiceRailAgents),
