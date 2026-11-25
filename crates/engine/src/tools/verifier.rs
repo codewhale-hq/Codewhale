@@ -1317,12 +1317,35 @@ async fn run_gate(gate: VerifierGate, context: &ToolContext) -> GateResult {
         }
     };
     // Armed until the gate settles cleanly; dropping this future (Stop)
-    // kills the whole group.
-    let mut group = GateProcessGroup::new(child.id());
+    // kills the whole tree.
+    let tree = match codewhale_runtime::process_tree::ProcessTree::attach_tokio(&child) {
+        Ok(tree) => tree,
+        Err(err) => {
+            let _ = child.start_kill();
+            return GateResult {
+                name: gate.name,
+                ecosystem: gate.ecosystem,
+                status: GateStatus::Failed,
+                command,
+                cwd: gate.cwd.display().to_string(),
+                exit_code: None,
+                duration_ms: started.elapsed().as_millis() as u64,
+                stdout: String::new(),
+                stderr: format!("Failed to contain verifier: {err}"),
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_log_ref: None,
+                stderr_log_ref: None,
+                skipped_reason: None,
+                zero_tests_matched: false,
+                warning: None,
+            };
+        }
+    };
 
     let mut stdout = GateCapture::new(session_id, &gate.name, "stdout");
     let mut stderr = GateCapture::new(session_id, &gate.name, "stderr");
-    let mut exit: Option<std::io::Result<std::process::ExitStatus>> = None;
+    let mut exited = false;
     let mut pipes_open = true;
     let mut timed_out = false;
     {
@@ -1334,13 +1357,14 @@ async fn run_gate(gate: VerifierGate, context: &ToolContext) -> GateResult {
         let deadline = tokio::time::sleep(gate.timeout);
         let mut deadline = std::pin::pin!(deadline);
         let mut drain_deadline: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
+        let mut leader_exit = std::pin::pin!(tree.leader_exit(&mut child));
         loop {
-            if exit.is_some() && !pipes_open {
+            if exited && !pipes_open {
                 break;
             }
             tokio::select! {
-                status = child.wait(), if exit.is_none() => {
-                    exit = Some(status);
+                () = &mut leader_exit, if !exited => {
+                    exited = true;
                     drain_deadline = Some(Box::pin(tokio::time::sleep(GATE_PIPE_DRAIN_GRACE)));
                 }
                 () = &mut read_pipes, if pipes_open => pipes_open = false,
@@ -1355,17 +1379,19 @@ async fn run_gate(gate: VerifierGate, context: &ToolContext) -> GateResult {
     }
 
     let mut notes = Vec::new();
-    if timed_out || pipes_open {
-        group.kill();
-        if exit.is_none() {
-            // The group is SIGKILLed; reaping the leader is bounded anyway so
-            // an uninterruptible child cannot wedge the verifier again.
-            exit = tokio::time::timeout(GATE_PIPE_DRAIN_GRACE, child.wait())
-                .await
-                .ok();
-        }
-    } else {
-        group.disarm();
+    let kill_tree = timed_out || pipes_open;
+    if kill_tree {
+        let _ = tree.kill();
+    }
+    // The leader has exited or its tree was just killed; the reap is bounded
+    // anyway so an uninterruptible child cannot wedge the verifier again.
+    let exit = tokio::time::timeout(GATE_PIPE_DRAIN_GRACE, child.wait())
+        .await
+        .ok();
+    if !kill_tree {
+        tree.release();
+    } else if exit.is_some() {
+        tree.disarm();
     }
     if timed_out {
         notes.push(format!(
@@ -1617,47 +1643,6 @@ impl GateCapture {
             truncated: true,
             log_ref: saved.then_some(self.artifact_id),
         }
-    }
-}
-
-/// The process group a foreground gate runs in. Killed on timeout, on
-/// held-open pipes, and on drop unless the gate settled cleanly first.
-struct GateProcessGroup {
-    pid: Option<u32>,
-}
-
-impl GateProcessGroup {
-    fn new(pid: Option<u32>) -> Self {
-        Self { pid }
-    }
-
-    fn disarm(&mut self) {
-        self.pid = None;
-    }
-
-    fn kill(&mut self) {
-        let Some(pid) = self.pid.take() else {
-            return;
-        };
-        #[cfg(unix)]
-        if let Ok(pgid) = libc::pid_t::try_from(pid)
-            && pgid > 0
-        {
-            // SAFETY: kill(2) dereferences no pointers; a negative pid targets
-            // the group this gate created with process_group(0).
-            unsafe {
-                libc::kill(-pgid, libc::SIGKILL);
-            }
-        }
-        // Elsewhere `kill_on_drop` on the child covers the leader.
-        #[cfg(not(unix))]
-        let _ = pid;
-    }
-}
-
-impl Drop for GateProcessGroup {
-    fn drop(&mut self) {
-        self.kill();
     }
 }
 

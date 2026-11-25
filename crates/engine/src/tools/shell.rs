@@ -704,6 +704,24 @@ fn wait_child_bounded(child: &mut Child, grace: Duration) -> bool {
     }
 }
 
+/// Bounded wait for the direct child to exit without reaping it. Returns true
+/// once it has exited (or is no longer an unreaped child of this process),
+/// false when the grace elapsed first.
+#[cfg(unix)]
+fn wait_leader_exit_bounded(child: &Child, grace: Duration) -> bool {
+    let deadline = Instant::now() + grace;
+    loop {
+        match codewhale_runtime::process_tree::leader_exited_unreaped(child.id()) {
+            Ok(true) | Err(_) => return true,
+            Ok(false) => {}
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Terminate a shell's whole process group with a bounded SIGTERM → SIGKILL
 /// escalation (#52). The previous kill path SIGKILLed only the direct child
 /// and then joined output-reader threads with no timeout, so the tool
@@ -715,11 +733,13 @@ fn terminate_child_process_group(child: &mut Child) -> std::io::Result<()> {
     // Cooperative stop first so shells and their children can run traps and
     // clean up; bounded so a SIGTERM-ignoring command cannot stall the caller.
     let _ = signal_child_process_group(child, libc::SIGTERM);
-    if wait_child_bounded(child, KILL_TERM_GRACE) {
+    if wait_leader_exit_bounded(child, KILL_TERM_GRACE) {
         // The leader exited on SIGTERM; descendants may linger, so SIGKILL
-        // the rest of the group (ESRCH when it is already empty).
-        kill_child_process_group(child)?;
-        return Ok(());
+        // the rest of the group (ESRCH when it is already empty) while the
+        // unreaped leader still pins the group id, then reap it.
+        let killed = kill_child_process_group(child);
+        let _ = child.try_wait();
+        return killed;
     }
     kill_child_process_group(child)?;
     let _ = wait_child_bounded(child, KILL_REAP_GRACE);
