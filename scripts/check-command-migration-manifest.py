@@ -595,7 +595,14 @@ CONCRETE_APP_PARAM = re.compile(
 CFG_TEST_ATTR = re.compile(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]")
 MOD_TESTS_HEAD = re.compile(r"\bmod\s+tests\s*\{")
 ATTRIBUTE_HEAD = re.compile(r"#\s*!?\s*\[")
-SEMICOLON_ITEM = re.compile(r"(?:pub(?:\s*\([^)]*\))?\s+)?(?:use|const|static|type)\b")
+CONST_FN_TAIL = r"(?:(?:async|unsafe)\s+|extern\s*(?:\"[^\"]*\"\s*)?)*fn\b"
+SEMICOLON_ITEM = re.compile(
+    r"(?:pub(?:\s*\([^)]*\))?\s+)?(?:use|static|type|const(?!\s+" + CONST_FN_TAIL + r"))\b"
+)
+ITEM_HEAD = re.compile(
+    r"(?:pub(?:\s*\([^)]*\))?\s+)?(?:default\s+)?"
+    r"(?:fn|async|unsafe|extern|mod|use|impl|struct|enum|union|trait|const|static|type|macro_rules)\b"
+)
 
 
 class RustItem:
@@ -843,7 +850,9 @@ def _blank_span(chars: list[str], start: int, end: int) -> None:
 
 def _blank_test_only_items(code: str) -> str:
     """Blank `#[cfg(test)]` items and `mod tests { .. }` bodies so test-only
-    helpers are never counted as handlers. Offsets and newlines are kept."""
+    helpers are never counted as handlers. Offsets and newlines are kept.
+    On a field, variant, parameter or match arm only the attribute is blanked,
+    so the scan never runs past the enclosing item."""
     chars = list(code)
     for match in CFG_TEST_ATTR.finditer(code):
         if chars[match.start()] == " ":
@@ -856,7 +865,8 @@ def _blank_test_only_items(code: str) -> str:
             if not attr:
                 break
             j = _skip_balanced(code, code.index("[", j), "[", "]")
-        _blank_span(chars, match.start(), _item_end(code, j))
+        end = _item_end(code, j) if ITEM_HEAD.match(code, j) else j
+        _blank_span(chars, match.start(), end)
     for match in MOD_TESTS_HEAD.finditer(code):
         if chars[match.start()] == " ":
             continue

@@ -494,6 +494,29 @@ class GateScopeTests(unittest.TestCase):
             items, _ = mod.scan_leaf_handlers(["crates/tui/src/commands/groups/alpha/mod.rs"], root)
             self.assertEqual([i.name for i in items if i.is_concrete_app], ["real"])
 
+    def test_cfg_test_on_a_non_item_does_not_hide_later_handlers(self) -> None:
+        fixtures = {
+            "field": ("struct S { #[cfg(test)] probe: u8, b: u8 }\n"
+                      "fn real(app: &mut App) { app.go() }\n", ["real"]),
+            "variant": "enum E { A, #[cfg(test)] B }\nfn real(app: &mut App) {}\n",
+            "parameter": "fn pre(#[cfg(test)] a: u8) {}\nfn real(app: &mut App) {}\n",
+            "match_arm": ("fn pre(e: E) { match e { E::A => {}, #[cfg(test)] E::B => {} } }\n"
+                          "fn real(app: &mut App) {}\n"),
+            "const_fn": ("#[cfg(test)]\nconst fn h(app: &mut App) -> u8 { 1 }\n"
+                         "fn real(app: &mut App) { app.go() }\n"
+                         "fn real2(app: &mut App) {}\nuse a::b;\n", ["real", "real2"]),
+            "const_unsafe_fn": ("#[cfg(test)]\npub(crate) const unsafe fn h(app: &mut App) {}\n"
+                                "fn real(app: &mut App) {}\nuse a::b;\n"),
+            "const_item": ("#[cfg(test)]\nconst H: fn(&mut App) = { fn h(app: &mut App) {} h };\n"
+                           "fn real(app: &mut App) {}\n"),
+        }
+        for name, fixture in fixtures.items():
+            text, expected = fixture if isinstance(fixture, tuple) else (fixture, ["real"])
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                root = self._group_root(tmp, "alpha", {"mod.rs": text})
+                items, _ = mod.scan_leaf_handlers(["crates/tui/src/commands/groups/alpha/mod.rs"], root)
+                self.assertEqual([i.name for i in items if i.is_concrete_app], expected)
+
     def test_every_group_directory_is_scanned_and_unlisted_handler_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = self._group_root(tmp, "alpha", {
