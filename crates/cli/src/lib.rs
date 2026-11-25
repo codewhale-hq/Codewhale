@@ -3949,6 +3949,24 @@ fn xai_runtime_api_key(
     }
 }
 
+fn runtime_api_key_for(
+    store: &ConfigStore,
+    secrets: &Secrets,
+    provider: ProviderKind,
+    runtime_overrides: &CliRuntimeOverrides,
+) -> Option<RuntimeAuthApiKey> {
+    let resolved = store.config.resolve_runtime_options_with_secrets(
+        &runtime_overrides_for_provider(runtime_overrides, provider),
+        secrets,
+    );
+    (resolved.provider == provider).then(|| RuntimeAuthApiKey {
+        source: resolved.api_key.as_ref().and(resolved.api_key_source),
+        last4: resolved.api_key.as_deref().map(last4_label),
+    })
+}
+
+const STORED_KEY_NOT_SENT: &str = "not sent on this route";
+
 fn api_key_source_name(
     config_key: Option<&str>,
     keyring_key: Option<&str>,
@@ -4305,7 +4323,24 @@ fn auth_get_line_with_runtime(
     }
 
     let config_key = provider_config_api_key(store, provider);
-    if config_key.is_none() && provider_bound_env_value(store, provider).is_some() {
+    let bound_env = provider_bound_env_value(store, provider).is_some();
+    if let Some(runtime) = runtime_api_key_for(store, secrets, provider, runtime_overrides) {
+        return match runtime.source {
+            Some(RuntimeApiKeySource::Cli) => format!("{slot}: set (source: cli)"),
+            Some(RuntimeApiKeySource::ConfigFile) => format!("{slot}: set (source: config-file)"),
+            Some(RuntimeApiKeySource::Keyring) => format!("{slot}: set (source: secret-store)"),
+            Some(RuntimeApiKeySource::Env) => format!("{slot}: set (source: env)"),
+            None if config_key.is_some()
+                || bound_env
+                || provider_keyring_set(secrets, provider)
+                || provider_env_set(provider) =>
+            {
+                format!("{slot}: stored, {STORED_KEY_NOT_SENT}")
+            }
+            None => format!("{slot}: not set"),
+        };
+    }
+    if config_key.is_none() && bound_env {
         return format!("{slot}: set (source: env)");
     }
     let keyring_key = config_key
@@ -4417,8 +4452,16 @@ fn auth_status_all_providers_with_runtime(
         let keyring_status = keyring_key.as_ref().map(|_| "set").unwrap_or("-");
         let env_status = if env_set { "set" } else { "-" };
 
+        let stored = config_key.is_some() || keyring_key.is_some() || env_set;
+        let runtime = runtime_api_key_for(store, secrets, provider, runtime_overrides);
         let source = if external_selected {
             "external consent (not probed)".to_string()
+        } else if let Some(runtime) = runtime {
+            match runtime.source_name() {
+                Some(source) => source.to_string(),
+                None if stored => STORED_KEY_NOT_SENT.to_string(),
+                None => "unset".to_string(),
+            }
         } else if config_key.is_some() {
             "config".to_string()
         } else if bound_env {
@@ -4739,8 +4782,18 @@ fn auth_list_lines_with_runtime(
         let bound_env = provider_bound_env_value(store, provider).is_some();
         let env = bound_env || provider_env_set(provider);
         let external_selected = external_oauth_selected(store, provider);
+        let runtime = runtime_api_key_for(store, secrets, provider, runtime_overrides);
         let active = if external_selected {
             "external-consent".to_string()
+        } else if let Some(runtime) = runtime {
+            match runtime.source {
+                Some(RuntimeApiKeySource::Cli) => "cli".to_string(),
+                Some(RuntimeApiKeySource::ConfigFile) => "config".to_string(),
+                Some(RuntimeApiKeySource::Keyring) => "store".to_string(),
+                Some(RuntimeApiKeySource::Env) => "env".to_string(),
+                None if file || keyring == Some(true) || env => "not-sent".to_string(),
+                None => "missing".to_string(),
+            }
         } else if file {
             "config".to_string()
         } else if bound_env {
@@ -4800,7 +4853,18 @@ fn auth_status_lines_for_provider_with_runtime(
     let external = external_consent(store, provider);
     let external_selected = external_oauth_selected(store, provider);
 
-    let active_label = {
+    let stored = config_key.is_some() || keyring_key.is_some() || env_key.is_some();
+    let runtime = runtime_api_key_for(store, secrets, provider, runtime_overrides)
+        .filter(|_| !external_selected);
+    let active_label = if let Some(runtime) = runtime {
+        runtime.source_with_last4().unwrap_or_else(|| {
+            if stored {
+                format!("none (a stored key is {STORED_KEY_NOT_SENT})")
+            } else {
+                "missing".to_string()
+            }
+        })
+    } else {
         let active_source = if external_selected {
             "external read-only consent (availability not probed)"
         } else if config_key.is_some() {
@@ -10595,6 +10659,63 @@ verbosity = "concise"
             "{status}"
         );
         assert!(!status.contains("bound-key-7777"), "{status}");
+    }
+
+    #[test]
+    fn auth_views_do_not_report_a_key_the_runtime_would_not_send() {
+        let _lock = env_lock();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "provider = \"openrouter\"\n\n[providers.openrouter]\napi_key_env = \"CODEWHALE_TEST_CLI_UNSENT_OPENROUTER_KEY\"\n",
+        )
+        .expect("fixture");
+        let store = ConfigStore::load(Some(path)).expect("store");
+        let secrets = Secrets::new(std::sync::Arc::new(
+            codewhale_secrets::InMemoryKeyringStore::new(),
+        ));
+        let _ambient = ScopedEnvVar::remove("OPENROUTER_API_KEY");
+        let _base = ScopedEnvVar::remove("OPENROUTER_BASE_URL");
+        let _bound =
+            ScopedEnvVar::set("CODEWHALE_TEST_CLI_UNSENT_OPENROUTER_KEY", "bound-key-8888");
+        let swapped = CliRuntimeOverrides {
+            base_url: Some("https://collector.example/v1".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+
+        let get = auth_get_line_with_runtime(&store, &secrets, ProviderKind::Openrouter, &swapped);
+        assert!(get.ends_with("stored, not sent on this route"), "{get}");
+        let status = auth_status_lines_for_provider_with_runtime(
+            &store,
+            &secrets,
+            ProviderKind::Openrouter,
+            &swapped,
+        )
+        .join("\n");
+        assert!(
+            status.contains("active source: none (a stored key is not sent on this route)"),
+            "{status}"
+        );
+        let row = |lines: Vec<String>| {
+            lines
+                .into_iter()
+                .find(|line| line.starts_with("openrouter"))
+                .expect("openrouter row")
+        };
+        let list = row(auth_list_lines_with_runtime(&store, &secrets, &swapped));
+        assert!(list.ends_with("not-sent"), "{list}");
+        let all = row(auth_status_all_providers_with_runtime(
+            &store, &secrets, &swapped,
+        ));
+        assert!(all.contains("not sent on this route"), "{all}");
+        for text in [&get, &status, &list, &all] {
+            assert!(!text.contains("bound-key-8888"), "{text}");
+        }
+
+        let direct = CliRuntimeOverrides::default();
+        let get = auth_get_line_with_runtime(&store, &secrets, ProviderKind::Openrouter, &direct);
+        assert!(get.ends_with("set (source: env)"), "{get}");
     }
 
     /// #5198: `auth set` shares the login resolver — provider auth markers go
