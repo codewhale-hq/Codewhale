@@ -79,7 +79,6 @@ impl Workspace {
     /// the secondary resolution pass. Convenience entry point intended for
     /// callers that don't already have a CWD on hand; the App routes through
     /// [`Workspace::with_cwd`] with its own captured launch directory.
-    #[allow(dead_code)] // Keeps the surface stable for #97 (Ctrl+P picker).
     pub fn new(root: PathBuf) -> Self {
         Self::with_cwd(root, std::env::current_dir().ok())
     }

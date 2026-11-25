@@ -36,13 +36,9 @@ pub const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 95.0;
 
 // This module IS wired. `ContextBudget` is consumed by `route_budget.rs` and
 // `core/engine/context.rs`; `PressureLevel` by `context_report.rs`. It sits on
-// the do-not-delete list in AGENTS.md because a blanket `allow(dead_code)` here,
-// plus a comment that used to claim the module was "not yet referenced," taught
-// several dead-code audits to propose deleting a live file. The suppression is
-// now `#[cfg_attr(not(test), expect(dead_code))]` on the three methods unused
-// outside tests, so a suppression that stops matching the lint fails the
-// build instead of hiding behind a module-wide waiver. Tests call them, so
-// a bare `#[expect(dead_code)]` would be unfulfilled under `cfg(test)`.
+// the do-not-delete list in AGENTS.md because stale dead-code comments and
+// blanket suppressions once taught several audits to propose deleting a live
+// file. It carries no dead_code suppression.
 
 /// Fraction of the window, expressed as a percentage, at or above which
 /// compaction should be suggested. Mirrors the "high" pressure boundary the

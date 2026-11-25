@@ -129,7 +129,6 @@ pub enum SkillOneStepRequest {
 
 #[derive(Debug, Clone)]
 pub struct SkillMutationReceipt {
-    #[allow(dead_code)] // surfaced by manager detail / future receipt toast
     pub action: SkillActionKind,
     pub name: String,
     pub scope: SkillScope,

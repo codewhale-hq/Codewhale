@@ -532,7 +532,6 @@ impl SnapshotRepo {
     /// `MAX_SNAPSHOT_SIZE_MB` and prunes the oldest snapshots if it does.
     ///
     /// Returns the snapshot's commit SHA.
-    #[allow(dead_code)] // convenience entry kept for tests and legacy callers; production writes go through snapshot_with_session
     pub fn snapshot(&self, label: &str) -> io::Result<SnapshotId> {
         self.snapshot_with_session(label, None)
     }

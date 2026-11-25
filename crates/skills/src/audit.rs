@@ -101,7 +101,6 @@ pub enum TrustState {
     Untrusted,
     // Matched by the skills manager ("n/a") but never constructed: no
     // discovery path yields a non-filesystem row yet.
-    #[allow(dead_code)]
     NotApplicable,
     Unknown,
 }
@@ -128,7 +127,6 @@ pub enum ProvenanceState {
     Cache,
     // Matched by the skills manager ("unknown") but never constructed: no
     // discovery path yields an unclassified logical source yet.
-    #[allow(dead_code)]
     Unknown,
 }
 

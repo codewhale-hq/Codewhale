@@ -849,7 +849,6 @@ pub struct OAuthTokenMaterial {
 /// The provider is the table row it resolved through; unified activation
 /// (3b-ii) matches on it.
 pub struct PendingOAuthLogin {
-    #[allow(dead_code, reason = "3b-ii unified activation matches on this")]
     pub provider: OAuthProvider,
     pub issuer: String,
     pub client_id: String,
@@ -2888,13 +2887,9 @@ pub struct OwnedOAuthCredentials {
     pub account_id: Option<String>,
     /// Display label (email, plan) of the entry these credentials came from.
     pub account_label: Option<String>,
-    #[allow(dead_code, reason = "read by provider routes and tests as needed")]
     pub refresh_token: Option<String>,
-    #[allow(dead_code, reason = "diagnostic surface only")]
     pub expires_at: Option<String>,
-    #[allow(dead_code, reason = "route provenance only")]
     pub issuer: String,
-    #[allow(dead_code, reason = "route provenance only")]
     pub client_id: String,
 }
 

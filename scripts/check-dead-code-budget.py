@@ -37,15 +37,22 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CRATES_DIR = REPO_ROOT / "crates"
 BUDGET_PATH = REPO_ROOT / "scripts" / "dead-code-budget.json"
 
-# Matches `#[allow(dead_code)]`, `#![allow(dead_code)]`, and combined forms like
-# `#[allow(dead_code, clippy::large_enum_variant)]`.
-ALLOW_PATTERN = re.compile(r"allow\(\s*dead_code\b")
+# Matches `#[allow(dead_code)]`, `#![allow(dead_code)]`, and combined forms with
+# `dead_code` in any position of the lint list, including lists that span lines,
+# like `#[allow(async_fn_in_trait, dead_code)]`.
+ALLOW_PATTERN = re.compile(r"\ballow\(\s*(?:[\w:]+\s*,\s*)*dead_code\b")
 # `#[expect(dead_code)]` suppresses exactly the same lint. Counting only the
 # `allow` spelling made the gate blind: rewriting an `allow` as an `expect`
 # lowered the headline number by the full count while removing no dead code
 # at all (#6241). `137fb70a9` did this 92 times and the budget recorded a
 # 115-point "improvement" for a real reduction of 21.
-EXPECT_PATTERN = re.compile(r"expect\(\s*dead_code\b")
+EXPECT_PATTERN = re.compile(r"\bexpect\(\s*(?:[\w:]+\s*,\s*)*dead_code\b")
+
+
+def strip_line_comments(text: str) -> str:
+    return "\n".join(
+        line for line in text.split("\n") if not line.lstrip().startswith("//")
+    )
 
 
 def measure() -> tuple[int, int, dict[str, dict[str, int]]]:
@@ -65,8 +72,9 @@ def measure() -> tuple[int, int, dict[str, dict[str, int]]]:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        allows = len(ALLOW_PATTERN.findall(text))
-        expects = len(EXPECT_PATTERN.findall(text))
+        code = strip_line_comments(text)
+        allows = len(ALLOW_PATTERN.findall(code))
+        expects = len(EXPECT_PATTERN.findall(code))
         if not allows and not expects:
             continue
         crate = path.relative_to(CRATES_DIR).parts[0]

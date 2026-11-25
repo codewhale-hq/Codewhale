@@ -567,7 +567,6 @@ impl AgentsInterruptTool {
     }
 
     #[must_use]
-    #[allow(dead_code)] // arms self-interrupt fail-closed when child registries thread caller (P1.2)
     pub fn with_caller(mut self, caller_agent_id: impl Into<String>) -> Self {
         self.caller_agent_id = Some(caller_agent_id.into());
         self

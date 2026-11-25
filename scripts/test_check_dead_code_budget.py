@@ -67,6 +67,23 @@ class DeadCodeBudgetTest(unittest.TestCase):
         self.assertEqual(allow_total, 0)
         self.assertEqual(expect_total, 1)
 
+    def test_dead_code_in_any_lint_list_position_is_counted(self) -> None:
+        self.write_source(
+            "#[allow(async_fn_in_trait, dead_code)]\nfn a() {}\n"
+            "#[allow(\n    unused_imports,\n    dead_code,\n)]\nfn b() {}\n"
+            "#[expect(clippy::too_many_arguments, dead_code)]\nfn c() {}\n"
+        )
+        allow_total, expect_total, _ = mod.measure()
+        self.assertEqual((allow_total, expect_total), (2, 1))
+
+    def test_comment_prose_is_not_counted(self) -> None:
+        self.write_source(
+            "// the old #[allow(dead_code)] was replaced by expect(dead_code)\n"
+            "    /// see allow(dead_code) here\n"
+            "//! and expect(dead_code)\nfn a() {}\n"
+        )
+        self.assertEqual(mod.measure()[:2], (0, 0))
+
     def test_rewriting_allow_as_expect_does_not_lower_the_total(self) -> None:
         """#6241's exact regression: a spelling change is not progress."""
         self.write_source("#[allow(dead_code)]\nfn a() {}\n#[allow(dead_code)]\nfn b() {}\n")

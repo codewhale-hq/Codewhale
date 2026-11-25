@@ -495,7 +495,6 @@ pub struct HookResult {
     /// Standard output
     pub stdout: String,
     /// Standard error
-    #[allow(dead_code)] // written by prod constructors, read only in tests
     pub stderr: String,
     /// Time taken to execute
     pub duration: Duration,
