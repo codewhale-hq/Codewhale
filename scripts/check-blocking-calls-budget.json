@@ -242,7 +242,7 @@
   "crates/engine/src/tools/shell.rs": {
     "path_canonicalize": 2,
     "std_fs": 2,
-    "thread_sleep": 1
+    "thread_sleep": 2
   },
   "crates/engine/src/tools/skill.rs": {
     "std_fs": 1
@@ -366,7 +366,7 @@
     "path_canonicalize": 2
   },
   "crates/release/src/check.rs": {
-    "std_fs": 4
+    "std_fs": 1
   },
   "crates/release/src/install.rs": {
     "std_fs": 2
@@ -511,7 +511,8 @@
   },
   "crates/tui/src/lib.rs": {
     "path_canonicalize": 3,
-    "std_fs": 36
+    "std_fs": 36,
+    "thread_sleep": 1
   },
   "crates/tui/src/tui/app/init.rs": {
     "std_fs": 1
