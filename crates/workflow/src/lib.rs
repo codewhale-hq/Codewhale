@@ -1112,7 +1112,22 @@ impl MockWorkflowExecutor {
         if let Some(max_children) = spec.max_children {
             nodes.truncate(max_children);
         }
-        validate_workflow_node_shapes(&nodes)?;
+        let mut finished: BTreeSet<String> = execution
+            .leaf_results
+            .iter()
+            .map(|result| result.leaf_id.clone())
+            .chain(
+                execution
+                    .control_node_results
+                    .iter()
+                    .map(|result| result.node_id.clone()),
+            )
+            .collect();
+        finished.insert(spec.id.clone());
+        let mut known = finished.clone();
+        validate_workflow_nodes_inner(&nodes, &mut known)?;
+        validate_workflow_references(&nodes, &known)?;
+        validate_reference_order(&nodes, &mut finished)?;
         self.execute_nodes(&nodes, execution)?;
         let status = if execution.should_stop_mock_execution() {
             execution.status
@@ -1985,7 +2000,17 @@ fn validate_workflow_references(
                 validate_workflow_references(&spec.then_nodes, known_ids)?;
                 validate_workflow_references(&spec.else_nodes, known_ids)?;
             }
-            WorkflowNode::Expand(_) => {}
+            WorkflowNode::Expand(spec) => {
+                validate_known_references(
+                    spec.id.as_str(),
+                    "source",
+                    std::slice::from_ref(&spec.source),
+                    known_ids,
+                )?;
+                if let Some(template) = spec.template.as_deref() {
+                    validate_workflow_references(std::slice::from_ref(template), known_ids)?;
+                }
+            }
         }
     }
     Ok(())
@@ -2023,6 +2048,7 @@ fn validate_reference_order(
 ) -> Result<(), WorkflowExecutionError> {
     for node in nodes {
         let (field, references): (&'static str, &[String]) = match node {
+            WorkflowNode::Expand(spec) => ("source", std::slice::from_ref(&spec.source)),
             WorkflowNode::Leaf(spec) => ("depends_on_results", &spec.depends_on_results),
             WorkflowNode::Reduce(spec) => ("inputs", &spec.inputs),
             WorkflowNode::TeacherReview(spec) => ("candidates", &spec.candidates),
@@ -2058,10 +2084,16 @@ fn validate_reference_order(
                 validate_reference_order(&spec.else_nodes, &mut else_arm)?;
                 finished.extend(then_arm.intersection(&else_arm).cloned());
             }
-            WorkflowNode::Leaf(_)
-            | WorkflowNode::Reduce(_)
-            | WorkflowNode::TeacherReview(_)
-            | WorkflowNode::Expand(_) => {}
+            WorkflowNode::Expand(spec) => {
+                if let Some(template) = spec.template.as_deref() {
+                    let mut template_finished = finished.clone();
+                    validate_reference_order(
+                        std::slice::from_ref(template),
+                        &mut template_finished,
+                    )?;
+                }
+            }
+            WorkflowNode::Leaf(_) | WorkflowNode::Reduce(_) | WorkflowNode::TeacherReview(_) => {}
         }
         finished.insert(id);
     }
@@ -3834,12 +3866,15 @@ mod tests {
 
     #[test]
     fn expand_respects_max_children() {
-        let workflow = workflow_spec(vec![WorkflowNode::Expand(ExpandSpec {
-            id: "split".to_string(),
-            source: "plan".to_string(),
-            max_children: Some(2),
-            template: None,
-        })]);
+        let workflow = workflow_spec(vec![
+            leaf_node("plan"),
+            WorkflowNode::Expand(ExpandSpec {
+                id: "split".to_string(),
+                source: "plan".to_string(),
+                max_children: Some(2),
+                template: None,
+            }),
+        ]);
 
         let generated = vec![leaf_node("first"), leaf_node("second"), leaf_node("third")];
         let mut executor = MockWorkflowExecutor::new().with_generated_nodes("split", generated);
@@ -3851,7 +3886,7 @@ mod tests {
                 .iter()
                 .map(|result| result.leaf_id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["first", "second"]
+            vec!["plan", "first", "second"]
         );
         assert_eq!(
             control_result(&execution, "split").selected_children,
@@ -3861,12 +3896,7 @@ mod tests {
 
     #[test]
     fn expand_generated_nodes_validate_before_run() {
-        let workflow = workflow_spec(vec![WorkflowNode::Expand(ExpandSpec {
-            id: "split".to_string(),
-            source: "plan".to_string(),
-            max_children: None,
-            template: None,
-        })]);
+        let workflow = expand_workflow("plan");
 
         let mut executor = MockWorkflowExecutor::new()
             .with_generated_nodes("split", vec![invalid_leaf_node("bad")]);
@@ -3878,6 +3908,57 @@ mod tests {
             err,
             WorkflowExecutionError::EmptyLeafPrompt {
                 leaf: "bad".to_string()
+            }
+        );
+    }
+
+    fn expand_workflow(source: &str) -> WorkflowSpec {
+        workflow_spec(vec![
+            leaf_node("plan"),
+            WorkflowNode::Expand(ExpandSpec {
+                id: "split".to_string(),
+                source: source.to_string(),
+                max_children: None,
+                template: None,
+            }),
+        ])
+    }
+
+    #[test]
+    fn expand_rejects_unknown_source() {
+        let err = MockWorkflowExecutor::new()
+            .run(&expand_workflow("missing"))
+            .expect_err("unknown expand source should fail before execution");
+
+        assert_eq!(
+            err,
+            WorkflowExecutionError::UnknownNodeReference {
+                node: "split".to_string(),
+                field: "source",
+                reference: "missing".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn expand_generated_leaf_with_unknown_reference_is_rejected() {
+        let mut generated = leaf_node("child");
+        let WorkflowNode::Leaf(spec) = &mut generated else {
+            panic!("expected leaf");
+        };
+        spec.depends_on_results = vec!["ghost".to_string()];
+
+        let err = MockWorkflowExecutor::new()
+            .with_generated_nodes("split", vec![generated])
+            .run(&expand_workflow("plan"))
+            .expect_err("generated leaf with unknown reference should fail");
+
+        assert_eq!(
+            err,
+            WorkflowExecutionError::UnknownNodeReference {
+                node: "child".to_string(),
+                field: "depends_on_results",
+                reference: "ghost".to_string(),
             }
         );
     }
