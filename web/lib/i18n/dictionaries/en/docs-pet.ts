@@ -2,29 +2,29 @@ import type { DocsPetDict } from "../types";
 
 /**
  * English reference dictionary for `app/[locale]/docs/pet/page.tsx`
- * ("Watch each session with pet mode"). Checked against docs/PET_MODE.md and
- * the `/pet` command in crates/tui/src/commands/groups/config/config.rs.
+ * ("Watch each session with the whale view"). Checked against docs/PET_MODE.md and
+ * the `/whale` command in crates/tui/src/commands/groups/config/config.rs.
  */
 export const docsPet: DocsPetDict = {
-  metaTitle: "Watch each session with pet mode · Codewhale Docs",
+  metaTitle: "Watch each session with the whale view · Codewhale Docs",
   metaDescription:
-    "Pet mode turns each terminal into a glanceable status view: a whale that shows working, waiting for you, done, or failed, with replies and agents one key away.",
+    "/whale turns each terminal into a glanceable status view: a whale made of dots that shows working, waiting for you, done, or failed, with replies and agents one key away.",
   bodyClassName: "text-ink-soft leading-relaxed",
-  title: "Watch each session with pet mode",
+  title: "Watch each session with the whale view",
   lede:
-    "Pet mode turns the terminal you already use into a glanceable status view. A whale fills the main view and shows whether the session is working, waiting for you, done, or failed, while the message box stays at the bottom. Run it in several terminals and each one shows its own session.",
+    "`/whale` turns the terminal you already use into a glanceable status view. A whale made of dots fills the main view and shows whether the session is working, waiting for you, done, or failed, while the message box stays at the bottom. Each terminal draws its own whale from its own session; nothing else runs.",
   sections: [
     {
       id: "turn-on",
       title: "Turn it on",
       blocks: [
-        { note: "Pet mode has been available since 0.9.13. Version 0.10.2 added the animated whale, the persistent message box, /pet style and the views selected with Ctrl+]. The whale's dots now become the thing the work is, such as a wrench, a pencil or a book, then return to the whale; the large activity words and /pet language are gone." },
+        { note: "This page describes Codewhale 0.10.5. The command is now `/whale`; `/pet` still runs it but is no longer listed. Earlier versions ran a shared companion process with sound, replay export, an appearance studio and other views. Those were removed in 0.10.5; see \"What was removed\" below." },
         {
-          code: "/pet on        # pet mode becomes the main view\n/pet off       # back to the standard view\n/pet status    # on or off, and the companion's identity",
+          code: "/whale         # turn the whale view on or off\n/whale on      # on, without toggling\n/whale off     # back to the standard view",
           lang: "Codewhale",
         },
         {
-          p: "Your choice is saved as the `pet_mode` setting, so the next session starts the way you left it. Pet mode only presents the session you are already running. It does not start a turn, call a model, or change your draft, mode, or approvals.",
+          p: "The view being on or off is saved as the `pet_mode` setting, so the next session starts the way you left it. The whale view only presents the session you are already running. It does not start a turn, call a model, or change your draft, mode, or approvals.",
         },
       ],
     },
@@ -46,7 +46,7 @@ export const docsPet: DocsPetDict = {
           codeTerms: false,
         },
         {
-          p: "The status bar keeps its live readouts, such as the agent count and the work bar.",
+          p: "While a turn runs, the whale's dots become the thing the work is, such as a wrench for commands, a pencil for edits or a book for reading, then return to the whale. The status bar keeps its live readouts, such as the agent count.",
         },
       ],
     },
@@ -55,7 +55,7 @@ export const docsPet: DocsPetDict = {
       title: "Open replies and agents when you want them",
       blocks: [
         {
-          p: "The main view stays quiet. Press `F5`, or run `/pet inspect`, to open the current reply and the agents list over it. Press `Esc` to return to the message box; your draft and any running turn are untouched.",
+          p: "The main view stays quiet. Press `F5` to open the current reply and the agents list over it. Press `Esc` to return to the message box; your draft and any running turn are untouched.",
         },
         {
           rows: [
@@ -74,10 +74,7 @@ export const docsPet: DocsPetDict = {
       title: "Use it in several terminals",
       blocks: [
         {
-          p: "Pet mode is per terminal. Run `/pet on` in each one and every whale follows its own session, so one can show Done while another is still working. Sessions are never mixed.",
-        },
-        {
-          p: "All terminals on a machine share one local companion that keeps the pet's identity, sound, and appearance. It follows one session at a time, called the source: the first saved terminal to attach, or the one where you run `/pet source`. Other terminals still show their own state; only the finer activity detail inside the whale follows the source.",
+          p: "The whale view is per terminal. Run `/whale` in each one and every whale follows its own session, so one can show Done while another is still working. Sessions are never mixed, and the terminals do not talk to each other: there is no background process, no port and no shared state.",
         },
       ],
     },
@@ -87,16 +84,16 @@ export const docsPet: DocsPetDict = {
       blocks: [
         {
           rows: [
-            ["/pet on, /pet off, /pet", "Enable, disable, or toggle pet mode for this terminal."],
-            ["/pet inspect", "Open replies and agents."],
-            ["/pet status", "Show the mode, the companion's identity, and the source session."],
-            ["/pet source", "Make this terminal's session the source."],
-            ["/pet appearance", "Open the appearance studio in your browser, on this machine only."],
-            ["/pet sound on, /pet sound off", "Turn the companion's sound on or off. Sound is off by default and needs ffplay."],
-            ["/pet avatar", "List the avatars, or choose one."],
-            ["/pet export", "Save a replay to this saved session's artifacts."],
+            ["/whale, /whale on, /whale off", "Toggle, enable, or disable the whale view for this terminal."],
+            ["/whale full", "The same as `/whale`; the word exists so the command reads the same as in the desktop app."],
+            ["/whale still", "Hold the whale still, or let it move again."],
+            ["/whale name <text>", "Name the whale, up to 32 characters. The name replaces Codewhale in the view's first line."],
+            ["/whale color <#rrggbb>", "Colour the whale. `/whale color default` restores its own colours."],
           ],
           codeTerms: false,
+        },
+        {
+          p: "The name, the colour and hold-still last until the terminal closes; they are not saved.",
         },
       ],
     },
@@ -105,7 +102,29 @@ export const docsPet: DocsPetDict = {
       title: "What it can see",
       blocks: [
         {
-          p: "The companion only presents. It has no agent, prompt, provider, or execution access, and it receives event kinds and outcomes rather than prompts, replies, tool arguments, results, or paths. It listens only on `127.0.0.1`, behind a private token, and nothing leaves your machine.",
+          p: "The whale is drawn inside the terminal process. It reads a short list of event kinds, ids and outcomes from the session, such as \"a read started\" or \"turn completed\". Prompt text, reasoning, tool names, arguments, results and paths are not read, and nothing is written to disk or sent anywhere.",
+        },
+      ],
+    },
+    {
+      id: "removed",
+      title: "What was removed in 0.10.5",
+      blocks: [
+        {
+          p: "The shared companion process (`codewhale pet serve`) is gone, with everything only it provided:",
+        },
+        {
+          list: [
+            "Sound (`/pet sound`, `F6`).",
+            "Replay recording and `/pet export`.",
+            "The browser appearance studio (`/pet appearance`, `F8`) and `/pet style`.",
+            "Source selection (`/pet source`) and `/pet status`.",
+            "The other views, view cycling, `/pet avatar`, `/pet action`, `/pet view` and avatar packs in the terminal.",
+            "`/pet inspect`; use `F5`.",
+          ],
+        },
+        {
+          p: "Files an older version left in `~/.codewhale/pet-shared` are not read and are not deleted; you can remove that folder yourself.",
         },
       ],
     },
@@ -117,10 +136,10 @@ export const docsPet: DocsPetDict = {
           note: "There is no separate \"reply ready\" cue yet. A finished turn shows Done on the whale; press `F5` to read the reply.",
         },
         {
-          note: "While agents run, the agents list in the inspector refreshes when the turn ends. The agent count in the status bar and the work bar are live.",
+          note: "While agents run, the agents list in the inspector refreshes when the turn ends. The agent count in the status bar is live.",
         },
         {
-          note: "Sound needs ffplay.",
+          note: "The work bar is hidden while the whale view is showing. Turn the view off with `/whale` to use it.",
         },
       ],
     },

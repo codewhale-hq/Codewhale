@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "feba1b6f8871d7a7769aaa57d67497816a7786bc72319980f32a98ae1406a86f"
+    "sha256": "7f420440ad5ceda955f7a26a4215b4ff2949536ea4f4cc76c830ef329aa10490"
   },
   "features": [
     {
@@ -1007,12 +1007,11 @@
     },
     {
       "id": "pet",
-      "name": "Pet",
-      "summary": "Shared whale activity and reply views; desktop and app-server turns can follow an idle existing companion.",
+      "name": "Whale view",
+      "summary": "/whale shows this session as a dot whale drawn locally, with replies and agents on F5; /pet is an alias.",
       "status": "stable",
       "surfaces": {
-        "tui": "stable",
-        "api": "partial"
+        "tui": "stable"
       },
       "since": null,
       "flag": null,

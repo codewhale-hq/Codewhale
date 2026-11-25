@@ -7,7 +7,7 @@
  │ ▸ Theme                              terminal               ‹ ›  changed █ │ 
  │   Language                           auto                   ‹ ›          █ │ 
  │   Background                         (default)              ✎            █ │ 
- │   Pet mode                           ○ Off                               █ │ 
+ │   Whale view                         ○ Off                               █ │ 
  │   Quiet transcript                   ● On                                █ │ 
  │   Model reasoning in chat            ● On                                █ │ 
  │   Expand reasoning by default        ○ Off                               │ │ 

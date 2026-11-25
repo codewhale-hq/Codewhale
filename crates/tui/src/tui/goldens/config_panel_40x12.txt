@@ -5,7 +5,7 @@
 │▸ Theme  terminal               ‹ ›  █│
 │  Language  auto                ‹ ›  ││
 │  Background  (default)         ✎    ││
-│  Pet mode  ○ Off                    ││
+│  Whale view  ○ Off                  ││
 │  Quiet transcript  ● On             ││
 │Theme: terminal                       │
 │Tab ⇆ · ↑↓ · Enter ↵ · Esc ×          │

@@ -1527,7 +1527,7 @@ mod tests {
             assert!(result.is_error, "{removed}");
             assert_eq!(
                 result.message.as_deref(),
-                Some(format!("Usage: {WHALE_USAGE}").as_str())
+                Some(format!("Error: Usage: {WHALE_USAGE}").as_str())
             );
         }
         assert!(!facet.enabled && !facet.still);

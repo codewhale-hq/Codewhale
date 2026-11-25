@@ -762,7 +762,7 @@ mod tests {
             .expect("whale command should exist");
         assert_eq!(whale.description_id, MessageId::CmdPetDescription);
         assert!(whale.usage.starts_with("/whale"));
-        for verb in ["full", "still", "color"] {
+        for verb in ["full", "still", "name", "color"] {
             assert!(whale.subcommands().contains(&verb), "{verb}");
         }
         assert!(get_command_info("pet").is_none(), "/pet is unlisted");

@@ -7,7 +7,7 @@
  │   Motion          │▸ Theme                              terminal      ‹ ›  │system | terminal | shoreline |        │ 
  │                   │  Language                           auto          ‹ ›  │shoreline-light | underwater |         │ 
  │                   │  Background                         (default)     ✎    │underwater-retro | dark | light |      │ 
- │                   │  Pet mode                           ○ Off              │grayscale | catppuccin-mocha |         │ 
+ │                   │  Whale view                         ○ Off              │grayscale | catppuccin-mocha |         │ 
  │                   │  Quiet transcript                   ● On               │tokyo-night | dracula | gruvbox-dark | │ 
  │                   │  Model reasoning in chat            ● On               │claude | matrix | solarized-light |    │ 
  │                   │  Expand reasoning by default        ○ Off              │uwu                                    │ 

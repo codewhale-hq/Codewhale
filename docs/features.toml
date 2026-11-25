@@ -766,7 +766,7 @@ owner = "crates/engine/src/voice.rs"
 [[feature]]
 id = "pet"
 name = "Whale view"
-summary = "/whale shows this terminal's session as a dot whale drawn locally, with replies and agents on F5; /pet is an unlisted alias."
+summary = "/whale shows this session as a dot whale drawn locally, with replies and agents on F5; /pet is an alias."
 status = "stable"
 surfaces = { tui = "stable" }
 owner = "crates/tui/src/tui/pet_watch"
