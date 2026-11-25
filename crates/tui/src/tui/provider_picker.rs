@@ -1386,10 +1386,11 @@ impl ProviderDashboardRow {
         }
     }
 
-    /// Match a query against what the list row shows or names: the display
-    /// name, the provider id, the provider key and the row's status hint.
-    /// Fields the row does not render (protocol kind, base URL, default route
-    /// models outside the Local view) do not match.
+    /// Match a query against what the list row shows or names (display name,
+    /// provider id, provider key, status hint), then against the start of the
+    /// default route's model name or wire id (#4141), so a model name still
+    /// surfaces the provider that serves it. The protocol kind and base URL do
+    /// not match.
     fn query_match_rank(&self, query: &str, view: ProviderListView) -> Option<u8> {
         let query = query.trim().to_ascii_lowercase();
         if query.is_empty() {
@@ -1415,6 +1416,19 @@ impl ProviderDashboardRow {
             .contains(&query)
         {
             return Some(3);
+        }
+        if self
+            .default_route
+            .logical_model
+            .to_ascii_lowercase()
+            .starts_with(&query)
+            || self
+                .default_route
+                .wire_model
+                .to_ascii_lowercase()
+                .starts_with(&query)
+        {
+            return Some(4);
         }
         None
     }
@@ -8008,6 +8022,26 @@ mod tests {
             direct_row.capabilities.context_window_source.as_deref(),
             Some("static Kimi Code safe floor")
         );
+    }
+
+    #[test]
+    fn provider_row_query_matches_the_start_of_its_default_model() {
+        let mut config = Config::default();
+        config.providers = Some(codewhale_runtime::config::ProvidersConfig {
+            zai: codewhale_runtime::config::ProviderConfig {
+                api_key: Some("zai-key".to_string()),
+                model: Some("GLM-5.2".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let row = ProviderDashboardRow::from_config(ProviderKind::Zai, ProviderKind::Zai, &config);
+        let view = ProviderListView::Catalog;
+        assert!(row.matches_query("glm-5.2", view));
+        assert!(row.matches_query("GLM", view));
+        assert!(row.matches_query("zhipu", view));
+        assert!(!row.matches_query("5.2", view));
+        assert!(!row.matches_query("anthropic", view));
     }
 
     #[test]
