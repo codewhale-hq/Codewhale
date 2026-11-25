@@ -8047,7 +8047,8 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
         && config.legacy_model.is_none()
         && config.legacy_root_custom_generation.is_none()
         && config.legacy_root.notes.is_empty()
-        && config.base_url_env_receipt == BaseUrlEnvReceipt::NoOwner
+        && !matches!(config.base_url_env_receipt, BaseUrlEnvReceipt::Route(..))
+        && env_base_url_override().is_none()
         && config.providers.is_none()
     {
         const AMBIENT_PRIORITY: [(&str, ProviderKind); 5] = [

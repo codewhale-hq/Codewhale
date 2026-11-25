@@ -11960,6 +11960,8 @@ fn ambient_default_provider_detects_cloud_env_keys_in_priority_order() {
     let keys = [
         "CODEWHALE_PROVIDER",
         "DEEPSEEK_PROVIDER",
+        "CODEWHALE_BASE_URL",
+        "DEEPSEEK_BASE_URL",
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
         "GEMINI_API_KEY",
