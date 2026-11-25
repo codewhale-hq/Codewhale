@@ -300,9 +300,10 @@ fn classify(
         .unwrap_or(name);
     let exact = COMMAND_NAMES.contains(&stem);
     let leftover_name = is_backup_name(name);
-    let leftover_dir = LEFTOVER_DIR_PREFIXES
-        .iter()
-        .any(|prefix| name.starts_with(prefix));
+    let leftover_dir = name != RECEIPT_FILE
+        && LEFTOVER_DIR_PREFIXES
+            .iter()
+            .any(|prefix| name.starts_with(prefix));
     let host_recovery = name.starts_with(".codewhale-host-recovery-");
     let related = exact
         || leftover_name
@@ -1674,5 +1675,18 @@ mod cargo_record_tests {
             classify(&exe, "codewhale", None, None),
             Some(InstallClass::PackageManaged(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod receipt_file_tests {
+    use super::*;
+
+    #[test]
+    fn the_install_receipt_is_not_a_leftover() {
+        let dir = tempfile::tempdir().unwrap();
+        let receipt = dir.path().join(RECEIPT_FILE);
+        fs::write(&receipt, b"abc  codewhale\n").unwrap();
+        assert_eq!(classify(&receipt, RECEIPT_FILE, None, None), None);
     }
 }

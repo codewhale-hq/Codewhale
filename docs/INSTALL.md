@@ -472,8 +472,9 @@ command -v codewhale codew     # ~/.npm-global/bin/codewhale, ~/.npm-global/bin/
   prefix (`npm install -g --prefix <dir> codewhale`) took 3 s and linked
   `codewhale` and `codew`, both `codewhale 0.10.0 (1be1a703b975)`.
 * **Upgrade:** `npm install -g codewhale@latest`. `codewhale update` refuses
-  on npm installs. It prints migration instructions and exits 1 with
-  `error: The package-managed executable was not changed.`
+  on npm installs. It prints the one command that updates it, ends with
+  `Not updated: use the command above.` and exits 1 (`codewhale uninstall` does
+  the same for these copies: `Not removed: use the command above.`, exit 1)
 * **Specific version:** `npm install -g codewhale@0.9.13`.
 * **Uninstall:** `npm uninstall -g codewhale`. This removes only the program,
   not your data (§12).
@@ -1241,8 +1242,10 @@ delete the two files first (§7 rollback), or install into a fresh
 The download was corrupted or tampered with. Nothing was installed. Retry, and
 if it repeats, don't use a mirror.
 
-**`error: The package-managed executable was not changed.` (from `codewhale update`)**
-You installed with npm, Cargo or Homebrew. Update with that tool instead.
+**`Not updated: use the command above.` (from `codewhale update`)**
+You installed with npm, Cargo or Homebrew. Run the command printed above that
+line; `codewhale update` exits 1 so scripts can tell nothing was updated.
+`codewhale uninstall` ends the same way (`Not removed: use the command above.`).
 
 **`error: failed to run custom build command for libdbus-sys` (Cargo).**
 Run `sudo apt-get install -y libdbus-1-dev pkg-config`.

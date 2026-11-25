@@ -55,6 +55,15 @@ const STAGED_SIGNATURE: &str = "codewhale-artifacts-sha256.txt.sig";
 #[cfg(target_os = "android")]
 const ANDROID_PROC_SELF_MAPS: &str = "/proc/self/maps";
 
+pub(crate) const PACKAGE_MANAGED_EXIT_CODE: i32 = 1;
+
+pub(crate) fn exit_package_managed(closing_line: &str) -> ! {
+    use std::io::Write;
+    println!("{closing_line}");
+    let _ = std::io::stdout().flush();
+    std::process::exit(PACKAGE_MANAGED_EXIT_CODE)
+}
+
 /// Run the self-update workflow.
 ///
 /// OpenHarmony (HarmonyOS) won't compile this file, so no need to handle
@@ -86,7 +95,7 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
         println!();
         println!("{}", installs::update_answer(install_method, &current_exe));
         if !check_only {
-            bail!("The package-managed executable was not changed.");
+            exit_package_managed("Not updated: use the command above.");
         }
     }
 

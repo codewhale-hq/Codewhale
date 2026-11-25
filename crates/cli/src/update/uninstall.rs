@@ -131,9 +131,13 @@ pub(crate) fn run(yes: bool, purge_data: bool) -> Result<()> {
     if purge_data {
         purge_targets(selected.as_deref())?;
     }
-    let result = remove(yes);
+    let mut package_managed = false;
+    let result = remove(yes, &mut package_managed);
     report_path_copies(selected.as_deref());
     let removed = result?;
+    if package_managed {
+        super::exit_package_managed("Not removed: use the command above.");
+    }
     if purge_data {
         if !yes {
             return purge(false, selected.as_deref());
@@ -153,7 +157,7 @@ pub(crate) fn run(yes: bool, purge_data: bool) -> Result<()> {
     }
 }
 
-fn remove(yes: bool) -> Result<bool> {
+fn remove(yes: bool, package_managed: &mut bool) -> Result<bool> {
     let identity = update_executable_identity()?;
     #[cfg(not(windows))]
     let identity = UpdateExecutableIdentity {
@@ -174,6 +178,7 @@ fn remove(yes: bool) -> Result<bool> {
             method.label(),
             codewhale_release::installs::manager_command(method, &identity.path)
         );
+        *package_managed = true;
         return Ok(false);
     }
     let primary_name = identity

@@ -344,7 +344,7 @@ command -v codewhale codew     # ~/.npm-global/bin/codewhale, ~/.npm-global/bin/
 * npm 会隐藏下载进度。加上 `--foreground-scripts` 可以看到（`codewhale: selected GitHub Releases for v0.10.0 … done.`）。所选来源也会写入 `$(npm prefix -g)/lib/node_modules/codewhale/bin/downloads/codewhale.source`。
 * 该包在磁盘上占用 157 MB。
 * 在 macOS 26.1（Apple silicon，Homebrew 的 Node 25）上，安装到用户自有的 prefix（`npm install -g --prefix <dir> codewhale`）用了 3 秒，并链接了 `codewhale` 和 `codew`，两者都是 `codewhale 0.10.0 (1be1a703b975)`。
-* **升级：** `npm install -g codewhale@latest`。`codewhale update` 会拒绝处理 npm 安装：它打印迁移说明，并以 1 退出，输出 `error: The package-managed executable was not changed.`。
+* **升级：** `npm install -g codewhale@latest`。`codewhale update` 会拒绝处理 npm 安装：它会打印可用的更新命令，以 `Not updated: use the command above.` 结束并以 1 退出（对这类安装，`codewhale uninstall` 同样以 `Not removed: use the command above.` 结束并以 1 退出）。
 * **指定版本：** `npm install -g codewhale@0.9.13`。
 * **卸载：** `npm uninstall -g codewhale`。它只删除程序本身，不删除你的数据（见 §12）。
 
@@ -779,8 +779,8 @@ Windows 正在运行的程序会先改名，退出后由辅助进程删除。Win
 **`codewhale install: checksum mismatch for codew-linux-x64`。**
 下载被损坏或被篡改。什么都没有安装。重试；如果反复出现，就不要使用镜像。
 
-**`error: The package-managed executable was not changed.`（来自 `codewhale update`）**
-你是用 npm、Cargo 或 Homebrew 安装的。请改用对应的工具更新。
+**`Not updated: use the command above.`（来自 `codewhale update`）**
+你是用 npm、Cargo 或 Homebrew 安装的。请运行这一行上方打印的命令；`codewhale update` 以 1 退出，方便脚本得知没有更新。`codewhale uninstall` 的结尾相同（`Not removed: use the command above.`）。
 
 **`error: failed to run custom build command for libdbus-sys`（Cargo）。**
 运行 `sudo apt-get install -y libdbus-1-dev pkg-config`。
