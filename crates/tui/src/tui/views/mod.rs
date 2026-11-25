@@ -7597,9 +7597,9 @@ mod tests {
     use super::{
         ActionHint, ConfigCategory, ConfigListItem, ConfigRowKind, ConfigScope, ConfigView,
         EmptyState, FocusTextureMode, HelpView, ListDetailLayout, ModalKind, ModalView,
-        SettingKind, SettingStore, SettingsRegistry, ViewAction, ViewEvent, ViewStack,
-        action_footer_lines, canonical_config_choice, centered_modal_area, config_choice_detail,
-        config_choice_label, config_choice_values, config_label_for_key,
+        SettingAuthority, SettingKind, SettingStore, SettingsRegistry, ViewAction, ViewEvent,
+        ViewStack, action_footer_lines, canonical_config_choice, centered_modal_area,
+        config_choice_detail, config_choice_label, config_choice_values, config_label_for_key,
         config_label_for_key_for_locale, render_modal_footer_with_gutter,
         render_underwater_surface, subagent_view_agents, truncate_view_text,
     };
@@ -10847,10 +10847,6 @@ context_window = 131072
         view.render(area, &mut buf);
         let dump = buffer_text(&buf, area);
         assert!(
-            !dump.contains("▸ Display"),
-            "single-group Appearance tab should hide left groups column:\n{dump}"
-        );
-        assert!(
             dump.contains("Preview:"),
             "theme row should render Preview band:\n{dump}"
         );
@@ -10871,6 +10867,15 @@ context_window = 131072
         assert!(
             !lang_dump.contains("Preview:"),
             "non-preview row should omit Preview band:\n{lang_dump}"
+        );
+
+        view.select_category(ConfigCategory::Models);
+        let mut models_buf = Buffer::empty(area);
+        view.render(area, &mut models_buf);
+        let models_dump = buffer_text(&models_buf, area);
+        assert!(
+            !models_dump.contains("▸ Model"),
+            "single-group Models tab should hide left groups column:\n{models_dump}"
         );
     }
 
