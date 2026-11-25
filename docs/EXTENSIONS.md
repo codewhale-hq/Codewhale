@@ -115,7 +115,7 @@ Under `auto`, if the Bun it found fails to start the host, `/plugin` reports
 why once and Node runs the host for the rest of the session. The runtime is
 pinned once a host on it completes its handshake, and restarts reuse it. A
 runtime binary replaced at that path mid-session is refused; restart Codewhale
-to use it. `codewhale doctor` and `/plugin` show which runtime runs the host,
+to use it. `codewhale doctor --full` and `/plugin` show which runtime runs the host,
 its version and path, how its memory cap is enforced, and, when `auto` used
 Node, why Bun was not used.
 

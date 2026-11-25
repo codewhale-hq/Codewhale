@@ -770,7 +770,7 @@ does not accidentally rewrite `/models` or `/beta/completions`.
 
 For private gateways with broken or intercepted certificates, use
 `SSL_CERT_FILE` with a trusted CA bundle. The legacy provider-table key
-`insecure_skip_tls_verify = true` is still parsed so `codewhale doctor` can
+`insecure_skip_tls_verify = true` is still parsed so `codewhale doctor --full` can
 report stale configs, but provider clients reject it instead of disabling TLS
 certificate verification.
 
@@ -1458,7 +1458,7 @@ Loading never rewrites the file. The next save Codewhale makes (for example
 keeps comments, writes a one-time credential-free copy of the old file to
 `config.toml.pre-migrate.bak`, and prints one line saying what moved. A
 disagreeing pair is never resolved in the file on its own; both values stay
-until you choose, and `codewhale config doctor` / `codewhale doctor` report
+until you choose, and `codewhale config doctor` / `codewhale doctor --full` report
 it (sources only, never values). `codewhale config get|set|unset base_url`
 (and `api_key`) address the active provider's table.
 
@@ -3965,8 +3965,16 @@ To bootstrap missing MCP/skills paths, run `codewhale setup --all`. You can
 also run `codewhale setup --skills --local` to create the owned project
 `.codewhale/skills` directory. Project skills load after workspace trust.
 
-Both plain `codewhale doctor` and `codewhale doctor --json` are structural and
-offline by default. They do not check the release service, hosted provider
+Plain `codewhale doctor` prints a short verdict: whether Codewhale is ready,
+what works, what needs attention and the next step. `codewhale doctor --full`
+prints every check (versions, installations, paths, sessions, setup state, API
+keys, MCP servers, skills, tools, plugins, storage, tool dependencies and
+platform); `--all` adds every resolved path and secret-backend detail. The
+`--check-updates`, `--probe-mcp`, `--probe-search` and `--fix` flags print the
+full report, because their results live in its sections.
+
+Plain `codewhale doctor`, `codewhale doctor --full` and
+`codewhale doctor --json` are structural and offline by default. They do not check the release service, hosted provider
 APIs, local provider endpoints, or MCP processes, and they do not load a
 workspace credential `.env`. Use `--check-updates`,
 `--probe-api`, `--probe-local`, or `--probe-mcp` to opt into the corresponding
@@ -4145,7 +4153,7 @@ completion evidence artifacts, and tool-call *inputs* (for example a
 `scrub-secrets` do not check those either.
 
 Sessions saved by builds before this change may still hold credentials in
-their tool output; nothing rewrites them automatically. `codewhale doctor`
+their tool output; nothing rewrites them automatically. `codewhale doctor --full`
 reports them under **Stored Sessions** (it checks the newest 50 files), and
 this command finds and masks them across every saved session:
 

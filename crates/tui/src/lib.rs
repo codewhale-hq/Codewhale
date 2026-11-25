@@ -1128,8 +1128,99 @@ fn read_stdin_context(grace: Duration) -> Result<Option<String>> {
     read_capped_text(stdin.lock(), MAX_EXEC_PROMPT_BYTES, "exec prompt on stdin").map(Some)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn windows_pipe_ready(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    grace: Duration,
+) -> io::Result<bool> {
+    use windows_sys::Win32::Foundation::ERROR_BROKEN_PIPE;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType};
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+
+    if unsafe { GetFileType(handle) } != FILE_TYPE_PIPE {
+        return Ok(true);
+    }
+    let deadline = Instant::now() + grace;
+    loop {
+        let mut available = 0_u32;
+        let peeked = unsafe {
+            PeekNamedPipe(
+                handle,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut available,
+                std::ptr::null_mut(),
+            )
+        };
+        if peeked == 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) {
+                return Ok(true);
+            }
+            return Err(error);
+        }
+        if available > 0 {
+            return Ok(true);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(25)));
+    }
+}
+
+#[cfg(windows)]
 fn read_stdin_context(grace: Duration) -> Result<Option<String>> {
+    use std::os::windows::io::AsRawHandle as _;
+    let stdin = io::stdin();
+    match windows_pipe_ready(stdin.as_raw_handle(), grace) {
+        Ok(true) => {}
+        Ok(false) => return Ok(None),
+        Err(_) => return read_stdin_context_threaded(grace),
+    }
+    read_capped_text(stdin.lock(), MAX_EXEC_PROMPT_BYTES, "exec prompt on stdin").map(Some)
+}
+
+#[cfg(all(test, windows))]
+mod windows_stdin_tests {
+    use std::time::{Duration, Instant};
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::Pipes::CreatePipe;
+
+    #[test]
+    fn a_pipe_that_never_writes_is_idle_within_the_grace_and_ready_once_closed() {
+        let mut read: HANDLE = std::ptr::null_mut();
+        let mut write: HANDLE = std::ptr::null_mut();
+        assert_ne!(
+            unsafe { CreatePipe(&mut read, &mut write, std::ptr::null(), 0) },
+            0,
+            "CreatePipe failed"
+        );
+        let started = Instant::now();
+        let idle = super::windows_pipe_ready(read, Duration::from_millis(200));
+        let waited = started.elapsed();
+        unsafe { CloseHandle(write) };
+        let closed = super::windows_pipe_ready(read, Duration::from_millis(200));
+        unsafe { CloseHandle(read) };
+        assert!(!idle.expect("peek an idle pipe"), "idle pipe read as ready");
+        assert!(waited >= Duration::from_millis(200), "{waited:?}");
+        assert!(waited < Duration::from_secs(2), "{waited:?}");
+        assert!(
+            closed.expect("peek a closed pipe"),
+            "closed pipe read as idle"
+        );
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn read_stdin_context(grace: Duration) -> Result<Option<String>> {
+    read_stdin_context_threaded(grace)
+}
+
+#[cfg(not(unix))]
+fn read_stdin_context_threaded(grace: Duration) -> Result<Option<String>> {
     let (tx, rx) = std::sync::mpsc::channel::<Result<Option<String>, String>>();
     let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
     std::thread::spawn(move || {
@@ -1501,6 +1592,9 @@ struct DoctorArgs {
     /// Show every resolved path, the search provider and secret-backend details
     #[arg(long, default_value_t = false, conflicts_with_all = ["json", "context_json"])]
     all: bool,
+    /// Print every check instead of the short verdict
+    #[arg(long, default_value_t = false, conflicts_with_all = ["json", "context_json"])]
+    full: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -2846,7 +2940,11 @@ async fn run_async_main_dispatch(
                         effective_config_profile(&cli).as_deref(),
                         probes,
                         plugin_registry.as_ref(),
-                        args.all,
+                        crate::doctor::DoctorDetail::from_flags(
+                            args.full,
+                            args.all,
+                            args.check_updates || args.probe_mcp || args.probe_search || args.fix,
+                        ),
                     )
                     .await;
                     if args.fix {
@@ -5438,10 +5536,12 @@ async fn run_doctor(
     profile: Option<&str>,
     probes: crate::doctor::DoctorProbeRequest,
     plugins: &codewhale_plugins::PluginRegistry,
-    all: bool,
+    detail: crate::doctor::DoctorDetail,
 ) {
     use codewhale_palette as palette;
     use colored::Colorize;
+
+    let all = detail == crate::doctor::DoctorDetail::All;
 
     let (accent_r, accent_g, accent_b) = palette::WHALE_HUMAN_RGB;
     let (sky_r, sky_g, sky_b) = palette::WHALE_ACTION_RGB;
@@ -5529,6 +5629,27 @@ async fn run_doctor(
             route_credential_unavailable,
         },
     );
+    if detail == crate::doctor::DoctorDetail::Short {
+        let checks = doctor_short_checks(
+            config,
+            config_path_override,
+            &api_target,
+            verdict.starts_with("Ready"),
+            live_probe.as_ref(),
+        )
+        .await;
+        for (index, line) in crate::doctor::short_report_lines(&verdict, &checks)
+            .into_iter()
+            .enumerate()
+        {
+            if index == 0 {
+                println!("{}", line.truecolor(aqua_r, aqua_g, aqua_b).bold());
+            } else {
+                println!("{line}");
+            }
+        }
+        return;
+    }
     println!("{}", verdict.truecolor(aqua_r, aqua_g, aqua_b).bold());
     println!();
 
@@ -5928,51 +6049,10 @@ async fn run_doctor(
                 );
             }
             Err(e) => {
-                let error_msg = e.to_string();
-                let timed_out = doctor_probe_timed_out(e);
-                println!(
-                    "  {} {}",
-                    "✗".truecolor(red_r, red_g, red_b),
-                    if timed_out {
-                        "API check got no answer in time"
-                    } else {
-                        "API connection failed"
-                    }
-                );
-                let names_status = |status| {
-                    codewhale_engine::mcp::oauth::text_names_http_status(&error_msg, status)
-                };
-                let provider = identity
-                    .as_ref()
-                    .map(|identity| identity.provider)
-                    .unwrap_or(codewhale_config::ProviderKind::Deepseek);
-                if names_status("401") || error_msg.contains("Unauthorized") {
-                    println!(
-                        "    Invalid API key. Check `codewhale auth status`, {}, or config.toml",
-                        doctor_provider_key_place(provider)
-                    );
-                } else if names_status("403") || error_msg.contains("Forbidden") {
-                    println!(
-                        "    API key lacks permissions. Verify the {} key is active.",
-                        provider.provider().display_name()
-                    );
-                } else if timed_out
-                    || error_msg.contains("timeout")
-                    || error_msg.contains("Timeout")
-                {
-                    for line in doctor_timeout_recovery_lines(config) {
-                        println!("    {line}");
-                    }
-                } else if error_msg.contains("dns") || error_msg.contains("resolve") {
-                    println!("    DNS resolution failed. Check your network connection");
-                } else if error_msg.contains("connect") {
-                    println!("    Connection failed. Check firewall settings or try again");
-                } else if crate::doctor::is_keyless_ds4_route(config) {
-                    println!("    {error_msg}");
-                } else {
-                    println!(
-                        "    Error details omitted because provider failures can contain credential material."
-                    );
+                let (headline, reasons) = doctor_live_probe_failure(config, e);
+                println!("  {} {headline}", "✗".truecolor(red_r, red_g, red_b));
+                for line in reasons {
+                    println!("    {line}");
                 }
             }
         }
@@ -6761,6 +6841,129 @@ async fn run_doctor(
     println!("{}", verdict.truecolor(aqua_r, aqua_g, aqua_b).bold());
 }
 
+fn doctor_live_probe_failure(
+    config: &Config,
+    error: &anyhow::Error,
+) -> (&'static str, Vec<String>) {
+    let error_msg = error.to_string();
+    let timed_out = doctor_probe_timed_out(error);
+    let headline = if timed_out {
+        "API check got no answer in time"
+    } else {
+        "API connection failed"
+    };
+    let names_status =
+        |status| codewhale_engine::mcp::oauth::text_names_http_status(&error_msg, status);
+    let provider = config
+        .active_provider_identity()
+        .ok()
+        .map(|identity| identity.provider)
+        .unwrap_or(codewhale_config::ProviderKind::Deepseek);
+    let reasons = if names_status("401") || error_msg.contains("Unauthorized") {
+        vec![format!(
+            "Invalid API key. Check `codewhale auth status`, {}, or config.toml",
+            doctor_provider_key_place(provider)
+        )]
+    } else if names_status("403") || error_msg.contains("Forbidden") {
+        vec![format!(
+            "API key lacks permissions. Verify the {} key is active.",
+            provider.provider().display_name()
+        )]
+    } else if timed_out || error_msg.contains("timeout") || error_msg.contains("Timeout") {
+        doctor_timeout_recovery_lines(config)
+    } else if error_msg.contains("dns") || error_msg.contains("resolve") {
+        vec!["DNS resolution failed. Check your network connection".to_string()]
+    } else if error_msg.contains("connect") {
+        vec!["Connection failed. Check firewall settings or try again".to_string()]
+    } else if crate::doctor::is_keyless_ds4_route(config) {
+        vec![error_msg.clone()]
+    } else {
+        vec![
+            "Error details omitted because provider failures can contain credential material."
+                .to_string(),
+        ]
+    };
+    (headline, reasons)
+}
+
+async fn doctor_short_checks(
+    config: &Config,
+    config_path_override: Option<&Path>,
+    api_target: &DoctorApiTarget,
+    ready: bool,
+    live_probe: Option<&Result<()>>,
+) -> Vec<crate::doctor::DoctorShortCheck> {
+    use crate::doctor::DoctorShortCheck::{NeedsAttention, Note, Works};
+
+    let mut checks = Vec::new();
+    let install_attention = tokio::task::spawn_blocking(|| crate::doctor::installation_lines(true))
+        .await
+        .unwrap_or_default();
+    if install_attention.is_empty() {
+        checks.push(Works(format!(
+            "Codewhale {} is installed, with no leftover copies",
+            env!("CODEWHALE_BUILD_VERSION")
+        )));
+    } else {
+        checks.push(Works(format!(
+            "Codewhale {} is installed",
+            env!("CODEWHALE_BUILD_VERSION")
+        )));
+        checks.push(NeedsAttention(
+            "Other Codewhale copies or old backups are on this machine: `codewhale doctor --installs` lists them"
+                .to_string(),
+        ));
+    }
+    match crate::doctor::DoctorPathReport::resolve(config_path_override) {
+        Ok(paths) => {
+            let shown = codewhale_util::utils::display_path(&paths.config);
+            match tokio::fs::read_to_string(&paths.config).await {
+                Ok(raw) => {
+                    checks.push(Works(format!("Settings file: {shown}")));
+                    if !crate::doctor::config_credential_shaped_keys(&raw).is_empty() {
+                        checks.push(NeedsAttention(format!(
+                            "{shown} holds a key in plain text: `codewhale doctor --fix` moves it to the secret store"
+                        )));
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    checks.push(Note(format!(
+                        "No settings file yet at {shown}; the built-in defaults are in use"
+                    )));
+                }
+                Err(error) => checks.push(NeedsAttention(format!(
+                    "Settings file {shown} could not be read: {error}"
+                ))),
+            }
+        }
+        Err(error) => checks.push(NeedsAttention(format!(
+            "The Codewhale settings folder could not be found: {error:#}"
+        ))),
+    }
+    let route = format!("Model: {} / {}", api_target.provider, api_target.model);
+    match live_probe {
+        Some(Ok(())) => checks.push(Works(format!("{route} (live check passed)"))),
+        Some(Err(error)) => {
+            let (headline, reasons) = doctor_live_probe_failure(config, error);
+            checks.push(NeedsAttention(format!(
+                "{route}: {headline}. {}",
+                reasons.join(" ")
+            )));
+        }
+        None if ready => checks.push(Works(route)),
+        None => checks.push(NeedsAttention(format!(
+            "{route} is not confirmed to work yet"
+        ))),
+    }
+    match codewhale_sandbox::get_platform_sandbox_with_bwrap_preference(config.prefers_bwrap()) {
+        Some(kind) => checks.push(Works(format!("Command sandbox: {kind}"))),
+        None => checks.push(NeedsAttention(
+            "No command sandbox on this system, so commands run without one".to_string(),
+        )),
+    }
+    checks
+}
+
 /// Human-facing facts the verdict uses beyond the setup-state record. None of
 /// these change structural Setup/Fleet readiness (the JSON contract): a set
 /// environment variable is reported, never certified, until a live probe.
@@ -6895,6 +7098,57 @@ fn doctor_verdict(
                     .to_string()
             }
         }),
+    }
+}
+
+#[cfg(test)]
+mod doctor_detail_tests {
+    use clap::Parser as _;
+
+    fn doctor_args(argv: &[&str]) -> super::DoctorArgs {
+        match super::Cli::try_parse_from(argv)
+            .expect("parse doctor")
+            .command
+        {
+            Some(super::Commands::Doctor(args)) => args,
+            _ => panic!("expected doctor command"),
+        }
+    }
+
+    #[test]
+    fn doctor_full_is_opt_in_and_stays_out_of_the_json_and_installs_paths() {
+        assert!(!doctor_args(&["codewhale-tui", "doctor"]).full);
+        assert!(doctor_args(&["codewhale-tui", "doctor", "--full"]).full);
+        assert!(doctor_args(&["codewhale-tui", "doctor", "--full", "--probe-local"]).probe_local);
+        let installs = doctor_args(&["codewhale-tui", "doctor", "--installs", "--brief"]);
+        assert!(installs.installs && installs.brief && !installs.full);
+        for output_flag in ["--json", "--context-json"] {
+            assert!(
+                super::Cli::try_parse_from(["codewhale-tui", "doctor", "--full", output_flag])
+                    .is_err(),
+                "{output_flag} unexpectedly accepted --full"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_live_check_is_explained_without_provider_error_text() {
+        let config = super::Config::default();
+        let (headline, reasons) = super::doctor_live_probe_failure(
+            &config,
+            &anyhow::anyhow!("HTTP 401 Unauthorized: sk-secret-material"),
+        );
+        assert_eq!(headline, "API connection failed");
+        assert_eq!(reasons.len(), 1);
+        assert!(reasons[0].starts_with("Invalid API key."), "{reasons:?}");
+        let (_, opaque) =
+            super::doctor_live_probe_failure(&config, &anyhow::anyhow!("sk-secret-material"));
+        assert!(
+            opaque
+                .iter()
+                .all(|line| !line.contains("sk-secret-material")),
+            "{opaque:?}"
+        );
     }
 }
 
@@ -12408,38 +12662,67 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
     } else {
         None
     };
-    let finalized = (|| -> Result<_> {
-        if let Some((number, view)) = &pr_view {
-            let cwd = std::env::current_dir().context(
-                "Failed to resolve the current directory before final PR revision check",
-            )?;
-            codewhale_engine::tools::review_pr::ensure_current(
-                *number,
-                args.repo.as_deref(),
-                &cwd,
-                view,
-            )?;
+    let published = if let Some((number, view)) = pr_view.clone() {
+        let repo = args.repo.clone();
+        let posted = args
+            .post
+            .then(|| (structured.clone(), diff.clone(), rendered_report.clone()));
+        let before = publication;
+        let joined = tokio::task::spawn_blocking(move || {
+            let mut publication = before;
+            let result = (|| -> Result<()> {
+                let cwd = std::env::current_dir().context(
+                    "Failed to resolve the current directory before final PR revision check",
+                )?;
+                codewhale_engine::tools::review_pr::ensure_current(
+                    number,
+                    repo.as_deref(),
+                    &cwd,
+                    &view,
+                )?;
+                if let Some((structured, diff, rendered_report)) = &posted {
+                    let review = structured
+                        .as_ref()
+                        .expect("structured output exists for PR reviews");
+                    post_pr_review(
+                        number,
+                        &view,
+                        repo.as_deref(),
+                        review,
+                        diff,
+                        rendered_report
+                            .as_deref()
+                            .expect("posted review has prepared body"),
+                        &mut publication,
+                    )
+                    .context("PR review publication failed")?;
+                }
+                Ok(())
+            })();
+            (publication, result)
+        })
+        .await;
+        match joined {
+            Ok((after, result)) => {
+                publication = after;
+                result
+            }
+            Err(join) if join.is_panic() => std::panic::resume_unwind(join.into_panic()),
+            Err(join) => {
+                if args.post {
+                    publication = ReviewPublication::Uncertain;
+                }
+                Err(anyhow!(
+                    "the final PR revision check did not finish: {join}"
+                ))
+            }
         }
-        if args.post {
-            let (number, view) = pr_view
-                .as_ref()
-                .expect("--post requires --pr (enforced by clap)");
-            let review = structured
-                .as_ref()
-                .expect("structured output exists for PR reviews");
-            post_pr_review(
-                *number,
-                view,
-                args.repo.as_deref(),
-                review,
-                &diff,
-                rendered_report
-                    .as_deref()
-                    .expect("posted review has prepared body"),
-                &mut publication,
-            )
-            .context("PR review publication failed")?;
-        }
+    } else if args.post {
+        Err(anyhow!("--post requires --pr"))
+    } else {
+        Ok(())
+    };
+    let finalized = published.and_then(|()| -> Result<_> {
         let receipt = if args.write_receipt {
             let parsed_output = structured
                 .clone()
@@ -12467,7 +12750,7 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
             None
         };
         Ok(receipt)
-    })();
+    });
     let receipt = match finalized {
         Ok(receipt) => receipt,
         Err(error) => {
@@ -12915,25 +13198,31 @@ async fn run_pr(
     pending_telemetry_notice: Option<codewhale_engine::telemetry_notice::PendingTelemetryNotice>,
     plugin_registry: Arc<codewhale_plugins::PluginRegistry>,
 ) -> Result<()> {
-    if !is_command_available("gh") {
-        bail!(
-            "`gh` CLI not found on PATH. Install GitHub CLI \
-             (https://cli.github.com) and authenticate (`gh auth login`) \
-             so `codewhale pr <N>` can fetch PR metadata and the diff."
-        );
-    }
-
-    let view = run_gh_pr_view(number, repo)?;
-    let diff = run_gh_pr_diff(number, repo, &view)?;
-
-    if checkout {
-        match run_gh_pr_checkout(number, repo) {
-            Ok(()) => eprintln!("Checked out PR #{number} into the current workspace."),
-            Err(err) => eprintln!(
-                "warning: gh pr checkout #{number} failed ({err}). Continuing without checkout."
-            ),
-        }
-    }
+    let (view, diff) = {
+        let repo = repo.map(str::to_owned);
+        tokio::task::spawn_blocking(move || -> Result<_> {
+            if !is_command_available("gh") {
+                bail!(
+                    "`gh` CLI not found on PATH. Install GitHub CLI \
+                     (https://cli.github.com) and authenticate (`gh auth login`) \
+                     so `codewhale pr <N>` can fetch PR metadata and the diff."
+                );
+            }
+            let repo = repo.as_deref();
+            let view = run_gh_pr_view(number, repo)?;
+            let diff = run_gh_pr_diff(number, repo, &view)?;
+            if checkout {
+                match run_gh_pr_checkout(number, repo) {
+                    Ok(()) => eprintln!("Checked out PR #{number} into the current workspace."),
+                    Err(err) => eprintln!(
+                        "warning: gh pr checkout #{number} failed ({err}). Continuing without checkout."
+                    ),
+                }
+            }
+            Ok((view, diff))
+        })
+        .await??
+    };
 
     let context = codewhale_engine::tools::spec::ToolContext::new(std::env::current_dir()?)
         .with_features(config.features());
@@ -14500,26 +14789,12 @@ fn run_sandbox_command(config: &Config, args: SandboxArgs) -> Result<()> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
-    // Lead a process group so the timeout ends everything the command started.
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        cmd.process_group(0);
-    }
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("Failed to run command: {e}"))?;
-    // The sandbox run is the tree's lifetime: dropping `tree` on return ends
+    // The command leads a process group (a Job on Windows, joined before its
+    // first instruction runs) so the timeout ends everything it started. The
+    // sandbox run is the tree's lifetime: dropping `tree` on return ends
     // anything the command left running, as `contained_output` does.
-    let tree = match codewhale_runtime::process_tree::ProcessTree::attach(&child) {
-        Ok(tree) => tree,
-        Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("Failed to contain the sandboxed command: {error}");
-        }
-    };
+    let (mut child, tree) = codewhale_runtime::process_tree::spawn_contained_std(&mut cmd)
+        .map_err(|e| anyhow::anyhow!("Failed to run command: {e}"))?;
     let stdout_handle = child
         .stdout
         .take()
@@ -15015,6 +15290,25 @@ fn merge_project_config_with_approval_baseline(
             &path,
             "tool_launcher is read only from the managed configuration",
         ));
+    }
+    for key in ["approval_policy", "sandbox_mode", "allow_shell"] {
+        let recognised = match (key, table.get(key)) {
+            (_, None) => true,
+            ("approval_policy", Some(toml::Value::String(value))) => {
+                codewhale_config::project_approval_policy_is_allowed(Some("auto"), value)
+            }
+            ("sandbox_mode", Some(toml::Value::String(value))) => {
+                codewhale_config::project_sandbox_mode_is_allowed(Some("external-sandbox"), value)
+            }
+            ("allow_shell", Some(toml::Value::Boolean(_))) => true,
+            _ => false,
+        };
+        if !recognised {
+            return Err(project_config_unusable(
+                &path,
+                &format!("{key} is not a recognised value"),
+            ));
+        }
     }
 
     // #417: dangerous keys are denied at project scope. A malicious
@@ -20771,6 +21065,46 @@ max_subagents = -3
         assert!(message.contains("--no-project-config"), "{message}");
         assert!(!message.contains("this is not valid"), "{message}");
         assert_eq!(config.provider.as_deref(), Some("codewhale"));
+    }
+
+    #[test]
+    fn project_overlay_refuses_wrong_typed_or_unrecognised_restrictions() {
+        for (body, key) in [
+            ("allow_shell = \"false\"\n", "allow_shell"),
+            ("sandbox_mode = \"readonly\"\n", "sandbox_mode"),
+            ("sandbox_mode = true\n", "sandbox_mode"),
+            ("approval_policy = \"nevr\"\n", "approval_policy"),
+            ("approval_policy = 3\n", "approval_policy"),
+            ("approval_policy = \"\"\n", "approval_policy"),
+        ] {
+            let tmp = workspace_with_project_config(&format!("model = \"project-model\"\n{body}"));
+            let mut config = Config::default();
+            let error = merge_project_config_with_approval_baseline(&mut config, tmp.path(), None)
+                .expect_err("an unusable restriction must stop the launch");
+            let message = error.to_string();
+            assert!(
+                message.contains(&format!("{key} is not a recognised value")),
+                "{body}: {message}"
+            );
+            assert!(message.contains("--no-project-config"), "{message}");
+            assert_eq!(config.default_text_model, None, "{body}");
+            assert_eq!(config.allow_shell, None, "{body}");
+        }
+    }
+
+    #[test]
+    fn project_overlay_keeps_the_warning_for_a_recognised_loosening_value() {
+        let tmp = workspace_with_project_config(
+            "approval_policy = \"auto\"\nsandbox_mode = \"danger-full-access\"\nallow_shell = true\n",
+        );
+        let mut config = Config::default();
+        config.approval_policy = Some("never".to_string());
+        config.sandbox_mode = Some("read-only".to_string());
+        merge_project_config_with_approval_baseline(&mut config, tmp.path(), None)
+            .expect("a recognised value that would loosen is ignored, not fatal");
+        assert_eq!(config.approval_policy.as_deref(), Some("never"));
+        assert_eq!(config.sandbox_mode.as_deref(), Some("read-only"));
+        assert_eq!(config.allow_shell, None);
     }
 
     #[test]

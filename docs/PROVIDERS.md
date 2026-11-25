@@ -674,7 +674,7 @@ a custom provider entry for that plan until a follow-up adds it.
 
 Private gateways with broken or intercepted certificates should use
 `SSL_CERT_FILE` with a trusted CA bundle. The legacy
-`insecure_skip_tls_verify = true` key is still parsed so `codewhale doctor` can
+`insecure_skip_tls_verify = true` key is still parsed so `codewhale doctor --full` can
 report stale configs, but provider clients reject it instead of skipping TLS
 certificate verification.
 

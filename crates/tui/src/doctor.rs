@@ -741,6 +741,90 @@ fn ds4_probe_error(config: &codewhale_runtime::config::Config, error: &str) -> S
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DoctorDetail {
+    Short,
+    Full,
+    All,
+}
+
+impl DoctorDetail {
+    pub(crate) fn from_flags(full: bool, all: bool, needs_sections: bool) -> Self {
+        if all {
+            Self::All
+        } else if full || needs_sections {
+            Self::Full
+        } else {
+            Self::Short
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DoctorShortCheck {
+    Works(String),
+    Note(String),
+    NeedsAttention(String),
+}
+
+const SHORT_REPORT_READY_STEP: &str = "Run `codewhale` in the folder you want to work in.";
+const SHORT_REPORT_DETAIL_STEP: &str = "Run `codewhale doctor --full` to see every check.";
+pub(crate) const SHORT_REPORT_FOOTER: &str = "`codewhale doctor --full` prints every check.";
+
+pub(crate) fn short_report_lines(verdict: &str, checks: &[DoctorShortCheck]) -> Vec<String> {
+    let (head, step) = match verdict.split_once(" → ") {
+        Some((head, step)) => (head.trim(), Some(step.trim())),
+        None => (verdict.trim(), None),
+    };
+    let mut lines = vec![if head.ends_with(['.', '!', '?']) {
+        head.to_string()
+    } else {
+        format!("{head}.")
+    }];
+    lines.push(String::new());
+    lines.push("Works:".to_string());
+    let before = lines.len();
+    for check in checks {
+        match check {
+            DoctorShortCheck::Works(text) => lines.push(format!("  ✓ {text}")),
+            DoctorShortCheck::Note(text) => lines.push(format!("  · {text}")),
+            DoctorShortCheck::NeedsAttention(_) => {}
+        }
+    }
+    if lines.len() == before {
+        lines.push("  nothing was confirmed".to_string());
+    }
+    lines.push("Needs attention:".to_string());
+    let before = lines.len();
+    for check in checks {
+        if let DoctorShortCheck::NeedsAttention(text) = check {
+            lines.push(format!("  ! {text}"));
+        }
+    }
+    if lines.len() == before {
+        lines.push("  nothing".to_string());
+    }
+    lines.push("Next step:".to_string());
+    let step = match step {
+        Some(step) => {
+            let step = step
+                .replace("see API Connectivity below; ", "")
+                .replace("; see API Connectivity below", "");
+            let mut chars = step.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+                None => SHORT_REPORT_DETAIL_STEP.to_string(),
+            }
+        }
+        None if head.starts_with("Ready") => SHORT_REPORT_READY_STEP.to_string(),
+        None => SHORT_REPORT_DETAIL_STEP.to_string(),
+    };
+    lines.push(format!("  {step}"));
+    lines.push(String::new());
+    lines.push(SHORT_REPORT_FOOTER.to_string());
+    lines
+}
+
 #[cfg(test)]
 #[path = "doctor/tests.rs"]
 mod tests;

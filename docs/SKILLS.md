@@ -411,7 +411,7 @@ An empty `selected` list enables the whole bundle; a nonempty list limits instal
 
 These lists apply only to recognized shipped copies in the owned global root. Edited files, managed installs with `.installed-from`, project copies and compatible-root copies keep their own behavior. Bundle settings never delete skill files, including retired pack entries. `all` preserves edited and managed bodies. A marker that is a directory or symlink is refused without deleting its contents. Profile fields merge independently; an explicit empty list clears the inherited list.
 
-`codewhale doctor` and its JSON output report mode, marker generation, installed and missing names, disabled and explicit-only counts, shadowing, unknown names and ignored explicit-only entries. `/skills inspect` adds each bundled path and its selection reason. Unknown config names produce a doctor warning; they do not name a write target.
+`codewhale doctor --full` and its JSON output report mode, marker generation, installed and missing names, disabled and explicit-only counts, shadowing, unknown names and ignored explicit-only entries. `/skills inspect` adds each bundled path and its selection reason. Unknown config names produce a doctor warning; they do not name a write target.
 
 ## Operator checklist
 

@@ -123,6 +123,9 @@ doctor check:
 codewhale doctor
 ```
 
+It prints a short verdict: whether Codewhale is ready, what works, what needs
+attention and the next step. `codewhale doctor --full` prints every check.
+
 Use the JSON form when you need a machine-readable report for an issue:
 
 ```bash
@@ -713,14 +716,14 @@ Start with doctor output:
 codewhale doctor
 ```
 
-Use JSON when filing a detailed issue:
+Add `--full` for every check. Use JSON when filing a detailed issue:
 
 ```bash
 codewhale doctor --json
 ```
 
-For authentication problems, use the structural source state to identify what
-is declared. Doctor deliberately does not inspect environment, secret-store,
+For authentication problems, use the structural source state in
+`codewhale doctor --full` to identify what is declared. Doctor deliberately does not inspect environment, secret-store,
 keyring, or OAuth token values. When a live check is appropriate, opt in with
 `codewhale doctor --probe-api` (or `--probe-local` for a local endpoint).
 
