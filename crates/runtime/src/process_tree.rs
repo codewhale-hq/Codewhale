@@ -208,6 +208,9 @@ impl ProcessTree {
     pub fn kill_if_leader_exited(&self) -> bool {
         #[cfg(unix)]
         {
+            if !self.armed.load(std::sync::atomic::Ordering::SeqCst) {
+                return true;
+            }
             match observe_leader_exit(self.pgid, false) {
                 Ok(false) => false,
                 Ok(true) => {
