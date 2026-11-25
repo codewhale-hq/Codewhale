@@ -2814,7 +2814,10 @@ pub(crate) async fn run_event_loop(
         if crate::tui::external_agent::poll_external_agent_discovery(app, config) {
             app.needs_redraw = true;
         }
-        if crate::tui::external_agent::drain_external_agent_events(app) {
+        if crate::tui::external_agent::drain_external_agent_events(
+            app,
+            config.approval_default_selection(),
+        ) {
             app.needs_redraw = true;
         }
 

@@ -1534,111 +1534,113 @@ fn is_approved(action: &ViewAction) -> bool {
     )
 }
 
+fn enter_was_refused(action: &ViewAction) -> bool {
+    matches!(
+        action,
+        ViewAction::Emit(ViewEvent::StatusToast { message, .. })
+            if message == tr(Locale::En, MessageId::ApprovalEnterIgnored).as_ref()
+    )
+}
+
+fn at(base: std::time::Instant, millis: u64) -> std::time::Instant {
+    base + std::time::Duration::from_millis(millis)
+}
+
 #[test]
 fn enter_does_not_allow_a_card_that_only_just_became_answerable() {
-    let _serial = ENTER_GUARD_TESTS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     for request in one_request_per_card_shape() {
-        super::view::clear_last_approval_enter();
         let mut untouched = guarded_view(request.clone());
-        assert!(matches!(
-            untouched.handle_key(create_key_event(KeyCode::Enter)),
-            ViewAction::None
+        assert!(enter_was_refused(
+            &untouched.handle_key(create_key_event(KeyCode::Enter))
         ));
 
-        super::view::clear_last_approval_enter();
         let mut ticked = guarded_view(request.clone());
         assert!(matches!(ticked.tick(), ViewAction::None));
         assert!(ticked.answerable_since.is_some());
-        assert!(matches!(
-            ticked.handle_key(create_key_event(KeyCode::Enter)),
-            ViewAction::None
+        assert!(enter_was_refused(
+            &ticked.handle_key(create_key_event(KeyCode::Enter))
         ));
 
-        super::view::clear_last_approval_enter();
         let mut settled = guarded_view(request);
         settled.answerable_since = long_ago();
         assert!(is_approved(
             &settled.handle_key(create_key_event(KeyCode::Enter))
         ));
     }
-    super::view::clear_last_approval_enter();
 }
 
 #[test]
-fn held_enter_does_not_allow_the_next_card() {
-    let _serial = ENTER_GUARD_TESTS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    super::view::clear_last_approval_enter();
+fn a_refused_enter_does_not_postpone_the_next_one() {
+    let base = std::time::Instant::now();
+    let mut view = guarded_view(shell_request());
+    ModalView::on_became_top(&mut view, base);
+    assert!(!view.enter_may_commit(ApprovalOption::ApproveOnce, at(base, 400)));
+    assert!(view.enter_may_commit(ApprovalOption::ApproveOnce, at(base, 900)));
 
-    let mut first = guarded_view(shell_request());
-    first.answerable_since = long_ago();
-    assert!(is_approved(
-        &first.handle_key(create_key_event(KeyCode::Enter))
-    ));
+    let mut steady = guarded_view(shell_request());
+    ModalView::on_became_top(&mut steady, base);
+    assert!(!steady.enter_may_commit(ApprovalOption::ApproveOnce, at(base, 300)));
+    assert!(!steady.enter_may_commit(ApprovalOption::ApproveOnce, at(base, 600)));
+    assert!(steady.enter_may_commit(ApprovalOption::ApproveOnce, at(base, 900)));
+}
 
-    // An older card revealed by that answer was answerable long ago.
-    let mut revealed = guarded_view(shell_request());
-    revealed.answerable_since = long_ago();
-    for _ in 0..40 {
-        assert!(matches!(
-            revealed.handle_key(create_key_event(KeyCode::Enter)),
-            ViewAction::None
-        ));
+#[test]
+fn held_enter_never_allows() {
+    let base = std::time::Instant::now();
+    let mut view = guarded_view(shell_request());
+    ModalView::on_became_top(&mut view, base);
+    for repeat in 0..200 {
+        assert!(
+            !view.enter_may_commit(ApprovalOption::ApproveOnce, at(base, repeat * 33)),
+            "repeat {repeat}"
+        );
     }
+    assert!(view.enter_may_commit(ApprovalOption::ApproveOnce, at(base, 200 * 33 + 250)));
 
-    let mut fresh = guarded_view(shell_request());
-    for _ in 0..40 {
-        assert!(matches!(
-            fresh.handle_key(create_key_event(KeyCode::Enter)),
-            ViewAction::None
-        ));
-    }
-
-    // A held Enter that refused the first card does not allow the next.
-    super::view::clear_last_approval_enter();
-    let mut denied = ApprovalView::new_with_default_selection(
+    let mut deny = ApprovalView::new_with_default_selection(
         shell_request(),
         Locale::En,
         ApprovalDefaultSelection::Deny,
     );
-    denied.enter_guard = true;
+    deny.enter_guard = true;
     assert!(matches!(
-        denied.handle_key(create_key_event(KeyCode::Enter)),
+        deny.handle_key(create_key_event(KeyCode::Enter)),
         ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
             decision: ReviewDecision::Denied,
             ..
         })
     ));
-    let mut after_denial = guarded_view(shell_request());
-    after_denial.answerable_since = long_ago();
-    assert!(matches!(
-        after_denial.handle_key(create_key_event(KeyCode::Enter)),
-        ViewAction::None
-    ));
 
-    // The explicit key still answers at once, and so does a later Enter.
+    let mut explicit = guarded_view(shell_request());
     assert!(is_approved(
-        &revealed
-            .clone()
-            .handle_key(create_key_event(KeyCode::Char('y')))
+        &explicit.handle_key(create_key_event(KeyCode::Char('y')))
     ));
-    super::view::clear_last_approval_enter();
-    assert!(is_approved(
-        &revealed.handle_key(create_key_event(KeyCode::Enter))
-    ));
-    super::view::clear_last_approval_enter();
 }
 
 #[test]
-fn pasted_text_never_allows() {
-    let _serial = ENTER_GUARD_TESTS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    super::view::clear_last_approval_enter();
+fn a_card_revealed_again_is_armed_again() {
+    let mut stack = crate::tui::views::ViewStack::new();
+    stack.push(guarded_view(shell_request()));
+    let armed_first = stack
+        .top_approval_for_test()
+        .and_then(|view| view.answerable_since)
+        .expect("armed when pushed");
+    if let Some(view) = stack.top_approval_for_test() {
+        view.answerable_since = long_ago();
+    }
+    stack.push(guarded_view(shell_request()));
+    stack.pop();
+    let revealed = stack.top_approval_for_test().expect("first card on top");
+    let armed_again = revealed.answerable_since.expect("armed when revealed");
+    assert!(armed_again >= armed_first);
+    assert!(armed_again.elapsed() < super::view::ENTER_ARMING_DELAY);
+    assert!(enter_was_refused(
+        &revealed.handle_key(create_key_event(KeyCode::Enter))
+    ));
+}
 
+#[test]
+fn pasted_enter_never_allows() {
     let mut view = guarded_view(shell_request());
     view.answerable_since = long_ago();
     assert!(!ModalView::handle_paste(&mut view, "y\n"));
@@ -1652,17 +1654,15 @@ fn pasted_text_never_allows() {
             ViewAction::None
         ));
     }
-    assert!(matches!(
-        view.handle_key(create_key_event(KeyCode::Enter)),
-        ViewAction::None
+    assert!(enter_was_refused(
+        &view.handle_key(create_key_event(KeyCode::Enter))
     ));
 
-    super::view::clear_last_approval_enter();
     view.last_char_key_at = long_ago();
+    view.last_enter_at = long_ago();
     assert!(is_approved(
         &view.handle_key(create_key_event(KeyCode::Enter))
     ));
-    super::view::clear_last_approval_enter();
 }
 
 #[test]
@@ -2400,7 +2400,10 @@ fn highlighted_option_row_names_enter() {
     let allow = wide.find("Allow [Enter]").expect("allow control");
     let deny = wide.find("Deny [n]").expect("deny control");
     assert!(details < allow && allow < deny, "{wide}");
-    assert!(!wide.contains("Deny [d]") && !wide.contains("Deny  [d]"), "{wide}");
+    assert!(
+        !wide.contains("Deny [d]") && !wide.contains("Deny  [d]"),
+        "{wide}"
+    );
 
     for &locale in Locale::shipped() {
         let view = ApprovalView::new_for_locale(shell_request(), locale);
@@ -2553,6 +2556,27 @@ fn approval_review_and_stop_hints_stay_on_one_row_at_80_columns() {
             .filter(|line| line.contains("Allow") && line.contains("Deny"))
             .collect::<Vec<_>>();
         assert_eq!(bar_rows.len(), 1, "{locale:?}:\n{}", lines.join("\n"));
+    }
+}
+
+#[test]
+fn critical_bar_at_80_columns_still_shows_the_command() {
+    let request = ApprovalRequest::new(
+        "test-id",
+        "exec_shell",
+        "Run a shell command",
+        &json!({"command": "rm -rf ~/projects/old-site"}),
+        "tool:exec_shell",
+    );
+    let view = ApprovalView::new(request);
+    let lines = render_lines(&view, 80, 24);
+    let bar = lines
+        .iter()
+        .find(|line| line.contains("Allow [Enter]"))
+        .unwrap_or_else(|| panic!("no bar:\n{}", lines.join("\n")));
+    assert!(bar.contains("rm -rf ~/projects"), "{bar}");
+    for control in ["[d]", "Allow [Enter]", "[m]", "Deny [n]"] {
+        assert!(bar.contains(control), "missing {control}: {bar}");
     }
 }
 

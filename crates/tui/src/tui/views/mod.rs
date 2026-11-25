@@ -1502,6 +1502,7 @@ pub trait ModalView: std::any::Any {
     fn tick(&mut self) -> ViewAction {
         ViewAction::None
     }
+    fn on_became_top(&mut self, _at: std::time::Instant) {}
     /// Erased downcast hook for views that need a typed reference back from
     /// the boxed trait object (e.g. the live transcript overlay needs `&mut`
     /// access from outside the trait so it can refresh its snapshot of the
@@ -1591,7 +1592,11 @@ impl ViewStack {
     /// Restamp `top_since` when the top view changed since `before`.
     fn note_top_change(&mut self, before: Option<(*const (), usize)>) {
         if self.top_identity() != before {
-            self.top_since = Some(std::time::Instant::now());
+            let now = std::time::Instant::now();
+            self.top_since = Some(now);
+            if let Some(view) = self.views.last_mut() {
+                view.on_became_top(now);
+            }
         }
     }
 
@@ -1811,6 +1816,13 @@ impl ViewStack {
         self.views.push(view);
         self.note_top_change(top);
         tracing::debug!(target: "codewhale_tui::view_stack", action = "push_boxed", kind = ?kind, depth = self.views.len(), "view pushed");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn top_approval_for_test(
+        &mut self,
+    ) -> Option<&mut crate::tui::approval::ApprovalView> {
+        self.views.last_mut()?.as_any_mut().downcast_mut()
     }
 
     pub fn pop(&mut self) -> Option<Box<dyn ModalView>> {

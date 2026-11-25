@@ -335,7 +335,10 @@ pub(crate) fn handle_external_approval_decision(
     Some(true)
 }
 
-pub(crate) fn drain_external_agent_events(app: &mut App) -> bool {
+pub(crate) fn drain_external_agent_events(
+    app: &mut App,
+    default_selection: codewhale_runtime::config::ApprovalDefaultSelection,
+) -> bool {
     let Some(session) = app.external_agent.as_mut() else {
         return false;
     };
@@ -395,7 +398,7 @@ pub(crate) fn drain_external_agent_events(app: &mut App) -> bool {
     }
 
     for record in records {
-        apply_external_event(app, &agent_name, record);
+        apply_external_event(app, &agent_name, record, default_selection);
         changed = true;
     }
 
@@ -432,7 +435,12 @@ fn finish_streaming_assistant(app: &mut App) {
     }
 }
 
-fn apply_external_event(app: &mut App, agent_name: &str, record: RuntimeEventRecord) {
+fn apply_external_event(
+    app: &mut App,
+    agent_name: &str,
+    record: RuntimeEventRecord,
+    default_selection: codewhale_runtime::config::ApprovalDefaultSelection,
+) {
     match record.event.as_str() {
         "turn.started" => {
             if let Some(turn_id) = record.turn_id
@@ -547,7 +555,7 @@ fn apply_external_event(app: &mut App, agent_name: &str, record: RuntimeEventRec
                 .push(ApprovalView::new_with_default_selection(
                     request,
                     app.ui_locale,
-                    Default::default(),
+                    default_selection,
                 ));
         }
         "turn.completed" => {
@@ -784,6 +792,7 @@ mod tests {
                     }
                 }),
             },
+            Default::default(),
         );
         assert!(!app.is_loading);
         assert!(app.history.iter().any(|cell| matches!(
@@ -810,6 +819,7 @@ mod tests {
                     }
                 }),
             },
+            Default::default(),
         );
         assert!(!app.is_loading);
         assert!(

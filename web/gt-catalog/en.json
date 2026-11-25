@@ -1388,7 +1388,7 @@
             "p": "Workflow plan cards have different options, including editing or canceling the plan. Follow the labels on that card rather than the ordinary tool shortcuts above."
           },
           {
-            "p": "A new approval card highlights Deny by default, so Enter refuses the call unless you changed that setting. Approval prompts wait indefinitely by default; set a timeout in your user configuration to deny unanswered prompts after 300 seconds:"
+            "p": "A new approval card highlights Allow by default, so Enter allows the one action shown, once. Set `default_selection = \"deny\"` to make Enter refuse the call instead. Approval prompts wait indefinitely by default; set a timeout in your user configuration to deny unanswered prompts after 300 seconds:"
           },
           {
             "code": "[approval]\ndefault_selection = \"deny\"\ntimeout_seconds = 300",

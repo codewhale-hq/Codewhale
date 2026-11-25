@@ -280,10 +280,12 @@ will run, then `Details [d]`, `Allow [Enter]`, `[▾ m]` and `Deny [n]`.
   their numbers: `[1] Allow once`, `[2] Allow in this conversation` and, where
   it is offered, `[3] Always allow in this repo`.
 - An `Enter` that would allow is ignored for the first three quarters of a
-  second the bar is the prompt in front of you, for the same time after
-  another `Enter` on an approval, and straight after typed characters. A key
-  already in flight, a held key or text pasted into the terminal therefore
-  does not approve. Denying is never delayed, and `y` answers at once.
+  second the bar is the prompt in front of you (again each time it comes back
+  to the front after another prompt covered it), and straight after another
+  `Enter` or typed characters. An `Enter` already in flight, held or pasted
+  therefore does not approve, and a notice says the key was ignored and why;
+  press `Enter` again to allow. Denying is never delayed, and the letter keys
+  (`y`, `a`, `1`) answer at once.
 - To make `Enter` deny instead, set `[approval] default_selection = "deny"`
   (see [Configuration](CONFIGURATION.md)).
 

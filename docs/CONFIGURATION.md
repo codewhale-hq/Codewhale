@@ -2478,9 +2478,10 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   (default) or `deny`. Enter commits the highlighted control, which is tagged
   `[Enter]`, so by default Enter allows the one action shown, once; `n` denies
   and `Esc` refuses the action and stops the turn. An Enter that would allow
-  is ignored for the first three quarters of a second and straight after
-  another Enter or typed characters, so a key in flight, a held key or pasted
-  text does not approve. Set `deny` to make Enter refuse the call instead
+  is ignored, with a notice saying so, for the first three quarters of a
+  second after the bar becomes the prompt in front and straight after another
+  Enter or typed characters, so an Enter in flight, held or pasted does not
+  approve. The letter keys (`y`, `a`, `1`) are not delayed. Set `deny` to make Enter refuse the call instead
   (the earlier default, #5293); `y` still allows once. It moves the
   highlight only: which calls are prompted for is still `approval_policy`
   plus the rules in `permissions.toml`. The sandbox elevation prompt is not

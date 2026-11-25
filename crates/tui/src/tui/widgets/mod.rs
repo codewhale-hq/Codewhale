@@ -2062,8 +2062,8 @@ impl<'a> ApprovalWidget<'a> {
         };
 
         let selected_pill = menu_style::selected_row_style().add_modifier(Modifier::REVERSED);
-        let wide = bar_area.width >= 72;
-        let padded = bar_area.width >= 56;
+        let wide = bar_area.width >= 100;
+        let padded = wide;
         let allow_text = if workflow_plan {
             "Approve"
         } else if wide {
@@ -2099,7 +2099,7 @@ impl<'a> ApprovalWidget<'a> {
         );
         let m_label = if workflow_plan {
             String::new()
-        } else if !padded {
+        } else if !wide {
             "[m]".to_string()
         } else if self.view.scopes_open {
             if ascii { "[^ m]" } else { "[▴ m]" }.to_string()

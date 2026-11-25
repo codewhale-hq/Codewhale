@@ -1283,11 +1283,11 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 
 - `approval_policy`(字符串，可选)：`on-request`、`untrusted` 或 `never`。`/config` 中的运行时 `approval_mode` 编辑也接受 `on-request` 和 `untrusted` 别名。
 
-- `[approval] default_selection`(字符串，可选)：审批卡片首次出现时高亮哪个选项——`deny`(默认)或 `allow_once`。`deny` 意味着在没读过的卡片上反射性按 Enter 会拒绝调用。高亮的那一行会标注 `(Enter)`；按 `y` 可仅允许本次。设置 `allow_once` 恢复 v0.9.6 之前的 Enter 即批准肌肉记忆(#5293)。它只移动高亮：哪些调用会被提示仍由 `approval_policy` 加 `permissions.toml` 中的规则决定。
+- `[approval] default_selection`(字符串，可选)：终端审批栏首次出现时高亮哪个控件——`allow_once`(默认)或 `deny`。Enter 提交高亮的控件(标注为 `[Enter]`)，所以默认情况下 Enter 会允许所显示的这一个操作，仅此一次；`n` 拒绝，`Esc` 拒绝该操作并停止本轮。审批栏刚出现的四分之三秒内，以及紧跟在另一次 Enter 或输入字符之后，会允许操作的 Enter 将被忽略并给出提示，所以仍在途中的、按住不放的或粘贴进来的 Enter 不会批准；字母键(`y`、`a`、`1`)不受此延迟限制。设置 `deny` 可让 Enter 改为拒绝调用(此前的默认值，#5293)；`y` 仍可仅允许本次。它只移动高亮：哪些调用会被提示仍由 `approval_policy` 加 `permissions.toml` 中的规则决定。沙箱提权提示不受影响，仍从跳过该调用的选项开始。
 
   ```toml
   [approval]
-  default_selection = "allow_once"
+  default_selection = "deny"
   ```
 
 - `[approval] timeout_seconds`（整数，可选）：限定一次审批最多可以等待多久——TUI 卡片，以及桌面应用和 web 使用的 Runtime API 审批同样适用。窗口过期后，该调用会被拒绝（fail closed），并记录为超时，而不是记录为操作者的拒绝。省略或为 `0` 表示无限期等待，这在各处都是默认值：除非你设置它，否则任何审批都不会被替你拒绝。超过 24h 的值会带警告被钳制（#6101）。

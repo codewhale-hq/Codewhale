@@ -5,17 +5,16 @@
 //! authority boundaries.
 //!
 //! Enter allows the highlighted action by default, so an Enter that approves
-//! is admitted only after the card has been the answerable prompt for
-//! `ENTER_ARMING_DELAY`, that long after the previous Enter on any approval
-//! card, and `ENTER_QUIET_GAP` after the last character key. Known limits:
-//! a key-repeat delay longer than the arming delay, a repeat slower than the
-//! quiet gap, an Enter held on a non-approval prompt that closes onto an
-//! older approval card, and the letter shortcuts (`y`, `a`, `1`) are not
-//! covered by this guard. Unit tests answer a card the instant it is built,
-//! so the guard starts off under `cfg(test)` and a test turns it on.
+//! is admitted only after the card has been the top prompt for
+//! `ENTER_ARMING_DELAY` (the view stack re-arms it each time the card becomes
+//! the top view again) and `ENTER_QUIET_GAP` after the previous Enter or
+//! character key on this card. A refused Enter says so in a status notice.
+//! Known limits: a key-repeat delay longer than the arming delay, a repeat
+//! slower than the quiet gap, and the letter shortcuts (`y`, `a`, `1`) are
+//! not covered by this guard. Unit tests answer a card the instant it is
+//! built, so the guard starts off under `cfg(test)` and a test turns it on.
 
 use std::cell::{Cell, RefCell};
-use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use codewhale_config::ToolAskRule;
@@ -37,22 +36,6 @@ use codewhale_engine::core::authority::RiskLevel;
 
 pub(super) const ENTER_ARMING_DELAY: Duration = Duration::from_millis(750);
 pub(super) const ENTER_QUIET_GAP: Duration = Duration::from_millis(200);
-
-static LAST_APPROVAL_ENTER: Mutex<Option<Instant>> = Mutex::new(None);
-
-fn replace_last_approval_enter(at: Option<Instant>) -> Option<Instant> {
-    std::mem::replace(
-        &mut *LAST_APPROVAL_ENTER
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner),
-        at,
-    )
-}
-
-#[cfg(test)]
-pub(super) fn clear_last_approval_enter() {
-    replace_last_approval_enter(None);
-}
 
 /// Indices into the option list shared by both variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +133,7 @@ pub struct ApprovalView {
     pub(crate) scopes_open: bool,
     pub(crate) details_expanded: bool,
     pub(super) answerable_since: Option<Instant>,
+    pub(super) last_enter_at: Option<Instant>,
     pub(super) last_char_key_at: Option<Instant>,
     pub(super) enter_guard: bool,
 }
@@ -196,6 +180,7 @@ impl ApprovalView {
             scopes_open: false,
             details_expanded: false,
             answerable_since: None,
+            last_enter_at: None,
             last_char_key_at: None,
             enter_guard: !cfg!(test),
         }
@@ -376,18 +361,17 @@ impl ApprovalView {
         self.locale
     }
 
-    fn enter_may_commit(&mut self, option: ApprovalOption, now: Instant) -> bool {
+    pub(super) fn enter_may_commit(&mut self, option: ApprovalOption, now: Instant) -> bool {
         if !self.enter_guard {
             return true;
         }
         let answerable_since = *self.answerable_since.get_or_insert(now);
-        let previous_enter = replace_last_approval_enter(Some(now));
+        let previous_enter = self.last_enter_at.replace(now);
         if !option.grants() {
             return true;
         }
         now.saturating_duration_since(answerable_since) >= ENTER_ARMING_DELAY
-            && previous_enter
-                .is_none_or(|at| now.saturating_duration_since(at) >= ENTER_ARMING_DELAY)
+            && previous_enter.is_none_or(|at| now.saturating_duration_since(at) >= ENTER_QUIET_GAP)
             && self
                 .last_char_key_at
                 .is_none_or(|at| now.saturating_duration_since(at) >= ENTER_QUIET_GAP)
@@ -551,7 +535,10 @@ impl ModalView for ApprovalView {
         if key.code == KeyCode::Enter {
             let option = self.current_option();
             if !self.enter_may_commit(option, now) {
-                return ViewAction::None;
+                return ViewAction::Emit(ViewEvent::StatusToast {
+                    message: tr(self.locale, MessageId::ApprovalEnterIgnored).into_owned(),
+                    level: crate::tui::app::StatusToastLevel::Info,
+                });
             }
             return self.commit_option(option);
         }
@@ -707,6 +694,12 @@ impl ModalView for ApprovalView {
 
     fn docked_height(&self, width: u16) -> u16 {
         ApprovalWidget::new(&self.request, self).docked_height(width)
+    }
+
+    fn on_became_top(&mut self, at: Instant) {
+        self.answerable_since = Some(at);
+        self.last_enter_at = None;
+        self.last_char_key_at = None;
     }
 
     fn tick(&mut self) -> ViewAction {
