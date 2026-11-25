@@ -537,55 +537,65 @@ pub(crate) fn persist_recovery_snapshot(app: &mut App) {
     if app.dispatch_in_flight {
         return;
     }
-    if let Ok(manager) = SessionManager::default_location()
-        && let Ok(mut session) = build_session_snapshot(app, &manager)
+    let built = SessionManager::default_location()
+        .map_err(|err| err.to_string())
+        .and_then(|manager| build_session_snapshot(app, &manager));
+    let mut session = match built {
+        Ok(session) => session,
+        Err(err) => {
+            tracing::warn!(%err, "recovery snapshot could not be built; in-progress turn not persisted");
+            return;
+        }
+    };
+    if let Some(turn) = app.active_turn.as_ref()
+        && app.runtime_turn_id.as_deref() == Some(turn.turn_id.as_str())
+        && !app.suppress_stream_events_until_turn_complete
+        && app
+            .api_messages
+            .last()
+            .is_some_and(|message| message.role == codewhale_models::Role::User)
+        && let Some(HistoryCell::Assistant {
+            content,
+            streaming: true,
+        }) = app
+            .streaming_message_index
+            .and_then(|index| app.history.get(index))
+        && !content.is_empty()
+        && let Some(journal) = session.journal.as_mut()
     {
-        if let Some(turn) = app.active_turn.as_ref()
-            && app.runtime_turn_id.as_deref() == Some(turn.turn_id.as_str())
-            && !app.suppress_stream_events_until_turn_complete
-            && app
-                .api_messages
-                .last()
-                .is_some_and(|message| message.role == codewhale_models::Role::User)
-            && let Some(HistoryCell::Assistant {
-                content,
-                streaming: true,
-            }) = app
-                .streaming_message_index
-                .and_then(|index| app.history.get(index))
-            && !content.is_empty()
-            && let Some(journal) = session.journal.as_mut()
-        {
-            session.leaf_id = Some(journal.append_message(Message::interrupted_assistant(content)));
-            session.metadata.message_count += 1;
-        }
-        let projection = saved_work_projection(app, &session);
-        if app.current_session_id.is_none() {
-            app.set_current_session_id(Some(session.metadata.id.clone()));
-        }
-        if let Err(err) = persist_with_pending_work_boundary(
-            app,
-            PersistRequest::SaveCheckpoint { session },
-            &projection,
-        ) {
-            tracing::error!(%err, "recovery snapshot save failed; in-progress turn not durably persisted");
-            let id = app
-                .current_session_id
-                .as_deref()
-                .map(codewhale_engine::session_manager::truncate_id)
-                .unwrap_or("—");
-            let message = app
-                .tr(MessageId::SessionSaveFailed)
-                .replace("{id}", id)
-                .replace("{error}", &err.to_string());
-            app.add_message(HistoryCell::Error {
-                message: message.clone(),
-                severity: codewhale_error_taxonomy::ErrorSeverity::Error,
-                code: None,
-            });
-            app.set_sticky_status(message, StatusToastLevel::Error, None);
-        }
+        session.leaf_id = Some(journal.append_message(Message::interrupted_assistant(content)));
+        session.metadata.message_count += 1;
     }
+    let projection = saved_work_projection(app, &session);
+    if app.current_session_id.is_none() {
+        app.set_current_session_id(Some(session.metadata.id.clone()));
+    }
+    if let Err(err) = persist_with_pending_work_boundary(
+        app,
+        PersistRequest::SaveCheckpoint { session },
+        &projection,
+    ) {
+        tracing::error!(%err, "recovery snapshot save failed; in-progress turn not durably persisted");
+        surface_session_save_failure(app, &err);
+    }
+}
+
+fn surface_session_save_failure(app: &mut App, error: &str) {
+    let id = app
+        .current_session_id
+        .as_deref()
+        .map(codewhale_engine::session_manager::truncate_id)
+        .unwrap_or("—");
+    let message = app
+        .tr(MessageId::SessionSaveFailed)
+        .replace("{id}", id)
+        .replace("{error}", error);
+    app.add_message(HistoryCell::Error {
+        message: message.clone(),
+        severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+        code: None,
+    });
+    app.set_sticky_status(message, StatusToastLevel::Error, None);
 }
 
 pub(crate) fn persist_full_reset_snapshot(app: &mut App) {
@@ -595,21 +605,8 @@ pub(crate) fn persist_full_reset_snapshot(app: &mut App) {
     let session = match session {
         Ok(session) => session,
         Err(err) => {
-            let id = app
-                .current_session_id
-                .as_deref()
-                .map(codewhale_engine::session_manager::truncate_id)
-                .unwrap_or("—");
-            let message = app
-                .tr(MessageId::SessionSaveFailed)
-                .replace("{id}", id)
-                .replace("{error}", &err);
-            app.add_message(crate::tui::history::HistoryCell::Error {
-                message: message.clone(),
-                severity: codewhale_error_taxonomy::ErrorSeverity::Error,
-                code: None,
-            });
-            app.status_message = Some(message);
+            tracing::error!(%err, "reset snapshot could not be built");
+            surface_session_save_failure(app, &err);
             return;
         }
     };
@@ -620,9 +617,8 @@ pub(crate) fn persist_full_reset_snapshot(app: &mut App) {
         PersistRequest::CompletedCommit { session },
         &projection,
     ) {
-        app.status_message = Some(format!(
-            "To-do list update pending while saving reset snapshot ({err})"
-        ));
+        tracing::error!(%err, "reset snapshot save failed");
+        surface_session_save_failure(app, &err);
     }
 }
 

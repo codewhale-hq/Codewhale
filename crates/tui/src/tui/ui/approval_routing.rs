@@ -172,6 +172,22 @@ pub(super) fn resolve_ui_approval_disposition(
     disposition
 }
 
+fn log_stale_resolution<E: std::fmt::Display>(
+    event_prefix: &str,
+    mut details: serde_json::Value,
+    tool_id: &str,
+    outcome: Result<(), E>,
+) {
+    match outcome {
+        Ok(()) => log_sensitive_event(&format!("{event_prefix}_resolved"), details),
+        Err(error) => {
+            tracing::warn!(%error, tool_id = %tool_id, "stale-request resolution op rejected");
+            details["error"] = serde_json::Value::String(error.to_string());
+            log_sensitive_event(&format!("{event_prefix}_resolution_failed"), details);
+        }
+    }
+}
+
 /// Answer, explicitly, a request that must not open a card here, so nothing
 /// waits on a card that never shows (approvals C1):
 ///
@@ -195,16 +211,16 @@ pub(super) async fn resolve_stale_parent_request(
     if let Event::ApprovalRequired { id, tool_name, .. } = event
         && crate::tui::pending_requests::is_foreign_child_request(app, id)
     {
-        log_sensitive_event(
-            "tool.approval.foreign_session_child_resolved",
+        let outcome = engine_handle.deny_tool_call_unavailable(id.clone()).await;
+        log_stale_resolution(
+            "tool.approval.foreign_session_child",
             serde_json::json!({
                 "tool_name": tool_name,
                 "session_id": app.current_session_id,
             }),
+            id,
+            outcome,
         );
-        if let Err(error) = engine_handle.deny_tool_call_unavailable(id.clone()).await {
-            tracing::warn!(%error, tool_id = %id, "stale-request resolution op rejected");
-        }
         return true;
     }
     if !(app.suppress_stream_events_until_turn_complete || !app.is_loading) {
@@ -214,49 +230,48 @@ pub(super) async fn resolve_stale_parent_request(
         Event::ApprovalRequired { id, tool_name, .. }
             if !codewhale_engine::tools::subagent::SubAgentManager::is_child_approval_id(id) =>
         {
-            log_sensitive_event(
-                "tool.approval.stale_parent_resolved",
+            let outcome = engine_handle.deny_tool_call_unavailable(id.clone()).await;
+            log_stale_resolution(
+                "tool.approval.stale_parent",
                 serde_json::json!({
                     "tool_name": tool_name,
                     "session_id": app.current_session_id,
                 }),
+                id,
+                outcome,
             );
-            if let Err(error) = engine_handle.deny_tool_call_unavailable(id.clone()).await {
-                tracing::warn!(%error, tool_id = %id, "stale-request resolution op rejected");
-            }
             true
         }
         Event::ElevationRequired {
             tool_id, tool_name, ..
         } => {
-            log_sensitive_event(
-                "tool.sandbox.stale_elevation_resolved",
+            let outcome = engine_handle
+                .deny_tool_call_unavailable(tool_id.clone())
+                .await;
+            log_stale_resolution(
+                "tool.sandbox.stale_elevation",
                 serde_json::json!({
                     "tool_name": tool_name,
                     "session_id": app.current_session_id,
                 }),
+                tool_id,
+                outcome,
             );
-            if let Err(error) = engine_handle
-                .deny_tool_call_unavailable(tool_id.clone())
-                .await
-            {
-                tracing::warn!(%error, tool_id = %tool_id, "stale-request resolution op rejected");
-            }
             true
         }
         Event::UserInputRequired { id, .. }
             if !codewhale_engine::tools::subagent::SubAgentManager::is_child_approval_id(id) =>
         {
-            log_sensitive_event(
-                "tool.user_input.stale_parent_resolved",
+            let outcome = engine_handle.cancel_user_input(id.clone()).await;
+            log_stale_resolution(
+                "tool.user_input.stale_parent",
                 serde_json::json!({
                     "tool_id": id,
                     "session_id": app.current_session_id,
                 }),
+                id,
+                outcome,
             );
-            if let Err(error) = engine_handle.cancel_user_input(id.clone()).await {
-                tracing::warn!(%error, tool_id = %id, "stale-request resolution op rejected");
-            }
             true
         }
         _ => false,

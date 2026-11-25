@@ -1703,7 +1703,7 @@ async fn apply_command_result_inner(
                 // Session files can be large; this is the UI action path, so
                 // the read must not park a Tokio worker (blocking-call
                 // convention, #6149).
-                const MAX_LOAD_SESSION_BYTES: u64 = 256 * 1024 * 1024;
+                use crate::commands::contract::MAX_LOAD_SESSION_BYTES;
                 let read = async {
                     let len = tokio::fs::metadata(&path)
                         .await

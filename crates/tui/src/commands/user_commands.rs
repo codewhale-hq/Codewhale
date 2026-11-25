@@ -466,6 +466,18 @@ mod tests {
     }
 
     #[test]
+    fn invalid_utf8_command_file_is_skipped_not_loaded() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("valid.md"), "valid").unwrap();
+        std::fs::write(tmp.path().join("broken.md"), [0xff, 0xfe, 0x00, 0xc3]).unwrap();
+        let names: Vec<String> = load_command_entries_from_component(tmp.path())
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .collect();
+        assert_eq!(names, vec!["valid".to_string()]);
+    }
+
+    #[test]
     fn test_global_commands_dir_contains_codewhale_commands() {
         let dir = global_commands_dir();
         let parts: Vec<_> = dir

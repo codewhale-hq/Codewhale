@@ -915,7 +915,7 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
 
         let read_path = load_path.clone();
         run_owner_blocking(move || {
-            let content = std::fs::read_to_string(&read_path)
+            let content = read_session_file_capped(&read_path)
                 .map_err(|e| format!("Failed to read session file: {e}"))?;
             let _session: codewhale_engine::session_manager::SavedSession =
                 serde_json::from_str(&content)
@@ -1608,7 +1608,7 @@ fn plan_snapshot_to_sections(
 fn import_foreign_file(app: &mut App, path: &Path) -> Result<ResumeImportReceipt, String> {
     let read_path = path.to_path_buf();
     let container = run_owner_blocking(move || {
-        let content = std::fs::read_to_string(&read_path)
+        let content = read_session_file_capped(&read_path)
             .map_err(|e| format!("failed to read import file {}: {e}", read_path.display()))?;
         if let Ok(container) =
             codewhale_runtime::session_tree::SessionImportContainer::from_json(&content)
@@ -3116,13 +3116,42 @@ where
     }
 }
 
+pub(crate) const MAX_LOAD_SESSION_BYTES: u64 = 256 * 1024 * 1024;
+
+pub(crate) fn read_session_file_capped(path: &Path) -> Result<String, String> {
+    use std::io::Read as _;
+    let len = std::fs::metadata(path)
+        .map_err(|err| err.to_string())?
+        .len();
+    if len > MAX_LOAD_SESSION_BYTES {
+        return Err(format!(
+            "session file is {len} bytes, over the {MAX_LOAD_SESSION_BYTES}-byte load limit"
+        ));
+    }
+    let mut raw = String::new();
+    std::fs::File::open(path)
+        .map_err(|err| err.to_string())?
+        .take(MAX_LOAD_SESSION_BYTES + 1)
+        .read_to_string(&mut raw)
+        .map_err(|err| err.to_string())?;
+    if raw.len() as u64 > MAX_LOAD_SESSION_BYTES {
+        return Err(format!(
+            "session file is over the {MAX_LOAD_SESSION_BYTES}-byte load limit"
+        ));
+    }
+    Ok(raw)
+}
+
 /// Read the active config knobs for the installer (network policy, max size,
-/// registry URL). `Config::load` is cheap and `App` does not carry a `Config`;
-/// on parse failure we fall back to defaults so the user still gets a
-/// network-gated install rather than a silent crash. Mirrors
-/// `groups/skills/skills.rs::installer_settings`.
-fn installer_settings() -> (NetworkPolicy, u64, String) {
-    let cfg = codewhale_plugins::providers::load_config(None, None).unwrap_or_default();
+/// registry URL). `Config::load` is cheap and `App` does not carry a `Config`.
+/// A config that cannot be loaded refuses the mutation: defaults would drop
+/// the user's network policy, size cap and registry URL, the same refusal the
+/// Skills Manager path gives.
+fn installer_settings() -> Result<(NetworkPolicy, u64, String), String> {
+    let cfg = codewhale_plugins::providers::load_config(None, None).map_err(|err| {
+        tracing::warn!(error = %err, "skills config unavailable; refusing skill mutation");
+        format!("Skill mutation refused: config could not be loaded ({err:#})")
+    })?;
     let network = cfg
         .network
         .clone()
@@ -3135,7 +3164,7 @@ fn installer_settings() -> (NetworkPolicy, u64, String) {
     let registry_url = skills_cfg
         .and_then(|s| s.registry_url.clone())
         .unwrap_or_else(|| codewhale_skill_install::install::DEFAULT_REGISTRY_URL.to_string());
-    (network, max_size, registry_url)
+    Ok((network, max_size, registry_url))
 }
 
 /// Resolve the cache destination before loading settings or entering the network bridge.
@@ -3143,7 +3172,7 @@ fn sync_registry_to_cache(cache_dir: Option<PathBuf>) -> Result<SkillSyncOutcome
     use codewhale_skill_install::install::{SkillSyncOutcome as TuiSyncOutcome, SyncResult};
     let cache_dir =
         cache_dir.ok_or_else(|| "global skill mutations require a home directory".to_string())?;
-    let (network, max_size, registry_url) = run_owner_blocking(|| Ok(installer_settings()))?;
+    let (network, max_size, registry_url) = run_owner_blocking(installer_settings)?;
     let result = run_async(async move {
         codewhale_skill_install::install::sync_registry(
             &network,
@@ -3534,7 +3563,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
             portable_scope(scope).unwrap_or(codewhale_skills::mutation::SkillTargetScope::Global);
         let workspace = self.host.app.borrow().workspace.clone();
         let home = codewhale_paths::user_home();
-        let (network, max_size, registry_url) = run_owner_blocking(|| Ok(installer_settings()))?;
+        let (network, max_size, registry_url) = run_owner_blocking(installer_settings)?;
         let outcome = run_async(async move {
             let ctx = MutationContext {
                 workspace: &workspace,
@@ -3564,7 +3593,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
         use codewhale_skills::mutation::{MutationContext, SkillMutationRequest};
         let workspace = self.host.app.borrow().workspace.clone();
         let home = codewhale_paths::user_home();
-        let (network, max_size, registry_url) = run_owner_blocking(|| Ok(installer_settings()))?;
+        let (network, max_size, registry_url) = run_owner_blocking(installer_settings)?;
         let owned_name = name.to_string();
         let scope = portable_scope(scope);
         let outcome = run_async(async move {
@@ -3606,7 +3635,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
             expected_digest: None,
         };
         run_owner_blocking(move || {
-            let (network, max_size, registry_url) = installer_settings();
+            let (network, max_size, registry_url) = installer_settings()?;
             let ctx = MutationContext {
                 workspace: &workspace,
                 home: home.as_deref(),
@@ -3635,7 +3664,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
             expected_digest: None,
         };
         run_owner_blocking(move || {
-            let (network, max_size, registry_url) = installer_settings();
+            let (network, max_size, registry_url) = installer_settings()?;
             let ctx = MutationContext {
                 workspace: &workspace,
                 home: home.as_deref(),
@@ -3651,7 +3680,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
     }
 
     fn fetch_remote_registry(&mut self) -> Result<RemoteRegistryOutcome, String> {
-        let (network, _max_size, registry_url) = run_owner_blocking(|| Ok(installer_settings()))?;
+        let (network, _max_size, registry_url) = run_owner_blocking(installer_settings)?;
         let registry = run_async(async move {
             codewhale_skill_install::install::fetch_registry(&network, &registry_url).await
         });
@@ -3672,7 +3701,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
     }
 
     fn recommend_skills(&mut self, task: &str) -> Result<Vec<SkillRecommendation>, String> {
-        let (network, _max_size, registry_url) = run_owner_blocking(|| Ok(installer_settings()))?;
+        let (network, _max_size, registry_url) = run_owner_blocking(installer_settings)?;
         let registry = run_async(async move {
             codewhale_skill_install::install::fetch_registry(&network, &registry_url).await
         });
@@ -7902,6 +7931,20 @@ mod tests {
                 .load_session(bad.display().to_string().as_str())
                 .expect_err("invalid json");
             assert!(parse.contains("Failed to parse session file"), "{parse}");
+            let oversized = tmpdir.path().join("oversized.json");
+            std::fs::File::create(&oversized)
+                .unwrap()
+                .set_len(MAX_LOAD_SESSION_BYTES + 1)
+                .unwrap();
+            let limit = facet
+                .load_session(oversized.display().to_string().as_str())
+                .expect_err("oversized file");
+            assert!(
+                limit.contains(&format!(
+                    "over the {MAX_LOAD_SESSION_BYTES}-byte load limit"
+                )),
+                "{limit}"
+            );
             let resolved = facet
                 .load_session(save_path.display().to_string().as_str())
                 .expect("valid session resolves");

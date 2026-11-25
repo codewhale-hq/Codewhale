@@ -4977,6 +4977,48 @@ completion_sound = "bell"
     }
 
     #[test]
+    fn unparseable_config_reports_lookup_failure_not_unknown_setting() {
+        let temp_root = tempfile::tempdir().expect("isolated config dir");
+        let _guard = EnvGuard::new(temp_root.path());
+        let config_path = temp_root.path().join("custom-config.toml");
+        fs::write(&config_path, "search = [unterminated").unwrap();
+
+        let mut app = create_test_app();
+        app.config_path = Some(config_path);
+
+        let result = show_single_setting(&app, "search");
+        assert!(result.is_error, "{:?}", result.message);
+        let message = result.message.expect("lookup failure message");
+        assert!(message.contains("Failed to load config"), "{message}");
+        assert!(!message.contains("Unknown setting"), "{message}");
+    }
+
+    #[test]
+    fn allow_shell_reply_follows_the_ui_locale() {
+        let temp_root = tempfile::tempdir().expect("isolated config dir");
+        let _guard = EnvGuard::new(temp_root.path());
+        let config_path = temp_root.path().join("custom-config.toml");
+        fs::write(&config_path, "").unwrap();
+
+        let mut app = create_test_app();
+        app.config_path = Some(config_path);
+        let mut replies = Vec::new();
+        for locale in [
+            codewhale_localization::Locale::En,
+            codewhale_localization::Locale::ZhHans,
+        ] {
+            app.ui_locale = locale;
+            for value in ["true", "false"] {
+                let result = set_config_value(&mut app, "allow_shell", value, false);
+                assert!(!result.is_error, "{:?}", result.message);
+                replies.push(result.message.expect("allow_shell reply"));
+            }
+        }
+        assert_ne!(replies[0], replies[2]);
+        assert_ne!(replies[1], replies[3]);
+    }
+
+    #[test]
     fn config_command_shows_autodetected_tavily_key_source() {
         let temp_root = tempfile::tempdir().expect("isolated config dir");
         let _guard = EnvGuard::new(temp_root.path());
