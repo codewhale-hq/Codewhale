@@ -545,8 +545,7 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
             TAB_APPEARANCE,
             "display",
             "ConfigLabelTheme",
-            // Described by its shipped value list, not prose (`config_hint_for_key`).
-            "",
+            "ConfigHintTheme",
         ),
     ),
     def(
@@ -557,8 +556,7 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
             TAB_APPEARANCE,
             "display",
             "ConfigLabelLocale",
-            // Described by its shipped value list, not prose (`config_hint_for_key`).
-            "",
+            "ConfigHintLocale",
         ),
     ),
     def(
@@ -620,7 +618,7 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
         ui(
             TAB_APPEARANCE,
             "display",
-            "",
+            "ConfigLabelThinkingDefaultExpanded",
             "ConfigHintThinkingDefaultExpanded",
         ),
     ),
@@ -631,7 +629,7 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
         ui(
             TAB_APPEARANCE,
             "display",
-            "",
+            "ConfigLabelThinkingPreviewLines",
             "ConfigHintThinkingPreviewLines",
         ),
     ),
@@ -650,7 +648,12 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
         "help_expand_groups",
         SettingKind::Bool(ON_OFF),
         "false",
-        ui(TAB_APPEARANCE, "display", "", "ConfigHintHelpExpandGroups"),
+        ui(
+            TAB_APPEARANCE,
+            "display",
+            "ConfigLabelHelpExpandGroups",
+            "ConfigHintHelpExpandGroups",
+        ),
     ),
     def(
         "contextual_tips",
@@ -667,7 +670,12 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
         "pin_last_prompt",
         SettingKind::Bool(ON_OFF),
         "true",
-        ui(TAB_APPEARANCE, "display", "", "ConfigHintPinLastPrompt"),
+        ui(
+            TAB_APPEARANCE,
+            "display",
+            "ConfigLabelPinLastPrompt",
+            "ConfigHintPinLastPrompt",
+        ),
     ),
     def(
         "show_tool_details",
@@ -740,6 +748,28 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
             "display",
             "ConfigLabelToolCollapse",
             "ConfigHintToolCollapse",
+        ),
+    ),
+    def(
+        "low_motion",
+        SettingKind::Bool(LOW_MOTION),
+        "false",
+        ui(
+            TAB_APPEARANCE,
+            "motion",
+            "ConfigLabelLowMotion",
+            "ConfigHintLowMotion",
+        ),
+    ),
+    def(
+        "fancy_animations",
+        SettingKind::Bool(FANCY_ANIMATIONS),
+        "true",
+        ui(
+            TAB_APPEARANCE,
+            "motion",
+            "ConfigLabelFancyAnimations",
+            "ConfigHintFancyAnimations",
         ),
     ),
     // ── models & providers ──────────────────────────────────────────────
@@ -893,7 +923,12 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
         "rail_panel",
         SettingKind::Enum(RAIL_PANEL),
         "tasks",
-        ui(TAB_WORK, "workbar", "", "ConfigHintRailPanel"),
+        ui(
+            TAB_WORK,
+            "workbar",
+            "ConfigLabelRailPanel",
+            "ConfigHintRailPanel",
+        ),
     ),
     // Sidebar panel toggles; driven by view actions and startup flags, not rows.
     def("context_panel", SettingKind::Bool(ON_OFF), "false", None),
@@ -1108,12 +1143,7 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
         "notifications.completion_sound",
         SettingKind::Enum(NOTIFICATION_COMPLETION_SOUNDS),
         "off",
-        ui(
-            TAB_WORK,
-            "workflow",
-            "ConfigLabelNotificationCompletionSound",
-            "ConfigHintNotificationLegacy",
-        ),
+        None,
     ),
     def(
         "notifications.sound_file",
@@ -1130,23 +1160,13 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
         "notifications.event_sound.enabled",
         SettingKind::Bool(ON_OFF),
         "false",
-        ui(
-            TAB_WORK,
-            "workflow",
-            "ConfigLabelNotificationEventSoundEnabled",
-            "ConfigHintNotificationLegacy",
-        ),
+        None,
     ),
     def(
         "notifications.event_sound.events",
         SettingKind::String,
         "[\"turn-complete\", \"approval-needed\"]",
-        ui(
-            TAB_WORK,
-            "workflow",
-            "ConfigLabelNotificationEventSoundEvents",
-            "ConfigHintNotificationLegacy",
-        ),
+        None,
     ),
     def(
         "notifications.event_sound.min_interval_ms",
@@ -1163,12 +1183,7 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
         "notifications.event_sound.quiet",
         SettingKind::Bool(ON_OFF),
         "false",
-        ui(
-            TAB_WORK,
-            "workflow",
-            "ConfigLabelNotificationEventSoundQuiet",
-            "ConfigHintNotificationLegacy",
-        ),
+        None,
     ),
     // ── tools & MCP ─────────────────────────────────────────────────────
     def(
@@ -1321,29 +1336,6 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
             "ConfigHintTelemetry",
         ),
     ),
-    // ── motion ──────────────────────────────────────────────────────────
-    def(
-        "low_motion",
-        SettingKind::Bool(LOW_MOTION),
-        "false",
-        ui(
-            TAB_MOTION,
-            "display",
-            "ConfigLabelLowMotion",
-            "ConfigHintLowMotion",
-        ),
-    ),
-    def(
-        "fancy_animations",
-        SettingKind::Bool(FANCY_ANIMATIONS),
-        "true",
-        ui(
-            TAB_MOTION,
-            "display",
-            "ConfigLabelFancyAnimations",
-            "ConfigHintFancyAnimations",
-        ),
-    ),
     // ── advanced ────────────────────────────────────────────────────────
     def(
         "base_url",
@@ -1371,7 +1363,12 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
         "context_window",
         SettingKind::Int,
         "",
-        ui_diagnostic(TAB_ADVANCED, "provider", "", "ConfigHintContextWindow"),
+        ui_diagnostic(
+            TAB_ADVANCED,
+            "provider",
+            "ConfigLabelContextWindow",
+            "ConfigHintContextWindow",
+        ),
     ),
     def(
         "effective_context_window",
@@ -1380,7 +1377,7 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
         ui_diagnostic(
             TAB_ADVANCED,
             "provider",
-            "",
+            "ConfigLabelEffectiveContextWindow",
             "ConfigHintEffectiveContextWindow",
         ),
     ),
@@ -1393,7 +1390,7 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
         ui_diagnostic(
             TAB_ADVANCED,
             "provider",
-            "",
+            "ConfigLabelExternalCredentialsCodex",
             "ConfigHintExternalCredentials",
         ),
     ),
@@ -1404,7 +1401,7 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
         ui_diagnostic(
             TAB_ADVANCED,
             "provider",
-            "",
+            "ConfigLabelExternalCredentialsXai",
             "ConfigHintExternalCredentials",
         ),
     ),
@@ -1627,15 +1624,31 @@ mod tests {
             let ui = def.ui.as_ref().expect("schema_rows filters on ui");
             assert!(!ui.tab.is_empty(), "{} has an empty tab", def.key);
             assert!(!ui.group.is_empty(), "{} has an empty group", def.key);
-            // theme and locale are described by their shipped value lists,
-            // which the TUI composes at render time; no prose key exists.
-            if matches!(def.key, "theme" | "locale") {
-                continue;
+            if !def.key.starts_with("features.") {
+                assert!(!ui.label.is_empty(), "{} has an empty label", def.key);
             }
             assert!(
                 !ui.description.is_empty(),
                 "{} has a row but no sentence justifying it",
                 def.key
+            );
+        }
+        for key in ["low_motion", "fancy_animations"] {
+            let ui = setting(key)
+                .and_then(|def| def.ui.as_ref())
+                .expect("motion setting has ui");
+            assert_eq!(ui.tab, TAB_APPEARANCE);
+            assert_eq!(ui.group, "motion");
+        }
+        for key in [
+            "notifications.completion_sound",
+            "notifications.event_sound.enabled",
+            "notifications.event_sound.events",
+            "notifications.event_sound.quiet",
+        ] {
+            assert!(
+                setting(key).expect("legacy key exists").ui.is_none(),
+                "{key} should be hidden from the settings UI"
             );
         }
     }

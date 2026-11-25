@@ -2543,6 +2543,17 @@ pub enum MessageId {
     BehavioralTipTodoWrite,
     ConfigLabelContextualTips,
     ConfigHintContextualTips,
+    ConfigHintTheme,
+    ConfigHintLocale,
+    ConfigLabelThinkingDefaultExpanded,
+    ConfigLabelThinkingPreviewLines,
+    ConfigLabelHelpExpandGroups,
+    ConfigLabelPinLastPrompt,
+    ConfigLabelRailPanel,
+    ConfigLabelContextWindow,
+    ConfigLabelEffectiveContextWindow,
+    ConfigLabelExternalCredentialsCodex,
+    ConfigLabelExternalCredentialsXai,
     ContextualTipsNotSaved,
     // Live-route settings lock (#2982): refusals and startup-default receipts.
     SettingLockedDuringTurn,
@@ -5448,6 +5459,17 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::BehavioralTipTodoWrite,
     MessageId::ConfigLabelContextualTips,
     MessageId::ConfigHintContextualTips,
+    MessageId::ConfigHintTheme,
+    MessageId::ConfigHintLocale,
+    MessageId::ConfigLabelThinkingDefaultExpanded,
+    MessageId::ConfigLabelThinkingPreviewLines,
+    MessageId::ConfigLabelHelpExpandGroups,
+    MessageId::ConfigLabelPinLastPrompt,
+    MessageId::ConfigLabelRailPanel,
+    MessageId::ConfigLabelContextWindow,
+    MessageId::ConfigLabelEffectiveContextWindow,
+    MessageId::ConfigLabelExternalCredentialsCodex,
+    MessageId::ConfigLabelExternalCredentialsXai,
     MessageId::ContextualTipsNotSaved,
     MessageId::SettingLockedDuringTurn,
     MessageId::SettingSubjectMode,
@@ -8384,6 +8406,59 @@ mod tests {
                 assert!(
                     saw_text,
                     "{tag} width={width}: fixture produced an empty render"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn config_action_verbs_never_duplicate_enter_key_and_telemetry_avoids_repo_path() {
+        let new_keys = [
+            MessageId::ConfigHintTheme,
+            MessageId::ConfigHintLocale,
+            MessageId::ConfigLabelThinkingDefaultExpanded,
+            MessageId::ConfigLabelThinkingPreviewLines,
+            MessageId::ConfigLabelHelpExpandGroups,
+            MessageId::ConfigLabelPinLastPrompt,
+            MessageId::ConfigLabelRailPanel,
+            MessageId::ConfigLabelContextWindow,
+            MessageId::ConfigLabelEffectiveContextWindow,
+            MessageId::ConfigLabelExternalCredentialsCodex,
+            MessageId::ConfigLabelExternalCredentialsXai,
+        ];
+        for locale in Locale::shipped() {
+            for id in [
+                MessageId::ConfigActionEdit,
+                MessageId::ConfigActionChoose,
+                MessageId::ConfigActionToggle,
+            ] {
+                let text = tr(*locale, id);
+                assert!(
+                    !text.contains("Enter"),
+                    "{} {:?} still duplicates Enter: {text:?}",
+                    locale.tag(),
+                    id
+                );
+                let footer = format!("Enter {text}");
+                assert!(!footer.contains("Enter Enter"), "{footer:?}");
+            }
+            let notice = tr(*locale, MessageId::TelemetryNoticeDefaultOn);
+            assert!(
+                !notice.contains("docs/TELEMETRY.md"),
+                "{} still links repo-relative docs/TELEMETRY.md",
+                locale.tag()
+            );
+            assert!(
+                notice.contains("codewhale config telemetry"),
+                "{} missing codewhale config telemetry",
+                locale.tag()
+            );
+            for id in new_keys {
+                assert!(
+                    !tr(*locale, id).trim().is_empty(),
+                    "{} {:?} must be non-empty",
+                    locale.tag(),
+                    id
                 );
             }
         }
