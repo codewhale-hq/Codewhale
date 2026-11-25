@@ -425,10 +425,14 @@ pub(crate) fn handle_composer_mouse(app: &mut App, mouse: MouseEvent, now: Insta
                 };
                 // PRIMARY often contains this very selection. Insert at the
                 // pointer, preserving the selected original rather than cutting it.
-                app.selection_anchor = None;
-                app.cursor_position = position;
                 crate::tui::work_surface::release_focus(app);
-                app.insert_paste_text(&text);
+                crate::tui::paste::handle_paste(
+                    app,
+                    crate::tui::paste::PasteSource::Primary {
+                        text: &text,
+                        position,
+                    },
+                );
             }
             true
         }

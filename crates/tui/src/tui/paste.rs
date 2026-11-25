@@ -202,6 +202,10 @@ pub(crate) enum PasteSource<'a> {
     /// Only the release of Ctrl+V arrived: the terminal took the chord and
     /// delivers any text itself, so only an image is Codewhale's to attach.
     ReleaseOnly,
+    /// Middle-click on the composer under X11/Wayland: `text` is the PRIMARY
+    /// selection, inserted at the pointer's char index `position` and never
+    /// anywhere but the composer.
+    Primary { text: &'a str, position: usize },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -274,6 +278,15 @@ pub(crate) fn handle_paste(app: &mut App, source: PasteSource<'_>) -> bool {
             if target == PasteTarget::Composer {
                 request_clipboard(app, target, true, true);
             }
+            true
+        }
+        PasteSource::Primary { text, position } => {
+            if target != PasteTarget::Composer || app.pending_paste.is_some() {
+                return false;
+            }
+            app.selection_anchor = None;
+            app.cursor_position = position;
+            deliver_text(app, target, text);
             true
         }
     }
@@ -1365,5 +1378,52 @@ mod tests {
             app.insert_str(&rest);
         }
         assert_eq!(app.input, payload);
+    }
+}
+
+#[cfg(test)]
+mod primary_paste_tests {
+    use super::{PasteSource, PasteTarget, PendingPaste, handle_paste};
+    use std::time::Instant;
+
+    fn app() -> crate::tui::app::App {
+        crate::tui::test_support::test_app_with_options(crate::tui::test_support::test_tui_options(
+            std::env::temp_dir(),
+        ))
+    }
+
+    #[test]
+    fn primary_paste_lands_at_position_in_composer() {
+        let mut app = app();
+        app.input = "abc".into();
+        assert!(handle_paste(
+            &mut app,
+            PasteSource::Primary {
+                text: "X",
+                position: 1
+            }
+        ));
+        assert_eq!(app.input, "aXbc");
+    }
+
+    #[test]
+    fn primary_paste_is_refused_while_a_clipboard_read_is_pending() {
+        let mut app = app();
+        app.input = "abc".into();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        app.pending_paste = Some(PendingPaste {
+            target: PasteTarget::Composer,
+            image_only: false,
+            started: Instant::now(),
+            rx,
+        });
+        assert!(!handle_paste(
+            &mut app,
+            PasteSource::Primary {
+                text: "X",
+                position: 1
+            }
+        ));
+        assert_eq!(app.input, "abc");
     }
 }

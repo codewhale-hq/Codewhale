@@ -3160,27 +3160,8 @@ fn details_affordance_line(text: &str, style: Style) -> Line<'static> {
     ])
 }
 
-/// Truncate to `max_len` display cells, cutting only at grapheme-cluster
-/// boundaries. Counting chars let CJK text overflow a width budget and could
-/// split a ZWJ or combining sequence (U04-m5); ASCII output is unchanged.
 fn truncate_text(text: &str, max_len: usize) -> String {
-    use unicode_segmentation::UnicodeSegmentation;
-    if codewhale_tui_kit::ui_text::text_display_width(text) <= max_len {
-        return text.to_string();
-    }
-    let budget = max_len.saturating_sub(3);
-    let mut out = String::new();
-    let mut used = 0usize;
-    for grapheme in text.graphemes(true) {
-        let width = codewhale_tui_kit::ui_text::text_display_width(grapheme);
-        if used + width > budget {
-            break;
-        }
-        used += width;
-        out.push_str(grapheme);
-    }
-    out.push_str("...");
-    out
+    codewhale_tui_kit::ui_text::truncate_line_to_width(text, max_len)
 }
 
 /// Label glyph for an error cell. `Critical`/`Error` get the loudest marker;
@@ -4088,3 +4069,19 @@ pub(crate) fn apply_hot_tail_to_line(line: &mut Line<'static>, low_motion: bool)
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod truncate_text_tests {
+    use super::truncate_text;
+
+    #[test]
+    fn truncate_text_keeps_cjk_and_zwj_whole() {
+        let cjk = truncate_text("日本語のテキストです", 9);
+        assert_eq!(cjk, "日本語...");
+        let family = "a👨‍👩‍👧‍👦👨‍👩‍👧‍👦👨‍👩‍👧‍👦";
+        let out = truncate_text(family, 6);
+        let body = out.strip_suffix("...").expect("ellipsis");
+        assert_eq!(body.chars().filter(|c| *c == '\u{200d}').count(), 3);
+        assert!(family.starts_with(body));
+    }
+}

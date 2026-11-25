@@ -1089,13 +1089,13 @@ fn truncate_to_width(text: &str, width: usize) -> String {
     }
     let mut result = String::new();
     let mut used = 0;
-    for ch in text.chars() {
-        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + ch_width + 1 > width {
+    for grapheme in unicode_segmentation::UnicodeSegmentation::graphemes(text, true) {
+        let grapheme_width = codewhale_tui_kit::ui_text::grapheme_display_width(grapheme);
+        if used + grapheme_width + 1 > width {
             break;
         }
-        result.push(ch);
-        used += ch_width;
+        result.push_str(grapheme);
+        used += grapheme_width;
     }
     result.push('…');
     result
@@ -2704,4 +2704,18 @@ pub fn launch_motion_active(app: &App, obscured: bool, ambient_settled: bool) ->
             started.elapsed().as_millis() < codewhale_tui_kit::mark::REVEAL_MS
         });
     revealing || dissolving || water_alive
+}
+
+#[cfg(test)]
+mod truncate_to_width_tests {
+    use super::truncate_to_width;
+
+    #[test]
+    fn truncate_to_width_keeps_graphemes_whole() {
+        assert_eq!(truncate_to_width("日本語のテキスト", 8), "日本語…");
+        assert_eq!(
+            truncate_to_width("e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}", 4),
+            "e\u{301}e\u{301}e\u{301}…"
+        );
+    }
 }

@@ -3204,9 +3204,10 @@ fn push_model_id(models: &mut Vec<String>, model: &str) {
     if model.is_empty() {
         return;
     }
+    let reserved = model.eq_ignore_ascii_case("auto");
     if !models
         .iter()
-        .any(|existing| existing.eq_ignore_ascii_case(model))
+        .any(|existing| existing == model || (reserved && existing.eq_ignore_ascii_case("auto")))
     {
         models.push(model.to_string());
     }
@@ -7631,5 +7632,21 @@ api_key = "fixture-xai-key"
                 .iter()
                 .all(|row| row.external_agent.is_none())
         );
+    }
+}
+
+#[cfg(test)]
+mod push_model_id_tests {
+    use super::push_model_id;
+
+    #[test]
+    fn case_variant_model_ids_stay_listed_but_auto_stays_reserved() {
+        let mut models = Vec::new();
+        push_model_id(&mut models, "auto");
+        push_model_id(&mut models, "Auto");
+        push_model_id(&mut models, "Org/Model-A");
+        push_model_id(&mut models, "org/model-a");
+        push_model_id(&mut models, "org/model-a");
+        assert_eq!(models, ["auto", "Org/Model-A", "org/model-a"]);
     }
 }
