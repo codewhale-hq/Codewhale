@@ -3817,7 +3817,7 @@ where
             Some(step) => step,
             None => {
                 let mut guard = pool.lock().await;
-                admit(&mut *guard)?;
+                admit(&mut guard)?;
                 let step = guard
                     .begin_tool_call(name, &input, rules, decision, turn.take(), retry.take())
                     .await?;
@@ -3836,6 +3836,9 @@ where
             McpToolCallStep::Call(call) => call,
         };
         let outcome = call.run(decision).await;
+        if outcome.result.is_ok() {
+            return outcome.result;
+        }
         let mut guard = pool.lock().await;
         next = Some(guard.finish_tool_call(outcome, &input, decision).await?);
     }
@@ -3855,7 +3858,7 @@ where
     let mut turn: Option<McpCallTurn> = None;
     loop {
         let mut guard = pool.lock().await;
-        admit(&mut *guard)?;
+        admit(&mut guard)?;
         let step = guard
             .begin_delegated_read(expected, name, &input, rules, turn.take())
             .await?;
@@ -4641,6 +4644,10 @@ impl McpPool {
     }
 
     pub async fn reload_if_config_changed(&mut self) -> Result<bool> {
+        self.refresh_config_if_changed()
+    }
+
+    pub(crate) fn refresh_config_if_changed(&mut self) -> Result<bool> {
         self.reload_from_config_sources(ConfigRefresh::IfChanged)
     }
 
@@ -6876,6 +6883,7 @@ impl McpPool {
         }))
     }
 
+    #[cfg(test)]
     pub(crate) async fn call_delegated_read(
         &mut self,
         expected: &DelegatedMcpRead,
