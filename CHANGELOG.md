@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Runtime API rejects `dynamic_tools` that reuse a built-in tool name:** a thread or turn request whose dynamic tools take the name of a built-in tool (including the sub-agent, workflow and coordination tools), or repeat a name across namespaces, now fails with an error naming the tool instead of the tool being dropped silently. (#6559)
 - **Provider receipts list at most 8 omitted tool names:** a per-request receipt now carries a short sample of the tool names left out of the request plus an `omitted_tool_count`, not every name.
 - **The finance tool reports how old a quote is:** results include `quote_age_seconds` next to `market_time`, price changes Codewhale computes itself are rounded to six decimals (six significant digits below 1) while a change the provider sent is passed through, and a change value that is not a finite number is left out. (#6557)
-- **`load_skill` list honours `listing_max_description_chars`:** the list keeps a skill's trigger clause when it shortens a description, and the companion file list shows shallow files first and says how many files it left out. (#7432)
+- **`load_skill` list honours `listing_max_description_chars`:** the list keeps a skill's trigger clause when it shortens a description, and the companion file list keeps shallow files when it is cut off and says how many files it left out. (#7432)
 
 ### Fixed
 
