@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`/config` Pet mode row shows the value you just set:** toggling Pet mode now updates the row at once, and one `Ctrl+R` resets it; the view waits for the queued startup-default save before reading saved settings.
 - **`Space` on a non-boolean `/config` row no longer starts a blank search:** a Settings search can no longer begin with, or consist only of, whitespace.
-- **`/connect` filter matches the provider's name and id only:** typing `open` lists OpenAI, OpenRouter and other providers named that way, not every provider whose hidden base URL, protocol or default model contains the text.
+- **`/connect` filter no longer matches hidden fields:** typing `open` lists OpenAI, OpenRouter and other providers named that way, not every provider whose base URL or protocol contains the text. A model name still finds the provider that serves it when you type its beginning.
+- **A background job finishing no longer leaves a failed record on the session:** when a background shell job or sub-agent woke an idle session, that turn's usage was filed as a separate "Turn was not accepted" record, so the session showed a red stopped-early line and a Failed state after it was reopened. The usage now stays on the wake turn.
 
 ## [0.10.5] - 2026-11-24
 

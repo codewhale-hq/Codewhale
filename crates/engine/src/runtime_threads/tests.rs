@@ -27479,6 +27479,19 @@ async fn async_completion_wake_skips_cancelled_and_archived_threads() -> Result<
 }
 
 #[tokio::test]
+async fn wake_manager_shares_the_turn_accounting_origins() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let Some(wake) = manager.weak_wake_manager()() else {
+        bail!("the wake manager was not rebuilt while its owner is alive");
+    };
+    assert!(Arc::ptr_eq(
+        &manager.turn_accounting_origins,
+        &wake.turn_accounting_origins
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn async_completion_wake_waits_for_busy_turn_settlement_and_wakes_once() -> Result<()> {
     use crate::tools::subagent::{SubAgentManager, SubAgentStatus};
 

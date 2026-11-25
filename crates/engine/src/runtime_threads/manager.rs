@@ -7498,6 +7498,7 @@ impl RuntimeThreadManager {
         let config_admission = self.config_admission.clone();
         let engine_load = self.engine_load.clone();
         let shutdown_drain = self.shutdown_drain.clone();
+        let turn_accounting_origins = self.turn_accounting_origins.clone();
         let engine_workers = self.engine_workers.clone();
         let subagent_manager = self.subagent_manager.clone();
         let turn_monitors = self.turn_monitors.clone();
@@ -7579,7 +7580,7 @@ impl RuntimeThreadManager {
                 task_execution_lease: task_execution_lease.clone(),
                 automations: automations.clone(),
                 pending_approvals: pending_approvals.clone(),
-                turn_accounting_origins: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+                turn_accounting_origins: turn_accounting_origins.clone(),
                 grants: grants.clone(),
                 auto_review_blocks: auto_review_blocks.clone(),
                 provider_health: provider_health.clone(),
