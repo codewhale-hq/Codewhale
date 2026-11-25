@@ -6,7 +6,7 @@
 │  Language  auto                ‹ ›  ││
 │  Background  (default)         ✎    ││
 │  Pet mode  ○ Off                    ││
-│  Quiet transcript  ● On             │││
+│  Quiet transcript  ● On             ││
 │Theme: terminal                       │
 │Tab ⇆ · ↑↓ · Enter ↵ · Esc ×          │
 ╰──────────────────────────────────────╯
