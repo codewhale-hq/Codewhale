@@ -164,6 +164,11 @@ pub(crate) fn preset_router_config(
                 model: Some(model.to_string()),
                 timeout_secs: Some(JEV_TIMEOUT_SECS),
                 min_confidence: Some(codewhale_runtime::config::DEFAULT_AUTO_ROUTER_MIN_CONFIDENCE),
+                shadow_gate: config
+                    .auto
+                    .as_ref()
+                    .and_then(|auto| auto.router.as_ref())
+                    .and_then(|router| router.shadow_gate),
                 ..Default::default()
             }))
         }
@@ -240,6 +245,9 @@ pub(crate) fn persist_auto_router(
         }
         if let Some(min_confidence) = router.min_confidence {
             set_document_value(doc, &["auto", "router", "min_confidence"], min_confidence)?;
+        }
+        if let Some(shadow_gate) = router.shadow_gate {
+            set_document_value(doc, &["auto", "router", "shadow_gate"], shadow_gate)?;
         }
         Ok(())
     })?;
@@ -515,7 +523,8 @@ provider = \"deepseek\"    # decision: \"openrouter\" or \"typesafe\"\n\
 model = \"deepseek-flash\"\n\
 thinking = \"off\"         # chat routers only\n\
 timeout_secs = 4\n\
-# min_confidence = 0.5     # decision routers only\n\n\
+# min_confidence = 0.5     # decision routers only\n\
+# shadow_gate = true       # decision routers only: log the Decision Gate's recommendation\n\n\
 {}",
         tr(locale, MessageId::RouterCurrent).replace("{router}", &current),
         tr(locale, MessageId::RouterCustomHelpIntro),
@@ -982,6 +991,47 @@ mod tests {
         let reloaded: Config =
             toml::from_str(&std::fs::read_to_string(&path).expect("read back")).expect("reload");
         assert!(reloaded.auto.expect("[auto] kept").router.is_none());
+    }
+
+    #[test]
+    fn saving_the_decision_preset_keeps_shadow_gate() {
+        let _env = hermetic();
+        let dir = tempfile::tempdir().expect("config dir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[auto.router]\nkind = \"decision\"\nprovider = \"typesafe\"\nshadow_gate = true\n",
+        )
+        .expect("seed config");
+        let mut config = deepseek_with_openrouter_key(true);
+        config.auto = Some(codewhale_runtime::config::AutoConfig {
+            router: Some(AutoRouterConfig {
+                kind: Some("decision".to_string()),
+                shadow_gate: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let jev = preset_router_config(&config, RouterPreset::Jev(None), Locale::En)
+            .expect("jev")
+            .expect("table");
+        persist_auto_router(Some(&path), Some(&jev)).expect("persist jev");
+        let reloaded: Config =
+            toml::from_str(&std::fs::read_to_string(&path).expect("read back")).expect("reload");
+        let router = reloaded.auto.and_then(|auto| auto.router).expect("router");
+        assert_eq!(router.shadow_gate, Some(true));
+
+        let fast = AutoRouterConfig {
+            kind: Some("chat".to_string()),
+            provider: Some("deepseek".to_string()),
+            model: Some("deepseek-v4-flash".to_string()),
+            ..Default::default()
+        };
+        persist_auto_router(Some(&path), Some(&fast)).expect("persist chat");
+        let reloaded: Config =
+            toml::from_str(&std::fs::read_to_string(&path).expect("read back")).expect("reload");
+        let router = reloaded.auto.and_then(|auto| auto.router).expect("router");
+        assert_eq!(router.shadow_gate, None);
     }
 
     #[test]

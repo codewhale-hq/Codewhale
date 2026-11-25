@@ -103,7 +103,7 @@ pub enum ShadowOutcome {
 pub fn removed_env_notice(lookup: impl Fn(&str) -> Option<String>) -> Option<String> {
     let set: Vec<&str> = REMOVED_ENV_VARS
         .into_iter()
-        .filter(|name| lookup(*name).is_some_and(|value| !value.trim().is_empty()))
+        .filter(|name| lookup(name).is_some_and(|value| !value.trim().is_empty()))
         .collect();
     (!set.is_empty()).then(|| {
         format!(
