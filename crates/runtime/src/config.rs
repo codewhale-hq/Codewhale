@@ -1418,6 +1418,11 @@ pub struct AutoRouterConfig {
     /// the configured OpenRouter base URL.
     #[serde(default)]
     pub base_url: Option<String>,
+    /// Decision routers only: `true` appends the shadow Decision Gate's three
+    /// questions to the router's own request (#6603). The recommendation is
+    /// logged, never acted on. Replaces the removed `SUPERFAST_*` variables.
+    #[serde(default)]
+    pub shadow_gate: Option<bool>,
 }
 
 /// `[auto.router] kind` (#6525).
@@ -3604,6 +3609,19 @@ impl Config {
             .filter(|value| value.is_finite())
             .unwrap_or(DEFAULT_AUTO_ROUTER_MIN_CONFIDENCE)
             .clamp(0.0, 1.0)
+    }
+
+    /// Whether the shadow Decision Gate rides the decision router's request:
+    /// `[auto.router] shadow_gate = true` on a `kind = "decision"` router.
+    #[must_use]
+    pub fn auto_router_shadow_gate(&self) -> bool {
+        self.auto
+            .as_ref()
+            .and_then(|a| a.router.as_ref())
+            .is_some_and(|r| {
+                r.shadow_gate == Some(true)
+                    && AutoRouterKind::parse(r.kind.as_deref()) == Some(AutoRouterKind::Decision)
+            })
     }
 
     #[must_use]

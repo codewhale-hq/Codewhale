@@ -915,38 +915,38 @@ min_confidence = 0.5          # default 0.5, clamped to 0..1
 
 #### Shadow Decision Gate (experimental, off by default)
 
-The Superfast Decision Gate asks a decision model three typed questions about
-the latest user message — does it need a tool, can it be answered from the
-conversation, and what is its intent — and logs a conservative recommendation.
-It is shadow-only: it never changes routing, never skips or delays the model
-call, and fails open on any error, timeout or malformed answer. It uses the same
-System One client as the decision router above; there is no separate HTTP
-client. It is configured from the environment and reads it when a turn starts:
+The Superfast Decision Gate asks the decision model three more typed questions
+about the turn — does it need a tool, can it be answered from the conversation,
+and what is its intent — and logs a conservative recommendation. It is an option
+of the decision router above, not a second call:
 
-```sh
-SUPERFAST_ENABLED=1              # off unless set
-SUPERFAST_PROVIDER=typesafe      # or openrouter; required when enabled
-SUPERFAST_BASE_URL=http://localhost:8000/v1  # optional TypeSafe-route base, e.g. self-hosted
-SUPERFAST_MODEL=jev-latest       # default jev-latest / ~typesafe/jev-latest
-SUPERFAST_TIMEOUT_MS=150         # 1..=10000, default 150
+```toml
+[auto.router]
+kind = "decision"
+provider = "openrouter"
+model = "typesafe/jev-1.13"
+shadow_gate = true            # default off; decision routers only
 ```
 
-- Enabling the gate never picks an endpoint by itself: without
-  `SUPERFAST_PROVIDER` nothing is sent and a warning is logged.
-- The key comes from the same place the decision router reads it. The TypeSafe
-  route always authenticates, so a self-hosted server that ignores auth still
-  needs a placeholder `TYPESAFE_API_KEY`.
-- Only the latest user message is sent, truncated to 4,000 characters and
-  redacted of configured secrets. The log (target `superfast`) carries the
-  route, failure class and latency, never prompt text.
-- The gate retains the originating turn's accounting owner and cancellation.
-  Its tokens settle through the shared ledger; missing usage or a cancelled/timed
-  out request after dispatch creates an explicit coverage gap. Unknown TypeSafe
-  pricing is recorded as unpriced rather than free.
-- Provider-reported cost survives rejected answers and late responses in bounded
-  receipts on the originating turn or session. These are diagnostic evidence;
-  unknown pricing never becomes an authoritative dollar total. Incomplete token
-  counters record a coverage gap while preserving the reported raw evidence.
+- The gate's questions ride the router's own request, so it uses the router's
+  route, key, model, `base_url` and `timeout_secs`, runs only when the router
+  runs (Auto model mode with a runnable strong/fast pair), and adds no second
+  request.
+- It is shadow-only: the recommendation never changes routing. It is logged
+  under the `superfast` target with the route, failure class and latency, never
+  prompt text, and kept as one shadow decision receipt on the originating turn
+  or session. Tokens settle once, through the router's usage record.
+- It fails open with the router: a timeout, error or rejected answer is the
+  gate's failure class too. The shared client validates every offered question,
+  so a decision server that cannot answer the gate's questions fails the
+  router's answer as well and the turn takes the local fallback.
+- `shadow_gate = true` on a `kind = "chat"` router leaves the router
+  unconfigured and shown as failing.
+- The `SUPERFAST_ENABLED`, `SUPERFAST_PROVIDER`, `SUPERFAST_BASE_URL`,
+  `SUPERFAST_MODEL` and `SUPERFAST_TIMEOUT_MS` environment variables are no
+  longer read. Setting any of them logs one warning naming this key; move the
+  route, model and base URL into `[auto.router]`. The separate 150 ms deadline
+  is gone: the gate waits exactly as long as the router does.
 
 The wire contracts are documented in [TypeSafe's OpenAPI schema](https://api.typesafe.ai/openapi.json)
 and [OpenRouter's Decisions examples](https://openrouter.ai/blog/insights/what-is-jev/).

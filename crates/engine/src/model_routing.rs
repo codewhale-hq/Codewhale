@@ -1603,7 +1603,8 @@ const DECISION_THINKING_OPTIONS: [&str; 3] = ["off", "high", "max"];
 pub const COST_SAVING_STRONG_MIN_BP: u16 = 7_500;
 
 /// The System One request: one `tier` choice and one `thinking` choice over
-/// the same redacted, bounded state.
+/// the same redacted, bounded state, plus the shadow Decision Gate's questions
+/// when `[auto.router] shadow_gate = true`.
 fn decision_request_body(
     client: &CodewhaleClient,
     model: &str,
@@ -1611,13 +1612,14 @@ fn decision_request_body(
     recent_context: &str,
     session_mode: &str,
     selected_thinking_mode: &str,
+    shadow_gate: bool,
 ) -> serde_json::Value {
     let recent_context = if recent_context.trim().is_empty() {
         "No prior context."
     } else {
         recent_context
     };
-    serde_json::json!({
+    let mut body = serde_json::json!({
         "model": model,
         "state": {
             "session_mode": client.redact_model_bound_text(session_mode),
@@ -1645,7 +1647,15 @@ fn decision_request_body(
                 },
             },
         },
-    })
+    });
+    if shadow_gate
+        && let Some(questions) = body
+            .get_mut("questions")
+            .and_then(serde_json::Value::as_object_mut)
+    {
+        questions.extend(crate::superfast::gate_questions());
+    }
+    body
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1673,12 +1683,17 @@ async fn auto_route_decision_recommendation(
     let base_url = inventory.router_base_url.clone();
     #[cfg(any(test, feature = "test-support"))]
     let ticket = crate::test_support::env_scope_ticket();
-    let client = tokio::task::spawn_blocking(move || {
+    let shadow_gate = config.auto_router_shadow_gate();
+    let built = tokio::task::spawn_blocking(move || {
         #[cfg(any(test, feature = "test-support"))]
         let _membership = crate::test_support::join_env_scope(ticket);
         CodewhaleClient::for_decision_route(&decision_config, route, base_url.as_deref())
     })
-    .await??;
+    .await;
+    if shadow_gate && !matches!(built, Ok(Ok(_))) {
+        crate::superfast::record_shadow_failure(AutoRouterFailure::NotRunnable, 0);
+    }
+    let client = built??;
     let body = decision_request_body(
         &client,
         &inventory.router_model,
@@ -1686,6 +1701,7 @@ async fn auto_route_decision_recommendation(
         recent_context,
         session_mode,
         selected_thinking_mode,
+        shadow_gate,
     );
     // Both transports enter the existing usage ledger. TypeSafe carries its
     // own Custom/Unknown identity; no chat price or zero-cost claim is inherited.
@@ -1705,6 +1721,25 @@ async fn auto_route_decision_recommendation(
         Ok(Err(failure)) => (None, Some(failure)),
         Err(_) => (None, Some(AutoRouterFailure::Timeout)),
     };
+    if shadow_gate {
+        match response.as_ref() {
+            Some(response) => {
+                crate::superfast::record_shadow_response(
+                    response,
+                    latency_ms,
+                    &request_route,
+                    &accounting_source,
+                )
+                .await;
+            }
+            None => {
+                crate::superfast::record_shadow_failure(
+                    failure.unwrap_or(AutoRouterFailure::Transport),
+                    latency_ms,
+                );
+            }
+        }
+    }
     if response.is_none() && wire.transmissions.is_empty() {
         return Ok(InventoryAutoRouteAttempt::failed(
             failure.unwrap_or(AutoRouterFailure::Transport),
@@ -3754,6 +3789,124 @@ mod decision_router_tests {
                     }
                 }
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn shadow_gate_questions_ride_the_one_router_request() {
+        let _env = hermetic_env();
+        let server = MockServer::start().await;
+        let mut answers = answer_body(0.82, 0.64);
+        answers["answers"]["needs_tool"] = serde_json::json!({ "type": "noul", "noul": 0.93 });
+        answers["answers"]["answerable_from_context"] =
+            serde_json::json!({ "type": "noul", "noul": 0.1 });
+        answers["answers"]["intent"] = serde_json::json!({
+            "type": "choice",
+            "choice": "code_change",
+            "probabilities": {
+                "code_change": 0.9, "code_question": 0.04, "command": 0.03,
+                "chat": 0.02, "other": 0.01
+            },
+            "confidence": 0.8,
+        });
+        Mock::given(method("POST"))
+            .and(path("/api/alpha/decisions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(answers))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut config = decision_config(&format!("{}/api/v1", server.uri()), false, 2);
+        config
+            .auto
+            .as_mut()
+            .and_then(|auto| auto.router.as_mut())
+            .expect("router table")
+            .shadow_gate = Some(true);
+        assert!(config.auto_router_shadow_gate());
+
+        let decisions = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let decision_sink = decisions.clone();
+        let origin = crate::cost_status::NativeUsageOrigin::captured_runtime_with_sinks(
+            crate::cost_status::scope_token(),
+            "shadow-gate-owner".to_string(),
+            std::sync::Arc::new(|_record: crate::cost_status::RuntimeUsageRecord| true),
+            None,
+            Some(std::sync::Arc::new(
+                move |receipt: crate::cost_status::RuntimeDecisionReceipt| {
+                    decision_sink.lock().expect("decision sink").push(receipt);
+                    true
+                },
+            )),
+        );
+        let source = crate::cost_status::NativeUsageSource::capture_with_origin(
+            "auto-router:shadow-gate-test",
+            crate::cost_status::UsageSpendOwner::Auxiliary,
+            Some(origin),
+        );
+        let inventory = ModelInventory::from_config(&config).unwrap();
+        let selection = auto_route_via_router(
+            &config,
+            &inventory,
+            "Refactor the parser across files",
+            "",
+            "agent",
+            "auto",
+            "auto",
+            false,
+            Some(source),
+        )
+        .await
+        .expect("router answers");
+        assert_eq!(
+            selection.model, "deepseek-v4-pro",
+            "the gate never changes the route"
+        );
+
+        let requests: Vec<Request> = server.received_requests().await.expect("recorded");
+        assert_eq!(requests.len(), 1, "one call carries both question sets");
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        let questions: Vec<&str> = body["questions"]
+            .as_object()
+            .expect("questions")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            questions,
+            [
+                "tier",
+                "thinking",
+                "needs_tool",
+                "answerable_from_context",
+                "intent"
+            ]
+        );
+        let receipts = decisions.lock().expect("decision receipts");
+        assert_eq!(receipts.len(), 1);
+        assert!(receipts[0].shadow && receipts[0].valid_answers);
+        assert_eq!(receipts[0].evidence.choice, "code_change");
+    }
+
+    #[test]
+    fn shadow_gate_is_a_decision_router_option_only() {
+        let _env = hermetic_env();
+        let mut config = decision_config("https://openrouter.invalid/api/v1", false, 2);
+        assert!(!config.auto_router_shadow_gate(), "off unless written down");
+        let router = config
+            .auto
+            .as_mut()
+            .and_then(|auto| auto.router.as_mut())
+            .expect("router table");
+        router.shadow_gate = Some(true);
+        router.kind = Some("chat".to_string());
+        router.provider = Some("deepseek".to_string());
+        router.model = Some("deepseek-v4-flash".to_string());
+        assert!(!config.auto_router_shadow_gate());
+        let inventory = ModelInventory::from_config(&config).unwrap();
+        assert!(!inventory.router_available);
+        assert_eq!(
+            inventory.router_setup_issue,
+            Some(crate::model_inventory::AutoRouterSetupIssue::ShadowGateNeedsDecision)
         );
     }
 

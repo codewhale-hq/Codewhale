@@ -446,6 +446,26 @@ min_confidence = 0.5          # 默认 0.5,限制在 0..1
 - 未知的 `kind`,或决策路由器的 `provider` 不是 `openrouter` / `typesafe`,会让路由器处于未配置状态并显示为 failing。
 - 决策路由器忽略 `thinking`。OpenRouter 的花费像其他路由用量一样记录；TypeSafe 直连的花费只显示在回执上。
 
+#### 影子决策门(实验性，默认关闭)
+
+Superfast 决策门向决策模型多提三个有类型的问题——这一回合是否需要工具、能否从对话中直接回答、意图是什么——并记录一条保守的建议。它是上述决策路由器的一个选项，不是第二次调用：
+
+```toml
+[auto.router]
+kind = "decision"
+provider = "openrouter"
+model = "typesafe/jev-1.13"
+shadow_gate = true            # 默认关闭；仅用于决策路由器
+```
+
+- 决策门的问题随路由器自己的请求一起发出，因此使用路由器的路由、key、模型、`base_url` 和 `timeout_secs`,只在路由器运行时运行(Auto 模型模式且有可运行的 strong/fast 档位对),不产生第二个请求。
+- 它只是影子模式：建议不会改变路由。日志目标为 `superfast`,只包含路由、失败类别和延迟，不包含提示文本；同时在发起的回合或会话上保留一条影子决策回执。token 只通过路由器的用量记录结算一次。
+- 它与路由器一起失败放行：超时、错误或被拒绝的回答同样是决策门的失败类别。共享客户端会校验每一个提出的问题，所以无法回答决策门问题的决策服务器也会让路由器的回答失败，回合走本地回退。
+- 在 `kind = "chat"` 的路由器上设置 `shadow_gate = true` 会让路由器处于未配置状态并显示为 failing。
+- 环境变量 `SUPERFAST_ENABLED`、`SUPERFAST_PROVIDER`、`SUPERFAST_BASE_URL`、`SUPERFAST_MODEL` 和 `SUPERFAST_TIMEOUT_MS` 不再被读取。设置其中任何一个都会记录一条指向此键的警告；请把路由、模型和 base URL 写入 `[auto.router]`。单独的 150 ms 截止时间已取消：决策门等待的时间与路由器完全相同。
+
+决策门的概念和参考实现来自 Andrea Bruno,以 CC BY 4.0 发布：[harness-superfast](https://github.com/Andrea-Bruno/harness-superfast)。
+
 有两个 `[auto]` 键会影响路由（`crates/tui/src/config.rs` 中的 `AutoConfig`）：
 
 ```toml
