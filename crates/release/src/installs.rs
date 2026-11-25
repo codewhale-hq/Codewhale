@@ -317,7 +317,11 @@ fn classify(
     if method == InstallMethod::DesktopApp {
         return Some(InstallClass::AppBundle);
     }
-    if !method.supports_self_update() {
+    if !method.supports_self_update()
+        && (method != InstallMethod::Cargo
+            || meta.is_symlink()
+            || cargo_record_lists(path, name) == Some(true))
+    {
         return Some(InstallClass::PackageManaged(method));
     }
     if meta.is_symlink() {
@@ -1626,5 +1630,49 @@ mod cargo_record_tests {
         let (method, class) = agree(&exe);
         assert!(method.supports_self_update());
         assert!(!matches!(class, Some(InstallClass::PackageManaged(_))));
+    }
+
+    #[test]
+    fn cargo_owns_only_the_names_its_record_lists_in_the_inventory() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(
+            root.path().join(".crates.toml"),
+            b"[v1]\n\"codewhale-cli 0.10.5 (registry+https://github.com/rust-lang/crates.io-index)\" = [\"codewhale\"]\n",
+        )
+        .unwrap();
+        let listed = bin.join("codewhale");
+        let backup = bin.join("codewhale.bak-1");
+        let staging = bin.join(".codewhale-update-1");
+        fs::write(&listed, b"binary").unwrap();
+        fs::write(&backup, b"binary").unwrap();
+        fs::create_dir(&staging).unwrap();
+        assert_eq!(
+            classify(&listed, "codewhale", None, None),
+            Some(InstallClass::PackageManaged(InstallMethod::Cargo))
+        );
+        for (path, name) in [
+            (&backup, "codewhale.bak-1"),
+            (&staging, ".codewhale-update-1"),
+        ] {
+            assert!(
+                !matches!(
+                    classify(path, name, None, None),
+                    Some(InstallClass::PackageManaged(_))
+                ),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn cargo_bin_without_a_record_is_judged_by_name_in_the_inventory() {
+        let (_root, exe) = cargo_bin(|_| {});
+        assert_eq!(InstallMethod::detect(&exe), InstallMethod::Cargo);
+        assert!(!matches!(
+            classify(&exe, "codewhale", None, None),
+            Some(InstallClass::PackageManaged(_))
+        ));
     }
 }
