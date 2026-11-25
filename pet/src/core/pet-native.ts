@@ -116,11 +116,14 @@ export class PetNative {
     const next = this.engine.clone(); next.observe(JSON.parse(metadataJSON), timeMs);
     this.prepareExpression(next.activity(this.world.frame.timeMs)); this.engine = next;
   }
-  observeEngineBatch(metadataJSON: string, timeMs: number): void {
+  observeEngineBatch(metadataJSON: string, timeMs: number, agesJSON = '[]'): void {
     const events: unknown = JSON.parse(metadataJSON);
+    const ages: unknown = JSON.parse(agesJSON);
     if (!Array.isArray(events) || events.length > 64) throw new Error('Invalid Engine batch.');
+    if (!Array.isArray(ages) || ages.length && ages.length !== events.length
+      || ages.some(age => typeof age !== 'number' || !Number.isFinite(age) || age < 0)) throw new Error('Invalid Engine batch ages.');
     const next = this.engine.clone();
-    for (const event of events) next.observe(event, timeMs);
+    events.forEach((event, i) => next.observeAged(event, timeMs, ages[i] ?? 0));
     this.prepareExpression(next.activity(this.world.frame.timeMs));
     this.engine = next;
   }

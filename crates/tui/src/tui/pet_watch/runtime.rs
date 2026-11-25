@@ -409,7 +409,12 @@ fn run(receiver: mpsc::Receiver<Observed>, gap: Arc<AtomicBool>) {
                     Ok(Some(value)) => serde_json::to_string(&value)
                         .ok()
                         .filter(|text| text.len() <= 16_384)
-                        .is_some_and(|text| current.batch.push(&text).is_ok_and(|fits| fits)),
+                        .is_some_and(|text| {
+                            current
+                                .batch
+                                .push(&text, Instant::now())
+                                .is_ok_and(|fits| fits)
+                        }),
                     Ok(None) => true,
                     Err(()) => false,
                 };
