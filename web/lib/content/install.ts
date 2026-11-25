@@ -17,7 +17,6 @@ export const INSTALL_PAGE_COMMANDS = {
   pathManualZsh: "echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.zshrc",
   version: "codewhale --version",
   telemetryOff: "codewhale config set telemetry false",
-  installTelemetryOff: "curl -fsSL https://codewhale.net/install.sh | CODEWHALE_TELEMETRY=0 sh",
   update: "codewhale update",
   uninstall: "codewhale uninstall --yes",
   removeFiles: "rm -f ~/.local/bin/codewhale ~/.local/bin/codew ~/.local/bin/.codewhale-install.sha256",
