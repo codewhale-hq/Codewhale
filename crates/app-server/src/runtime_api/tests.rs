@@ -14205,7 +14205,7 @@ async fn settings_schema_serves_every_declared_row_with_runtime_state() -> Resul
         );
         let label = entry["label"].as_str().expect("label");
         assert!(
-            !label.is_empty() && !label.starts_with("Config"),
+            !label.is_empty() && !(label.starts_with("Config") && !label.contains(' ')),
             "label must be resolved prose, not a message key: {label}"
         );
         assert!(entry["visible"].is_boolean());

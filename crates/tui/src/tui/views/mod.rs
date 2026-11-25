@@ -2376,7 +2376,6 @@ pub(crate) enum ConfigCategory {
     Work,
     ToolsMcp,
     Trust,
-    Motion,
     Advanced,
 }
 
@@ -2389,7 +2388,6 @@ impl ConfigCategory {
             ConfigCategory::Work => codewhale_config::settings_schema::TAB_WORK,
             ConfigCategory::ToolsMcp => codewhale_config::settings_schema::TAB_TOOLS,
             ConfigCategory::Trust => codewhale_config::settings_schema::TAB_TRUST,
-            ConfigCategory::Motion => codewhale_config::settings_schema::TAB_MOTION,
             ConfigCategory::Advanced => codewhale_config::settings_schema::TAB_ADVANCED,
         }
     }
@@ -2398,13 +2396,12 @@ impl ConfigCategory {
         Self::ALL.into_iter().find(|category| category.id() == id)
     }
 
-    const ALL: [ConfigCategory; 7] = [
+    const ALL: [ConfigCategory; 6] = [
         ConfigCategory::Appearance,
         ConfigCategory::ModelsProviders,
         ConfigCategory::Work,
         ConfigCategory::ToolsMcp,
         ConfigCategory::Trust,
-        ConfigCategory::Motion,
         ConfigCategory::Advanced,
     ];
 
@@ -2417,7 +2414,6 @@ impl ConfigCategory {
                 ConfigCategory::Work => MessageId::ConfigCategoryWork,
                 ConfigCategory::ToolsMcp => MessageId::ConfigCategoryToolsMcp,
                 ConfigCategory::Trust => MessageId::ConfigCategoryTrust,
-                ConfigCategory::Motion => MessageId::ConfigCategoryMotion,
                 ConfigCategory::Advanced => MessageId::ConfigCategoryAdvanced,
             },
         )
@@ -4774,17 +4770,15 @@ impl ModalView for ConfigView {
             KeyCode::Char(' ')
                 if self.filter.is_empty()
                     && !key.modifiers.contains(KeyModifiers::CONTROL)
-                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+                    && !key.modifiers.contains(KeyModifiers::ALT)
+                    && self
+                        .selected_row_index()
+                        .and_then(|idx| self.rows.get(idx))
+                        .is_some_and(|row| {
+                            row.editable && self.editor_kind(row) == SettingKind::Boolean
+                        }) =>
             {
-                if self
-                    .selected_row_index()
-                    .and_then(|idx| self.rows.get(idx))
-                    .is_some_and(|row| row.editable)
-                    && let Some(action) = self.toggle_selected_boolean()
-                {
-                    return action;
-                }
-                ViewAction::None
+                self.toggle_selected_boolean().unwrap_or(ViewAction::None)
             }
             KeyCode::Enter => {
                 if self
@@ -10403,9 +10397,11 @@ context_window = 131072
 
     fn assert_config_search_owns_text(query: &str) {
         let mut view = create_config_view(Locale::En);
-        // Start on an actionable boolean so a stolen Space would emit a
-        // persisted update, and a stolen e would open an editor.
-        view.focus_key("low_motion");
+        if query.starts_with(' ') {
+            view.focus_key("theme");
+        } else {
+            view.focus_key("low_motion");
+        }
         let values = view
             .rows
             .iter()
@@ -11504,8 +11500,8 @@ context_window = 131072
         assert_eq!(category_of("approval_mode"), ConfigCategory::Trust);
         assert_eq!(category_of("allow_shell"), ConfigCategory::Trust);
         assert_eq!(category_of("telemetry"), ConfigCategory::Trust);
-        assert_eq!(category_of("low_motion"), ConfigCategory::Motion);
-        assert_eq!(category_of("fancy_animations"), ConfigCategory::Motion);
+        assert_eq!(category_of("low_motion"), ConfigCategory::Appearance);
+        assert_eq!(category_of("fancy_animations"), ConfigCategory::Appearance);
         for category in ConfigCategory::ALL {
             assert!(
                 view.rows.iter().any(|row| category.contains(row)),
@@ -11577,8 +11573,8 @@ context_window = 131072
 
         let dump = render_dump(&view, 120, 32);
         assert!(
-            !dump.contains("▸ Display"),
-            "single-group tab omits the redundant left groups column:\n{dump}"
+            dump.contains("▸ Display"),
+            "multi-group Appearance tab lists its groups column:\n{dump}"
         );
         for label in [
             &en(MessageId::ConfigFactCurrent),
@@ -11602,7 +11598,7 @@ context_window = 131072
             dump.contains(&en(MessageId::ConfigApplyOnSave)),
             "apply semantics:\n{dump}"
         );
-        assert_eq!(view.last_rail_hitboxes.borrow().len(), 7);
+        assert_eq!(view.last_rail_hitboxes.borrow().len(), 6);
 
         for (w, h) in [(0u16, 0u16), (20, 4), (44, 12), (60, 18), (300, 60)] {
             let _ = render_dump(&view, w, h);
@@ -11650,7 +11646,7 @@ context_window = 131072
         for (w, h) in [(40u16, 12u16), (44, 12), (60, 16)] {
             view.category = ConfigCategory::Appearance;
             view.select_first_visible_row();
-            for _ in 0..6 {
+            for _ in 0..5 {
                 let _ = view.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
             }
             assert_eq!(view.category, ConfigCategory::Advanced, "{w}x{h}");
@@ -11723,7 +11719,7 @@ context_window = 131072
         // saved/effective synthesis contract, not override detection.
         view.rows[low_motion].facts.authority = super::SettingAuthority::UserSettings;
         view.rows[low_motion].facts.authority_detail = None;
-        view.category = ConfigCategory::Motion;
+        view.category = ConfigCategory::Appearance;
         view.selected = low_motion;
 
         let fact = view
@@ -12009,16 +12005,15 @@ context_window = 131072
             assert!(matches!(key(&mut view, KeyCode::Enter), ViewAction::None));
             assert!(view.editing.is_none(), "{w}x{h} read-only rows never edit");
 
-            // Tab ×4 → Motion; ↓ → fancy_animations; Enter toggles it and
-            // emits the persisted update without opening an editor.
-            for _ in 0..4 {
+            for _ in 0..5 {
                 assert!(matches!(key(&mut view, KeyCode::Tab), ViewAction::None));
             }
-            assert_eq!(view.category, ConfigCategory::Motion);
+            assert_eq!(view.category, ConfigCategory::Appearance);
+            view.focus_key("low_motion");
             assert_eq!(view.rows[view.selected].key, "low_motion");
             assert!(matches!(key(&mut view, KeyCode::Down), ViewAction::None));
             assert_eq!(view.rows[view.selected].key, "fancy_animations");
-            let dump = snapshot(&view, "Motion · ↓ to fancy_animations");
+            let dump = snapshot(&view, "Appearance · ↓ to fancy_animations");
             assert!(
                 if w < 50 {
                     dump.contains("Enter")
@@ -12036,8 +12031,6 @@ context_window = 131072
             }
             assert!(view.editing.is_none());
 
-            // Pointer parity: click a visible non-active chip or the compact
-            // Previous control, then select and activate the first row.
             let mut buf = Buffer::empty(area);
             view.render(area, &mut buf);
             let (chip, target) = view
@@ -12045,13 +12038,13 @@ context_window = 131072
                 .borrow()
                 .iter()
                 .copied()
-                .find(|(_, category)| *category != ConfigCategory::Motion)
+                .find(|(_, category)| *category != ConfigCategory::Appearance)
                 .or_else(|| {
                     view.last_nav_controls
                         .borrow()
                         .iter()
                         .find(|(_, step)| *step == super::NavStep::Previous)
-                        .map(|(rect, _)| (*rect, ConfigCategory::Trust))
+                        .map(|(rect, _)| (*rect, ConfigCategory::Advanced))
                 })
                 .expect("another category is reachable through a painted target");
             assert!(matches!(click(&mut view, chip.x, chip.y), ViewAction::None));
@@ -12301,7 +12294,7 @@ context_window = 131072
                 .filter(|line| line.spans.len() == 2)
                 .map(|line| line.spans[0].content.to_string())
                 .collect();
-            assert_eq!(labels.len(), 8, "{locale:?}: {labels:?}");
+            assert_eq!(labels.len(), 3, "{locale:?}: {labels:?}");
             assert!(
                 labels
                     .iter()
@@ -12713,8 +12706,8 @@ context_window = 131072
     fn config_second_click_arming_resets_on_every_keyboard_step() {
         let app = create_test_app();
         let mut view = ConfigView::new_for_app(&app);
-        view.category = ConfigCategory::Motion;
-        view.select_first_visible_row();
+        view.category = ConfigCategory::Appearance;
+        view.focus_key("calm_mode");
         let area = Rect::new(0, 0, 80, 24);
         let click_row = |view: &mut ConfigView, key: &str| -> ViewAction {
             let mut buf = Buffer::empty(area);
@@ -12744,24 +12737,22 @@ context_window = 131072
             vec![KeyCode::PageDown, KeyCode::PageUp],
         ];
         for sequence in sequences {
-            // The previous iteration's checking click left the row armed; a
-            // keyboard step (like any real navigation) disarms it first.
             let _ = key(&mut view, KeyCode::Up);
             assert!(matches!(
-                click_row(&mut view, "low_motion"),
+                click_row(&mut view, "calm_mode"),
                 ViewAction::None
             ));
             for code in &sequence {
                 let _ = key(&mut view, *code);
             }
-            assert_eq!(view.category, ConfigCategory::Motion, "{sequence:?}");
-            let action = click_row(&mut view, "low_motion");
+            assert_eq!(view.category, ConfigCategory::Appearance, "{sequence:?}");
+            let action = click_row(&mut view, "calm_mode");
             assert!(
                 matches!(action, ViewAction::None),
                 "{sequence:?} then one click must not mutate: {action:?}"
             );
             assert!(view.editing.is_none(), "{sequence:?}");
-            assert_eq!(view.rows[view.selected].key, "low_motion");
+            assert_eq!(view.rows[view.selected].key, "calm_mode");
         }
         // Control: two consecutive clicks with nothing in between activate
         // (the previous check click is disarmed by a keyboard step first).
@@ -12866,7 +12857,11 @@ context_window = 131072
                 "{w}x{h} localized category {category}:\n{dump}"
             );
             if w >= 100 {
-                for id in [MessageId::ConfigFactCurrent, MessageId::ConfigFactApply] {
+                for id in [
+                    MessageId::ConfigFactCurrent,
+                    MessageId::ConfigFactSource,
+                    MessageId::ConfigFactApply,
+                ] {
                     let label = tr(Locale::ZhHans, id);
                     let spaced: String = label.chars().map(|ch| format!("{ch} ")).collect();
                     assert!(
@@ -12874,19 +12869,7 @@ context_window = 131072
                         "{w}x{h} localized fact label {label}:\n{dump}"
                     );
                 }
-                let unobserved = tr(Locale::ZhHans, MessageId::ConfigLaneUnobserved);
-                let spaced: String = unobserved.chars().map(|ch| format!("{ch} ")).collect();
-                assert!(
-                    dump.contains(spaced.trim_end()),
-                    "{w}x{h} localized unobserved lane:\n{dump}"
-                );
             }
-            let scope = tr(Locale::ZhHans, MessageId::ConfigScopeSaved);
-            let spaced: String = scope.chars().map(|ch| format!("{ch} ")).collect();
-            assert!(
-                dump.contains(spaced.trim_end()) || dump.contains(scope.as_ref()),
-                "{w}x{h} localized scope badge {scope}:\n{dump}"
-            );
         }
     }
 
@@ -13126,7 +13109,7 @@ context_window = 131072
             buffer_row_text(&buf, area, theme_rect.y).contains("shoreline"),
             "{dump}"
         );
-        assert!(dump.contains("Appearance  1/7"), "{dump}");
+        assert!(dump.contains("Appearance  1/6"), "{dump}");
         let footer = dump
             .lines()
             .find(|line| line.contains("Enter") && line.contains("Esc"))

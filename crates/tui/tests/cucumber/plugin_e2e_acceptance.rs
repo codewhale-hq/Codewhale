@@ -1156,7 +1156,7 @@ fn a_continued_session_resumes_again_after_each_turn() {
     let _ = tui.shutdown();
 
     for round in 1..=2 {
-        let mut tui = launch(&["resume", "--last"]);
+        let mut tui = launch(&["--skip-onboarding", "resume", "--last"]);
         if tui
             .wait_for_text("Resumed session", BINARY_ACCEPTANCE_TIMEOUT)
             .is_err()

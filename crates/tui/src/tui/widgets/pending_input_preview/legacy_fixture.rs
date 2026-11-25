@@ -152,13 +152,14 @@ impl PendingInputPreview {
             return lines;
         }
 
+        let header_style = Style::default().fg(palette::TEXT_MUTED);
         if !self.context_items.is_empty() {
             push_section_header(
                 &mut lines,
-                Line::from(vec![
-                    Span::raw("• "),
-                    Span::raw(tr(self.locale, MessageId::PendingContextHeader).into_owned()),
-                ]),
+                Line::from(Span::styled(
+                    format!("• {}", tr(self.locale, MessageId::PendingContextHeader)),
+                    header_style,
+                )),
             );
             for item in &self.context_items {
                 push_context_item(&mut lines, item, width);
@@ -171,10 +172,10 @@ impl PendingInputPreview {
             }
             push_section_header(
                 &mut lines,
-                Line::from(vec![
-                    Span::raw("• "),
-                    Span::raw(tr(self.locale, MessageId::PendingInputsHeader).into_owned()),
-                ]),
+                Line::from(Span::styled(
+                    format!("• {}", tr(self.locale, MessageId::PendingInputsHeader)),
+                    header_style,
+                )),
             );
             let sending_prefix =
                 tr(self.locale, MessageId::PendingSendingIntoTurnPrefix).into_owned();
@@ -202,7 +203,10 @@ impl PendingInputPreview {
                     &editing_indent,
                 );
                 lines.push(Line::from(vec![Span::styled(
-                    tr(self.locale, MessageId::PendingEscRestore).into_owned(),
+                    codewhale_localization::truncate_to_width(
+                        &tr(self.locale, MessageId::PendingEscRestore),
+                        usize::from(width),
+                    ),
                     dim,
                 )]));
             }
@@ -222,8 +226,11 @@ impl PendingInputPreview {
             }
             if !self.queued_messages.is_empty() {
                 lines.push(Line::from(vec![Span::styled(
-                    tr(self.locale, MessageId::PendingSendNowControls)
-                        .replace("{key}", self.edit_binding.label),
+                    codewhale_localization::truncate_to_width(
+                        &tr(self.locale, MessageId::PendingSendNowControls)
+                            .replace("{key}", self.edit_binding.label),
+                        usize::from(width),
+                    ),
                     dim,
                 )]));
             }

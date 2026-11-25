@@ -311,8 +311,7 @@ fn launch_mcp_summary_opens_manager_by_click_and_keyboard() {
         tui.send(keys::key::esc()).unwrap();
         wait(&mut tui, "New session");
         assert!(!tui.frame().contains("launch-proof"));
-        // New session, recent sessions, then MCP.
-        for _ in 0..3 {
+        for _ in 0..4 {
             tui.send(keys::key::down()).unwrap();
         }
         tui.send(keys::key::enter()).unwrap();

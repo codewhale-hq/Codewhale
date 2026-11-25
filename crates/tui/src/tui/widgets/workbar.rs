@@ -86,7 +86,7 @@ pub(crate) fn lines(
         ascii: false,
         appearance: Appearance::Dark,
     })
-    .tui_palette(TuiPalette::Whale);
+    .tui_palette(TuiPalette::Underwater);
     let inks = [
         (source_theme.color(Role::Foreground), theme.text_body),
         (source_theme.color(Role::Muted), theme.text_muted),
