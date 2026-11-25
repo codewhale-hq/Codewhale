@@ -143,12 +143,20 @@ impl InstallMethod {
     }
 
     fn detect_with_omarchy_probe(exe: &Path, owns_package: impl FnOnce(&Path) -> bool) -> Self {
-        let path_method = Self::from_path(exe);
+        let mut path_method = Self::from_path(exe);
+        let unlisted = path_method == Self::Cargo
+            && exe
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| crate::installs::cargo_record_lists(exe, name) == Some(false));
+        if unlisted {
+            path_method = Self::Binary;
+        }
         match path_method {
             Self::Binary if windows_installer_uninstaller(exe).is_some() => {
                 return Self::WindowsInstaller;
             }
-            Self::Binary if crate::installs::cargo_owns_a_command_beside(exe) => {
+            Self::Binary if !unlisted && crate::installs::cargo_owns_a_command_beside(exe) => {
                 return Self::Cargo;
             }
             Self::Binary | Self::System => {}

@@ -144,19 +144,19 @@ impl UpdateCheckCache {
         age < interval_hours.saturating_mul(3600)
     }
 
-    /// Write the cache atomically (temp file, then rename), creating the
-    /// parent directory if needed.
+    /// Write the cache atomically through the release crate's single writer,
+    /// creating the parent directory if needed.
     pub fn store(&self, path: &Path) -> Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("failed to create {}", dir.display()))?;
-        }
-        let tmp = path.with_extension("json.tmp");
         let body = serde_json::to_vec_pretty(self).context("failed to serialize update cache")?;
-        std::fs::write(&tmp, body).with_context(|| format!("failed to write {}", tmp.display()))?;
-        std::fs::rename(&tmp, path)
-            .with_context(|| format!("failed to install {}", path.display()))?;
-        Ok(())
+        let dir = path
+            .parent()
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .with_context(|| format!("invalid update cache path {}", path.display()))?;
+        crate::installs::write_file_atomically(dir, name, &body, false)
     }
 }
 

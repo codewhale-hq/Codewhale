@@ -317,11 +317,7 @@ fn classify(
     if method == InstallMethod::DesktopApp {
         return Some(InstallClass::AppBundle);
     }
-    // Cargo owns only the names its record lists; other files in its `bin`
-    // (old backups, renamed copies) are judged below like any directory.
-    if !method.supports_self_update()
-        && (method != InstallMethod::Cargo || meta.is_symlink() || cargo_lists(path, name))
-    {
+    if !method.supports_self_update() {
         return Some(InstallClass::PackageManaged(method));
     }
     if meta.is_symlink() {
@@ -547,30 +543,24 @@ fn cargo_root_beside(path: &Path) -> Option<PathBuf> {
 }
 
 pub(crate) fn cargo_owns_a_command_beside(path: &Path) -> bool {
-    let Some(root) = cargo_root_beside(path) else {
-        return false;
-    };
-    [".crates.toml", ".crates2.json"].iter().any(|file| {
-        let record = root.join(file);
-        if fs::symlink_metadata(&record).is_err() {
-            return false;
-        }
-        read_small(&record, 4 * 1024 * 1024).map_or(true, |text| {
-            RECEIPT_COMMANDS
-                .iter()
-                .any(|name| text.contains(&format!("\"{name}\"")))
-        })
-    })
+    RECEIPT_COMMANDS
+        .iter()
+        .any(|name| cargo_record_lists(path, name) == Some(true))
 }
 
-fn cargo_lists(path: &Path, name: &str) -> bool {
-    let Some(root) = cargo_root_beside(path) else {
-        return false;
-    };
+pub(crate) fn cargo_record_lists(path: &Path, name: &str) -> Option<bool> {
+    let root = cargo_root_beside(path)?;
     let quoted = format!("\"{name}\"");
-    [".crates.toml", ".crates2.json"].iter().any(|file| {
-        read_small(&root.join(file), 4 * 1024 * 1024).is_ok_and(|text| text.contains(&quoted))
-    })
+    for file in [".crates.toml", ".crates2.json"] {
+        let record = root.join(file);
+        if fs::symlink_metadata(&record).is_err() {
+            continue;
+        }
+        if read_small(&record, 4 * 1024 * 1024).map_or(true, |text| text.contains(&quoted)) {
+            return Some(true);
+        }
+    }
+    Some(false)
 }
 
 #[cfg(unix)]
@@ -1588,5 +1578,53 @@ mod npm_family_tests {
         );
         let bun = Path::new("/home/u/.bun/install/global/node_modules/codewhale/bin/codewhale");
         assert!(update_answer(InstallMethod::Npm, bun).contains("`bun add -g codewhale@latest`"));
+    }
+}
+
+#[cfg(test)]
+mod cargo_record_tests {
+    use super::*;
+
+    fn cargo_bin(record: impl FnOnce(&Path)) -> (tempfile::TempDir, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let cargo = root.path().join(".cargo");
+        let bin = cargo.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        record(&cargo);
+        let exe = bin.join("codewhale");
+        fs::write(&exe, b"binary").unwrap();
+        (root, exe)
+    }
+
+    fn agree(exe: &Path) -> (InstallMethod, Option<InstallClass>) {
+        (
+            InstallMethod::detect(exe),
+            classify(exe, "codewhale", None, None),
+        )
+    }
+
+    #[test]
+    fn unreadable_cargo_record_is_cargo_for_update_and_inventory() {
+        let (_root, exe) = cargo_bin(|cargo| fs::create_dir(cargo.join(".crates.toml")).unwrap());
+        let (method, class) = agree(&exe);
+        assert_eq!(method, InstallMethod::Cargo);
+        assert_eq!(
+            class,
+            Some(InstallClass::PackageManaged(InstallMethod::Cargo))
+        );
+    }
+
+    #[test]
+    fn record_listing_another_crate_leaves_the_file_ours_for_update_and_inventory() {
+        let (_root, exe) = cargo_bin(|cargo| {
+            fs::write(
+                cargo.join(".crates.toml"),
+                b"[v1]\n\"other 0.1.0 (path+file:///src/other)\" = [\"other-bin\"]\n",
+            )
+            .unwrap();
+        });
+        let (method, class) = agree(&exe);
+        assert!(method.supports_self_update());
+        assert!(!matches!(class, Some(InstallClass::PackageManaged(_))));
     }
 }
