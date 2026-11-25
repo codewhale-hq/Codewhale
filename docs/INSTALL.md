@@ -25,7 +25,7 @@ there.
 
 Install commands that use `latest` resolve to the latest **published** GitHub
 Release or package. Between releases, `main` may already describe the next
-version (for example a v0.10.4 source candidate before its tag). A
+version (for example a v0.10.5 source candidate before its tag). A
 prebuilt candidate is available through the official installer only after its
 tag, checksums and release assets exist. Contributors can build `main` now.
 

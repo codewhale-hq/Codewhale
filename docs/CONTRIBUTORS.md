@@ -40,18 +40,21 @@ changelog or release notes, and this contributor record.
 ## Contributors by time
 
 <details open>
-<summary><strong>v0.10.5 (unreleased) — ACP agent picker, simplifications, and reliability</strong></summary>
+<summary><strong>v0.10.5 — ACP agent picker, DSH compatibility, design sync, and reliability</strong></summary>
 
 **Contributions**
 
+- **[7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX)** — sub-agent terminal status, budget recovery, mailbox fidelity, structured failure `cause`, MCP pool lock & stdio shutdown hardening, and pet/history resilience ([#6557](https://github.com/codewhale-hq/Codewhale/issues/6557), [#6558](https://github.com/codewhale-hq/Codewhale/issues/6558), [#6559](https://github.com/codewhale-hq/Codewhale/issues/6559), [#7328](https://github.com/codewhale-hq/Codewhale/issues/7328), [#7434](https://github.com/codewhale-hq/Codewhale/issues/7434), [#7461](https://github.com/codewhale-hq/Codewhale/issues/7461)).
+- **[axobase001](https://github.com/axobase001)** — added verified candidate evaluator (`task.verifyCandidate`) for experimental search workflows ([#7294](https://github.com/codewhale-hq/Codewhale/pull/7294)).
+- **[SamhandsomeLee](https://github.com/SamhandsomeLee)** — preserved unknown Responses cache-miss `input_tokens` and added conformance fixtures ([#7527](https://github.com/codewhale-hq/Codewhale/pull/7527), [#7528](https://github.com/codewhale-hq/Codewhale/pull/7528)).
 - **[jperla](https://github.com/jperla)** — added TrustedRouter as a bundled OpenAI-compatible provider descriptor row ([#7350](https://github.com/codewhale-hq/Codewhale/pull/7350)).
 - **[Goldloli](https://github.com/Goldloli)** — added the Simplified Chinese translation of `AUTO_REVIEW.md` ([#7521](https://github.com/codewhale-hq/Codewhale/pull/7521)).
 - **[gaord](https://github.com/gaord)** — improved runtime item-index caching and turn-reference lookup performance ([#7446](https://github.com/codewhale-hq/Codewhale/pull/7446), [#7522](https://github.com/codewhale-hq/Codewhale/pull/7522)).
 - **[NieZhuZhu](https://github.com/NieZhuZhu)** — hardened outbox, engine, subagent, fleet, bridge, MCP, and TUI surfaces ([#7481](https://github.com/codewhale-hq/Codewhale/pull/7481), [#7483](https://github.com/codewhale-hq/Codewhale/pull/7483), [#7484](https://github.com/codewhale-hq/Codewhale/pull/7484), [#7489](https://github.com/codewhale-hq/Codewhale/pull/7489), [#7492](https://github.com/codewhale-hq/Codewhale/pull/7492), [#7493](https://github.com/codewhale-hq/Codewhale/pull/7493), [#7495](https://github.com/codewhale-hq/Codewhale/pull/7495), [#7500](https://github.com/codewhale-hq/Codewhale/pull/7500), [#7501](https://github.com/codewhale-hq/Codewhale/pull/7501), [#7532](https://github.com/codewhale-hq/Codewhale/pull/7532), [#7533](https://github.com/codewhale-hq/Codewhale/pull/7533), [#7534](https://github.com/codewhale-hq/Codewhale/pull/7534), [#7535](https://github.com/codewhale-hq/Codewhale/pull/7535)).
-- **[Serendo](https://github.com/Serendo)** — routed TUI `TaskManager` consumers through `App`'s single owned slot ([#7507](https://github.com/codewhale-hq/Codewhale/pull/7507)).
+- **[Serendo](https://github.com/Serendo)** — routed TUI `TaskManager` consumers through `App`'s single owned slot ([#7507](https://github.com/codewhale-hq/Codewhale/pull/7507)) and adopted populated Runtime stores on session switch ([#7451](https://github.com/codewhale-hq/Codewhale/pull/7451)).
 - **[luochen211](https://github.com/luochen211)** — removed confirmed dead-code candidates across TUI, Fleet, and skills ([#7491](https://github.com/codewhale-hq/Codewhale/pull/7491)).
 - **[deosiree](https://github.com/deosiree)** — matched `ShellExperienceHost.exe` case-insensitively in the Windows desktop-shell filter ([#7513](https://github.com/codewhale-hq/Codewhale/pull/7513)).
-- **[WTFitsmemyself](https://github.com/WTFitsmemyself)** — community fix ([#7496](https://github.com/codewhale-hq/Codewhale/pull/7496)).
+- **[WTFitsmemyself](https://github.com/WTFitsmemyself)** — classified `find -delete` as a destructive action in execution policy ([#7496](https://github.com/codewhale-hq/Codewhale/pull/7496)).
 
 </details>
 

@@ -54,7 +54,7 @@ default-members = ["crates/cli"]
 resolver = "2"
 
 [workspace.package]
-version = "0.10.4"
+version = "0.10.5"
 edition = "2024"
 # The floor is what CI's MSRV job builds (1.89): Rust 1.88 stabilized the
 # `let_chains` the codebase relies on, but a locked dependency

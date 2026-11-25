@@ -16,11 +16,11 @@ test-support = []
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
-codewhale-config = { path = "../config", version = "0.10.4" }
-codewhale-models = { path = "../models", version = "0.10.4" }
-codewhale-paths = { path = "../paths", version = "0.10.4" }
-codewhale-protocol = { path = "../protocol", version = "0.10.4" }
-codewhale-telemetry = { path = "../telemetry", version = "0.10.4" }
+codewhale-config = { path = "../config", version = "0.10.5" }
+codewhale-models = { path = "../models", version = "0.10.5" }
+codewhale-paths = { path = "../paths", version = "0.10.5" }
+codewhale-protocol = { path = "../protocol", version = "0.10.5" }
+codewhale-telemetry = { path = "../telemetry", version = "0.10.5" }
 futures-util = "0.3.31"
 gix.workspace = true
 ignore = "0.4"
