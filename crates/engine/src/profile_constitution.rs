@@ -13,6 +13,9 @@ use codewhale_secrets::account::{
 };
 
 const DESKTOP_BROWSER_SERVER: &str = "codewhale-browser";
+const ACCOUNT_LOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const TURN_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+const FRESH_FOR: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountEpoch {
@@ -184,7 +187,7 @@ async fn load_from(
         .context("Sign in again to load your profile constitution")?;
     let client = crate::platform_client_builder()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(ACCOUNT_LOAD_TIMEOUT)
         .build()?;
     let response = client
         .get(format!("{api_base}/api/me"))
@@ -237,26 +240,106 @@ pub fn snapshot_from_me(
     Ok(Some(snapshot))
 }
 
-pub async fn capture(
-    profile: Option<&str>,
-    supplied: Option<ProfileConstitutionSnapshot>,
-) -> Result<Option<String>> {
-    if let Some(snapshot) = supplied {
-        return snapshot.render().map(Some);
+pub type Captured = Result<Option<String>, String>;
+
+#[derive(Default)]
+pub struct AccountConstitution {
+    ready: Option<(Option<AccountEpoch>, std::time::Instant, Captured)>,
+    pending: Option<(Option<AccountEpoch>, tokio::task::JoinHandle<Captured>)>,
+}
+
+impl AccountConstitution {
+    pub async fn capture(
+        &mut self,
+        profile: Option<&str>,
+        fence: Option<&AccountFence>,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Option<Captured> {
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            if let Some(message) = TEST_ACCOUNT_LOAD_FAILURE.get() {
+                return Some(Err(message.to_owned()));
+            }
+            if !account_api_base_is_loopback() {
+                return Some(Ok(crate::prompts::load_user_constitution_block()));
+            }
+        }
+        let profile = profile.map(str::to_owned);
+        let key = fence.and_then(|fence| fence.admitted.clone());
+        self.capture_with(key, cancel, TURN_WAIT, async move {
+            rendered(load(profile.as_deref()).await)
+        })
+        .await
     }
-    #[cfg(any(test, feature = "test-support"))]
+
+    async fn capture_with<F>(
+        &mut self,
+        key: Option<AccountEpoch>,
+        cancel: &tokio_util::sync::CancellationToken,
+        wait: std::time::Duration,
+        read: F,
+    ) -> Option<Captured>
+    where
+        F: std::future::Future<Output = Captured> + Send + 'static,
     {
-        if let Some(message) = TEST_ACCOUNT_LOAD_FAILURE.get() {
-            anyhow::bail!(message);
+        if let Some((pending_key, mut handle)) = self.pending.take() {
+            if pending_key != key {
+                handle.abort();
+            } else if handle.is_finished() {
+                let captured = (&mut handle)
+                    .await
+                    .unwrap_or_else(|error| Err(error.to_string()));
+                self.ready = Some((pending_key, std::time::Instant::now(), captured));
+            } else {
+                self.pending = Some((pending_key, handle));
+                return self.cached(&key);
+            }
         }
-        if !account_api_base_is_loopback() {
-            return Ok(crate::prompts::load_user_constitution_block());
+        if let Some((ready_key, read_at, captured)) = &self.ready
+            && *ready_key == key
+            && read_at.elapsed() < FRESH_FOR
+        {
+            return Some(captured.clone());
+        }
+        let mut handle = tokio::spawn(read);
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => {}
+            joined = &mut handle => {
+                let captured = joined.unwrap_or_else(|error| Err(error.to_string()));
+                self.ready = Some((key, std::time::Instant::now(), captured.clone()));
+                return Some(captured);
+            }
+            () = tokio::time::sleep(wait) => {}
+        }
+        let cached = self.cached(&key);
+        self.pending = Some((key, handle));
+        cached
+    }
+
+    fn cached(&self, key: &Option<AccountEpoch>) -> Option<Captured> {
+        self.ready
+            .as_ref()
+            .filter(|(ready_key, ..)| ready_key == key)
+            .map(|(_, _, captured)| captured.clone())
+    }
+}
+
+impl Drop for AccountConstitution {
+    fn drop(&mut self) {
+        if let Some((_, handle)) = self.pending.take() {
+            handle.abort();
         }
     }
-    if let Some(snapshot) = load(profile).await? {
-        return snapshot.render().map(Some);
+}
+
+fn rendered(loaded: Result<Option<ProfileConstitutionSnapshot>>) -> Captured {
+    match loaded {
+        Ok(Some(snapshot)) => snapshot.render().map(Some),
+        Ok(None) => Ok(crate::prompts::load_user_constitution_block()),
+        Err(error) => Err(error),
     }
-    Ok(crate::prompts::load_user_constitution_block())
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -282,7 +365,7 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-/// Make the account profile that `capture` would load itself fail on this
+/// Make the account profile that `AccountConstitution::capture` would load itself fail on this
 /// thread until the guard drops, as an expired sign-in or unreachable account
 /// service does in a real build. A supplied snapshot never reaches it.
 #[cfg(any(test, feature = "test-support"))]
@@ -498,5 +581,112 @@ mod tests {
         admit_desktop_browser_call(OTHER, Some(&unconfirmed))
             .await
             .expect("non-browser tool unaffected by an unreadable store");
+    }
+
+    #[tokio::test]
+    async fn slow_account_service_never_holds_a_turn_and_stop_ends_the_wait() {
+        let server = MockServer::start().await;
+        let store = fixture_store(&server.uri());
+        Mock::given(method("GET"))
+            .and(path("/api/me"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(me())
+                    .set_delay(std::time::Duration::from_millis(400)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let read = {
+            let (store, base) = (store.clone(), server.uri());
+            async move { rendered(load_from(&store, &base).await) }
+        };
+        let key = Some(AccountEpoch {
+            api_base: server.uri(),
+            state: AccountSessionState::Authenticated,
+            account_id: Some("acct_fixture".into()),
+            session_id: Some("session_fixture".into()),
+            signed_out_revision: None,
+        });
+        let mut cache = AccountConstitution::default();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let started = std::time::Instant::now();
+        let first = cache
+            .capture_with(
+                key.clone(),
+                &cancel,
+                std::time::Duration::from_millis(50),
+                read,
+            )
+            .await;
+        assert!(first.is_none(), "an unready read must not hold the turn");
+        assert!(started.elapsed() < std::time::Duration::from_millis(300));
+
+        let started = std::time::Instant::now();
+        let unused = async { unreachable!("an in-flight read for the same account is reused") };
+        assert!(
+            cache
+                .capture_with(
+                    key.clone(),
+                    &cancel,
+                    std::time::Duration::from_secs(60),
+                    unused
+                )
+                .await
+                .is_none()
+        );
+        assert!(started.elapsed() < std::time::Duration::from_millis(300));
+
+        let stop = tokio_util::sync::CancellationToken::new();
+        let stopper = {
+            let stop = stop.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                stop.cancel();
+            })
+        };
+        let mut stopped = AccountConstitution::default();
+        let started = std::time::Instant::now();
+        let never = std::future::pending::<Captured>();
+        assert!(
+            stopped
+                .capture_with(
+                    key.clone(),
+                    &stop,
+                    std::time::Duration::from_secs(60),
+                    never
+                )
+                .await
+                .is_none(),
+            "Stop ends the wait for the account service"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_millis(300));
+        stopper.await.unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        let unused = async { unreachable!("a fresh read is reused") };
+        let adopted = cache
+            .capture_with(
+                key.clone(),
+                &cancel,
+                std::time::Duration::from_secs(60),
+                unused,
+            )
+            .await
+            .expect("the finished read is adopted by the next turn")
+            .unwrap()
+            .unwrap();
+        assert!(adopted.contains("revision 9"));
+        assert!(
+            cache
+                .capture_with(
+                    None,
+                    &stop,
+                    std::time::Duration::from_secs(60),
+                    std::future::pending()
+                )
+                .await
+                .is_none()
+        );
     }
 }
