@@ -869,7 +869,11 @@ mod tests {
             err.contains("Usage: /connect [account|<provider>]"),
             "{err}"
         );
-        assert!(err.contains("`/login`"), "{err}");
+        assert_eq!(
+            err.contains("`/login`"),
+            crate::tui::account_login::ACCOUNT_SIGN_IN_ENABLED,
+            "{err}"
+        );
         assert!(execute("/disconnect", &mut app).is_error);
         assert!(execute("/disconnect nothing-enabled", &mut app).is_error);
     }
