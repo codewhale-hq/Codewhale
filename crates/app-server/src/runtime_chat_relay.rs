@@ -864,6 +864,7 @@ impl RuntimeChatRelayHost {
                         environment_id: None,
                         model_provider: None,
                         model_provider_id: None,
+                        user_command: None,
                     },
                     &reserved_native_turn_id,
                 )

@@ -1046,10 +1046,10 @@ impl RuntimeThreadManager {
     pub(super) async fn start_external_turn(
         &self,
         thread: ThreadRecord,
-        req: StartTurnRequest,
+        mut req: StartTurnRequest,
         input_source: &RuntimeTurnInputSource,
         reserved_turn_id: Option<&str>,
-        prompt: String,
+        mut prompt: String,
     ) -> Result<(TurnRecord, bool)> {
         anyhow::ensure!(
             matches!(input_source, RuntimeTurnInputSource::ExternalUser),
@@ -1149,6 +1149,12 @@ impl RuntimeThreadManager {
             }
             None => None,
         };
+        if take_user_command(&mut req, &mut prompt)?.is_some() {
+            return Err(refuse(
+                refusal::UNSUPPORTED_CONTROL,
+                "A session with another agent uses that agent's own tools; a command that limits tools is unavailable.",
+            ));
+        }
 
         let session = self.external_session(&thread).await?;
         let now = Utc::now();

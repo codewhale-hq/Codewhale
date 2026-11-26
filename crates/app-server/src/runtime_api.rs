@@ -2101,7 +2101,8 @@ async fn expand_user_command(
     state: &RuntimeApiState,
     workspace: &std::path::Path,
     prompt: &str,
-) -> Result<Option<codewhale_engine::command_catalog::ExpandedUserCommand>, ApiError> {
+) -> Result<Option<Result<codewhale_engine::command_catalog::ExpandedUserCommand, String>>, ApiError>
+{
     if !prompt.trim_start().starts_with('/') {
         return Ok(None);
     }
@@ -2122,9 +2123,7 @@ async fn expand_user_command(
         catalog.expand_user_command(&workspace, &plugins, &input)
     })
     .await
-    .map_err(|error| ApiError::internal(error.to_string()))?
-    .transpose()
-    .map_err(|reason| ApiError::unprocessable(reason).with_code("user_command_denied"))
+    .map_err(|error| ApiError::internal(error.to_string()))
 }
 
 fn replay_flag_is_absent(replayed: &bool) -> bool {
@@ -10958,6 +10957,7 @@ async fn retry_thread_turn(
                 environment_id: None,
                 model_provider: None,
                 model_provider_id: None,
+                user_command: None,
             },
         )
         .await
@@ -11095,30 +11095,15 @@ async fn start_thread_turn_for_caller(
         .get_thread(&id)
         .await
         .map_err(map_thread_err)?;
-    let expanded = expand_user_command(&state, &target.workspace, &req.prompt).await?;
-    let user_command = expanded.map(|expanded| {
-        if req.input_summary.is_none() {
-            req.input_summary = Some(codewhale_engine::runtime_threads::manager::summarize_text(
-                req.prompt.trim(),
-                codewhale_engine::runtime_threads::manager::SUMMARY_LIMIT,
-            ));
-        }
-        req.prompt = expanded.message;
-        if let Some(tools) = expanded.allowed_tools {
-            let granted = req.allowed_tools.take().or(target.allowed_tools.clone());
-            req.allowed_tools = Some(match granted {
-                Some(granted) => tools
-                    .into_iter()
-                    .filter(|tool| granted.contains(tool))
-                    .collect(),
-                None => tools,
-            });
-        }
-        UserCommandRun {
-            name: expanded.name,
-            plugin_id: expanded.plugin_id,
-        }
-    });
+    req.user_command = expand_user_command(&state, &target.workspace, &req.prompt).await?;
+    let user_command = req
+        .user_command
+        .as_ref()
+        .and_then(|expansion| expansion.as_ref().ok())
+        .map(|expanded| UserCommandRun {
+            name: expanded.name.clone(),
+            plugin_id: expanded.plugin_id.clone(),
+        });
     let expected_workspace = req.expected_workspace.clone();
     let (turn, replayed) = if owner_composer {
         state
@@ -11337,6 +11322,8 @@ async fn steer_thread_turn(
         .await
         .map_err(map_thread_err)?;
     if let Some(expanded) = expand_user_command(&state, &thread.workspace, &req.prompt).await? {
+        let expanded = expanded
+            .map_err(|reason| ApiError::unprocessable(reason).with_code("user_command_denied"))?;
         if expanded.allowed_tools.is_some() {
             return Err(ApiError::unprocessable(format!(
                 "/{} limits the tools a turn may use; send it as a new turn",
@@ -16029,6 +16016,9 @@ fn external_agent_refusal(err: &anyhow::Error) -> Option<ApiError> {
 }
 
 fn map_thread_err(err: anyhow::Error) -> ApiError {
+    if err.is::<codewhale_engine::runtime_threads::manager::UserCommandDenied>() {
+        return ApiError::unprocessable(err.to_string()).with_code("user_command_denied");
+    }
     if err.is::<codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch>() {
         return ApiError::forbidden(err.to_string()).with_code("workspace_mismatch");
     }

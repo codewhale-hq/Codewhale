@@ -12,7 +12,7 @@ pub use permission_rules::{
 pub(super) const EVENT_CHANNEL_CAPACITY: usize = 1024;
 pub(super) const MAX_ACTIVE_THREADS_DEFAULT: usize = 8;
 pub(super) const MAX_PENDING_DYNAMIC_TOOL_CALLS: usize = 128;
-pub const SUMMARY_LIMIT: usize = 280;
+pub(super) const SUMMARY_LIMIT: usize = 280;
 pub(super) const STREAM_DELTA_BATCH_MAX_LATENCY: Duration = Duration::from_millis(32);
 pub(super) const STREAM_DELTA_BATCH_MAX_BYTES: usize = 16 * 1024;
 /// How long `steer_turn` observes the engine's verdict before answering with
@@ -1832,6 +1832,43 @@ pub struct StartTurnRequest {
     /// Exact configured provider id for this turn only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_provider_id: Option<String>,
+    #[serde(skip)]
+    pub user_command: Option<Result<crate::command_catalog::ExpandedUserCommand, String>>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct UserCommandDenied(pub String);
+
+pub(super) fn take_user_command(
+    req: &mut StartTurnRequest,
+    prompt: &mut String,
+) -> Result<Option<Vec<String>>> {
+    let Some(expansion) = req.user_command.take() else {
+        return Ok(None);
+    };
+    let expanded = expansion.map_err(UserCommandDenied)?;
+    if req.input_summary.is_none() {
+        req.input_summary = Some(summarize_text(prompt.trim(), SUMMARY_LIMIT));
+    }
+    *prompt = expanded.message.trim().to_string();
+    if prompt.is_empty() {
+        bail!("/{} expands to an empty prompt", expanded.name);
+    }
+    Ok(expanded.allowed_tools)
+}
+
+pub(super) fn narrow_to_command_tools(
+    command_tools: Vec<String>,
+    granted: Option<Vec<String>>,
+) -> Vec<String> {
+    match granted {
+        Some(granted) => command_tools
+            .into_iter()
+            .filter(|tool| granted.contains(tool))
+            .collect(),
+        None => command_tools,
+    }
 }
 
 /// Resolve a caller-selected provider the way `/provider` and
@@ -6528,6 +6565,7 @@ impl RuntimeThreadManager {
             environment_id: None,
             model_provider: None,
             model_provider_id: None,
+            user_command: None,
         };
         self.start_turn_with_source(
             thread_id,
@@ -7103,6 +7141,7 @@ impl RuntimeThreadManager {
                     environment_id: None,
                     model_provider: None,
                     model_provider_id: None,
+                    user_command: None,
                 },
                 RuntimeTurnInputSource::AgentMail {
                     message_id: message_id.to_string(),
@@ -14448,6 +14487,7 @@ impl RuntimeThreadManager {
             environment_id: None,
             model_provider: req.model_provider,
             model_provider_id: req.model_provider_id,
+            user_command: None,
         };
         self.start_turn_with_source(
             thread_id,
@@ -15231,7 +15271,8 @@ impl RuntimeThreadManager {
         } else {
             crate::image_attach::prepare_runtime_images(&req.images)?
         };
-        let prompt = if matches!(&input_source, RuntimeTurnInputSource::WatchEvent(_)) {
+        let mut req = req;
+        let mut prompt = if matches!(&input_source, RuntimeTurnInputSource::WatchEvent(_)) {
             req.prompt.clone()
         } else {
             req.prompt.trim().to_string()
@@ -15351,7 +15392,7 @@ impl RuntimeThreadManager {
         let allow_shell = req.allow_shell.unwrap_or(thread.allow_shell);
         let trust_mode = req.trust_mode.unwrap_or(thread.trust_mode);
         let auto_approve = policy.auto_approve();
-        let allowed_tools = req
+        let mut allowed_tools = req
             .allowed_tools
             .clone()
             .or_else(|| thread.allowed_tools.clone());
@@ -15453,6 +15494,9 @@ impl RuntimeThreadManager {
             if let Some(original_turn) = original_turn {
                 return Ok((original_turn, true));
             }
+        }
+        if let Some(command_tools) = take_user_command(&mut req, &mut prompt)? {
+            allowed_tools = Some(narrow_to_command_tools(command_tools, allowed_tools));
         }
         if let Some(owner) = &req.account_model_owner {
             cfg_snapshot.bind_account_model_owner(owner)?;

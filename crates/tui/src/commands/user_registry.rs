@@ -1316,6 +1316,53 @@ mod tests {
     }
 
     #[test]
+    fn runtime_expansion_uses_the_terminal_registry_and_refuses_a_revoked_plugin() {
+        let _lock = crate::test_support::lock_test_env();
+        let fixture = codewhale_plugins::test_fixture::DeclarativePluginFixture::new();
+        write_workspace_command(&fixture.workspace, "ship", "Reply with $ARGUMENTS");
+        let catalog = crate::commands::CommandTable;
+        let expand = |input: &str| {
+            codewhale_engine::command_catalog::CommandCatalog::expand_user_command(
+                &catalog,
+                &fixture.workspace,
+                &fixture.registry,
+                input,
+            )
+        };
+
+        let ship = expand("/ship shipped")
+            .expect("trusted workspace command resolves")
+            .expect("workspace command expands");
+        assert_eq!(ship.name, "ship");
+        assert_eq!(ship.message, "Reply with shipped");
+        assert_eq!(ship.plugin_id, None);
+
+        let plugin = expand("/plugin-hello ocean")
+            .expect("plugin command resolves")
+            .expect("active plugin command expands");
+        assert_eq!(plugin.message, "hello from plugin ocean");
+        assert!(plugin.plugin_id.is_some(), "{plugin:?}");
+
+        assert!(expand("/help").is_none(), "a builtin is not a user command");
+
+        let (resolved, args) = with_registry_for_workspace_plugins(
+            Some(&fixture.workspace),
+            &fixture.registry,
+            |registry| lookup(registry, "/plugin-hello ocean"),
+        )
+        .expect("plugin command resolves")
+        .expect("plugin command is dispatchable");
+        let _inactive = fixture.revoke_from_fresh_registry();
+        let denied = expand_template(&resolved, &args)
+            .expect_err("a plugin command revoked after lookup is refused");
+        assert!(denied.contains("was denied"), "{denied}");
+        assert!(
+            expand("/plugin-hello ocean").is_none(),
+            "a revoked plugin command is no longer offered"
+        );
+    }
+
+    #[test]
     fn user_commands_with_plugins_attributes_real_catalog_without_clobbering_other_workspace() {
         let _lock = crate::test_support::lock_test_env();
         let fixture = codewhale_plugins::test_fixture::DeclarativePluginFixture::new();
