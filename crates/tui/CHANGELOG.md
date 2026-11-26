@@ -65,8 +65,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Removed the unlabelled left and right arrow hint from the Help footer.**
 - **`codewhale update` and the install inventory agree on Cargo installs:** both use one rule to decide whether a file in `~/.cargo/bin` is Cargo's, and the update-check cache is written with fsync and a unique temporary file.
 
-### Fixed
-
 - **Cheaper workflow progress, visible disk-sync failures, review diffs that stop when cancelled:** workflow progress and event lines no longer force a full disk flush each; the next run snapshot flushes them, a newly created journal still syncs its directory, and a recovery snapshot written after a crash-torn last line is no longer lost. Directory syncs after a new journal, approval log or state file now log a warning on real failures (for example EIO, ENOSPC, or a directory that cannot be opened) and stay silent only when the filesystem cannot sync directories. A cancelled or dropped review now stops its local `git` diff instead of letting it run to completion. Thanks [@NieZhuZhu](https://github.com/NieZhuZhu) for the durability and directory-sync groundwork in #7561. (Refs #7461, #6561)
 ### Removed
 
