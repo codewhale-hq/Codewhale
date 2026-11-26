@@ -1,8 +1,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
-use codewhale_command_contract::facets::{BackgroundCommandWork, CommandBackgroundContext};
+use codewhale_command_contract::facets::{
+    BackgroundCancel, BackgroundJob, BackgroundRequest, CommandBackgroundContext,
+};
 use codewhale_command_contract::handler::CommandCapabilities;
 use codewhale_command_contract::outcome::{BackgroundAction, BackgroundCommandResult};
 use codewhale_localization::{Locale, MessageId, tr};
@@ -12,7 +15,7 @@ use crate::tui::app::{App, AppAction, DispatchApplyFn};
 
 struct Running {
     id: u64,
-    abort: tokio::task::AbortHandle,
+    cancel: BackgroundCancel,
 }
 
 #[derive(Default)]
@@ -50,7 +53,7 @@ impl BackgroundCommands {
         let running = self.lock().running.remove(command);
         match running {
             Some(running) => {
-                running.abort.abort();
+                running.cancel.store(true, Ordering::SeqCst);
                 true
             }
             None => false,
@@ -63,7 +66,7 @@ impl BackgroundCommands {
             .running
             .drain()
             .map(|(command, running)| {
-                running.abort.abort();
+                running.cancel.store(true, Ordering::SeqCst);
                 command
             })
             .collect();
@@ -152,7 +155,8 @@ impl CommandBackgroundContext for BackgroundHost {
     fn start(
         &mut self,
         command: &'static str,
-        work: BackgroundCommandWork,
+        job: BackgroundJob,
+        request: BackgroundRequest,
     ) -> Result<String, String> {
         let mut state = self.commands.lock();
         if state.running.contains_key(command) {
@@ -160,19 +164,26 @@ impl CommandBackgroundContext for BackgroundHost {
         }
         state.next_id += 1;
         let id = state.next_id;
-        let task = self.runtime.spawn(work);
+        let cancel = BackgroundCancel::default();
         state.running.insert(
             command,
             Running {
                 id,
-                abort: task.abort_handle(),
+                cancel: cancel.clone(),
             },
         );
         drop(state);
+        let job_cancel = cancel.clone();
+        let task = self
+            .runtime
+            .spawn_blocking(move || job(request, job_cancel));
         self.runtime.spawn(supervise(
-            self.commands.clone(),
-            command,
-            id,
+            Supervised {
+                commands: self.commands.clone(),
+                command,
+                id,
+                cancel,
+            },
             task,
             self.completion.clone(),
             Delivery {
@@ -199,14 +210,25 @@ struct Delivery {
     stale: String,
 }
 
-async fn supervise(
+struct Supervised {
     commands: BackgroundCommands,
     command: &'static str,
     id: u64,
+    cancel: BackgroundCancel,
+}
+
+async fn supervise(
+    supervised: Supervised,
     mut task: tokio::task::JoinHandle<BackgroundCommandResult>,
     completion: tokio::sync::mpsc::Sender<DispatchApplyFn>,
     delivery: Delivery,
 ) {
+    let Supervised {
+        commands,
+        command,
+        id,
+        cancel,
+    } = supervised;
     let Delivery {
         workspace,
         failed,
@@ -216,10 +238,10 @@ async fn supervise(
         joined = &mut task => Some(joined),
         () = completion.closed() => None,
     };
-    let current = commands.finish(command, id);
+    let current = commands.finish(command, id) && !cancel.load(Ordering::SeqCst);
     let result = match joined {
         None => {
-            task.abort();
+            cancel.store(true, Ordering::SeqCst);
             return;
         }
         Some(Ok(result)) => result,
@@ -245,19 +267,10 @@ async fn supervise(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use codewhale_engine::core::engine::mock_engine_handle;
     use codewhale_runtime::config::Config;
-
-    struct DropFlag(Arc<AtomicBool>);
-
-    impl Drop for DropFlag {
-        fn drop(&mut self) {
-            self.0.store(true, Ordering::SeqCst);
-        }
-    }
 
     type Mailbox = tokio::sync::mpsc::Receiver<DispatchApplyFn>;
 
@@ -282,17 +295,44 @@ mod tests {
         (app, config)
     }
 
-    fn held(flag: &Arc<AtomicBool>) -> BackgroundCommandWork {
-        let flag = DropFlag(flag.clone());
-        Box::pin(async move {
-            let _held = flag;
-            std::future::pending::<BackgroundCommandResult>().await
-        })
+    fn held(_request: BackgroundRequest, cancel: BackgroundCancel) -> BackgroundCommandResult {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !cancel.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        BackgroundCommandResult::message("held job returned")
     }
 
-    async fn settled(flag: &Arc<AtomicBool>) -> bool {
-        for _ in 0..200 {
-            if flag.load(Ordering::SeqCst) {
+    fn init_done(
+        _request: BackgroundRequest,
+        _cancel: BackgroundCancel,
+    ) -> BackgroundCommandResult {
+        BackgroundCommandResult::with_message_and_action(
+            "Creating AGENTS.md",
+            BackgroundAction::SendMessage("prompt".to_string()),
+        )
+    }
+
+    fn update_failed(
+        _request: BackgroundRequest,
+        _cancel: BackgroundCancel,
+    ) -> BackgroundCommandResult {
+        BackgroundCommandResult::error("updater failed")
+    }
+
+    fn running_flag(commands: &BackgroundCommands, command: &str) -> BackgroundCancel {
+        commands
+            .lock()
+            .running
+            .get(command)
+            .expect("running command")
+            .cancel
+            .clone()
+    }
+
+    async fn stopped(flag: &BackgroundCancel) -> bool {
+        for _ in 0..400 {
+            if flag.load(Ordering::SeqCst) && Arc::strong_count(flag) == 1 {
                 return true;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -319,15 +359,7 @@ mod tests {
         app.workspace = tmp.path().to_path_buf();
         let engine = mock_engine_handle();
 
-        let started = host.start(
-            "init",
-            Box::pin(async {
-                BackgroundCommandResult::with_message_and_action(
-                    "Creating AGENTS.md",
-                    BackgroundAction::SendMessage("prompt".to_string()),
-                )
-            }),
-        );
+        let started = host.start("init", init_done, BackgroundRequest::default());
         assert_eq!(started, Ok(line(MessageId::CmdBackgroundStarted, "init")));
         assert!(
             host.commands.take_ready().is_empty(),
@@ -351,11 +383,14 @@ mod tests {
             "a result is applied once"
         );
 
-        let flag = Arc::new(AtomicBool::new(false));
         assert!(
-            host.start("init", held(&flag)).is_ok(),
+            host.start("init", held, BackgroundRequest::default())
+                .is_ok(),
             "a finished command can be started again"
         );
+        let flag = running_flag(&host.commands, "init");
+        host.commands.cancel_all();
+        assert!(stopped(&flag).await);
     }
 
     #[tokio::test]
@@ -365,8 +400,12 @@ mod tests {
         let (completion, _mailbox) = tokio::sync::mpsc::channel::<DispatchApplyFn>(2);
         app.dispatch_completion_tx = Some(completion);
         let mut background = host(&app, CommandCapabilities::BACKGROUND).expect("background host");
-        let flag = Arc::new(AtomicBool::new(false));
-        assert!(background.start("update", held(&flag)).is_ok());
+        assert!(
+            background
+                .start("update", held, BackgroundRequest::default())
+                .is_ok()
+        );
+        let flag = running_flag(&background.commands, "update");
 
         let working = super::line(app.ui_locale, MessageId::CmdBackgroundWorking, "update");
         let mut shown = Vec::new();
@@ -383,7 +422,7 @@ mod tests {
                 "update"
             ))
         );
-        assert!(settled(&flag).await, "the cancelled work is dropped");
+        assert!(stopped(&flag).await, "the cancelled job returns");
         crate::tui::ui::sync_background_command_notices(&mut app, &mut shown);
         assert!(shown.is_empty());
         assert!(!app.status_toasts.iter().any(|toast| toast.text == working));
@@ -397,11 +436,8 @@ mod tests {
         let (mut app, config) = test_app(tmp.path());
         let engine = mock_engine_handle();
 
-        host.start(
-            "update",
-            Box::pin(async { BackgroundCommandResult::error("updater failed") }),
-        )
-        .expect("start");
+        host.start("update", update_failed, BackgroundRequest::default())
+            .expect("start");
         let apply = delivered(&mut mailbox).await;
         apply(&mut app, &engine.handle, &config).expect("apply completion");
 
@@ -416,45 +452,54 @@ mod tests {
     async fn a_second_run_of_the_same_command_is_refused_while_the_first_is_running() {
         let tmp = tempfile::tempdir().unwrap();
         let (mut host, mut mailbox) = test_host(tmp.path());
-        let first = Arc::new(AtomicBool::new(false));
-        let second = Arc::new(AtomicBool::new(false));
 
-        assert!(host.start("update", held(&first)).is_ok());
+        assert!(
+            host.start("update", held, BackgroundRequest::default())
+                .is_ok()
+        );
+        let first = running_flag(&host.commands, "update");
         assert_eq!(
-            host.start("update", held(&second)),
+            host.start("update", init_done, BackgroundRequest::default()),
             Err(line(MessageId::CmdBackgroundAlreadyRunning, "update"))
         );
         assert!(
-            second.load(Ordering::SeqCst),
-            "refused work is dropped without running"
+            Arc::ptr_eq(&first, &running_flag(&host.commands, "update")),
+            "the first run is untouched"
         );
-        assert!(!first.load(Ordering::SeqCst), "the first run is untouched");
+        assert!(!first.load(Ordering::SeqCst));
 
-        let other = Arc::new(AtomicBool::new(false));
         assert!(
-            host.start("init", held(&other)).is_ok(),
+            host.start("init", held, BackgroundRequest::default())
+                .is_ok(),
             "a different command is independent"
         );
+        let other = running_flag(&host.commands, "init");
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert!(mailbox.try_recv().is_err(), "nothing has finished");
+        host.commands.cancel_all();
+        assert!(stopped(&first).await);
+        assert!(stopped(&other).await);
     }
 
     #[tokio::test]
-    async fn cancelling_drops_the_work_and_delivers_nothing() {
+    async fn cancelling_stops_the_job_and_delivers_nothing() {
         let tmp = tempfile::tempdir().unwrap();
         let (mut host, mut mailbox) = test_host(tmp.path());
-        let flag = Arc::new(AtomicBool::new(false));
 
         assert_eq!(
             host.cancel("update"),
             Err(line(MessageId::CmdBackgroundNotRunning, "update"))
         );
-        assert!(host.start("update", held(&flag)).is_ok());
+        assert!(
+            host.start("update", held, BackgroundRequest::default())
+                .is_ok()
+        );
+        let flag = running_flag(&host.commands, "update");
         assert_eq!(
             host.cancel("update"),
             Ok(line(MessageId::CmdBackgroundCancelled, "update"))
         );
-        assert!(settled(&flag).await, "cancelled work is dropped");
+        assert!(stopped(&flag).await, "the cancelled job returns");
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert!(
             mailbox.try_recv().is_err(),
@@ -466,24 +511,30 @@ mod tests {
             Err(line(MessageId::CmdBackgroundNotRunning, "update"))
         );
 
-        let again = Arc::new(AtomicBool::new(false));
         assert!(
-            host.start("update", held(&again)).is_ok(),
+            host.start("update", held, BackgroundRequest::default())
+                .is_ok(),
             "a cancelled command can be started again"
         );
+        let again = running_flag(&host.commands, "update");
+        host.commands.cancel_all();
+        assert!(stopped(&again).await);
     }
 
     #[tokio::test]
     async fn quitting_closes_the_mailbox_and_cancels_running_work() {
         let tmp = tempfile::tempdir().unwrap();
         let (mut host, mailbox) = test_host(tmp.path());
-        let flag = Arc::new(AtomicBool::new(false));
 
-        assert!(host.start("update", held(&flag)).is_ok());
+        assert!(
+            host.start("update", held, BackgroundRequest::default())
+                .is_ok()
+        );
+        let flag = running_flag(&host.commands, "update");
         drop(mailbox);
         assert!(
-            settled(&flag).await,
-            "work stops when the event loop is gone"
+            stopped(&flag).await,
+            "the job stops when the event loop is gone"
         );
         assert!(host.commands.lock().running.is_empty());
         assert!(host.commands.take_ready().is_empty());
@@ -497,16 +548,8 @@ mod tests {
         app.workspace = tmp.path().join("elsewhere");
         let engine = mock_engine_handle();
 
-        host.start(
-            "init",
-            Box::pin(async {
-                BackgroundCommandResult::with_message_and_action(
-                    "Creating AGENTS.md",
-                    BackgroundAction::SendMessage("prompt".to_string()),
-                )
-            }),
-        )
-        .expect("start");
+        host.start("init", init_done, BackgroundRequest::default())
+            .expect("start");
         let apply = delivered(&mut mailbox).await;
         apply(&mut app, &engine.handle, &config).expect("apply completion");
 

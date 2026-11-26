@@ -467,6 +467,9 @@
   "crates/tui/src/commands/groups/project/init.rs": {
     "std_fs": 13
   },
+  "crates/tui/src/commands/groups/utility/update.rs": {
+    "thread_sleep": 1
+  },
   "crates/tui/src/commands/session_acceptance.rs": {
     "std_fs": 6
   },

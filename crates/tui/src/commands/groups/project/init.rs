@@ -9,6 +9,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use codewhale_command_contract::facets::{BackgroundCancel, BackgroundRequest};
 use codewhale_command_contract::handler::CommandContexts;
 use codewhale_command_contract::outcome::{BackgroundAction, BackgroundCommandResult};
 
@@ -887,21 +888,19 @@ fn init_contextual(mut contexts: CommandContexts<'_>, arg: Option<&str>) -> Comm
     background
         .start(
             INIT_INFO.name,
-            Box::pin(async move {
-                match codewhale_runtime::runtime_control::owner_work(move || {
-                    Ok(prepare_init(&workspace, &language))
-                })
-                .await
-                {
-                    Ok((message, prompt)) => BackgroundCommandResult::with_message_and_action(
-                        message,
-                        BackgroundAction::SendMessage(prompt),
-                    ),
-                    Err(error) => BackgroundCommandResult::error(error.to_string()),
-                }
-            }),
+            init_job,
+            BackgroundRequest {
+                workspace,
+                language,
+                ..BackgroundRequest::default()
+            },
         )
         .map_or_else(CommandResult::error, CommandResult::message)
+}
+
+fn init_job(request: BackgroundRequest, _cancel: BackgroundCancel) -> BackgroundCommandResult {
+    let (message, prompt) = prepare_init(&request.workspace, &request.language);
+    BackgroundCommandResult::with_message_and_action(message, BackgroundAction::SendMessage(prompt))
 }
 
 // ---------------------------------------------------------------------------
@@ -992,7 +991,10 @@ mod tests {
     }
 
     struct Background {
-        started: Vec<codewhale_command_contract::facets::BackgroundCommandWork>,
+        started: Vec<(
+            codewhale_command_contract::facets::BackgroundJob,
+            BackgroundRequest,
+        )>,
         cancelled: usize,
     }
 
@@ -1000,12 +1002,13 @@ mod tests {
         fn start(
             &mut self,
             command: &'static str,
-            work: codewhale_command_contract::facets::BackgroundCommandWork,
+            job: codewhale_command_contract::facets::BackgroundJob,
+            request: BackgroundRequest,
         ) -> Result<String, String> {
             if !self.started.is_empty() {
                 return Err(format!("/{command} is already running"));
             }
-            self.started.push(work);
+            self.started.push((job, request));
             Ok(format!("/{command} started"))
         }
 
@@ -1059,8 +1062,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn init_returns_at_once_and_delivers_the_prompt_as_the_background_result() {
+    #[test]
+    fn init_returns_at_once_and_delivers_the_prompt_as_the_background_result() {
         let tmpdir = TempDir::new().unwrap();
         let mut workspace = Workspace(tmpdir.path().to_path_buf());
         let mut presentation = Presentation;
@@ -1093,8 +1096,10 @@ mod tests {
         assert!(refused.is_error, "{refused:?}");
         assert!(refused.message.unwrap().contains("already running"));
 
-        let work = background.started.pop().expect("background work");
-        let finished = work.await;
+        let (job, request) = background.started.pop().expect("background job");
+        assert_eq!(request.workspace, tmpdir.path());
+        assert_eq!(request.language, "English");
+        let finished = job(request, BackgroundCancel::default());
         assert!(!finished.is_error, "{finished:?}");
         assert!(finished.message.unwrap().contains("Creating AGENTS.md"));
         assert!(matches!(

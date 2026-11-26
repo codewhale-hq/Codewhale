@@ -3945,46 +3945,68 @@ fn status_facet_is_object_safe_and_construction_never_observes_or_grants_mutatio
     assert!(parts.workspace.is_none());
 }
 
+type ParkedJob = (
+    &'static str,
+    crate::BackgroundJob,
+    crate::BackgroundRequest,
+    crate::BackgroundCancel,
+);
+
 #[derive(Default)]
 struct BackgroundFixture {
-    running: Vec<&'static str>,
-    parked: Vec<crate::BackgroundCommandWork>,
+    parked: Vec<ParkedJob>,
+}
+
+impl BackgroundFixture {
+    fn running(&self, command: &str) -> Option<&crate::BackgroundCancel> {
+        self.parked
+            .iter()
+            .find(|(name, _, _, cancel)| {
+                *name == command && !cancel.load(std::sync::atomic::Ordering::SeqCst)
+            })
+            .map(|(_, _, _, cancel)| cancel)
+    }
 }
 
 impl CommandBackgroundContext for BackgroundFixture {
     fn start(
         &mut self,
         command: &'static str,
-        work: crate::BackgroundCommandWork,
+        job: crate::BackgroundJob,
+        request: crate::BackgroundRequest,
     ) -> Result<String, String> {
-        if self.running.contains(&command) {
+        if self.running(command).is_some() {
             return Err(format!("/{command} is already running"));
         }
-        self.running.push(command);
-        self.parked.push(work);
+        self.parked
+            .push((command, job, request, crate::BackgroundCancel::default()));
         Ok(format!("/{command} started"))
     }
 
     fn cancel(&mut self, command: &'static str) -> Result<String, String> {
-        let Some(index) = self.running.iter().position(|name| *name == command) else {
+        let Some(cancel) = self.running(command) else {
             return Err(format!("/{command} is not running"));
         };
-        self.running.remove(index);
-        drop(self.parked.remove(index));
+        cancel.store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(format!("/{command} cancelled"))
     }
 }
 
-struct DropFlag(std::sync::Arc<std::sync::atomic::AtomicBool>);
-
-impl Drop for DropFlag {
-    fn drop(&mut self) {
-        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+fn echo_job(
+    request: crate::BackgroundRequest,
+    cancel: crate::BackgroundCancel,
+) -> crate::outcome::BackgroundCommandResult {
+    if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+        return crate::outcome::BackgroundCommandResult::error("cancelled");
     }
+    crate::outcome::BackgroundCommandResult::message(request.argument)
 }
 
-fn background_work(message: &'static str) -> crate::BackgroundCommandWork {
-    Box::pin(async move { crate::outcome::BackgroundCommandResult::message(message) })
+fn echo_request(argument: &str) -> crate::BackgroundRequest {
+    crate::BackgroundRequest {
+        argument: argument.to_string(),
+        ..crate::BackgroundRequest::default()
+    }
 }
 
 #[test]
@@ -4012,7 +4034,7 @@ fn background_slot_is_optional_and_taken_once() {
     assert!(parts.workspace.is_none());
     assert!(parts.presentation.is_none());
     assert_eq!(
-        background.start("update", background_work("done")),
+        background.start("update", echo_job, echo_request("done")),
         Ok("/update started".to_string())
     );
 }
@@ -4028,32 +4050,34 @@ fn background_duplicate_slot_fails_loudly() {
 }
 
 #[test]
-fn background_facet_refuses_a_second_run_and_cancel_drops_the_work() {
+fn background_facet_refuses_a_second_run_and_cancel_signals_the_job() {
     let mut fixture = BackgroundFixture::default();
     let facet: &mut dyn CommandBackgroundContext = &mut fixture;
-    let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let flag = DropFlag(dropped.clone());
-    let work: crate::BackgroundCommandWork = Box::pin(async move {
-        let _held = flag;
-        crate::outcome::BackgroundCommandResult::ok()
-    });
-    assert!(facet.start("init", work).is_ok());
+    assert!(facet.start("init", echo_job, echo_request("first")).is_ok());
     assert_eq!(
-        facet.start("init", background_work("second")),
+        facet.start("init", echo_job, echo_request("second")),
         Err("/init is already running".to_string())
     );
-    assert!(facet.start("update", background_work("other")).is_ok());
-    assert!(!dropped.load(std::sync::atomic::Ordering::SeqCst));
-    assert_eq!(facet.cancel("init"), Ok("/init cancelled".to_string()));
     assert!(
-        dropped.load(std::sync::atomic::Ordering::SeqCst),
-        "cancelling drops the unfinished work"
+        facet
+            .start("update", echo_job, echo_request("other"))
+            .is_ok()
     );
+    assert_eq!(facet.cancel("init"), Ok("/init cancelled".to_string()));
     assert_eq!(
         facet.cancel("init"),
         Err("/init is not running".to_string())
     );
-    assert!(facet.start("init", background_work("again")).is_ok());
+    assert!(facet.start("init", echo_job, echo_request("again")).is_ok());
+
+    let results: Vec<_> = fixture
+        .parked
+        .drain(..)
+        .map(|(_, job, request, cancel)| job(request, cancel))
+        .collect();
+    assert!(results[0].is_error, "the cancelled job sees its flag");
+    assert_eq!(results[1].message.as_deref(), Some("other"));
+    assert_eq!(results[2].message.as_deref(), Some("again"));
 }
 
 #[test]

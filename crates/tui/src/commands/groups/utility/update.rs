@@ -18,9 +18,14 @@
 //!   Telling the user to restart is the honest slice; that is also the only
 //!   possible answer on Windows, where the replaced image is the one running.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
+use codewhale_command_contract::facets::{BackgroundCancel, BackgroundRequest};
 use codewhale_command_contract::handler::{CommandCapabilities, CommandContexts, CommandHandler};
 use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
 use codewhale_command_contract::outcome::BackgroundCommandResult;
@@ -199,7 +204,12 @@ fn update(mut contexts: CommandContexts<'_>, arg: Option<&str>) -> CommandResult
             Some(background) => background
                 .start(
                     COMMAND_INFO.name,
-                    Box::pin(run_updater_in_background(updater, mode)),
+                    update_job,
+                    BackgroundRequest {
+                        updater,
+                        argument: arg.unwrap_or_default().to_string(),
+                        ..BackgroundRequest::default()
+                    },
                 )
                 .map_or_else(CommandResult::error, CommandResult::message),
             None => crate::commands::contract::run_owner_blocking(move || {
@@ -223,10 +233,72 @@ fn run_updater(updater: &Path, mode: UpdateMode) -> CommandResult {
     updater_result(updater, mode, updater_command(updater, mode).output())
 }
 
-async fn run_updater_in_background(updater: PathBuf, mode: UpdateMode) -> BackgroundCommandResult {
-    let mut command = tokio::process::Command::from(updater_command(&updater, mode));
-    command.kill_on_drop(true);
-    updater_result(&updater, mode, command.output().await)
+fn update_job(request: BackgroundRequest, cancel: BackgroundCancel) -> BackgroundCommandResult {
+    let mode = match parse_mode(Some(&request.argument)) {
+        Ok(mode) => mode,
+        Err(message) => return BackgroundCommandResult::error(message),
+    };
+    let updater = request.updater;
+    match run_until_cancelled(updater_command(&updater, mode), &cancel) {
+        Some(output) => updater_result(&updater, mode, output),
+        None => {
+            BackgroundCommandResult::error(format!("`{} update` was cancelled.", updater.display()))
+        }
+    }
+}
+
+const CANCEL_POLL: Duration = Duration::from_millis(50);
+
+fn run_until_cancelled(
+    mut command: Command,
+    cancel: &AtomicBool,
+) -> Option<std::io::Result<Output>> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) => return Some(Err(err)),
+    };
+    let stdout = child.stdout.take().map(drain);
+    let stderr = child.stderr.take().map(drain);
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Some(Ok(Output {
+                    status,
+                    stdout: collected(stdout),
+                    stderr: collected(stderr),
+                }));
+            }
+            Ok(None) => std::thread::sleep(CANCEL_POLL),
+            Err(err) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Some(Err(err));
+            }
+        }
+    }
+}
+
+fn drain(mut pipe: impl Read + Send + 'static) -> JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = pipe.read_to_end(&mut bytes);
+        bytes
+    })
+}
+
+fn collected(reader: Option<JoinHandle<Vec<u8>>>) -> Vec<u8> {
+    reader
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default()
 }
 
 fn updater_result<A>(
@@ -456,7 +528,8 @@ mod tests {
         fn start(
             &mut self,
             command: &'static str,
-            _work: codewhale_command_contract::facets::BackgroundCommandWork,
+            _job: codewhale_command_contract::facets::BackgroundJob,
+            _request: BackgroundRequest,
         ) -> Result<String, String> {
             Err(format!("/{command} must not start in this test"))
         }
@@ -504,10 +577,17 @@ mod tests {
         assert!(message.contains("no such file"), "{message}");
     }
 
-    #[tokio::test]
-    async fn a_background_updater_run_reports_a_missing_binary_without_blocking() {
+    #[test]
+    fn a_background_updater_job_reports_a_missing_binary() {
         let missing = std::env::temp_dir().join("codewhale-update-test-missing-binary");
-        let result = run_updater_in_background(missing.clone(), UpdateMode::Check).await;
+        let result = update_job(
+            BackgroundRequest {
+                updater: missing.clone(),
+                argument: "check".to_string(),
+                ..BackgroundRequest::default()
+            },
+            BackgroundCancel::default(),
+        );
         assert!(result.is_error);
         assert!(
             result
@@ -515,6 +595,42 @@ mod tests {
                 .expect("error message")
                 .contains(&missing.display().to_string())
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_finished_child_returns_its_output() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "echo out; echo err >&2"]);
+        let output = run_until_cancelled(command, &AtomicBool::new(false))
+            .expect("not cancelled")
+            .expect("spawned");
+        assert!(output.status.success());
+        assert_eq!(
+            updater_transcript(&output.stdout, &output.stderr),
+            "out\nerr"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelling_kills_and_reaps_the_running_updater() {
+        let cancel = BackgroundCancel::default();
+        let trigger = cancel.clone();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            trigger.store(true, Ordering::SeqCst);
+        });
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let started = std::time::Instant::now();
+        assert!(run_until_cancelled(command, &cancel).is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the child was killed, not waited out: {:?}",
+            started.elapsed()
+        );
+        canceller.join().unwrap();
     }
 
     #[test]
