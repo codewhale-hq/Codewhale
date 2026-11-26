@@ -26,9 +26,18 @@ pub struct AccountEpoch {
     signed_out_revision: Option<String>,
 }
 
-#[cfg(not(any(test, feature = "test-support")))]
 pub fn account_epoch(profile: Option<&str>) -> Result<AccountEpoch> {
     let api_base = runtime_account_api_base();
+    #[cfg(any(test, feature = "test-support"))]
+    if !account_api_base_is_loopback() {
+        return Ok(AccountEpoch {
+            api_base,
+            state: AccountSessionState::SignedOut,
+            account_id: None,
+            session_id: None,
+            signed_out_revision: None,
+        });
+    }
     epoch_of(
         &AccountSessionStore::new(secure_account_session_secrets()?, profile, &api_base)
             .snapshot()?,
@@ -49,17 +58,6 @@ fn epoch_of(snapshot: &AccountSessionSnapshot) -> Result<AccountEpoch> {
         account_id: info.account_id,
         session_id: info.session_id,
         signed_out_revision,
-    })
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn account_epoch(_profile: Option<&str>) -> Result<AccountEpoch> {
-    Ok(AccountEpoch {
-        api_base: runtime_account_api_base(),
-        state: AccountSessionState::SignedOut,
-        account_id: None,
-        session_id: None,
-        signed_out_revision: None,
     })
 }
 
