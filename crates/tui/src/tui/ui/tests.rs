@@ -20753,6 +20753,36 @@ fn inline_skill_slash_popup_filters_partial_without_leaking_to_command_position(
 }
 
 #[test]
+fn inline_skill_popup_opens_directly_after_cjk_text() {
+    let mut app = create_test_app();
+    app.cached_skills = vec![
+        ("search-files".to_string(), "Search files".to_string()),
+        ("my-review".to_string(), "Review code".to_string()),
+    ];
+
+    for input in ["请用/my", "请用$my", "（$my", "看看，/my"] {
+        app.input = input.to_string();
+        app.cursor_position = app.input.chars().count();
+        let entries = visible_slash_menu_entries(&app, 128);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec![format!(
+                "{}my-review",
+                if input.contains('$') { "$" } else { "/" }
+            )],
+            "input {input:?}"
+        );
+    }
+
+    app.input = "path/my".to_string();
+    app.cursor_position = app.input.chars().count();
+    assert!(visible_slash_menu_entries(&app, 128).is_empty());
+}
+
+#[test]
 fn inline_skill_slash_popup_does_not_open_inside_command_arguments() {
     let mut app = create_test_app();
     app.cached_skills = vec![
