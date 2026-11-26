@@ -1638,19 +1638,22 @@ mod cargo_record_tests {
         let root = tempfile::tempdir().unwrap();
         let bin = root.path().join("bin");
         fs::create_dir_all(&bin).unwrap();
+        let name = format!("codewhale{}", std::env::consts::EXE_SUFFIX);
         fs::write(
             root.path().join(".crates.toml"),
-            b"[v1]\n\"codewhale-cli 0.10.5 (registry+https://github.com/rust-lang/crates.io-index)\" = [\"codewhale\"]\n",
+            format!(
+                "[v1]\n\"codewhale-cli 0.10.5 (registry+https://github.com/rust-lang/crates.io-index)\" = [\"{name}\"]\n"
+            ),
         )
         .unwrap();
-        let listed = bin.join("codewhale");
+        let listed = bin.join(&name);
         let backup = bin.join("codewhale.bak-1");
         let staging = bin.join(".codewhale-update-1");
         fs::write(&listed, b"binary").unwrap();
         fs::write(&backup, b"binary").unwrap();
         fs::create_dir(&staging).unwrap();
         assert_eq!(
-            classify(&listed, "codewhale", None, None),
+            classify(&listed, &name, None, None),
             Some(InstallClass::PackageManaged(InstallMethod::Cargo))
         );
         for (path, name) in [
