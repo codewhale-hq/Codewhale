@@ -227,7 +227,7 @@ impl ToolSpec for FinanceTool {
     }
 
     fn description(&self) -> &'static str {
-        "Fetch live stock, ETF or crypto quotes via Yahoo-style endpoints under the session network policy. quote_age_seconds is the age of market_time."
+        "Fetch live stock, ETF or crypto quotes via Yahoo-style endpoints under the session network policy."
     }
 
     fn input_schema(&self) -> Value {
