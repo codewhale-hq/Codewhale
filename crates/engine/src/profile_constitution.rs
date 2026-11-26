@@ -9,13 +9,13 @@
 use anyhow::{Context, Result, ensure};
 use codewhale_config::user_constitution::ProfileConstitutionSnapshot;
 use codewhale_secrets::account::{
-    AccountSessionState, AccountSessionStore, secure_account_session_secrets,
+    AccountSessionSnapshot, AccountSessionState, AccountSessionStore,
+    secure_account_session_secrets,
 };
 
 const DESKTOP_BROWSER_SERVER: &str = "codewhale-browser";
 const ACCOUNT_LOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-const TURN_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
-const FRESH_FOR: std::time::Duration = std::time::Duration::from_secs(30);
+pub(crate) const TURN_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountEpoch {
@@ -29,8 +29,13 @@ pub struct AccountEpoch {
 #[cfg(not(any(test, feature = "test-support")))]
 pub fn account_epoch(profile: Option<&str>) -> Result<AccountEpoch> {
     let api_base = runtime_account_api_base();
-    let snapshot = AccountSessionStore::new(secure_account_session_secrets()?, profile, &api_base)
-        .snapshot()?;
+    epoch_of(
+        &AccountSessionStore::new(secure_account_session_secrets()?, profile, &api_base)
+            .snapshot()?,
+    )
+}
+
+fn epoch_of(snapshot: &AccountSessionSnapshot) -> Result<AccountEpoch> {
     let info = snapshot.runtime_info_at(chrono::Utc::now())?;
     let state = match info.state {
         AccountSessionState::OfflineCached => AccountSessionState::Authenticated,
@@ -77,6 +82,13 @@ async fn read_account_epoch(profile: Option<String>) -> Option<AccountEpoch> {
     if let Some(seam) = TEST_ACCOUNT_EPOCH.with(|cell| cell.borrow().clone()) {
         return seam;
     }
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some((store, ..)) = TEST_ACCOUNT_SOURCE.with(|cell| cell.borrow().clone()) {
+        return store
+            .snapshot()
+            .ok()
+            .and_then(|snapshot| epoch_of(&snapshot).ok());
+    }
     tokio::task::spawn_blocking(move || account_epoch(profile.as_deref()))
         .await
         .ok()?
@@ -116,9 +128,16 @@ pub async fn admit_desktop_browser_call(
 /// with their own provider key never requires a Codewhale sign-in. A
 /// host-supplied snapshot (Runtime API) still fails its turn closed.
 pub async fn load(profile: Option<&str>) -> Result<Option<ProfileConstitutionSnapshot>> {
+    load_for(profile, None).await
+}
+
+async fn load_for(
+    profile: Option<&str>,
+    expected: Option<&AccountEpoch>,
+) -> Result<Option<ProfileConstitutionSnapshot>> {
     let api_base = runtime_account_api_base();
     let store = AccountSessionStore::new(secure_account_session_secrets()?, profile, &api_base);
-    load_from(&store, &api_base).await
+    load_from(&store, &api_base, expected).await
 }
 
 /// Offline preview cannot promise a request hash before account admission.
@@ -173,8 +192,15 @@ pub fn normalize_runtime_account_api_base(value: &str) -> Option<String> {
 async fn load_from(
     store: &AccountSessionStore,
     api_base: &str,
+    expected: Option<&AccountEpoch>,
 ) -> Result<Option<ProfileConstitutionSnapshot>> {
     let captured = store.snapshot()?;
+    if let Some(expected) = expected {
+        ensure!(
+            epoch_of(&captured)? == *expected,
+            "The signed-in account changed while loading its constitution; retry"
+        );
+    }
     let Some(auth) = captured.load()? else {
         return Ok(None);
     };
@@ -240,12 +266,21 @@ pub fn snapshot_from_me(
     Ok(Some(snapshot))
 }
 
-pub type Captured = Result<Option<String>, String>;
+type Loaded = Result<Option<ProfileConstitutionSnapshot>, String>;
+
+pub enum AccountRead {
+    Ready(Result<Option<String>, String>),
+    Pending {
+        last: Option<String>,
+        signed_in: bool,
+    },
+}
 
 #[derive(Default)]
 pub struct AccountConstitution {
-    ready: Option<(Option<AccountEpoch>, std::time::Instant, Captured)>,
-    pending: Option<(Option<AccountEpoch>, tokio::task::JoinHandle<Captured>)>,
+    last: Option<(AccountEpoch, ProfileConstitutionSnapshot)>,
+    failure: Option<(AccountEpoch, String)>,
+    pending: Option<(AccountEpoch, tokio::task::JoinHandle<Loaded>)>,
 }
 
 impl AccountConstitution {
@@ -254,20 +289,34 @@ impl AccountConstitution {
         profile: Option<&str>,
         fence: Option<&AccountFence>,
         cancel: &tokio_util::sync::CancellationToken,
-    ) -> Option<Captured> {
+    ) -> AccountRead {
+        let key = fence.and_then(|fence| fence.admitted.clone());
+        let expected = key.clone();
         #[cfg(any(test, feature = "test-support"))]
         {
             if let Some(message) = TEST_ACCOUNT_LOAD_FAILURE.get() {
-                return Some(Err(message.to_owned()));
+                return AccountRead::Ready(Err(message.to_owned()));
+            }
+            if let Some((store, api_base, wait)) =
+                TEST_ACCOUNT_SOURCE.with(|cell| cell.borrow().clone())
+            {
+                return self
+                    .capture_with(key, cancel, wait, async move {
+                        load_from(&store, &api_base, expected.as_ref())
+                            .await
+                            .map_err(|error| error.to_string())
+                    })
+                    .await;
             }
             if !account_api_base_is_loopback() {
-                return Some(Ok(crate::prompts::load_user_constitution_block()));
+                return AccountRead::Ready(Ok(crate::prompts::load_user_constitution_block()));
             }
         }
         let profile = profile.map(str::to_owned);
-        let key = fence.and_then(|fence| fence.admitted.clone());
         self.capture_with(key, cancel, TURN_WAIT, async move {
-            rendered(load(profile.as_deref()).await)
+            load_for(profile.as_deref(), expected.as_ref())
+                .await
+                .map_err(|error| error.to_string())
         })
         .await
     }
@@ -278,50 +327,88 @@ impl AccountConstitution {
         cancel: &tokio_util::sync::CancellationToken,
         wait: std::time::Duration,
         read: F,
-    ) -> Option<Captured>
+    ) -> AccountRead
     where
-        F: std::future::Future<Output = Captured> + Send + 'static,
+        F: std::future::Future<Output = Loaded> + Send + 'static,
     {
-        if let Some((pending_key, mut handle)) = self.pending.take() {
-            if pending_key != key {
-                handle.abort();
-            } else if handle.is_finished() {
-                let captured = (&mut handle)
-                    .await
-                    .unwrap_or_else(|error| Err(error.to_string()));
-                self.ready = Some((pending_key, std::time::Instant::now(), captured));
-            } else {
-                self.pending = Some((pending_key, handle));
-                return self.cached(&key);
-            }
+        let current = |epoch: &AccountEpoch| Some(epoch) == key.as_ref();
+        if !self.last.as_ref().is_some_and(|(epoch, _)| current(epoch)) {
+            self.last = None;
         }
-        if let Some((ready_key, read_at, captured)) = &self.ready
-            && *ready_key == key
-            && read_at.elapsed() < FRESH_FOR
+        if !self
+            .failure
+            .as_ref()
+            .is_some_and(|(epoch, _)| current(epoch))
         {
-            return Some(captured.clone());
+            self.failure = None;
         }
-        let mut handle = tokio::spawn(read);
+        let in_flight = match self.pending.take() {
+            Some((epoch, handle)) if current(&epoch) && !handle.is_finished() => Some(handle),
+            Some((epoch, handle)) if current(&epoch) => {
+                self.adopt(
+                    epoch,
+                    handle.await.unwrap_or_else(|error| Err(error.to_string())),
+                );
+                None
+            }
+            Some((_, handle)) => {
+                handle.abort();
+                None
+            }
+            None => None,
+        };
+        let mut handle = in_flight.unwrap_or_else(|| tokio::spawn(read));
+        let wait = if self.failure.is_some() {
+            std::time::Duration::ZERO
+        } else {
+            wait
+        };
         tokio::select! {
             biased;
             () = cancel.cancelled() => {}
             joined = &mut handle => {
-                let captured = joined.unwrap_or_else(|error| Err(error.to_string()));
-                self.ready = Some((key, std::time::Instant::now(), captured.clone()));
-                return Some(captured);
+                let loaded = joined.unwrap_or_else(|error| Err(error.to_string()));
+                if let Some(epoch) = key {
+                    self.adopt(epoch, loaded.clone());
+                }
+                return AccountRead::Ready(rendered(loaded));
             }
             () = tokio::time::sleep(wait) => {}
         }
-        let cached = self.cached(&key);
-        self.pending = Some((key, handle));
-        cached
+        let signed_in = key
+            .as_ref()
+            .is_some_and(|epoch| epoch.state != AccountSessionState::SignedOut);
+        match key {
+            Some(epoch) => self.pending = Some((epoch, handle)),
+            None => handle.abort(),
+        }
+        if let Some((_, error)) = &self.failure {
+            return AccountRead::Ready(Err(error.clone()));
+        }
+        AccountRead::Pending {
+            last: self
+                .last
+                .as_ref()
+                .and_then(|(_, snapshot)| snapshot.render().ok()),
+            signed_in,
+        }
     }
 
-    fn cached(&self, key: &Option<AccountEpoch>) -> Option<Captured> {
-        self.ready
+    #[cfg(test)]
+    pub(crate) fn read_in_flight(&self) -> bool {
+        self.pending
             .as_ref()
-            .filter(|(ready_key, ..)| ready_key == key)
-            .map(|(_, _, captured)| captured.clone())
+            .is_some_and(|(_, handle)| !handle.is_finished())
+    }
+
+    fn adopt(&mut self, epoch: AccountEpoch, loaded: Loaded) {
+        match loaded {
+            Ok(snapshot) => {
+                self.failure = None;
+                self.last = snapshot.map(|snapshot| (epoch, snapshot));
+            }
+            Err(error) => self.failure = Some((epoch, error)),
+        }
     }
 }
 
@@ -333,13 +420,14 @@ impl Drop for AccountConstitution {
     }
 }
 
-fn rendered(loaded: Result<Option<ProfileConstitutionSnapshot>>) -> Captured {
-    match loaded {
-        Ok(Some(snapshot)) => snapshot.render().map(Some),
-        Ok(None) => Ok(crate::prompts::load_user_constitution_block()),
-        Err(error) => Err(error),
+fn rendered(loaded: Loaded) -> Result<Option<String>, String> {
+    match loaded? {
+        Some(snapshot) => snapshot
+            .render()
+            .map(Some)
+            .map_err(|error| error.to_string()),
+        None => Ok(crate::prompts::load_user_constitution_block()),
     }
-    .map_err(|error| error.to_string())
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -412,6 +500,35 @@ impl Drop for AccountEpochGuard {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static TEST_ACCOUNT_SOURCE: std::cell::RefCell<
+        Option<(AccountSessionStore, String, std::time::Duration)>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Serve this thread's turns the signed-in account in `store`, read from
+/// `api_base` through the real profile load, waiting at most `wait` per turn.
+#[cfg(any(test, feature = "test-support"))]
+pub fn serve_account_for_test(
+    store: AccountSessionStore,
+    api_base: String,
+    wait: std::time::Duration,
+) -> AccountSourceGuard {
+    TEST_ACCOUNT_SOURCE.with(|cell| *cell.borrow_mut() = Some((store, api_base, wait)));
+    AccountSourceGuard
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub struct AccountSourceGuard;
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for AccountSourceGuard {
+    fn drop(&mut self) {
+        TEST_ACCOUNT_SOURCE.with(|cell| *cell.borrow_mut() = None);
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
 pub struct AccountLoadFailureGuard;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -422,41 +539,43 @@ impl Drop for AccountLoadFailureGuard {
 }
 
 #[cfg(test)]
+pub(crate) fn fixture_account_store(base: &str) -> AccountSessionStore {
+    use codewhale_secrets::account::{AccountAuthBundle, AccountSession, AccountUser};
+    use codewhale_secrets::{InMemoryKeyringStore, Secrets};
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let store = AccountSessionStore::new(
+        Secrets::new(std::sync::Arc::new(InMemoryKeyringStore::new())),
+        Some("work"),
+        base,
+    );
+    store
+        .save(AccountAuthBundle {
+            token_type: "Bearer".into(),
+            access_token: "constitution-fixture-access".into(),
+            refresh_token: "constitution-fixture-refresh".into(),
+            user: Some(AccountUser {
+                id: "acct_fixture".into(),
+                ..Default::default()
+            }),
+            session: Some(AccountSession {
+                id: "session_fixture".into(),
+                expires_at: "2099-01-01T00:00:00Z".into(),
+                ..Default::default()
+            }),
+        })
+        .unwrap();
+    store
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use codewhale_config::user_constitution::ProfileConstitution;
-    use codewhale_secrets::account::{AccountAuthBundle, AccountSession, AccountUser};
-    use codewhale_secrets::{InMemoryKeyringStore, Secrets};
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{header, method, path},
     };
 
-    fn fixture_store(base: &str) -> AccountSessionStore {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let store = AccountSessionStore::new(
-            Secrets::new(std::sync::Arc::new(InMemoryKeyringStore::new())),
-            Some("work"),
-            base,
-        );
-        store
-            .save(AccountAuthBundle {
-                token_type: "Bearer".into(),
-                access_token: "constitution-fixture-access".into(),
-                refresh_token: "constitution-fixture-refresh".into(),
-                user: Some(AccountUser {
-                    id: "acct_fixture".into(),
-                    ..Default::default()
-                }),
-                session: Some(AccountSession {
-                    id: "session_fixture".into(),
-                    expires_at: "2099-01-01T00:00:00Z".into(),
-                    ..Default::default()
-                }),
-            })
-            .unwrap();
-        store
-    }
     fn me() -> serde_json::Value {
         serde_json::json!({"user":{"id":"acct_fixture","settingsRevision":9,
             "preferences":{"constitution":ProfileConstitution { notes:"🐋".repeat(4000), ..Default::default() }}}})
@@ -465,7 +584,7 @@ mod tests {
     #[tokio::test]
     async fn profile_constitution_account_transport_is_bounded_and_identity_checked() {
         let server = MockServer::start().await;
-        let store = fixture_store(&server.uri());
+        let store = fixture_account_store(&server.uri());
         Mock::given(method("GET"))
             .and(path("/api/me"))
             .and(header(
@@ -476,7 +595,10 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let snapshot = load_from(&store, &server.uri()).await.unwrap().unwrap();
+        let snapshot = load_from(&store, &server.uri(), None)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(snapshot.revision, 9);
         assert_eq!(snapshot.constitution.notes.chars().count(), 4000);
         assert!(snapshot_from_me(me(), "another_account").is_err());
@@ -491,7 +613,7 @@ mod tests {
     #[tokio::test]
     async fn profile_constitution_does_not_adopt_a_response_after_logout() {
         let server = MockServer::start().await;
-        let store = fixture_store(&server.uri());
+        let store = fixture_account_store(&server.uri());
         Mock::given(method("GET"))
             .respond_with(
                 ResponseTemplate::new(200)
@@ -501,14 +623,14 @@ mod tests {
             .mount(&server)
             .await;
         let base = server.uri();
-        let (result, ()) = tokio::join!(load_from(&store, &base), async {
+        let (result, ()) = tokio::join!(load_from(&store, &base, None), async {
             while server.received_requests().await.unwrap().is_empty() {
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
             store.clear().unwrap();
         });
         assert!(result.unwrap_err().to_string().contains("account changed"));
-        assert!(load_from(&store, &base).await.unwrap().is_none());
+        assert!(load_from(&store, &base, None).await.unwrap().is_none());
     }
 
     #[test]
@@ -584,109 +706,82 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn slow_account_service_never_holds_a_turn_and_stop_ends_the_wait() {
+    async fn account_reads_are_never_cached_and_never_cross_accounts() {
+        let _home = crate::test_support::SealedHome::new();
         let server = MockServer::start().await;
-        let store = fixture_store(&server.uri());
-        Mock::given(method("GET"))
-            .and(path("/api/me"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(me())
-                    .set_delay(std::time::Duration::from_millis(400)),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
-        let read = {
-            let (store, base) = (store.clone(), server.uri());
-            async move { rendered(load_from(&store, &base).await) }
-        };
-        let key = Some(AccountEpoch {
-            api_base: server.uri(),
-            state: AccountSessionState::Authenticated,
-            account_id: Some("acct_fixture".into()),
-            session_id: Some("session_fixture".into()),
-            signed_out_revision: None,
-        });
-        let mut cache = AccountConstitution::default();
+        let store = fixture_account_store(&server.uri());
+        let epoch = epoch_of(&store.snapshot().unwrap()).unwrap();
+        let mut other = epoch.clone();
+        other.account_id = Some("acct_other".into());
+        assert!(
+            load_from(&store, &server.uri(), Some(&other))
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("account changed")
+        );
+        let snapshot = snapshot_from_me(me(), "acct_fixture").unwrap();
         let cancel = tokio_util::sync::CancellationToken::new();
-        let started = std::time::Instant::now();
-        let first = cache
-            .capture_with(
-                key.clone(),
-                &cancel,
-                std::time::Duration::from_millis(50),
-                read,
-            )
-            .await;
-        assert!(first.is_none(), "an unready read must not hold the turn");
-        assert!(started.elapsed() < std::time::Duration::from_millis(300));
-
-        let started = std::time::Instant::now();
-        let unused = async { unreachable!("an in-flight read for the same account is reused") };
-        assert!(
-            cache
-                .capture_with(
-                    key.clone(),
-                    &cancel,
-                    std::time::Duration::from_secs(60),
-                    unused
-                )
-                .await
-                .is_none()
-        );
-        assert!(started.elapsed() < std::time::Duration::from_millis(300));
-
-        let stop = tokio_util::sync::CancellationToken::new();
-        let stopper = {
-            let stop = stop.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                stop.cancel();
-            })
+        let wait = std::time::Duration::from_secs(60);
+        let mut reads = AccountConstitution::default();
+        let ready = |read: AccountRead| match read {
+            AccountRead::Ready(result) => result.unwrap(),
+            AccountRead::Pending { .. } => panic!("a finished read is used by its own turn"),
         };
-        let mut stopped = AccountConstitution::default();
-        let started = std::time::Instant::now();
-        let never = std::future::pending::<Captured>();
-        assert!(
-            stopped
-                .capture_with(
-                    key.clone(),
-                    &stop,
-                    std::time::Duration::from_secs(60),
-                    never
-                )
-                .await
-                .is_none(),
-            "Stop ends the wait for the account service"
+        let first = ready(
+            reads
+                .capture_with(Some(epoch.clone()), &cancel, wait, {
+                    let snapshot = snapshot.clone();
+                    async move { Ok(snapshot) }
+                })
+                .await,
         );
-        assert!(started.elapsed() < std::time::Duration::from_millis(300));
-        stopper.await.unwrap();
+        assert!(first.unwrap().contains("revision 9"));
+        codewhale_config::UserConstitution {
+            about: Some("Signed out local edit.".to_string()),
+            ..Default::default()
+        }
+        .save()
+        .unwrap();
+        let signed_out = ready(
+            reads
+                .capture_with(Some(epoch.clone()), &cancel, wait, async { Ok(None) })
+                .await,
+        );
+        assert!(
+            signed_out.unwrap().contains("Signed out local edit."),
+            "no account is rendered from the local file at use time"
+        );
 
-        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-        let unused = async { unreachable!("a fresh read is reused") };
-        let adopted = cache
+        let slow = || std::future::pending::<Loaded>();
+        reads.last = Some((
+            epoch.clone(),
+            snapshot_from_me(me(), "acct_fixture").unwrap().unwrap(),
+        ));
+        let AccountRead::Pending { last, signed_in } = reads
             .capture_with(
-                key.clone(),
+                Some(other.clone()),
                 &cancel,
-                std::time::Duration::from_secs(60),
-                unused,
+                std::time::Duration::ZERO,
+                slow(),
             )
             .await
-            .expect("the finished read is adopted by the next turn")
-            .unwrap()
-            .unwrap();
-        assert!(adopted.contains("revision 9"));
+        else {
+            panic!("an unfinished read is pending");
+        };
+        assert!(last.is_none(), "another account never reuses a read");
+        assert!(signed_in);
+        assert!(reads.pending.is_some());
+        let AccountRead::Pending { last, .. } = reads
+            .capture_with(None, &cancel, std::time::Duration::ZERO, slow())
+            .await
+        else {
+            panic!("an unfinished read is pending");
+        };
+        assert!(last.is_none());
         assert!(
-            cache
-                .capture_with(
-                    None,
-                    &stop,
-                    std::time::Duration::from_secs(60),
-                    std::future::pending()
-                )
-                .await
-                .is_none()
+            reads.pending.is_none() && reads.last.is_none(),
+            "an unknown account keeps nothing"
         );
     }
 }

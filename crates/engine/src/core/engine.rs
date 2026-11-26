@@ -1144,6 +1144,7 @@ pub struct Engine {
     /// The local-fallback notice for an unavailable account profile is shown
     /// once per engine; later turns only log it.
     profile_constitution_fallback_noticed: bool,
+    profile_constitution_pending_noticed: bool,
     account_constitution: crate::profile_constitution::AccountConstitution,
     turn_account_fence: Option<Arc<crate::profile_constitution::AccountFence>>,
     /// Model requests in a row that failed with the same upstream HTTP
@@ -2846,6 +2847,7 @@ impl Engine {
             creator_unavailable_noted: None,
             constitution_block: None,
             profile_constitution_fallback_noticed: false,
+            profile_constitution_pending_noticed: false,
             account_constitution: Default::default(),
             turn_account_fence: None,
             repeated_upstream_failure: None,
@@ -7323,38 +7325,60 @@ impl Engine {
             self.constitution_block.clone()
         } else {
             let host_supplied = profile_constitution.is_some();
-            if provenance.can_authorize_work() {
-                self.turn_account_fence = Some(Arc::new(
+            let fence = if provenance.can_authorize_work() {
+                Some(Arc::new(
                     crate::profile_constitution::AccountFence::capture(
                         self.api_config.account_profile.as_deref(),
                     )
                     .await,
-                ));
-            }
-            let captured = match profile_constitution {
-                Some(snapshot) => Some(
-                    snapshot
-                        .render()
-                        .map(Some)
-                        .map_err(|error| error.to_string()),
-                ),
-                None => {
-                    self.account_constitution
-                        .capture(
-                            self.api_config.account_profile.as_deref(),
-                            self.turn_account_fence.as_deref(),
-                            &self.cancel_token,
-                        )
-                        .await
-                }
+                ))
+            } else {
+                None
             };
-            match captured {
-                Some(Ok(block)) => block,
-                None => crate::prompts::load_user_constitution_block(),
+            let captured = match profile_constitution {
+                Some(snapshot) => snapshot
+                    .render()
+                    .map(Some)
+                    .map_err(|error| error.to_string()),
+                None => match self
+                    .account_constitution
+                    .capture(
+                        self.api_config.account_profile.as_deref(),
+                        fence.as_deref(),
+                        &self.cancel_token,
+                    )
+                    .await
+                {
+                    crate::profile_constitution::AccountRead::Ready(result) => result,
+                    crate::profile_constitution::AccountRead::Pending {
+                        last: Some(block), ..
+                    } => Ok(Some(block)),
+                    crate::profile_constitution::AccountRead::Pending {
+                        last: None,
+                        signed_in,
+                    } => {
+                        if signed_in && !self.profile_constitution_pending_noticed {
+                            self.profile_constitution_pending_noticed = true;
+                            let _ = self
+                                .send_event(Event::status(
+                                    codewhale_localization::tr(
+                                        codewhale_localization::resolve_locale(&self.config.locale_tag),
+                                        codewhale_localization::MessageId::ProfileConstitutionLoadingLocal,
+                                    )
+                                    .to_string(),
+                                ))
+                                .await;
+                        }
+                        Ok(crate::prompts::load_user_constitution_block())
+                    }
+                },
+            };
+            let block = match captured {
+                Ok(block) => block,
                 // Local use never depends on the Codewhale account: an expired
                 // sign-in or unreachable account service falls back to the
                 // signed-out local constitution, never another account's.
-                Some(Err(error)) if !host_supplied => {
+                Err(error) if !host_supplied => {
                     tracing::warn!(%error, "account profile constitution unavailable; using local constitution");
                     if !self.profile_constitution_fallback_noticed {
                         self.profile_constitution_fallback_noticed = true;
@@ -7370,7 +7394,7 @@ impl Engine {
                     }
                     crate::prompts::load_user_constitution_block()
                 }
-                Some(Err(error)) => {
+                Err(error) => {
                     crate::cost_status::record_runtime_usage_batch(
                         initial_cost_scope,
                         initial_origin.as_ref(),
@@ -7389,7 +7413,11 @@ impl Engine {
                         error: Some(error.to_string()),
                     };
                 }
+            };
+            if fence.is_some() {
+                self.turn_account_fence = fence;
             }
+            block
         };
         if provenance.can_authorize_work() && (is_review || self.rlm_host.is_some()) {
             self.turn_account_fence = Some(Arc::new(
