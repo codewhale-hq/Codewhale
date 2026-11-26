@@ -3093,7 +3093,7 @@ pub fn approval_policy_baseline_from_permission_posture(
 impl Config {
     #[must_use]
     pub fn catalog_auto_refresh_enabled(&self) -> bool {
-        self.catalog.as_ref().map_or(true, |c| c.auto_refresh)
+        self.catalog.as_ref().is_none_or(|c| c.auto_refresh)
     }
     /// Whether Linux shell commands prefer bubblewrap confinement.
     ///

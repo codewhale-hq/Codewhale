@@ -289,6 +289,43 @@ impl codewhale_engine::command_catalog::CommandCatalog for CommandTable {
             user_registry_entries,
         )
     }
+
+    fn expands_user_commands(&self) -> bool {
+        true
+    }
+
+    fn expand_user_command(
+        &self,
+        workspace: &std::path::Path,
+        plugins: &codewhale_plugins::PluginRegistry,
+        input: &str,
+    ) -> Option<Result<codewhale_engine::command_catalog::ExpandedUserCommand, String>> {
+        let found = user_registry::with_registry_for_workspace_plugins(
+            Some(workspace),
+            plugins,
+            |registry| user_registry::lookup(registry, input),
+        )?;
+        let (metadata, args) = match found {
+            Ok(found) => found,
+            Err(error) => return Some(Err(error)),
+        };
+        if metadata.extension.is_some() {
+            return None;
+        }
+        Some(
+            user_registry::expand_template(&metadata, &args).map(|message| {
+                codewhale_engine::command_catalog::ExpandedUserCommand {
+                    plugin_id: metadata
+                        .plugin_authority
+                        .as_ref()
+                        .map(|authority| authority.plugin_id.as_str().to_string()),
+                    name: metadata.name,
+                    message,
+                    allowed_tools: metadata.allowed_tools,
+                }
+            }),
+        )
+    }
 }
 
 fn user_registry_entries(

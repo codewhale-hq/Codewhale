@@ -26,6 +26,7 @@ pub(super) async fn start_thread_review(
             thread,
             turn,
             idempotent_replay: replayed,
+            user_command: None,
         }),
     ))
 }

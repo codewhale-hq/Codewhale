@@ -2086,6 +2086,45 @@ struct StartTurnResponse {
     /// byte-identical — a client that never sends a key sees no change.
     #[serde(skip_serializing_if = "replay_flag_is_absent")]
     idempotent_replay: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_command: Option<UserCommandRun>,
+}
+
+#[derive(Debug, Serialize)]
+struct UserCommandRun {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plugin_id: Option<String>,
+}
+
+async fn expand_user_command(
+    state: &RuntimeApiState,
+    workspace: &std::path::Path,
+    prompt: &str,
+) -> Result<Option<codewhale_engine::command_catalog::ExpandedUserCommand>, ApiError> {
+    if !prompt.trim_start().starts_with('/') {
+        return Ok(None);
+    }
+    let Some(catalog) = codewhale_engine::command_catalog::installed()
+        .filter(|catalog| catalog.expands_user_commands())
+    else {
+        return Ok(None);
+    };
+    let discovery = Arc::clone(&state.plugin_discovery);
+    let workspace = workspace.to_path_buf();
+    let input = prompt.to_string();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+        let plugins = discovery.registry_for_workspace(&workspace);
+        catalog.expand_user_command(&workspace, &plugins, &input)
+    })
+    .await
+    .map_err(|error| ApiError::internal(error.to_string()))?
+    .transpose()
+    .map_err(|reason| ApiError::unprocessable(reason).with_code("user_command_denied"))
 }
 
 fn replay_flag_is_absent(replayed: &bool) -> bool {
@@ -6142,7 +6181,9 @@ struct CommandCatalogEntry {
     /// `builtin` and `extension` are registered code; `user` expands a stored template.
     kind: &'static str,
     /// `host` runs locally, `extension` invokes the Runtime command endpoint,
-    /// and `prompt` expands into the request the model sees.
+    /// and `prompt` is a template that expands into the request the model
+    /// sees: in the terminal always, and through the Runtime turn endpoint
+    /// when `runtime_expands` is set.
     binding: &'static str,
     /// `primary` | `advanced` | `compatibility` — builtins only; `hidden`
     /// covers rows the product does not advertise anywhere.
@@ -6161,6 +6202,8 @@ struct CommandCatalogEntry {
     plugin_id: Option<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     workspace_sourced: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    runtime_expands: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     registration_id: Option<String>,
 }
@@ -6173,6 +6216,7 @@ struct CommandsResponse {
 fn command_catalog(
     builtins: &[codewhale_engine::command_catalog::BuiltinCommand],
     users: &[codewhale_engine::command_catalog::UserCommand],
+    runtime_expands: bool,
 ) -> Vec<CommandCatalogEntry> {
     let mut commands = Vec::new();
     for info in builtins {
@@ -6222,6 +6266,7 @@ fn command_catalog(
             origin: None,
             plugin_id: None,
             workspace_sourced: false,
+            runtime_expands: false,
             registration_id: None,
         });
     }
@@ -6247,6 +6292,7 @@ fn command_catalog(
             origin: None,
             plugin_id: command.plugin_id.clone(),
             workspace_sourced: command.workspace_sourced,
+            runtime_expands,
             registration_id: None,
         });
     }
@@ -6291,6 +6337,7 @@ async fn list_commands(
         let mut commands = command_catalog(
             &catalog.builtins(),
             &catalog.user_commands_with_plugins(&workspace, &plugins),
+            catalog.expands_user_commands(),
         );
         let mut counts = std::collections::HashMap::new();
         for entry in &extensions {
@@ -6335,6 +6382,7 @@ async fn list_commands(
                 origin: Some(reference.origin.clone()),
                 plugin_id: Some(reference.plugin_id.clone()),
                 workspace_sourced: false,
+                runtime_expands: false,
                 registration_id: query
                     .thread_id
                     .as_deref()
@@ -10949,6 +10997,7 @@ async fn start_thread_watch_turn(
             thread,
             turn,
             idempotent_replay: replayed,
+            user_command: None,
         }),
     ))
 }
@@ -11041,6 +11090,35 @@ async fn start_thread_turn_for_caller(
     if scope.is_some() {
         sanitize_remote_turn_request(&mut req)?;
     }
+    let target = state
+        .runtime_threads
+        .get_thread(&id)
+        .await
+        .map_err(map_thread_err)?;
+    let expanded = expand_user_command(&state, &target.workspace, &req.prompt).await?;
+    let user_command = expanded.map(|expanded| {
+        if req.input_summary.is_none() {
+            req.input_summary = Some(codewhale_engine::runtime_threads::manager::summarize_text(
+                req.prompt.trim(),
+                codewhale_engine::runtime_threads::manager::SUMMARY_LIMIT,
+            ));
+        }
+        req.prompt = expanded.message;
+        if let Some(tools) = expanded.allowed_tools {
+            let granted = req.allowed_tools.take().or(target.allowed_tools.clone());
+            req.allowed_tools = Some(match granted {
+                Some(granted) => tools
+                    .into_iter()
+                    .filter(|tool| granted.contains(tool))
+                    .collect(),
+                None => tools,
+            });
+        }
+        UserCommandRun {
+            name: expanded.name,
+            plugin_id: expanded.plugin_id,
+        }
+    });
     let expected_workspace = req.expected_workspace.clone();
     let (turn, replayed) = if owner_composer {
         state
@@ -11084,6 +11162,7 @@ async fn start_thread_turn_for_caller(
             thread,
             turn,
             idempotent_replay: replayed,
+            user_command,
         }),
     ))
 }
@@ -11250,8 +11329,23 @@ async fn steer_thread_turn(
     Json(value): Json<Value>,
 ) -> Result<Json<TurnRecord>, ApiError> {
     let owner_composer = turn_caller_is_owner_composer(&state, caller, &value)?;
-    let req: SteerTurnRequest = serde_json::from_value(value)
+    let mut req: SteerTurnRequest = serde_json::from_value(value)
         .map_err(|error| ApiError::unprocessable(error.to_string()))?;
+    let thread = state
+        .runtime_threads
+        .get_thread(&id)
+        .await
+        .map_err(map_thread_err)?;
+    if let Some(expanded) = expand_user_command(&state, &thread.workspace, &req.prompt).await? {
+        if expanded.allowed_tools.is_some() {
+            return Err(ApiError::unprocessable(format!(
+                "/{} limits the tools a turn may use; send it as a new turn",
+                expanded.name
+            ))
+            .with_code("user_command_needs_turn"));
+        }
+        req.prompt = expanded.message;
+    }
     let turn = state
         .runtime_threads
         .steer_turn_for_caller(&id, &turn_id, req, owner_composer)
@@ -11317,6 +11411,7 @@ async fn compact_thread(
             thread,
             turn,
             idempotent_replay: false,
+            user_command: None,
         }),
     ))
 }

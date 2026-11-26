@@ -958,26 +958,46 @@ pub fn with_registry_for_app<R>(app: &App, f: impl FnOnce(&UserCommandRegistry) 
     with_registry_for_plugins(app.extension_plugin_view().as_ref(), f)
 }
 
-pub fn try_dispatch(app: &mut App, input: &str) -> Option<CommandResult> {
+pub(crate) fn lookup(
+    registry: &UserCommandRegistry,
+    input: &str,
+) -> Option<Result<(UserCommandMetadata, String), String>> {
     let parts: Vec<&str> = input.trim().splitn(2, char::is_whitespace).collect();
     let command = normalize_name(parts.first().copied().unwrap_or_default());
-    let args = parts.get(1).copied().unwrap_or("").trim();
-
-    let (dispatch_error, metadata) = with_registry_for_app(app, |registry| {
-        // Dispatch must see a just-revoked plugin command long enough to
-        // return a visible authority error. Discovery and palettes use
-        // `get`/`iter`, which hide it immediately.
-        let metadata = registry.get_unchecked(&command).cloned();
-        let dispatch_error = metadata
-            .as_ref()
-            .and_then(|_| registry.dispatch_error(&command));
-        (dispatch_error, metadata)
-    });
-    if let Some(error) = dispatch_error {
-        return Some(CommandResult::error(error));
+    let args = parts.get(1).copied().unwrap_or("").trim().to_string();
+    // Dispatch must see a just-revoked plugin command long enough to
+    // return a visible authority error. Discovery and palettes use
+    // `get`/`iter`, which hide it immediately.
+    let metadata = registry.get_unchecked(&command).cloned()?;
+    if let Some(error) = registry.dispatch_error(&command) {
+        return Some(Err(error));
     }
+    Some(Ok((metadata, args)))
+}
 
-    let metadata = metadata?;
+pub(crate) fn expand_template(
+    metadata: &UserCommandMetadata,
+    args: &str,
+) -> Result<String, String> {
+    if let Some(authority) = metadata.plugin_authority.as_ref()
+        && let Err(reason) = codewhale_plugins::registry::verify_plugin_component_authority(
+            authority,
+            codewhale_plugins::activation::PluginActivationCapability::Commands,
+        )
+    {
+        return Err(format!(
+            "Plugin command '/{}' was denied: {reason}. Reload, review, trust, and enable the bundle before retrying.",
+            metadata.name
+        ));
+    }
+    Ok(user_commands::apply_template(&metadata.body, args))
+}
+
+pub fn try_dispatch(app: &mut App, input: &str) -> Option<CommandResult> {
+    let (metadata, args) = match with_registry_for_app(app, |registry| lookup(registry, input))? {
+        Ok(found) => found,
+        Err(error) => return Some(CommandResult::error(error)),
+    };
     if let Some(extension) = metadata.extension.clone() {
         // Runs in the extension host, asynchronously: the UI event loop
         // handles the action. Its liveness, receipt and host checks happen
@@ -986,20 +1006,13 @@ pub fn try_dispatch(app: &mut App, input: &str) -> Option<CommandResult> {
         return Some(CommandResult::action(AppAction::RunExtensionCommand {
             command: extension,
             name: metadata.name,
-            input: args.to_string(),
+            input: args,
         }));
     }
-    if let Some(authority) = metadata.plugin_authority.as_ref()
-        && let Err(reason) = codewhale_plugins::registry::verify_plugin_component_authority(
-            authority,
-            codewhale_plugins::activation::PluginActivationCapability::Commands,
-        )
-    {
-        return Some(CommandResult::error(format!(
-            "Plugin command '/{}' was denied: {reason}. Reload, review, trust, and enable the bundle before retrying.",
-            metadata.name
-        )));
-    }
+    let message = match expand_template(&metadata, &args) {
+        Ok(message) => message,
+        Err(error) => return Some(CommandResult::error(error)),
+    };
 
     app.goal.objective = None;
     app.goal.started_at = None;
@@ -1050,7 +1063,6 @@ pub fn try_dispatch(app: &mut App, input: &str) -> Option<CommandResult> {
     }
     app.pausable = metadata.pausable;
 
-    let message = user_commands::apply_template(&metadata.body, args);
     Some(CommandResult::action(AppAction::SendMessage(message)))
 }
 

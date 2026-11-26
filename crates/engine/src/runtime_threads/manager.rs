@@ -12,7 +12,7 @@ pub use permission_rules::{
 pub(super) const EVENT_CHANNEL_CAPACITY: usize = 1024;
 pub(super) const MAX_ACTIVE_THREADS_DEFAULT: usize = 8;
 pub(super) const MAX_PENDING_DYNAMIC_TOOL_CALLS: usize = 128;
-pub(super) const SUMMARY_LIMIT: usize = 280;
+pub const SUMMARY_LIMIT: usize = 280;
 pub(super) const STREAM_DELTA_BATCH_MAX_LATENCY: Duration = Duration::from_millis(32);
 pub(super) const STREAM_DELTA_BATCH_MAX_BYTES: usize = 16 * 1024;
 /// How long `steer_turn` observes the engine's verdict before answering with
