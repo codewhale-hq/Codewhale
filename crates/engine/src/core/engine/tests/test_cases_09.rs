@@ -234,6 +234,49 @@ fn workspace_write_carve_out_covers_accept_edits_only() {
 }
 
 #[test]
+fn ask_posture_asks_before_read_only_shell_commands() {
+    use crate::tools::spec::ToolSpec;
+
+    let shell = crate::tools::shell::BashTool::new("Bash");
+    let input = json!({"command": "ls /walk-does-not-exist"});
+    let requirement = shell.approval_requirement_for(&input);
+    assert_eq!(requirement, ApprovalRequirement::Auto);
+
+    assert!(ask_posture_requires_command_card(
+        AppMode::Agent,
+        ApprovalMode::Suggest,
+        false,
+        "Bash",
+        requirement,
+    ));
+
+    for (mode, approval_mode, auto_approve) in [
+        (AppMode::Agent, ApprovalMode::AcceptEdits, false),
+        (AppMode::Agent, ApprovalMode::Auto, false),
+        (AppMode::Agent, ApprovalMode::Bypass, true),
+        (AppMode::Plan, ApprovalMode::Suggest, false),
+    ] {
+        assert!(
+            !ask_posture_requires_command_card(
+                mode,
+                approval_mode,
+                auto_approve,
+                "Bash",
+                requirement
+            ),
+            "{mode:?}/{approval_mode:?}"
+        );
+    }
+    assert!(!ask_posture_requires_command_card(
+        AppMode::Agent,
+        ApprovalMode::Suggest,
+        false,
+        "read_file",
+        ApprovalRequirement::Auto,
+    ));
+}
+
+#[test]
 fn sandbox_escalation_requires_a_pair_and_a_strictly_wider_mode() {
     use codewhale_sandbox::SandboxPolicy;
 

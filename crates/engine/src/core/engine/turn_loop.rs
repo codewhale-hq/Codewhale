@@ -547,6 +547,21 @@ pub(super) fn workspace_write_carve_out_applies(
     crate::core::authority::paths_within_workspace_write_carve_out(workspace, &paths)
 }
 
+#[must_use]
+pub(super) fn ask_posture_requires_command_card(
+    mode: AppMode,
+    approval_mode: ApprovalMode,
+    auto_approve: bool,
+    tool_name: &str,
+    approval: ApprovalRequirement,
+) -> bool {
+    approval == ApprovalRequirement::Auto
+        && !auto_approve
+        && matches!(mode, AppMode::Agent)
+        && approval_mode == ApprovalMode::Suggest
+        && super::tool_catalog::is_shell_tool_name(tool_name)
+}
+
 pub(super) fn registered_tool_forces_prompt(
     tool_name: &str,
     requirement: ApprovalRequirement,
@@ -2534,6 +2549,18 @@ impl Engine {
                         "tool_name": tool_name.clone(),
                     }))
                     .await;
+                }
+
+                if !approval_required
+                    && ask_posture_requires_command_card(
+                        mode,
+                        batch_approval_mode,
+                        prepared.auto_approve,
+                        &tool_name,
+                        prepared.call.approval,
+                    )
+                {
+                    approval_required = true;
                 }
 
                 let approval = match prepared.call.approval {
