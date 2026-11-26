@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:7e0e7ebc680b -->
+<!-- source: README.md sha256:308ec0b2a2e8 -->
 <div align="center">
 
 <picture>
@@ -51,7 +51,7 @@ Gotowe binaria są dostępne dla Linuxa, macOS i Windows (x64 oraz arm64). Scoop
 Fix the failing tests and explain what changed.
 ```
 
-Polecenia tylko do odczytu uruchamiają się od razu. Polecenia powłoki wprowadzające zmiany pytają o zgodę: `y` uruchamia raz, `a` zezwala na pasujące polecenia do końca sesji, a `n` odmawia. Użyj `/undo`, aby cofnąć ostatnią turę i jej zmiany w plikach, lub `/help`, aby wyświetlić polecenia i skróty klawiszowe.
+Polecenia tylko do odczytu uruchamiają się od razu, z wyjątkiem trybu Ask, który pyta przed każdym poleceniem. Polecenia powłoki wprowadzające zmiany pytają o zgodę: `y` uruchamia raz, `a` zezwala na pasujące polecenia do końca sesji, a `n` odmawia. Użyj `/undo`, aby cofnąć ostatnią turę i jej zmiany w plikach, lub `/help`, aby wyświetlić polecenia i skróty klawiszowe.
 
 ## Możliwości
 

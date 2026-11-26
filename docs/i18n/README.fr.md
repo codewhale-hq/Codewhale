@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:7e0e7ebc680b -->
+<!-- source: README.md sha256:308ec0b2a2e8 -->
 <div align="center">
 
 <picture>
@@ -51,7 +51,7 @@ Des binaires précompilés sont fournis pour Linux, macOS et Windows (x64 et arm
 Fix the failing tests and explain what changed.
 ```
 
-Les commandes en lecture seule s’exécutent immédiatement. Les commandes shell qui modifient le système demandent confirmation : `y` exécute une fois, `a` autorise les commandes correspondantes pour le reste de la session et `n` refuse. Utilisez `/undo` pour annuler le dernier tour et ses modifications de fichiers, ou `/help` pour les commandes et raccourcis clavier.
+Les commandes en lecture seule s’exécutent immédiatement, sauf en mode Ask, qui demande avant chaque commande. Les commandes shell qui modifient le système demandent confirmation : `y` exécute une fois, `a` autorise les commandes correspondantes pour le reste de la session et `n` refuse. Utilisez `/undo` pour annuler le dernier tour et ses modifications de fichiers, ou `/help` pour les commandes et raccourcis clavier.
 
 ## Fonctionnalités
 

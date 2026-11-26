@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:7e0e7ebc680b -->
+<!-- source: README.md sha256:308ec0b2a2e8 -->
 <div align="center">
 
 <picture>
@@ -51,7 +51,7 @@ Es publiquen binaris precompilats per a Linux, macOS i Windows (x64 i arm64). Sc
 Fix the failing tests and explain what changed.
 ```
 
-Les ordres de només lectura s’executen immediatament. Les ordres de shell que modifiquen l’estat demanen aprovació: `y` executa una vegada, `a` permet ordres coincidents durant la resta de la sessió i `n` denega. Executa `/undo` per revertir l’últim torn i les seves edicions de fitxers, o `/help` per veure ordres i dreceres de teclat.
+Les ordres de només lectura s’executen immediatament, excepte a Ask, que demana abans de cada ordre. Les ordres de shell que modifiquen l’estat demanen aprovació: `y` executa una vegada, `a` permet ordres coincidents durant la resta de la sessió i `n` denega. Executa `/undo` per revertir l’últim torn i les seves edicions de fitxers, o `/help` per veure ordres i dreceres de teclat.
 
 ## Capacitats
 

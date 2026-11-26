@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:7e0e7ebc680b -->
+<!-- source: README.md sha256:308ec0b2a2e8 -->
 <div align="center">
 
 <picture>
@@ -51,7 +51,7 @@ I binari precompilati sono distribuiti per Linux, macOS e Windows (x64 e arm64).
 Fix the failing tests and explain what changed.
 ```
 
-I comandi di sola lettura vengono eseguiti subito. I comandi shell che modificano lo stato chiedono approvazione: `y` esegue una volta, `a` consente i comandi corrispondenti per il resto della sessione e `n` rifiuta. Esegui `/undo` per annullare l’ultimo turno e le relative modifiche ai file, oppure `/help` per comandi e scorciatoie da tastiera.
+I comandi di sola lettura vengono eseguiti subito, tranne in Ask, che chiede prima di ogni comando. I comandi shell che modificano lo stato chiedono approvazione: `y` esegue una volta, `a` consente i comandi corrispondenti per il resto della sessione e `n` rifiuta. Esegui `/undo` per annullare l’ultimo turno e le relative modifiche ai file, oppure `/help` per comandi e scorciatoie da tastiera.
 
 ## Funzionalità
 

@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:7e0e7ebc680b -->
+<!-- source: README.md sha256:308ec0b2a2e8 -->
 <div align="center">
 
 <picture>
@@ -53,7 +53,7 @@ Biner siap pakai tersedia untuk Linux, macOS, dan Windows (x64 dan arm64). Scoop
 Fix the failing tests and explain what changed.
 ```
 
-Perintah baca-saja langsung berjalan. Perintah shell yang mengubah keadaan meminta persetujuan: `y` menjalankan sekali, `a` mengizinkan perintah serupa untuk sisa sesi, dan `n` menolak. Jalankan `/undo` untuk membatalkan giliran terakhir beserta perubahan berkasnya, atau `/help` untuk daftar perintah dan pintasan.
+Perintah baca-saja langsung berjalan, kecuali di Ask, yang bertanya sebelum setiap perintah. Perintah shell yang mengubah keadaan meminta persetujuan: `y` menjalankan sekali, `a` mengizinkan perintah serupa untuk sisa sesi, dan `n` menolak. Jalankan `/undo` untuk membatalkan giliran terakhir beserta perubahan berkasnya, atau `/help` untuk daftar perintah dan pintasan.
 
 ## Kemampuan
 

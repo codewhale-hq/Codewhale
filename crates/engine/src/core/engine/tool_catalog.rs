@@ -1613,7 +1613,7 @@ fn shell_tool_allow_shell_hint() -> &'static str {
      the next turn will expose shell again"
 }
 
-pub(super) fn is_shell_tool_name(tool_name: &str) -> bool {
+pub(crate) fn is_shell_tool_name(tool_name: &str) -> bool {
     matches!(
         tool_name,
         "bash"

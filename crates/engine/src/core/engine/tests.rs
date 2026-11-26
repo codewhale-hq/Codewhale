@@ -3,11 +3,10 @@ use super::*;
 use super::context::COMPACTION_SUMMARY_MARKER;
 use super::streaming::{TOOL_CALL_END_MARKERS, TOOL_CALL_MARKER_PAIRS};
 use super::turn_loop::{
-    ask_posture_requires_command_card, auto_review_block_tool_error, call_forces_prompt,
-    initial_stream_error_user_message, preview_request_error_user_message,
-    registered_tool_approval_required, registered_tool_forces_prompt, replace_runtime_mcp_tools,
-    repo_law_must_block_without_prompt, requested_sandbox_escalation, sandbox_escalation_denial,
-    workspace_write_carve_out_applies,
+    auto_review_block_tool_error, call_forces_prompt, initial_stream_error_user_message,
+    preview_request_error_user_message, registered_tool_approval_required,
+    registered_tool_forces_prompt, replace_runtime_mcp_tools, repo_law_must_block_without_prompt,
+    requested_sandbox_escalation, sandbox_escalation_denial, workspace_write_carve_out_applies,
 };
 use crate::prompts::{
     InstructionSource, PromptSessionContext, system_prompt_flat_text,

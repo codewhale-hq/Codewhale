@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:7e0e7ebc680b -->
+<!-- source: README.md sha256:308ec0b2a2e8 -->
 <div align="center">
 
 <picture>
@@ -53,7 +53,7 @@ cargo install codewhale-cli --locked                              # builds from 
 Fix the failing tests and explain what changed.
 ```
 
-읽기 전용 명령은 즉시 실행됩니다. 상태를 바꾸는 셸 명령은 실행 전에 승인을 묻습니다(`y` 한 번 실행, `a` 현재 세션에서 유사 명령 허용, `n` 거부). `/undo`로 직전 턴과 파일 변경을 되돌리고, `/help`로 명령과 단축키를 확인할 수 있습니다.
+읽기 전용 명령은 즉시 실행됩니다(Ask에서는 모든 명령 전에 묻습니다). 상태를 바꾸는 셸 명령은 실행 전에 승인을 묻습니다(`y` 한 번 실행, `a` 현재 세션에서 유사 명령 허용, `n` 거부). `/undo`로 직전 턴과 파일 변경을 되돌리고, `/help`로 명령과 단축키를 확인할 수 있습니다.
 
 ## 주요 기능
 

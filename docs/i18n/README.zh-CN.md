@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:7e0e7ebc680b -->
+<!-- source: README.md sha256:308ec0b2a2e8 -->
 <div align="center">
 
 <picture>
@@ -53,7 +53,7 @@ cargo install codewhale-cli --locked                              # builds from 
 Fix the failing tests and explain what changed.
 ```
 
-只读命令会立即执行。会修改状态的 Shell 命令会先请求批准：`y` 允许本次执行，`a` 允许本会话内同类命令，`n` 拒绝。运行 `/undo` 可撤销上一轮操作及其文件修改，运行 `/help` 可查看命令和快捷键。
+只读命令会立即执行（Ask 模式下每条命令都会先询问）。会修改状态的 Shell 命令会先请求批准：`y` 允许本次执行，`a` 允许本会话内同类命令，`n` 拒绝。运行 `/undo` 可撤销上一轮操作及其文件修改，运行 `/help` 可查看命令和快捷键。
 
 ## 核心能力
 

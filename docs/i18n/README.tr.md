@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:7e0e7ebc680b -->
+<!-- source: README.md sha256:308ec0b2a2e8 -->
 <div align="center">
 
 <picture>
@@ -51,7 +51,7 @@ Hazır ikili dosyalar Linux, macOS ve Windows (x64 ve arm64) için yayımlanır.
 Fix the failing tests and explain what changed.
 ```
 
-Salt okunur komutlar hemen çalışır. Değişiklik yapan kabuk komutları onay ister: `y` bir kez çalıştırır, `a` oturumun geri kalanında eşleşen komutlara izin verir, `n` reddeder. Son turu ve dosya düzenlemelerini geri almak için `/undo`, komutlar ve kısayollar için `/help` yazın.
+Salt okunur komutlar hemen çalışır; Ask ise her komuttan önce sorar. Değişiklik yapan kabuk komutları onay ister: `y` bir kez çalıştırır, `a` oturumun geri kalanında eşleşen komutlara izin verir, `n` reddeder. Son turu ve dosya düzenlemelerini geri almak için `/undo`, komutlar ve kısayollar için `/help` yazın.
 
 ## Yetenekler
 

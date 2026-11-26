@@ -548,7 +548,7 @@ pub(super) fn workspace_write_carve_out_applies(
 }
 
 #[must_use]
-pub(super) fn ask_posture_requires_command_card(
+fn ask_posture_requires_command_card(
     mode: AppMode,
     approval_mode: ApprovalMode,
     auto_approve: bool,

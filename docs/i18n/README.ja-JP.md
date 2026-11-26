@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:7e0e7ebc680b -->
+<!-- source: README.md sha256:308ec0b2a2e8 -->
 <div align="center">
 
 <picture>
@@ -53,7 +53,7 @@ cargo install codewhale-cli --locked                              # builds from 
 Fix the failing tests and explain what changed.
 ```
 
-読み取り専用コマンドはそのまま実行されます。変更を伴うシェルコマンドは実行前に承認を求めます（`y` で 1 回許可、`a` で同種のコマンドをセッション中許可、`n` で拒否）。`/undo` で直前のターンとファイル変更を取り消し、`/help` でコマンドとキーバインドを確認できます。
+読み取り専用コマンドはそのまま実行されます（Ask ではすべてのコマンドの前に確認します）。変更を伴うシェルコマンドは実行前に承認を求めます（`y` で 1 回許可、`a` で同種のコマンドをセッション中許可、`n` で拒否）。`/undo` で直前のターンとファイル変更を取り消し、`/help` でコマンドとキーバインドを確認できます。
 
 ## 主な機能
 

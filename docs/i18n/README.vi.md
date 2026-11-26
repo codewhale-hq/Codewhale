@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:7e0e7ebc680b -->
+<!-- source: README.md sha256:308ec0b2a2e8 -->
 <div align="center">
 
 <picture>
@@ -53,7 +53,7 @@ Tệp nhị phân dựng sẵn hỗ trợ Linux, macOS và Windows (x64 và arm6
 Fix the failing tests and explain what changed.
 ```
 
-Các lệnh chỉ đọc chạy ngay lập tức. Lệnh shell có thay đổi trạng thái sẽ hỏi phê duyệt: `y` chạy một lần, `a` cho phép các lệnh tương tự trong phần còn lại của phiên, `n` từ chối. Chạy `/undo` để hoàn tác lượt gần nhất và các sửa đổi tệp, hoặc `/help` để xem lệnh và phím tắt.
+Các lệnh chỉ đọc chạy ngay lập tức, trừ chế độ Ask, vốn hỏi trước mọi lệnh. Lệnh shell có thay đổi trạng thái sẽ hỏi phê duyệt: `y` chạy một lần, `a` cho phép các lệnh tương tự trong phần còn lại của phiên, `n` từ chối. Chạy `/undo` để hoàn tác lượt gần nhất và các sửa đổi tệp, hoặc `/help` để xem lệnh và phím tắt.
 
 ## Khả năng chính
 

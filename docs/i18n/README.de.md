@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:7e0e7ebc680b -->
+<!-- source: README.md sha256:308ec0b2a2e8 -->
 <div align="center">
 
 <picture>
@@ -51,7 +51,7 @@ Vorkompilierte Binaries erscheinen für Linux, macOS und Windows (x64 und arm64)
 Fix the failing tests and explain what changed.
 ```
 
-Nur-lesende Befehle laufen sofort. Verändernde Shell-Befehle fragen nach einer Freigabe: `y` erlaubt einmalig, `a` erlaubt passende Befehle für den Rest der Sitzung und `n` lehnt ab. Mit `/undo` machst du den letzten Schritt samt Dateiänderungen rückgängig; `/help` zeigt Befehle und Tastenkürzel.
+Nur-lesende Befehle laufen sofort, außer in Ask, das vor jedem Befehl fragt. Verändernde Shell-Befehle fragen nach einer Freigabe: `y` erlaubt einmalig, `a` erlaubt passende Befehle für den Rest der Sitzung und `n` lehnt ab. Mit `/undo` machst du den letzten Schritt samt Dateiänderungen rückgängig; `/help` zeigt Befehle und Tastenkürzel.
 
 ## Funktionen
 

@@ -60,8 +60,8 @@ binaries do not shadow each other on `PATH`.
 Fix the failing tests and explain what changed.
 ```
 
-Read-only commands run immediately. Mutating shell commands prompt for
-approval: `y` runs once, `a` allows matching commands for the rest of the
+Read-only commands run immediately, except in Ask, which asks before every
+command. Mutating shell commands prompt for approval: `y` runs once, `a` allows matching commands for the rest of the
 session, and `n` denies. Run `/undo` to revert the last turn and its file
 edits, or `/help` for commands and keybindings.
 

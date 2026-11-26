@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:7e0e7ebc680b -->
+<!-- source: README.md sha256:308ec0b2a2e8 -->
 <div align="center">
 
 <picture>
@@ -51,7 +51,7 @@ Los binarios precompilados se publican para Linux, macOS y Windows (x64 y arm64)
 Fix the failing tests and explain what changed.
 ```
 
-Los comandos de solo lectura se ejecutan de inmediato. Los comandos de shell que modifican el entorno piden aprobación: `y` ejecuta una vez, `a` permite comandos coincidentes durante el resto de la sesión y `n` deniega. Ejecuta `/undo` para revertir el último turno y sus ediciones de archivos, o `/help` para ver comandos y atajos de teclado.
+Los comandos de solo lectura se ejecutan de inmediato, salvo en Ask, que pregunta antes de cada comando. Los comandos de shell que modifican el entorno piden aprobación: `y` ejecuta una vez, `a` permite comandos coincidentes durante el resto de la sesión y `n` deniega. Ejecuta `/undo` para revertir el último turno y sus ediciones de archivos, o `/help` para ver comandos y atajos de teclado.
 
 ## Capacidades
 
