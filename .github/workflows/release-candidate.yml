@@ -138,6 +138,47 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: npm run check
 
+  regression:
+    # Provider-free input to the regression pass in docs/RELEASE_CHECKLIST.md:
+    # behaviour statements and feature-docs drift over every commit since the
+    # last release. It reports and never fails the candidate; a maintainer
+    # reads the summary next to the per-slice review receipts.
+    name: Regression report
+    needs: resolve
+    if: ${{ !cancelled() && needs.resolve.result == 'success' }}
+    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Report unstated behaviour changes since the last release
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_sha="$(git rev-parse HEAD)"
+          last_release=""
+          while read -r tag; do
+            if [[ "$(git rev-parse "${tag}^{commit}")" != "${head_sha}" ]]; then
+              last_release="${tag}"
+              break
+            fi
+          done < <(git tag --merged HEAD --sort=-v:refname --list 'v[0-9]*')
+          if [[ -z "${last_release}" ]]; then
+            echo "No earlier release tag; nothing to compare." | tee -a "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          {
+            echo "## Regression report: ${last_release}..$(git rev-parse --short=12 HEAD)"
+            echo
+            echo '```text'
+            python3 scripts/check-behaviour-line.py --warn-only "${last_release}" HEAD 2>&1
+            echo
+            python3 scripts/check-docs-drift.py --warn-only "${last_release}" HEAD 2>&1
+            echo '```'
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
+
   parity:
     # The same gate release.yml runs before publish. release.yml refuses a tag
     # unless an RC run for that exact SHA has this job green

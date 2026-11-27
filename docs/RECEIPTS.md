@@ -407,7 +407,9 @@ messages.
 `docs/RELEASE_CHECKLIST.md` uses one receipt per crate or path as the
 regression pass before a release candidate: run `--write-receipt` per slice,
 then `--check-receipt`; a receipt with unresolved risk blocks the candidate
-until a maintainer reads the findings.
+until a maintainer reads the findings. The pass is a maintainer action, because
+`--write-receipt` calls a model; the release candidate's provider-free
+Regression report job only lists unstated behaviour changes to start from.
 
 ## Builder Rules
 
