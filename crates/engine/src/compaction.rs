@@ -538,18 +538,15 @@ pub fn restore_compaction_checkpoint(
         crate::runtime_handoff::relocate_restored_compaction_topology(&mut messages);
         return messages;
     };
-    let typed_position = messages
-        .iter()
-        .position(is_wire_compaction_checkpoint_message);
+    let typed_position = messages.iter().position(is_checkpoint_for_compaction);
     let checkpoint_index = if let Some(index) = typed_position {
-        messages.retain(|message| !is_wire_compaction_checkpoint_message(message));
+        messages.retain(|message| !is_checkpoint_for_compaction(message));
         index
     } else {
-        // Legacy sessions have no independent provenance. Only replace
-        // header-prefixed messages when a saved checkpoint exists; identical
-        // user text is still ambiguous in that legacy format.
-        messages.retain(|message| !is_compaction_checkpoint_message(message));
-        messages.len()
+        messages
+            .iter()
+            .position(is_compaction_checkpoint_message)
+            .unwrap_or(messages.len())
     };
     messages.insert(
         checkpoint_index.min(messages.len()),
@@ -2381,11 +2378,24 @@ mod tests {
             );
 
             let summary = SystemPrompt::Text(build_compaction_summary_block_text("Summary", ""));
-            let restored =
-                restore_compaction_checkpoint(vec![quoted.clone(), legacy], Some(&summary));
-            assert_eq!(restored.len(), 2);
-            assert_eq!(restored[0], quoted);
-            assert!(is_wire_compaction_checkpoint_message(&restored[1]));
+            let later = msg("user", "keep working on the current task");
+            let restored = restore_compaction_checkpoint(
+                vec![quoted.clone(), legacy.clone(), later.clone()],
+                Some(&summary),
+            );
+            assert_eq!(
+                restored,
+                vec![
+                    quoted,
+                    compaction_checkpoint_message(&summary),
+                    legacy,
+                    later
+                ]
+            );
+            assert_eq!(
+                restore_compaction_checkpoint(restored.clone(), Some(&summary)),
+                restored
+            );
         }
     }
 
@@ -2409,7 +2419,6 @@ mod tests {
         assert!(is_wire_compaction_checkpoint_message(&restored[0]));
         assert_eq!(restored[1], user_quote);
 
-        // With a saved summary, legacy header-prefixed copies are replaced.
         let legacy = Message {
             role: Role::User,
             content: vec![ContentBlock::Text {
@@ -2417,10 +2426,23 @@ mod tests {
                 cache_control: None,
             }],
         };
+        let saved = SystemPrompt::Text(format!(
+            "{LEGACY_V2_COMPACTION_SUMMARY_MARKER}\nold summary"
+        ));
         let legacy_restored =
-            restore_compaction_checkpoint(vec![legacy.clone(), legacy], Some(&summary));
-        assert_eq!(legacy_restored.len(), 1);
-        assert!(is_wire_compaction_checkpoint_message(&legacy_restored[0]));
+            restore_compaction_checkpoint(vec![legacy.clone(), legacy.clone()], Some(&saved));
+        assert_eq!(
+            legacy_restored,
+            vec![
+                compaction_checkpoint_message(&saved),
+                legacy.clone(),
+                legacy
+            ]
+        );
+        assert_eq!(
+            restore_compaction_checkpoint(legacy_restored.clone(), Some(&saved)),
+            legacy_restored
+        );
     }
 
     #[test]
