@@ -53,12 +53,23 @@ the shared web app (the `apps/web` build from the `codewhale-app` repository)
 from a directory on disk. This is opt-in; the embedded client remains the
 default until the shared build reaches parity.
 
-1. Build `apps/web` in `codewhale-app` so it produces a `dist` directory.
-2. Point `CODEWHALE_WEB_DIST` at that directory and start the command:
+With Engine 0.10.5 or later, build the local Engine client from the root of
+a `codewhale-app` checkout:
 
-   ```bash
-   CODEWHALE_WEB_DIST=/path/to/codewhale-app/apps/web/dist codewhale web
-   ```
+```bash
+npm run build:engine -w apps/web
+```
+
+From the workspace where you want to use Codewhale, point the Engine at the
+build's absolute path:
+
+```bash
+CODEWHALE_WEB_DIST="/path/to/codewhale-app/apps/web/dist-engine" codewhale web
+```
+
+If you have access to the App repository's Desktop workflow, you can also
+download its `codewhale-web-dist-engine` artifact. Extract it and point
+`CODEWHALE_WEB_DIST` at the directory containing `index.html`.
 
 The directory must contain `index.html`, and neither the directory nor
 `index.html` may be a symlink. When the variable is set to a valid directory,

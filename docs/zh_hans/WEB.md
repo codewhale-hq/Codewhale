@@ -47,12 +47,20 @@ Codewhale 会启动 Runtime API，提供已内嵌在所安装二进制文件中�
 （`codewhale-app` 仓库中 `apps/web` 的构建产物）。这是可选功能；在共享构建达到功能对等之前，
 内嵌客户端仍是默认选项。
 
-1. 在 `codewhale-app` 中构建 `apps/web`，生成 `dist` 目录。
-2. 将 `CODEWHALE_WEB_DIST` 指向该目录并启动命令：
+使用 0.10.5 或更高版本的引擎时，可在 `codewhale-app` 仓库根目录构建本地引擎客户端：
 
-   ```bash
-   CODEWHALE_WEB_DIST=/path/to/codewhale-app/apps/web/dist codewhale web
-   ```
+```bash
+npm run build:engine -w apps/web
+```
+
+然后进入要使用 Codewhale 的工作区，将环境变量指向构建产物的绝对路径：
+
+```bash
+CODEWHALE_WEB_DIST="/path/to/codewhale-app/apps/web/dist-engine" codewhale web
+```
+
+如果你有权访问 App 仓库的 Desktop 工作流，也可以下载其中的 `codewhale-web-dist-engine`
+构建产物。解压后，将 `CODEWHALE_WEB_DIST` 指向包含 `index.html` 的目录。
 
 该目录必须包含 `index.html`，且目录本身和 `index.html` 都不能是符号链接。
 当变量指向有效目录时，启动时会打印一行信息，说明正在提供的目录。
