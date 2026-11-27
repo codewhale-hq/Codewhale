@@ -130,6 +130,8 @@ pub struct StartupDefaults {
     reasoning_effort: Option<String>,
     /// `settings.pet_mode` — the main view a fresh session starts in.
     pet_mode: Option<bool>,
+    whale_name: Option<String>,
+    whale_color: Option<String>,
 }
 
 impl StartupDefaults {
@@ -165,6 +167,22 @@ impl StartupDefaults {
         }
     }
 
+    #[must_use]
+    pub fn whale_name(name: &str) -> Self {
+        Self {
+            whale_name: Some(name.to_owned()),
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn whale_color(color: Option<&str>) -> Self {
+        Self {
+            whale_color: Some(color.unwrap_or_default().to_owned()),
+            ..Self::default()
+        }
+    }
+
     #[cfg(test)]
     #[must_use]
     pub fn with_reasoning_effort(mut self, effort: &str) -> Self {
@@ -174,7 +192,11 @@ impl StartupDefaults {
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.mode.is_none() && self.reasoning_effort.is_none() && self.pet_mode.is_none()
+        self.mode.is_none()
+            && self.reasoning_effort.is_none()
+            && self.pet_mode.is_none()
+            && self.whale_name.is_none()
+            && self.whale_color.is_none()
     }
 
     /// Which user-facing settings this update touches, as typed subjects.
@@ -195,6 +217,12 @@ impl StartupDefaults {
         }
         if self.pet_mode.is_some() {
             subjects.push(StartupDefaultSubject::PetMode);
+        }
+        if self.whale_name.is_some() {
+            subjects.push(StartupDefaultSubject::WhaleName);
+        }
+        if self.whale_color.is_some() {
+            subjects.push(StartupDefaultSubject::WhaleColor);
         }
         subjects
     }
@@ -221,6 +249,12 @@ impl StartupDefaults {
             }
             if let Some(enabled) = self.pet_mode {
                 settings.set("pet_mode", if enabled { "true" } else { "false" })?;
+            }
+            if let Some(name) = self.whale_name.as_deref() {
+                settings.set("whale_name", name)?;
+            }
+            if let Some(color) = self.whale_color.as_deref() {
+                settings.set("whale_color", color)?;
             }
             Ok(())
         })
@@ -258,6 +292,8 @@ pub enum StartupDefaultSubject {
     Thinking,
     /// `settings.pet_mode`.
     PetMode,
+    WhaleName,
+    WhaleColor,
 }
 
 /// One startup-default write that did not land.

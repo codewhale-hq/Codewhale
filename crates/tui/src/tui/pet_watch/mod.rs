@@ -2,16 +2,20 @@
 //! session are projected here once and drawn locally as the dot whale; no
 //! other process takes part.
 //!
-//! Known limits: the name, colour and hold-still choices last until this
-//! terminal closes; only `pet_mode` is saved.
+//! Known limits: hold-still lasts until this terminal closes. The name and
+//! colour live in settings.toml beside `pet_mode`; a change another process
+//! makes is picked up within two seconds while the whale is kept.
 use crate::tui::{app::App, underwater::ShellPhase, views::ModalKind};
 use codewhale_engine::core::events::{Event, TurnOutcomeStatus};
 use ratatui::layout::Rect;
 use serde_json::json;
 use std::{
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
+const IDENTITY_POLL: Duration = Duration::from_secs(2);
+type IdentityStamp = Option<(SystemTime, u64)>;
+type DiskIdentity = (Option<String>, Option<String>);
 mod dots;
 mod full;
 mod habitat;
@@ -39,6 +43,8 @@ pub struct PetWatch {
     still: bool,
     name: Option<String>,
     color: Option<[u8; 3]>,
+    identity_checked: Option<Instant>,
+    identity_poll: Arc<Mutex<(IdentityStamp, Option<DiskIdentity>, bool)>>,
     work_history_start: usize,
     full: codewhale_ratatui::PetModeState,
     full_next: Option<Instant>,
@@ -61,12 +67,50 @@ impl PetWatch {
     }
     pub fn set_name(&mut self, name: Option<String>) {
         self.name = name;
+        self.identity_checked = Some(Instant::now());
     }
     pub fn color(&self) -> Option<[u8; 3]> {
         self.color
     }
-    pub fn set_color(&mut self, color: Option<[u8; 3]>) {
-        self.color = color;
+    pub fn set_color(&mut self, color: Option<&str>) {
+        self.color = color.and_then(codewhale_config::whale_identity::whale_color_rgb);
+        self.identity_checked = Some(Instant::now());
+    }
+    pub fn apply_identity(&mut self, name: Option<&str>, color: Option<&str>) {
+        self.name = name.map(str::to_owned);
+        self.color = color.and_then(codewhale_config::whale_identity::whale_color_rgb);
+    }
+    fn refresh_identity(&mut self, now: Instant) -> bool {
+        let pending = self
+            .identity_poll
+            .lock()
+            .ok()
+            .and_then(|mut poll| poll.1.take());
+        let applied = pending.is_some_and(|(name, color)| {
+            let changed = self.name != name
+                || self.color
+                    != color
+                        .as_deref()
+                        .and_then(codewhale_config::whale_identity::whale_color_rgb);
+            self.apply_identity(name.as_deref(), color.as_deref());
+            changed
+        });
+        let due = self
+            .identity_checked
+            .is_none_or(|at| now.saturating_duration_since(at) >= IDENTITY_POLL);
+        if due && tokio::runtime::Handle::try_current().is_ok() {
+            self.identity_checked = Some(now);
+            let poll = Arc::clone(&self.identity_poll);
+            if poll
+                .lock()
+                .is_ok_and(|mut state| !std::mem::replace(&mut state.2, true))
+            {
+                codewhale_util::utils::spawn_blocking_supervised("whale-identity", move || {
+                    read_identity(&poll);
+                });
+            }
+        }
+        applied
     }
     fn reset(&mut self, session: Option<String>) {
         self.session = session;
@@ -125,6 +169,25 @@ impl PetWatch {
         if let Ok(mut area) = self.copy_area.lock() {
             *area = None;
         }
+    }
+}
+fn read_identity(poll: &Mutex<(IdentityStamp, Option<DiskIdentity>, bool)>) {
+    use codewhale_runtime::settings::Settings;
+    let stamp = Settings::path()
+        .ok()
+        .and_then(|path| std::fs::metadata(path).ok())
+        .and_then(|meta| Some((meta.modified().ok()?, meta.len())));
+    let seen = poll.lock().map(|state| state.0).unwrap_or(None);
+    let identity = (stamp != seen)
+        .then(Settings::load_persisted)
+        .and_then(Result::ok)
+        .map(|settings| (settings.whale_name, settings.whale_color));
+    if let Ok(mut state) = poll.lock() {
+        if identity.is_some() {
+            state.0 = stamp;
+            state.1 = identity;
+        }
+        state.2 = false;
     }
 }
 /// Existing protocol projection defines the variant names. This allowlist
@@ -330,6 +393,10 @@ pub fn tick(app: &mut App, now: Instant) {
         command(app, control);
     }
     let state = &mut app.pet_watch;
+    if keep_dots && state.refresh_identity(now) {
+        app.needs_redraw = true;
+    }
+    let state = &mut app.pet_watch;
     if state.session != app.current_session_id {
         state.reset(app.current_session_id.clone());
     }
@@ -467,7 +534,7 @@ mod tests {
         let mut watch = PetWatch::default();
         watch.detach_for_test();
         watch.set_name(Some("Moby".into()));
-        watch.set_color(Some([10, 20, 30]));
+        watch.set_color(Some("#0a141e"));
         watch.set_still(true);
         watch.observe(&turn_started("turn"), Some("another-session"));
         assert_eq!(watch.name(), Some("Moby"));

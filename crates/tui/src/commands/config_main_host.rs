@@ -2536,6 +2536,13 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             app.calm_mode = settings.calm_mode;
             app.mark_history_updated();
         }
+        "whale_name" | "whale_color" | "whale_colour" => {
+            app.pet_watch.apply_identity(
+                settings.whale_name.as_deref(),
+                settings.whale_color.as_deref(),
+            );
+            app.needs_redraw = true;
+        }
         "low_motion" | "motion" => {
             app.low_motion = effective_settings.low_motion;
             app.needs_redraw = true;

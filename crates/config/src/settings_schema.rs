@@ -590,6 +590,28 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
         ),
     ),
     def(
+        "whale_name",
+        SettingKind::String,
+        "",
+        ui(
+            TAB_APPEARANCE,
+            "display",
+            "ConfigLabelWhaleName",
+            "ConfigHintWhaleName",
+        ),
+    ),
+    def(
+        "whale_color",
+        SettingKind::String,
+        "",
+        ui(
+            TAB_APPEARANCE,
+            "display",
+            "ConfigLabelWhaleColor",
+            "ConfigHintWhaleColor",
+        ),
+    ),
+    def(
         "calm_mode",
         SettingKind::Bool(ON_OFF),
         "true",

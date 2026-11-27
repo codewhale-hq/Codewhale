@@ -30,15 +30,19 @@ F5 replies & agents · /whale standard view
 | `/whale` | Turn the whale view on or off for this terminal. `/whale on` and `/whale off` set it without toggling. |
 | `/whale full` | The same as `/whale`. In the terminal the whale view is already the full view; the word exists so the command reads the same as in the desktop app. |
 | `/whale still` | Hold the whale still, or let it move again. |
-| `/whale name <text>` | Name the whale. The name replaces `Codewhale` in the view's first line. Up to 32 characters. |
-| `/whale color <#rrggbb>` | Colour the whale. Each dot keeps its own brightness. `/whale color default` restores the whale's own colours. |
+| `/whale name <text>` | Name the whale. The name replaces `Codewhale` in the view's first line. Up to 32 characters, with no control or invisible formatting characters. |
+| `/whale color <name|#rrggbb>` | Colour the whale with one of the desktop app's colours (`scout`, `patch`, `harbor`, `echo`, `keel`, `lantern`, `violet`, `amber`) or a hex value. Each dot keeps its own brightness. `/whale color default` restores the whale's own colours. |
 
 `/pet` still runs `/whale`, with the same words after it, so old habits and
 scripts keep working. It is not listed in help or completion.
 
 The view being on or off is saved as the `pet_mode` setting (also in the
-settings editor), so a new session starts the way you left it. The name, the
-colour and hold-still last until this terminal closes; they are not saved yet.
+settings editor), so a new session starts the way you left it. The name and
+colour are saved as `whale_name` and `whale_color` in the same `settings.toml`.
+They are the one identity every terminal and the desktop app share: change them
+in the desktop's About page, `/whale`, or `/config`, and an open terminal
+showing the whale picks the change up within two seconds. Hold-still lasts until
+this terminal closes.
 
 The whale view never starts a turn, calls a model, or changes your draft, mode,
 or approvals. It only presents the session you are already running.
