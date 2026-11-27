@@ -1254,7 +1254,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          args=(--all-features --locked --profile ci --no-tests=fail)
+          args=(--all-features --locked --profile ci --no-tests=fail --success-output immediate)
           if [ -n "${SCOPE_CRATE}" ]; then args+=(-p "${SCOPE_CRATE}"); else args+=(--workspace); fi
           if [ -n "${SCOPE_FILTER}" ]; then args+=(-E "${SCOPE_FILTER}"); fi
           sh scripts/with-hermetic-test-home.sh cargo nextest run "${args[@]}"

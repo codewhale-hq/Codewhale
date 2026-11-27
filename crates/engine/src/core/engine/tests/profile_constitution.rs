@@ -455,13 +455,23 @@ async fn stop_ends_a_slow_account_read_at_once_for_interactive_and_hosted_turns(
                 while account_requests(&server).await == seen {
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 }
+                let stopped = std::time::Instant::now();
                 stopper.cancel();
-                std::time::Instant::now()
+                stopped
             }
         );
-        let after_stop = ended.saturating_duration_since(stopped);
+        let after_stop = ended.checked_duration_since(stopped).unwrap();
+        let mode = if host_managed {
+            "hosted"
+        } else {
+            "interactive"
+        };
+        eprintln!(
+            "STOP_TIMING mode={mode} elapsed_us={}",
+            after_stop.as_micros()
+        );
         assert!(
-            after_stop < Duration::from_secs(3),
+            after_stop < Duration::from_secs(1),
             "Stop took {after_stop:?} while the account read was pending"
         );
         assert_eq!(mock.call_count(), 0);
