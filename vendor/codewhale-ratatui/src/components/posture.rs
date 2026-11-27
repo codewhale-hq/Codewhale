@@ -19,16 +19,17 @@ use crate::{Paint, Role, Theme, TuiInk, glyphs, text};
 const ITEM_JOIN: &str = "   ";
 const COUNT_JOIN: &str = ", ";
 const HELP_GAP: usize = 2;
-const SHED_TURN_CLOCK: u8 = 1;
-const SHED_SESSION_CLOCK: u8 = 2;
-const SHED_PERMISSION_KEY: u8 = 3;
-const SHED_HINT: u8 = 4;
-const SHED_COUNTS: u8 = 5;
+const SHED_SESSION_CLOCK: u8 = 1;
+const SHED_PERMISSION_KEY: u8 = 2;
+const SHED_HINT: u8 = 3;
+const SHED_COUNTS: u8 = 4;
+const SHED_TURN_CLOCK: u8 = 5;
 const SHED_CAP_WARNING: u8 = 6;
 const SHED_MODE_KEY: u8 = 7;
-const SHED_MODE: u8 = 8;
+const SHED_THINKING: u8 = 8;
+const SHED_MODE: u8 = 9;
 const MAX_SHED: u8 = SHED_MODE;
-const COMPACT_SHED: u8 = SHED_COUNTS;
+const COMPACT_SHED: u8 = SHED_TURN_CLOCK;
 
 /// One caller-authored posture word and its semantic ink.
 #[derive(Clone, Debug)]
@@ -58,14 +59,17 @@ impl<'a> PostureFact<'a> {
 /// Codewhale's one-row posture bar, immediately below the composer.
 ///
 /// Permission is the floor. Optional clocks, keys, hints and counts shed
-/// before mode; the right notice never covers permission. At 80% context,
-/// the native `surface soon — /compact` warning replaces the ordinary hint.
+/// before mode, the live turn clock last of them; the right notice never
+/// covers permission or the turn clock. At 80% context, the native
+/// `surface soon — /compact` warning replaces the ordinary hint.
 #[derive(Clone, Debug)]
 pub struct PostureBar<'a> {
     pub permission: PostureFact<'a>,
     pub permission_key: Option<Cow<'a, str>>,
     pub mode: Option<PostureFact<'a>>,
     pub mode_key: Option<Cow<'a, str>>,
+    /// Optional reasoning/thinking effort badge, shed after `mode_key` and before `mode`.
+    pub thinking: Option<PostureFact<'a>>,
     pub turn_clock: Option<PostureFact<'a>>,
     pub counts: Vec<PostureFact<'a>>,
     pub session_clock: Option<PostureFact<'a>>,
@@ -84,6 +88,7 @@ impl<'a> PostureBar<'a> {
             permission_key: None,
             mode: None,
             mode_key: None,
+            thinking: None,
             turn_clock: None,
             counts: Vec::new(),
             session_clock: None,
@@ -93,6 +98,38 @@ impl<'a> PostureBar<'a> {
             right: None,
             compact: false,
         }
+    }
+
+    /// Construct a posture bar using the canonical `Ask` permission label.
+    #[must_use]
+    pub fn ask() -> Self {
+        Self::new("Ask")
+    }
+
+    /// Construct a posture bar using the canonical `Accept Edits` permission label.
+    #[must_use]
+    pub fn accept_edits() -> Self {
+        Self::new("Accept Edits").permission_role(Role::Accent)
+    }
+
+    /// Construct a posture bar using the canonical `Plan` permission label.
+    #[must_use]
+    pub fn plan() -> Self {
+        Self::new("Plan")
+            .permission_role(Role::Accent)
+            .permission_ink(TuiInk::ModePlan)
+    }
+
+    /// Construct a posture bar using the canonical `Auto-Review` permission label.
+    #[must_use]
+    pub fn auto_review() -> Self {
+        Self::new("Auto-Review").permission_ink(TuiInk::PermissionAutoReview)
+    }
+
+    /// Construct a posture bar using the canonical `Full Access` permission label.
+    #[must_use]
+    pub fn full_access() -> Self {
+        Self::new("Full Access").permission_ink(TuiInk::PermissionFullAccess)
     }
 
     #[must_use]
@@ -129,6 +166,13 @@ impl<'a> PostureBar<'a> {
     #[must_use]
     pub fn mode_key(mut self, value: impl Into<Cow<'a, str>>) -> Self {
         self.mode_key = Some(value.into());
+        self
+    }
+
+    /// Attach a thinking/reasoning effort indicator, shed after `mode_key` and before `mode`.
+    #[must_use]
+    pub fn thinking(mut self, value: impl Into<Cow<'a, str>>, role: Role) -> Self {
+        self.thinking = Some(PostureFact::new(value, role));
         self
     }
 
@@ -220,14 +264,10 @@ impl<'a> PostureBar<'a> {
                 turn_clock: false,
             });
         }
-        // Preserve the native turn-only clock rung: removing the session
-        // half must not make the remaining clock shed a rung too early.
-        let turn_shed = if self.session_clock.is_none() {
-            SHED_SESSION_CLOCK
-        } else {
-            SHED_TURN_CLOCK
-        };
-        if let Some(clock) = self.turn_clock.as_ref().filter(|_| shed < turn_shed) {
+        if let Some(thinking) = self.thinking.as_ref().filter(|_| shed < SHED_THINKING) {
+            items.push(PostureItem::fact(thinking, ascii));
+        }
+        if let Some(clock) = self.turn_clock.as_ref().filter(|_| shed < SHED_TURN_CLOCK) {
             let mut item = PostureItem::fact(clock, ascii);
             item.turn_clock = true;
             items.push(item);
@@ -284,16 +324,24 @@ impl<'a> PostureBar<'a> {
         let area = area.inner(Margin::new(1, 0));
         let ascii = theme.ascii();
         let width = usize::from(area.width);
-        let floor = left_width(&self.items(MAX_SHED, ascii));
+        let floor = left_width(&self.items(MAX_SHED, ascii))
+            + self
+                .turn_clock
+                .as_ref()
+                .filter(|_| !self.compact)
+                .map_or(0, |clock| {
+                    text::width(ITEM_JOIN) + text::width(&project(&clock.text, ascii))
+                });
         let right = self.right.as_ref().map(|fact| {
             (
                 clip_native(&project(&fact.text, ascii), width.saturating_sub(floor + 1)),
                 fact.role,
+                fact.ink,
             )
         });
         let right_width = right
             .as_ref()
-            .map_or(0, |(value, _)| text::width(value) + 1);
+            .map_or(0, |(value, _, _)| text::width(value) + 1);
         let budget = width.saturating_sub(right_width);
         let first = if self.compact { COMPACT_SHED } else { 0 };
         let items = (first..=MAX_SHED)
@@ -371,7 +419,7 @@ struct PostureLayout {
     area: Rect,
     budget: usize,
     items: Vec<PostureItem>,
-    right: Option<(String, Role)>,
+    right: Option<(String, Role, Option<TuiInk>)>,
 }
 
 impl PostureLayout {
@@ -469,11 +517,12 @@ impl Paint for PostureBar<'_> {
             }
             x += item.width();
         }
-        if let Some((value, role)) = &layout.right
+        if let Some((value, role, ink)) = &layout.right
             && !value.is_empty()
         {
             let x = usize::from(layout.area.right()).saturating_sub(text::width(value));
-            put(layout.area, buf, x, value, theme.fg(*role));
+            let style = ink.map_or_else(|| theme.fg(*role), |ink| theme.tui_ink(ink));
+            put(layout.area, buf, x, value, style);
         }
     }
 
@@ -498,6 +547,8 @@ pub enum MetricKind {
     Workspace,
     GitBranch,
     Update,
+    /// Active thinking/reasoning effort indicator.
+    Thinking,
 }
 
 impl MetricKind {
@@ -510,7 +561,7 @@ impl MetricKind {
             Self::Cache => 6,
             Self::Rate | Self::Ttft | Self::Cost => 5,
             Self::OutputTokens | Self::BillingTier => 7,
-            Self::Balance | Self::Workspace | Self::GitBranch => 4,
+            Self::Balance | Self::Workspace | Self::GitBranch | Self::Thinking => 4,
             Self::Goal | Self::Update => 3,
             Self::Model | Self::Context => 0,
         }

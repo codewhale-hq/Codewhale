@@ -380,12 +380,16 @@ impl Engine {
             .map_err(|error| ToolError::not_available(error.to_string()))?;
         if let Some(grant) = delegated {
             crate::profile_constitution::admit_desktop_browser_call(name, account_fence).await?;
-            let result = pool
-                .lock()
-                .await
-                .call_delegated_read(&grant, name, input, disallowed_tools)
-                .await
-                .map_err(|error| ToolError::permission_denied(error.to_string()))?;
+            let result = crate::mcp::call_delegated_read_unlocked(
+                &pool,
+                &grant,
+                name,
+                input,
+                disallowed_tools,
+                |_| Ok(()),
+            )
+            .await
+            .map_err(|error| ToolError::permission_denied(error.to_string()))?;
             return Ok(crate::tools::registry::mcp_result_to_bounded_rich_tool_result(result));
         }
         // A synthetic `mcp_<server>_authenticate` call runs the shared OAuth
@@ -435,25 +439,40 @@ impl Engine {
             }
             return Ok(rich);
         }
-        let (needs_auth_generation_before, result) = {
-            let mut pool = pool.lock().await;
-            if let Some(expected) = always_binding {
-                pool.reload_if_config_changed()
-                    .await
-                    .map_err(|error| ToolError::execution_failed(error.to_string()))?;
-                if pool.always_allow_binding(name) != Some(expected) {
-                    return Err(ToolError::permission_denied(
-                        "The connector permission changed. Try the call again.",
-                    ));
+        crate::profile_constitution::admit_desktop_browser_call(name, account_fence).await?;
+        let mut needs_auth_generation_before = None;
+        let mut binding_changed = false;
+        let mut reload_error = None;
+        let result = crate::mcp::call_tool_unlocked(
+            &pool,
+            name,
+            input,
+            disallowed_tools,
+            decision,
+            |pool| {
+                if let Some(expected) = always_binding {
+                    if let Err(error) = pool.refresh_config_if_changed() {
+                        reload_error = Some(error.to_string());
+                        anyhow::bail!("MCP configuration could not be reloaded");
+                    }
+                    if pool.always_allow_binding(name) != Some(expected) {
+                        binding_changed = true;
+                        anyhow::bail!("The connector permission changed. Try the call again.");
+                    }
                 }
-            }
-            crate::profile_constitution::admit_desktop_browser_call(name, account_fence).await?;
-            (
-                pool.needs_auth_generation(),
-                pool.call_tool_with_disallowed(name, input, disallowed_tools, decision)
-                    .await,
-            )
-        };
+                needs_auth_generation_before.get_or_insert(pool.needs_auth_generation());
+                Ok(())
+            },
+        )
+        .await;
+        if binding_changed {
+            return Err(ToolError::permission_denied(
+                "The connector permission changed. Try the call again.",
+            ));
+        }
+        if let Some(error) = reload_error {
+            return Err(ToolError::execution_failed(error));
+        }
         match result {
             Ok(result) => {
                 Ok(crate::tools::registry::mcp_result_to_bounded_rich_tool_result(result))
@@ -468,9 +487,9 @@ impl Engine {
                 // synthetic login tool arrives, and the error's own hint
                 // stays model-readable. Every other failure keeps the Err
                 // contract.
-                let auth_surface_changed = {
-                    let pool = pool.lock().await;
-                    pool.needs_auth_generation() != needs_auth_generation_before
+                let auth_surface_changed = match needs_auth_generation_before {
+                    Some(before) => pool.lock().await.needs_auth_generation() != before,
+                    None => false,
                 };
                 if !auth_surface_changed {
                     return Err(ToolError::execution_failed(format!(
@@ -957,7 +976,6 @@ impl Engine {
                     dispatch,
                     duration_ms,
                     error_kind = kind,
-                    error = %err,
                     "tool.exec.end",
                 );
             }

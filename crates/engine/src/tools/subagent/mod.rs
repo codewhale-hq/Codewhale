@@ -478,6 +478,8 @@ const COMPLETED_AGENT_RETENTION: Duration = Duration::from_secs(60 * 60);
 const MAX_AGENT_WORKER_RECORDS: usize = 256;
 const MAX_AGENT_WORKER_EVENTS_PER_RECORD: usize = 128;
 const MAX_QUEUED_PARENT_MESSAGES: usize = 64;
+const MAX_PARENT_MESSAGE_BYTES: usize = 16 * 1024;
+const MAX_QUEUED_PARENT_MAIL_BYTES: usize = 256 * 1024;
 /// Byte budget for the message tail retained in a [`SubAgentCheckpoint`]
 /// (#3882). Checkpoints fire on every step of every worker and are cloned
 /// into snapshots, projections, and `subagents.v1.json`; an unbounded
@@ -2698,9 +2700,9 @@ fn terminal_mailbox_message(result: &SubAgentResult, report_ref: Option<&str>) -
         SubAgentStatus::Cancelled => MailboxMessage::Cancelled {
             agent_id: result.agent_id.clone(),
         },
-        SubAgentStatus::BudgetExhausted => MailboxMessage::Failed {
+        SubAgentStatus::BudgetExhausted => MailboxMessage::BudgetExhausted {
             agent_id: result.agent_id.clone(),
-            error: summarize_subagent_result(result),
+            summary: summarize_subagent_result(result),
         },
         SubAgentStatus::Running => MailboxMessage::Progress {
             agent_id: result.agent_id.clone(),
@@ -3750,6 +3752,27 @@ impl SubAgentWorkLifecycle {
     }
 }
 
+fn fail_aborted_durable_launch(
+    agent_id: &str,
+    lifecycle: Option<&SubAgentWorkLifecycle>,
+    persist_error: anyhow::Error,
+) -> anyhow::Error {
+    if let Some(reconcile_error) =
+        lifecycle.and_then(|lifecycle| lifecycle.reconcile_state(OwnerState::Failed, 1, None).err())
+    {
+        tracing::warn!(
+            target: "subagent",
+            agent_id = %agent_id,
+            %reconcile_error,
+            "failed to mark aborted write-capable launch as Failed"
+        );
+        return anyhow!(
+            "failed to durably register write-capable sub-agent before launch: {persist_error}; additionally failed to settle lifecycle owner: {reconcile_error}"
+        );
+    }
+    anyhow!("failed to durably register write-capable sub-agent before launch: {persist_error}")
+}
+
 /// Translate the persisted worker owner record after its manager has applied
 /// restart recovery. A record without an event predates the lifecycle owner
 /// protocol and cannot safely invent a sequence.
@@ -4099,6 +4122,7 @@ pub struct SubAgentManager {
     /// Taken when the task settles.
     rerouted_requests: HashMap<String, ReroutedRequest>,
     member_starts: HashMap<(String, String), (String, String)>,
+    terminal_notify: Arc<tokio::sync::Notify>,
 }
 
 /// One child request waiting on a person (approvals C2). The store is the
@@ -4674,6 +4698,7 @@ impl SubAgentManager {
             refused_routes: HashMap::new(),
             rerouted_requests: HashMap::new(),
             member_starts: HashMap::new(),
+            terminal_notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -8519,6 +8544,12 @@ impl SubAgentManager {
         text: String,
         wake: bool,
     ) -> Result<ParentMailReceipt> {
+        if text.len() > MAX_PARENT_MESSAGE_BYTES {
+            return Err(anyhow!(
+                "Parent message is {} bytes; maximum allowed is {MAX_PARENT_MESSAGE_BYTES} bytes",
+                text.len()
+            ));
+        }
         let agent_id = self.resolve_agent_ref(agent_ref)?;
         let status = self
             .agents
@@ -8534,6 +8565,12 @@ impl SubAgentManager {
         if queue.len() >= MAX_QUEUED_PARENT_MESSAGES {
             return Err(anyhow!(
                 "Agent {agent_id} already has {MAX_QUEUED_PARENT_MESSAGES} queued parent messages; wait for it to read them before sending more"
+            ));
+        }
+        let queued_bytes: usize = queue.iter().map(|queued| queued.text.len()).sum();
+        if queued_bytes.saturating_add(entry.text.len()) > MAX_QUEUED_PARENT_MAIL_BYTES {
+            return Err(anyhow!(
+                "Agent {agent_id} queued parent mail would exceed {MAX_QUEUED_PARENT_MAIL_BYTES} bytes; wait for it to read pending messages before sending more"
             ));
         }
         queue.push_back(entry);
@@ -10458,11 +10495,10 @@ impl SubAgentManager {
                 self.coordination = coordination;
                 self.worker_origins = origins;
                 self.worker_origin_schema = schema;
-                if let Some(lifecycle) = agent.work_lifecycle.as_ref() {
-                    let _ = lifecycle.reconcile_state(OwnerState::Failed, 1, None);
-                }
-                return Err(anyhow!(
-                    "failed to durably register write-capable sub-agent before launch: {error}"
+                return Err(fail_aborted_durable_launch(
+                    &agent_id,
+                    agent.work_lifecycle.as_ref(),
+                    error,
                 ));
             }
         }
@@ -11960,6 +11996,7 @@ impl SubAgentManager {
         if let Some((event_tx, session_id)) = refresh_target {
             let _ = event_tx.try_send(self.agent_list_event(&session_id));
         }
+        self.terminal_notify.notify_waiters();
         Ok(true)
     }
 
@@ -12446,15 +12483,19 @@ pub async fn settle_requested_child(
     let deadline = tokio::time::Instant::now() + CHILD_STOP_SETTLE_GRACE;
     let mut latest = snapshot;
     loop {
-        let Ok(manager) = tokio::time::timeout_at(deadline, manager.read()).await else {
+        let Ok(guard) = tokio::time::timeout_at(deadline, manager.read()).await else {
             return latest;
         };
-        latest = manager.get_result(&latest.agent_id).unwrap_or(latest);
-        drop(manager);
+        latest = guard.get_result(&latest.agent_id).unwrap_or(latest);
         if latest.status != SubAgentStatus::Running || tokio::time::Instant::now() >= deadline {
             return latest;
         }
-        tokio::time::sleep(SUBAGENT_WAIT_CHECK_INTERVAL).await;
+        let notify = Arc::clone(&guard.terminal_notify);
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        drop(guard);
+        let _ = tokio::time::timeout_at(deadline, notified).await;
     }
 }
 
@@ -12465,19 +12506,22 @@ pub async fn settle_requested_children_for_session(
 ) {
     let deadline = tokio::time::Instant::now() + CHILD_STOP_SETTLE_GRACE;
     loop {
-        let live = {
-            let Ok(manager) = tokio::time::timeout_at(deadline, manager.read()).await else {
-                return;
-            };
-            parent.map_or_else(
-                || manager.live_count_for_session(session),
-                |parent| manager.live_count_for_parent(session, parent),
-            )
+        let Ok(guard) = tokio::time::timeout_at(deadline, manager.read()).await else {
+            return;
         };
+        let live = parent.map_or_else(
+            || guard.live_count_for_session(session),
+            |parent| guard.live_count_for_parent(session, parent),
+        );
         if live == 0 || tokio::time::Instant::now() >= deadline {
             return;
         }
-        tokio::time::sleep(SUBAGENT_WAIT_CHECK_INTERVAL).await;
+        let notify = Arc::clone(&guard.terminal_notify);
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        drop(guard);
+        let _ = tokio::time::timeout_at(deadline, notified).await;
     }
 }
 
@@ -18370,6 +18414,12 @@ fn subagent_completion_with_verification(
                 .map(|checkpoint| checkpoint.reason.as_str())
                 .unwrap_or("child token budget exhausted"),
         ),
+        SubAgentStatus::Interrupted(_) => {
+            subagent_stopped_sentinel(result, "subagent.interrupted", summary_truncated)
+        }
+        SubAgentStatus::Cancelled => {
+            subagent_stopped_sentinel(result, "subagent.cancelled", summary_truncated)
+        }
         _ => subagent_done_sentinel(&result.agent_id, result, summary_truncated),
     };
     let sentinel = {
@@ -18551,6 +18601,39 @@ fn subagent_failed_sentinel(res: &SubAgentResult, error: &str) -> String {
     format!("<codewhale:subagent.done>{payload}</codewhale:subagent.done>")
 }
 
+fn subagent_stopped_sentinel(res: &SubAgentResult, event: &str, truncated: bool) -> String {
+    let transcript_handle = format!("agent:{}/full_transcript", res.agent_id);
+    let mut payload = json!({
+        "event": event,
+        "agent_id": res.agent_id,
+        "name": subagent_result_display_name(res),
+        "agent_type": res.agent_type.as_str(),
+        "status": subagent_status_name(&res.status),
+        "steps": res.steps_taken,
+        "elapsed_ms": res.duration_ms,
+        "transcript_handle": transcript_handle,
+        "summary_location": "previous_line",
+        "summary_kind": if truncated { "truncated" } else { "complete" },
+    });
+    if matches!(res.status, SubAgentStatus::Interrupted(_)) {
+        let continuable = res
+            .checkpoint
+            .as_ref()
+            .is_some_and(|checkpoint| checkpoint.continuable && !checkpoint.messages.is_empty());
+        payload["continuable"] = json!(continuable);
+    }
+    if let Some(needs_input) = res.needs_input.clone() {
+        payload["needs_input"] = json!(needs_input);
+    }
+    if let Some(child_route) = res.child_route.clone() {
+        if let Some(note) = lifecycle::reasoning_override_note(&child_route) {
+            payload["reasoning_note"] = json!(note);
+        }
+        payload["child_route"] = json!(child_route);
+    }
+    format!("<codewhale:subagent.done>{payload}</codewhale:subagent.done>")
+}
+
 /// Preserve the child's fail-closed incomplete-response contract in Core.
 pub fn incomplete_subagent_response_failure(stop_reason: Option<&str>) -> String {
     let reason = stop_reason_detail(stop_reason);
@@ -18563,6 +18646,29 @@ pub fn incomplete_subagent_response_failure(stop_reason: Option<&str>) -> String
             "Sub-agent model response was incomplete (provider stop reason `{reason}`); no partial tool call or final result was accepted, and any partial text was preserved for diagnostics."
         )
     }
+}
+
+fn sync_transcript_artifact_metadata(
+    transcript_artifact: Option<&mut SubAgentTranscriptArtifactWriter>,
+    agent_id: &str,
+    messages: &[Message],
+    durable: bool,
+) -> Option<Value> {
+    transcript_artifact.map(|writer| {
+        let synced = match writer.sync_projected_messages(messages, durable) {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::warn!(
+                    target: "subagent",
+                    ?err,
+                    agent_id,
+                    "failed to persist complete sub-agent transcript artifact"
+                );
+                false
+            }
+        };
+        writer.metadata(synced && writer.synced_live_messages == messages.len())
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -18580,6 +18686,44 @@ async fn insert_subagent_full_transcript_handle(
     duration_ms: u64,
     fork_context: bool,
 ) -> VarHandle {
+    let transcript_artifact = sync_transcript_artifact_metadata(
+        transcript_artifact,
+        agent_id,
+        messages,
+        *status != SubAgentStatus::Running,
+    );
+    insert_subagent_full_transcript_handle_with_metadata(
+        runtime,
+        agent_id,
+        agent_type,
+        assignment,
+        status,
+        result,
+        checkpoint,
+        transcript_artifact,
+        messages,
+        steps_taken,
+        duration_ms,
+        fork_context,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn insert_subagent_full_transcript_handle_with_metadata(
+    runtime: &SubAgentRuntime,
+    agent_id: &str,
+    agent_type: &FleetRole,
+    assignment: &SubAgentAssignment,
+    status: &SubAgentStatus,
+    result: Option<&String>,
+    checkpoint: Option<&SubAgentCheckpoint>,
+    transcript_artifact: Option<Value>,
+    messages: &[Message],
+    steps_taken: u32,
+    duration_ms: u64,
+    fork_context: bool,
+) -> VarHandle {
     // Byte-bound the retained transcript (#3882): the handle store keeps this
     // payload resident per agent, and the checkpoint already carries its own
     // bounded message tail — embedding it verbatim would duplicate that tail
@@ -18591,22 +18735,6 @@ async fn insert_subagent_full_transcript_handle(
         omitted_messages: checkpoint.message_count,
         messages: Vec::new(),
         ..checkpoint.clone()
-    });
-    let transcript_artifact = transcript_artifact.map(|writer| {
-        let synced =
-            match writer.sync_projected_messages(messages, *status != SubAgentStatus::Running) {
-                Ok(()) => true,
-                Err(err) => {
-                    tracing::warn!(
-                        target: "subagent",
-                        ?err,
-                        agent_id,
-                        "failed to persist complete sub-agent transcript artifact"
-                    );
-                    false
-                }
-            };
-        writer.metadata(synced && writer.synced_live_messages == messages.len())
     });
     let payload = json!({
         "kind": "subagent_full_transcript",
@@ -19132,7 +19260,7 @@ async fn cancelled_subagent_result(
     max_steps: u32,
     latest_checkpoint: Option<&SubAgentCheckpoint>,
     turn_end_parking: Option<&Arc<std::sync::atomic::AtomicBool>>,
-    transcript_artifact: &mut Option<SubAgentTranscriptArtifactWriter>,
+    transcript_artifact_metadata: Option<Value>,
     started_at: Instant,
     fork_context_enabled: bool,
     progress_suffix: &str,
@@ -19155,7 +19283,7 @@ async fn cancelled_subagent_result(
         ),
     );
     let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-    insert_subagent_full_transcript_handle(
+    insert_subagent_full_transcript_handle_with_metadata(
         runtime,
         agent_id,
         agent_type,
@@ -19163,7 +19291,7 @@ async fn cancelled_subagent_result(
         &status,
         result.as_ref(),
         checkpoint.as_ref(),
-        transcript_artifact.as_mut(),
+        transcript_artifact_metadata,
         messages,
         steps,
         duration_ms,
@@ -22787,6 +22915,7 @@ fn subagent_failure_message(err: &anyhow::Error) -> String {
         Some(LlmError::QuotaExhausted(_)) => Some("quota_exhausted"),
         Some(LlmError::ServerError { .. }) => Some("server"),
         Some(LlmError::NetworkError(_))
+        | Some(LlmError::HeaderTimeout { .. })
         | Some(LlmError::ConnectError { .. })
         | Some(LlmError::Timeout(_)) => Some("network"),
         Some(LlmError::AuthenticationError(_)) | Some(LlmError::AuthorizationError(_)) => {

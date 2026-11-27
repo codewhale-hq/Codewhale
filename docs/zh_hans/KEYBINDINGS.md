@@ -29,14 +29,14 @@
 | `Ctrl-Alt-O` | 打开整个回合的 Turn Inspector，与输入框内容无关 |
 | `Alt-V` / `Option-V`（macOS） | 为所选的工具/智能体卡片打开详情分页器；未选择时，打开最新的可见错误，否则打开第一个有详情的可见卡片，再否则打开最近的一张。先点击某张卡片，新卡片出现时 Alt-V 仍会停留在它上面。发出传统 Option-V 字符的终端也会被处理 |
 | `Ctrl-Shift-E` / `Cmd-Shift-E` | 在任务面板（workbar）中切换文件树 |
-| `Ctrl-]` 或 `Ctrl-Tab` | Pet 主视图显示时循环切换 Pet 视图；其他时候循环切换 work dock：TODO → Agents → Jobs → Background。`Ctrl-]` 可移植；`Ctrl-Tab` 需要 kitty 键盘协议。Terminal.app 用它切换终端标签页 |
-| `Ctrl-Shift-Tab` | 终端能发送 kitty 键盘组合键时，反向循环切换 Pet 视图或 work dock。Terminal.app 用它切换终端标签页 |
+| `Ctrl-]` 或 `Ctrl-Tab` | 循环切换 work dock：TODO → Agents → Jobs → Background。`Ctrl-]` 可移植；`Ctrl-Tab` 需要 kitty 键盘协议。Terminal.app 用它切换终端标签页 |
+| `Ctrl-Shift-Tab` | 终端能发送 kitty 键盘组合键时，反向循环切换 work dock。Terminal.app 用它切换终端标签页 |
 | `Alt-G` / `Alt-Shift-G` | 输入框为空时将对话记录滚动到顶部 / 底部 |
 | `Alt-1`-`Alt-8` | 当没有模态框或内联选择器打开时分发 Hotbar 槽位 1-8 |
 | `Alt-!` / `Alt-@` / `Alt-#` / `Alt-$` | 选择任务面板（workbar）的面板：Tasks / Agents / Context / Files |
 | `Ctrl-Alt-0` | 关闭任务面板（workbar）/ 恢复到底部位置 |
 | `Alt-L` | 为最后一条消息打开分页器（输入框为空） |
-| `Alt-P` / `Alt-A` / `Alt-Y` | 跳到 Plan / Work，或请求 Full Access（`Alt-Y` 是旧的权限通道——Work + Full Access——不是独立模式；它遵循锁定的审批策略） |
+| `Alt-P` / `Alt-A` | 跳到 Plan / Work |
 | `Ctrl-X`（Activity 任务面板） | 取消所有正在运行的后台 shell 任务 |
 | `Esc` | 关闭最上层模态框 · 取消斜杠菜单 · 关闭 toast。当压缩正在为一个进行中的回合服务时，`Esc` 会停止该回合（压缩随之中断） |
 

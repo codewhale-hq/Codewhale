@@ -45,10 +45,11 @@ pub(crate) fn continue_without_trusting_directory(app: &mut App) {
 pub(crate) fn advance_after_trust_directory_choice(app: &mut App) {
     if app.onboarding_workspace_trust_gate {
         app.onboarding_workspace_trust_gate = false;
+        let _ = crate::tui::onboarding::mark_onboarded();
         app.onboarding = OnboardingState::None;
+    } else if !app.composer.input.trim().is_empty() && !app.onboarding_explore_offline {
+        app.finish_onboarding_without_feature_intro();
     } else {
-        // Both a first run and missing-key recovery end on the ready screen;
-        // a trust-gate-only launch (already onboarded) exits directly above.
         app.onboarding = OnboardingState::Ready;
     }
 }
@@ -321,12 +322,14 @@ async fn balance_get_json<T: serde::de::DeserializeOwned>(
         .send()
         .await
         .map_err(|error| {
+            let error = error.without_url();
+            tracing::warn!(%error, "provider balance request failed");
             if error.is_timeout() {
-                "request timed out".to_string()
+                format!("request timed out: {error}")
             } else if error.is_connect() {
-                "could not connect to the balance service".to_string()
+                format!("could not connect to the balance service: {error}")
             } else {
-                "request failed".to_string()
+                format!("request failed: {error}")
             }
         })?;
     let status = response.status();
@@ -338,10 +341,10 @@ async fn balance_get_json<T: serde::de::DeserializeOwned>(
         );
         return Err(format!("HTTP {status}"));
     }
-    response
-        .json()
-        .await
-        .map_err(|_| "the response was not readable".to_string())
+    response.json().await.map_err(|error| {
+        tracing::warn!(%error, "provider balance response was not readable");
+        format!("the response was not readable: {error}")
+    })
 }
 
 pub(crate) fn should_fetch_provider_balance(app: &App) -> bool {
@@ -427,41 +430,6 @@ pub(crate) fn openrouter_credits_from_json(
         topped_up_balance: format!("{:.2}", body.data.total_credits),
         granted_balance: String::new(),
     })
-}
-
-/// Route text from either clipboard transport into the canonical provider
-/// picker. Keeping this small seam pure lets tests exercise ordinary
-/// Cmd/Ctrl+V without reading the developer's real clipboard.
-pub(crate) fn paste_text_into_provider_picker(app: &mut App, text: &str) -> bool {
-    if app.view_stack.top_kind() != Some(ModalKind::ProviderPicker) {
-        return false;
-    }
-    let _ = app.view_stack.handle_paste(text);
-    true
-}
-
-/// Read an ordinary Cmd/Ctrl+V clipboard shortcut for the provider picker.
-/// Images are deliberately consumed but ignored: an open credential modal
-/// must never leak unsupported clipboard content into the composer beneath it.
-pub(crate) fn paste_provider_picker_from_clipboard(app: &mut App) -> bool {
-    if app.view_stack.top_kind() != Some(ModalKind::ProviderPicker) {
-        return false;
-    }
-    // The same guard the composer uses: a backend that forwards both edges of
-    // Ctrl+V would otherwise paste the text twice into the credential field.
-    if app.clipboard_paste_within_dedupe_window() {
-        return true;
-    }
-    if app.clipboard.requires_terminal_paste() {
-        app.status_message = Some(app.tr(MessageId::ClipboardSshPasteHint).into_owned());
-        app.note_clipboard_paste();
-        return true;
-    }
-    if let Some(ClipboardContent::Text(text)) = app.clipboard.read(app.workspace.as_path()) {
-        let _ = paste_text_into_provider_picker(app, &text);
-    }
-    app.note_clipboard_paste();
-    true
 }
 
 pub(crate) async fn fetch_available_models(config: &Config) -> Result<Vec<String>> {

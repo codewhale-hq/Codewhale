@@ -1,15 +1,9 @@
-//! Compatibility persistent-RLM session tools.
+//! Persistent RLM session tool.
 //!
 //! v0.8.33 replaces the old one-shot `rlm` tool with a head/hands surface:
 //! `rlm_open` creates a named Python kernel over a large context,
 //! `rlm_eval` runs bounded probes against it, `rlm_configure` adjusts runtime
 //! feedback, and `rlm_close` tears it down.
-//!
-//! The normal Agent path now owns one session-persistent `repl` kernel. This
-//! action-shaped surface stays registered for explicit compatibility and saved
-//! transcript replay, but is hidden from new model turns. Its `rlm_*` aliases
-//! force the action so old transcripts replay correctly — the pattern
-//! `BashTool` established for `exec_shell*` in #4625.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -153,10 +147,7 @@ impl ToolSpec for RlmTool {
     }
 
     fn model_visible(&self) -> bool {
-        // The normal Agent path owns a session-scoped `repl` kernel. Keep the
-        // old action fan-out registered for replay and explicit compatibility,
-        // but do not teach a second RLM workflow to new model turns.
-        false
+        self.forced_action.is_none()
     }
 
     fn description(&self) -> &'static str {
@@ -1022,9 +1013,9 @@ mod tests {
     }
 
     #[test]
-    fn rlm_tool_is_compatibility_only_not_model_visible() {
+    fn canonical_rlm_tool_is_model_visible_while_aliases_stay_hidden() {
         let canonical = RlmTool::new("rlm");
-        assert!(!canonical.model_visible());
+        assert!(canonical.model_visible());
         assert_eq!(canonical.name(), "rlm");
         let actions = canonical.input_schema()["properties"]["action"]["enum"]
             .as_array()

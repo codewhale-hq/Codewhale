@@ -3,7 +3,10 @@
 use ratatui::{buffer::Buffer, layout::Rect};
 
 use super::Entry;
-use crate::{Artifact, ArtifactKind, ArtifactShelf, Paint, ReceiptValue, State, Theme};
+use crate::{
+    Artifact, ArtifactChip, ArtifactChipRow, ArtifactKind, ArtifactShelf, Paint, ReceiptValue,
+    State, Theme,
+};
 
 fn artifact(area: Rect, buf: &mut Buffer, theme: &Theme) {
     Artifact::new("Release checklist.md", ArtifactKind::File, State::Done)
@@ -85,6 +88,19 @@ fn empty(area: Rect, buf: &mut Buffer, theme: &Theme) {
     ArtifactShelf::new(Vec::new()).paint(area, buf, theme);
 }
 
+fn chip(area: Rect, buf: &mut Buffer, theme: &Theme) {
+    ArtifactChip::new("summary.md", ArtifactKind::File, State::Done).paint(area, buf, theme);
+}
+
+fn chip_row(area: Rect, buf: &mut Buffer, theme: &Theme) {
+    ArtifactChipRow::new(vec![
+        ArtifactChip::new("summary.md", ArtifactKind::File, State::Done),
+        ArtifactChip::new("review.diff", ArtifactKind::Review, State::NeedsYou),
+        ArtifactChip::new("ci-log.txt", ArtifactKind::Run, State::Working),
+    ])
+    .paint(area, buf, theme);
+}
+
 pub(crate) fn entries() -> Vec<Entry> {
     vec![
         Entry {
@@ -116,6 +132,18 @@ pub(crate) fn entries() -> Vec<Entry> {
             width: 40,
             height: 2,
             draw: empty,
+        },
+        Entry {
+            name: "artifact-chip",
+            width: 40,
+            height: 1,
+            draw: chip,
+        },
+        Entry {
+            name: "artifact-chip-row",
+            width: 60,
+            height: 1,
+            draw: chip_row,
         },
     ]
 }

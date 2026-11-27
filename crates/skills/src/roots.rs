@@ -58,9 +58,7 @@ pub enum SkillRootKind {
     Configured,
     // Matched by the extensions UI + audit provenance, never constructed:
     // no discovery path produces these roots yet (#4651 follow-up never came).
-    #[allow(dead_code)]
     BuiltIn,
-    #[allow(dead_code)]
     ReviewedPluginSnapshot,
     RegistryCache,
 }
@@ -75,7 +73,6 @@ pub enum SkillRootAccess {
     /// Built-in / reviewed plugin snapshot content.
     // Never constructed: no discovery path assigns it yet (#4651 follow-up
     // never came). Kept because the access taxonomy is meaningless without it.
-    #[allow(dead_code)]
     Immutable,
     /// Registry download cache — not an active install target.
     CacheOnly,

@@ -9,15 +9,15 @@ pub const WHALE_PANEL_RGB: (u8, u8, u8) = (16, 28, 64); // #101C40 Panel surface
 pub const WHALE_COMPOSER_RGB: (u8, u8, u8) = (20, 35, 82); // #142352 Stage plate (brand navy)
 pub const WHALE_ELEVATED_RGB: (u8, u8, u8) = (26, 44, 99); // #1A2C63 Raised
 pub const WHALE_SELECTION_RGB: (u8, u8, u8) = (35, 45, 65); // #232D41 Quiet selection surface
-pub const WHALE_TEXT_BODY_RGB: (u8, u8, u8) = (246, 242, 232); // #F6F2E8 Whale Ivory
-pub const WHALE_TEXT_SOFT_RGB: (u8, u8, u8) = (182, 192, 212); // #B6C0D4
-pub const WHALE_TEXT_MUTED_RGB: (u8, u8, u8) = (147, 160, 184); // #93A0B8
-pub const WHALE_TEXT_HINT_RGB: (u8, u8, u8) = (138, 153, 179); // #8A99B3 — AA hint on the ink field
+pub const WHALE_TEXT_BODY_RGB: (u8, u8, u8) = (237, 241, 247);
+pub const WHALE_TEXT_SOFT_RGB: (u8, u8, u8) = (182, 192, 212);
+pub const WHALE_TEXT_MUTED_RGB: (u8, u8, u8) = (147, 160, 184);
+pub const WHALE_TEXT_HINT_RGB: (u8, u8, u8) = (138, 153, 179);
 /// Blue Stage grammar: the interaction blue is the primary accent and the
 /// Info ink; it has exactly one name. Signal Gold is reserved for the whale
 /// mark and human-attention roles ([`WHALE_HUMAN_RGB`]), never for general
 /// interaction.
-pub const WHALE_ACTION_RGB: (u8, u8, u8) = (106, 166, 220); // #6AA6DC Ombre sky — owns interaction on dark
+pub const WHALE_ACTION_RGB: (u8, u8, u8) = (148, 190, 255);
 // No TUI consumer yet; the web reads these through scripts/export-design-tokens.py
 // (`--whale-cobalt`, `--whale-ice`), so they are not dead.
 pub const WHALE_COBALT_RGB: (u8, u8, u8) = (21, 53, 178); // #1535B2 Ombre cobalt — light-mode action
@@ -30,9 +30,9 @@ pub const WHALE_ACCENT_SECONDARY_RGB: (u8, u8, u8) = (79, 209, 197); // #4FD1C5 
 // borrowed state color. Never use them for status, mode, or permission.
 pub const WHALE_BRAND_ORANGE_RGB: (u8, u8, u8) = (255, 138, 61); // #FF8A3D Harbor mooring loop
 pub const WHALE_BRAND_MAGENTA_RGB: (u8, u8, u8) = (240, 78, 184); // #F04EB8 Echo sonar ticks
-pub const WHALE_HUMAN_RGB: (u8, u8, u8) = (246, 196, 83); // #F6C453 Signal Gold
-pub const WHALE_WORKING_GREEN_RGB: (u8, u8, u8) = (155, 214, 111); // #9BD66F Working Green
-pub const WHALE_ERROR_RGB: (u8, u8, u8) = (255, 134, 178); // #FF86B2 Rose danger
+pub const WHALE_HUMAN_RGB: (u8, u8, u8) = (240, 190, 130);
+pub const WHALE_WORKING_GREEN_RGB: (u8, u8, u8) = (127, 223, 200);
+pub const WHALE_ERROR_RGB: (u8, u8, u8) = (244, 168, 160);
 pub const WHALE_ERROR_HOVER_RGB: (u8, u8, u8) = (255, 156, 194); // #FF9CC2
 pub const WHALE_ERROR_SURFACE_RGB: (u8, u8, u8) = (43, 21, 34); // #2B1522
 pub const WHALE_ERROR_BORDER_RGB: (u8, u8, u8) = WHALE_ERROR_RGB;
@@ -84,17 +84,17 @@ pub const LIGHT_PANEL_RGB: (u8, u8, u8) = (255, 253, 248); // #FFFDF8
 pub const LIGHT_ELEVATED_RGB: (u8, u8, u8) = (232, 238, 248); // #E8EEF8
 pub const LIGHT_REASONING_RGB: (u8, u8, u8) = (255, 246, 214); // #FFF6D6
 pub const LIGHT_SUCCESS_RGB: (u8, u8, u8) = (223, 247, 231); // #DFF7E7
-pub const LIGHT_SUCCESS_FG_RGB: (u8, u8, u8) = (20, 118, 61); // #14763D, readable on every light surface
-pub const LIGHT_ERROR_RGB: (u8, u8, u8) = (252, 235, 242); // #FCEBF2
-pub const LIGHT_TEXT_BODY_RGB: (u8, u8, u8) = (20, 33, 58); // #14213A
-pub const LIGHT_TEXT_MUTED_RGB: (u8, u8, u8) = (91, 103, 128); // #5B6780
-pub const LIGHT_TEXT_HINT_RGB: (u8, u8, u8) = (95, 107, 129); // #5F6B81
-pub const LIGHT_TEXT_SOFT_RGB: (u8, u8, u8) = (69, 81, 104); // #455168
-pub const LIGHT_ACTION_RGB: (u8, u8, u8) = (21, 53, 178); // #1535B2 Ombre cobalt
-pub const LIGHT_LIVE_RGB: (u8, u8, u8) = (8, 118, 109); // #08766D
-pub const LIGHT_HUMAN_RGB: (u8, u8, u8) = (122, 85, 0); // #7A5500
-pub const LIGHT_WARNING_RGB: (u8, u8, u8) = (169, 71, 36); // #A94724
-pub const LIGHT_DANGER_RGB: (u8, u8, u8) = (180, 35, 90); // #B4235A
+pub const LIGHT_SUCCESS_FG_RGB: (u8, u8, u8) = (20, 118, 61);
+pub const LIGHT_ERROR_RGB: (u8, u8, u8) = (252, 235, 242);
+pub const LIGHT_TEXT_BODY_RGB: (u8, u8, u8) = (22, 34, 48);
+pub const LIGHT_TEXT_MUTED_RGB: (u8, u8, u8) = (91, 103, 128);
+pub const LIGHT_TEXT_HINT_RGB: (u8, u8, u8) = (95, 107, 129);
+pub const LIGHT_TEXT_SOFT_RGB: (u8, u8, u8) = (69, 81, 104);
+pub const LIGHT_ACTION_RGB: (u8, u8, u8) = (21, 82, 198);
+pub const LIGHT_LIVE_RGB: (u8, u8, u8) = (20, 104, 87);
+pub const LIGHT_HUMAN_RGB: (u8, u8, u8) = (123, 75, 6);
+pub const LIGHT_WARNING_RGB: (u8, u8, u8) = (169, 71, 36);
+pub const LIGHT_DANGER_RGB: (u8, u8, u8) = (164, 37, 49);
 // Mode shades stay in their parent semantic families while remaining distinct
 // inputs to the render backend. A `Cell` carries only a `Color`, so reusing the
 // exact action/human/danger value here would erase the mode role before ANSI

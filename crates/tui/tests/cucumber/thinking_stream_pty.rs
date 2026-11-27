@@ -273,9 +273,7 @@ fn prepare(workspace: &SealedWorkspace, provider: &PacedProvider, settings: Opti
     if let Some(settings) = settings {
         std::fs::write(state.join("settings.toml"), settings).unwrap();
     }
-    let trust = workspace.workspace().join(".deepseek");
-    std::fs::create_dir_all(&trust).unwrap();
-    std::fs::write(trust.join("trusted"), "").unwrap();
+    workspace.trust_workspace().unwrap();
 }
 
 fn launch(
@@ -305,7 +303,7 @@ fn launch(
         .size(rows, cols)
         .spawn()
         .unwrap();
-    tui.wait_for_text("accept edits", WAIT)
+    tui.wait_for_text("Accept Edits", WAIT)
         .unwrap_or_else(|error| panic!("the dial chip never painted: {error}"));
     tui
 }
@@ -342,7 +340,7 @@ fn footer_row(tui: &mut Harness) -> (u16, String) {
     (0..frame.rows())
         .rev()
         .map(|row| (row, frame.row(row)))
-        .find(|(_, text)| text.contains("accept edits"))
+        .find(|(_, text)| text.contains("Accept Edits"))
         .unwrap_or_else(|| panic!("no dial chip on screen:\n{}", frame.debug_dump()))
 }
 
@@ -356,7 +354,7 @@ fn assert_status_and_water(tui: &mut Harness, label: &str) {
             frame.debug_dump()
         );
     }
-    assert!(status.contains("accept edits"), "{label}: {status}");
+    assert!(status.contains("Accept Edits"), "{label}: {status}");
     for row in 0..footer.saturating_sub(3) {
         let text = frame.row(row);
         if !text.chars().any(char::is_alphanumeric) {

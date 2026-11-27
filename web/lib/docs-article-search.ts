@@ -106,7 +106,7 @@ function getCustomDocSearchSections(locale: string): DocSearchSection[] {
       t(INSTALL_COPY.firstStep1), t(INSTALL_COPY.firstStep2), t(INSTALL_COPY.firstStep3),
     ]),
     section("/install", "install-usage", installTitle, t(INSTALL_COPY.usageTitle), [
-      t(INSTALL_COPY.usageBody), t(INSTALL_COPY.usageInstaller), INSTALL_PAGE_COMMANDS.installTelemetryOff,
+      t(INSTALL_COPY.usageBody), t(INSTALL_COPY.usageInstaller),
     ]),
     section("/install", "install-update", installTitle, t(INSTALL_COPY.updateTitle), [t(INSTALL_COPY.updateBody)]),
     section("/install", "install-remove", installTitle, t(INSTALL_COPY.removeTitle), [

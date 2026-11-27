@@ -854,8 +854,8 @@ var init_lib2 = __esm({
         let inFlight;
         let removeWrapper = () => false;
         const waitForSetup = () => {
-          setupBarrier ??= new Promise((resolve7, reject) => {
-            resolveSetup = resolve7;
+          setupBarrier ??= new Promise((resolve9, reject) => {
+            resolveSetup = resolve9;
             rejectSetup = reject;
           });
           return setupBarrier;
@@ -1045,7 +1045,7 @@ var init_lib2 = __esm({
         });
       }
       async _unload() {
-        while ([...this.provisions].some((impl) => impl.dependents.size)) await new Promise((resolve7) => this._release = resolve7);
+        while ([...this.provisions].some((impl) => impl.dependents.size)) await new Promise((resolve9) => this._release = resolve9);
         this._release = void 0;
         await Promise.all(this._disposables.clear().map(async (dispose) => {
           try {
@@ -1710,9 +1710,9 @@ var init_lib2 = __esm({
           return async () => {
             if (this.store[impl.isolate] === impl) delete this.store[impl.isolate];
             this.ctx.isolate(name, impl.isolate).reflect.notify([name]);
-            await new Promise((resolve7) => {
-              impl.release = resolve7;
-              if (!impl.dependents.size) resolve7();
+            await new Promise((resolve9) => {
+              impl.release = resolve9;
+              if (!impl.dependents.size) resolve9();
             });
             impl.release = void 0;
             this.ctx.fiber.provisions.delete(impl);
@@ -1820,16 +1820,16 @@ var init_lib2 = __esm({
       }
     };
     (function(Inject3) {
-      function resolve7(inject, result = /* @__PURE__ */ Object.create(null)) {
+      function resolve9(inject, result = /* @__PURE__ */ Object.create(null)) {
         if (!inject) return result;
         if (Array.isArray(inject)) for (const name of inject) result[name] = null;
         else if (Reflect.has(inject, symbols.checkProto)) {
-          Object.assign(result, resolve7(Object.getPrototypeOf(inject)));
+          Object.assign(result, resolve9(Object.getPrototypeOf(inject)));
           for (const name of Object.keys(inject)) result[name] = inject[name] ?? null;
         } else for (const name of Object.keys(inject)) result[name] = inject[name] ?? null;
         return result;
       }
-      Inject3.resolve = resolve7;
+      Inject3.resolve = resolve9;
     })(Inject || (Inject = {}));
     RegistryService = class {
       ctx;
@@ -12803,631 +12803,6 @@ var init_bun_closure = __esm({
   }
 });
 
-// src/dsh/compatibility.json
-var compatibility_default;
-var init_compatibility = __esm({
-  "src/dsh/compatibility.json"() {
-    compatibility_default = {
-      version: 3,
-      target_dsh_version: "0.2.2-rc.1",
-      provided_services: {
-        dsh: [
-          "tools",
-          "commands",
-          "storage",
-          "skills",
-          "sessions",
-          "userQuestions",
-          "subagents",
-          "agents",
-          "systemPrompt",
-          "llm",
-          "credentials",
-          "settings",
-          "pluginManager",
-          "deepseekAccount",
-          "terminal"
-        ],
-        cordis: [
-          "logger",
-          "events",
-          "reflect",
-          "registry"
-        ],
-        codewhale: [
-          "prompt",
-          "avatars",
-          "mcp",
-          "shellHooks",
-          "remote",
-          "workspace"
-        ]
-      },
-      refused_services: [
-        "shellHooks",
-        "loader",
-        "approval",
-        "agents",
-        "subagents",
-        "sessions",
-        "llm",
-        "sandboxPolicy",
-        "credentials",
-        "fs",
-        "subprocess",
-        "systemPrompt",
-        "runtimeLoop",
-        "tools",
-        "commands",
-        "prompt",
-        "storage",
-        "skills",
-        "avatars",
-        "mcp",
-        "logger",
-        "userQuestions",
-        "remote",
-        "workspace",
-        "settings",
-        "pluginManager",
-        "deepseekAccount",
-        "terminal"
-      ],
-      row_bridges: {
-        "@deepseek-ai/dsh-mcp-client": "mcp",
-        "@deepseek-ai/dsh-skill-filesystem": "skills",
-        "@deepseek-ai/dsh-hooks-claude-code": "hooks-claude-code",
-        "@deepseek-ai/dsh-hooks-codex": "hooks-codex",
-        "@deepseek-ai/dsh-persona": "persona",
-        "@deepseek-ai/dsh-storage": "host-spine",
-        "@deepseek-ai/dsh-storage-json": "host-spine",
-        "@deepseek-ai/dsh-storage-domain": "host-spine",
-        "@deepseek-ai/dsh-workspace": "host-spine",
-        "@deepseek-ai/dsh-code-runtime-worker-thread": "host-spine",
-        "@deepseek-ai/dsh-tool-subagent/model-selection-settings": "host-spine",
-        "@deepseek-ai/dsh-agent-preset-registry": "host-spine",
-        "@deepseek-ai/dsh-cordis-host-runner": "host-spine",
-        "@deepseek-ai/dsh-host-webserver": "host-spine"
-      },
-      module_singletons: {
-        "@codewhale/dsh-composition": "dsh-composition",
-        "@deepseek-ai/cordis-plugin-loader": "dsh-loader",
-        "@deepseek-ai/cordis-plugin-include": "dsh-include",
-        "@deepseek-ai/cordis-plugin-group": "dsh-group",
-        "@deepseek-ai/cordis": "cordis",
-        "@deepseek-ai/schemastery": "schemastery",
-        "@deepseek-ai/cosmokit": "cosmokit",
-        cosmokit: "cosmokit",
-        "@deepseek-ai/dsh-tools": "dsh-tools",
-        "@deepseek-ai/dsh-util-values": "dsh-util-values",
-        "@deepseek-ai/dsh-commands/brand": "dsh-commands-brand",
-        "@deepseek-ai/dsh-llm": "dsh-llm-values",
-        "@deepseek-ai/dsh-session": "dsh-session-values",
-        "@deepseek-ai/dsh-system-prompt": "dsh-system-prompt-values",
-        "@deepseek-ai/dsh-user-questions": "dsh-user-questions-values"
-      },
-      definition_api: {
-        package: "@deepseek-ai/dsh-tools",
-        version: "0.2.2-rc.1",
-        license: "MIT",
-        tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-tools/-/dsh-tools-0.2.2-rc.1.tgz",
-        integrity: "sha512-svB49dLPCHkKHgGwik3dTvEH0sL1vKwIzlQgqjE4qzEqFbSEROW8fByk3g2y2lxDv8TqgEUa0Vp2qFrVbm2lfw==",
-        license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-        tarball_sha256: "bb94ee037bd7d3efe2d0654c6a1fa7084b268b895fa0ca6ceeb7e65d4fd6da72",
-        sources: [
-          {
-            file: "lib/shared-DTdn5dXO.js",
-            sha256: "d02f0d8f36878313b0dae3a1bba5b77f7db4cffc77a0b72772048a36bacf2cf0",
-            lines: [
-              [
-                22,
-                548
-              ]
-            ]
-          },
-          {
-            file: "lib/index.js",
-            sha256: "1889cbf718d64518dd83245d4dba1e1f080b2c5326259c3ed5b1be7a7666a2bd",
-            lines: [
-              [
-                7,
-                377
-              ]
-            ]
-          },
-          {
-            file: "lib/shared-DTdn5dXO.js",
-            sha256: "d02f0d8f36878313b0dae3a1bba5b77f7db4cffc77a0b72772048a36bacf2cf0",
-            lines: [
-              [
-                566,
-                596
-              ]
-            ]
-          }
-        ]
-      },
-      command_followup: "one-text-message-submit-on-success",
-      pure_api: {
-        file: "src/dsh/dsh-message-compat.js",
-        source_sha256: "aac208e72eac3601b02c5a4ce95bfeb82f1bb3ba0d1e906d786d1e25609e9857",
-        exports: {
-          "@deepseek-ai/dsh-llm": [
-            "createUserMessage",
-            "HarnessError"
-          ],
-          "@deepseek-ai/dsh-session": [
-            "SessionId"
-          ],
-          "@deepseek-ai/dsh-system-prompt": [
-            "PERSONA_PREFIX_SECTION"
-          ],
-          "@deepseek-ai/dsh-user-questions": [
-            "UserQuestionError"
-          ]
-        },
-        packages: [
-          {
-            package: "@deepseek-ai/dsh-brand",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-brand/-/dsh-brand-0.2.2-rc.1.tgz",
-            integrity: "sha512-ShGNEmNuEQA+bfkspWC2kGrdbrM4dFNhqlrNHIWsHO+PgVH1KoTKTLSraT1pt0A8YYk/moKE0gL2gY9dNBU+rw==",
-            tarball_sha256: "d953cb5e8dcd69be0b0347ce9a3b36421eefa751820cbe909f4a185348ad5530",
-            source_file: "lib/index.js",
-            source_sha256: "14feb59256b891982b2017d73ed03ee65e2a7365f48e4902a856acb0e52d5eb0",
-            excerpts: [
-              {
-                name: "brandString",
-                lines: [
-                  20,
-                  22
-                ],
-                sha256: "2f0b62ba6507db54836a99e24d1d219e598b6140e575d2cf5c63d86a18e5e8ac"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          },
-          {
-            package: "@deepseek-ai/dsh-util-crypto",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-crypto/-/dsh-util-crypto-0.2.2-rc.1.tgz",
-            integrity: "sha512-I9Nhh3/64HPzjdR/mUt0J534FYHgodMUe0coXtA91+kxGcJQcSHOYouewv4hf0NWw0BuLh5zihTdtldZtobOWA==",
-            tarball_sha256: "c9ef0dfed280c83202f1d7bd5d32b1139a92a2fc375da62962ef709c3d1e4a6a",
-            source_file: "lib/index.js",
-            source_sha256: "640b26c8e5a1156c6c8e8749a22f805c9c0e34444778eb4ee9529be3e88ec862",
-            excerpts: [
-              {
-                name: "randomUUID",
-                lines: [
-                  27,
-                  33
-                ],
-                sha256: "e6c3b47d5cf366a149204c36d1697e658f61c48bfd96e66ec1c96deec3a8f4e2"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          },
-          {
-            package: "@deepseek-ai/dsh-llm",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-llm/-/dsh-llm-0.2.2-rc.1.tgz",
-            integrity: "sha512-XeEvH+6bpkjx0E2P1B5ZE+WWa+VHp4DimQaJDKNUZEFouqHMuN1B61TIz6IzUquRxa/6X4yJy+qXQ9WwAeMw5w==",
-            tarball_sha256: "cbf45039d3ef63e26987de514928a847a8c2d0b049df8fb24c11684e203b05d4",
-            source_file: "lib/index.js",
-            source_sha256: "8e541fc98a11897706a122fde1db42f8b2a41b3b354ba3fcb932e9a16929ac6a",
-            excerpts: [
-              {
-                name: "createMessage",
-                lines: [
-                  37,
-                  42
-                ],
-                sha256: "74baa44c9dea1821d97bd4fe592b21baf31f60eaf06962a269fcf2ec88e352ae"
-              },
-              {
-                name: "createUserMessage",
-                lines: [
-                  59,
-                  64
-                ],
-                sha256: "2c4929c2c18e511aa0fefe216eb50e703191057bb15ba1412ddcfdcc8bfc020f"
-              },
-              {
-                name: "HarnessError declaration",
-                lines: [
-                  126,
-                  126
-                ],
-                sha256: "d260a23e0a20850d3b623cbeed54626b47d43fa74e000c5d529dc0a341ab63ee"
-              },
-              {
-                name: "HarnessError body",
-                lines: [
-                  128,
-                  134
-                ],
-                sha256: "30ee24ef29e412b1ab2f0ca89ab600bb0260022d1479d43ca2ad21173b774ccf"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          },
-          {
-            package: "@deepseek-ai/dsh-session",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-session/-/dsh-session-0.2.2-rc.1.tgz",
-            integrity: "sha512-e0zx9HFNn8EyqrymGQS85SjKOyr61//ChTgIVDlCBSZvBB723fuXyi9LiHIIuPTlkgmWJl3gm5J51ebEXew7PQ==",
-            tarball_sha256: "b8b1b4a7b9c8efbdbe4c134ed3b18cddf11842b62ad7675c21c05b3afef1cfb5",
-            source_file: "lib/index.js",
-            source_sha256: "6fad466aa1f7aa64bfa038681ead5721f66c88e9891e25d357d2b8edbccd5494",
-            excerpts: [
-              {
-                name: "SessionId",
-                lines: [
-                  13,
-                  15
-                ],
-                sha256: "68a5778f0586d4e1c219ce6ae3cec3120a57446bbb91f371b4ba208533f48996"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          },
-          {
-            package: "@deepseek-ai/dsh-system-prompt",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-system-prompt/-/dsh-system-prompt-0.2.2-rc.1.tgz",
-            integrity: "sha512-1p9imdrenPnJTkLb6Coq+ELBDjngblM/YGP1Pa/xf1oisjLHcCoK2n9kkOUTIfgvoFtqWfxZJNZeKef71ZmlrA==",
-            tarball_sha256: "5ecb3f2ff2f0c037287c22c1ef917f1ce5cdd4c8055d51da6646ed5a39fe02a9",
-            source_file: "lib/index.js",
-            source_sha256: "18b692b03bbb717589085f63b126cbcf22963763c5a0565bb3a7a5d254e8e4a7",
-            excerpts: [
-              {
-                name: "PERSONA_PREFIX_SECTION",
-                lines: [
-                  61,
-                  61
-                ],
-                sha256: "11338254c278626eea6887b9cb5dc94d16f2ab4dae4bd7e555ea608c4b15648f"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          },
-          {
-            package: "@deepseek-ai/dsh-util-values",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-values/-/dsh-util-values-0.2.2-rc.1.tgz",
-            integrity: "sha512-UN4B/Fa9zAunYN3UuXDQ3QknxF/lMKNwTu2WxXKKEC+Ejz745po7I/JmsVFVa7+socfuwwTmVrfSsddRVU+lew==",
-            tarball_sha256: "e5de9a3c2600c70d72dba702cd0dfc8097264b7b6a7f393f4cfa799c81ecf759",
-            source_file: "lib/index.js",
-            source_sha256: "8b4ffdf40126d48bd22017b4671f7e90612d01833fc865f7a0b60d3de4183e8b",
-            excerpts: [
-              {
-                name: "deepFreeze",
-                lines: [
-                  809,
-                  845
-                ],
-                sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: false
-          },
-          {
-            package: "@deepseek-ai/dsh-user-questions",
-            version: "0.2.2-rc.1",
-            license: "MIT",
-            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-user-questions/-/dsh-user-questions-0.2.2-rc.1.tgz",
-            integrity: "sha512-COY40boWZ7XEszSvMGZ4CY5ze5ujCdA+Trtqx5C6ioqWzH9e8YbkY7AxyCOadxVO++5zAsqvsAfq65cZUPIMGA==",
-            tarball_sha256: "e7c1c38234fea9c0634ec95272bd1005c48ce890d2b935c8442b4ae7fee1b51e",
-            source_file: "lib/index.js",
-            source_sha256: "69fee77aa57cc43de583d53a4877394c4cf3b5d58b8d7579fd8095c0a015bfbd",
-            excerpts: [
-              {
-                name: "UserQuestionError",
-                lines: [
-                  430,
-                  435
-                ],
-                sha256: "5d49a4ecdf40039b26824f3575a79820b48ed011f90641870f44fe5a41bf5ced"
-              }
-            ],
-            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
-            excerpted: true
-          }
-        ],
-        reuse: {
-          package: "@deepseek-ai/dsh-util-values",
-          version: "0.2.2-rc.1",
-          file: "lib/index.js",
-          symbol: "deepFreeze",
-          lines: [
-            809,
-            845
-          ],
-          sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
-        },
-        constructor_names: [
-          "HarnessError",
-          "UserQuestionError"
-        ]
-      },
-      tool_caller_projection: "readonly-id-session-header-cwd",
-      session_methods: {
-        flush: "invocation-bound-acknowledged-checkpoint-with-host-redaction-policy"
-      },
-      user_question_methods: {
-        ask: "invocation-bound-root-agent-typed-answers-no-wait"
-      },
-      subagent_methods: {
-        getProvider: "spawn-only-independent-context",
-        startActivation: "invocation-bound-caller-or-parent-delivery-text-prompt-model-persona-deny",
-        result: "text-output-typed-stop-reason",
-        dispose: "exact-activation"
-      },
-      agents_methods: {},
-      system_prompt_methods: {
-        section: "child-persona-slot-in-agent-created-only"
-      },
-      tool_definition_fields: {
-        deferLoading: "boolean-presentation-noop-engine-controls-loading"
-      }
-    };
-  }
-});
-
-// src/dsh/resolve-hooks.ts
-import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL2 } from "node:url";
-import { resolve as resolve2, isAbsolute as isAbsolute2, dirname as dirname2 } from "node:path";
-function keyIn(closure, path2) {
-  const canonical = insideKey(closure.canonicalRoot, path2);
-  if (canonical !== void 0) return canonical;
-  for (const root of closure.rawRoots) {
-    const raw = insideKey(root, path2);
-    if (raw !== void 0) return raw;
-  }
-}
-function admitReviewedClosure(baseUrl, files) {
-  const rawRoot = resolve2(fileURLToPath2(baseUrl));
-  const canonicalRoot = canonicalPath(rawRoot);
-  const id = pathKey(canonicalRoot);
-  const accepted = /* @__PURE__ */ Object.create(null);
-  const keys = Object.keys(files);
-  if (keys.length > 16384) throw new Error("reviewed composition closure exceeds its file limit");
-  for (const key of keys) {
-    if (!key || key.split("/").some((part) => !part || part === "." || part === "..") || key.includes("\\") || key.includes(":") || isAbsolute2(key) || !/^[a-f0-9]{64}$/.test(files[key])) throw new Error("invalid reviewed composition closure file");
-    accepted[key] = files[key];
-  }
-  const existing = reviewedClosures.get(id);
-  if (existing) {
-    if (Object.keys(existing.files).length !== keys.length || keys.some((key) => existing.files[key] !== accepted[key])) throw new Error("the same composition root carries different file receipts");
-    existing.refs++;
-    existing.rawRoots.add(rawRoot);
-  } else reviewedClosures.set(id, { files: Object.freeze(accepted), refs: 1, canonicalRoot, rawRoots: /* @__PURE__ */ new Set([rawRoot]) });
-  let disposed = false;
-  return () => {
-    if (disposed) return;
-    disposed = true;
-    const current2 = reviewedClosures.get(id);
-    if (current2 && --current2.refs === 0) reviewedClosures.delete(id);
-  };
-}
-async function importReviewedModule(baseUrl, path2) {
-  const rawRoot = resolve2(fileURLToPath2(baseUrl));
-  const id = pathKey(canonicalPath(rawRoot));
-  const receipt = reviewedClosures.get(id);
-  if (!receipt) throw new Error("composition module closure is no longer admitted");
-  const entry = resolve2(rawRoot, path2);
-  const admitted = closureAt(pathToFileURL2(entry).href);
-  if (!admitted || admitted.root !== id || !(admitted.path in receipt.files)) throw new Error("composition module is absent from reviewed closure");
-  return import(pathToFileURL2(entry).href);
-}
-function closureAt(url) {
-  if (!url?.startsWith("file:")) return;
-  const path2 = resolve2(fileURLToPath2(url));
-  for (const [root, receipt] of reviewedClosures) {
-    const inside = keyIn(receipt, path2);
-    if (inside !== void 0) return { root, receipt, path: inside };
-  }
-}
-var SINGLETONS, reviewedClosures;
-var init_resolve_hooks = __esm({
-  "src/dsh/resolve-hooks.ts"() {
-    "use strict";
-    init_canonical_path();
-    init_runtime();
-    init_bun_closure();
-    init_compatibility();
-    SINGLETONS = compatibility_default.module_singletons;
-    reviewedClosures = /* @__PURE__ */ new Map();
-  }
-});
-
-// src/shims/prompt.ts
-function normalizePromptSection(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError("prompt section must be an object with id and text");
-  }
-  if (Object.keys(value).some((key) => key !== "id" && key !== "text" && key !== "interpolate")) {
-    throw new TypeError("prompt section supports only id and text, plus optional model-cwd interpolation");
-  }
-  const { id, text: text4, interpolate: interpolate2 } = value;
-  if (typeof id !== "string" || !SECTION_ID.test(id)) {
-    throw new TypeError("prompt section id must be lower case, start with a letter, and use a-z, 0-9, _ or - (at most 64 characters)");
-  }
-  if (typeof text4 !== "string" || text4.trim().length === 0) {
-    throw new TypeError(`prompt section "${id}" needs non-empty text`);
-  }
-  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text4)) {
-    throw new TypeError(`prompt section "${id}" text contains control characters`);
-  }
-  if (Buffer.byteLength(text4, "utf8") > MAX_PROMPT_SECTION_BYTES) {
-    throw new RangeError(`prompt section "${id}" exceeds ${MAX_PROMPT_SECTION_BYTES} UTF-8 bytes`);
-  }
-  if (interpolate2 !== void 0 && interpolate2 !== "model-cwd") throw new TypeError("prompt interpolation supports only model-cwd");
-  if (interpolate2 !== void 0) validatePromptTemplate(text4);
-  return Object.freeze({ id, text: text4, ...interpolate2 === void 0 ? {} : { interpolate: interpolate2 } });
-}
-function validatePromptTemplate(text4) {
-  for (let open = text4.indexOf("{{"); open >= 0; ) {
-    const group = /^\{\{([^{}]*)\}\}/u.exec(text4.slice(open));
-    if (!group) {
-      if (text4.indexOf("}}", open + 2) >= 0) throw new TypeError("malformed prompt variable reference");
-      open = text4.indexOf("{{", open + 2);
-      continue;
-    }
-    if (!/^[a-z][a-z0-9_]*$/u.test(group[1])) throw new TypeError("malformed prompt variable reference");
-    if (group[1] !== "model" && group[1] !== "cwd") throw new TypeError(`unknown Core prompt variable "{{${group[1]}}}"; supported variables: model, cwd`);
-    open = text4.indexOf("{{", open + group[0].length);
-  }
-}
-var MAX_PROMPT_SECTION_BYTES, MAX_PROMPT_OWNER_BYTES, MAX_PROMPT_HOST_BYTES, SECTION_ID;
-var init_prompt = __esm({
-  "src/shims/prompt.ts"() {
-    "use strict";
-    init_owned();
-    MAX_PROMPT_SECTION_BYTES = 4 * 1024;
-    MAX_PROMPT_OWNER_BYTES = 32 * 1024;
-    MAX_PROMPT_HOST_BYTES = 128 * 1024;
-    SECTION_ID = /^[a-z][a-z0-9_-]{0,63}$/u;
-  }
-});
-
-// src/protocol.generated.ts
-var MAGIC_ASCII, ErrorCode;
-var init_protocol_generated = __esm({
-  "src/protocol.generated.ts"() {
-    "use strict";
-    MAGIC_ASCII = "CWX1";
-    ErrorCode = {
-      ParseError: -32700,
-      InvalidRequest: -32600,
-      MethodNotFound: -32601,
-      InvalidParams: -32602,
-      Internal: -32603,
-      ExecutionFailed: -32e3,
-      NotAvailable: -32001,
-      Refused: -32002,
-      Denied: -32003,
-      Cancelled: -32800
-    };
-  }
-});
-
-// src/protocol.ts
-var MAGIC;
-var init_protocol = __esm({
-  "src/protocol.ts"() {
-    "use strict";
-    init_protocol_generated();
-    init_protocol_generated();
-    MAGIC = Buffer.from(MAGIC_ASCII, "ascii");
-  }
-});
-
-// src/rpc.ts
-var RpcError;
-var init_rpc = __esm({
-  "src/rpc.ts"() {
-    "use strict";
-    init_protocol();
-    RpcError = class extends Error {
-      constructor(code, message, data2) {
-        super(message);
-        this.code = code;
-        this.data = data2;
-        this.name = "RpcError";
-      }
-      code;
-      data;
-      toWire() {
-        return this.data === void 0 ? { code: this.code, message: this.message } : { code: this.code, message: this.message, data: this.data };
-      }
-    };
-  }
-});
-
-// src/dsh/session-prompt.ts
-function checkpointCall(host, ctx, session2) {
-  const invocation = host.liveInvocation(ctx);
-  const ticket = invocation?.ticket;
-  return invocation !== void 0 && typeof ticket === "string" && ticket.length > 0 && session2 !== void 0 && session2 === invocation.session ? invocation : void 0;
-}
-var CHILD_ONLY, sessionsAdapter, systemPromptAdapter;
-var init_session_prompt = __esm({
-  "src/dsh/session-prompt.ts"() {
-    "use strict";
-    init_lib2();
-    init_protocol();
-    init_rpc();
-    CHILD_ONLY = "system prompt sections are only available on a child agent's agent/created context";
-    sessionsAdapter = {
-      service: "sessions",
-      define(host) {
-        class SessionsService extends Service {
-          constructor(ctx) {
-            super(ctx, "sessions");
-          }
-          async flush(session2) {
-            const ctx = this.ctx;
-            const call = checkpointCall(host, ctx, session2);
-            if (call === void 0) throw new RpcError(ErrorCode.NotAvailable, "sessions.flush requires this live tool invocation’s session");
-            const owner = call.owner;
-            const live = () => checkpointCall(host, ctx, session2) === call && !call.signal.aborted;
-            const run = async () => {
-              if (!live()) throw new RpcError(ErrorCode.NotAvailable, "session checkpoint invocation ended");
-              const result2 = await host.rpc.request("session/checkpoint", { owner: owner.ref, ticket: call.ticket }, call.signal);
-              if (!live()) throw new RpcError(ErrorCode.NotAvailable, "session checkpoint invocation ended");
-              if (typeof result2 !== "boolean") throw new RpcError(ErrorCode.Internal, "invalid session checkpoint receipt");
-              return result2;
-            };
-            const result = call.pending.then(run);
-            call.pending = result.then(() => void 0, () => void 0);
-            return result;
-          }
-        }
-        Object.freeze(SessionsService.prototype);
-        return SessionsService;
-      }
-    };
-    systemPromptAdapter = {
-      service: "systemPrompt",
-      define() {
-        class SystemPromptService extends Service {
-          constructor(ctx) {
-            super(ctx, "systemPrompt");
-          }
-          section() {
-            throw new RpcError(ErrorCode.NotAvailable, CHILD_ONLY);
-          }
-          getSectionOrder() {
-            throw new RpcError(ErrorCode.NotAvailable, CHILD_ONLY);
-          }
-        }
-        Object.freeze(SystemPromptService.prototype);
-        return SystemPromptService;
-      }
-    };
-  }
-});
-
 // node_modules/@deepseek-ai/dsh-util-values/lib/index.js
 function isWhitespace(c) {
   return c === " " || c === "\n" || c === "\r" || c === "	";
@@ -14056,7 +13431,7 @@ var init_lib3 = __esm({
 });
 
 // src/dsh/dsh-message-compat.js
-var PERSONA_PREFIX_SECTION, HarnessError, UserQuestionError;
+var PERSONA_PREFIX_SECTION, HarnessError, LlmError, UserQuestionError;
 var init_dsh_message_compat = __esm({
   "src/dsh/dsh-message-compat.js"() {
     "use strict";
@@ -14070,6 +13445,12 @@ var init_dsh_message_compat = __esm({
         this.name = new.target.name;
       }
     };
+    LlmError = class extends HarnessError {
+      constructor(message, code, options) {
+        super(message, code, options);
+        this.name = "LlmError";
+      }
+    };
     UserQuestionError = class extends HarnessError {
       constructor(message, code, options) {
         super(message, code, options);
@@ -14077,12 +13458,825 @@ var init_dsh_message_compat = __esm({
       }
     };
     Object.defineProperty(HarnessError, "name", { value: "HarnessError" });
+    Object.defineProperty(LlmError, "name", { value: "LlmError" });
     Object.defineProperty(UserQuestionError, "name", { value: "UserQuestionError" });
   }
 });
 
+// src/protocol.generated.ts
+var MAGIC_ASCII, IMAGE_LIMITS, ErrorCode;
+var init_protocol_generated = __esm({
+  "src/protocol.generated.ts"() {
+    "use strict";
+    MAGIC_ASCII = "CWX1";
+    IMAGE_LIMITS = {
+      maxImageBytes: 5242880,
+      maxImagesPerMessage: 1,
+      maxMessageImageBytes: 5242880,
+      maxImagePixels: 33554432,
+      maxImageDimension: 8192,
+      mediaTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"]
+    };
+    ErrorCode = {
+      ParseError: -32700,
+      InvalidRequest: -32600,
+      MethodNotFound: -32601,
+      InvalidParams: -32602,
+      Internal: -32603,
+      ExecutionFailed: -32e3,
+      NotAvailable: -32001,
+      Refused: -32002,
+      Denied: -32003,
+      Cancelled: -32800
+    };
+  }
+});
+
+// src/protocol.ts
+var MAGIC;
+var init_protocol = __esm({
+  "src/protocol.ts"() {
+    "use strict";
+    init_protocol_generated();
+    init_protocol_generated();
+    MAGIC = Buffer.from(MAGIC_ASCII, "ascii");
+  }
+});
+
+// src/shims/prompt.ts
+function normalizePromptSection(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("prompt section must be an object with id and text");
+  }
+  if (Object.keys(value).some((key) => key !== "id" && key !== "text" && key !== "interpolate")) {
+    throw new TypeError("prompt section supports only id and text, plus optional model-cwd interpolation");
+  }
+  const { id, text: text4, interpolate: interpolate2 } = value;
+  if (typeof id !== "string" || !SECTION_ID.test(id)) {
+    throw new TypeError("prompt section id must be lower case, start with a letter, and use a-z, 0-9, _ or - (at most 64 characters)");
+  }
+  if (typeof text4 !== "string" || text4.trim().length === 0) {
+    throw new TypeError(`prompt section "${id}" needs non-empty text`);
+  }
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text4)) {
+    throw new TypeError(`prompt section "${id}" text contains control characters`);
+  }
+  if (Buffer.byteLength(text4, "utf8") > MAX_PROMPT_SECTION_BYTES) {
+    throw new RangeError(`prompt section "${id}" exceeds ${MAX_PROMPT_SECTION_BYTES} UTF-8 bytes`);
+  }
+  if (interpolate2 !== void 0 && interpolate2 !== "model-cwd") throw new TypeError("prompt interpolation supports only model-cwd");
+  if (interpolate2 !== void 0) validatePromptTemplate(text4);
+  return Object.freeze({ id, text: text4, ...interpolate2 === void 0 ? {} : { interpolate: interpolate2 } });
+}
+function validatePromptTemplate(text4) {
+  for (let open = text4.indexOf("{{"); open >= 0; ) {
+    const group = /^\{\{([^{}]*)\}\}/u.exec(text4.slice(open));
+    if (!group) {
+      if (text4.indexOf("}}", open + 2) >= 0) throw new TypeError("malformed prompt variable reference");
+      open = text4.indexOf("{{", open + 2);
+      continue;
+    }
+    if (!/^[a-z][a-z0-9_]*$/u.test(group[1])) throw new TypeError("malformed prompt variable reference");
+    if (group[1] !== "model" && group[1] !== "cwd") throw new TypeError(`unknown Core prompt variable "{{${group[1]}}}"; supported variables: model, cwd`);
+    open = text4.indexOf("{{", open + group[0].length);
+  }
+}
+var MAX_PROMPT_SECTION_BYTES, MAX_PROMPT_OWNER_BYTES, MAX_PROMPT_HOST_BYTES, SECTION_ID;
+var init_prompt = __esm({
+  "src/shims/prompt.ts"() {
+    "use strict";
+    init_owned();
+    MAX_PROMPT_SECTION_BYTES = 4 * 1024;
+    MAX_PROMPT_OWNER_BYTES = 32 * 1024;
+    MAX_PROMPT_HOST_BYTES = 128 * 1024;
+    SECTION_ID = /^[a-z][a-z0-9_-]{0,63}$/u;
+  }
+});
+
+// src/dsh/persona.ts
+function normalizePersonaConfig(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("persona config must be plain data");
+  const config = value;
+  if (Object.keys(config).some((key) => !["prefix", "suffix", "complete", "includeRuntimeContext"].includes(key))) throw new TypeError("persona config has an unsupported field");
+  if (config.complete !== void 0 && config.complete !== false) throw new TypeError("persona replacement belongs to the Core prompt and cannot be imported");
+  if (config.includeRuntimeContext !== void 0 && config.includeRuntimeContext !== true) throw new TypeError("persona runtime-context suppression belongs to the Core prompt and cannot be imported");
+  if (typeof config.prefix !== "string" || config.suffix !== void 0 && typeof config.suffix !== "string") throw new TypeError("persona prefix and suffix must be text");
+  const result = { prefix: config.prefix, suffix: config.suffix ?? "" };
+  for (const [position, text4] of Object.entries(result)) {
+    if (Buffer.byteLength(text4, "utf8") > MAX_PROMPT_SECTION_BYTES) throw new RangeError("persona text exceeds 4096 UTF-8 bytes");
+    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text4)) throw new TypeError("persona text contains control characters");
+    validatePromptTemplate(text4);
+    if (text4.trim().length > 0) normalizePromptSection({ id: `persona-${position}`, text: text4, interpolate: "model-cwd" });
+  }
+  return Object.freeze(result);
+}
+var PERSONA, reviewedPersonaModule;
+var init_persona = __esm({
+  "src/dsh/persona.ts"() {
+    "use strict";
+    init_prompt();
+    init_root();
+    PERSONA = "@deepseek-ai/dsh-persona";
+    reviewedPersonaModule = Object.freeze({
+      name: "persona",
+      inject: ["prompt"],
+      apply(ctx, value) {
+        if (!ownerStorage.getStore()?.scope) throw new Error("persona requires an exact Core-selected entry scope");
+        const config = normalizePersonaConfig(value);
+        for (const [position, text4] of Object.entries(config)) {
+          if (text4.trim().length > 0) ctx.prompt.registerSection({ id: `persona-${position}`, text: text4, interpolate: "model-cwd" });
+        }
+      }
+    });
+  }
+});
+
+// src/dsh/upstream/agent-presets/metadata.ts
+import { join as join2 } from "node:path";
+function text(value) {
+  if (typeof value !== "string") return void 0;
+  const trimmed = value.trim();
+  return trimmed === "" ? void 0 : trimmed;
+}
+async function readPresetMetadata(directory, readFile3) {
+  let raw;
+  try {
+    raw = await readFile3(join2(directory, METADATA_FILE), "utf8");
+  } catch {
+    return {};
+  }
+  let parsed;
+  try {
+    parsed = yaml.load(raw);
+  } catch {
+    return {};
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+  const record3 = parsed;
+  const name = text(record3.name);
+  const description = text(record3.description);
+  const order = typeof record3.order === "number" && Number.isFinite(record3.order) ? record3.order : void 0;
+  return {
+    ...name === void 0 ? {} : { name },
+    ...description === void 0 ? {} : { description },
+    ...order === void 0 ? {} : { order }
+  };
+}
+var METADATA_FILE;
+var init_metadata = __esm({
+  "src/dsh/upstream/agent-presets/metadata.ts"() {
+    "use strict";
+    init_js_yaml();
+    METADATA_FILE = "preset.yml";
+  }
+});
+
+// src/dsh/upstream/agent-presets/preset.ts
+var PRESET_ID;
+var init_preset = __esm({
+  "src/dsh/upstream/agent-presets/preset.ts"() {
+    "use strict";
+    PRESET_ID = /^[a-z0-9][a-z0-9-]*$/;
+  }
+});
+
+// src/dsh/upstream/agent-presets/specifier.ts
+import { isAbsolute as isAbsolute2 } from "node:path";
+import { pathToFileURL as pathToFileURL2 } from "node:url";
+function classifyRowSpecifier(name) {
+  if (name.startsWith("cordis:")) return { kind: "builtin", specifier: name };
+  if (name.startsWith(".")) return { kind: "preset", specifier: name };
+  if (name.startsWith("file:")) return { kind: "file", specifier: name };
+  if (isAbsolute2(name)) return { kind: "file", specifier: pathToFileURL2(name).href };
+  return { kind: "package", specifier: name };
+}
+var init_specifier = __esm({
+  "src/dsh/upstream/agent-presets/specifier.ts"() {
+    "use strict";
+  }
+});
+
+// src/dsh/upstream/agent-presets/discovery.ts
+import { isBuiltin as isBuiltin2 } from "node:module";
+import { join as join3, resolve as resolve2 } from "node:path";
+import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL3 } from "node:url";
+function entryListProblem(rows, at2 = "") {
+  if (!Array.isArray(rows)) {
+    return at2 === "" ? "the composition must be a top-level list of plugin rows" : `group ${at2} must hold a list of plugin rows`;
+  }
+  for (const [index, row] of rows.entries()) {
+    const label2 = at2 === "" ? `row ${String(index + 1)}` : `${at2} row ${String(index + 1)}`;
+    if (typeof row !== "object" || row === null || Array.isArray(row)) {
+      return `${label2} is not a plugin row (expected a map with a "name")`;
+    }
+    const { name, group, config } = row;
+    if (typeof name !== "string" || name === "") {
+      return `${label2} names no plugin (a "name" string is required)`;
+    }
+    if (group === true) {
+      const nested = entryListProblem(config, label2);
+      if (nested !== void 0) return nested;
+    }
+  }
+  return void 0;
+}
+async function rowResolves(row, presetBase, harnessBase, resolves, io) {
+  if (row.kind === "builtin") return true;
+  if (row.kind === "package") return isBuiltin2(row.specifier) || resolves(row.specifier, harnessBase);
+  const url = row.kind === "file" ? new URL(row.specifier) : new URL(row.specifier, presetBase);
+  return await isFile(fileURLToPath2(url), io);
+}
+async function unresolvableRows(rows, presetBase, harnessBase, resolves, io, at2 = "") {
+  const found = [];
+  for (const [index, entry] of rows.entries()) {
+    const row = entry;
+    if (Boolean(row.disabled)) continue;
+    const positional = at2 === "" ? `row ${String(index + 1)}` : `${at2} row ${String(index + 1)}`;
+    if (row.group === true) {
+      found.push(...await unresolvableRows(row.config, presetBase, harnessBase, resolves, io, positional));
+      continue;
+    }
+    if (await rowResolves(classifyRowSpecifier(row.name), presetBase, harnessBase, resolves, io)) continue;
+    const label2 = typeof row.id === "string" && row.id !== "" ? `row "${row.id}"` : positional;
+    found.push({ label: label2, name: row.name });
+  }
+  return found;
+}
+async function compositionProblem(path2, harnessBase, resolves, io) {
+  let content;
+  try {
+    content = await io.readFile(path2, "utf8");
+  } catch {
+    return `the composition file ${COMPOSITION_FILE} cannot be read`;
+  }
+  let rows;
+  try {
+    rows = load(content, { schema: entryListSchema });
+  } catch (error) {
+    const full = error instanceof Error ? error.message : String(error);
+    return `the composition is not valid YAML: ${full.replace(/\n[\s\S]*$/, "")}`;
+  }
+  const shape = entryListProblem(rows);
+  if (shape !== void 0) return shape;
+  const presetBase = new URL(".", pathToFileURL3(path2)).href;
+  let unresolvable;
+  try {
+    unresolvable = await unresolvableRows(rows, presetBase, harnessBase, resolves, io);
+  } catch (error) {
+    const full = error instanceof Error ? error.message : String(error);
+    return `the composition's plugins cannot be checked: ${full.replace(/\n[\s\S]*$/, "")}`;
+  }
+  const [first] = unresolvable;
+  if (first === void 0) return void 0;
+  if (unresolvable.length === 1) {
+    return `${first.label} names a plugin that cannot be resolved: ${first.name}`;
+  }
+  return `${String(unresolvable.length)} rows name plugins that cannot be resolved:
+` + unresolvable.map((row) => `- ${row.label}: ${row.name}`).join("\n");
+}
+async function isFile(path2, io) {
+  try {
+    return (await io.stat(path2)).isFile();
+  } catch {
+    return false;
+  }
+}
+async function scanRoot(root, harnessBase, resolves, io) {
+  const dir = resolve2(root.path);
+  let children;
+  try {
+    children = await io.readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw new Error(`agent-presets: cannot read preset root ${dir}: ${String(error)}`, { cause: error });
+  }
+  const found = [];
+  for (const child of children) {
+    if (!child.isDirectory() || !PRESET_ID.test(child.name)) continue;
+    const directory = join3(dir, child.name);
+    const path2 = join3(directory, COMPOSITION_FILE);
+    const broken = await isFile(path2, io) ? await compositionProblem(path2, harnessBase, resolves, io) : `the composition file ${COMPOSITION_FILE} is missing — the directory still occupies the id; delete it or restore the file`;
+    const metadata = await readPresetMetadata(directory, io.readFile);
+    found.push({
+      id: child.name,
+      trust: root.trust,
+      path: path2,
+      ...metadata,
+      ...broken === void 0 ? {} : { broken }
+    });
+  }
+  return found.sort((left, right) => {
+    const leftOrder = left.order ?? Number.POSITIVE_INFINITY;
+    const rightOrder = right.order ?? Number.POSITIVE_INFINITY;
+    const byOrder = leftOrder === rightOrder ? 0 : leftOrder - rightOrder;
+    return byOrder === 0 ? left.id.localeCompare(right.id) : byOrder;
+  });
+}
+async function discoverPresets(roots, harnessBase, resolves, io) {
+  const byId = /* @__PURE__ */ new Map();
+  for (const root of roots) {
+    for (const preset of await scanRoot(root, harnessBase, resolves, io)) {
+      if (byId.has(preset.id)) continue;
+      byId.set(preset.id, preset);
+    }
+  }
+  return [...byId.values()];
+}
+var COMPOSITION_FILE, SHIPPED_PRESET_ROOT;
+var init_discovery = __esm({
+  "src/dsh/upstream/agent-presets/discovery.ts"() {
+    "use strict";
+    init_js_yaml();
+    init_src2();
+    init_metadata();
+    init_preset();
+    init_specifier();
+    COMPOSITION_FILE = "agent.cordis.yml";
+    SHIPPED_PRESET_ROOT = fileURLToPath2(new URL("../presets/", import.meta.url));
+  }
+});
+
+// src/dsh/upstream/agent-presets/composition-inventory.ts
+function disabledContribution(value, evaluateExpression) {
+  if (isJsExpr(value)) {
+    try {
+      return Boolean(evaluateExpression(value.__jsExpr));
+    } catch {
+      return "conditional";
+    }
+  }
+  return Boolean(value);
+}
+function combineDisabled(outer, own) {
+  if (outer === true || own === true) return true;
+  if (outer === "conditional" || own === "conditional") return "conditional";
+  return false;
+}
+function flattenRows(rows, outerDisabled, evaluateExpression, found) {
+  for (const value of rows) {
+    const row = value;
+    const disabled = combineDisabled(outerDisabled, disabledContribution(row.disabled, evaluateExpression));
+    if (row.group === true) {
+      flattenRows(row.config, disabled, evaluateExpression, found);
+      continue;
+    }
+    found.push({
+      entryId: typeof row.id === "string" && row.id !== "" ? row.id : null,
+      moduleName: row.name,
+      enabled: disabled === true ? false : disabled === "conditional" ? "conditional" : true,
+      ...isJsExpr(row.disabled) ? { condition: row.disabled.__jsExpr } : {}
+    });
+  }
+}
+async function fileComposition(path2, evaluateExpression, readFile3) {
+  let rows;
+  try {
+    rows = load(await readFile3(path2, "utf8"), { schema: entryListSchema });
+  } catch (error) {
+    return { broken: error instanceof Error ? error.message : String(error) };
+  }
+  const problem = entryListProblem(rows);
+  if (problem !== void 0) return { broken: problem };
+  const found = [];
+  flattenRows(rows, false, evaluateExpression, found);
+  return { rows: found };
+}
+function mountedCompositionRows(tree) {
+  const found = [];
+  for (const entry of tree.entries()) {
+    if (entry.options.group) continue;
+    found.push({
+      entryId: entry.id,
+      moduleName: entry.options.name,
+      enabled: !entry.disabled,
+      ...isJsExpr(entry.options.disabled) ? { condition: entry.options.disabled.__jsExpr } : {},
+      ...entry.fiber === void 0 ? {} : { fiberState: entry.fiber.state }
+    });
+  }
+  return found;
+}
+var init_composition_inventory = __esm({
+  "src/dsh/upstream/agent-presets/composition-inventory.ts"() {
+    "use strict";
+    init_js_yaml();
+    init_src();
+    init_src2();
+    init_discovery();
+  }
+});
+
+// src/dsh/agent-presets.ts
+import { createHash as createHash2, randomBytes } from "node:crypto";
+import { resolve as resolve3, relative as relative2, dirname as dirname3, sep as sep2 } from "node:path";
+import { fileURLToPath as fileURLToPath3, pathToFileURL as pathToFileURL4 } from "node:url";
+function plain(path2) {
+  return typeof path2 === "string" && path2.length > 0 && path2.length <= 4096 && !/[\\:\u0000-\u001f\u007f]/u.test(path2) && !path2.startsWith("/") && path2.split("/").every((p) => p !== "" && p !== "." && p !== "..");
+}
+function fail(message) {
+  throw new Error(`agent-presets: ${message}`);
+}
+function containedPackageModule(name, documents, files) {
+  if (!name || /[\\:\u0000-\u0020\u007f]/u.test(name)) return;
+  const parts = name.split("/");
+  const n = name.startsWith("@") ? 2 : 1;
+  if (parts.length < n || parts.some((p) => !p || p === "." || p === "..")) return;
+  const pkg = parts.slice(0, n).join("/");
+  const packageRoot = `node_modules/${pkg}`;
+  const source = documents.get(`${packageRoot}/package.json`);
+  if (source === void 0) return;
+  let data2;
+  try {
+    data2 = JSON.parse(source);
+  } catch {
+    return;
+  }
+  if (data2.name !== pkg || data2.type !== "module") return;
+  const subpath = parts.length === n ? "." : `./${parts.slice(n).join("/")}`;
+  const refused = /* @__PURE__ */ Symbol("unsupported package target");
+  function target(value) {
+    if (typeof value === "string") return value;
+    if (!value || Array.isArray(value) || typeof value !== "object") return refused;
+    for (const [condition, child] of Object.entries(value)) {
+      if (["node", "import", "default"].includes(condition)) {
+        const picked = target(child);
+        if (picked !== void 0) return picked;
+      }
+    }
+  }
+  let entry;
+  if (data2.exports !== void 0) {
+    const value = data2.exports;
+    entry = value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).some((k) => k.startsWith(".")) ? target(value[subpath]) : subpath === "." ? target(value) : void 0;
+  } else if (subpath === ".") entry = typeof data2.main === "string" ? data2.main : "./index.js";
+  else entry = subpath;
+  if (typeof entry !== "string" || !entry.startsWith("./") || !plain(entry.slice(2))) return;
+  const path2 = `${packageRoot}/${entry.slice(2)}`;
+  if (!/\.(mjs|js|mts)$/.test(path2) || !SHA.test(files[path2] ?? "")) return;
+  return { name, path: path2, sha256: files[path2] };
+}
+async function reviewAgentPresets(input) {
+  const { composition } = input;
+  const files = composition.files;
+  if (!files || Object.keys(files).length > 16384 || !Array.isArray(input.directories) || input.directories.length > 16384) fail("invalid source inventory");
+  const base = resolve3("codewhale-reviewed-agent-presets");
+  const baseUrl = pathToFileURL4(`${base}${sep2}`).href;
+  function key(path2) {
+    const inside = relative2(base, path2).split(sep2).join("/");
+    if (!plain(inside)) fail("path escapes the admitted source root");
+    return inside;
+  }
+  const documents = /* @__PURE__ */ new Map();
+  let bytes = 0;
+  for (const doc of input.documents) {
+    if (!plain(doc.path) || !SHA.test(doc.sha256) || files[doc.path] !== doc.sha256 || hash(doc.source) !== doc.sha256 || documents.has(doc.path)) fail("document changed or is outside the source receipt");
+    bytes += Buffer.byteLength(doc.source);
+    if (Buffer.byteLength(doc.source) > 1024 * 1024 || bytes > 4 * 1024 * 1024) fail("documents exceed their bound");
+    documents.set(doc.path, doc.source);
+  }
+  const directories = new Set(input.directories);
+  for (const path2 of directories) if (!plain(path2)) fail("invalid source directory");
+  for (const path2 of Object.keys(files)) if (!plain(path2) || !SHA.test(files[path2])) fail("invalid source file receipt");
+  const invalid6 = /* @__PURE__ */ new Set();
+  const parsed = /* @__PURE__ */ new Map();
+  const io = {
+    async readFile(path2) {
+      const relative4 = key(path2);
+      if (invalid6.has(relative4)) throw new Error("composition exceeds its data/shape bound");
+      const text4 = documents.get(relative4);
+      if (text4 === void 0) throw new Error("document not admitted");
+      return text4;
+    },
+    async stat(path2) {
+      return { isFile: () => Object.hasOwn(files, key(path2)) };
+    },
+    async readdir(path2) {
+      const prefix = `${key(path2)}/`;
+      if (!directories.has(prefix.slice(0, -1))) {
+        const e = new Error("missing root");
+        Object.assign(e, { code: "ENOENT" });
+        throw e;
+      }
+      return [...directories].filter((p) => p.startsWith(prefix) && !p.slice(prefix.length).includes("/")).map((p) => ({ name: p.slice(prefix.length), isDirectory: () => true }));
+    }
+  };
+  const { reviewComposition: reviewComposition2, parsePresetComposition: parsePresetComposition2, compositionRowProblem: compositionRowProblem2, hasReviewedRowBridge: hasReviewedRowBridge2 } = await Promise.resolve().then(() => (init_composition(), composition_exports));
+  for (const [path2, source] of documents) {
+    if (!path2.endsWith("/agent.cordis.yml")) continue;
+    try {
+      parsed.set(path2, parsePresetComposition2(source));
+    } catch {
+      invalid6.add(path2);
+    }
+  }
+  const top = reviewComposition2(composition);
+  const rosterRows = [];
+  function visit(rows2) {
+    for (const row of rows2) {
+      if (row.group === true || row.name === "cordis:group" || row.name === "@deepseek-ai/cordis-plugin-group") visit(row.config ?? []);
+      else if (row.name === AGENT_PRESETS) rosterRows.push(row);
+    }
+  }
+  visit(top.entries);
+  if (rosterRows.length !== 1) fail("exactly one raw roster row is required");
+  const config = rosterRows[0].config ?? {};
+  if (!config || Array.isArray(config) || typeof config !== "object" || Object.keys(config).some((k) => !["default", "roots", "includeShippedRoot", "includeUserRoot"].includes(k))) fail("roster configuration must be literal upstream fields");
+  for (const k of ["includeShippedRoot", "includeUserRoot"]) if (config[k] !== void 0 && typeof config[k] !== "boolean") fail("root gates must be literal booleans");
+  if (config.default !== void 0 && (typeof config.default !== "string" || !PRESET_ID.test(config.default) || config.default.length > 64)) fail("invalid default id");
+  const roots = [];
+  if (config.includeShippedRoot !== false) {
+    const candidates = [...documents.entries()].filter(([p, text4]) => {
+      if (p !== "package.json" && !p.endsWith("/package.json")) return false;
+      try {
+        return JSON.parse(text4).name === AGENT_PRESETS;
+      } catch {
+        return false;
+      }
+    });
+    if (candidates.length !== 1) fail("shipped root requires exactly one admitted agent-presets package");
+    const folder = dirname3(candidates[0][0]).split(sep2).join("/");
+    const root = folder === "." ? "presets" : `${folder}/presets`;
+    if (!directories.has(root)) fail("shipped preset root was not admitted");
+    roots.push({ path: resolve3(base, root), trust: "system" });
+  }
+  if (config.roots !== void 0 && !Array.isArray(config.roots)) fail("roots must be a literal list");
+  for (const root of config.roots ?? []) {
+    if (!root || Object.keys(root).some((k) => !["path", "trust"].includes(k)) || !plain(root.path) || !["system", "user"].includes(root.trust)) fail("configured roots must stay inside the admitted package");
+    if (!directories.has(root.path)) fail("configured preset root was not admitted");
+    roots.push({ path: resolve3(base, root.path), trust: root.trust });
+  }
+  if (config.includeUserRoot !== false) {
+    if (!directories.has(".agent-presets")) fail("user root requires an admitted .agent-presets tree; ambient home discovery is refused");
+    roots.push({ path: resolve3(base, ".agent-presets"), trust: "user" });
+  }
+  if (roots.length > 64) fail("too many roots");
+  const declared = new Map(composition.modules.map((m) => [m.name, m]));
+  if (declared.size !== composition.modules.length) fail("duplicate module name receipt");
+  const found = await discoverPresets(roots, baseUrl, (name) => hasReviewedRowBridge2(name) || declared.has(name) || containedPackageModule(name, documents, files) !== void 0, io);
+  if (found.length > MAX_PRESETS) fail("too many presets");
+  const prepared = [];
+  const rows = [];
+  const inventory = /* @__PURE__ */ Object.create(null);
+  for (const preset of found) {
+    let resolveRows2 = function(children) {
+      for (const row of children) {
+        if (Boolean(row.disabled) && !isJsExpr(row.disabled)) continue;
+        if (row.group === true || row.name === "cordis:group" || row.name === "@deepseek-ai/cordis-plugin-group") {
+          resolveRows2(row.config ?? []);
+          continue;
+        }
+        const specifier = classifyRowSpecifier(row.name);
+        if (row.name === PERSONA) normalizePersonaConfig(row.config);
+        if (specifier.kind === "builtin" || hasReviewedRowBridge2(row.name)) continue;
+        if (row.name === AGENT_PRESETS) fail("nested roster cannot create a second selection authority");
+        const problem = compositionRowProblem2(row.name);
+        if (problem) fail(problem);
+        let receipt;
+        if (specifier.kind === "package") receipt = declared.get(row.name) ?? containedPackageModule(row.name, documents, files);
+        else {
+          const url = specifier.kind === "file" ? new URL(specifier.specifier) : new URL(specifier.specifier, pathToFileURL4(preset.path).href);
+          const path3 = key(fileURLToPath3(url));
+          if (files[path3] !== void 0) receipt = { name: row.name, path: path3, sha256: files[path3] };
+        }
+        if (!receipt || files[receipt.path] !== receipt.sha256) {
+          if (isJsExpr(row.disabled)) continue;
+          fail("row module has no exact admitted receipt");
+        }
+        modules.set(row.name, receipt);
+      }
+    };
+    var resolveRows = resolveRows2;
+    if (preset.id.length > 64 || (preset.name?.length ?? 0) > 1024 || (preset.description?.length ?? 0) > 4096) fail("preset metadata exceeds its bound");
+    const metadata = {
+      id: preset.id,
+      trust: preset.trust,
+      is_default: preset.id === config.default,
+      ...preset.name === void 0 ? {} : { name: preset.name },
+      ...preset.description === void 0 ? {} : { description: preset.description },
+      ...preset.order === void 0 ? {} : { order: preset.order },
+      ...preset.broken === void 0 ? {} : { broken: preset.broken }
+    };
+    rows.push(metadata);
+    const path2 = key(preset.path);
+    inventory[preset.id] = { path: path2, ...preset.broken !== void 0 ? { broken: preset.broken } : await fileComposition(preset.path, () => {
+      throw new Error("conditional until mounted");
+    }, io.readFile) };
+    if (preset.broken !== void 0) continue;
+    const source = await io.readFile(preset.path, "utf8");
+    const entries = parsed.get(key(preset.path));
+    const modules = /* @__PURE__ */ new Map();
+    try {
+      resolveRows2(entries);
+    } catch (error) {
+      metadata.broken = error instanceof Error ? error.message : "preset preparation refused";
+      continue;
+    }
+    const layer = JSON.stringify([{ insert: entries }]);
+    const spec = { version: 1, layers: [{ path: key(preset.path), sha256: hash(layer), source: layer }], modules: [...modules.values()], files };
+    reviewComposition2(spec);
+    prepared.push({ metadata, composition: spec, source });
+  }
+  if (config.default !== void 0 && !prepared.some((p) => p.metadata.id === config.default)) fail("default preset is missing or broken");
+  if (!prepared.length) fail("no admitted usable preset");
+  if (Buffer.byteLength(JSON.stringify(inventory)) > 4 * 1024 * 1024) fail("composition inventory exceeds its bound");
+  return { catalog: { version: 1, ...config.default === void 0 ? {} : { default: config.default }, mode_selection_enabled: true, presets: rows, inventory }, presets: prepared };
+}
+function issuePresetReceipt(snapshot2) {
+  const payload = JSON.stringify(snapshot2);
+  const receipt = createHash2("sha256").update(randomBytes(32)).update(payload).digest("hex");
+  activePresetReceipts.set(receipt, payload);
+  return receipt;
+}
+function revokePresetReceipt(receipt) {
+  activePresetReceipts.delete(receipt);
+}
+function defineReviewedAgentPresets(mount) {
+  class ReviewedAgentPresets extends Service {
+    static inject = ["loader"];
+    snapshot;
+    selfCtx;
+    constructor(ctx, config) {
+      super(ctx, "agentPresets");
+      this.selfCtx = ctx;
+      if (config?.codewhale_reviewed !== void 0 || config?.codewhale_receipt !== void 0) {
+        const snapshot2 = config.codewhale_reviewed;
+        const receipt = typeof config.codewhale_receipt === "string" ? config.codewhale_receipt : "";
+        const expected = receipt ? activePresetReceipts.get(receipt) : void 0;
+        activePresetReceipts.delete(receipt);
+        if (!snapshot2 || !expected || expected !== JSON.stringify(snapshot2) || snapshot2.catalog?.version !== 1 || !snapshot2.catalog.presets.some((p) => p.id === snapshot2.selected?.metadata.id && !p.broken)) fail("raw roster needs an installer-minted preset receipt");
+        this.snapshot = structuredClone(snapshot2);
+      }
+    }
+    mounting;
+    mounted;
+    mountSelected() {
+      const snapshot2 = this.snapshot;
+      if (!snapshot2) return Promise.resolve(void 0);
+      return this.mounting ??= mount(this.selfCtx, snapshot2.base_url, snapshot2.selected.composition).then((result) => this.mounted = result);
+    }
+    async list() {
+      const snapshot2 = this.snapshot;
+      if (!snapshot2) return [];
+      return snapshot2.catalog.presets.map((row) => ({ ...structuredClone(row), path: fileURLToPath3(new URL(snapshot2.catalog.inventory[row.id].path, snapshot2.base_url)) }));
+    }
+    async remoteExportList() {
+      const snapshot2 = this.snapshot;
+      if (!snapshot2) return { presets: [], authorable: false, defaultId: void 0, modeSelectionEnabled: false };
+      return { presets: snapshot2.catalog.presets.map(({ is_default, entry, ...row }) => ({ ...structuredClone(row), isDefault: is_default })), authorable: false, defaultId: this.defaultId, modeSelectionEnabled: snapshot2.catalog.mode_selection_enabled };
+    }
+    get defaultId() {
+      return this.snapshot?.catalog.default;
+    }
+    get authorable() {
+      return false;
+    }
+    async resolve(id = this.defaultId) {
+      const row = (await this.list()).find((p) => p.id === id);
+      if (!row) fail("preset not found");
+      return row;
+    }
+    composedPreset() {
+      return this.snapshot?.selected.metadata.id;
+    }
+    async compositionInventory() {
+      const snapshot2 = this.snapshot;
+      if (!snapshot2) return [];
+      return snapshot2.catalog.presets.map((row) => {
+        const identity = { id: row.id, trust: row.trust, ...row.name === void 0 ? {} : { name: row.name }, isDefault: row.id === this.defaultId };
+        if (row.id === this.composedPreset() && this.mounted) return { ...identity, rows: mountedCompositionRows(this.mounted.tree) };
+        const read = snapshot2.catalog.inventory[row.id];
+        if (row.broken || "broken" in read) return { ...identity, broken: row.broken ?? ("broken" in read ? read.broken : void 0), rows: [] };
+        return { ...identity, rows: structuredClone(read.rows) };
+      });
+    }
+    async readDocument(id) {
+      const snapshot2 = this.snapshot;
+      if (!snapshot2 || id !== this.composedPreset()) fail("read another preset through Core file authority");
+      return { agentPreset: id, trust: snapshot2.selected.metadata.trust, content: snapshot2.selected.source };
+    }
+    select() {
+      fail("select through Core AgentProfile/native preset selection before a turn");
+    }
+    recompose() {
+      fail("Core owns the captured agent selection and blank-session check");
+    }
+    copy() {
+      fail("copy through Core file/install/review/reload authority");
+    }
+    remove() {
+      fail("delete through Core file/install/review/reload authority");
+    }
+  }
+  Object.defineProperty(ReviewedAgentPresets.prototype, REVIEWED_AGENT_PRESETS_BRAND, { value: true });
+  return ReviewedAgentPresets;
+}
+var AGENT_PRESETS, MAX_PRESETS, hash, SHA, activePresetReceipts, REVIEWED_AGENT_PRESETS_BRAND;
+var init_agent_presets = __esm({
+  "src/dsh/agent-presets.ts"() {
+    "use strict";
+    init_persona();
+    init_lib2();
+    init_discovery();
+    init_preset();
+    init_specifier();
+    init_composition_inventory();
+    init_src();
+    AGENT_PRESETS = "@deepseek-ai/dsh-agent-presets";
+    MAX_PRESETS = 64;
+    hash = (bytes) => createHash2("sha256").update(bytes).digest("hex");
+    SHA = /^[a-f0-9]{64}$/;
+    activePresetReceipts = /* @__PURE__ */ new Map();
+    REVIEWED_AGENT_PRESETS_BRAND = /* @__PURE__ */ Symbol("codewhale.reviewedAgentPresets");
+  }
+});
+
+// src/rpc.ts
+var RpcError;
+var init_rpc = __esm({
+  "src/rpc.ts"() {
+    "use strict";
+    init_protocol();
+    RpcError = class extends Error {
+      constructor(code, message, data2) {
+        super(message);
+        this.code = code;
+        this.data = data2;
+        this.name = "RpcError";
+      }
+      code;
+      data;
+      toWire() {
+        return this.data === void 0 ? { code: this.code, message: this.message } : { code: this.code, message: this.message, data: this.data };
+      }
+    };
+  }
+});
+
+// src/dsh/session-prompt.ts
+function checkpointCall(host, ctx, session2) {
+  const invocation = host.liveInvocation(ctx);
+  const ticket = invocation?.ticket;
+  return invocation !== void 0 && typeof ticket === "string" && ticket.length > 0 && session2 !== void 0 && session2 === invocation.session ? invocation : void 0;
+}
+var CHILD_ONLY, sessionsAdapter, systemPromptAdapter;
+var init_session_prompt = __esm({
+  "src/dsh/session-prompt.ts"() {
+    "use strict";
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    CHILD_ONLY = "system prompt sections are only available on a child agent's agent/created context";
+    sessionsAdapter = {
+      service: "sessions",
+      define(host) {
+        class SessionsService extends Service {
+          constructor(ctx) {
+            super(ctx, "sessions");
+          }
+          async flush(session2) {
+            const ctx = this.ctx;
+            const call = checkpointCall(host, ctx, session2);
+            if (call === void 0) throw new RpcError(ErrorCode.NotAvailable, "sessions.flush requires this live tool invocation’s session");
+            const owner = call.owner;
+            const live = () => checkpointCall(host, ctx, session2) === call && !call.signal.aborted;
+            const run = async () => {
+              if (!live()) throw new RpcError(ErrorCode.NotAvailable, "session checkpoint invocation ended");
+              const result2 = await host.rpc.request("session/checkpoint", { owner: owner.ref, ticket: call.ticket }, call.signal);
+              if (!live()) throw new RpcError(ErrorCode.NotAvailable, "session checkpoint invocation ended");
+              if (typeof result2 !== "boolean") throw new RpcError(ErrorCode.Internal, "invalid session checkpoint receipt");
+              return result2;
+            };
+            const result = call.pending.then(run);
+            call.pending = result.then(() => void 0, () => void 0);
+            return result;
+          }
+        }
+        Object.freeze(SessionsService.prototype);
+        return SessionsService;
+      }
+    };
+    systemPromptAdapter = {
+      service: "systemPrompt",
+      define() {
+        class SystemPromptService extends Service {
+          constructor(ctx) {
+            super(ctx, "systemPrompt");
+          }
+          section() {
+            throw new RpcError(ErrorCode.NotAvailable, CHILD_ONLY);
+          }
+          getSectionOrder() {
+            throw new RpcError(ErrorCode.NotAvailable, CHILD_ONLY);
+          }
+        }
+        Object.freeze(SystemPromptService.prototype);
+        return SystemPromptService;
+      }
+    };
+  }
+});
+
 // src/dsh/agents.ts
-function plain(value, allowed, what) {
+function plain2(value, allowed, what) {
   if (value === null || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new RpcError(ErrorCode.InvalidParams, `expected a plain ${what} object`);
   const result = /* @__PURE__ */ Object.create(null);
   for (const key of Reflect.ownKeys(value)) {
@@ -14098,14 +14292,19 @@ function defineSubagents(host) {
       super(ctx, "subagents");
     }
     getProvider(name) {
-      return name === "spawn" ? SPAWN_PROVIDER : void 0;
+      if (name === "spawn") return SPAWN_PROVIDER;
+      if (name === "fork") return FORK_PROVIDER;
+      return void 0;
+    }
+    listProviders() {
+      return Object.freeze(["spawn", "fork"]);
     }
     async startActivation(request) {
       const owner = host.ownerOf(this.ctx);
-      const input = plain(request, ["provider", "label", "childId", "request", "signal", "delivery"], "activation");
-      if (input.provider !== "spawn") throw new RpcError(ErrorCode.NotAvailable, "only the spawn provider is available");
-      const spawn = plain(input.request, ["parent", "prompt", "agentOptions"], "spawn request");
-      const options = spawn.agentOptions === void 0 ? {} : plain(spawn.agentOptions, ["model"], "agentOptions");
+      const input = plain2(request, ["provider", "label", "childId", "request", "signal", "delivery"], "activation");
+      if (input.provider !== "spawn" && input.provider !== "fork") throw new RpcError(ErrorCode.NotAvailable, "only the spawn and fork providers are available");
+      const spawn = plain2(input.request, ["parent", "prompt", "agentOptions"], "spawn request");
+      const options = spawn.agentOptions === void 0 ? {} : plain2(spawn.agentOptions, ["model"], "agentOptions");
       if (options.model !== void 0 && typeof options.model !== "string") throw new RpcError(ErrorCode.InvalidParams, "agentOptions.model must be a string");
       const delivery = input.delivery === void 0 ? "parent" : input.delivery;
       if (delivery !== "caller" && delivery !== "parent") throw new RpcError(ErrorCode.InvalidParams, "delivery must be caller or parent");
@@ -14113,7 +14312,7 @@ function defineSubagents(host) {
       if (typeof childId !== "string" || !/^[A-Za-z0-9_.:-]{1,128}$/.test(childId)) throw new RpcError(ErrorCode.InvalidParams, "childId must be 1-128 letters, digits, or _.:-");
       if (!Array.isArray(spawn.prompt) || spawn.prompt.length === 0) throw new RpcError(ErrorCode.InvalidParams, "prompt must be a non-empty content array");
       const prompt = spawn.prompt.map((block) => {
-        const item = plain(block, ["type", "text"], "prompt block");
+        const item = plain2(block, ["type", "text"], "prompt block");
         if (item.type !== "text" || typeof item.text !== "string") throw new RpcError(ErrorCode.NotAvailable, "only text prompt blocks are supported");
         return item.text;
       }).join("");
@@ -14143,7 +14342,7 @@ function defineSubagents(host) {
             },
             section(section) {
               sealed();
-              const value = plain(section, ["name", "order", "text"], "system prompt section");
+              const value = plain2(section, ["name", "order", "text"], "system prompt section");
               if (value.name !== PERSONA_PREFIX_SECTION || value.order !== PERSONA_ORDER || typeof value.text !== "string") {
                 throw new RpcError(ErrorCode.NotAvailable, "only the child deployment persona section is supported");
               }
@@ -14156,10 +14355,14 @@ function defineSubagents(host) {
           tools: Object.freeze({
             restrict(filter) {
               sealed();
-              const value = plain(filter, ["deny"], "tool filter");
+              const value = plain2(filter, ["deny"], "tool filter");
               if (!Array.isArray(value.deny) || value.deny.some((name) => typeof name !== "string" || name === "")) throw new RpcError(ErrorCode.InvalidParams, "deny must be a list of tool names");
               for (const name of value.deny) denied.add(name);
               return () => void 0;
+            },
+            guard() {
+              sealed();
+              throw new RpcError(ErrorCode.NotAvailable, "child tools.guard is not supported; use child.ctx.tools.restrict({ deny }) or root ctx.tools.guard");
             }
           })
         })
@@ -14220,7 +14423,7 @@ function defineAgents() {
   Object.freeze(AgentsShim.prototype);
   return AgentsShim;
 }
-var SPAWN_PROVIDER, PERSONA_ORDER, DSH_AGENT_ADAPTERS;
+var SPAWN_PROVIDER, FORK_PROVIDER, PERSONA_ORDER, DSH_AGENT_ADAPTERS;
 var init_agents = __esm({
   "src/dsh/agents.ts"() {
     "use strict";
@@ -14231,7 +14434,12 @@ var init_agents = __esm({
     SPAWN_PROVIDER = Object.freeze({
       name: "spawn",
       inheritsParentContext: false,
-      capabilities: Object.freeze({ persona: true, toolFilter: true, agentOptions: true })
+      capabilities: Object.freeze({ persona: true, toolFilter: true, agentOptions: true, depthLimit: true })
+    });
+    FORK_PROVIDER = Object.freeze({
+      name: "fork",
+      inheritsParentContext: true,
+      capabilities: Object.freeze({ persona: true, toolFilter: true, agentOptions: true, depthLimit: true })
     });
     PERSONA_ORDER = 0;
     DSH_AGENT_ADAPTERS = Object.freeze([
@@ -14640,7 +14848,7 @@ var init_network = __esm({
 });
 
 // src/dsh/settings.ts
-function plain2(value, what) {
+function plain3(value, what) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new RpcError(ErrorCode.InvalidParams, `${what} is a plain object`);
   return value;
 }
@@ -14655,6 +14863,29 @@ function descriptor(value) {
     throw new RpcError(ErrorCode.Internal, "invalid settings broker response");
   }
   return { ns: row.ns, writable: row.writable, roots: row.roots.map(String), value: row.value, revision: row.revision, applied: typeof row.applied === "boolean" ? row.applied : null, applies: "reload" };
+}
+function hostLocalePreference() {
+  const fromIntl = (() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().locale;
+    } catch {
+      return void 0;
+    }
+  })();
+  const raw = fromIntl || process.env.LC_ALL || process.env.LC_MESSAGES || process.env.LANG || "en";
+  const cleaned = String(raw).split(".")[0].replaceAll("_", "-").trim();
+  return cleaned.length > 0 ? cleaned : "en";
+}
+function localeDescriptor() {
+  return Object.freeze({
+    ns: "locale",
+    writable: false,
+    roots: Object.freeze([]),
+    value: Object.freeze({ preference: hostLocalePreference() }),
+    revision: "host-locale",
+    applied: true,
+    applies: "reload"
+  });
 }
 var SettingsConflictError, settingsAdapter;
 var init_settings = __esm({
@@ -14683,14 +14914,31 @@ var init_settings = __esm({
           constructor(ctx) {
             super(ctx, "settings");
           }
-          async describe() {
-            return [descriptor(await host.broker(this.ctx, "settings", "describe", {}))];
+          get locale() {
+            return Object.freeze({ preference: hostLocalePreference() });
+          }
+          describe() {
+            try {
+              host.brokerTicket(this.ctx, "settings");
+            } catch {
+              const forms = [localeDescriptor()];
+              Object.defineProperty(forms, "then", {
+                value(onFulfilled, onRejected) {
+                  return Promise.resolve([localeDescriptor()]).then(onFulfilled, onRejected);
+                }
+              });
+              return forms;
+            }
+            return host.broker(this.ctx, "settings", "describe", {}).then((row) => {
+              const desc = descriptor(row);
+              return desc.ns === "locale" ? [desc] : [desc, localeDescriptor()];
+            });
           }
           async update(ns, patch, expectedRevision) {
-            return this.write(ns, "update", { patch: plain2(patch, "a settings patch") }, expectedRevision);
+            return this.write(ns, "update", { patch: plain3(patch, "a settings patch") }, expectedRevision);
           }
           async replace(ns, section, expectedRevision) {
-            return this.write(ns, "replace", { value: plain2(section, "a settings section") }, expectedRevision);
+            return this.write(ns, "replace", { value: plain3(section, "a settings section") }, expectedRevision);
           }
           async mutate(ns, ops, expectedRevision) {
             if (!Array.isArray(ops)) throw new RpcError(ErrorCode.InvalidParams, "settings edits are an array of path operations");
@@ -14722,7 +14970,7 @@ function record2(value, what) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw invalid3(what);
   return value;
 }
-function text(value, what) {
+function text2(value, what) {
   if (typeof value !== "string" || value.length === 0) throw invalid3(what);
   return value;
 }
@@ -14737,7 +14985,7 @@ async function accountBalance(host, ctx) {
   const toppedUp = answer.topped_up;
   const granted = answer.granted;
   if (status !== "known" || typeof toppedUp !== "string" || typeof granted !== "string") throw invalid3("balance");
-  return { status, currency: text(answer.currency, "balance"), total: text(answer.total, "balance"), topped_up: toppedUp, granted };
+  return { status, currency: text2(answer.currency, "balance"), total: text2(answer.total, "balance"), topped_up: toppedUp, granted };
 }
 async function planInstall(host, ctx, spec, registry) {
   const exact = typeof spec === "string" ? spec.lastIndexOf("@") : -1;
@@ -14750,12 +14998,12 @@ async function planInstall(host, ctx, spec, registry) {
   if (status !== "review_required" && status !== "already_present" || planned !== void 0 && typeof planned !== "string") throw invalid3("install plan");
   return {
     status,
-    package: text(plan.package, "install plan"),
-    version: text(plan.version, "install plan"),
-    plugin: text(plan.plugin, "install plan"),
+    package: text2(plan.package, "install plan"),
+    version: text2(plan.version, "install plan"),
+    plugin: text2(plan.plugin, "install plan"),
     ...planned === void 0 ? {} : { spec: planned },
-    command: text(plan.command, "install plan"),
-    message: text(plan.message, "install plan")
+    command: text2(plan.command, "install plan"),
+    message: text2(plan.message, "install plan")
   };
 }
 function notChanged(stage, target, code, diagnostic) {
@@ -14856,7 +15104,7 @@ function session(value) {
   if (typeof value !== "string" || !SESSION.test(value)) invalid4("a terminal name is 1 to 64 letters, digits, `_`, `-` or `.`");
   return value;
 }
-function text2(value, what) {
+function text3(value, what) {
   if (typeof value !== "string" || value.length === 0) invalid4(`${what} is a non-empty string`);
   return value;
 }
@@ -14888,7 +15136,7 @@ var init_terminal = __esm({
           }
           run(command, options) {
             return host.broker(this.ctx, "terminal", "run", compact2({
-              command: text2(command, "a command"),
+              command: text3(command, "a command"),
               session: options?.session === void 0 ? void 0 : session(options.session),
               timeout_secs: bounded2(options?.timeoutSecs, "timeoutSecs", 1, 600)
             }));
@@ -14896,7 +15144,7 @@ var init_terminal = __esm({
           send(name, input, options) {
             return host.broker(this.ctx, "terminal", "send", compact2({
               session: session(name),
-              text: text2(input, "terminal input"),
+              text: text3(input, "terminal input"),
               wait_ms: bounded2(options?.waitMs, "waitMs", 0, 6e4)
             }));
           }
@@ -14917,6 +15165,1211 @@ var init_terminal = __esm({
         return TerminalService;
       }
     };
+  }
+});
+
+// src/dsh/attachments.ts
+function invalid5(message) {
+  throw new RpcError(ErrorCode.InvalidParams, message);
+}
+function isPlainRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) && !ArrayBuffer.isView(value);
+}
+function checkAllowedKeys(value, allowed, label2) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) invalid5(`${label2} contains unsupported field \`${key}\``);
+  }
+}
+function validateSignal(signal) {
+  if (signal === void 0) return void 0;
+  if (!(signal instanceof AbortSignal)) {
+    invalid5("signal must be an AbortSignal");
+  }
+  return signal;
+}
+function checkAborted(signal) {
+  if (signal?.aborted === true) {
+    throw new AttachmentError("CANCELLED", "the attachment operation was aborted");
+  }
+}
+function validateName(name) {
+  if (name === void 0) return void 0;
+  if (typeof name !== "string" || name.length === 0 || name.length > MAX_NAME_LEN || name.startsWith(".") || name.includes("/") || name.includes("\\") || name.includes("..") || name.includes(":") || /[\x00-\x1f\x7f]/.test(name)) {
+    invalid5("attachment name must be a non-empty basename with no path separators or control characters");
+  }
+  return name;
+}
+function serializeImageBytesInput(input) {
+  if (!isPlainRecord(input)) invalid5("image input must be an object");
+  checkAllowedKeys(input, IMAGE_INPUT_KEYS, "image input");
+  const { data: data2, mediaType } = input;
+  if (!(data2 instanceof Uint8Array)) invalid5("image data must be a Uint8Array");
+  if (typeof mediaType !== "string" || mediaType.length === 0) invalid5("mediaType must be a non-empty string");
+  if (!ALLOWED_MEDIA_TYPES.has(mediaType)) {
+    throw new AttachmentError("UNSUPPORTED_IMAGE_TYPE", `unsupported image media type: ${mediaType}`);
+  }
+  const byteLength = data2.byteLength;
+  if (byteLength === 0) {
+    throw new AttachmentError("INVALID_IMAGE", "image payload is empty");
+  }
+  if (byteLength > ATTACHMENT_IMAGE_LIMITS.maxImageBytes) {
+    throw new AttachmentError("IMAGE_TOO_LARGE", `image exceeds the ${ATTACHMENT_IMAGE_LIMITS.maxImageBytes} byte limit`);
+  }
+  const name = validateName(input.name);
+  const data_base64 = Buffer.from(data2.buffer, data2.byteOffset, byteLength).toString("base64");
+  return name === void 0 ? { data_base64, media_type: mediaType } : { data_base64, media_type: mediaType, name };
+}
+function positiveU32(value, label2) {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0 || value > 4294967295) {
+    invalid5(`${label2} must be a positive integer`);
+  }
+  return value;
+}
+function positiveSafeInt(value, label2) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    invalid5(`${label2} must be a positive integer`);
+  }
+  return value;
+}
+function serializeRef(ref2) {
+  if (!isPlainRecord(ref2)) invalid5("attachment reference must be an object");
+  checkAllowedKeys(ref2, REF_KEYS, "attachment reference");
+  if (typeof ref2.attachmentId !== "string" || !ATTACHMENT_ID.test(ref2.attachmentId)) {
+    throw new AttachmentError("INVALID_ATTACHMENT_REF", "invalid attachment id");
+  }
+  const wire = { attachment_id: ref2.attachmentId };
+  if (ref2.mediaType !== void 0) {
+    if (typeof ref2.mediaType !== "string" || ref2.mediaType.length === 0) invalid5("attachment mediaType must be a string");
+    wire.media_type = ref2.mediaType;
+  }
+  if (ref2.bytes !== void 0) wire.bytes = positiveSafeInt(ref2.bytes, "attachment bytes");
+  if (ref2.width !== void 0) wire.width = positiveU32(ref2.width, "attachment width");
+  if (ref2.height !== void 0) wire.height = positiveU32(ref2.height, "attachment height");
+  return wire;
+}
+function serializeRequestTarget(target) {
+  if (target === void 0) return {};
+  if (!isPlainRecord(target)) invalid5("readImageRequest target must be an object");
+  checkAllowedKeys(target, REQUEST_TARGET_KEYS, "readImageRequest target");
+  const wire = {};
+  if (target.width !== void 0) {
+    const width = positiveU32(target.width, "width");
+    if (width > ATTACHMENT_IMAGE_LIMITS.maxImageDimension) {
+      throw new AttachmentError("IMAGE_DIMENSION_TOO_LARGE", `requested width exceeds the ${ATTACHMENT_IMAGE_LIMITS.maxImageDimension}px limit`);
+    }
+    wire.width = width;
+  }
+  if (target.height !== void 0) {
+    const height = positiveU32(target.height, "height");
+    if (height > ATTACHMENT_IMAGE_LIMITS.maxImageDimension) {
+      throw new AttachmentError("IMAGE_DIMENSION_TOO_LARGE", `requested height exceeds the ${ATTACHMENT_IMAGE_LIMITS.maxImageDimension}px limit`);
+    }
+    wire.height = height;
+  }
+  if (target.maxBytes !== void 0) {
+    const maxBytes = positiveSafeInt(target.maxBytes, "maxBytes");
+    if (maxBytes > ATTACHMENT_IMAGE_LIMITS.maxImageBytes) {
+      throw new AttachmentError("IMAGE_TOO_LARGE", `requested maxBytes exceeds the ${ATTACHMENT_IMAGE_LIMITS.maxImageBytes} byte limit`);
+    }
+    wire.max_bytes = maxBytes;
+  }
+  return wire;
+}
+function parseRefWire(value, what) {
+  if (!isPlainRecord(value) || typeof value.attachment_id !== "string" || !ATTACHMENT_ID.test(value.attachment_id) || typeof value.media_type !== "string" || !ALLOWED_MEDIA_TYPES.has(value.media_type) || typeof value.bytes !== "number" || !Number.isSafeInteger(value.bytes) || value.bytes <= 0 || typeof value.width !== "number" || !Number.isInteger(value.width) || value.width <= 0 || typeof value.height !== "number" || !Number.isInteger(value.height) || value.height <= 0) {
+    throw new RpcError(ErrorCode.Internal, `invalid ${what}`);
+  }
+  return {
+    attachmentId: value.attachment_id,
+    mediaType: value.media_type,
+    bytes: value.bytes,
+    width: value.width,
+    height: value.height
+  };
+}
+function mapBrokerError(error) {
+  if (error instanceof Error && error.name === "AbortError") {
+    return new AttachmentError("CANCELLED", error.message || "the attachment operation was aborted");
+  }
+  if (error !== null && typeof error === "object") {
+    const code = error.code;
+    const message = error.message;
+    if (code === ErrorCode.Cancelled) {
+      return new AttachmentError("CANCELLED", typeof message === "string" && message.length > 0 ? message : "the attachments broker call was cancelled");
+    }
+    if (code === ErrorCode.Refused && typeof message === "string") {
+      const match = /^\[([A-Z0-9_]+)\]\s*(.+)$/s.exec(message);
+      if (match !== null) {
+        return new AttachmentError(match[1], match[2]);
+      }
+    }
+  }
+  return error;
+}
+async function callBroker(host, ctx, method, input, signal) {
+  const checkedSignal = validateSignal(signal);
+  checkAborted(checkedSignal);
+  const settled = host.broker(ctx, "attachments", method, input, checkedSignal).catch((error) => {
+    throw mapBrokerError(error);
+  });
+  settled.catch(() => void 0);
+  if (checkedSignal === void 0) {
+    return await settled;
+  }
+  let onAbort;
+  try {
+    const aborted = new Promise((_, reject) => {
+      onAbort = () => reject(new AttachmentError("CANCELLED", "the attachment operation was aborted"));
+      checkedSignal.addEventListener("abort", onAbort, { once: true });
+    });
+    const result = await Promise.race([settled, aborted]);
+    checkAborted(checkedSignal);
+    return result;
+  } finally {
+    if (onAbort !== void 0) checkedSignal.removeEventListener("abort", onAbort);
+  }
+}
+function notAvailable(method) {
+  throw new RpcError(
+    ErrorCode.NotAvailable,
+    `attachments.${method} is not available: Codewhale brokers conversation images only and exposes no generic file store`
+  );
+}
+var ATTACHMENT_ID, IMAGE_INPUT_KEYS, REF_KEYS, REQUEST_TARGET_KEYS, MAX_NAME_LEN, FROZEN_MEDIA_TYPES, ALLOWED_MEDIA_TYPES, ATTACHMENT_IMAGE_LIMITS, AttachmentError, attachmentsAdapter;
+var init_attachments = __esm({
+  "src/dsh/attachments.ts"() {
+    "use strict";
+    init_lib2();
+    init_protocol();
+    init_protocol_generated();
+    init_rpc();
+    ATTACHMENT_ID = /^sha256:[0-9a-f]{64}$/;
+    IMAGE_INPUT_KEYS = /* @__PURE__ */ new Set(["data", "mediaType", "name"]);
+    REF_KEYS = /* @__PURE__ */ new Set(["attachmentId", "mediaType", "bytes", "width", "height"]);
+    REQUEST_TARGET_KEYS = /* @__PURE__ */ new Set(["width", "height", "maxBytes"]);
+    MAX_NAME_LEN = 128;
+    FROZEN_MEDIA_TYPES = Object.freeze([...IMAGE_LIMITS.mediaTypes]);
+    ALLOWED_MEDIA_TYPES = new Set(FROZEN_MEDIA_TYPES);
+    ATTACHMENT_IMAGE_LIMITS = Object.freeze({
+      maxImageBytes: IMAGE_LIMITS.maxImageBytes,
+      maxImagesPerMessage: IMAGE_LIMITS.maxImagesPerMessage,
+      maxMessageImageBytes: IMAGE_LIMITS.maxMessageImageBytes,
+      maxImagePixels: IMAGE_LIMITS.maxImagePixels,
+      maxImageDimension: IMAGE_LIMITS.maxImageDimension,
+      mediaTypes: FROZEN_MEDIA_TYPES
+    });
+    AttachmentError = class extends Error {
+      code;
+      constructor(code, message) {
+        super(message);
+        this.name = "AttachmentError";
+        this.code = code;
+      }
+    };
+    attachmentsAdapter = {
+      service: "attachments",
+      define(host) {
+        class AttachmentsService extends Service {
+          constructor(ctx) {
+            super(ctx, "attachments");
+          }
+          get imageLimits() {
+            return ATTACHMENT_IMAGE_LIMITS;
+          }
+          imageHostPath(_ref, signal) {
+            const checkedSignal = validateSignal(signal);
+            checkAborted(checkedSignal);
+            return void 0;
+          }
+          async validateImage(input, signal) {
+            const wire = serializeImageBytesInput(input);
+            const res = await callBroker(host, this.ctx, "validate", wire, signal);
+            if (!isPlainRecord(res) || res.ok !== true || typeof res.media_type !== "string" || !ALLOWED_MEDIA_TYPES.has(res.media_type) || typeof res.bytes !== "number" || !Number.isSafeInteger(res.bytes) || res.bytes <= 0 || typeof res.width !== "number" || !Number.isInteger(res.width) || res.width <= 0 || typeof res.height !== "number" || !Number.isInteger(res.height) || res.height <= 0) {
+              throw new RpcError(ErrorCode.Internal, "invalid attachments.validate broker response");
+            }
+            return {
+              ok: true,
+              mediaType: res.media_type,
+              bytes: res.bytes,
+              width: res.width,
+              height: res.height
+            };
+          }
+          async saveImage(input, signal) {
+            const wire = serializeImageBytesInput(input);
+            const res = await callBroker(host, this.ctx, "save", wire, signal);
+            if (!isPlainRecord(res)) throw new RpcError(ErrorCode.Internal, "invalid attachments.save broker response");
+            return parseRefWire(res.attachment, "attachments.save attachment reference");
+          }
+          async readImage(ref2, signal) {
+            const attachment = serializeRef(ref2);
+            const res = await callBroker(host, this.ctx, "read", { attachment }, signal);
+            if (!isPlainRecord(res) || typeof res.data_base64 !== "string") {
+              throw new RpcError(ErrorCode.Internal, "invalid attachments.read broker response");
+            }
+            return {
+              data: Buffer.from(res.data_base64, "base64"),
+              ref: parseRefWire(res.attachment, "attachments.read attachment reference")
+            };
+          }
+          async readImageRequest(ref2, target, signal) {
+            const attachment = serializeRef(ref2);
+            const sizing = serializeRequestTarget(target);
+            const res = await callBroker(host, this.ctx, "read_request", { attachment, ...sizing }, signal);
+            if (!isPlainRecord(res) || typeof res.variant_id !== "string" || !ATTACHMENT_ID.test(res.variant_id) || typeof res.data_base64 !== "string" || typeof res.media_type !== "string" || !ALLOWED_MEDIA_TYPES.has(res.media_type)) {
+              throw new RpcError(ErrorCode.Internal, "invalid attachments.read_request broker response");
+            }
+            return {
+              variantId: res.variant_id,
+              data: Buffer.from(res.data_base64, "base64"),
+              mediaType: res.media_type
+            };
+          }
+          saveFile() {
+            return notAvailable("saveFile");
+          }
+          admitEncodedFile() {
+            return notAvailable("admitEncodedFile");
+          }
+          saveFileStream() {
+            return notAvailable("saveFileStream");
+          }
+          readFileStream() {
+            return notAvailable("readFileStream");
+          }
+          readFile() {
+            return notAvailable("readFile");
+          }
+          fileHostPath() {
+            return notAvailable("fileHostPath");
+          }
+        }
+        Object.freeze(AttachmentsService.prototype);
+        return AttachmentsService;
+      }
+    };
+  }
+});
+
+// src/dsh/host-services.ts
+import { serialize as v8Serialize } from "node:v8";
+var agentPresetsAdapter, agentDefaultModelAdapter, sessionProjectionsAdapter, workspaceRegistryAdapter, typertGatewayAdapter, webAdapter, MAX_STORAGE_DOMAINS_PER_OWNER, MAX_STORAGE_TABLES_PER_DOMAIN, MAX_STORAGE_ENTRIES_PER_TABLE, MAX_STORAGE_VALUE_BYTES, MAX_INVARIANTS_PER_OWNER, sessionPersistenceAdapter, storageDomainAdapter, invariantsAdapter, READONLY_PERMISSION_PRESET_NAMES, READONLY_PERMISSION_PRESETS, permissionPresetsAdapter, DSH_HOST_SERVICE_ADAPTERS;
+var init_host_services = __esm({
+  "src/dsh/host-services.ts"() {
+    "use strict";
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    init_network();
+    agentPresetsAdapter = {
+      service: "agentPresets",
+      define(host) {
+        const ownerPresets = /* @__PURE__ */ new Map();
+        class AgentPresetsService extends Service {
+          constructor(ctx) {
+            super(ctx, "agentPresets");
+          }
+          get defaultId() {
+            return void 0;
+          }
+          get authorable() {
+            return false;
+          }
+          composedPreset() {
+            return void 0;
+          }
+          async list() {
+            const owner = host.ownerOf(this.ctx);
+            const table = owner ? ownerPresets.get(owner.ref.owner_token) : void 0;
+            return table ? [...table.values()].map((row) => structuredClone(row)) : [];
+          }
+          async get(id) {
+            if (typeof id !== "string" || id.length === 0) return void 0;
+            const rows = await this.list();
+            return rows.find((row) => row.id === id);
+          }
+          async resolve(id) {
+            const found = await this.get(id ?? this.defaultId);
+            if (!found) throw new RpcError(ErrorCode.NotAvailable, "preset not found");
+            return found;
+          }
+          async remoteExportList() {
+            const presets = await this.list();
+            return { presets, authorable: false, defaultId: void 0, modeSelectionEnabled: false };
+          }
+          async compositionInventory() {
+            return [];
+          }
+          register(preset) {
+            const owner = host.ownerOf(this.ctx);
+            if (!owner) throw new RpcError(ErrorCode.NotAvailable, "agentPresets.register requires an active owner");
+            if (!preset || typeof preset !== "object" || Array.isArray(preset)) {
+              throw new RpcError(ErrorCode.InvalidParams, "preset must be an object");
+            }
+            const record3 = preset;
+            const id = typeof record3.id === "string" && record3.id.trim().length > 0 ? record3.id.trim() : void 0;
+            if (!id) throw new RpcError(ErrorCode.InvalidParams, "preset.id must be a non-empty string");
+            const token = owner.ref.owner_token;
+            return this.ctx.effect(() => {
+              let table = ownerPresets.get(token);
+              if (!table) {
+                table = /* @__PURE__ */ new Map();
+                ownerPresets.set(token, table);
+              }
+              table.set(id, structuredClone(record3));
+              return () => {
+                const current2 = ownerPresets.get(token);
+                current2?.delete(id);
+                if (current2 && current2.size === 0) ownerPresets.delete(token);
+              };
+            }, `agentPresets.register(${JSON.stringify(id)})`);
+          }
+          mount() {
+            throw new RpcError(ErrorCode.NotAvailable, "select or mount presets through Core agent preset selection");
+          }
+          select() {
+            throw new RpcError(ErrorCode.NotAvailable, "select through Core AgentProfile/native preset selection before a turn");
+          }
+        }
+        Object.freeze(AgentPresetsService.prototype);
+        return AgentPresetsService;
+      }
+    };
+    agentDefaultModelAdapter = {
+      service: "agentDefaultModel",
+      define(host) {
+        class AgentDefaultModelService extends Service {
+          constructor(ctx) {
+            super(ctx, "agentDefaultModel");
+          }
+          currentSelection() {
+            const invocation = host.liveInvocation(this.ctx);
+            if (!invocation) return void 0;
+            return Object.freeze({ provider: "default", model: "default" });
+          }
+        }
+        Object.freeze(AgentDefaultModelService.prototype);
+        return AgentDefaultModelService;
+      }
+    };
+    sessionProjectionsAdapter = {
+      service: "sessionProjections",
+      define(host) {
+        class SessionProjectionsService extends Service {
+          constructor(ctx) {
+            super(ctx, "sessionProjections");
+          }
+          get(sessionId) {
+            const invocation = host.liveInvocation(this.ctx);
+            const activeId = invocation?.agent?.session?.id ?? invocation?.agent?.id;
+            if (!activeId) return void 0;
+            if (sessionId !== void 0 && sessionId !== activeId) return void 0;
+            return Object.freeze({
+              sessionId: activeId,
+              messages: Object.freeze([]),
+              events: Object.freeze([])
+            });
+          }
+          list() {
+            const current2 = this.get();
+            return current2 ? Object.freeze([current2]) : Object.freeze([]);
+          }
+          messages(sessionId) {
+            return this.get(sessionId)?.messages ?? Object.freeze([]);
+          }
+          events(sessionId) {
+            return this.get(sessionId)?.events ?? Object.freeze([]);
+          }
+        }
+        Object.freeze(SessionProjectionsService.prototype);
+        return SessionProjectionsService;
+      }
+    };
+    workspaceRegistryAdapter = {
+      service: "workspaceRegistry",
+      define(host) {
+        function currentWorkspace(ctx) {
+          const invocation = host.liveInvocation(ctx);
+          const cwd = invocation?.session?.header?.cwd;
+          if (!cwd) return void 0;
+          return Object.freeze({
+            id: cwd,
+            path: cwd,
+            status: async () => "available"
+          });
+        }
+        class WorkspaceRegistryService extends Service {
+          constructor(ctx) {
+            super(ctx, "workspaceRegistry");
+          }
+          get state() {
+            return Object.freeze({ archivedSessionIds: Object.freeze([]) });
+          }
+          list() {
+            const ws = currentWorkspace(this.ctx);
+            return ws ? Object.freeze([ws]) : Object.freeze([]);
+          }
+          get(id) {
+            const ws = currentWorkspace(this.ctx);
+            if (!ws || typeof id !== "string") return void 0;
+            return ws.id === id || ws.path === id ? ws : void 0;
+          }
+          resolveByPath(path2) {
+            const ws = currentWorkspace(this.ctx);
+            if (!ws || typeof path2 !== "string") return void 0;
+            return ws.path === path2 ? ws : void 0;
+          }
+          create() {
+            throw new RpcError(ErrorCode.Refused, "workspaceRegistry is read-only in Codewhale");
+          }
+          delete() {
+            throw new RpcError(ErrorCode.Refused, "workspaceRegistry is read-only in Codewhale");
+          }
+          enqueueOperation() {
+            throw new RpcError(ErrorCode.Refused, "workspaceRegistry mutations are refused in Codewhale");
+          }
+        }
+        Object.freeze(WorkspaceRegistryService.prototype);
+        return WorkspaceRegistryService;
+      }
+    };
+    typertGatewayAdapter = {
+      service: "typertGateway",
+      define(host) {
+        const ownerServices = /* @__PURE__ */ new Map();
+        class TypertGatewayService extends Service {
+          constructor(ctx) {
+            super(ctx, "typertGateway");
+          }
+          register(name, service, descriptors = []) {
+            const owner = host.ownerOf(this.ctx);
+            if (!owner) throw new RpcError(ErrorCode.NotAvailable, "typertGateway.register requires an active owner");
+            if (typeof name !== "string" || name.trim().length === 0 || name.length > 128) {
+              throw new RpcError(ErrorCode.InvalidParams, "typertGateway service name must be a non-empty string");
+            }
+            const key = name.trim();
+            const token = owner.ref.owner_token;
+            const frozenDescriptors = Object.freeze(Array.isArray(descriptors) ? [...descriptors] : []);
+            return this.ctx.effect(() => {
+              let table = ownerServices.get(token);
+              if (!table) {
+                table = /* @__PURE__ */ new Map();
+                ownerServices.set(token, table);
+              }
+              table.set(key, { service, descriptors: frozenDescriptors });
+              return () => {
+                const current2 = ownerServices.get(token);
+                current2?.delete(key);
+                if (current2 && current2.size === 0) ownerServices.delete(token);
+              };
+            }, `typertGateway.register(${JSON.stringify(key)})`);
+          }
+          list() {
+            const owner = host.ownerOf(this.ctx);
+            const table = owner ? ownerServices.get(owner.ref.owner_token) : void 0;
+            return Object.freeze(table ? [...table.keys()] : []);
+          }
+          get(name) {
+            if (typeof name !== "string") return void 0;
+            const owner = host.ownerOf(this.ctx);
+            const table = owner ? ownerServices.get(owner.ref.owner_token) : void 0;
+            return table?.get(name);
+          }
+        }
+        Object.freeze(TypertGatewayService.prototype);
+        return TypertGatewayService;
+      }
+    };
+    webAdapter = {
+      service: "web",
+      define(host) {
+        const ownerProviders = /* @__PURE__ */ new Map();
+        class WebService extends Service {
+          constructor(ctx) {
+            super(ctx, "web");
+          }
+          fetch(input, init) {
+            return brokeredFetch(host, this.ctx, input, init);
+          }
+          registerSearchProvider(provider) {
+            const owner = host.ownerOf(this.ctx);
+            if (!owner) throw new RpcError(ErrorCode.NotAvailable, "web.registerSearchProvider requires an active owner");
+            if (!provider || typeof provider !== "object" || Array.isArray(provider)) {
+              throw new RpcError(ErrorCode.InvalidParams, "search provider must be an object");
+            }
+            const row = provider;
+            const id = typeof row.id === "string" && row.id.trim().length > 0 ? row.id.trim() : typeof row.name === "string" && row.name.trim().length > 0 ? row.name.trim() : void 0;
+            if (!id) throw new RpcError(ErrorCode.InvalidParams, "search provider requires a non-empty id or name");
+            const token = owner.ref.owner_token;
+            const entry = Object.freeze({
+              id,
+              name: typeof row.name === "string" && row.name.trim().length > 0 ? row.name.trim() : id,
+              ...typeof row.search === "function" ? { search: row.search } : {}
+            });
+            return this.ctx.effect(() => {
+              let table = ownerProviders.get(token);
+              if (!table) {
+                table = /* @__PURE__ */ new Map();
+                ownerProviders.set(token, table);
+              }
+              table.set(id, entry);
+              return () => {
+                const current2 = ownerProviders.get(token);
+                current2?.delete(id);
+                if (current2 && current2.size === 0) ownerProviders.delete(token);
+              };
+            }, `web.registerSearchProvider(${JSON.stringify(id)})`);
+          }
+          listSearchProviders() {
+            const owner = host.ownerOf(this.ctx);
+            const table = owner ? ownerProviders.get(owner.ref.owner_token) : void 0;
+            return Object.freeze(table ? [...table.values()] : []);
+          }
+        }
+        Object.freeze(WebService.prototype);
+        return WebService;
+      }
+    };
+    MAX_STORAGE_DOMAINS_PER_OWNER = 16;
+    MAX_STORAGE_TABLES_PER_DOMAIN = 32;
+    MAX_STORAGE_ENTRIES_PER_TABLE = 512;
+    MAX_STORAGE_VALUE_BYTES = 64 * 1024;
+    MAX_INVARIANTS_PER_OWNER = 64;
+    sessionPersistenceAdapter = {
+      service: "sessionPersistence",
+      define() {
+        class SessionPersistenceService extends Service {
+          constructor(ctx) {
+            super(ctx, "sessionPersistence");
+          }
+          async findLog(_id) {
+            return void 0;
+          }
+          async listLogs() {
+            return Object.freeze([]);
+          }
+          async readLog(_id) {
+            return void 0;
+          }
+          artifactDirectory(_headerOrId) {
+            return void 0;
+          }
+          async deleteLog() {
+            throw new RpcError(ErrorCode.Refused, "sessionPersistence mutations are refused in Codewhale");
+          }
+          async removeLog() {
+            throw new RpcError(ErrorCode.Refused, "sessionPersistence mutations are refused in Codewhale");
+          }
+          async writeLog() {
+            throw new RpcError(ErrorCode.Refused, "sessionPersistence mutations are refused in Codewhale");
+          }
+        }
+        Object.freeze(SessionPersistenceService.prototype);
+        return SessionPersistenceService;
+      }
+    };
+    storageDomainAdapter = {
+      service: "storageDomain",
+      define(host) {
+        const ownerDomains = /* @__PURE__ */ new Map();
+        function makeDomainHandle(token, domainName, tables) {
+          let closed = false;
+          const ensureOpen = () => {
+            if (closed || ownerDomains.get(token)?.get(domainName) !== tables) {
+              throw new RpcError(ErrorCode.NotAvailable, `storageDomain \`${domainName}\` is closed`);
+            }
+          };
+          return Object.freeze({
+            name: domainName,
+            table(tableName) {
+              ensureOpen();
+              if (typeof tableName !== "string" || tableName.trim().length === 0 || tableName.length > 128) {
+                throw new RpcError(ErrorCode.InvalidParams, "storageDomain table name must be a non-empty string");
+              }
+              const key = tableName.trim();
+              let rows = tables.get(key);
+              if (!rows) {
+                if (tables.size >= MAX_STORAGE_TABLES_PER_DOMAIN) {
+                  throw new RpcError(ErrorCode.Refused, "storageDomain table limit reached");
+                }
+                rows = /* @__PURE__ */ new Map();
+                tables.set(key, rows);
+              }
+              const store = rows;
+              return Object.freeze({
+                async get(rowKey) {
+                  ensureOpen();
+                  if (typeof rowKey !== "string") return void 0;
+                  const val = store.get(rowKey);
+                  return val === void 0 ? void 0 : structuredClone(val);
+                },
+                async set(rowKey, value) {
+                  ensureOpen();
+                  if (typeof rowKey !== "string" || rowKey.length === 0 || rowKey.length > 256) {
+                    throw new RpcError(ErrorCode.InvalidParams, "storageDomain row key must be a non-empty string");
+                  }
+                  if (!store.has(rowKey) && store.size >= MAX_STORAGE_ENTRIES_PER_TABLE) {
+                    throw new RpcError(ErrorCode.Refused, "storageDomain table entry limit reached");
+                  }
+                  let serialized;
+                  try {
+                    serialized = JSON.stringify(value);
+                  } catch {
+                    throw new RpcError(ErrorCode.InvalidParams, "storageDomain value must be JSON-serializable");
+                  }
+                  if (serialized === void 0) {
+                    throw new RpcError(ErrorCode.InvalidParams, "storageDomain value must be JSON-serializable");
+                  }
+                  if (Buffer.byteLength(serialized, "utf8") > MAX_STORAGE_VALUE_BYTES) {
+                    throw new RpcError(ErrorCode.InvalidParams, "storageDomain value exceeds size limit");
+                  }
+                  try {
+                    if (v8Serialize(value).byteLength > MAX_STORAGE_VALUE_BYTES) {
+                      throw new RpcError(ErrorCode.InvalidParams, "storageDomain value exceeds size limit");
+                    }
+                  } catch (err) {
+                    if (err instanceof RpcError) throw err;
+                    throw new RpcError(ErrorCode.InvalidParams, "storageDomain value must be JSON-serializable");
+                  }
+                  store.set(rowKey, JSON.parse(serialized));
+                },
+                async delete(rowKey) {
+                  ensureOpen();
+                  return typeof rowKey === "string" ? store.delete(rowKey) : false;
+                },
+                async has(rowKey) {
+                  ensureOpen();
+                  return typeof rowKey === "string" && store.has(rowKey);
+                },
+                async keys() {
+                  ensureOpen();
+                  return Object.freeze([...store.keys()]);
+                },
+                async list() {
+                  ensureOpen();
+                  return Object.freeze([...store.values()].map((v) => structuredClone(v)));
+                },
+                async entries() {
+                  ensureOpen();
+                  return Object.freeze([...store.entries()].map(([k, v]) => [k, structuredClone(v)]));
+                },
+                async clear() {
+                  ensureOpen();
+                  store.clear();
+                }
+              });
+            },
+            async close() {
+              closed = true;
+              const domains = ownerDomains.get(token);
+              if (domains?.get(domainName) === tables) {
+                domains.delete(domainName);
+                if (domains.size === 0) ownerDomains.delete(token);
+              }
+            }
+          });
+        }
+        class StorageDomainService extends Service {
+          constructor(ctx) {
+            super(ctx, "storageDomain");
+          }
+          async open(spec) {
+            const owner = host.ownerOf(this.ctx);
+            if (!owner) throw new RpcError(ErrorCode.NotAvailable, "storageDomain.open requires an active owner");
+            const rawName = typeof spec === "string" ? spec : spec && typeof spec === "object" && !Array.isArray(spec) ? spec.name ?? spec.id : void 0;
+            if (typeof rawName !== "string" || rawName.trim().length === 0 || rawName.length > 128) {
+              throw new RpcError(ErrorCode.InvalidParams, "storageDomain spec requires a non-empty name");
+            }
+            const domainName = rawName.trim();
+            const token = owner.ref.owner_token;
+            let domains = ownerDomains.get(token);
+            if (!domains) {
+              domains = /* @__PURE__ */ new Map();
+              ownerDomains.set(token, domains);
+            }
+            let tables = domains.get(domainName);
+            if (!tables) {
+              if (domains.size >= MAX_STORAGE_DOMAINS_PER_OWNER) {
+                throw new RpcError(ErrorCode.Refused, "storageDomain owner domain limit reached");
+              }
+              tables = /* @__PURE__ */ new Map();
+              domains.set(domainName, tables);
+              const ownedTables = tables;
+              this.ctx.effect(() => () => {
+                const current2 = ownerDomains.get(token);
+                if (current2?.get(domainName) === ownedTables) {
+                  current2.delete(domainName);
+                  if (current2.size === 0) ownerDomains.delete(token);
+                }
+              }, `storageDomain.open(${JSON.stringify(domainName)})`);
+            }
+            return makeDomainHandle(token, domainName, tables);
+          }
+          get(name) {
+            if (typeof name !== "string" || name.trim().length === 0) return void 0;
+            const owner = host.ownerOf(this.ctx);
+            if (!owner) return void 0;
+            const token = owner.ref.owner_token;
+            const tables = ownerDomains.get(token)?.get(name.trim());
+            return tables ? makeDomainHandle(token, name.trim(), tables) : void 0;
+          }
+          list() {
+            const owner = host.ownerOf(this.ctx);
+            const domains = owner ? ownerDomains.get(owner.ref.owner_token) : void 0;
+            return Object.freeze(domains ? [...domains.keys()] : []);
+          }
+        }
+        Object.freeze(StorageDomainService.prototype);
+        return StorageDomainService;
+      }
+    };
+    invariantsAdapter = {
+      service: "invariants",
+      define(host) {
+        const ownerInvariants = /* @__PURE__ */ new Map();
+        class InvariantsService extends Service {
+          constructor(ctx) {
+            super(ctx, "invariants");
+          }
+          register(name, _install) {
+            const owner = host.ownerOf(this.ctx);
+            if (!owner) throw new RpcError(ErrorCode.NotAvailable, "invariants.register requires an active owner");
+            if (typeof name !== "string" || name.trim().length === 0 || name.length > 128) {
+              throw new RpcError(ErrorCode.InvalidParams, "invariant name must be a non-empty string");
+            }
+            const key = name.trim();
+            const token = owner.ref.owner_token;
+            const existing = ownerInvariants.get(token);
+            if (existing && !existing.has(key) && existing.size >= MAX_INVARIANTS_PER_OWNER) {
+              throw new RpcError(ErrorCode.Refused, "invariants owner limit reached");
+            }
+            return this.ctx.effect(() => {
+              let names = ownerInvariants.get(token);
+              if (!names) {
+                names = /* @__PURE__ */ new Set();
+                ownerInvariants.set(token, names);
+              }
+              if (!names.has(key) && names.size >= MAX_INVARIANTS_PER_OWNER) {
+                throw new RpcError(ErrorCode.Refused, "invariants owner limit reached");
+              }
+              names.add(key);
+              return () => {
+                const current2 = ownerInvariants.get(token);
+                current2?.delete(key);
+                if (current2 && current2.size === 0) ownerInvariants.delete(token);
+              };
+            }, `invariants.register(${JSON.stringify(key)})`);
+          }
+          list() {
+            const owner = host.ownerOf(this.ctx);
+            const names = owner ? ownerInvariants.get(owner.ref.owner_token) : void 0;
+            return Object.freeze(names ? [...names] : []);
+          }
+        }
+        Object.freeze(InvariantsService.prototype);
+        return InvariantsService;
+      }
+    };
+    READONLY_PERMISSION_PRESET_NAMES = Object.freeze(["ask", "accept-edits", "auto-review", "full-access"]);
+    READONLY_PERMISSION_PRESETS = Object.freeze(
+      READONLY_PERMISSION_PRESET_NAMES.map((name) => Object.freeze({ name, readonly: true }))
+    );
+    permissionPresetsAdapter = {
+      service: "permissionPresets",
+      define() {
+        class PermissionPresetsService extends Service {
+          constructor(ctx) {
+            super(ctx, "permissionPresets");
+          }
+          get availability() {
+            return "readonly";
+          }
+          get defaultPreset() {
+            return "ask";
+          }
+          get names() {
+            return READONLY_PERMISSION_PRESET_NAMES;
+          }
+          list() {
+            return READONLY_PERMISSION_PRESETS;
+          }
+          get(name) {
+            if (typeof name !== "string") return void 0;
+            return READONLY_PERMISSION_PRESETS.find((preset) => preset.name === name);
+          }
+          apply() {
+            throw new RpcError(ErrorCode.Refused, "permissionPresets is read-only in Codewhale; Core owns approval posture");
+          }
+          set() {
+            throw new RpcError(ErrorCode.Refused, "permissionPresets is read-only in Codewhale; Core owns approval posture");
+          }
+          register() {
+            throw new RpcError(ErrorCode.Refused, "permissionPresets is read-only in Codewhale; Core owns approval posture");
+          }
+        }
+        Object.freeze(PermissionPresetsService.prototype);
+        return PermissionPresetsService;
+      }
+    };
+    DSH_HOST_SERVICE_ADAPTERS = Object.freeze([
+      agentPresetsAdapter,
+      agentDefaultModelAdapter,
+      sessionProjectionsAdapter,
+      workspaceRegistryAdapter,
+      typertGatewayAdapter,
+      webAdapter,
+      sessionPersistenceAdapter,
+      storageDomainAdapter,
+      invariantsAdapter,
+      permissionPresetsAdapter
+    ]);
+  }
+});
+
+// src/dsh/webserver.ts
+import { isAbsolute as isAbsolute3, resolve as resolve4 } from "node:path";
+function normalizePath(raw) {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > 1024 || /[\x00-\x1f\x7f]/.test(raw)) {
+    throw new RpcError(ErrorCode.InvalidParams, "route path must be a non-empty single-line string");
+  }
+  const withSlash = raw.startsWith("/") ? raw : `/${raw}`;
+  if (withSlash.length > 1 && withSlash.endsWith("/")) {
+    return withSlash.slice(0, -1);
+  }
+  return withSlash;
+}
+function normalizeMethods(method, methods) {
+  const list2 = [];
+  if (typeof method === "string" && method.trim() !== "") {
+    list2.push(method.trim().toUpperCase());
+  }
+  if (Array.isArray(methods)) {
+    for (const item of methods) {
+      if (typeof item === "string" && item.trim() !== "") {
+        list2.push(item.trim().toUpperCase());
+      }
+    }
+  }
+  return list2.length > 0 ? new Set(list2) : void 0;
+}
+function addOwnerRoute(owner, route) {
+  const ownerToken = owner.ref.owner_token;
+  let list2 = routesByOwner.get(ownerToken);
+  if (!list2) {
+    list2 = [];
+    routesByOwner.set(ownerToken, list2);
+  }
+  if (list2.length >= MAX_ROUTES_PER_OWNER) {
+    throw new RpcError(ErrorCode.Refused, `owner exceeded ${MAX_ROUTES_PER_OWNER} registered routes`);
+  }
+  const stored = { ...route, id: nextRouteId++, ownerToken };
+  list2.push(stored);
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    const current2 = routesByOwner.get(ownerToken);
+    if (!current2) return;
+    const index = current2.findIndex((entry) => entry.id === stored.id);
+    if (index >= 0) current2.splice(index, 1);
+    if (current2.length === 0) routesByOwner.delete(ownerToken);
+  };
+}
+function isLoopbackHostHeader(raw) {
+  if (!raw) return true;
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed === "") return true;
+  let host = trimmed;
+  if (host.startsWith("[")) {
+    const close = host.indexOf("]");
+    if (close < 0) return false;
+    host = host.slice(1, close);
+  } else {
+    const colon = host.indexOf(":");
+    if (colon >= 0) host = host.slice(0, colon);
+  }
+  if (host === "localhost" || host.endsWith(".localhost") || host === "::1") return true;
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!match) return false;
+  const octets = match.slice(1).map(Number);
+  return octets[0] === 127 && octets.every((n) => n >= 0 && n <= 255);
+}
+function checkRequestRejection(req) {
+  if (!req || !req.headers) return null;
+  const hostHeader = req.headers.host;
+  const host = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
+  if (!isLoopbackHostHeader(host)) {
+    return { status: 403, message: "forbidden: host is not loopback" };
+  }
+  const fetchSiteHeader = req.headers["sec-fetch-site"];
+  const fetchSite = Array.isArray(fetchSiteHeader) ? fetchSiteHeader[0] : fetchSiteHeader;
+  if (typeof fetchSite === "string" && fetchSite.toLowerCase() === "cross-site") {
+    return { status: 403, message: "forbidden: cross-site request rejected" };
+  }
+  return null;
+}
+function extractSessionId(session2) {
+  if (typeof session2 === "string" && session2.trim() !== "") return session2.trim();
+  if (!session2 || typeof session2 !== "object") return void 0;
+  const obj = session2;
+  if (typeof obj.id === "string" && obj.id.trim() !== "") return obj.id.trim();
+  if (typeof obj.sessionId === "string" && obj.sessionId.trim() !== "") return obj.sessionId.trim();
+  const header = obj.header;
+  if (header && typeof header === "object" && typeof header.id === "string") {
+    const id = header.id.trim();
+    if (id !== "") return id;
+  }
+  return void 0;
+}
+var MAX_REQUEST_BODY_BYTES, MAX_RESPONSE_BODY_BYTES, MAX_ROUTES_PER_OWNER, MAX_SESSION_TITLES, nextRouteId, routesByOwner, webServerAdapter, connectionAdapter, sessionTitleAdapter, profileContextAdapter, DSH_WEBSERVER_ADAPTERS;
+var init_webserver = __esm({
+  "src/dsh/webserver.ts"() {
+    "use strict";
+    init_lib2();
+    init_protocol();
+    init_rpc();
+    MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
+    MAX_RESPONSE_BODY_BYTES = 8 * 1024 * 1024;
+    MAX_ROUTES_PER_OWNER = 256;
+    MAX_SESSION_TITLES = 1024;
+    nextRouteId = 1;
+    routesByOwner = /* @__PURE__ */ new Map();
+    webServerAdapter = {
+      service: "webServer",
+      define(host) {
+        class WebServerService extends Service {
+          host = "127.0.0.1";
+          port = 0;
+          basePath = "";
+          constructor(ctx) {
+            super(ctx, "webServer");
+          }
+          getOrigin() {
+            return "http://127.0.0.1";
+          }
+          register(route) {
+            const owner = host.ownerOf(this.ctx);
+            if (!owner) throw new Error("webServer.register called outside an extension owner");
+            if (!route || typeof route !== "object" || typeof route.handler !== "function") {
+              throw new RpcError(ErrorCode.InvalidParams, "webServer.register requires { path, handler }");
+            }
+            const kind = route.kind === "prefix" ? "prefix" : "exact";
+            const path2 = normalizePath(route.path);
+            const methods = normalizeMethods(route.method, route.methods);
+            return this.ctx.effect(
+              () => addOwnerRoute(owner, { kind, path: path2, methods, mode: "node", nodeHandler: route.handler }),
+              `webServer.register(${kind}:${path2})`
+            );
+          }
+          registerRoute(route) {
+            return this.register(route);
+          }
+          route(path2, handler) {
+            return this.register({ kind: "exact", path: path2, handler });
+          }
+          get(path2, handler) {
+            return this.register({ kind: "exact", path: path2, method: "GET", handler });
+          }
+          post(path2, handler) {
+            return this.register({ kind: "exact", path: path2, method: "POST", handler });
+          }
+          put(path2, handler) {
+            return this.register({ kind: "exact", path: path2, method: "PUT", handler });
+          }
+          patch(path2, handler) {
+            return this.register({ kind: "exact", path: path2, method: "PATCH", handler });
+          }
+          delete(path2, handler) {
+            return this.register({ kind: "exact", path: path2, method: "DELETE", handler });
+          }
+          use(pathOrHandler, maybeHandler) {
+            if (typeof pathOrHandler === "function") {
+              return this.register({ kind: "prefix", path: "/", handler: pathOrHandler });
+            }
+            if (typeof maybeHandler !== "function") {
+              throw new RpcError(ErrorCode.InvalidParams, "webServer.use requires a handler function");
+            }
+            return this.register({ kind: "prefix", path: pathOrHandler, handler: maybeHandler });
+          }
+          registerUpgrade(_spec) {
+            return () => {
+            };
+          }
+          tapIndex(_fn) {
+            return () => {
+            };
+          }
+        }
+        Object.freeze(WebServerService.prototype);
+        return WebServerService;
+      }
+    };
+    connectionAdapter = {
+      service: "connection",
+      define(host) {
+        class ConnectionService extends Service {
+          isLoopback = true;
+          connected = true;
+          baseUrl = "http://127.0.0.1";
+          constructor(ctx) {
+            super(ctx, "connection");
+          }
+          requestRejection(req) {
+            return checkRequestRejection(req);
+          }
+          get fetch() {
+            const ctx = this.ctx;
+            return {
+              register: (route) => {
+                const owner = host.ownerOf(ctx);
+                if (!owner) throw new Error("connection.fetch.register called outside an extension owner");
+                if (!route || typeof route !== "object" || typeof route.fetch !== "function") {
+                  throw new RpcError(ErrorCode.InvalidParams, "connection.fetch.register requires { path, fetch }");
+                }
+                const path2 = normalizePath(route.path);
+                const methods = normalizeMethods(void 0, route.methods);
+                return ctx.effect(
+                  () => addOwnerRoute(owner, { kind: "prefix", path: path2, methods, mode: "fetch", fetchHandler: route.fetch }),
+                  `connection.fetch.register(${path2})`
+                );
+              }
+            };
+          }
+          get rpc() {
+            const ctx = this.ctx;
+            return {
+              handle: (channel, handler, _options) => {
+                const owner = host.ownerOf(ctx);
+                if (!owner) throw new Error("connection.rpc.handle called outside an extension owner");
+                if (typeof handler !== "function") {
+                  throw new RpcError(ErrorCode.InvalidParams, "connection.rpc.handle requires a handler function");
+                }
+                const path2 = normalizePath(channel);
+                return ctx.effect(
+                  () => addOwnerRoute(owner, { kind: "prefix", path: path2, methods: /* @__PURE__ */ new Set(["POST"]), mode: "rpc", rpcHandler: handler }),
+                  `connection.rpc.handle(${path2})`
+                );
+              }
+            };
+          }
+          onReady(cb) {
+            if (typeof cb === "function") queueMicrotask(cb);
+            return () => {
+            };
+          }
+          onNotification(_cb) {
+            return () => {
+            };
+          }
+        }
+        Object.freeze(ConnectionService.prototype);
+        return ConnectionService;
+      }
+    };
+    sessionTitleAdapter = {
+      service: "sessionTitle",
+      define(host) {
+        const titlesByOwner = /* @__PURE__ */ new Map();
+        const listenersByOwner = /* @__PURE__ */ new Map();
+        const requireOwnerToken = (ctx) => {
+          const owner = host.ownerOf(ctx);
+          if (!owner || owner.state === "disposed" || owner.disposing) {
+            throw new RpcError(ErrorCode.NotAvailable, "sessionTitle requires an active extension owner");
+          }
+          return owner.ref.owner_token;
+        };
+        class SessionTitleService extends Service {
+          constructor(ctx) {
+            super(ctx, "sessionTitle");
+          }
+          get(session2) {
+            const ownerToken = requireOwnerToken(this.ctx);
+            const id = extractSessionId(session2);
+            return id ? titlesByOwner.get(ownerToken)?.get(id) : void 0;
+          }
+          rename(session2, title) {
+            const ownerToken = requireOwnerToken(this.ctx);
+            const id = extractSessionId(session2);
+            if (!id) throw new RpcError(ErrorCode.InvalidParams, "sessionTitle.rename requires a session or session id");
+            if (typeof title !== "string") throw new RpcError(ErrorCode.InvalidParams, "sessionTitle.rename requires a string title");
+            const cleaned = title.replace(/[\r\n\t]+/g, " ").trim().slice(0, 256);
+            if (!cleaned) throw new RpcError(ErrorCode.InvalidParams, "sessionTitle.rename requires a non-empty title");
+            let titles = titlesByOwner.get(ownerToken);
+            if (!titles) {
+              titles = /* @__PURE__ */ new Map();
+              titlesByOwner.set(ownerToken, titles);
+            }
+            if (!titles.has(id) && titles.size >= MAX_SESSION_TITLES) {
+              const oldest = titles.keys().next().value;
+              if (oldest !== void 0) titles.delete(oldest);
+            }
+            titles.set(id, cleaned);
+            const listeners = listenersByOwner.get(ownerToken);
+            if (listeners) {
+              for (const listener of listeners) {
+                try {
+                  listener(id, cleaned);
+                } catch {
+                }
+              }
+            }
+            return cleaned;
+          }
+          register(listener) {
+            const ownerToken = requireOwnerToken(this.ctx);
+            if (typeof listener !== "function") {
+              throw new RpcError(ErrorCode.InvalidParams, "sessionTitle.register requires a function");
+            }
+            return this.ctx.effect(() => {
+              let listeners = listenersByOwner.get(ownerToken);
+              if (!listeners) {
+                listeners = /* @__PURE__ */ new Set();
+                listenersByOwner.set(ownerToken, listeners);
+              }
+              listeners.add(listener);
+              return () => {
+                const current2 = listenersByOwner.get(ownerToken);
+                if (!current2) return;
+                current2.delete(listener);
+                if (current2.size === 0) listenersByOwner.delete(ownerToken);
+              };
+            }, "sessionTitle.register");
+          }
+        }
+        Object.freeze(SessionTitleService.prototype);
+        return SessionTitleService;
+      }
+    };
+    profileContextAdapter = {
+      service: "profileContext",
+      define(host) {
+        class ProfileContextService extends Service {
+          name = "codewhale";
+          packageManager = "npm";
+          constructor(ctx) {
+            super(ctx, "profileContext");
+          }
+          get dir() {
+            const owner = host.ownerOf(this.ctx);
+            if (!owner?.dataDir || !isAbsolute3(owner.dataDir)) {
+              throw new RpcError(ErrorCode.NotAvailable, "profileContext requires an active owner with a scoped dataDir");
+            }
+            return resolve4(owner.dataDir);
+          }
+          get installAnchor() {
+            return this.dir;
+          }
+        }
+        Object.freeze(ProfileContextService.prototype);
+        return ProfileContextService;
+      }
+    };
+    DSH_WEBSERVER_ADAPTERS = [
+      webServerAdapter,
+      connectionAdapter,
+      sessionTitleAdapter,
+      profileContextAdapter
+    ];
   }
 });
 
@@ -14943,6 +16396,9 @@ var init_adapters = __esm({
     init_settings();
     init_catalog();
     init_terminal();
+    init_attachments();
+    init_host_services();
+    init_webserver();
     init_plugin_manager();
     DSH_ADAPTERS = [
       sessionsAdapter,
@@ -14955,8 +16411,486 @@ var init_adapters = __esm({
       settingsAdapter,
       pluginManagerAdapter,
       deepseekAccountAdapter,
-      terminalAdapter
+      terminalAdapter,
+      attachmentsAdapter,
+      ...DSH_HOST_SERVICE_ADAPTERS,
+      ...DSH_WEBSERVER_ADAPTERS
     ];
+  }
+});
+
+// src/dsh/compatibility.json
+var compatibility_default;
+var init_compatibility = __esm({
+  "src/dsh/compatibility.json"() {
+    compatibility_default = {
+      version: 3,
+      target_dsh_version: "0.2.2-rc.1",
+      provided_services: {
+        dsh: [
+          "tools",
+          "commands",
+          "storage",
+          "skills",
+          "sessions",
+          "userQuestions",
+          "subagents",
+          "agents",
+          "systemPrompt",
+          "llm",
+          "credentials",
+          "settings",
+          "pluginManager",
+          "deepseekAccount",
+          "terminal",
+          "attachments",
+          "agentPresets",
+          "agentDefaultModel",
+          "sessionProjections",
+          "workspaceRegistry",
+          "typertGateway",
+          "web",
+          "webServer",
+          "connection",
+          "sessionTitle",
+          "profileContext",
+          "sessionPersistence",
+          "storageDomain",
+          "invariants",
+          "permissionPresets"
+        ],
+        cordis: [
+          "logger",
+          "events",
+          "reflect",
+          "registry"
+        ],
+        codewhale: [
+          "prompt",
+          "avatars",
+          "mcp",
+          "shellHooks",
+          "remote",
+          "workspace"
+        ]
+      },
+      refused_services: [
+        "shellHooks",
+        "loader",
+        "approval",
+        "agents",
+        "subagents",
+        "sessions",
+        "llm",
+        "sandboxPolicy",
+        "credentials",
+        "fs",
+        "subprocess",
+        "systemPrompt",
+        "runtimeLoop",
+        "tools",
+        "commands",
+        "prompt",
+        "storage",
+        "skills",
+        "avatars",
+        "mcp",
+        "logger",
+        "userQuestions",
+        "remote",
+        "workspace",
+        "settings",
+        "pluginManager",
+        "deepseekAccount",
+        "terminal",
+        "attachments",
+        "agentPresets",
+        "agentDefaultModel",
+        "sessionProjections",
+        "workspaceRegistry",
+        "typertGateway",
+        "web",
+        "webServer",
+        "connection",
+        "sessionTitle",
+        "profileContext",
+        "sessionPersistence",
+        "storageDomain",
+        "invariants",
+        "permissionPresets"
+      ],
+      row_bridges: {
+        "@deepseek-ai/dsh-mcp-client": "mcp",
+        "@deepseek-ai/dsh-skill-filesystem": "skills",
+        "@deepseek-ai/dsh-hooks-claude-code": "hooks-claude-code",
+        "@deepseek-ai/dsh-hooks-codex": "hooks-codex",
+        "@deepseek-ai/dsh-persona": "persona",
+        "@deepseek-ai/dsh-storage": "host-spine",
+        "@deepseek-ai/dsh-storage-json": "host-spine",
+        "@deepseek-ai/dsh-storage-domain": "host-spine",
+        "@deepseek-ai/dsh-workspace": "host-spine",
+        "@deepseek-ai/dsh-code-runtime-worker-thread": "host-spine",
+        "@deepseek-ai/dsh-tool-subagent/model-selection-settings": "host-spine",
+        "@deepseek-ai/dsh-agent-preset-registry": "host-spine",
+        "@deepseek-ai/dsh-cordis-host-runner": "host-spine",
+        "@deepseek-ai/dsh-host-webserver": "host-spine"
+      },
+      module_singletons: {
+        "@codewhale/dsh-composition": "dsh-composition",
+        "@deepseek-ai/cordis-plugin-loader": "dsh-loader",
+        "@deepseek-ai/cordis-plugin-include": "dsh-include",
+        "@deepseek-ai/cordis-plugin-group": "dsh-group",
+        "@deepseek-ai/cordis": "cordis",
+        "@deepseek-ai/schemastery": "schemastery",
+        "@deepseek-ai/cosmokit": "cosmokit",
+        cosmokit: "cosmokit",
+        "@deepseek-ai/dsh-tools": "dsh-tools",
+        "@deepseek-ai/dsh-util-values": "dsh-util-values",
+        "@deepseek-ai/dsh-commands/brand": "dsh-commands-brand",
+        "@deepseek-ai/dsh-llm": "dsh-llm-values",
+        "@deepseek-ai/dsh-session": "dsh-session-values",
+        "@deepseek-ai/dsh-session/surface": "dsh-session-surface",
+        "@deepseek-ai/dsh-system-prompt": "dsh-system-prompt-values",
+        "@deepseek-ai/dsh-user-questions": "dsh-user-questions-values",
+        "@deepseek-ai/dsh-credentials": "dsh-credentials",
+        "@deepseek-ai/dsh-settings": "dsh-settings",
+        "@deepseek-ai/dsh-home-paths": "dsh-home-paths",
+        "@deepseek-ai/dsh-atomic-write": "dsh-atomic-write",
+        "@deepseek-ai/dsh-skill": "dsh-skill",
+        "@deepseek-ai/dsh-typert-protocol": "dsh-typert-protocol",
+        "@deepseek-ai/dsh-workspace": "dsh-workspace",
+        "@deepseek-ai/dsh-subagent": "dsh-subagent",
+        "@deepseek-ai/dsh-agent": "dsh-agent",
+        "@deepseek-ai/dsh-app-boot": "dsh-app-boot"
+      },
+      definition_api: {
+        package: "@deepseek-ai/dsh-tools",
+        version: "0.2.2-rc.1",
+        license: "MIT",
+        tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-tools/-/dsh-tools-0.2.2-rc.1.tgz",
+        integrity: "sha512-svB49dLPCHkKHgGwik3dTvEH0sL1vKwIzlQgqjE4qzEqFbSEROW8fByk3g2y2lxDv8TqgEUa0Vp2qFrVbm2lfw==",
+        license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+        tarball_sha256: "bb94ee037bd7d3efe2d0654c6a1fa7084b268b895fa0ca6ceeb7e65d4fd6da72",
+        sources: [
+          {
+            file: "lib/shared-DTdn5dXO.js",
+            sha256: "d02f0d8f36878313b0dae3a1bba5b77f7db4cffc77a0b72772048a36bacf2cf0",
+            lines: [
+              [
+                22,
+                548
+              ]
+            ]
+          },
+          {
+            file: "lib/index.js",
+            sha256: "1889cbf718d64518dd83245d4dba1e1f080b2c5326259c3ed5b1be7a7666a2bd",
+            lines: [
+              [
+                7,
+                377
+              ]
+            ]
+          },
+          {
+            file: "lib/shared-DTdn5dXO.js",
+            sha256: "d02f0d8f36878313b0dae3a1bba5b77f7db4cffc77a0b72772048a36bacf2cf0",
+            lines: [
+              [
+                566,
+                596
+              ]
+            ]
+          }
+        ]
+      },
+      command_followup: "one-text-message-submit-on-success",
+      pure_api: {
+        file: "src/dsh/dsh-message-compat.js",
+        source_sha256: "018236676c31a588543e69d09821c53bc1138d14f4520b92ceba0e122cc8de78",
+        exports: {
+          "@deepseek-ai/dsh-llm": [
+            "createUserMessage",
+            "createAssistantMessage",
+            "createSystemMessage",
+            "createToolResultMessage",
+            "freezeMessage",
+            "contentHasImage",
+            "ReasoningEffortId",
+            "MessageId",
+            "ToolCallId",
+            "isAgentLoopRequest",
+            "resolveRetryPolicy",
+            "boundContextSummary",
+            "BlockAssembler",
+            "LlmAdapter",
+            "LlmError",
+            "HarnessError"
+          ],
+          "@deepseek-ai/dsh-session": [
+            "SessionId",
+            "SESSION_FORMAT_VERSION",
+            "KNOWN_SESSION_EVENT_TYPES",
+            "deriveEventMessage"
+          ],
+          "@deepseek-ai/dsh-system-prompt": [
+            "PERSONA_PREFIX_SECTION"
+          ],
+          "@deepseek-ai/dsh-user-questions": [
+            "UserQuestionError"
+          ]
+        },
+        packages: [
+          {
+            package: "@deepseek-ai/dsh-brand",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-brand/-/dsh-brand-0.2.2-rc.1.tgz",
+            integrity: "sha512-ShGNEmNuEQA+bfkspWC2kGrdbrM4dFNhqlrNHIWsHO+PgVH1KoTKTLSraT1pt0A8YYk/moKE0gL2gY9dNBU+rw==",
+            tarball_sha256: "d953cb5e8dcd69be0b0347ce9a3b36421eefa751820cbe909f4a185348ad5530",
+            source_file: "lib/index.js",
+            source_sha256: "14feb59256b891982b2017d73ed03ee65e2a7365f48e4902a856acb0e52d5eb0",
+            excerpts: [
+              {
+                name: "brandString",
+                lines: [
+                  20,
+                  22
+                ],
+                sha256: "2f0b62ba6507db54836a99e24d1d219e598b6140e575d2cf5c63d86a18e5e8ac"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-util-crypto",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-crypto/-/dsh-util-crypto-0.2.2-rc.1.tgz",
+            integrity: "sha512-I9Nhh3/64HPzjdR/mUt0J534FYHgodMUe0coXtA91+kxGcJQcSHOYouewv4hf0NWw0BuLh5zihTdtldZtobOWA==",
+            tarball_sha256: "c9ef0dfed280c83202f1d7bd5d32b1139a92a2fc375da62962ef709c3d1e4a6a",
+            source_file: "lib/index.js",
+            source_sha256: "640b26c8e5a1156c6c8e8749a22f805c9c0e34444778eb4ee9529be3e88ec862",
+            excerpts: [
+              {
+                name: "randomUUID",
+                lines: [
+                  27,
+                  33
+                ],
+                sha256: "e6c3b47d5cf366a149204c36d1697e658f61c48bfd96e66ec1c96deec3a8f4e2"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-llm",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-llm/-/dsh-llm-0.2.2-rc.1.tgz",
+            integrity: "sha512-XeEvH+6bpkjx0E2P1B5ZE+WWa+VHp4DimQaJDKNUZEFouqHMuN1B61TIz6IzUquRxa/6X4yJy+qXQ9WwAeMw5w==",
+            tarball_sha256: "cbf45039d3ef63e26987de514928a847a8c2d0b049df8fb24c11684e203b05d4",
+            source_file: "lib/index.js",
+            source_sha256: "8e541fc98a11897706a122fde1db42f8b2a41b3b354ba3fcb932e9a16929ac6a",
+            excerpts: [
+              {
+                name: "createMessage",
+                lines: [
+                  37,
+                  42
+                ],
+                sha256: "74baa44c9dea1821d97bd4fe592b21baf31f60eaf06962a269fcf2ec88e352ae"
+              },
+              {
+                name: "createUserMessage",
+                lines: [
+                  59,
+                  64
+                ],
+                sha256: "2c4929c2c18e511aa0fefe216eb50e703191057bb15ba1412ddcfdcc8bfc020f"
+              },
+              {
+                name: "HarnessError declaration",
+                lines: [
+                  126,
+                  126
+                ],
+                sha256: "d260a23e0a20850d3b623cbeed54626b47d43fa74e000c5d529dc0a341ab63ee"
+              },
+              {
+                name: "HarnessError body",
+                lines: [
+                  128,
+                  134
+                ],
+                sha256: "30ee24ef29e412b1ab2f0ca89ab600bb0260022d1479d43ca2ad21173b774ccf"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-session",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-session/-/dsh-session-0.2.2-rc.1.tgz",
+            integrity: "sha512-e0zx9HFNn8EyqrymGQS85SjKOyr61//ChTgIVDlCBSZvBB723fuXyi9LiHIIuPTlkgmWJl3gm5J51ebEXew7PQ==",
+            tarball_sha256: "b8b1b4a7b9c8efbdbe4c134ed3b18cddf11842b62ad7675c21c05b3afef1cfb5",
+            source_file: "lib/index.js",
+            source_sha256: "6fad466aa1f7aa64bfa038681ead5721f66c88e9891e25d357d2b8edbccd5494",
+            excerpts: [
+              {
+                name: "SessionId",
+                lines: [
+                  13,
+                  15
+                ],
+                sha256: "68a5778f0586d4e1c219ce6ae3cec3120a57446bbb91f371b4ba208533f48996"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-system-prompt",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-system-prompt/-/dsh-system-prompt-0.2.2-rc.1.tgz",
+            integrity: "sha512-1p9imdrenPnJTkLb6Coq+ELBDjngblM/YGP1Pa/xf1oisjLHcCoK2n9kkOUTIfgvoFtqWfxZJNZeKef71ZmlrA==",
+            tarball_sha256: "5ecb3f2ff2f0c037287c22c1ef917f1ce5cdd4c8055d51da6646ed5a39fe02a9",
+            source_file: "lib/index.js",
+            source_sha256: "18b692b03bbb717589085f63b126cbcf22963763c5a0565bb3a7a5d254e8e4a7",
+            excerpts: [
+              {
+                name: "PERSONA_PREFIX_SECTION",
+                lines: [
+                  61,
+                  61
+                ],
+                sha256: "11338254c278626eea6887b9cb5dc94d16f2ab4dae4bd7e555ea608c4b15648f"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          },
+          {
+            package: "@deepseek-ai/dsh-util-values",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-util-values/-/dsh-util-values-0.2.2-rc.1.tgz",
+            integrity: "sha512-UN4B/Fa9zAunYN3UuXDQ3QknxF/lMKNwTu2WxXKKEC+Ejz745po7I/JmsVFVa7+socfuwwTmVrfSsddRVU+lew==",
+            tarball_sha256: "e5de9a3c2600c70d72dba702cd0dfc8097264b7b6a7f393f4cfa799c81ecf759",
+            source_file: "lib/index.js",
+            source_sha256: "8b4ffdf40126d48bd22017b4671f7e90612d01833fc865f7a0b60d3de4183e8b",
+            excerpts: [
+              {
+                name: "deepFreeze",
+                lines: [
+                  809,
+                  845
+                ],
+                sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: false
+          },
+          {
+            package: "@deepseek-ai/dsh-user-questions",
+            version: "0.2.2-rc.1",
+            license: "MIT",
+            tarball: "https://registry.npmjs.org/@deepseek-ai/dsh-user-questions/-/dsh-user-questions-0.2.2-rc.1.tgz",
+            integrity: "sha512-COY40boWZ7XEszSvMGZ4CY5ze5ujCdA+Trtqx5C6ioqWzH9e8YbkY7AxyCOadxVO++5zAsqvsAfq65cZUPIMGA==",
+            tarball_sha256: "e7c1c38234fea9c0634ec95272bd1005c48ce890d2b935c8442b4ae7fee1b51e",
+            source_file: "lib/index.js",
+            source_sha256: "69fee77aa57cc43de583d53a4877394c4cf3b5d58b8d7579fd8095c0a015bfbd",
+            excerpts: [
+              {
+                name: "UserQuestionError",
+                lines: [
+                  430,
+                  435
+                ],
+                sha256: "5d49a4ecdf40039b26824f3575a79820b48ed011f90641870f44fe5a41bf5ced"
+              }
+            ],
+            license_sha256: "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+            license_text_sha256: "fe195482bb2bddf34ebced7531d6afb11c33fa42f248472736ad9fa9b9eb503b",
+            excerpted: true
+          }
+        ],
+        reuse: {
+          package: "@deepseek-ai/dsh-util-values",
+          version: "0.2.2-rc.1",
+          file: "lib/index.js",
+          symbol: "deepFreeze",
+          lines: [
+            809,
+            845
+          ],
+          sha256: "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
+        },
+        constructor_names: [
+          "HarnessError",
+          "UserQuestionError"
+        ]
+      },
+      tool_caller_projection: "readonly-id-session-header-cwd",
+      session_methods: {
+        flush: "invocation-bound-acknowledged-checkpoint-with-host-redaction-policy"
+      },
+      user_question_methods: {
+        ask: "invocation-bound-root-agent-typed-answers-no-wait"
+      },
+      subagent_methods: {
+        getProvider: "spawn-only-independent-context",
+        startActivation: "invocation-bound-caller-or-parent-delivery-text-prompt-model-persona-deny",
+        result: "text-output-typed-stop-reason",
+        dispose: "exact-activation"
+      },
+      agents_methods: {},
+      system_prompt_methods: {
+        section: "child-persona-slot-in-agent-created-only"
+      },
+      tool_definition_fields: {
+        deferLoading: "boolean-presentation-noop-engine-controls-loading"
+      }
+    };
+  }
+});
+
+// src/dsh/missing-services.ts
+function describeMissingServices(names, { scoped: classifyScoped = true } = {}) {
+  const absent = names.filter((name) => !classifyScoped || !PROVIDED_SERVICES.has(name));
+  const scoped = names.filter((name) => classifyScoped && PROVIDED_SERVICES.has(name));
+  const parts = [];
+  if (absent.length > 0) {
+    const owned = absent.filter((name) => REFUSED_SERVICES.has(name));
+    const reasons = [...new Set(absent.flatMap((name) => UNPROVIDED_REASONS.filter(([matches]) => matches(name)).map(([, reason]) => reason)))];
+    parts.push(`${quoted(absent)}, not provided by the Codewhale extension host in this phase` + (reasons.length > 0 ? ` (${reasons.join("; ")})` : "") + (owned.length > 0 ? `; ${quoted(owned)} belong${owned.length === 1 ? "s" : ""} to the Codewhale core and no reviewed bridge exposes ${owned.length === 1 ? "it" : "them"} yet` : ""));
+  }
+  if (scoped.length > 0) parts.push(`${quoted(scoped)}, provided by the host but unavailable in this scope`);
+  return parts.join("; ");
+}
+var REFUSED_SERVICES, PROVIDED_SERVICES, UNPROVIDED_REASONS, quoted;
+var init_missing_services = __esm({
+  "src/dsh/missing-services.ts"() {
+    "use strict";
+    init_compatibility();
+    REFUSED_SERVICES = new Set(compatibility_default.refused_services);
+    PROVIDED_SERVICES = new Set(Object.values(compatibility_default.provided_services).flat());
+    UNPROVIDED_REASONS = [
+      [(name) => name.startsWith("@deepseek-ai/dsh-client-"), "DSH client UI services"]
+    ];
+    quoted = (names) => names.map((name) => `\`${name}\``).join(", ");
   }
 });
 
@@ -15042,16 +16976,18 @@ var init_commands = __esm({
 
 // src/root.ts
 import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
-var REFUSED_SERVICES, PROVIDED_SERVICES, CORDIS_SERVICES, ownerStorage;
+var CORDIS_SERVICES, ownerStorage;
 var init_root = __esm({
   "src/root.ts"() {
     "use strict";
     init_composition();
+    init_agent_presets();
     init_adapters();
     init_protocol();
     init_rpc();
     init_dsh_message_compat();
     init_resolve_hooks();
+    init_missing_services();
     init_compatibility();
     init_dsh_tools_compat();
     init_json();
@@ -15067,643 +17003,455 @@ var init_root = __esm({
     init_skills();
     init_tier();
     init_commands();
-    REFUSED_SERVICES = new Set(compatibility_default.refused_services);
-    PROVIDED_SERVICES = new Set(Object.values(compatibility_default.provided_services).flat());
     CORDIS_SERVICES = new Set(compatibility_default.provided_services.cordis);
     ownerStorage = new AsyncLocalStorage2();
   }
 });
 
-// src/dsh/persona.ts
-function normalizePersonaConfig(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("persona config must be plain data");
-  const config = value;
-  if (Object.keys(config).some((key) => !["prefix", "suffix", "complete", "includeRuntimeContext"].includes(key))) throw new TypeError("persona config has an unsupported field");
-  if (config.complete !== void 0 && config.complete !== false) throw new TypeError("persona replacement belongs to the Core prompt and cannot be imported");
-  if (config.includeRuntimeContext !== void 0 && config.includeRuntimeContext !== true) throw new TypeError("persona runtime-context suppression belongs to the Core prompt and cannot be imported");
-  if (typeof config.prefix !== "string" || config.suffix !== void 0 && typeof config.suffix !== "string") throw new TypeError("persona prefix and suffix must be text");
-  const result = { prefix: config.prefix, suffix: config.suffix ?? "" };
-  for (const [position, text4] of Object.entries(result)) {
-    if (Buffer.byteLength(text4, "utf8") > MAX_PROMPT_SECTION_BYTES) throw new RangeError("persona text exceeds 4096 UTF-8 bytes");
-    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text4)) throw new TypeError("persona text contains control characters");
-    validatePromptTemplate(text4);
-    if (text4.trim().length > 0) normalizePromptSection({ id: `persona-${position}`, text: text4, interpolate: "model-cwd" });
+// src/dsh/dsh-shims.ts
+import { randomBytes as randomBytes2 } from "node:crypto";
+import { lstat, mkdir, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
+import { dirname as dirname4, isAbsolute as isAbsolute4, join as join4, resolve as resolve5 } from "node:path";
+function activeDataDir(operation) {
+  const owner = ownerStorage.getStore();
+  if (!owner || typeof owner.dataDir !== "string" || owner.dataDir.length === 0) {
+    throw new Error(`${operation} requires an active plugin owner with a scoped dataDir`);
   }
-  return Object.freeze(result);
+  return canonicalPath(owner.dataDir);
 }
-var PERSONA, reviewedPersonaModule;
-var init_persona = __esm({
-  "src/dsh/persona.ts"() {
-    "use strict";
-    init_prompt();
-    init_root();
-    PERSONA = "@deepseek-ai/dsh-persona";
-    reviewedPersonaModule = Object.freeze({
-      name: "persona",
-      inject: ["prompt"],
-      apply(ctx, value) {
-        if (!ownerStorage.getStore()?.scope) throw new Error("persona requires an exact Core-selected entry scope");
-        const config = normalizePersonaConfig(value);
-        for (const [position, text4] of Object.entries(config)) {
-          if (text4.trim().length > 0) ctx.prompt.registerSection({ id: `persona-${position}`, text: text4, interpolate: "model-cwd" });
-        }
-      }
-    });
-  }
-});
-
-// src/dsh/upstream/agent-presets/metadata.ts
-import { join as join2 } from "node:path";
-function text3(value) {
-  if (typeof value !== "string") return void 0;
-  const trimmed = value.trim();
-  return trimmed === "" ? void 0 : trimmed;
-}
-async function readPresetMetadata(directory, readFile3) {
-  let raw;
-  try {
-    raw = await readFile3(join2(directory, METADATA_FILE), "utf8");
-  } catch {
-    return {};
-  }
-  let parsed;
-  try {
-    parsed = yaml.load(raw);
-  } catch {
-    return {};
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
-  const record3 = parsed;
-  const name = text3(record3.name);
-  const description = text3(record3.description);
-  const order = typeof record3.order === "number" && Number.isFinite(record3.order) ? record3.order : void 0;
-  return {
-    ...name === void 0 ? {} : { name },
-    ...description === void 0 ? {} : { description },
-    ...order === void 0 ? {} : { order }
-  };
-}
-var METADATA_FILE;
-var init_metadata = __esm({
-  "src/dsh/upstream/agent-presets/metadata.ts"() {
-    "use strict";
-    init_js_yaml();
-    METADATA_FILE = "preset.yml";
-  }
-});
-
-// src/dsh/upstream/agent-presets/preset.ts
-var PRESET_ID;
-var init_preset = __esm({
-  "src/dsh/upstream/agent-presets/preset.ts"() {
-    "use strict";
-    PRESET_ID = /^[a-z0-9][a-z0-9-]*$/;
-  }
-});
-
-// src/dsh/upstream/agent-presets/specifier.ts
-import { isAbsolute as isAbsolute3 } from "node:path";
-import { pathToFileURL as pathToFileURL3 } from "node:url";
-function classifyRowSpecifier(name) {
-  if (name.startsWith("cordis:")) return { kind: "builtin", specifier: name };
-  if (name.startsWith(".")) return { kind: "preset", specifier: name };
-  if (name.startsWith("file:")) return { kind: "file", specifier: name };
-  if (isAbsolute3(name)) return { kind: "file", specifier: pathToFileURL3(name).href };
-  return { kind: "package", specifier: name };
-}
-var init_specifier = __esm({
-  "src/dsh/upstream/agent-presets/specifier.ts"() {
-    "use strict";
-  }
-});
-
-// src/dsh/upstream/agent-presets/discovery.ts
-import { isBuiltin as isBuiltin2 } from "node:module";
-import { join as join3, resolve as resolve3 } from "node:path";
-import { fileURLToPath as fileURLToPath3, pathToFileURL as pathToFileURL4 } from "node:url";
-function entryListProblem(rows, at2 = "") {
-  if (!Array.isArray(rows)) {
-    return at2 === "" ? "the composition must be a top-level list of plugin rows" : `group ${at2} must hold a list of plugin rows`;
-  }
-  for (const [index, row] of rows.entries()) {
-    const label2 = at2 === "" ? `row ${String(index + 1)}` : `${at2} row ${String(index + 1)}`;
-    if (typeof row !== "object" || row === null || Array.isArray(row)) {
-      return `${label2} is not a plugin row (expected a map with a "name")`;
-    }
-    const { name, group, config } = row;
-    if (typeof name !== "string" || name === "") {
-      return `${label2} names no plugin (a "name" string is required)`;
-    }
-    if (group === true) {
-      const nested = entryListProblem(config, label2);
-      if (nested !== void 0) return nested;
-    }
-  }
-  return void 0;
-}
-async function rowResolves(row, presetBase, harnessBase, resolves, io) {
-  if (row.kind === "builtin") return true;
-  if (row.kind === "package") return isBuiltin2(row.specifier) || resolves(row.specifier, harnessBase);
-  const url = row.kind === "file" ? new URL(row.specifier) : new URL(row.specifier, presetBase);
-  return await isFile(fileURLToPath3(url), io);
-}
-async function unresolvableRows(rows, presetBase, harnessBase, resolves, io, at2 = "") {
-  const found = [];
-  for (const [index, entry] of rows.entries()) {
-    const row = entry;
-    if (Boolean(row.disabled)) continue;
-    const positional = at2 === "" ? `row ${String(index + 1)}` : `${at2} row ${String(index + 1)}`;
-    if (row.group === true) {
-      found.push(...await unresolvableRows(row.config, presetBase, harnessBase, resolves, io, positional));
-      continue;
-    }
-    if (await rowResolves(classifyRowSpecifier(row.name), presetBase, harnessBase, resolves, io)) continue;
-    const label2 = typeof row.id === "string" && row.id !== "" ? `row "${row.id}"` : positional;
-    found.push({ label: label2, name: row.name });
-  }
-  return found;
-}
-async function compositionProblem(path2, harnessBase, resolves, io) {
-  let content;
-  try {
-    content = await io.readFile(path2, "utf8");
-  } catch {
-    return `the composition file ${COMPOSITION_FILE} cannot be read`;
-  }
-  let rows;
-  try {
-    rows = load(content, { schema: entryListSchema });
-  } catch (error) {
-    const full = error instanceof Error ? error.message : String(error);
-    return `the composition is not valid YAML: ${full.replace(/\n[\s\S]*$/, "")}`;
-  }
-  const shape = entryListProblem(rows);
-  if (shape !== void 0) return shape;
-  const presetBase = new URL(".", pathToFileURL4(path2)).href;
-  let unresolvable;
-  try {
-    unresolvable = await unresolvableRows(rows, presetBase, harnessBase, resolves, io);
-  } catch (error) {
-    const full = error instanceof Error ? error.message : String(error);
-    return `the composition's plugins cannot be checked: ${full.replace(/\n[\s\S]*$/, "")}`;
-  }
-  const [first] = unresolvable;
-  if (first === void 0) return void 0;
-  if (unresolvable.length === 1) {
-    return `${first.label} names a plugin that cannot be resolved: ${first.name}`;
-  }
-  return `${String(unresolvable.length)} rows name plugins that cannot be resolved:
-` + unresolvable.map((row) => `- ${row.label}: ${row.name}`).join("\n");
-}
-async function isFile(path2, io) {
-  try {
-    return (await io.stat(path2)).isFile();
-  } catch {
-    return false;
-  }
-}
-async function scanRoot(root, harnessBase, resolves, io) {
-  const dir = resolve3(root.path);
-  let children;
-  try {
-    children = await io.readdir(dir, { withFileTypes: true });
-  } catch (error) {
-    if (error.code === "ENOENT") return [];
-    throw new Error(`agent-presets: cannot read preset root ${dir}: ${String(error)}`, { cause: error });
-  }
-  const found = [];
-  for (const child of children) {
-    if (!child.isDirectory() || !PRESET_ID.test(child.name)) continue;
-    const directory = join3(dir, child.name);
-    const path2 = join3(directory, COMPOSITION_FILE);
-    const broken = await isFile(path2, io) ? await compositionProblem(path2, harnessBase, resolves, io) : `the composition file ${COMPOSITION_FILE} is missing — the directory still occupies the id; delete it or restore the file`;
-    const metadata = await readPresetMetadata(directory, io.readFile);
-    found.push({
-      id: child.name,
-      trust: root.trust,
-      path: path2,
-      ...metadata,
-      ...broken === void 0 ? {} : { broken }
-    });
-  }
-  return found.sort((left, right) => {
-    const leftOrder = left.order ?? Number.POSITIVE_INFINITY;
-    const rightOrder = right.order ?? Number.POSITIVE_INFINITY;
-    const byOrder = leftOrder === rightOrder ? 0 : leftOrder - rightOrder;
-    return byOrder === 0 ? left.id.localeCompare(right.id) : byOrder;
-  });
-}
-async function discoverPresets(roots, harnessBase, resolves, io) {
-  const byId = /* @__PURE__ */ new Map();
-  for (const root of roots) {
-    for (const preset of await scanRoot(root, harnessBase, resolves, io)) {
-      if (byId.has(preset.id)) continue;
-      byId.set(preset.id, preset);
-    }
-  }
-  return [...byId.values()];
-}
-var COMPOSITION_FILE, SHIPPED_PRESET_ROOT;
-var init_discovery = __esm({
-  "src/dsh/upstream/agent-presets/discovery.ts"() {
-    "use strict";
-    init_js_yaml();
-    init_src2();
-    init_metadata();
-    init_preset();
-    init_specifier();
-    COMPOSITION_FILE = "agent.cordis.yml";
-    SHIPPED_PRESET_ROOT = fileURLToPath3(new URL("../presets/", import.meta.url));
-  }
-});
-
-// src/dsh/upstream/agent-presets/composition-inventory.ts
-function disabledContribution(value, evaluateExpression) {
-  if (isJsExpr(value)) {
+function assertNoEscapingAncestor(dataRoot, target, operation) {
+  let current2 = target;
+  while (current2.length >= dataRoot.length) {
+    if (current2 === dataRoot) break;
     try {
-      return Boolean(evaluateExpression(value.__jsExpr));
-    } catch {
-      return "conditional";
-    }
-  }
-  return Boolean(value);
-}
-function combineDisabled(outer, own) {
-  if (outer === true || own === true) return true;
-  if (outer === "conditional" || own === "conditional") return "conditional";
-  return false;
-}
-function flattenRows(rows, outerDisabled, evaluateExpression, found) {
-  for (const value of rows) {
-    const row = value;
-    const disabled = combineDisabled(outerDisabled, disabledContribution(row.disabled, evaluateExpression));
-    if (row.group === true) {
-      flattenRows(row.config, disabled, evaluateExpression, found);
-      continue;
-    }
-    found.push({
-      entryId: typeof row.id === "string" && row.id !== "" ? row.id : null,
-      moduleName: row.name,
-      enabled: disabled === true ? false : disabled === "conditional" ? "conditional" : true,
-      ...isJsExpr(row.disabled) ? { condition: row.disabled.__jsExpr } : {}
-    });
-  }
-}
-async function fileComposition(path2, evaluateExpression, readFile3) {
-  let rows;
-  try {
-    rows = load(await readFile3(path2, "utf8"), { schema: entryListSchema });
-  } catch (error) {
-    return { broken: error instanceof Error ? error.message : String(error) };
-  }
-  const problem = entryListProblem(rows);
-  if (problem !== void 0) return { broken: problem };
-  const found = [];
-  flattenRows(rows, false, evaluateExpression, found);
-  return { rows: found };
-}
-function mountedCompositionRows(tree) {
-  const found = [];
-  for (const entry of tree.entries()) {
-    if (entry.options.group) continue;
-    found.push({
-      entryId: entry.id,
-      moduleName: entry.options.name,
-      enabled: !entry.disabled,
-      ...isJsExpr(entry.options.disabled) ? { condition: entry.options.disabled.__jsExpr } : {},
-      ...entry.fiber === void 0 ? {} : { fiberState: entry.fiber.state }
-    });
-  }
-  return found;
-}
-var init_composition_inventory = __esm({
-  "src/dsh/upstream/agent-presets/composition-inventory.ts"() {
-    "use strict";
-    init_js_yaml();
-    init_src();
-    init_src2();
-    init_discovery();
-  }
-});
-
-// src/dsh/agent-presets.ts
-import { createHash as createHash2, randomBytes } from "node:crypto";
-import { resolve as resolve4, relative as relative2, dirname as dirname4, sep as sep2 } from "node:path";
-import { fileURLToPath as fileURLToPath4, pathToFileURL as pathToFileURL5 } from "node:url";
-function plain3(path2) {
-  return typeof path2 === "string" && path2.length > 0 && path2.length <= 4096 && !/[\\:\u0000-\u001f\u007f]/u.test(path2) && !path2.startsWith("/") && path2.split("/").every((p) => p !== "" && p !== "." && p !== "..");
-}
-function fail(message) {
-  throw new Error(`agent-presets: ${message}`);
-}
-function containedPackageModule(name, documents, files) {
-  if (!name || /[\\:\u0000-\u0020\u007f]/u.test(name)) return;
-  const parts = name.split("/");
-  const n = name.startsWith("@") ? 2 : 1;
-  if (parts.length < n || parts.some((p) => !p || p === "." || p === "..")) return;
-  const pkg = parts.slice(0, n).join("/");
-  const packageRoot = `node_modules/${pkg}`;
-  const source = documents.get(`${packageRoot}/package.json`);
-  if (source === void 0) return;
-  let data2;
-  try {
-    data2 = JSON.parse(source);
-  } catch {
-    return;
-  }
-  if (data2.name !== pkg || data2.type !== "module") return;
-  const subpath = parts.length === n ? "." : `./${parts.slice(n).join("/")}`;
-  const refused = /* @__PURE__ */ Symbol("unsupported package target");
-  function target(value) {
-    if (typeof value === "string") return value;
-    if (!value || Array.isArray(value) || typeof value !== "object") return refused;
-    for (const [condition, child] of Object.entries(value)) {
-      if (["node", "import", "default"].includes(condition)) {
-        const picked = target(child);
-        if (picked !== void 0) return picked;
-      }
-    }
-  }
-  let entry;
-  if (data2.exports !== void 0) {
-    const value = data2.exports;
-    entry = value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).some((k) => k.startsWith(".")) ? target(value[subpath]) : subpath === "." ? target(value) : void 0;
-  } else if (subpath === ".") entry = typeof data2.main === "string" ? data2.main : "./index.js";
-  else entry = subpath;
-  if (typeof entry !== "string" || !entry.startsWith("./") || !plain3(entry.slice(2))) return;
-  const path2 = `${packageRoot}/${entry.slice(2)}`;
-  if (!/\.(mjs|js|mts)$/.test(path2) || !SHA.test(files[path2] ?? "")) return;
-  return { name, path: path2, sha256: files[path2] };
-}
-async function reviewAgentPresets(input) {
-  const { composition } = input;
-  const files = composition.files;
-  if (!files || Object.keys(files).length > 16384 || !Array.isArray(input.directories) || input.directories.length > 16384) fail("invalid source inventory");
-  const base = resolve4("codewhale-reviewed-agent-presets");
-  const baseUrl = pathToFileURL5(`${base}${sep2}`).href;
-  function key(path2) {
-    const inside = relative2(base, path2).split(sep2).join("/");
-    if (!plain3(inside)) fail("path escapes the admitted source root");
-    return inside;
-  }
-  const documents = /* @__PURE__ */ new Map();
-  let bytes = 0;
-  for (const doc of input.documents) {
-    if (!plain3(doc.path) || !SHA.test(doc.sha256) || files[doc.path] !== doc.sha256 || hash(doc.source) !== doc.sha256 || documents.has(doc.path)) fail("document changed or is outside the source receipt");
-    bytes += Buffer.byteLength(doc.source);
-    if (Buffer.byteLength(doc.source) > 1024 * 1024 || bytes > 4 * 1024 * 1024) fail("documents exceed their bound");
-    documents.set(doc.path, doc.source);
-  }
-  const directories = new Set(input.directories);
-  for (const path2 of directories) if (!plain3(path2)) fail("invalid source directory");
-  for (const path2 of Object.keys(files)) if (!plain3(path2) || !SHA.test(files[path2])) fail("invalid source file receipt");
-  const invalid5 = /* @__PURE__ */ new Set();
-  const parsed = /* @__PURE__ */ new Map();
-  const io = {
-    async readFile(path2) {
-      const relative4 = key(path2);
-      if (invalid5.has(relative4)) throw new Error("composition exceeds its data/shape bound");
-      const text4 = documents.get(relative4);
-      if (text4 === void 0) throw new Error("document not admitted");
-      return text4;
-    },
-    async stat(path2) {
-      return { isFile: () => Object.hasOwn(files, key(path2)) };
-    },
-    async readdir(path2) {
-      const prefix = `${key(path2)}/`;
-      if (!directories.has(prefix.slice(0, -1))) {
-        const e = new Error("missing root");
-        Object.assign(e, { code: "ENOENT" });
-        throw e;
-      }
-      return [...directories].filter((p) => p.startsWith(prefix) && !p.slice(prefix.length).includes("/")).map((p) => ({ name: p.slice(prefix.length), isDirectory: () => true }));
-    }
-  };
-  const { reviewComposition: reviewComposition2, parsePresetComposition: parsePresetComposition2, compositionRowProblem: compositionRowProblem2, hasReviewedRowBridge: hasReviewedRowBridge2 } = await Promise.resolve().then(() => (init_composition(), composition_exports));
-  for (const [path2, source] of documents) {
-    if (!path2.endsWith("/agent.cordis.yml")) continue;
-    try {
-      parsed.set(path2, parsePresetComposition2(source));
-    } catch {
-      invalid5.add(path2);
-    }
-  }
-  const top = reviewComposition2(composition);
-  const rosterRows = [];
-  function visit(rows2) {
-    for (const row of rows2) {
-      if (row.group === true || row.name === "cordis:group" || row.name === "@deepseek-ai/cordis-plugin-group") visit(row.config ?? []);
-      else if (row.name === AGENT_PRESETS) rosterRows.push(row);
-    }
-  }
-  visit(top.entries);
-  if (rosterRows.length !== 1) fail("exactly one raw roster row is required");
-  const config = rosterRows[0].config ?? {};
-  if (!config || Array.isArray(config) || typeof config !== "object" || Object.keys(config).some((k) => !["default", "roots", "includeShippedRoot", "includeUserRoot"].includes(k))) fail("roster configuration must be literal upstream fields");
-  for (const k of ["includeShippedRoot", "includeUserRoot"]) if (config[k] !== void 0 && typeof config[k] !== "boolean") fail("root gates must be literal booleans");
-  if (config.default !== void 0 && (typeof config.default !== "string" || !PRESET_ID.test(config.default) || config.default.length > 64)) fail("invalid default id");
-  const roots = [];
-  if (config.includeShippedRoot !== false) {
-    const candidates = [...documents.entries()].filter(([p, text4]) => {
-      if (p !== "package.json" && !p.endsWith("/package.json")) return false;
-      try {
-        return JSON.parse(text4).name === AGENT_PRESETS;
-      } catch {
-        return false;
-      }
-    });
-    if (candidates.length !== 1) fail("shipped root requires exactly one admitted agent-presets package");
-    const folder = dirname4(candidates[0][0]).split(sep2).join("/");
-    const root = folder === "." ? "presets" : `${folder}/presets`;
-    if (!directories.has(root)) fail("shipped preset root was not admitted");
-    roots.push({ path: resolve4(base, root), trust: "system" });
-  }
-  if (config.roots !== void 0 && !Array.isArray(config.roots)) fail("roots must be a literal list");
-  for (const root of config.roots ?? []) {
-    if (!root || Object.keys(root).some((k) => !["path", "trust"].includes(k)) || !plain3(root.path) || !["system", "user"].includes(root.trust)) fail("configured roots must stay inside the admitted package");
-    if (!directories.has(root.path)) fail("configured preset root was not admitted");
-    roots.push({ path: resolve4(base, root.path), trust: root.trust });
-  }
-  if (config.includeUserRoot !== false) {
-    if (!directories.has(".agent-presets")) fail("user root requires an admitted .agent-presets tree; ambient home discovery is refused");
-    roots.push({ path: resolve4(base, ".agent-presets"), trust: "user" });
-  }
-  if (roots.length > 64) fail("too many roots");
-  const declared = new Map(composition.modules.map((m) => [m.name, m]));
-  if (declared.size !== composition.modules.length) fail("duplicate module name receipt");
-  const found = await discoverPresets(roots, baseUrl, (name) => hasReviewedRowBridge2(name) || declared.has(name) || containedPackageModule(name, documents, files) !== void 0, io);
-  if (found.length > MAX_PRESETS) fail("too many presets");
-  const prepared = [];
-  const rows = [];
-  const inventory = /* @__PURE__ */ Object.create(null);
-  for (const preset of found) {
-    let resolveRows2 = function(children) {
-      for (const row of children) {
-        if (Boolean(row.disabled) && !isJsExpr(row.disabled)) continue;
-        if (row.group === true || row.name === "cordis:group" || row.name === "@deepseek-ai/cordis-plugin-group") {
-          resolveRows2(row.config ?? []);
-          continue;
+      const canonical = canonicalPath(current2);
+      const key = insideKey(dataRoot, current2);
+      if (key === void 0 || key === "") {
+        if (canonical !== dataRoot) {
+          throw new Error(`${operation} refused symlink escaping plugin dataDir`);
         }
-        const specifier = classifyRowSpecifier(row.name);
-        if (row.name === PERSONA) normalizePersonaConfig(row.config);
-        if (specifier.kind === "builtin" || hasReviewedRowBridge2(row.name)) continue;
-        if (row.name === AGENT_PRESETS) fail("nested roster cannot create a second selection authority");
-        const problem = compositionRowProblem2(row.name);
-        if (problem) fail(problem);
-        let receipt;
-        if (specifier.kind === "package") receipt = declared.get(row.name) ?? containedPackageModule(row.name, documents, files);
-        else {
-          const url = specifier.kind === "file" ? new URL(specifier.specifier) : new URL(specifier.specifier, pathToFileURL5(preset.path).href);
-          const path3 = key(fileURLToPath4(url));
-          if (files[path3] !== void 0) receipt = { name: row.name, path: path3, sha256: files[path3] };
-        }
-        if (!receipt || files[receipt.path] !== receipt.sha256) {
-          if (isJsExpr(row.disabled)) continue;
-          fail("row module has no exact admitted receipt");
-        }
-        modules.set(row.name, receipt);
+        break;
       }
-    };
-    var resolveRows = resolveRows2;
-    if (preset.id.length > 64 || (preset.name?.length ?? 0) > 1024 || (preset.description?.length ?? 0) > 4096) fail("preset metadata exceeds its bound");
-    const metadata = {
-      id: preset.id,
-      trust: preset.trust,
-      is_default: preset.id === config.default,
-      ...preset.name === void 0 ? {} : { name: preset.name },
-      ...preset.description === void 0 ? {} : { description: preset.description },
-      ...preset.order === void 0 ? {} : { order: preset.order },
-      ...preset.broken === void 0 ? {} : { broken: preset.broken }
-    };
-    rows.push(metadata);
-    const path2 = key(preset.path);
-    inventory[preset.id] = { path: path2, ...preset.broken !== void 0 ? { broken: preset.broken } : await fileComposition(preset.path, () => {
-      throw new Error("conditional until mounted");
-    }, io.readFile) };
-    if (preset.broken !== void 0) continue;
-    const source = await io.readFile(preset.path, "utf8");
-    const entries = parsed.get(key(preset.path));
-    const modules = /* @__PURE__ */ new Map();
-    try {
-      resolveRows2(entries);
+      if (!unlinkedKeyMatches(dataRoot, key, canonical)) {
+        throw new Error(`${operation} refused symlink escaping plugin dataDir`);
+      }
+      break;
     } catch (error) {
-      metadata.broken = error instanceof Error ? error.message : "preset preparation refused";
-      continue;
-    }
-    const layer = JSON.stringify([{ insert: entries }]);
-    const spec = { version: 1, layers: [{ path: key(preset.path), sha256: hash(layer), source: layer }], modules: [...modules.values()], files };
-    reviewComposition2(spec);
-    prepared.push({ metadata, composition: spec, source });
-  }
-  if (config.default !== void 0 && !prepared.some((p) => p.metadata.id === config.default)) fail("default preset is missing or broken");
-  if (!prepared.length) fail("no admitted usable preset");
-  if (Buffer.byteLength(JSON.stringify(inventory)) > 4 * 1024 * 1024) fail("composition inventory exceeds its bound");
-  return { catalog: { version: 1, ...config.default === void 0 ? {} : { default: config.default }, mode_selection_enabled: true, presets: rows, inventory }, presets: prepared };
-}
-function issuePresetReceipt(snapshot2) {
-  const payload = JSON.stringify(snapshot2);
-  const receipt = createHash2("sha256").update(randomBytes(32)).update(payload).digest("hex");
-  activePresetReceipts.set(receipt, payload);
-  return receipt;
-}
-function revokePresetReceipt(receipt) {
-  activePresetReceipts.delete(receipt);
-}
-function defineReviewedAgentPresets(mount) {
-  return class ReviewedAgentPresets extends Service {
-    static inject = ["loader"];
-    snapshot;
-    selfCtx;
-    constructor(ctx, config) {
-      super(ctx, "agentPresets");
-      this.selfCtx = ctx;
-      if (config?.codewhale_reviewed !== void 0 || config?.codewhale_receipt !== void 0) {
-        const snapshot2 = config.codewhale_reviewed;
-        const receipt = typeof config.codewhale_receipt === "string" ? config.codewhale_receipt : "";
-        const expected = receipt ? activePresetReceipts.get(receipt) : void 0;
-        activePresetReceipts.delete(receipt);
-        if (!snapshot2 || !expected || expected !== JSON.stringify(snapshot2) || snapshot2.catalog?.version !== 1 || !snapshot2.catalog.presets.some((p) => p.id === snapshot2.selected?.metadata.id && !p.broken)) fail("raw roster needs an installer-minted preset receipt");
-        this.snapshot = structuredClone(snapshot2);
+      if (error?.code === "ENOENT") {
+        const next = dirname4(current2);
+        if (next === current2) break;
+        current2 = next;
+        continue;
       }
+      throw error;
     }
-    mounting;
-    mounted;
-    mountSelected() {
-      const snapshot2 = this.snapshot;
-      if (!snapshot2) return Promise.resolve(void 0);
-      return this.mounting ??= mount(this.selfCtx, snapshot2.base_url, snapshot2.selected.composition).then((result) => this.mounted = result);
+  }
+}
+function confinePathToDataDir(targetPath, operation) {
+  if (typeof targetPath !== "string" || targetPath.length === 0 || /[\x00-\x1f\x7f]/.test(targetPath)) {
+    throw new TypeError(`${operation} requires a valid file path string`);
+  }
+  const dataRoot = activeDataDir(operation);
+  const resolved = isAbsolute4(targetPath) ? resolve5(targetPath) : resolve5(dataRoot, targetPath);
+  const rel = insideKey(dataRoot, resolved);
+  if (rel === void 0 || rel === "") {
+    throw new Error(`${operation} refused path outside plugin dataDir`);
+  }
+  assertNoEscapingAncestor(dataRoot, dirname4(resolved), operation);
+  return resolved;
+}
+function credentialRef2(value) {
+  if (typeof value !== "string") {
+    throw new TypeError("credentialRef requires a non-empty string");
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_CREDENTIAL_REF_LEN || /[\x00-\x1f\x7f]/.test(trimmed)) {
+    throw new TypeError("credentialRef requires a bounded printable string");
+  }
+  return trimmed;
+}
+async function resolveCredential(ctx, ref2) {
+  if (!ctx?.credentials || typeof ctx.credentials.resolve !== "function") return void 0;
+  return ctx.credentials.resolve(credentialRef2(ref2));
+}
+async function describeCredential(ctx, ref2) {
+  if (!ctx?.credentials || typeof ctx.credentials.describe !== "function") return void 0;
+  return ctx.credentials.describe(credentialRef2(ref2));
+}
+function settingsNamespace(name) {
+  if (typeof name !== "string" || name.trim().length === 0 || name.length > 128) {
+    throw new TypeError("settingsNamespace requires a non-empty string");
+  }
+  return name.trim();
+}
+function installSettingsSection(ctx, ns, _section) {
+  settingsNamespace(ns);
+  void ctx?.settings;
+  return () => void 0;
+}
+function resolveDshHome(...segments) {
+  const dataRoot = activeDataDir("resolveDshHome");
+  if (segments.length === 0) return dataRoot;
+  for (const seg of segments) {
+    if (typeof seg !== "string" || seg.includes("\0") || isAbsolute4(seg)) {
+      throw new Error("resolveDshHome refused absolute or invalid path segment");
     }
-    async list() {
-      const snapshot2 = this.snapshot;
-      if (!snapshot2) return [];
-      return snapshot2.catalog.presets.map((row) => ({ ...structuredClone(row), path: fileURLToPath4(new URL(snapshot2.catalog.inventory[row.id].path, snapshot2.base_url)) }));
+  }
+  const target = resolve5(dataRoot, ...segments);
+  const rel = insideKey(dataRoot, target);
+  if (rel === void 0) {
+    throw new Error("resolveDshHome refused path escaping plugin dataDir");
+  }
+  if (rel !== "") {
+    assertNoEscapingAncestor(dataRoot, target, "resolveDshHome");
+  }
+  return target;
+}
+async function withFileLock(targetPath, fn) {
+  const confined = confinePathToDataDir(targetPath, "withFileLock");
+  const prev = fileLocks.get(confined) ?? Promise.resolve();
+  let release;
+  const current2 = new Promise((res) => {
+    release = res;
+  });
+  const chain = prev.then(() => current2);
+  fileLocks.set(confined, chain);
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (fileLocks.get(confined) === chain) {
+      fileLocks.delete(confined);
     }
-    async remoteExportList() {
-      const snapshot2 = this.snapshot;
-      if (!snapshot2) return { presets: [], authorable: false, defaultId: void 0, modeSelectionEnabled: false };
-      return { presets: snapshot2.catalog.presets.map(({ is_default, entry, ...row }) => ({ ...structuredClone(row), isDefault: is_default })), authorable: false, defaultId: this.defaultId, modeSelectionEnabled: snapshot2.catalog.mode_selection_enabled };
+  }
+}
+async function writeFileAtomic(targetPath, data2, options) {
+  const dataRoot = activeDataDir("writeFileAtomic");
+  const confined = confinePathToDataDir(targetPath, "writeFileAtomic");
+  const bytes = typeof data2 === "string" ? Buffer.from(data2, options?.encoding ?? "utf8") : Buffer.from(data2.buffer, data2.byteOffset, data2.byteLength);
+  if (bytes.byteLength > MAX_ATOMIC_WRITE_BYTES) {
+    throw new RangeError(`writeFileAtomic exceeds the ${MAX_ATOMIC_WRITE_BYTES} byte limit`);
+  }
+  try {
+    const existing = await lstat(confined);
+    if (existing.isSymbolicLink()) {
+      throw new Error("writeFileAtomic refused symlink target");
     }
-    get defaultId() {
-      return this.snapshot?.catalog.default;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  const parent = dirname4(confined);
+  await mkdir(parent, { recursive: true });
+  const canonicalParent = canonicalPath(parent);
+  const parentKey = insideKey(dataRoot, parent);
+  if (parentKey === void 0 || (parentKey === "" ? canonicalParent !== dataRoot : !unlinkedKeyMatches(dataRoot, parentKey, canonicalParent))) {
+    throw new Error("writeFileAtomic refused symlink escaping plugin dataDir");
+  }
+  const tmpPath = join4(canonicalParent, `.cw-atomic-${process.pid}-${randomBytes2(8).toString("hex")}.tmp`);
+  try {
+    await writeFile2(tmpPath, bytes, {
+      flag: "wx",
+      ...options?.mode !== void 0 ? { mode: options.mode } : {}
+    });
+    await rename2(tmpPath, confined);
+  } catch (error) {
+    await rm2(tmpPath, { force: true }).catch(() => void 0);
+    throw error;
+  }
+}
+function isModelInvocable(skill) {
+  if (!skill || typeof skill !== "object") return false;
+  const s = skill;
+  if (s.disableModelInvocation === true || s.modelInvocable === false) return false;
+  return true;
+}
+function isUserInvocable(skill) {
+  if (!skill || typeof skill !== "object") return false;
+  const s = skill;
+  if (s.userInvocable === false) return false;
+  return true;
+}
+function parseSkillFrontmatter(markdown) {
+  if (typeof markdown !== "string") return { frontmatter: {}, body: "" };
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(markdown);
+  if (!match) return { frontmatter: {}, body: markdown };
+  const frontmatter = {};
+  for (const line of match[1].split(/\r?\n/)) {
+    const idx = line.indexOf(":");
+    if (idx <= 0) continue;
+    const key = line.slice(0, idx).trim();
+    const val = line.slice(idx + 1).trim().replace(/^["']|["']$/g, "");
+    if (key) frontmatter[key] = val;
+  }
+  return { frontmatter, body: match[2] };
+}
+function renderSkillContent(skill, args) {
+  const raw = typeof skill === "string" ? skill : skill && typeof skill === "object" && typeof skill.content === "string" ? skill.content : "";
+  const { body } = parseSkillFrontmatter(raw);
+  if (typeof args !== "string" || args.length === 0) return body;
+  return body.replaceAll("$ARGUMENTS", args);
+}
+function WorkspaceId(id) {
+  return id;
+}
+function isSurfaceEligibleType(type2) {
+  return typeof type2 === "string" && (type2 === "message/user" || type2 === "message/assistant" || type2 === "tool/call" || type2 === "tool/result");
+}
+function foldSurface(events) {
+  if (!Array.isArray(events)) return [];
+  return events.filter((event) => event && typeof event === "object" && isSurfaceEligibleType(event.type));
+}
+function foldSubagentDescriptor(events) {
+  const out = { status: "idle", count: 0 };
+  if (!Array.isArray(events)) return out;
+  for (const ev of events) {
+    if (!ev || typeof ev !== "object") continue;
+    if (ev.type === "subagent/start") {
+      out.status = "running";
+      out.count = out.count + 1;
+    } else if (ev.type === "subagent/end") {
+      out.status = "completed";
     }
-    get authorable() {
-      return false;
-    }
-    async resolve(id = this.defaultId) {
-      const row = (await this.list()).find((p) => p.id === id);
-      if (!row) fail("preset not found");
-      return row;
-    }
-    composedPreset() {
-      return this.snapshot?.selected.metadata.id;
-    }
-    async compositionInventory() {
-      const snapshot2 = this.snapshot;
-      if (!snapshot2) return [];
-      return snapshot2.catalog.presets.map((row) => {
-        const identity = { id: row.id, trust: row.trust, ...row.name === void 0 ? {} : { name: row.name }, isDefault: row.id === this.defaultId };
-        if (row.id === this.composedPreset() && this.mounted) return { ...identity, rows: mountedCompositionRows(this.mounted.tree) };
-        const read = snapshot2.catalog.inventory[row.id];
-        if (row.broken || "broken" in read) return { ...identity, broken: row.broken ?? ("broken" in read ? read.broken : void 0), rows: [] };
-        return { ...identity, rows: structuredClone(read.rows) };
-      });
-    }
-    async readDocument(id) {
-      const snapshot2 = this.snapshot;
-      if (!snapshot2 || id !== this.composedPreset()) fail("read another preset through Core file authority");
-      return { agentPreset: id, trust: snapshot2.selected.metadata.trust, content: snapshot2.selected.source };
-    }
-    select() {
-      fail("select through Core AgentProfile/native preset selection before a turn");
-    }
-    recompose() {
-      fail("Core owns the captured agent selection and blank-session check");
-    }
-    copy() {
-      fail("copy through Core file/install/review/reload authority");
-    }
-    remove() {
-      fail("delete through Core file/install/review/reload authority");
-    }
+  }
+  return out;
+}
+function snapshotSubagentDescriptor(descriptor2) {
+  if (!descriptor2 || typeof descriptor2 !== "object") return { status: "idle" };
+  return structuredClone(descriptor2);
+}
+function assembleContextFor(messages = []) {
+  return Array.isArray(messages) ? [...messages] : [];
+}
+function installModelSelection(_ctx, _options) {
+  return () => void 0;
+}
+function getDshRuntimeVersion() {
+  return compatibility_default.target_dsh_version;
+}
+function loadProfileDirectory() {
+  throw new RpcError(ErrorCode.NotAvailable, "dsh-app-boot profile directory loading is not available in Codewhale");
+}
+function resolveBundleDir() {
+  throw new RpcError(ErrorCode.NotAvailable, "dsh-app-boot bundle resolution is not available in Codewhale");
+}
+async function createRuntimeResolution() {
+  throw new RpcError(ErrorCode.NotAvailable, "dsh-app-boot runtime resolution is not available in Codewhale");
+}
+var MAX_CREDENTIAL_REF_LEN, MAX_ATOMIC_WRITE_BYTES, dshCredentialsModule, dshSettingsModule, dshHomePathsModule, fileLocks, dshAtomicWriteModule, BUNDLED_SKILL_RANK, dshSkillModule, Remote, TypertRemoteService, dshTypertProtocolModule, dshWorkspaceModule, dshSessionSurfaceModule, SubagentError, dshSubagentModule, dshAgentModule, dshAppBootModule;
+var init_dsh_shims = __esm({
+  "src/dsh/dsh-shims.ts"() {
+    "use strict";
+    init_lib2();
+    init_protocol();
+    init_root();
+    init_rpc();
+    init_canonical_path();
+    init_compatibility();
+    init_settings();
+    init_dsh_message_compat();
+    MAX_CREDENTIAL_REF_LEN = 256;
+    MAX_ATOMIC_WRITE_BYTES = 16 * 1024 * 1024;
+    dshCredentialsModule = Object.freeze({
+      credentialRef: credentialRef2,
+      resolveCredential,
+      describeCredential
+    });
+    dshSettingsModule = Object.freeze({
+      SettingsConflictError,
+      settingsNamespace,
+      installSettingsSection,
+      default: Object.freeze({
+        SettingsConflictError,
+        settingsNamespace,
+        installSettingsSection
+      })
+    });
+    dshHomePathsModule = Object.freeze({
+      resolveDshHome,
+      resolveDshPath: resolveDshHome
+    });
+    fileLocks = /* @__PURE__ */ new Map();
+    dshAtomicWriteModule = Object.freeze({
+      writeFileAtomic,
+      withFileLock
+    });
+    BUNDLED_SKILL_RANK = 100;
+    dshSkillModule = Object.freeze({
+      BUNDLED_SKILL_RANK,
+      isModelInvocable,
+      isUserInvocable,
+      parseSkillFrontmatter,
+      renderSkillContent
+    });
+    Remote = Object.freeze({
+      strictCodec(typeSymbol, schema3) {
+        return Object.freeze({
+          mode: "strict",
+          typeSymbol,
+          create: () => schema3,
+          schema: schema3
+        });
+      },
+      jsonParameter(name, typeSymbol, schema3, acceptsUndefined = false) {
+        return Object.freeze({
+          name,
+          wire: name,
+          source: "json",
+          codec: Remote.strictCodec(typeSymbol, schema3),
+          ...acceptsUndefined ? { acceptsUndefined: true } : {}
+        });
+      },
+      descriptor(def) {
+        return Object.freeze({ ...def });
+      }
+    });
+    TypertRemoteService = class extends Service {
+      descriptors;
+      constructor(ctx, name, descriptors = []) {
+        super(ctx, name);
+        this.descriptors = Object.freeze([...descriptors]);
+      }
+      getDescriptors() {
+        return this.descriptors;
+      }
+    };
+    dshTypertProtocolModule = Object.freeze({
+      Remote,
+      TypertRemoteService
+    });
+    dshWorkspaceModule = Object.freeze({
+      WorkspaceId
+    });
+    dshSessionSurfaceModule = Object.freeze({
+      foldSurface,
+      isSurfaceEligibleType
+    });
+    SubagentError = class extends HarnessError {
+      constructor(message, code = "SUBAGENT_ERROR", options) {
+        super(message, code, options);
+        this.name = "SubagentError";
+      }
+    };
+    dshSubagentModule = Object.freeze({
+      SubagentError,
+      foldSubagentDescriptor,
+      snapshotSubagentDescriptor
+    });
+    dshAgentModule = Object.freeze({
+      assembleContextFor,
+      installModelSelection
+    });
+    dshAppBootModule = Object.freeze({
+      getDshRuntimeVersion,
+      loadProfileDirectory,
+      resolveBundleDir,
+      createRuntimeResolution
+    });
+  }
+});
+
+// src/dsh/resolve-hooks.ts
+import { fileURLToPath as fileURLToPath4, pathToFileURL as pathToFileURL5 } from "node:url";
+import { resolve as resolve6, isAbsolute as isAbsolute5, dirname as dirname5 } from "node:path";
+function packageName(specifier) {
+  const parts = specifier.split("/");
+  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+}
+function classifySpecifier(specifier) {
+  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.includes(":")) return null;
+  if (Object.hasOwn(SINGLETONS, specifier)) return SINGLETONS[specifier];
+  const name = packageName(specifier);
+  if (Object.hasOwn(SINGLETONS, name)) {
+    if (specifier !== name) throw new UnsupportedPeerError(specifier);
+    return SINGLETONS[name];
+  }
+  if (name.startsWith("@deepseek-ai/dsh-") || name.startsWith("@deepseek-ai/cordis-")) {
+    throw new UnsupportedPeerError(name);
+  }
+  return null;
+}
+function explainImportError(error) {
+  const match = error instanceof Error ? /Cannot find package '([^']+)'/.exec(error.message) : null;
+  if (!match) return error;
+  try {
+    classifySpecifier(match[1]);
+  } catch (unsupported) {
+    return unsupported;
+  }
+  return error;
+}
+function keyIn(closure, path2) {
+  const canonical = insideKey(closure.canonicalRoot, path2);
+  if (canonical !== void 0) return canonical;
+  for (const root of closure.rawRoots) {
+    const raw = insideKey(root, path2);
+    if (raw !== void 0) return raw;
+  }
+}
+function admitReviewedClosure(baseUrl, files) {
+  const rawRoot = resolve6(fileURLToPath4(baseUrl));
+  const canonicalRoot = canonicalPath(rawRoot);
+  const id = pathKey(canonicalRoot);
+  const accepted = /* @__PURE__ */ Object.create(null);
+  const keys = Object.keys(files);
+  if (keys.length > 16384) throw new Error("reviewed composition closure exceeds its file limit");
+  for (const key of keys) {
+    if (!key || key.split("/").some((part) => !part || part === "." || part === "..") || key.includes("\\") || key.includes(":") || isAbsolute5(key) || !/^[a-f0-9]{64}$/.test(files[key])) throw new Error("invalid reviewed composition closure file");
+    accepted[key] = files[key];
+  }
+  const existing = reviewedClosures.get(id);
+  if (existing) {
+    if (Object.keys(existing.files).length !== keys.length || keys.some((key) => existing.files[key] !== accepted[key])) throw new Error("the same composition root carries different file receipts");
+    existing.refs++;
+    existing.rawRoots.add(rawRoot);
+  } else reviewedClosures.set(id, { files: Object.freeze(accepted), refs: 1, canonicalRoot, rawRoots: /* @__PURE__ */ new Set([rawRoot]) });
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    const current2 = reviewedClosures.get(id);
+    if (current2 && --current2.refs === 0) reviewedClosures.delete(id);
   };
 }
-var AGENT_PRESETS, MAX_PRESETS, hash, SHA, activePresetReceipts;
-var init_agent_presets = __esm({
-  "src/dsh/agent-presets.ts"() {
+async function importReviewedModule(baseUrl, path2) {
+  const rawRoot = resolve6(fileURLToPath4(baseUrl));
+  const id = pathKey(canonicalPath(rawRoot));
+  const receipt = reviewedClosures.get(id);
+  if (!receipt) throw new Error("composition module closure is no longer admitted");
+  const entry = resolve6(rawRoot, path2);
+  const admitted = closureAt(pathToFileURL5(entry).href);
+  if (!admitted || admitted.root !== id || !(admitted.path in receipt.files)) throw new Error("composition module is absent from reviewed closure");
+  return import(pathToFileURL5(entry).href);
+}
+function closureAt(url) {
+  if (!url?.startsWith("file:")) return;
+  const path2 = resolve6(fileURLToPath4(url));
+  for (const [root, receipt] of reviewedClosures) {
+    const inside = keyIn(receipt, path2);
+    if (inside !== void 0) return { root, receipt, path: inside };
+  }
+}
+var SINGLETONS, UnsupportedPeerError, reviewedClosures;
+var init_resolve_hooks = __esm({
+  "src/dsh/resolve-hooks.ts"() {
     "use strict";
-    init_persona();
-    init_lib2();
-    init_discovery();
-    init_preset();
-    init_specifier();
-    init_composition_inventory();
-    init_src();
-    AGENT_PRESETS = "@deepseek-ai/dsh-agent-presets";
-    MAX_PRESETS = 64;
-    hash = (bytes) => createHash2("sha256").update(bytes).digest("hex");
-    SHA = /^[a-f0-9]{64}$/;
-    activePresetReceipts = /* @__PURE__ */ new Map();
+    init_canonical_path();
+    init_runtime();
+    init_bun_closure();
+    init_dsh_message_compat();
+    init_dsh_shims();
+    init_compatibility();
+    SINGLETONS = compatibility_default.module_singletons;
+    UnsupportedPeerError = class extends Error {
+      constructor(specifier) {
+        super(`requires \`${specifier}\`, which the Codewhale extension host does not provide`);
+        this.specifier = specifier;
+        this.name = "UnsupportedPeerError";
+      }
+      specifier;
+    };
+    reviewedClosures = /* @__PURE__ */ new Map();
   }
 });
 
@@ -16051,10 +17799,10 @@ var init_lib4 = __esm({
     };
     resolvers = {};
     checkedVolatile = /* @__PURE__ */ Symbol("checked-volatile-schema");
-    Schema2.extend = function extend2(type2, resolve7) {
-      resolvers[type2] = resolve7;
+    Schema2.extend = function extend2(type2, resolve9) {
+      resolvers[type2] = resolve9;
     };
-    Schema2.resolve = function resolve5(data2, schema3, options = {}, strict = false) {
+    Schema2.resolve = function resolve7(data2, schema3, options = {}, strict = false) {
       if (!schema3) return [data2];
       if (!options[checkedVolatile]) {
         validateVolatileSchema(schema3, options.path);
@@ -16418,7 +18166,7 @@ function raceWithSignal(promise, signal) {
     });
     return Promise.reject(signal.reason);
   }
-  return new Promise((resolve7, reject) => {
+  return new Promise((resolve9, reject) => {
     let settled = false;
     const onAbort = () => {
       if (settled) return;
@@ -16433,7 +18181,7 @@ function raceWithSignal(promise, signal) {
         if (settled) return;
         settled = true;
         signal.removeEventListener("abort", onAbort);
-        resolve7(value);
+        resolve9(value);
       },
       (error) => {
         if (settled) return;
@@ -16856,13 +18604,13 @@ __export(composition_exports, {
 });
 import { createHash as createHash3 } from "node:crypto";
 import { readFile as readFile2 } from "node:fs/promises";
-import { isAbsolute as isAbsolute4, relative as relative3, resolve as resolve6, sep as sep3 } from "node:path";
+import { isAbsolute as isAbsolute6, relative as relative3, resolve as resolve8, sep as sep3 } from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 function digest(bytes) {
   return createHash3("sha256").update(bytes).digest("hex");
 }
 function plainRelative(path2) {
-  return typeof path2 === "string" && path2.length > 0 && path2.length <= 4096 && !isAbsolute4(path2) && !path2.startsWith("/") && !/[\\:\u0000-\u001f\u007f]/u.test(path2) && path2.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+  return typeof path2 === "string" && path2.length > 0 && path2.length <= 4096 && !isAbsolute6(path2) && !path2.startsWith("/") && !/[\\:\u0000-\u001f\u007f]/u.test(path2) && path2.split("/").every((part) => part !== "" && part !== "." && part !== "..");
 }
 function boundData(root) {
   let nodes = 0;
@@ -16983,6 +18731,12 @@ function validateInventory(group) {
     if (entry.subtree) validateInventory(entry.subtree.root);
   }
 }
+function describeCause(error) {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+function fiberStateName(state) {
+  return Object.entries(FiberState).find(([, value]) => value === state)?.[0] ?? String(state);
+}
 async function mountReviewedComposition(ctx, baseUrl, spec) {
   const review = reviewComposition(spec);
   function groups(rows) {
@@ -17092,6 +18846,7 @@ var init_composition = __esm({
     init_skill_filesystem();
     init_shell_hooks();
     init_resolve_hooks();
+    init_missing_services();
     init_persona();
     init_agent_presets();
     init_cot_translation();
@@ -17133,7 +18888,24 @@ var init_composition = __esm({
       /** A reviewed composition is input; teardown and self-disposal never rewrite it. */
       commit() {
       }
+      importFailures = /* @__PURE__ */ new Map();
+      importFailure(name) {
+        return this.importFailures.has(name) ? { error: this.importFailures.get(name) } : void 0;
+      }
       import(name) {
+        this.importFailures.delete(name);
+        const record3 = (error) => {
+          this.importFailures.set(name, error);
+          throw error;
+        };
+        try {
+          const imported = this.importRow(name);
+          return imported instanceof Promise ? imported.catch(record3) : imported;
+        } catch (error) {
+          return record3(error);
+        }
+      }
+      importRow(name) {
         if (name === PERSONA) return reviewedPersonaModule;
         if (name === AGENT_PRESETS) return defineReviewedAgentPresets(mountReviewedComposition);
         if (name === "cordis:group" || name === "@deepseek-ai/cordis-plugin-group") return ReviewedGroup;
@@ -17152,9 +18924,9 @@ var init_composition = __esm({
       }
       async importReviewed(module) {
         const root = fileURLToPath5(this.base);
-        const path2 = resolve6(root, module.path);
+        const path2 = resolve8(root, module.path);
         const inside = relative3(root, path2);
-        if (inside.startsWith(`..${sep3}`) || inside === ".." || isAbsolute4(inside)) throw new Error("module escapes reviewed bundle");
+        if (inside.startsWith(`..${sep3}`) || inside === ".." || isAbsolute6(inside)) throw new Error("module escapes reviewed bundle");
         if (this.spec.files[module.path] !== module.sha256 || digest(await readFile2(path2)) !== module.sha256) throw new Error("module changed after review");
         return importReviewedModule(this.base, module.path);
       }
@@ -17203,10 +18975,15 @@ var init_composition = __esm({
         validateInventory(this.tree.root);
         for (const entry of this.tree.entries()) {
           if (entry.disabled) continue;
-          if (!entry.fiber || entry.fiber.uid === null) throw new Error(`composition row ${JSON.stringify(entry.options.id ?? entry.options.name)} failed activation`);
+          const row = `composition row ${JSON.stringify(entry.options.id ?? entry.options.name)}`;
+          if (!entry.fiber || entry.fiber.uid === null) {
+            const failure = this.tree.importFailure(entry.options.name);
+            throw new Error(failure !== void 0 ? `${row} failed activation: ${describeCause(explainImportError(failure.error))}` : `${row} failed activation (${entry.fiber ? `fiber ${fiberStateName(entry.fiber.state)}` : "no fiber"}); see the logged error above`, failure !== void 0 ? { cause: failure.error } : void 0);
+          }
           await entry.fiber.await();
           const missing = Object.keys(entry.fiber.inject).filter((name) => entry.fiber.ctx.get(name) === void 0);
-          if (missing.length || entry.fiber.state !== FiberState.ACTIVE) throw new Error(`composition row ${JSON.stringify(entry.options.id ?? entry.options.name)} is not active`);
+          if (missing.length) throw new Error(`${row} requires ${describeMissingServices(missing)}`);
+          if (entry.fiber.state !== FiberState.ACTIVE) throw new Error(`${row} is not active (fiber ${fiberStateName(entry.fiber.state)})`);
         }
         const leaked = leakedServices(this.ctx, this.ctx.fiber);
         if (leaked.length) throw new Error(`composition published shared-root services: ${leaked.join(", ")}`);

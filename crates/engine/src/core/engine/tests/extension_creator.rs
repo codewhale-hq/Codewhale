@@ -275,11 +275,20 @@ async fn extension_creator_skills_config_cannot_be_set_from_config_toml() {
     let _home = crate::test_support::SealedHome::new();
     let owned = installed_skills_dir();
     let workspace = tempfile::tempdir().unwrap();
-    let parsed: codewhale_runtime::config::SkillsConfig = toml::from_str(
+    let rejected = toml::from_str::<codewhale_runtime::config::SkillsConfig>(
         "creator_skills = true\n[bundled]\nselected = [\"cordis-plugin-development\"]\n",
-    )
-    .unwrap();
-    assert!(!parsed.creator_skills);
+    );
+    assert!(
+        rejected.is_err(),
+        "creator_skills must be rejected as an unknown [skills] key"
+    );
+    let parsed: codewhale_runtime::config::SkillsConfig =
+        toml::from_str("[bundled]\nselected = [\"cordis-plugin-development\"]\n").unwrap();
+    let parsed = codewhale_runtime::config::SkillsConfig {
+        creator_skills: true,
+        ..parsed
+    };
+    assert!(parsed.creator_skills);
     let mut engine = engine_for(workspace.path(), None);
     engine.config.skills_config = Arc::new(parsed);
     engine.creator_available = true;

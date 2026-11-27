@@ -9,7 +9,9 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use codewhale_command_contract::facets::{BackgroundCancel, BackgroundRequest};
 use codewhale_command_contract::handler::CommandContexts;
+use codewhale_command_contract::outcome::{BackgroundAction, BackgroundCommandResult};
 
 use crate::tui::app::AppAction;
 use codewhale_engine::project_context;
@@ -25,6 +27,11 @@ use crate::commands::CommandResult;
 /// handler-owned (D2). `codewhale_util::utils`/`codewhale_engine::project_context` are leaf,
 /// path-parameterized helpers (no App/service state), consistent with D8.
 fn init(workspace: &Path, language: &str) -> CommandResult {
+    let (msg, prompt) = prepare_init(workspace, language);
+    CommandResult::with_message_and_action(msg, AppAction::SendMessage(prompt))
+}
+
+fn prepare_init(workspace: &Path, language: &str) -> (String, String) {
     // Ensure .deepseek/ is gitignored if we're inside a git repo.
     ensure_deepseek_gitignored(workspace);
 
@@ -61,7 +68,7 @@ fn init(workspace: &Path, language: &str) -> CommandResult {
         agents_path.display()
     );
 
-    CommandResult::with_message_and_action(msg, AppAction::SendMessage(prompt))
+    (msg, prompt)
 }
 
 /// If `workspace` is inside a git repository, ensure workspace-local CodeWhale
@@ -382,33 +389,36 @@ fn detect_js_frameworks(deps: &[&str]) -> Vec<String> {
     found
 }
 
-/// Strip userinfo (username:password or username) from a URL to avoid leaking
-/// embedded credentials into the LLM prompt.
+/// Strip embedded credentials, query strings, and fragments from a git remote
+/// URL to avoid leaking secrets into the LLM prompt or session transcript.
 fn strip_url_credentials(url: &str) -> String {
-    // Handle SSH-style URLs: git@host:org/repo.git — no embedded password.
-    if url.contains('@') && !url.contains("://") {
-        return url.to_string();
-    }
-    // HTTP(S) remotes: strip only authority userinfo. `@` in a path, query,
-    // or fragment is repository data, not credentials. SSH remotes such as
-    // `git@host:org/repo.git` and `ssh://git@host/org/repo.git` keep their
-    // user component because it is protocol syntax, not an embedded token.
-    if let Some(scheme_end) = url.find("://") {
-        let scheme_name = url[..scheme_end].to_ascii_lowercase();
-        if scheme_name != "http" && scheme_name != "https" {
-            return url.to_string();
+    let without_query_or_fragment = url.split(['?', '#']).next().unwrap_or(url);
+    // Handle SCP-style SSH remotes: git@host:org/repo.git.
+    if without_query_or_fragment.contains('@') && !without_query_or_fragment.contains("://") {
+        if let Some((user_part, host_and_path)) = without_query_or_fragment.split_once('@')
+            && user_part.contains(':')
+        {
+            return host_and_path.to_string();
         }
-        let scheme = &url[..scheme_end + 3];
-        let after_scheme = &url[scheme_end + 3..];
-        let authority_end = after_scheme
-            .find(['/', '?', '#'])
-            .unwrap_or(after_scheme.len());
-        let (authority, suffix) = after_scheme.split_at(authority_end);
+        return without_query_or_fragment.to_string();
+    }
+    if let Some(scheme_end) = without_query_or_fragment.find("://") {
+        let scheme_name = without_query_or_fragment[..scheme_end].to_ascii_lowercase();
+        let scheme = &without_query_or_fragment[..scheme_end + 3];
+        let after_scheme = &without_query_or_fragment[scheme_end + 3..];
+        let authority_end = after_scheme.find('/').unwrap_or(after_scheme.len());
+        let (authority, path) = after_scheme.split_at(authority_end);
         if let Some(at_pos) = authority.rfind('@') {
-            return format!("{scheme}{}{suffix}", &authority[at_pos + 1..]);
+            let userinfo = &authority[..at_pos];
+            let host = &authority[at_pos + 1..];
+            if scheme_name == "ssh" && !userinfo.contains(':') {
+                return format!("{scheme}{authority}{path}");
+            }
+            return format!("{scheme}{host}{path}");
         }
+        return format!("{scheme}{authority}{path}");
     }
-    url.to_string()
+    without_query_or_fragment.to_string()
 }
 
 /// Find the enclosing git repository root. Works for nested workspaces and
@@ -816,7 +826,7 @@ pub(in crate::commands) const INIT_INFO: codewhale_command_contract::metadata::C
     codewhale_command_contract::metadata::CommandInfo {
         name: "init",
         aliases: &[],
-        usage: "/init",
+        usage: "/init [cancel]",
         description_key: "cmd_init_description",
     };
 
@@ -833,7 +843,8 @@ impl codewhale_command_contract::metadata::RegisterCommand<crate::commands::Comm
     -> codewhale_command_contract::handler::CommandHandler<crate::commands::CommandResult> {
         codewhale_command_contract::handler::CommandHandler::Contextual {
             capabilities: codewhale_command_contract::handler::CommandCapabilities::WORKSPACE
-                .union(codewhale_command_contract::handler::CommandCapabilities::PRESENTATION),
+                .union(codewhale_command_contract::handler::CommandCapabilities::PRESENTATION)
+                .union(codewhale_command_contract::handler::CommandCapabilities::BACKGROUND),
             handler: init_contextual,
         }
     }
@@ -848,7 +859,10 @@ impl codewhale_command_contract::metadata::RegisterCommand<crate::commands::Comm
 /// those two (D4, least-capability — the initial PROJECT|WORKSPACE
 /// declaration was amended after the critical audit; main's model expresses
 /// the declaration as exact facet destructuring rather than a bitmask).
-fn init_contextual(contexts: CommandContexts<'_>, _arg: Option<&str>) -> CommandResult {
+/// The scan runs through the `BACKGROUND` facet when the host offers one and
+/// inline otherwise.
+fn init_contextual(mut contexts: CommandContexts<'_>, arg: Option<&str>) -> CommandResult {
+    let background = contexts.take_background();
     let parts = contexts.into_parts();
     let Some(workspace) = parts.workspace.as_deref() else {
         return crate::commands::CommandResult::error("Command capability unavailable: workspace");
@@ -858,7 +872,35 @@ fn init_contextual(contexts: CommandContexts<'_>, _arg: Option<&str>) -> Command
             "Command capability unavailable: presentation",
         );
     };
-    init(&workspace.workspace(), presentation.language_name())
+    let workspace = workspace.workspace().to_path_buf();
+    let language = presentation.language_name().to_string();
+    let Some(background) = background else {
+        return crate::commands::contract::run_owner_blocking(move || {
+            Ok(init(&workspace, &language))
+        })
+        .unwrap_or_else(CommandResult::error);
+    };
+    if arg.is_some_and(|arg| arg.trim().eq_ignore_ascii_case("cancel")) {
+        return background
+            .cancel(INIT_INFO.name)
+            .map_or_else(CommandResult::error, CommandResult::message);
+    }
+    background
+        .start(
+            INIT_INFO.name,
+            init_job,
+            BackgroundRequest {
+                workspace,
+                language,
+                ..BackgroundRequest::default()
+            },
+        )
+        .map_or_else(CommandResult::error, CommandResult::message)
+}
+
+fn init_job(request: BackgroundRequest, _cancel: BackgroundCancel) -> BackgroundCommandResult {
+    let (message, prompt) = prepare_init(&request.workspace, &request.language);
+    BackgroundCommandResult::with_message_and_action(message, BackgroundAction::SendMessage(prompt))
 }
 
 // ---------------------------------------------------------------------------
@@ -946,6 +988,134 @@ mod tests {
         };
         assert!(prompt.contains("Custom instructions here"));
         assert!(prompt.contains("update it in place"));
+    }
+
+    struct Background {
+        started: Vec<(
+            codewhale_command_contract::facets::BackgroundJob,
+            BackgroundRequest,
+        )>,
+        cancelled: usize,
+    }
+
+    impl codewhale_command_contract::facets::CommandBackgroundContext for Background {
+        fn start(
+            &mut self,
+            command: &'static str,
+            job: codewhale_command_contract::facets::BackgroundJob,
+            request: BackgroundRequest,
+        ) -> Result<String, String> {
+            if !self.started.is_empty() {
+                return Err(format!("/{command} is already running"));
+            }
+            self.started.push((job, request));
+            Ok(format!("/{command} started"))
+        }
+
+        fn cancel(&mut self, command: &'static str) -> Result<String, String> {
+            self.cancelled += 1;
+            self.started.clear();
+            Ok(format!("/{command} cancelled"))
+        }
+    }
+
+    struct Workspace(PathBuf);
+
+    impl codewhale_command_contract::facets::CommandWorkspaceContext for Workspace {
+        fn workspace(&self) -> PathBuf {
+            self.0.clone()
+        }
+        fn effective_home_dir(&self) -> Option<PathBuf> {
+            None
+        }
+        fn inspect_workspace_target(
+            &self,
+            _candidate: &Path,
+        ) -> codewhale_command_contract::navigation::WorkspaceTarget {
+            unreachable!("/init does not inspect workspace targets")
+        }
+        fn read_anchor_document(&self) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+        fn append_anchor_bytes(
+            &mut self,
+            _parts: &[&[u8]],
+        ) -> Result<PathBuf, codewhale_command_contract::navigation::AnchorWriteError> {
+            unreachable!("/init does not write anchors")
+        }
+        fn replace_anchor_document(&mut self, _bytes: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn work_state_snapshot(&self) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+        fn operation_digest(&mut self) -> Result<String, String> {
+            Ok(String::new())
+        }
+    }
+
+    struct Presentation;
+
+    impl codewhale_command_contract::facets::CommandPresentationContext for Presentation {
+        fn translate(&self, _key: &str, _replacements: &[(&str, &str)]) -> Result<String, String> {
+            Err("no catalog".to_string())
+        }
+    }
+
+    #[test]
+    fn init_returns_at_once_and_delivers_the_prompt_as_the_background_result() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut workspace = Workspace(tmpdir.path().to_path_buf());
+        let mut presentation = Presentation;
+        let mut background = Background {
+            started: Vec::new(),
+            cancelled: 0,
+        };
+
+        let started = init_contextual(
+            CommandContexts::empty()
+                .with_workspace(&mut workspace)
+                .with_presentation(&mut presentation)
+                .with_background(&mut background),
+            None,
+        );
+        assert!(!started.is_error, "{started:?}");
+        assert_eq!(started.message.as_deref(), Some("/init started"));
+        assert!(
+            started.action.is_none(),
+            "the prompt is not sent before the scan finishes"
+        );
+
+        let refused = init_contextual(
+            CommandContexts::empty()
+                .with_workspace(&mut workspace)
+                .with_presentation(&mut presentation)
+                .with_background(&mut background),
+            None,
+        );
+        assert!(refused.is_error, "{refused:?}");
+        assert!(refused.message.unwrap().contains("already running"));
+
+        let (job, request) = background.started.pop().expect("background job");
+        assert_eq!(request.workspace, tmpdir.path());
+        assert_eq!(request.language, "English");
+        let finished = job(request, BackgroundCancel::default());
+        assert!(!finished.is_error, "{finished:?}");
+        assert!(finished.message.unwrap().contains("Creating AGENTS.md"));
+        assert!(matches!(
+            finished.action,
+            Some(BackgroundAction::SendMessage(prompt)) if prompt.contains("AGENTS.md")
+        ));
+
+        let cancelled = init_contextual(
+            CommandContexts::empty()
+                .with_workspace(&mut workspace)
+                .with_presentation(&mut presentation)
+                .with_background(&mut background),
+            Some("cancel"),
+        );
+        assert_eq!(cancelled.message.as_deref(), Some("/init cancelled"));
+        assert_eq!(background.cancelled, 1);
     }
 
     #[test]
@@ -1091,7 +1261,7 @@ mod tests {
         );
         assert_eq!(
             strip_url_credentials("https://github.com/org/repo.git?ref=user@example.com"),
-            "https://github.com/org/repo.git?ref=user@example.com"
+            "https://github.com/org/repo.git"
         );
         assert_eq!(
             strip_url_credentials("git@github.com:org/repo.git"),
@@ -1100,6 +1270,32 @@ mod tests {
         assert_eq!(
             strip_url_credentials("ssh://git@github.com/org/repo.git"),
             "ssh://git@github.com/org/repo.git"
+        );
+    }
+
+    #[test]
+    fn strip_url_credentials_strips_query_tokens_fragments_and_ssh_passwords() {
+        assert_eq!(
+            strip_url_credentials(
+                "https://user:pass@github.com/org/repo.git?access_token=tok_12345#frag"
+            ),
+            "https://github.com/org/repo.git"
+        );
+        assert_eq!(
+            strip_url_credentials("https://github.com/org/repo.git?access_token=tok_12345"),
+            "https://github.com/org/repo.git"
+        );
+        assert_eq!(
+            strip_url_credentials("ssh://user:pass@host/org/repo.git?token=x#section"),
+            "ssh://host/org/repo.git"
+        );
+        assert_eq!(
+            strip_url_credentials("ssh://git@host/org/repo.git?token=x"),
+            "ssh://git@host/org/repo.git"
+        );
+        assert_eq!(
+            strip_url_credentials("https://alice:pass%zz@github.com/org/repo.git?token=secret"),
+            "https://github.com/org/repo.git"
         );
     }
 

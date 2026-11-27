@@ -64,6 +64,7 @@ pub struct ChatWidget {
     /// Ink for the selected underwater scene's idle fish/bubbles.
     ambient_inks: Option<(Color, Color)>,
     ocean_elapsed_ms: u128,
+    life_elapsed_ms: u128,
     #[cfg(test)]
     ocean_animated: bool,
     /// Fixed-point (0..=1000) life presence; see `ocean::life_presence`.
@@ -183,6 +184,7 @@ impl ChatWidget {
         } else {
             0.0
         };
+        let life_elapsed_ms = app.ambient_life_held_ms.unwrap_or(ocean_elapsed_ms);
         let ocean_column = ocean_ramp.map(|ramp| {
             let context_percent = crate::tui::phase_strip::context_percent_from_app(app);
             crate::tui::ocean::OceanColumn::new(
@@ -236,6 +238,7 @@ impl ChatWidget {
                 ocean_activity,
                 ambient_inks,
                 ocean_elapsed_ms,
+                life_elapsed_ms,
                 #[cfg(test)]
                 ocean_animated,
                 #[cfg(test)]
@@ -369,7 +372,7 @@ impl ChatWidget {
                 if let Some(HistoryCell::SubAgent(agent)) = cell_at(index) {
                     fold_summaries.push((
                         index,
-                        agent_line_summary_cell(agent),
+                        agent_line_summary_cell(agent, app.ui_locale),
                         members_summary_revision(
                             0xA6E7_11FE_0000_2233,
                             std::iter::once(index),
@@ -761,6 +764,7 @@ impl ChatWidget {
             ocean_activity,
             ambient_inks,
             ocean_elapsed_ms,
+            life_elapsed_ms,
             #[cfg(test)]
             ocean_animated,
             #[cfg(test)]
@@ -849,15 +853,16 @@ fn turn_fold_summary_cell(
     turn: &crate::tui::history::TurnFold,
     locale: codewhale_localization::Locale,
 ) -> HistoryCell {
-    let changes = crate::tui::history::turn_fold_changes(turn, locale).map(|changes| {
-        format!(
-            "{changes} \u{00B7} {}",
-            codewhale_localization::tr(
-                locale,
-                codewhale_localization::MessageId::TurnReviewChanges
+    let changes = crate::tui::history::turn_fold_changes_in(turn, locale, ascii_safe_enabled())
+        .map(|changes| {
+            format!(
+                "{changes} \u{00B7} {}",
+                codewhale_localization::tr(
+                    locale,
+                    codewhale_localization::MessageId::TurnReviewChanges
+                )
             )
-        )
-    });
+        });
     HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
         name: "turn_work".to_string(),
         status: ToolStatus::Success,
@@ -870,11 +875,14 @@ fn turn_fold_summary_cell(
     }))
 }
 
-fn agent_line_summary_cell(agent: &crate::tui::history::SubAgentCell) -> HistoryCell {
+fn agent_line_summary_cell(
+    agent: &crate::tui::history::SubAgentCell,
+    locale: codewhale_localization::Locale,
+) -> HistoryCell {
     use crate::tui::history::SubAgentCell;
     let (tag, rest) = match agent {
         SubAgentCell::Delegate(card) => {
-            let mut rest = format!(" \u{00B7} {}", card.status.label());
+            let mut rest = format!(" \u{00B7} {}", card.status.label_in(locale));
             if let (Some(started), Some(finished)) = (card.started_at, card.finished_at) {
                 rest.push_str(" \u{00B7} ");
                 rest.push_str(&codewhale_command_contract::elapsed::format_elapsed_ms(
@@ -900,7 +908,7 @@ fn agent_line_summary_cell(agent: &crate::tui::history::SubAgentCell) -> History
             format!(
                 " \u{00B7} {} \u{00B7} {}",
                 card.workers.len(),
-                card.aggregate_status_public().label()
+                card.aggregate_status_public().label_in(locale)
             ),
         ),
     };
@@ -1185,7 +1193,7 @@ impl ChatWidget {
                 &theme,
                 inks.0,
                 &self.lines,
-                self.ocean_elapsed_ms,
+                self.life_elapsed_ms,
                 self.ocean_presence_f32(),
                 whale,
                 self.ocean_activity,
@@ -2054,36 +2062,65 @@ impl<'a> ApprovalWidget<'a> {
         };
 
         let selected_pill = menu_style::selected_row_style().add_modifier(Modifier::REVERSED);
+        let wide = bar_area.width >= 100;
+        let padded = wide;
         let allow_text = if workflow_plan {
             "Approve"
-        } else if bar_area.width >= 56 {
+        } else if wide {
             if ascii { "v Allow" } else { "✓ Allow" }
         } else {
             "Allow"
         };
         let deny_text = if workflow_plan {
             "Edit"
-        } else if bar_area.width >= 56 {
+        } else if wide {
             if ascii { "x Deny" } else { "✕ Deny" }
         } else {
             "Deny"
         };
+        let keyed = |text: &str, option: ApprovalOption, key: &str| {
+            let key = if selected_option == Some(option) {
+                "Enter"
+            } else {
+                key
+            };
+            if padded {
+                format!(" {text} [{key}] ")
+            } else {
+                format!("{text} [{key}]")
+            }
+        };
 
-        let allow_label = format!(" {allow_text} ");
-        let deny_label = format!(" {deny_text} ");
+        let allow_label = keyed(allow_text, ApprovalOption::ApproveOnce, "y");
+        let deny_label = keyed(
+            deny_text,
+            ApprovalOption::Deny,
+            if workflow_plan { "e" } else { "n" },
+        );
         let m_label = if workflow_plan {
             String::new()
+        } else if !wide {
+            "[m]".to_string()
         } else if self.view.scopes_open {
             if ascii { "[^ m]" } else { "[▴ m]" }.to_string()
         } else {
             if ascii { "[v m]" } else { "[▾ m]" }.to_string()
         };
-        let d_label = if self.view.details_expanded {
+        let d_key = if self.view.details_expanded {
             if ascii { "[^ d]" } else { "[▴ d]" }
         } else {
             "[d]"
         };
-        let cancel_label = if workflow_plan { " Cancel " } else { "" };
+        let d_label = if wide {
+            format!("Details {d_key}")
+        } else {
+            d_key.to_string()
+        };
+        let cancel_label = if workflow_plan {
+            keyed("Cancel", ApprovalOption::Abort, "n")
+        } else {
+            String::new()
+        };
 
         struct ControlSpec {
             text: String,
@@ -2103,6 +2140,17 @@ impl<'a> ApprovalWidget<'a> {
         } else {
             palette::WHALE_ACTION
         };
+        controls.push(ControlSpec {
+            text: d_label,
+            style: if self.view.details_expanded {
+                Style::default()
+                    .fg(palette::WHALE_HUMAN)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(palette::TEXT_MUTED)
+            },
+            kind: ControlKind::Details,
+        });
         controls.push(ControlSpec {
             text: allow_label,
             style: if selected_option == Some(ApprovalOption::ApproveOnce) {
@@ -2139,7 +2187,7 @@ impl<'a> ApprovalWidget<'a> {
         });
         if workflow_plan {
             controls.push(ControlSpec {
-                text: cancel_label.to_string(),
+                text: cancel_label,
                 style: if selected_option == Some(ApprovalOption::Abort) {
                     selected_pill
                 } else {
@@ -2148,17 +2196,6 @@ impl<'a> ApprovalWidget<'a> {
                 kind: ControlKind::OptionIndex(2),
             });
         }
-        controls.push(ControlSpec {
-            text: d_label.to_string(),
-            style: if self.view.details_expanded {
-                Style::default()
-                    .fg(palette::WHALE_HUMAN)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(palette::TEXT_MUTED)
-            },
-            kind: ControlKind::Details,
-        });
 
         let controls_width: usize = controls
             .iter()
@@ -2768,16 +2805,6 @@ pub struct ElevationWidget<'a> {
 }
 
 impl<'a> ElevationWidget<'a> {
-    #[expect(dead_code)]
-    pub fn new(request: &'a ElevationRequest, selected: usize, locale: Locale) -> Self {
-        Self {
-            request,
-            selected,
-            locale,
-            hitboxes: None,
-        }
-    }
-
     pub fn new_with_hitboxes(
         request: &'a ElevationRequest,
         selected: usize,
@@ -5220,7 +5247,7 @@ mod tests {
             "{rendered}"
         );
         assert!(
-            rendered.contains("1 file changed +3 -1 \u{00B7} Enter to review"),
+            rendered.contains("1 file changed +3 \u{2212}1 \u{00B7} Enter to review"),
             "{rendered}"
         );
         assert!(!rendered.contains("full output from"), "{rendered}");
@@ -8889,6 +8916,78 @@ mod tests {
         assert!(ChatWidget::new_with_ocean_elapsed(&mut app, area, 0).ocean_animated);
         let rendered = assert_life_keeps_clear_of_text(&mut app, area);
         assert!(rendered.contains("release check 17"), "{rendered}");
+    }
+
+    #[test]
+    fn ocean_life_moves_while_a_turn_runs_and_holds_still_when_idle() {
+        fn life_cells(app: &mut App, area: Rect, elapsed: u128) -> Vec<(u16, u16, String)> {
+            let alive = ChatWidget::new_with_ocean_elapsed(app, area, elapsed);
+            let mut still = ChatWidget::new_with_ocean_elapsed(app, area, elapsed);
+            still.ambient_life = false;
+            let mut alive_buf = Buffer::empty(area);
+            alive.render(area, &mut alive_buf);
+            let mut still_buf = Buffer::empty(area);
+            still.render(area, &mut still_buf);
+            let mut cells = Vec::new();
+            for y in area.top()..area.bottom() {
+                for x in area.left()..area.right() {
+                    if alive_buf[(x, y)] != still_buf[(x, y)] {
+                        cells.push((x, y, alive_buf[(x, y)].symbol().to_string()));
+                    }
+                }
+            }
+            cells
+        }
+
+        let mut app = create_test_app();
+        app.theme_id = codewhale_palette::ThemeId::Underwater;
+        app.ui_theme = palette::UNDERWATER_UI_THEME;
+        app.viewport.ocean_caps = Some(test_native_ocean_caps());
+        app.low_motion = false;
+        app.fancy_animations = true;
+        app.add_message(HistoryCell::Assistant {
+            content: "release receipt".to_string(),
+            streaming: false,
+        });
+        let area = Rect::new(0, 0, 80, 24);
+        let start = Instant::now();
+
+        app.is_loading = true;
+        app.runtime_turn_status = Some("in_progress".to_string());
+        app.turn_started_at = Some(start);
+        app.ambient_clock_ms = 9_000;
+        assert!(!app.ambient_idle_settled(true, start));
+        let early = life_cells(&mut app, area, 4_000);
+        let late = life_cells(&mut app, area, 9_000);
+        assert!(!early.is_empty() && !late.is_empty());
+        assert_ne!(early, late, "a running turn must move the ocean");
+        assert!(crate::tui::ui::underwater_life_motion_requested(
+            &app, false, false
+        ));
+
+        app.is_loading = false;
+        app.runtime_turn_status = Some("completed".to_string());
+        app.turn_started_at = None;
+        assert!(!app.ambient_idle_settled(false, start));
+        let settle = std::time::Duration::from_millis(App::AMBIENT_IDLE_SETTLE_MS + 1);
+        assert!(app.ambient_idle_settled(false, start + settle));
+        assert!(!crate::tui::ui::underwater_life_motion_requested(
+            &app, false, true
+        ));
+        let held = life_cells(&mut app, area, 9_000);
+        let after_keystrokes = life_cells(&mut app, area, 13_000);
+        assert!(!held.is_empty(), "a settled ocean keeps its creatures");
+        assert_eq!(
+            held, after_keystrokes,
+            "an idle redraw must not step the ocean"
+        );
+
+        app.low_motion = true;
+        assert!(!app.ambient_idle_settled(true, start + settle));
+        assert!(!crate::tui::ui::underwater_life_motion_requested(
+            &app, false, false
+        ));
+        assert!(life_cells(&mut app, area, 4_000).is_empty());
     }
 
     #[test]

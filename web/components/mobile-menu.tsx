@@ -20,7 +20,7 @@ export function MobileMenu({
 }: {
   links: ChromeLink[];
   github: { href: string; label: string; count: string | null; aria: string };
-  signIn: ChromeLink;
+  signIn: ChromeLink | null;
   installHref: string;
   installLabel: string;
   openLabel: string;
@@ -35,7 +35,7 @@ export function MobileMenu({
   const [closing, setClosing] = useState(false);
   const closeTimer = useRef<number | null>(null);
   const pathname = usePathname();
-  const currentHref = currentNavHref([...links, signIn], pathname);
+  const currentHref = currentNavHref(signIn ? [...links, signIn] : links, pathname);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -211,17 +211,19 @@ export function MobileMenu({
                   <Icon name="chevron-right" className="nav-icon mm-link-chevron icon-flip" />
                 </a>
               </li>
-              <li>
-                <Link
-                  href={signIn.href}
-                  onClick={() => setOpen(false)}
-                  className="mm-link"
-                  aria-current={signIn.href === currentHref ? "page" : undefined}
-                >
-                  <span>{signIn.label}</span>
-                  <Icon name="chevron-right" className="nav-icon mm-link-chevron icon-flip" />
-                </Link>
-              </li>
+              {signIn ? (
+                <li>
+                  <Link
+                    href={signIn.href}
+                    onClick={() => setOpen(false)}
+                    className="mm-link"
+                    aria-current={signIn.href === currentHref ? "page" : undefined}
+                  >
+                    <span>{signIn.label}</span>
+                    <Icon name="chevron-right" className="nav-icon mm-link-chevron icon-flip" />
+                  </Link>
+                </li>
+              ) : null}
             </ul>
 
             <Link

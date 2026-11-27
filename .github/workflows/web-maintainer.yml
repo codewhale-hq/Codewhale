@@ -65,6 +65,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           ref: main
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -247,6 +248,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           ref: main
+          fetch-depth: 0
           path: verify
           persist-credentials: false
       - name: Run the web checks on the proposal in a clean tree without secrets
@@ -277,19 +279,47 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+      - name: Report lanes that did not finish
+        id: lanes
+        env:
+          DERIVED_RESULT: ${{ needs.derived.result }}
+          LANE_RESULT: ${{ needs.lane.result }}
+        run: |
+          failed=""
+          for pair in "derived=$DERIVED_RESULT" "lane=$LANE_RESULT"; do
+            case "${pair#*=}" in success|skipped) ;; *) failed="$failed ${pair}" ;; esac
+          done
+          if [ -n "$failed" ]; then
+            echo "failed=true" >> "$GITHUB_OUTPUT"
+            echo "::error::web-maintainer jobs did not finish:$failed; their patches are missing from this run."
+            echo "Jobs did not finish:$failed. Their patches are missing; this run is not a clean no-op." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "failed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - id: download
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         continue-on-error: true
         with:
           pattern: web-maintainer-*
           path: ${{ runner.temp }}/patches
       - name: Look for proposed patches
         id: patches
+        env:
+          LANES_FAILED: ${{ steps.lanes.outputs.failed }}
+          DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
         run: |
+          if [ "$DOWNLOAD_OUTCOME" = "failure" ]; then
+            echo "::error::web-maintainer patch artifacts could not be downloaded; their patches may exist but were not published."
+            echo "Patch artifact download failed; this run is not a clean no-op. No pull request was opened." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           if [ -n "$(find "$RUNNER_TEMP/patches" -name change.patch -size +0c 2>/dev/null)" ]; then
             echo "found=true" >> "$GITHUB_OUTPUT"
           else
             echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "No lane proposed a change; no pull request opened." >> "$GITHUB_STEP_SUMMARY"
+            if [ "$LANES_FAILED" != "true" ]; then
+              echo "No lane proposed a change; no pull request opened." >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
       - if: steps.patches.outputs.found == 'true'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
@@ -317,3 +347,6 @@ jobs:
           mkdir -p "$RUNNER_TEMP/trusted"
           cp web/maintainer/allowlist.txt web/maintainer/derived.txt web/maintainer/check-allowlist.mjs web/maintainer/publish-prs.sh "$RUNNER_TEMP/trusted/"
           TRUSTED_DIR="$RUNNER_TEMP/trusted" bash "$RUNNER_TEMP/trusted/publish-prs.sh"
+      - name: Fail when a lane did not finish
+        if: steps.lanes.outputs.failed == 'true'
+        run: exit 1

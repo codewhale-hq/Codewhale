@@ -443,8 +443,18 @@ impl Engine {
             .stop_diagnostics
             .transport_retries
             .saturating_add(transport_retries.load(std::sync::atomic::Ordering::Relaxed));
+        let review_cause = result
+            .as_ref()
+            .err()
+            .filter(|_| !self.cancel_token.is_cancelled())
+            .map(|error| {
+                crate::llm_error_envelope::ProviderFailureCause::from_llm_error(
+                    error,
+                    Some("review"),
+                )
+            });
         let accounting = self
-            .settle_provider_request_receipt(
+            .settle_provider_request_receipt_with_cause(
                 &mut pending,
                 result.as_ref().ok().map(|value| &value.usage),
                 if result.is_ok() {
@@ -454,6 +464,7 @@ impl Engine {
                 } else {
                     "review_failed"
                 },
+                review_cause.as_ref(),
             )
             .await
             .ok()

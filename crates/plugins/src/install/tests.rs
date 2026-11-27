@@ -1155,6 +1155,105 @@ fn remote_bundle_bytes(name: &str, extra: &[u8]) -> Vec<u8> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_update_with_unchanged_archive_repairs_altered_install() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins = tmp.path().join("plugins");
+    let archive = tarball(&[
+        (
+            "repo-main/plugin.toml",
+            b"schema_version = 1\n[plugin]\nname = \"demo\"\nversion = \"1.0.0\"\n",
+        ),
+        ("repo-main/data.txt", b"v1"),
+    ]);
+    let url = serve_bodies(vec![archive.clone(), archive.clone(), archive]);
+    let outcome = install(
+        PluginInstallSource::parse(&url).unwrap(),
+        &plugins,
+        DEFAULT_MAX_SIZE_BYTES,
+        &loopback_policy(),
+        false,
+        &no_conflict(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(outcome, PluginInstallOutcome::Installed(_)));
+    fs::write(plugins.join("demo/data.txt"), b"tampered").unwrap();
+    assert!(matches!(
+        update("demo", &plugins, DEFAULT_MAX_SIZE_BYTES, &loopback_policy())
+            .await
+            .unwrap(),
+        PluginUpdateResult::Updated(_)
+    ));
+    assert_eq!(fs::read(plugins.join("demo/data.txt")).unwrap(), b"v1");
+    assert!(matches!(
+        update("demo", &plugins, DEFAULT_MAX_SIZE_BYTES, &loopback_policy())
+            .await
+            .unwrap(),
+        PluginUpdateResult::NoChange
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dsh_update_with_unchanged_package_repairs_altered_install() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins = tmp.path().join("plugins");
+    let pkg = write_dsh_base_package(
+        &tmp.path().join("dsh-repair"),
+        serde_json::json!({
+            "name": "dsh-repair",
+            "version": "1.0.0",
+            "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+        }),
+        "[]\n",
+    );
+    fs::create_dir_all(pkg.join("commands")).unwrap();
+    fs::write(pkg.join("commands/hello.md"), "hello v1\n").unwrap();
+    fs::write(
+        pkg.join("plugin.json"),
+        serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "dsh-repair",
+            "version": "1.0.0",
+            "extensions": {
+                "net.codewhale": {
+                    "commands": {"path": "commands"}
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let outcome = install(
+        PluginInstallSource::parse(pkg.to_str().unwrap()).unwrap(),
+        &plugins,
+        DEFAULT_MAX_SIZE_BYTES,
+        &allow_all(),
+        false,
+        &no_conflict(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(outcome, PluginInstallOutcome::Installed(_)));
+
+    let installed_cmd = plugins.join("dsh-repair/commands/hello.md");
+    fs::write(&installed_cmd, "tampered\n").unwrap();
+    assert!(matches!(
+        update("dsh-repair", &plugins, DEFAULT_MAX_SIZE_BYTES, &allow_all())
+            .await
+            .unwrap(),
+        PluginUpdateResult::Updated(_)
+    ));
+    assert_eq!(fs::read_to_string(&installed_cmd).unwrap(), "hello v1\n");
+    assert!(matches!(
+        update("dsh-repair", &plugins, DEFAULT_MAX_SIZE_BYTES, &allow_all())
+            .await
+            .unwrap(),
+        PluginUpdateResult::NoChange
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn marketplace_archive_selects_only_requested_bundle_and_updates_same_source() {
     let tmp = tempfile::tempdir().unwrap();
     let plugins = tmp.path().join("plugins");
@@ -2519,6 +2618,27 @@ fn plain_dsh_package_with_no_plugin_json_keeps_behavior_with_skills_dir_or_mcp_j
     }
     let conversion_md = fs::read_to_string(out.join("CONVERSION.md")).unwrap();
     assert!(!conversion_md.contains("Merged from sibling plugin.json"));
+    assert!(conversion_md.contains("install hook, network request or credential lookup ran"));
+    assert!(conversion_md.contains("Only files inside the selected package were read"));
+
+    let fetched = ["acorn@8.14.0".to_string(), "zod@4.1.0".to_string()];
+    let mut staged = converted.clone();
+    staged
+        .diagnostics
+        .push(dsh::fetched_npm_note(&fetched).unwrap());
+    let staged_md = dsh::conversion_markdown(&staged, true);
+    assert!(staged_md.contains(
+        "Fetched from registry.npmjs.org (sha512-verified; install scripts not run): acorn@8.14.0, zod@4.1.0"
+    ));
+    assert!(!staged_md.contains("network request"));
+    assert!(!staged_md.contains("Only files inside the selected package were read"));
+    let many: Vec<String> = (0..45).map(|index| format!("p{index}@1.0.0")).collect();
+    assert!(
+        dsh::fetched_npm_note(&many)
+            .unwrap()
+            .ends_with("p39@1.0.0, +5 more")
+    );
+    assert!(dsh::fetched_npm_note(&[]).is_none());
 }
 
 #[cfg(unix)]
@@ -2989,6 +3109,55 @@ fn tarball_with_dsh_package_and_plugin_json_merges_and_enforces_rules() {
         ("b/commands/hello.md", cmd),
     ]);
     assert!(tarball::stage_tarball(&multi_tar, tmp.path(), DEFAULT_MAX_SIZE_BYTES, None).is_err());
+}
+
+#[test]
+fn native_root_with_nested_dsh_integration_installs_as_one_bundle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugin_json = serde_json::to_vec(&serde_json::json!({
+        "$schema": "https://agent-plugins.org/schemas/plugin.json",
+        "name": "computer-use",
+        "version": "0.16.3"
+    }))
+    .unwrap();
+    let root_package = br#"{"name":"codewhale-cu-plugin","version":"0.16.3","private":true}"#;
+    let dsh_package = serde_json::to_vec(&serde_json::json!({
+        "name": "@codewhale/computer-use-dsh",
+        "version": "0.6.0",
+        "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+    }))
+    .unwrap();
+    let patch = minimal_dsh_patch_with_skill().as_bytes();
+
+    let archive = tarball(&[
+        ("computer-use/plugin.json", &plugin_json),
+        ("computer-use/package.json", root_package),
+        ("computer-use/integrations/dsh/package.json", &dsh_package),
+        ("computer-use/integrations/dsh/cordis.patch.yml", patch),
+    ]);
+    let staged = stage_tarball(&archive, tmp.path(), DEFAULT_MAX_SIZE_BYTES, None).unwrap();
+    assert_eq!(staged.name, "computer-use");
+    assert!(!staged.staged_path.join("CONVERSION.json").exists());
+    assert!(
+        staged
+            .staged_path
+            .join("integrations/dsh/package.json")
+            .is_file()
+    );
+
+    let siblings = tarball(&[
+        ("repo/native/plugin.json", &plugin_json),
+        ("repo/harness/package.json", &dsh_package),
+        ("repo/harness/cordis.patch.yml", patch),
+    ]);
+    let err = scan_tarball(&siblings, DEFAULT_MAX_SIZE_BYTES).unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<PluginInstallError>(),
+            Some(PluginInstallError::PluginTomlRoots(2))
+        ),
+        "got: {err:#}"
+    );
 }
 
 #[test]
@@ -3479,6 +3648,7 @@ async fn prepare_remote_install_leaves_plugins_dir_empty_and_checks_exact_hash()
         &no_conflict(),
         "0000000000000000000000000000000000000000000000000000000000000000",
     )
+    .await
     .unwrap_err();
     assert!(mismatch.downcast_ref::<PluginContentMismatch>().is_some());
     assert!(!plugins.join("remote-preview").exists());
@@ -3491,6 +3661,7 @@ async fn prepare_remote_install_leaves_plugins_dir_empty_and_checks_exact_hash()
         &no_conflict(),
         &prepared.content_hash,
     )
+    .await
     .unwrap();
     assert!(matches!(outcome, PluginInstallOutcome::Installed(_)));
     assert!(plugins.join("remote-preview").is_dir());
@@ -3649,4 +3820,72 @@ fn dsh_row_turned_off_with_the_flag_converts_and_is_not_enabled() {
     assert!(server.required);
     assert!(server.disabled);
     assert!(!server.is_enabled());
+}
+
+#[test]
+fn dsh_named_group_module_is_included_in_reviewed_module_closure() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = write_dsh_base_package(
+        &tmp.path().join("named-group"),
+        serde_json::json!({
+            "name": "demo-named-group",
+            "version": "1.0.0",
+            "type": "module",
+            "exports": {
+                ".": { "default": "./lib/index.js" },
+                "./bundle": { "default": "./lib/bundle.js" }
+            },
+            "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+        }),
+        "- insert:\n    - id: demo-bundle\n      name: demo-named-group/bundle\n      group: true\n      config:\n        - id: demo-core\n          name: demo-named-group\n",
+    );
+    fs::create_dir_all(pkg.join("lib")).unwrap();
+    fs::write(pkg.join("lib/index.js"), "export function apply() {}\n").unwrap();
+    fs::write(
+        pkg.join("lib/bundle.js"),
+        "export default class Bundle {}\n",
+    )
+    .unwrap();
+
+    let out = tmp.path().join("out-named-group");
+    dsh::convert_package(&pkg, &out).unwrap();
+    let comp: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(out.join("native/composition.json")).unwrap())
+            .unwrap();
+    let modules = comp["modules"].as_array().unwrap();
+    assert!(
+        modules
+            .iter()
+            .any(|m| m["name"] == "demo-named-group/bundle" && m["path"] == "lib/bundle.js"),
+        "expected demo-named-group/bundle in reviewed module closure, got {modules:?}"
+    );
+}
+
+#[test]
+fn dsh_npm_deps_scans_bundled_js_asset_above_two_mib_within_eight_mib_cap() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = serde_json::json!({
+        "name": "@demo/large-asset",
+        "version": "1.0.0",
+        "type": "module",
+        "main": "./lib/index.js",
+        "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+    });
+    let pkg = write_dsh_base_package(
+        &tmp.path().join("large-asset"),
+        manifest,
+        "- insert:\n    - id: demo-large\n      name: '@demo/large-asset'\n",
+    );
+    fs::create_dir_all(pkg.join("lib")).unwrap();
+    let mut big = String::with_capacity(2_500_000);
+    big.push_str("export function apply() {}\n// ");
+    big.push_str(&"a".repeat(2_400_000));
+    big.push('\n');
+    fs::write(pkg.join("lib/index.js"), big).unwrap();
+
+    let policy = codewhale_net::network_policy::NetworkPolicy::default();
+    let no_dependencies = dsh::Value::Map(Vec::new());
+    let stage = npm_deps::maybe_stage_with_dependencies(&pkg, &no_dependencies, &[], &policy)
+        .expect("2.4 MiB bundled JS asset should scan cleanly within 8 MiB limit");
+    assert!(stage.is_none());
 }

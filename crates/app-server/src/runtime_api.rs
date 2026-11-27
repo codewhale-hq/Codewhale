@@ -123,6 +123,9 @@ mod context;
 mod diagnostics;
 mod external_agent_options;
 mod external_agents;
+pub use self::external_agents::{
+    ExternalAgentDiscoveryRow, discover_external_agent, discover_external_agents,
+};
 mod git;
 mod jobs;
 pub mod listener;
@@ -176,6 +179,41 @@ CODEWHALE_RUNTIME_TOKEN (the legacy alias is removed in 0.10.0).";
 struct RuntimeTokenEnvironment {
     token: Option<String>,
     legacy_alias_used: bool,
+}
+
+const RUNTIME_TOKEN_ENV_NAMES: [&str; 2] = [RUNTIME_TOKEN_ENV, LEGACY_RUNTIME_TOKEN_ENV];
+
+static CAPTURED_RUNTIME_TOKEN_ENV: std::sync::OnceLock<[Option<String>; 2]> =
+    std::sync::OnceLock::new();
+
+pub fn capture_runtime_token_environment() {
+    CAPTURED_RUNTIME_TOKEN_ENV.get_or_init(|| RUNTIME_TOKEN_ENV_NAMES.map(take_env_var));
+}
+
+pub fn runtime_env_var(name: &str) -> Option<String> {
+    let index = RUNTIME_TOKEN_ENV_NAMES
+        .iter()
+        .position(|known| *known == name);
+    match (index, CAPTURED_RUNTIME_TOKEN_ENV.get()) {
+        (Some(index), Some(captured)) => captured[index].clone(),
+        _ => std::env::var(name).ok(),
+    }
+}
+
+fn take_env_var(name: &str) -> Option<String> {
+    let value = std::env::var(name).ok();
+    #[cfg(unix)]
+    if let Ok(key) = std::ffi::CString::new(name) {
+        let stored = unsafe { libc::getenv(key.as_ptr()) };
+        if !stored.is_null() {
+            let len = unsafe { libc::strlen(stored) };
+            for offset in 0..len {
+                unsafe { std::ptr::write_volatile(stored.add(offset), 0) };
+            }
+        }
+    }
+    unsafe { std::env::remove_var(name) };
+    value
 }
 
 const DESKTOP_BROWSER_OWNER_ENV: &str = "CODEWHALE_BROWSER_OWNER_PUBLIC_KEY";
@@ -769,6 +807,8 @@ struct RuntimeFrontendReady {
     reused_owner_listener: bool,
     mobile_bootstrap_url: Option<String>,
     web_bootstrap_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    web_dist_dir: Option<PathBuf>,
 }
 fn canonical_runtime_config_source(source: Option<PathBuf>) -> Result<Option<PathBuf>> {
     let Some(source) = source else {
@@ -1053,6 +1093,7 @@ impl crate::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
                     reused_owner_listener: true,
                     mobile_bootstrap_url: None,
                     web_bootstrap_url: None,
+                    web_dist_dir: None,
                 };
                 write_frontend_ready(&mut output, ready).await?;
                 return tokio::select! {
@@ -1092,6 +1133,10 @@ impl crate::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
             } else {
                 (None, None)
             };
+            let web_dist_dir = web
+                .as_ref()
+                .and_then(|web| web.dist_dir())
+                .map(FsPath::to_path_buf);
             state.web = web;
             state.mobile = mobile;
             // The guest may drain its own streams/listener. It cannot replace
@@ -1114,6 +1159,7 @@ impl crate::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
                 reused_owner_listener: false,
                 mobile_bootstrap_url,
                 web_bootstrap_url,
+                web_dist_dir,
             };
             write_frontend_ready(&mut output, ready).await?;
             let serving = serve_runtime_api(listener, app, shutdown.clone());
@@ -1256,9 +1302,6 @@ pub struct RuntimeApiOptions {
     /// Effective profile used to load the server's initial Config.
     pub config_profile: Option<String>,
     pub control_frontend: Option<codewhale_runtime::runtime_control::RuntimeControlFrontend>,
-    pub runtime_event_tap: Option<
-        fn(tokio::sync::broadcast::Receiver<codewhale_engine::runtime_threads::RuntimeEventRecord>),
-    >,
 }
 
 impl Default for RuntimeApiOptions {
@@ -1276,7 +1319,6 @@ impl Default for RuntimeApiOptions {
             config_path: None,
             config_profile: None,
             control_frontend: None,
-            runtime_event_tap: None,
         }
     }
 }
@@ -2044,6 +2086,44 @@ struct StartTurnResponse {
     /// byte-identical — a client that never sends a key sees no change.
     #[serde(skip_serializing_if = "replay_flag_is_absent")]
     idempotent_replay: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_command: Option<UserCommandRun>,
+}
+
+#[derive(Debug, Serialize)]
+struct UserCommandRun {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plugin_id: Option<String>,
+}
+
+async fn expand_user_command(
+    state: &RuntimeApiState,
+    workspace: &std::path::Path,
+    prompt: &str,
+) -> Result<Option<Result<codewhale_engine::command_catalog::ExpandedUserCommand, String>>, ApiError>
+{
+    if !prompt.trim_start().starts_with('/') {
+        return Ok(None);
+    }
+    let Some(catalog) = codewhale_engine::command_catalog::installed()
+        .filter(|catalog| catalog.expands_user_commands())
+    else {
+        return Ok(None);
+    };
+    let discovery = Arc::clone(&state.plugin_discovery);
+    let workspace = workspace.to_path_buf();
+    let input = prompt.to_string();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+        let plugins = discovery.registry_for_workspace(&workspace);
+        catalog.expand_user_command(&workspace, &plugins, &input)
+    })
+    .await
+    .map_err(|error| ApiError::internal(error.to_string()))
 }
 
 fn replay_flag_is_absent(replayed: &bool) -> bool {
@@ -2355,7 +2435,7 @@ pub async fn run_http_server(
                 .context("authenticated owner disappeared before control attachment")?
             }
             _ => {
-                let environment = runtime_token_environment(&|name| std::env::var(name).ok());
+                let environment = runtime_token_environment(&runtime_env_var);
                 let selection = crate::RuntimeListenerSelection {
                     workers: options.workers,
                     workspace: workspace.clone(),
@@ -2435,9 +2515,6 @@ pub async fn run_http_server(
     let workspace_scopes =
         RuntimeWorkspaceScopes::new(runtime_threads.clone(), sub_agent_manager.clone());
     let workspace_scope = workspace_scopes.admit(workspace.clone()).await?;
-    if let Some(tap) = options.runtime_event_tap {
-        tap(runtime_threads.subscribe_events());
-    }
     let task_manager =
         TaskManager::start_with_runtime_manager(task_cfg, config.clone(), runtime_threads.clone())
             .await?;
@@ -2458,7 +2535,7 @@ pub async fn run_http_server(
     // Repair the saved-session store once per server start (#6144); this
     // server's own store is open by now, so it reads as in use.
     codewhale_engine::session_reconcile::spawn_background_reconcile(None);
-    let runtime_token_env = runtime_token_environment(&|name| std::env::var(name).ok());
+    let runtime_token_env = runtime_token_environment(&runtime_env_var);
     let runtime_token_alias_warning =
         runtime_token_alias_warning(options.auth_token.as_deref(), &runtime_token_env);
     let resolved_auth = resolve_runtime_auth(
@@ -2477,6 +2554,10 @@ pub async fn run_http_server(
     } else {
         (None, None)
     };
+    let web_dist_dir = web
+        .as_ref()
+        .and_then(|web| web.dist_dir())
+        .map(FsPath::to_path_buf);
     let (mobile, mobile_bootstrap) = if options.mobile && auth_enabled {
         let (mobile, bootstrap) = mobile::RuntimeMobileState::new();
         (Some(mobile), Some(bootstrap))
@@ -2602,12 +2683,22 @@ pub async fn run_http_server(
             );
         }
         if let Some(bootstrap) = web_bootstrap {
-            println!("Codewhale web enabled at http://{bound_addr}/");
             let bootstrap_url = web::bootstrap_url(bound_addr, &bootstrap);
             println!(
-                "Codewhale web bootstrap (single-use, expires in {} min): {bootstrap_url}",
+                "Codewhale web: open this link once in your browser (single-use, expires in {} min):",
                 web::BOOTSTRAP_TTL.as_secs() / 60
             );
+            println!("{bootstrap_url}");
+            println!(
+                "After that, http://{bound_addr}/ works in the same browser. Opened before the link, it reports that it is not authenticated."
+            );
+            if let Some(dir) = web_dist_dir.as_ref() {
+                println!(
+                    "Codewhale web is serving the app build at {} ({})",
+                    dir.display(),
+                    web::WEB_DIST_ENV
+                );
+            }
             if let Some(warning) =
                 web_launcher_warning(codewhale_runtime::browser::open_url(&bootstrap_url))
             {
@@ -2903,12 +2994,31 @@ async fn run_attached_frontend(
             "invalid selected listener readiness response"
         );
         let ready: RuntimeFrontendReady = serde_json::from_value(frame["params"].clone())?;
+        if options.web {
+            let requested = web::configured_web_dist().map_err(anyhow::Error::msg)?;
+            if let Some(reason) =
+                web::attached_web_dist_mismatch(requested.as_deref(), ready.web_dist_dir.as_deref())
+            {
+                bail!(reason);
+            }
+        }
         println!("{RUNTIME_LISTENING_PREFIX}{}", ready.endpoint);
         if ready.generated_auth {
             println!("Runtime authentication enabled; generated bearer is not printed.");
         }
         if let Some(url) = ready.web_bootstrap_url {
-            println!("Codewhale web: {url}");
+            println!(
+                "Codewhale web: open this link once in your browser (single-use, expires in {} min):",
+                web::BOOTSTRAP_TTL.as_secs() / 60
+            );
+            println!("{url}");
+            if let Some(dir) = ready.web_dist_dir.as_ref() {
+                println!(
+                    "Codewhale web is serving the app build at {} ({} of the Codewhale that is already running)",
+                    dir.display(),
+                    web::WEB_DIST_ENV
+                );
+            }
         }
         if let Some(url) = ready.mobile_bootstrap_url {
             println!("Codewhale mobile: {url}");
@@ -2960,6 +3070,11 @@ fn validate_runtime_listener_security(options: &RuntimeApiOptions) -> Result<()>
     }
     if options.web && options.insecure_no_auth {
         bail!("Codewhale web requires Runtime authentication; remove --insecure");
+    }
+    if options.web
+        && let Err(reason) = web::configured_web_dist()
+    {
+        bail!(reason);
     }
     if options.mobile && !is_loopback_bind_host(&options.host) {
         bail!(
@@ -3524,12 +3639,20 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             get(plugins::get_plugin).delete(plugins::uninstall_plugin_api),
         )
         .route(
+            "/v1/apps/plugins/{selector}/settings",
+            get(plugins::get_plugin_settings).put(plugins::put_plugin_settings),
+        )
+        .route(
             "/v1/apps/plugins/{selector}/ui",
             get(plugins::get_plugin_ui),
         )
         .route(
             "/v1/apps/plugins/{selector}/ui/{*path}",
             get(plugins::get_plugin_ui_asset),
+        )
+        .route(
+            "/v1/apps/plugins/{selector}/route/{*path}",
+            any(plugins::plugin_route_bridge),
         )
         .route(
             "/v1/apps/plugins/{selector}/routes/{*path}",
@@ -3767,6 +3890,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         ))
         .merge(api_routes)
         .merge(account::routes(&state))
+        .fallback(web::web_fallback)
         .layer(cors_layer(&state.cors_origins))
         .with_state(state)
 }
@@ -6056,7 +6180,9 @@ struct CommandCatalogEntry {
     /// `builtin` and `extension` are registered code; `user` expands a stored template.
     kind: &'static str,
     /// `host` runs locally, `extension` invokes the Runtime command endpoint,
-    /// and `prompt` expands into the request the model sees.
+    /// and `prompt` is a template that expands into the request the model
+    /// sees: in the terminal always, and through the Runtime turn endpoint
+    /// when `runtime_expands` is set.
     binding: &'static str,
     /// `primary` | `advanced` | `compatibility` — builtins only; `hidden`
     /// covers rows the product does not advertise anywhere.
@@ -6075,6 +6201,8 @@ struct CommandCatalogEntry {
     plugin_id: Option<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     workspace_sourced: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    runtime_expands: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     registration_id: Option<String>,
 }
@@ -6087,6 +6215,7 @@ struct CommandsResponse {
 fn command_catalog(
     builtins: &[codewhale_engine::command_catalog::BuiltinCommand],
     users: &[codewhale_engine::command_catalog::UserCommand],
+    runtime_expands: bool,
 ) -> Vec<CommandCatalogEntry> {
     let mut commands = Vec::new();
     for info in builtins {
@@ -6136,6 +6265,7 @@ fn command_catalog(
             origin: None,
             plugin_id: None,
             workspace_sourced: false,
+            runtime_expands: false,
             registration_id: None,
         });
     }
@@ -6161,6 +6291,7 @@ fn command_catalog(
             origin: None,
             plugin_id: command.plugin_id.clone(),
             workspace_sourced: command.workspace_sourced,
+            runtime_expands,
             registration_id: None,
         });
     }
@@ -6205,6 +6336,7 @@ async fn list_commands(
         let mut commands = command_catalog(
             &catalog.builtins(),
             &catalog.user_commands_with_plugins(&workspace, &plugins),
+            catalog.expands_user_commands(),
         );
         let mut counts = std::collections::HashMap::new();
         for entry in &extensions {
@@ -6249,6 +6381,7 @@ async fn list_commands(
                 origin: Some(reference.origin.clone()),
                 plugin_id: Some(reference.plugin_id.clone()),
                 workspace_sourced: false,
+                runtime_expands: false,
                 registration_id: query
                     .thread_id
                     .as_deref()
@@ -6482,9 +6615,9 @@ async fn list_modes(
     )
 }
 
-async fn list_skills(
-    State(state): State<RuntimeApiState>,
-) -> Result<Json<SkillsResponse>, ApiError> {
+fn discover_skills_snapshot(
+    state: &RuntimeApiState,
+) -> (PathBuf, codewhale_skills::SkillRegistry, Vec<PathBuf>) {
     let (skills_dir, skills_config) = {
         let config = state.config.read();
         let skills_dir = resolve_skills_dir(&config, &state.workspace);
@@ -6500,25 +6633,40 @@ async fn list_skills(
         &skills_config,
         Some(plugin_registry.as_ref()),
     );
-    let mut skill_state = state.skill_state.lock().await;
-    skill_state
-        .refresh()
-        .map_err(|error| ApiError::internal(format!("refresh skill state: {error}")))?;
-    let skills = registry
-        .list()
-        .iter()
-        .map(|skill| {
-            let enabled = skill_state
-                .is_enabled_with_legacy(&skill.name, skill.legacy_activation_name.as_deref());
-            skill_entry_for(skill, enabled, &skills_dir)
-        })
-        .collect();
-    Ok(Json(SkillsResponse {
-        directory: skills_dir,
-        directories,
-        warnings: registry.warnings().to_vec(),
-        skills,
-    }))
+    (skills_dir, registry, directories)
+}
+
+async fn list_skills(
+    State(state): State<RuntimeApiState>,
+) -> Result<Json<SkillsResponse>, ApiError> {
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+        let (skills_dir, registry, directories) = discover_skills_snapshot(&state);
+        let mut skill_state = state.skill_state.blocking_lock();
+        skill_state
+            .refresh()
+            .map_err(|error| ApiError::internal(format!("refresh skill state: {error}")))?;
+        let skills = registry
+            .list()
+            .iter()
+            .map(|skill| {
+                let enabled = skill_state
+                    .is_enabled_with_legacy(&skill.name, skill.legacy_activation_name.as_deref());
+                skill_entry_for(skill, enabled, &skills_dir)
+            })
+            .collect();
+        Ok(Json(SkillsResponse {
+            directory: skills_dir,
+            directories,
+            warnings: registry.warnings().to_vec(),
+            skills,
+        }))
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("list skills task failed: {error}")))?
 }
 
 async fn set_skill_enabled(
@@ -6526,37 +6674,31 @@ async fn set_skill_enabled(
     Path(name): Path<String>,
     Json(req): Json<SetSkillEnabledRequest>,
 ) -> Result<Json<SetSkillEnabledResponse>, ApiError> {
-    let (skills_dir, skills_config) = {
-        let config = state.config.read();
-        let skills_dir = resolve_skills_dir(&config, &state.workspace);
-        let skills_config = config.skills_config();
-        (skills_dir, skills_config)
-    };
-    let plugin_registry = state
-        .plugin_discovery
-        .registry_for_workspace(&state.workspace);
-    let (registry, directories) = discover_skills_for_runtime_api(
-        &state.workspace,
-        &skills_dir,
-        &skills_config,
-        Some(plugin_registry.as_ref()),
-    );
-    let exists = registry.list().iter().any(|skill| skill.name == name);
-    if !exists {
-        return Err(ApiError::not_found(format!(
-            "skill '{name}' not found in searched directories: {}",
-            format_skill_search_paths(&directories)
-        )));
-    }
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+        let (_skills_dir, registry, directories) = discover_skills_snapshot(&state);
+        let exists = registry.list().iter().any(|skill| skill.name == name);
+        if !exists {
+            return Err(ApiError::not_found(format!(
+                "skill '{name}' not found in searched directories: {}",
+                format_skill_search_paths(&directories)
+            )));
+        }
 
-    let mut store = state.skill_state.lock().await;
-    store
-        .set_enabled(&name, req.enabled)
-        .map_err(|err| ApiError::internal(format!("persist skill state: {err}")))?;
-    Ok(Json(SetSkillEnabledResponse {
-        name,
-        enabled: req.enabled,
-    }))
+        let mut store = state.skill_state.blocking_lock();
+        store
+            .set_enabled(&name, req.enabled)
+            .map_err(|err| ApiError::internal(format!("persist skill state: {err}")))?;
+        Ok(Json(SetSkillEnabledResponse {
+            name,
+            enabled: req.enabled,
+        }))
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("set skill enabled task failed: {error}")))?
 }
 
 /// `GET /v1/skills/{name}` — one skill's full routing metadata plus its body.
@@ -6579,21 +6721,7 @@ async fn get_skill_detail(
     tokio::task::spawn_blocking(move || {
         #[cfg(any(test, feature = "test-support"))]
         let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
-        let (skills_dir, skills_config) = {
-            let config = state.config.read();
-            let skills_dir = resolve_skills_dir(&config, &state.workspace);
-            let skills_config = config.skills_config();
-            (skills_dir, skills_config)
-        };
-        let plugin_registry = state
-            .plugin_discovery
-            .registry_for_workspace(&state.workspace);
-        let (registry, directories) = discover_skills_for_runtime_api(
-            &state.workspace,
-            &skills_dir,
-            &skills_config,
-            Some(plugin_registry.as_ref()),
-        );
+        let (skills_dir, registry, directories) = discover_skills_snapshot(&state);
         let Some(skill) = registry.get(&name) else {
             return Err(ApiError::not_found(format!(
                 "skill '{name}' not found in searched directories: {}",
@@ -8935,6 +9063,20 @@ async fn automation_admission_test_point(state: &RuntimeApiState) {
     }
 }
 
+pub(crate) fn reject_automation_permission_elevation(
+    allow_shell: Option<bool>,
+    trust_mode: Option<bool>,
+    auto_approve: Option<bool>,
+) -> Result<(), ApiError> {
+    if allow_shell.unwrap_or(false) || trust_mode.unwrap_or(false) || auto_approve.unwrap_or(false)
+    {
+        return Err(ApiError::bad_request(
+            "automation permissions may not be elevated",
+        ));
+    }
+    Ok(())
+}
+
 async fn create_automation(
     State(state): State<RuntimeApiState>,
     headers: HeaderMap,
@@ -8949,6 +9091,7 @@ async fn create_automation_in_workspace(
     req: CreateAutomationRequest,
     expected_workspace: Option<PathBuf>,
 ) -> Result<Response, ApiError> {
+    reject_automation_permission_elevation(req.allow_shell, req.trust_mode, req.auto_approve)?;
     require_destination_thread(&state, req.destination_thread_id.as_deref()).await?;
     #[cfg(test)]
     if expected_workspace.is_some() {
@@ -9010,6 +9153,7 @@ async fn update_automation(
     headers: HeaderMap,
     Json(mut req): Json<UpdateAutomationRequest>,
 ) -> Result<Response, ApiError> {
+    reject_automation_permission_elevation(req.allow_shell, req.trust_mode, req.auto_approve)?;
     require_destination_thread(&state, req.destination_thread_id.as_deref()).await?;
     req.expected_revision = req.expected_revision.or(query.expected_revision);
     automation_mutation(
@@ -10813,6 +10957,7 @@ async fn retry_thread_turn(
                 environment_id: None,
                 model_provider: None,
                 model_provider_id: None,
+                user_command: None,
             },
         )
         .await
@@ -10852,6 +10997,7 @@ async fn start_thread_watch_turn(
             thread,
             turn,
             idempotent_replay: replayed,
+            user_command: None,
         }),
     ))
 }
@@ -10944,6 +11090,20 @@ async fn start_thread_turn_for_caller(
     if scope.is_some() {
         sanitize_remote_turn_request(&mut req)?;
     }
+    let target = state
+        .runtime_threads
+        .get_thread(&id)
+        .await
+        .map_err(map_thread_err)?;
+    req.user_command = expand_user_command(&state, &target.workspace, &req.prompt).await?;
+    let user_command = req
+        .user_command
+        .as_ref()
+        .and_then(|expansion| expansion.as_ref().ok())
+        .map(|expanded| UserCommandRun {
+            name: expanded.name.clone(),
+            plugin_id: expanded.plugin_id.clone(),
+        });
     let expected_workspace = req.expected_workspace.clone();
     let (turn, replayed) = if owner_composer {
         state
@@ -10987,6 +11147,7 @@ async fn start_thread_turn_for_caller(
             thread,
             turn,
             idempotent_replay: replayed,
+            user_command,
         }),
     ))
 }
@@ -11153,8 +11314,25 @@ async fn steer_thread_turn(
     Json(value): Json<Value>,
 ) -> Result<Json<TurnRecord>, ApiError> {
     let owner_composer = turn_caller_is_owner_composer(&state, caller, &value)?;
-    let req: SteerTurnRequest = serde_json::from_value(value)
+    let mut req: SteerTurnRequest = serde_json::from_value(value)
         .map_err(|error| ApiError::unprocessable(error.to_string()))?;
+    let thread = state
+        .runtime_threads
+        .get_thread(&id)
+        .await
+        .map_err(map_thread_err)?;
+    if let Some(expanded) = expand_user_command(&state, &thread.workspace, &req.prompt).await? {
+        let expanded = expanded
+            .map_err(|reason| ApiError::unprocessable(reason).with_code("user_command_denied"))?;
+        if expanded.allowed_tools.is_some() {
+            return Err(ApiError::unprocessable(format!(
+                "/{} limits the tools a turn may use; send it as a new turn",
+                expanded.name
+            ))
+            .with_code("user_command_needs_turn"));
+        }
+        req.prompt = expanded.message;
+    }
     let turn = state
         .runtime_threads
         .steer_turn_for_caller(&id, &turn_id, req, owner_composer)
@@ -11220,6 +11398,7 @@ async fn compact_thread(
             thread,
             turn,
             idempotent_replay: false,
+            user_command: None,
         }),
     ))
 }
@@ -14702,6 +14881,29 @@ async fn set_config(
                 })?;
                 config_persistence::persist_root_bool_key(config_path, "strict_tool_mode", enabled)
             }
+            "telemetry" => {
+                let enabled = value.parse::<bool>().map_err(|_| {
+                    ApiError::bad_request(format!(
+                        "Invalid value '{value}' for telemetry: expected 'true' or 'false'"
+                    ))
+                })?;
+                let applied = codewhale_engine::telemetry_notice::apply_persistent_preference(
+                    state.config_path.clone(),
+                    enabled,
+                );
+                let message = applied.message(codewhale_localization::Locale::En);
+                if applied.is_save_failed() {
+                    return Err(ApiError::internal(message));
+                }
+                state.config.write().telemetry = Some(enabled);
+                return Ok(Json(SetConfigResponse {
+                    key,
+                    value: enabled.to_string(),
+                    message,
+                    persisted: applied.is_persisted(),
+                    requires_reload: enabled,
+                }));
+            }
             "memory_enabled" => {
                 let enabled = value.parse::<bool>().map_err(|_| {
                     ApiError::bad_request(format!(
@@ -14911,6 +15113,7 @@ const RUNTIME_CONFIG_KEYS: &[&str] = &[
     "memory_enabled",
     "search_provider",
     "prompt_suggestion",
+    "telemetry",
 ];
 
 /// A dotted-path lookup over a TOML document — used to decide `persisted`
@@ -14921,6 +15124,28 @@ fn toml_value_at_path<'a>(document: &'a toml::Value, segments: &[&str]) -> Optio
         current = current.as_table()?.get(*segment)?;
     }
     Some(current)
+}
+
+fn runtime_config_toml_path(key: &str) -> Option<&'static [&'static str]> {
+    match key {
+        "reasoning_effort" => Some(&["reasoning_effort"]),
+        "approval_mode" | "approval_policy" => Some(&["approval_policy"]),
+        "provider" => Some(&["provider"]),
+        "cost_currency" => Some(&["cost_currency"]),
+        "max_history" => Some(&["max_history"]),
+        "allow_shell" => Some(&["allow_shell"]),
+        "mcp_config_path" => Some(&["mcp_config_path"]),
+        "subagents_enabled" => Some(&["subagents", "enabled"]),
+        "subagents_max_depth" => Some(&["subagents", "max_depth"]),
+        "subagents_max_concurrent" => Some(&["subagents", "max_concurrent"]),
+        "verbosity" => Some(&["verbosity"]),
+        "sandbox_mode" => Some(&["sandbox_mode"]),
+        "strict_tool_mode" => Some(&["strict_tool_mode"]),
+        "memory_enabled" => Some(&["memory", "enabled"]),
+        "search_provider" => Some(&["search", "provider"]),
+        "prompt_suggestion" => Some(&["prompt_suggestion"]),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -14961,6 +15186,16 @@ async fn get_settings_schema(
         state.config_profile.as_deref(),
         &state.workspace,
     );
+    let interactive_allow_shell = config.interactive_allow_shell()
+        && state
+            .runtime_threads
+            .validate_shell_access_policy(
+                &state.workspace,
+                state.config_path.as_deref(),
+                state.config_profile.as_deref(),
+            )
+            .await
+            .is_ok();
     let base_url_row_key = if config
         .active_provider_identity()
         .ok()
@@ -14997,7 +15232,16 @@ async fn get_settings_schema(
     // still serves defaults through `value`. This is an async axum route, so
     // the read rides the blocking pool instead of parking a Tokio worker
     // (#6149).
-    let config_document = match state.config_path.as_deref() {
+    let config_document_path = state
+        .config_path
+        .clone()
+        .or_else(|| config.loaded_config_path.clone())
+        .or_else(|| {
+            codewhale_runtime::config::resolve_load_config_path(None)
+                .ok()
+                .flatten()
+        });
+    let config_document = match config_document_path.as_deref() {
         Some(path) => tokio::fs::read_to_string(path)
             .await
             .ok()
@@ -15128,14 +15372,20 @@ async fn get_settings_schema(
                     },
                     "managed_allow_shell" if !shell_control.editable_root() => Some(format!(
                         "{} · {}",
-                        config.allow_shell(),
+                        interactive_allow_shell,
                         shell_control.label()
                     )),
                     _ => None,
                 };
+                let persisted = runtime_config_toml_path(def.key).map(|segments| {
+                    config_document
+                        .as_ref()
+                        .is_some_and(|document| toml_value_at_path(document, segments).is_some())
+                });
                 (
-                    managed_value.or_else(|| config_schema_value(def.key, &config)),
-                    None,
+                    managed_value
+                        .or_else(|| config_schema_value(def.key, &config, interactive_allow_shell)),
+                    persisted,
                 )
             };
 
@@ -15205,7 +15455,11 @@ async fn get_settings_schema(
 /// Current value of a config.toml-owned schema row, when one resolves
 /// cheaply. Diagnostics that need per-route or credential computation are
 /// omitted rather than approximated.
-fn config_schema_value(key: &str, config: &Config) -> Option<String> {
+fn config_schema_value(
+    key: &str,
+    config: &Config,
+    interactive_allow_shell: bool,
+) -> Option<String> {
     match key {
         "provider" => config
             .active_provider_identity()
@@ -15219,7 +15473,7 @@ fn config_schema_value(key: &str, config: &Config) -> Option<String> {
         "telemetry" => {
             Some(codewhale_engine::telemetry_notice::saved_preference_enabled(config).to_string())
         }
-        "allow_shell" => Some(config.allow_shell().to_string()),
+        "allow_shell" => Some(interactive_allow_shell.to_string()),
         "base_url" => config
             .active_provider_identity()
             .ok()
@@ -15762,6 +16016,9 @@ fn external_agent_refusal(err: &anyhow::Error) -> Option<ApiError> {
 }
 
 fn map_thread_err(err: anyhow::Error) -> ApiError {
+    if err.is::<codewhale_engine::runtime_threads::manager::UserCommandDenied>() {
+        return ApiError::unprocessable(err.to_string()).with_code("user_command_denied");
+    }
     if err.is::<codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch>() {
         return ApiError::forbidden(err.to_string()).with_code("workspace_mismatch");
     }

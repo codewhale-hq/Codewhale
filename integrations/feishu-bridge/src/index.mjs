@@ -3,7 +3,6 @@ import * as Lark from "@larksuiteoapi/node-sdk";
 import {
   activeTurnBlock,
   commandAction,
-  compactRuntimeError,
   helpText,
   incomingIdentity,
   isAllowed,
@@ -16,6 +15,7 @@ import {
   parseTextContent,
   preservedChatStateFields,
   splitMessage,
+  FEISHU_MAX_TEXT_CHARS,
   stripGroupPrefix
 } from "./lib.mjs";
 import {
@@ -24,12 +24,13 @@ import {
   createRuntimeClient,
   decideApproval as decideRuntimeApproval,
   listOwnedThreads,
-  readJsonSafe,
-  readThreadEvents,
   settleLegacyOwners,
   THREAD_NOT_OWNED_MESSAGE,
   ThreadOwnershipError,
-  ThreadStore as CoreThreadStore
+  ThreadStore as CoreThreadStore,
+  splitAtCodePoint,
+  observeTurn,
+  turnOutcomeText
 } from "../../bridge-core/src/lib.mjs";
 
 class ThreadStore extends CoreThreadStore {
@@ -58,7 +59,7 @@ const config = {
   allowGroups: parseBool(process.env.FEISHU_ALLOW_GROUPS, false),
   requirePrefixInGroup: parseBool(process.env.FEISHU_REQUIRE_PREFIX_IN_GROUP, true),
   groupPrefix: process.env.FEISHU_GROUP_PREFIX || "/ds",
-  maxReplyChars: Number(process.env.FEISHU_MAX_REPLY_CHARS || 3500),
+  maxReplyChars: Math.min(Number(process.env.FEISHU_MAX_REPLY_CHARS || 3500), FEISHU_MAX_TEXT_CHARS),
   turnTimeoutMs: Number(process.env.CODEWHALE_TURN_TIMEOUT_MS || process.env.DEEPSEEK_TURN_TIMEOUT_MS || 900000)
 };
 
@@ -95,7 +96,7 @@ const dispatcher = new Lark.EventDispatcher({}).register({
   }
 });
 
-console.log("Starting DeepSeek Feishu bridge");
+console.log("Starting Codewhale Feishu bridge");
 console.log(`Runtime: ${config.runtimeUrl}`);
 console.log(`Workspace: ${config.workspace}`);
 if (!config.allowlist.length && !config.allowUnlisted) {
@@ -292,6 +293,7 @@ async function runPrompt(chatId, prompt, identity) {
   await threadStore.patchChat(chatId, {
     activeTurnId: turnId || null,
     lastSeq: sinceSeq,
+    responseText: "",
     updatedAt: new Date().toISOString()
   });
   await sendText(chatId, `Started turn ${turnId || "(unknown)"}`);
@@ -322,6 +324,7 @@ async function reattachActiveTurns(onlyThreadIds = null) {
       await threadStore.patchChat(chatId, {
         activeTurnId: null,
         lastSeq: Number(detail.latest_seq || state.lastSeq || 0),
+        responseText: "",
         updatedAt: new Date().toISOString()
       });
       await sendText(chatId, `Bridge restarted. No active turn remains for ${state.threadId}.`);
@@ -345,89 +348,43 @@ async function reattachActiveTurns(onlyThreadIds = null) {
 }
 
 async function streamTurnEvents(chatId, threadId, turnId, sinceSeq) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), config.turnTimeoutMs);
-  let responseText = "";
-  let latestSeq = sinceSeq;
   let sentProgressAt = Date.now();
-
-  try {
-    const response = await fetch(
-      `${config.runtimeUrl}/v1/threads/${encodeURIComponent(threadId)}/events?since_seq=${sinceSeq}`,
-      {
-        headers: authHeaders(),
-        signal: controller.signal
-      }
-    );
-    if (!response.ok) {
-      const body = await readJsonSafe(response);
-      throw new Error(compactRuntimeError(response.status, body));
-    }
-
-    for await (const record of readThreadEvents(response, threadId)) {
-      if (record.event === "stream.end") return false;
-      latestSeq = Math.max(latestSeq, Number(record.seq || 0));
-      await threadStore.patchChat(chatId, { lastSeq: latestSeq });
-
-      if (!turnId || record.turn_id !== turnId) continue;
-
-      if (record.event === "item.delta" && record.payload?.kind === "agent_message") {
-        responseText += record.payload.delta || "";
-        const now = Date.now();
-        if (responseText.length > config.maxReplyChars && now - sentProgressAt > 15000) {
-          await sendText(chatId, responseText.slice(0, config.maxReplyChars));
-          responseText = responseText.slice(config.maxReplyChars);
-          sentProgressAt = now;
-        }
-      }
-
-      if (record.event === "approval.required") {
-        const approval = record.payload || {};
-        await sendText(
-          chatId,
-          [
-            "Approval required",
-            `tool=${approval.tool_name || "unknown"}`,
-            `approval_id=${approval.approval_id || approval.id}`,
-            approval.description || "",
-            "",
-            `Reply /allow ${approval.approval_id || approval.id}`,
-            `Reply /deny ${approval.approval_id || approval.id}`
-          ]
-            .filter(Boolean)
-            .join("\n")
-        );
-      }
-
-      if (record.event === "turn.completed") {
-        const turn = record.payload?.turn || {};
-        const status = turn.status || "completed";
-        const error = turn.error ? `\n${turn.error}` : "";
-        if (status !== "completed") {
-          await sendText(chatId, `Turn ${status}.${error}`.trim());
-        } else {
-          await sendText(chatId, responseText.trim() || "Turn completed.");
-        }
-        return true;
-      }
-
-      if (record.event === "turn.lifecycle") {
-        const status = record.payload?.turn?.status || record.payload?.status;
-        if (["failed", "canceled", "interrupted"].includes(status)) {
-          await sendText(chatId, `Turn ${status}.`);
-          return true;
-        }
-      }
-    }
-  } catch (error) {
-    if (error.name === "AbortError") {
-      await sendText(chatId, `Turn observation timed out after ${Math.round(config.turnTimeoutMs / 1000)}s.`);
-      return false;
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
+  return observeTurn({
+    fetchEvents: (seq, signal) => fetch(
+      `${config.runtimeUrl}/v1/threads/${encodeURIComponent(threadId)}/events?since_seq=${seq}`,
+      { headers: authHeaders(), signal }
+    ),
+    threadId,
+    turnId,
+    sinceSeq,
+    responseText: (await threadStore.getChat(chatId))?.responseText || "",
+    timeoutMs: config.turnTimeoutMs,
+    saveCursor: (cursor) => threadStore.patchChat(chatId, cursor),
+    onDelta: async (text) => {
+      const now = Date.now();
+      if (text.length <= config.maxReplyChars || now - sentProgressAt <= 15000) return text;
+      const [head, rest] = splitAtCodePoint(text, config.maxReplyChars);
+      await sendText(chatId, head);
+      sentProgressAt = now;
+      return rest;
+    },
+    onApproval: (approval) => sendText(
+      chatId,
+      [
+        "Approval required",
+        `tool=${approval.tool_name || "unknown"}`,
+        `approval_id=${approval.approval_id || approval.id}`,
+        approval.description || "",
+        "",
+        `Reply /allow ${approval.approval_id || approval.id}`,
+        `Reply /deny ${approval.approval_id || approval.id}`
+      ]
+        .filter(Boolean)
+        .join("\n")
+    ),
+    onTerminal: (outcome) => sendText(chatId, turnOutcomeText(outcome)),
+    onTimeout: () => sendText(chatId, `Turn observation timed out after ${Math.round(config.turnTimeoutMs / 1000)}s.`)
+  });
 }
 
 async function sendStatus(chatId) {

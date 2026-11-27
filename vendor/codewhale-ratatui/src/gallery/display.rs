@@ -8,7 +8,7 @@ use ratatui::{buffer::Buffer, layout::Rect};
 use super::Entry;
 use crate::{
     CountBar, Diff, DiffGutter, DiffWrap, Paint, Receipt, ReceiptColumn, ReceiptDensity,
-    ReceiptTable, ReceiptValue, Role, State, Theme, TreeNode, TreeState, WorkflowTree,
+    ReceiptTable, ReceiptValue, Role, State, Theme, TreeNode, TreeState, TurnSummary, WorkflowTree,
     parse_unified,
 };
 use std::time::Duration;
@@ -112,6 +112,13 @@ fn receipt_table_minimal(area: Rect, buf: &mut Buffer, theme: &Theme) {
 
 fn receipt_table_clipped(area: Rect, buf: &mut Buffer, theme: &Theme) {
     table(None, theme.ascii()).paint(area, buf, theme);
+}
+
+fn turn_summary(area: Rect, buf: &mut Buffer, theme: &Theme) {
+    TurnSummary::new(Duration::from_secs(134), 6)
+        .tokens(12_400)
+        .cost(Cost::usd_cents(14))
+        .paint(area, buf, theme);
 }
 
 // ---------------------------------------------------------------------------
@@ -360,6 +367,12 @@ pub(crate) fn entries() -> Vec<Entry> {
             width: 80,
             height: 5,
             draw: receipt_table_clipped,
+        },
+        Entry {
+            name: "turn-summary",
+            width: 60,
+            height: 1,
+            draw: turn_summary,
         },
         Entry {
             name: "diff",

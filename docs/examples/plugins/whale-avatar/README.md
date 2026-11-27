@@ -6,10 +6,8 @@ through Codewhale's normal plugin install/review/enable flow. Review includes
 secret or custom renderer API. The Engine binds the contribution to this live
 Native owner and automatically withdraws it when disabled or disposed.
 
-Select **Studio whale girl** in GPUI's whale habitat. In the Engine TUI, list
-`/pet avatar`, select the returned `plugin:…:studio-girl` key, and try
-`/pet action greet`. `/pet action live` returns to live owner activity. The
-terminal selection is session-local. Previewing `greet` changes only artwork.
+Select **Studio whale girl** in GPUI's whale habitat. The Engine TUI draws
+only the dot whale and no longer shows avatar packs.
 
 The `greet` clip demonstrates an author-defined action name. Add your own PNG
 pages, clips, state mappings or views to this manifest. Frame indices span
@@ -26,4 +24,4 @@ behaviors. Avatar custom actions are visual clips, not arbitrary execution.
 Art is derived from Codewhale's whale-girl pack. The exact generation prompt
 is embedded in the PNG; the full provenance lives in the vendored Ratatui
 `assets/whale-girl/PROMPT.md`. The web currently includes the built-in girl;
-Native plugin catalog transport is available in GPUI and the Engine TUI.
+Native plugin catalog transport is available in GPUI.

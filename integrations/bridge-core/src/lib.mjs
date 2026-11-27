@@ -712,26 +712,34 @@ export function splitMessage(text, maxChars = 3500, maxBytes = 0) {
   // Materialize code points once; all chunking below works on index ranges
   // instead of re-running Array.from over the shrinking remainder.
   const chars = Array.from(value);
+  const byteLimit = Math.floor(Number(maxBytes) || 0);
   let chunks;
-  if (chars.length <= limit) {
+  if (chars.length <= limit && (byteLimit <= 0 || Buffer.byteLength(value, "utf8") <= byteLimit)) {
     chunks = value ? [value] : [];
   } else {
     chunks = [];
     let offset = 0;
     let openFence = null;
     while (offset < chars.length) {
-      const next = takeRenderedSplitMessageChunk(chars, offset, limit, openFence);
+      const next = takeRenderedSplitMessageChunk(chars, offset, limit, openFence, byteLimit);
       chunks.push(next.chunk);
       offset = next.offset;
       openFence = next.openFence;
     }
   }
-  const byteLimit = Math.floor(Number(maxBytes) || 0);
   if (byteLimit <= 0) return chunks;
   // Transport caps such as WeCom's 4096-byte message limit are measured in
   // UTF-8 bytes, not characters: a 3500-character CJK reply is ~10.5 KB and
   // gets silently truncated. Split any oversized chunk on code-point bounds.
   return chunks.flatMap((chunk) => splitChunkByBytes(chunk, byteLimit));
+}
+
+export function splitAtCodePoint(text, maxChars) {
+  const value = String(text || "");
+  let cut = Math.min(value.length, Math.max(1, Math.floor(maxChars)));
+  const code = value.charCodeAt(cut - 1);
+  if (cut < value.length && cut > 1 && code >= 0xd800 && code <= 0xdbff) cut -= 1;
+  return [value.slice(0, cut), value.slice(cut)];
 }
 
 function splitChunkByBytes(chunk, maxBytes) {
@@ -752,7 +760,7 @@ function splitChunkByBytes(chunk, maxBytes) {
   return out;
 }
 
-function takeRenderedSplitMessageChunk(chars, offset, maxChars, openFence) {
+function takeRenderedSplitMessageChunk(chars, offset, maxChars, openFence, maxBytes = 0) {
   const prefix = openFence !== null ? `\`\`\`${openFence}\n` : "";
   const prefixLength = charLength(prefix);
   let payloadLimit = Math.max(1, maxChars - prefixLength);
@@ -766,10 +774,11 @@ function takeRenderedSplitMessageChunk(chars, offset, maxChars, openFence) {
       nextOpenFence !== null && splitAt < chars.length ? (body.endsWith("\n") ? "```" : "\n```") : "";
     // prefix/suffix are ASCII fence markup, so string length == code points.
     const overflow = prefixLength + (splitAt - offset) + suffix.length - maxChars;
-    if (overflow <= 0 || payloadLimit === 1) {
+    const byteOverflow = maxBytes > 0 ? Buffer.byteLength(`${body}${suffix}`, "utf8") - maxBytes : 0;
+    if ((overflow <= 0 && byteOverflow <= 0) || payloadLimit === 1) {
       return { chunk: `${body}${suffix}`, offset: splitAt, openFence: nextOpenFence };
     }
-    payloadLimit = Math.max(1, payloadLimit - overflow);
+    payloadLimit = Math.max(1, payloadLimit - Math.max(overflow, Math.ceil(byteOverflow / 4)));
   }
 }
 
@@ -1042,4 +1051,64 @@ export function activeTurnBlock(detail, state = {}) {
       runningTurn.id || activeTurnId || "(unknown)"
     }. Wait for it to finish or send /interrupt.`
   };
+}
+
+export function turnTerminalStatus(record) {
+  if (record.event === "turn.completed") return record.payload?.turn?.status || "completed";
+  if (record.event !== "turn.lifecycle") return null;
+  const status = record.payload?.turn?.status || record.payload?.status;
+  return ["failed", "canceled", "interrupted"].includes(status) ? status : null;
+}
+
+export function turnOutcomeText({ status, text, error }) {
+  if (status === "completed") return text.trim() || "Turn completed.";
+  return `Turn ${status}.${error ? `\n${error}` : ""}`;
+}
+
+export async function observeTurn({
+  fetchEvents,
+  threadId,
+  turnId,
+  sinceSeq,
+  responseText = "",
+  timeoutMs,
+  saveCursor,
+  onDelta = (text) => text,
+  onApproval = async () => {},
+  onTerminal,
+  onTimeout = async () => {}
+}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let text = responseText;
+  let latestSeq = Number(sinceSeq || 0);
+  try {
+    const response = await fetchEvents(latestSeq, controller.signal);
+    if (!response.ok) throw new Error(compactRuntimeError(response.status, await readJsonSafe(response)));
+    for await (const record of readThreadEvents(response, threadId)) {
+      if (record.event === "stream.end") return false;
+      latestSeq = Math.max(latestSeq, Number(record.seq || 0));
+      if (turnId && record.turn_id === turnId) {
+        if (record.event === "item.delta" && record.payload?.kind === "agent_message") {
+          text = await onDelta(text + (record.payload.delta || ""));
+        }
+        if (record.event === "approval.required") await onApproval(record.payload || {});
+        const status = turnTerminalStatus(record);
+        if (status) {
+          const error = record.payload?.turn?.error || record.payload?.error || "";
+          await onTerminal({ status, text, error });
+          await saveCursor({ lastSeq: latestSeq, responseText: "" });
+          return true;
+        }
+      }
+      await saveCursor({ lastSeq: latestSeq, responseText: text });
+    }
+    return false;
+  } catch (error) {
+    if (error.name !== "AbortError") throw error;
+    await onTimeout();
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
 }

@@ -95,6 +95,7 @@ impl Engine {
         config.advisor_config = crate::tools::subagent::AdvisorConfig::disabled();
         config.goal_objective = None;
         config.goal_status = GoalStatus::Paused;
+        config.tools = api_config.tools.clone();
         config.exec_policy_engine = api_config.exec_policy_engine.clone();
         let (mut engine, handle) = Self::new_admitted(
             config,
@@ -611,7 +612,14 @@ impl Engine {
                             approval_deliveries.push(Box::pin(async move {
                                 match decision {
                                     Ok(reply) => handle.accept_child_approval(id, reply).await,
-                                    Err(_) => handle.deny_tool_call_unavailable(id).await,
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            %error,
+                                            %id,
+                                            "child approval decision failed; denying as unavailable"
+                                        );
+                                        handle.deny_tool_call_unavailable(id).await
+                                    }
                                 }
                             }));
                         }

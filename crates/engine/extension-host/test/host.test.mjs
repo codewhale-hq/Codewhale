@@ -209,13 +209,29 @@ export function apply() { createUserMessage({ content: [], source: { kind: 'fixt
   }
 })
 
+test('a nested ctx.inject wait names only the services that are missing, and why', async (t) => {
+  const host = await startHost()
+  t.after(() => host.stop())
+  const web = tempPlugin("export const name = 'widget'\nexport function apply(ctx) { ctx.inject(['credentials', '@deepseek-ai/dsh-client-panel'], () => {}) }\n")
+  t.after(() => { web.cleanup() })
+  const widget = (await activate(host, 'nested-web', web.entry)).result
+  assert.equal(widget.status, 'failed')
+  assert.match(widget.diagnostic, /waits on `@deepseek-ai\/dsh-client-panel`, not provided by the Codewhale extension host in this phase \(DSH client UI services\)/)
+  assert.doesNotMatch(widget.diagnostic, /credentials/)
+  const hijack = tempPlugin("export const name = 'hijack'\nexport function apply(ctx) { ctx.root.provide('webServer', {}) }\n")
+  t.after(() => { hijack.cleanup() })
+  const refused = (await activate(host, 'hijack-webserver', hijack.entry)).result
+  assert.equal(refused.status, 'failed')
+  assert.match(refused.diagnostic, /may not provide core service `webServer`/)
+})
+
 test('an unsupported DSH peer fails the import loudly', async (t) => {
   const host = await startHost()
-  const plugin = tempPlugin("import '@deepseek-ai/dsh-agent'\nexport function apply() {}\n")
+  const plugin = tempPlugin("import '@deepseek-ai/dsh-subprocess'\nexport function apply() {}\n")
   t.after(async () => { await host.stop(); plugin.cleanup() })
-  const { result } = await activate(host, 'needs-agent', plugin.entry)
+  const { result } = await activate(host, 'needs-subprocess', plugin.entry)
   assert.equal(result.status, 'failed')
-  assert.match(result.diagnostic, /requires `@deepseek-ai\/dsh-agent`/)
+  assert.match(result.diagnostic, /requires `@deepseek-ai\/dsh-subprocess`/)
   for (const specifier of ['@deepseek-ai/dsh-llm/typert', '@deepseek-ai/dsh-llm/message', '@deepseek-ai/dsh-session/types', '@deepseek-ai/dsh-system-prompt/src/index.js', '@deepseek-ai/dsh-user-questions/typert', '@deepseek-ai/dsh-user-questions/remote']) {
     const subpath = tempPlugin(`import '${specifier}'\nexport function apply() {}\n`)
     t.after(subpath.cleanup)
@@ -233,11 +249,11 @@ test('an unsupported DSH peer fails the import loudly', async (t) => {
 test('a DSH peer or a second Cordis shipped in node_modules is refused, not loaded', async (t) => {
   const host = await startHost()
   const plugin = tempPlugin(
-    "import { x } from '@deepseek-ai/dsh-agent'\nexport function apply() { throw new Error('loaded: ' + x) }\n",
+    "import { x } from '@deepseek-ai/dsh-subprocess'\nexport function apply() { throw new Error('loaded: ' + x) }\n",
   )
   const subpath = tempPlugin("import { x } from '@deepseek-ai/cordis/lib/x.js'\nexport function apply() { throw new Error('loaded: ' + x) }\n")
   for (const dir of [plugin.dir, subpath.dir]) {
-    for (const [name, main] of [['dsh-agent', 'index.js'], ['cordis', 'lib/x.js']]) {
+    for (const [name, main] of [['dsh-subprocess', 'index.js'], ['cordis', 'lib/x.js']]) {
       const root = join(dir, 'node_modules', '@deepseek-ai', name)
       mkdirSync(join(root, 'lib'), { recursive: true })
       writeFileSync(join(root, 'package.json'), JSON.stringify({ name: `@deepseek-ai/${name}`, type: 'module', main, exports: { '.': `./${main}`, './lib/*': './lib/*' } }))
@@ -245,9 +261,9 @@ test('a DSH peer or a second Cordis shipped in node_modules is refused, not load
     }
   }
   t.after(async () => { await host.stop(); plugin.cleanup(); subpath.cleanup() })
-  const agent = (await activate(host, 'ships-agent', plugin.entry)).result
-  assert.equal(agent.status, 'failed')
-  assert.match(agent.diagnostic, /requires `@deepseek-ai\/dsh-agent`/)
+  const subproc = (await activate(host, 'ships-subprocess', plugin.entry)).result
+  assert.equal(subproc.status, 'failed')
+  assert.match(subproc.diagnostic, /requires `@deepseek-ai\/dsh-subprocess`/)
   const cordis = (await activate(host, 'ships-cordis', subpath.entry)).result
   assert.equal(cordis.status, 'failed')
   assert.match(cordis.diagnostic, /requires `@deepseek-ai\/cordis/)
@@ -794,7 +810,7 @@ import * as questions from '@deepseek-ai/dsh-user-questions'
 export const name = 'dsh-style'
 export const inject = ['commands']
 export function apply(ctx) {
-  assert.deepEqual(Object.keys(llm), ['HarnessError', 'createUserMessage'])
+  for (const key of ['HarnessError', 'createUserMessage', 'ReasoningEffortId']) assert.ok(key in llm, 'llm missing ' + key)
   assert.deepEqual(Object.keys(questions), ['UserQuestionError'])
   const cause = new Error('original cause')
   const failure = new questions.UserQuestionError('human cancelled', 'ASK_CANCELLED', { cause })
@@ -808,7 +824,7 @@ export function apply(ctx) {
   const baseFailure = new llm.HarnessError('base', 'FIXTURE', { cause })
   assert.equal(baseFailure.name, 'HarnessError')
   assert.equal(baseFailure.cause, cause)
-  assert.deepEqual(Object.keys(session), ['SessionId'])
+  for (const key of ['SessionId', 'KNOWN_SESSION_EVENT_TYPES', 'deriveEventMessage']) assert.ok(key in session, 'session missing ' + key)
   assert.deepEqual(Object.keys(prompt), ['PERSONA_PREFIX_SECTION'])
   assert.equal(prompt.PERSONA_PREFIX_SECTION, 'deployment:persona-prefix')
   for (const value of ['', 'session', 7, null, { arbitrary: true }]) assert.equal(session.SessionId(value), value)

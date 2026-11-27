@@ -209,7 +209,9 @@ impl CodewhaleClient {
                     "cannot force an omitted tool because its input schema is incompatible with this route"
                 );
             }
-            body["tool_choice"] = anthropic_tool_choice(tool_choice, &model);
+            if body.get("tools").is_some() {
+                body["tool_choice"] = anthropic_tool_choice(tool_choice, &model);
+            }
         }
 
         // Thinking + effort shaping. MiniMax supports adaptive/disabled but

@@ -117,7 +117,7 @@ struct Cli {
     #[arg(
         long,
         value_name = "BOOL",
-        help = "Control usage reporting (default on; Codewhale + PostHog; \
+        help = "Control usage reporting (default on; first-party Codewhale only; \
                 durable off: config set telemetry false; CODEWHALE_TELEMETRY=0 always wins)"
     )]
     telemetry: Option<bool>,
@@ -154,12 +154,20 @@ struct Cli {
         conflicts_with_all = ["continue_session", "resume"]
     )]
     session_id: Option<String>,
+    /// Prefill the initial prompt in the interactive session (use `codewhale exec`
+    /// for a non-interactive run).
     #[arg(short = 'p', long = "prompt", value_name = "PROMPT")]
     prompt_flag: Option<String>,
     /// Conversation mode for a new interactive session (for example
     /// `creator`). With `--resume` or `--continue` it must match the saved mode.
     #[arg(long = "conversation-mode", value_name = "MODE")]
     conversation_mode: Option<String>,
+    #[arg(
+        long = "agent",
+        value_name = "AGENT_ID",
+        help = "Run this session with an installed external ACP agent (for example `antigravity`, `opencode`, `copilot`, or `dsh`)"
+    )]
+    agent: Option<String>,
     /// Per-run config override (`KEY=VALUE`), repeatable, never saved.
     /// Runtime keys: provider, model/default_text_model, verbosity,
     /// approval_policy, sandbox_mode, telemetry. Dedicated flags win;
@@ -244,7 +252,7 @@ enum Commands {
         after_help = "Commands:\n  install <SPEC> [--json]  Install a plugin bundle without trusting or enabling it\n  import dsh <PATH> [--json]  Review a DeepSeek Harness package before importing\n  import dsh approve <PATH> <HASH> [--json]  Install an exact reviewed DeepSeek Harness package\n  status [NAME] [--json]  Inspect plugin status and diagnostics\n  list [NAME] [--json]    Alias of status\n  show <NAME> [--json]    Show the capability review without prompting or trusting\n  restage <NAME> [--json]  Restore an eligible reviewed plugin snapshot\n  trust <NAME> [--json]  Show the capability review; in a terminal, then ask\n  trust <NAME> --review-token T [--yes] [--json]  Trust exactly the content the bundle review token names\n  enable <NAME> [--json]  Enable a trusted plugin\n  disable <NAME> [--json]  Disable a plugin, keeping its trust\n  update <NAME> [--json]  Update an installed plugin bundle from its recorded source\n  uninstall <NAME> [--yes] [--json]  Disable if needed and remove an installed plugin bundle\n  revoke <NAME> [--json]  Revoke trust\n\nThe bundle review token ties trust to exact content; it does not show that anyone read the review,\nand it is not the host-service review token. A --yes trust is recorded as the command line. When\nCODEWHALE_AGENT_PROJECT marks the process, as it does every command the agent runs, trust and enable\nare the agent's, for that project only; that mark is a label the agent could remove in Full Access."
     )]
     Plugins(TuiPassthroughArgs),
-    /// Bootstrap MCP config and/or skills directories.
+    /// Scaffold project MCP config and example skills (use `codewhale auth` or `/provider` for model setup).
     Setup(TuiPassthroughArgs),
     /// Generate a remote Codewhale agent deploy bundle (cloud + chat bridge).
     RemoteSetup(RemoteSetupArgs),
@@ -347,10 +355,6 @@ lifecycle generation you observed.
         after_help = codewhale_tui::mcp_subcommand_help()
     )]
     Mcp(TuiPassthroughArgs),
-    /// Run the shared ambient pet owner (`pet serve`). Internal: spawned
-    /// lazily by clients when no owner is running.
-    #[command(name = "pet", hide = true)]
-    Pet(TuiPassthroughArgs),
     /// Inspect feature flags.
     #[command(
         override_usage = "codewhale features <COMMAND>",
@@ -386,9 +390,7 @@ New integrations should prefer `codewhale app-server --http` for the full Engine
     )]
     Web(WebArgs),
     /// Sign in to your Codewhale account through the browser.
-    #[command(
-        after_help = "Local use does not require a Codewhale account.\nConnect a model in the TUI with /connect, or run `codewhale auth set --provider <provider>`.\nSigning in preserves your selected model and does not upload existing local keys."
-    )]
+    #[command(after_help = LOGIN_AFTER_HELP)]
     Login(LoginArgs),
     /// Sign out of Codewhale, keeping local model connections and work.
     Logout(LogoutArgs),
@@ -526,17 +528,20 @@ const COMPLETION_BIN_NAME: &str = "codewhale";
 /// types the short name.
 const COMPLETION_ALIAS_NAME: &str = "codew";
 
+const LOGIN_AFTER_HELP: &str = if codewhale_account_cli::ACCOUNT_SIGN_IN_OPEN {
+    "Local use does not require a Codewhale account.\nConnect a model in the TUI with /provider, or run `codewhale auth set --provider <provider>`.\nSigning in preserves your selected model and does not upload existing local keys."
+} else {
+    "Codewhale accounts are not open yet, so this command does not sign in.\nLocal use does not require a Codewhale account.\nConnect a model in the TUI with /provider, or run `codewhale auth set --provider <provider>`."
+};
+
 const ADVANCED_COMMANDS: &[&str] = &[
     "run",
-    "models",
     "model",
     "fork",
     "rc",
-    "web",
     "serve",
     "app-server",
     "mcp-server",
-    "login",
     "logout",
     "account",
     "dispatch",
@@ -562,7 +567,11 @@ const ADVANCED_COMMANDS: &[&str] = &[
 ];
 
 fn user_facing_command() -> clap::Command {
+    let accounts_open = codewhale_account_cli::ACCOUNT_SIGN_IN_OPEN;
     let mut cmd = Cli::command();
+    if !accounts_open {
+        cmd = cmd.mut_subcommand("login", |sub| sub.hide(true));
+    }
     let mut listed = Vec::new();
     for name in ADVANCED_COMMANDS {
         if let Some(subcommand) = cmd.find_subcommand(name) {
@@ -1042,14 +1051,7 @@ fn start_lane(request: LaneStartRequest) -> Result<()> {
         worktree,
     };
     let backend = resolve_backend(kind);
-    if let Err(error) = backend.start(&reg, &mut record, &spec) {
-        // A start that failed before launch (worktree provisioning, the
-        // first log write) left the lane `pending` forever; reconcile skips
-        // pending lanes. Close it as failed. A lane a backend already made
-        // terminal is left as it is.
-        let _ = reg.mark_terminal_if_active(&mut record, LaneStatus::Failed);
-        return Err(error);
-    }
+    start_lane_with_backend(backend.as_ref(), &reg, &mut record, &spec)?;
     println!("started {}", record.id);
     println!("status:  {}", record.status.as_str());
     println!("runtime: {}", record.runtime.as_str());
@@ -1068,6 +1070,24 @@ fn start_lane(request: LaneStartRequest) -> Result<()> {
             record.status.as_str(),
             record.log_path.display()
         );
+    }
+    Ok(())
+}
+
+fn start_lane_with_backend(
+    backend: &dyn codewhale_lane::RuntimeBackend,
+    reg: &codewhale_lane::LaneRegistry,
+    record: &mut codewhale_lane::LaneRecord,
+    spec: &codewhale_lane::LaneStartSpec,
+) -> Result<()> {
+    if let Err(error) = backend.start(reg, record, spec) {
+        if let Err(mark) = reg.mark_terminal_if_active(record, codewhale_lane::LaneStatus::Failed) {
+            return Err(error.context(format!(
+                "lane {} start failed and could not be closed as failed: {mark:#}",
+                record.id
+            )));
+        }
+        return Err(error);
     }
     Ok(())
 }
@@ -1517,9 +1537,24 @@ fn resolve_against_workspace(path: &Path, workspace: &Path) -> PathBuf {
     }
 }
 
+const MAX_WORKFLOW_SOURCE_BYTES: u64 = 1024 * 1024;
+
 fn validate_workflow_source_file(path: &Path) -> Result<()> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|file| {
+            file.take(MAX_WORKFLOW_SOURCE_BYTES + 1)
+                .read_to_end(&mut bytes)
+        })
+        .with_context(|| format!("read {}", path.display()))?;
+    if bytes.len() as u64 > MAX_WORKFLOW_SOURCE_BYTES {
+        bail!(
+            "workflow source {} exceeds {MAX_WORKFLOW_SOURCE_BYTES} bytes",
+            path.display()
+        );
+    }
     let source =
-        std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        String::from_utf8(bytes).with_context(|| format!("read {} as UTF-8", path.display()))?;
     if source.trim_start().starts_with("export default workflow(")
         || source.trim_start().starts_with("workflow(")
         || source.contains("\nworkflow(")
@@ -1945,7 +1980,7 @@ enum ConfigCommand {
     Unset {
         key: String,
     },
-    /// Review usage reporting by Codewhale and PostHog (default on).
+    /// Review first-party usage reporting by Codewhale (default on).
     Telemetry {
         /// Optional compatibility form: enable future sessions under this policy version.
         #[arg(long, value_name = "VERSION")]
@@ -2178,6 +2213,11 @@ pub fn run_cli() -> std::process::ExitCode {
     match outcome {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) => {
+            #[cfg(not(target_env = "ohos"))]
+            if let Some(managed) = err.downcast_ref::<update::PackageManaged>() {
+                println!("{managed}");
+                return std::process::ExitCode::FAILURE;
+            }
             // Use the full anyhow chain so callers see the underlying
             // cause (e.g. the actual TOML parse error with line/column)
             // instead of just the top-level context message. The bare
@@ -2635,8 +2675,23 @@ fn run() -> Result<()> {
         }
         Some(Commands::Exec(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
-            run_tui_in_process(&cli, &resolved_runtime, tui_args("exec", args))
+            let mut exec_args = tui_args("exec", args);
+            let has_agent_flag = cli.agent.is_some()
+                || exec_args
+                    .iter()
+                    .any(|arg| arg == "--agent" || arg.starts_with("--agent="));
+            if !has_agent_flag {
+                ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
+            }
+            if let Some(agent) = cli.agent.as_deref()
+                && !exec_args
+                    .iter()
+                    .any(|arg| arg == "--agent" || arg.starts_with("--agent="))
+            {
+                exec_args.insert(1, agent.to_string());
+                exec_args.insert(1, "--agent".to_string());
+            }
+            run_tui_in_process(&cli, &resolved_runtime, exec_args)
         }
         Some(Commands::Fleet(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
@@ -2699,21 +2754,6 @@ fn run() -> Result<()> {
         Some(Commands::Mcp(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             run_tui_in_process(&cli, &resolved_runtime, tui_args("mcp", args))
-        }
-        Some(Commands::Pet(args)) => {
-            // The pet owner is a delegated Engine service, with no separate
-            // process or argument owner. Keep its narrow command contract.
-            let mut argv = vec!["pet".to_string()];
-            argv.extend(args.args);
-            let code = codewhale_tui::run(
-                codewhale_engine::runtime_options::RuntimeOptions::default(),
-                argv,
-            );
-            std::process::exit(if code == std::process::ExitCode::SUCCESS {
-                0
-            } else {
-                1
-            });
         }
         Some(Commands::Integrations(args)) => {
             // Integrations only need route *identity*. Do not recover or
@@ -2881,11 +2921,20 @@ fn run() -> Result<()> {
             // read-only path `doctor` uses rather than looking only at flags.
             let resolved_runtime =
                 resolve_runtime_for_diagnostic_dispatch(&store, &runtime_overrides);
+            let project_model = if cli.no_project_config {
+                None
+            } else {
+                let workspace = cli.workspace.clone().unwrap_or_else(|| {
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                });
+                project_config_model(&workspace)?
+            };
             run_model_command(
                 &mut store,
                 args.command,
                 runtime_overrides.provider,
                 &resolved_runtime,
+                project_model,
             )
         }
         Some(Commands::Thread(args)) => {
@@ -2953,6 +3002,9 @@ fn run() -> Result<()> {
 }
 
 fn ensure_dispatch_model_valid(cli: &Cli, resolved: &ResolvedRuntimeOptions) -> Result<()> {
+    if cli.agent.is_some() {
+        return Ok(());
+    }
     if cli.profile.is_none() || cli.model.is_some() {
         resolved.ensure_valid_model()?;
     }
@@ -2987,6 +3039,10 @@ fn root_tui_passthrough(cli: &Cli) -> Result<Vec<String>> {
     if let Some(mode) = cli.conversation_mode.as_deref() {
         forwarded.push("--conversation-mode".to_string());
         forwarded.push(mode.to_string());
+    }
+    if let Some(agent) = cli.agent.as_deref() {
+        forwarded.push("--agent".to_string());
+        forwarded.push(agent.to_string());
     }
 
     let prompt =
@@ -3614,6 +3670,18 @@ fn provider_config_api_key(store: &ConfigStore, provider: ProviderKind) -> Optio
     slot.filter(|value| classify_config_api_key_value(value) == ConfigApiKeyValueKind::Literal)
 }
 
+fn provider_bound_env_value(store: &ConfigStore, provider: ProviderKind) -> Option<(&str, String)> {
+    let name = store
+        .config
+        .providers
+        .for_provider(provider)
+        .api_key_env_name()?;
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| (name, value))
+}
+
 fn provider_config_set(store: &ConfigStore, provider: ProviderKind) -> bool {
     provider_config_api_key(store, provider).is_some()
 }
@@ -3885,6 +3953,24 @@ fn xai_runtime_api_key(
         last4: resolved.api_key.as_deref().map(last4_label),
     }
 }
+
+fn runtime_api_key_for(
+    store: &ConfigStore,
+    secrets: &Secrets,
+    provider: ProviderKind,
+    runtime_overrides: &CliRuntimeOverrides,
+) -> Option<RuntimeAuthApiKey> {
+    let resolved = store.config.resolve_runtime_options_with_secrets(
+        &runtime_overrides_for_provider(runtime_overrides, provider),
+        secrets,
+    );
+    (resolved.provider == provider).then(|| RuntimeAuthApiKey {
+        source: resolved.api_key.as_ref().and(resolved.api_key_source),
+        last4: resolved.api_key.as_deref().map(last4_label),
+    })
+}
+
+const STORED_KEY_NOT_SENT: &str = "not sent on this route";
 
 fn api_key_source_name(
     config_key: Option<&str>,
@@ -4242,6 +4328,26 @@ fn auth_get_line_with_runtime(
     }
 
     let config_key = provider_config_api_key(store, provider);
+    let bound_env = provider_bound_env_value(store, provider).is_some();
+    if let Some(runtime) = runtime_api_key_for(store, secrets, provider, runtime_overrides) {
+        return match runtime.source {
+            Some(RuntimeApiKeySource::Cli) => format!("{slot}: set (source: cli)"),
+            Some(RuntimeApiKeySource::ConfigFile) => format!("{slot}: set (source: config-file)"),
+            Some(RuntimeApiKeySource::Keyring) => format!("{slot}: set (source: secret-store)"),
+            Some(RuntimeApiKeySource::Env) => format!("{slot}: set (source: env)"),
+            None if config_key.is_some()
+                || bound_env
+                || provider_keyring_set(secrets, provider)
+                || provider_env_set(provider) =>
+            {
+                format!("{slot}: stored, {STORED_KEY_NOT_SENT}")
+            }
+            None => format!("{slot}: not set"),
+        };
+    }
+    if config_key.is_none() && bound_env {
+        return format!("{slot}: set (source: env)");
+    }
     let keyring_key = config_key
         .is_none()
         .then(|| provider_keyring_api_key(secrets, provider))
@@ -4269,18 +4375,25 @@ fn auth_status_all_providers_with_runtime(
 ) -> Vec<String> {
     let active_provider = store.config.provider;
     let mut lines = Vec::new();
-    lines.push(account_status_line());
-    lines.push(String::new());
+    let account = account_status_line();
+    if codewhale_account_cli::ACCOUNT_SIGN_IN_OPEN
+        || !(account.starts_with("account: not signed in")
+            || account.starts_with("account: unavailable"))
+    {
+        lines.push(account);
+        lines.push(String::new());
+    }
     lines.push(format!(
         "active provider: {} (set via config or CODEWHALE_PROVIDER)",
         active_provider.as_str()
     ));
+    lines.push(format!("secret store: {}", secrets.backend_name()));
     lines.push(String::new());
     lines.push(format!(
-        "{:<14} {:<8} {:<10} {:<8} {}",
-        "provider", "config", "keyring", "env", "status"
+        "{:<14} {:<8} {:<13} {:<8} {}",
+        "provider", "config", "secret store", "env", "status"
     ));
-    lines.push("-".repeat(70));
+    lines.push("-".repeat(73));
 
     for provider in ProviderKind::ALL {
         if provider == ProviderKind::Xai {
@@ -4294,7 +4407,7 @@ fn auth_status_all_providers_with_runtime(
                 ""
             };
             lines.push(format!(
-                "{:<14} {:<8} {:<10} {:<8} {}{}",
+                "{:<14} {:<8} {:<13} {:<8} {}{}",
                 provider.as_str(),
                 xai_table_storage_status(api_key.as_ref(), RuntimeApiKeySource::ConfigFile),
                 xai_table_storage_status(api_key.as_ref(), RuntimeApiKeySource::Keyring),
@@ -4319,7 +4432,7 @@ fn auth_status_all_providers_with_runtime(
                 }
             };
             lines.push(format!(
-                "{:<14} {:<8} {:<10} {:<8} {}{}",
+                "{:<14} {:<8} {:<13} {:<8} {}{}",
                 provider.as_str(),
                 status(RuntimeApiKeySource::ConfigFile),
                 status(RuntimeApiKeySource::Keyring),
@@ -4336,20 +4449,31 @@ fn auth_status_all_providers_with_runtime(
 
         let config_key = provider_config_api_key(store, provider);
         let keyring_key = provider_keyring_api_key(secrets, provider);
-        let env_key = provider_env_value(provider);
+        let bound_env = provider_bound_env_value(store, provider).is_some();
+        let env_set = bound_env || provider_env_set(provider);
         let external_selected = external_oauth_selected(store, provider);
 
         let config_status = config_key.map(|_| "set").unwrap_or("-");
         let keyring_status = keyring_key.as_ref().map(|_| "set").unwrap_or("-");
-        let env_status = env_key.as_ref().map(|_| "set").unwrap_or("-");
+        let env_status = if env_set { "set" } else { "-" };
 
+        let stored = config_key.is_some() || keyring_key.is_some() || env_set;
+        let runtime = runtime_api_key_for(store, secrets, provider, runtime_overrides);
         let source = if external_selected {
             "external consent (not probed)".to_string()
+        } else if let Some(runtime) = runtime {
+            match runtime.source_name() {
+                Some(source) => source.to_string(),
+                None if stored => STORED_KEY_NOT_SENT.to_string(),
+                None => "unset".to_string(),
+            }
         } else if config_key.is_some() {
             "config".to_string()
+        } else if bound_env {
+            "env".to_string()
         } else if keyring_key.is_some() {
-            "keyring".to_string()
-        } else if env_key.is_some() {
+            "secret store".to_string()
+        } else if env_set {
             "env".to_string()
         } else {
             "unset".to_string()
@@ -4362,7 +4486,7 @@ fn auth_status_all_providers_with_runtime(
         };
 
         lines.push(format!(
-            "{:<14} {:<8} {:<10} {:<8} {}{}",
+            "{:<14} {:<8} {:<13} {:<8} {}{}",
             provider.as_str(),
             config_status,
             keyring_status,
@@ -4375,7 +4499,9 @@ fn auth_status_all_providers_with_runtime(
     lines.push(String::new());
     lines.push("* = active provider (from config or CODEWHALE_PROVIDER)".to_string());
     lines.push("Run `codewhale auth status --provider <id>` for detailed info.".to_string());
-    lines.push("Account sign-in is `codewhale login`.".to_string());
+    if codewhale_account_cli::ACCOUNT_SIGN_IN_OPEN {
+        lines.push("Account sign-in is `codewhale login`.".to_string());
+    }
     lines
 }
 
@@ -4658,12 +4784,25 @@ fn auth_list_lines_with_runtime(
 
         let file = provider_config_set(store, provider);
         let keyring = (!file).then(|| provider_keyring_set(secrets, provider));
-        let env = provider_env_set(provider);
+        let bound_env = provider_bound_env_value(store, provider).is_some();
+        let env = bound_env || provider_env_set(provider);
         let external_selected = external_oauth_selected(store, provider);
+        let runtime = runtime_api_key_for(store, secrets, provider, runtime_overrides);
         let active = if external_selected {
             "external-consent".to_string()
+        } else if let Some(runtime) = runtime {
+            match runtime.source {
+                Some(RuntimeApiKeySource::Cli) => "cli".to_string(),
+                Some(RuntimeApiKeySource::ConfigFile) => "config".to_string(),
+                Some(RuntimeApiKeySource::Keyring) => "store".to_string(),
+                Some(RuntimeApiKeySource::Env) => "env".to_string(),
+                None if file || keyring == Some(true) || env => "not-sent".to_string(),
+                None => "missing".to_string(),
+            }
         } else if file {
             "config".to_string()
+        } else if bound_env {
+            "env".to_string()
         } else if keyring == Some(true) {
             "store".to_string()
         } else if env {
@@ -4711,15 +4850,32 @@ fn auth_status_lines_for_provider_with_runtime(
 
     let config_key = provider_config_api_key(store, provider);
     let keyring_key = provider_keyring_api_key(secrets, provider);
-    let env_key = provider_env_value(provider);
+    let bound_env_key = provider_bound_env_value(store, provider);
+    let env_key = bound_env_key
+        .as_ref()
+        .map(|(name, value)| (*name, value.clone()))
+        .or_else(|| provider_env_value(provider));
     let external = external_consent(store, provider);
     let external_selected = external_oauth_selected(store, provider);
 
-    let active_label = {
+    let stored = config_key.is_some() || keyring_key.is_some() || env_key.is_some();
+    let runtime = runtime_api_key_for(store, secrets, provider, runtime_overrides)
+        .filter(|_| !external_selected);
+    let active_label = if let Some(runtime) = runtime {
+        runtime.source_with_last4().unwrap_or_else(|| {
+            if stored {
+                format!("none (a stored key is {STORED_KEY_NOT_SENT})")
+            } else {
+                "missing".to_string()
+            }
+        })
+    } else {
         let active_source = if external_selected {
             "external read-only consent (availability not probed)"
         } else if config_key.is_some() {
             "config"
+        } else if bound_env_key.is_some() {
+            "env"
         } else if keyring_key.is_some() {
             "secret store"
         } else if env_key.is_some() {
@@ -4729,6 +4885,7 @@ fn auth_status_lines_for_provider_with_runtime(
         };
         let active_last4 = config_key
             .map(last4_label)
+            .or_else(|| bound_env_key.as_ref().map(|(_, value)| last4_label(value)))
             .or_else(|| keyring_key.as_deref().map(last4_label))
             .or_else(|| env_key.as_ref().map(|(_, value)| last4_label(value)));
         active_last4
@@ -4752,7 +4909,7 @@ fn auth_status_lines_for_provider_with_runtime(
     let base_url = provider_cfg.base_url.as_deref().unwrap_or("(default)");
     let model = provider_cfg.model.as_deref().unwrap_or("(default)");
 
-    let lookup_order = "lookup order: config -> secret store -> env".to_string();
+    let lookup_order = "lookup order: config -> api_key_env -> secret store -> env".to_string();
     let auth_mode = provider_cfg
         .auth_mode
         .as_deref()
@@ -6052,11 +6209,24 @@ fn model_set_route(
     }))
 }
 
+fn project_config_model(workspace: &Path) -> Result<Option<String>> {
+    match codewhale_config::load_project_config_outcome(workspace) {
+        codewhale_config::ProjectConfigOutcome::Missing => Ok(None),
+        codewhale_config::ProjectConfigOutcome::Loaded(config) => {
+            Ok(config.model.filter(|model| !model.is_empty()))
+        }
+        codewhale_config::ProjectConfigOutcome::Invalid { path, reason } => {
+            bail!("project config {} {reason}", path.display())
+        }
+    }
+}
+
 fn run_model_command(
     store: &mut ConfigStore,
     command: ModelCommand,
     top_level_provider: Option<ProviderKind>,
     resolved_runtime: &ResolvedRuntimeOptions,
+    project_model: Option<String>,
 ) -> Result<()> {
     match command {
         ModelCommand::List { provider } => {
@@ -6076,8 +6246,17 @@ fn run_model_command(
             let queried = raw_query.map(str::trim).filter(|m| !m.is_empty());
 
             if raw_query.is_none() && subcommand_provider.is_none() {
-                resolved_runtime.ensure_valid_model()?;
-                let saved = if matches!(resolved_runtime.provider_source, ProviderSource::Config)
+                let project_model = project_model.filter(|_| {
+                    !matches!(
+                        resolved_runtime.model_source,
+                        codewhale_config::ModelSource::Cli | codewhale_config::ModelSource::Env
+                    )
+                });
+                if project_model.is_none() {
+                    resolved_runtime.ensure_valid_model()?;
+                }
+                let saved = if project_model.is_none()
+                    && matches!(resolved_runtime.provider_source, ProviderSource::Config)
                     && !matches!(
                         resolved_runtime.model_source,
                         codewhale_config::ModelSource::Cli | codewhale_config::ModelSource::Env
@@ -6093,14 +6272,17 @@ fn run_model_command(
                     .map_or(resolved_runtime.provider.as_str(), |(provider, _, _)| {
                         provider.as_str()
                     });
-                let model = saved
-                    .as_ref()
-                    .map_or(resolved_runtime.model.as_str(), |(_, model, _)| {
-                        model.as_str()
-                    });
-                let source = saved
-                    .as_ref()
-                    .map_or(resolved_runtime.model_source, |(_, _, source)| *source);
+                let model = project_model
+                    .as_deref()
+                    .or_else(|| saved.as_ref().map(|(_, model, _)| model.as_str()))
+                    .unwrap_or(resolved_runtime.model.as_str());
+                let source = if project_model.is_some() {
+                    codewhale_config::ModelSource::RootModel
+                } else {
+                    saved
+                        .as_ref()
+                        .map_or(resolved_runtime.model_source, |(_, _, source)| *source)
+                };
                 let kind = ProviderKind::parse(provider).unwrap_or(ProviderKind::Custom);
                 let identity = if kind == ProviderKind::Custom {
                     store.config.named_custom_provider_id().unwrap_or(provider)
@@ -6176,8 +6358,16 @@ fn run_model_command(
                     "provider_source: {}",
                     provider_source_label(resolved_runtime.provider_source)
                 );
-                println!("model_source: {}", source.as_str());
+                println!(
+                    "model_source: {}",
+                    if project_model.is_some() {
+                        "project config model"
+                    } else {
+                        source.as_str()
+                    }
+                );
                 if saved.is_none()
+                    && project_model.is_none()
                     && let Err(error) = &resolved_runtime.route
                 {
                     println!("route_error: {error}");
@@ -7707,7 +7897,7 @@ mod tests {
         let bytes_before = std::fs::read(&path).unwrap();
         let token = ["sk-live-", "Z7qX4mNb2Vc9Lk3PwR8t"].concat();
         for (key, value) in [
-            ("approval_policy", "ask"),
+            ("approval_policy", "full-access"),
             ("sandbox_mode", "full"),
             ("verbosity", "quiet"),
             ("approval_policy", token.as_str()),
@@ -8138,6 +8328,7 @@ verbosity = "concise"
             },
             None,
             &runtime,
+            None,
         )
         .unwrap();
         assert_eq!(store.config.provider, ProviderKind::Zai);
@@ -8232,6 +8423,7 @@ verbosity = "concise"
                 },
                 None,
                 &runtime,
+                None,
             )
             .unwrap();
             assert_eq!(store.config.provider, provider);
@@ -8280,6 +8472,7 @@ verbosity = "concise"
                 },
                 None,
                 &runtime,
+                None,
             )
             .unwrap();
             let saved = std::fs::read_to_string(&path).unwrap();
@@ -8329,12 +8522,43 @@ verbosity = "concise"
                 },
                 None,
                 &runtime,
+                None,
             )
             .expect_err("rejected model must fail loud")
             .to_string();
             assert!(err.contains(expected_provider), "{err}");
             assert!(err.contains(expected_model), "{err}");
         }
+    }
+
+    #[test]
+    fn model_resolve_reports_the_project_config_model() {
+        let _env = env_lock();
+        let home = tempfile::tempdir().expect("isolated home");
+        let _home = ScopedEnvVar::set("CODEWHALE_HOME", &home.path().to_string_lossy());
+        let path = home.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "provider = \"deepseek\"\n\n[providers.deepseek]\napi_key = \"k\"\nmodel = \"deepseek-v4-pro\"\n",
+        )
+        .unwrap();
+        let mut store = ConfigStore::load(Some(path)).unwrap();
+        let runtime = store
+            .config
+            .resolve_runtime_options(&CliRuntimeOverrides::default());
+        let err = run_model_command(
+            &mut store,
+            ModelCommand::Resolve {
+                model: None,
+                provider: None,
+            },
+            None,
+            &runtime,
+            Some("totally-unknown-model-x".to_string()),
+        )
+        .expect_err("the project model, not the global one, is resolved")
+        .to_string();
+        assert!(err.contains("totally-unknown-model-x"), "{err}");
     }
 
     #[test]
@@ -8719,6 +8943,64 @@ verbosity = "concise"
         let error = start_lane(request("exit 3")).expect_err("a failed inline lane must fail");
         assert!(format!("{error:#}").contains(" failed"), "{error:#}");
         start_lane(request("exit 0")).expect("a completed inline lane succeeds");
+    }
+
+    #[test]
+    fn start_lane_reports_mark_terminal_error_when_start_and_close_both_fail() {
+        use codewhale_lane::{
+            LaneRecord, LaneRegistry, LaneStartSpec, RuntimeBackend, RuntimeBackendKind,
+            TerminalTransition,
+        };
+
+        struct FailingBackend;
+
+        impl RuntimeBackend for FailingBackend {
+            fn kind(&self) -> RuntimeBackendKind {
+                RuntimeBackendKind::Inline
+            }
+
+            fn start(
+                &self,
+                _registry: &LaneRegistry,
+                _record: &mut LaneRecord,
+                _spec: &LaneStartSpec,
+            ) -> Result<()> {
+                bail!("simulated backend start failure")
+            }
+
+            fn attach_command(&self, _record: &LaneRecord) -> Option<String> {
+                None
+            }
+
+            fn stop(
+                &self,
+                _registry: &LaneRegistry,
+                _record: &mut LaneRecord,
+                _fence: Option<u64>,
+            ) -> Result<TerminalTransition> {
+                Ok(TerminalTransition::AlreadyTerminal)
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let reg = LaneRegistry::open(dir.path()).unwrap();
+        let mut record = reg
+            .create_pending(None, None, None, None, RuntimeBackendKind::Inline, None)
+            .unwrap();
+        // Replace the lock file path with a directory so opening the lane lock fails.
+        std::fs::create_dir(dir.path().join(format!("{}.lock", record.id))).unwrap();
+        let spec = LaneStartSpec {
+            command: vec!["true".into()],
+            cwd: None,
+            environment: Vec::new(),
+            log_proxy: None,
+            worktree: None,
+        };
+        let err = start_lane_with_backend(&FailingBackend, &reg, &mut record, &spec)
+            .expect_err("combined start + mark-terminal failure must error");
+        let text = format!("{err:#}");
+        assert!(text.contains("could not be closed as failed"), "{text}");
+        assert!(text.contains("simulated backend start failure"), "{text}");
     }
 
     #[test]
@@ -9888,6 +10170,22 @@ verbosity = "concise"
     }
 
     #[test]
+    fn workflow_source_validation_refuses_an_oversized_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.workflow.js");
+        std::fs::write(&path, vec![b' '; MAX_WORKFLOW_SOURCE_BYTES as usize + 1]).unwrap();
+        let err = validate_workflow_source_file(&path).unwrap_err();
+        assert!(err.to_string().contains("exceeds"), "{err}");
+
+        // Multi-byte UTF-8 straddling the cap must still report the size limit.
+        let utf8_path = dir.path().join("big-utf8.workflow.js");
+        let repeated = "中".repeat((MAX_WORKFLOW_SOURCE_BYTES as usize / 3) + 2);
+        std::fs::write(&utf8_path, repeated).unwrap();
+        let utf8_err = validate_workflow_source_file(&utf8_path).unwrap_err();
+        assert!(utf8_err.to_string().contains("exceeds"), "{utf8_err}");
+    }
+
+    #[test]
     fn workflow_run_resolves_stopship_alias_and_payload() {
         let _lock = env_lock();
         let (_dir, _tui) = install_fake_tui_binary();
@@ -10316,12 +10614,113 @@ verbosity = "concise"
             help.contains("Local use does not require a Codewhale account"),
             "login help must explain that local use does not require an account: {help}"
         );
+        assert!(help.contains("/provider"), "{help}");
+        assert!(!help.contains("/connect"), "{help}");
+        if codewhale_account_cli::ACCOUNT_SIGN_IN_OPEN {
+            assert!(
+                help.contains(
+                    "Signing in preserves your selected model and does not upload existing local keys"
+                ),
+                "login help must explain model preservation and the local-key upload boundary: {help}"
+            );
+        } else {
+            assert!(help.contains("not open yet"), "{help}");
+        }
+    }
+
+    #[test]
+    fn auth_get_reports_the_route_bound_api_key_env() {
+        let _lock = env_lock();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "provider = \"openrouter\"\n\n[providers.openrouter]\napi_key_env = \"CODEWHALE_TEST_CLI_BOUND_OPENROUTER_KEY\"\n",
+        )
+        .expect("fixture");
+        let store = ConfigStore::load(Some(path)).expect("store");
+        let secrets = Secrets::new(std::sync::Arc::new(
+            codewhale_secrets::InMemoryKeyringStore::new(),
+        ));
+        let runtime = CliRuntimeOverrides::default();
+        let _ambient = ScopedEnvVar::remove("OPENROUTER_API_KEY");
+
+        let _unset = ScopedEnvVar::remove("CODEWHALE_TEST_CLI_BOUND_OPENROUTER_KEY");
+        let missing =
+            auth_get_line_with_runtime(&store, &secrets, ProviderKind::Openrouter, &runtime);
+        assert!(missing.ends_with("not set"), "{missing}");
+
+        let _bound = ScopedEnvVar::set("CODEWHALE_TEST_CLI_BOUND_OPENROUTER_KEY", "bound-key-7777");
+        let get = auth_get_line_with_runtime(&store, &secrets, ProviderKind::Openrouter, &runtime);
+        assert!(get.ends_with("set (source: env)"), "{get}");
+        let status =
+            auth_status_lines_for_provider(&store, &secrets, ProviderKind::Openrouter).join("\n");
         assert!(
-            help.contains(
-                "Signing in preserves your selected model and does not upload existing local keys"
-            ),
-            "login help must explain model preservation and the local-key upload boundary: {help}"
+            status.contains("active source: env (last4: ...7777)"),
+            "{status}"
         );
+        assert!(
+            status.contains("env var: CODEWHALE_TEST_CLI_BOUND_OPENROUTER_KEY"),
+            "{status}"
+        );
+        assert!(!status.contains("bound-key-7777"), "{status}");
+    }
+
+    #[test]
+    fn auth_views_do_not_report_a_key_the_runtime_would_not_send() {
+        let _lock = env_lock();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "provider = \"openrouter\"\n\n[providers.openrouter]\napi_key_env = \"CODEWHALE_TEST_CLI_UNSENT_OPENROUTER_KEY\"\n",
+        )
+        .expect("fixture");
+        let store = ConfigStore::load(Some(path)).expect("store");
+        let secrets = Secrets::new(std::sync::Arc::new(
+            codewhale_secrets::InMemoryKeyringStore::new(),
+        ));
+        let _ambient = ScopedEnvVar::remove("OPENROUTER_API_KEY");
+        let _base = ScopedEnvVar::remove("OPENROUTER_BASE_URL");
+        let _bound =
+            ScopedEnvVar::set("CODEWHALE_TEST_CLI_UNSENT_OPENROUTER_KEY", "bound-key-8888");
+        let swapped = CliRuntimeOverrides {
+            base_url: Some("https://collector.example/v1".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+
+        let get = auth_get_line_with_runtime(&store, &secrets, ProviderKind::Openrouter, &swapped);
+        assert!(get.ends_with("stored, not sent on this route"), "{get}");
+        let status = auth_status_lines_for_provider_with_runtime(
+            &store,
+            &secrets,
+            ProviderKind::Openrouter,
+            &swapped,
+        )
+        .join("\n");
+        assert!(
+            status.contains("active source: none (a stored key is not sent on this route)"),
+            "{status}"
+        );
+        let row = |lines: Vec<String>| {
+            lines
+                .into_iter()
+                .find(|line| line.starts_with("openrouter"))
+                .expect("openrouter row")
+        };
+        let list = row(auth_list_lines_with_runtime(&store, &secrets, &swapped));
+        assert!(list.ends_with("not-sent"), "{list}");
+        let all = row(auth_status_all_providers_with_runtime(
+            &store, &secrets, &swapped,
+        ));
+        assert!(all.contains("not sent on this route"), "{all}");
+        for text in [&get, &status, &list, &all] {
+            assert!(!text.contains("bound-key-8888"), "{text}");
+        }
+
+        let direct = CliRuntimeOverrides::default();
+        let get = auth_get_line_with_runtime(&store, &secrets, ProviderKind::Openrouter, &direct);
+        assert!(get.ends_with("set (source: env)"), "{get}");
     }
 
     /// #5198: `auth set` shares the login resolver — provider auth markers go
@@ -11265,7 +11664,7 @@ verbosity = "concise"
 
         assert!(output.contains("provider: deepseek"));
         assert!(output.contains("active source: config (last4: ...3333)"));
-        assert!(output.contains("lookup order: config -> secret store -> env"));
+        assert!(output.contains("lookup order: config -> api_key_env -> secret store -> env"));
         assert!(output.contains("config file: "));
         assert!(output.contains("set, last4: ...3333"));
         assert!(output.contains("secret store: in-memory (test) (set, last4: ...2222)"));
@@ -11297,8 +11696,14 @@ verbosity = "concise"
 
         let output = auth_status_all_providers(&store, &secrets).join("\n");
 
-        assert!(output.contains("account:"), "{output}");
-        assert!(output.contains("codewhale login"), "{output}");
+        let accounts_open = codewhale_account_cli::ACCOUNT_SIGN_IN_OPEN;
+        assert_eq!(output.contains("account:"), accounts_open, "{output}");
+        assert_eq!(
+            output.contains("codewhale login"),
+            accounts_open,
+            "{output}"
+        );
+        assert!(output.contains("secret store"), "{output}");
         assert!(!output.to_lowercase().contains("daytona"), "{output}");
         assert!(!output.contains("set-slot"), "{output}");
 
@@ -11978,7 +12383,9 @@ verbosity = "concise"
             .expect("xAI status row");
         assert!(xai_row.contains("unset"), "{xai_row}");
         assert!(
-            !xai_row.contains("config") && !xai_row.contains("keyring") && !xai_row.contains("env"),
+            !xai_row.contains("config")
+                && !xai_row.contains("secret store")
+                && !xai_row.contains("env"),
             "xAI summary must show runtime-effective sources only: {xai_row}"
         );
 
@@ -13212,7 +13619,8 @@ verbosity = "concise"
             "the help string must document the always-winning opt-out: {telemetry_line}"
         );
         let help = help_for(&["codewhale", "config", "telemetry", "--help"]);
-        assert!(help.contains("PostHog"));
+        assert!(help.contains("Codewhale"));
+        assert!(!help.contains("PostHog"));
         assert!(help.contains("--accept-notice"));
     }
 
@@ -13400,6 +13808,33 @@ verbosity = "concise"
     }
 
     #[test]
+    fn top_level_help_surfaces_login_models_and_documents_prompt_flag() {
+        let command = user_facing_command();
+        assert_eq!(
+            command
+                .find_subcommand("login")
+                .expect("login command")
+                .is_hide_set(),
+            !codewhale_account_cli::ACCOUNT_SIGN_IN_OPEN
+        );
+        assert!(
+            !command
+                .find_subcommand("web")
+                .expect("web command")
+                .is_hide_set()
+        );
+        assert!(!ADVANCED_COMMANDS.contains(&"web"));
+        let help = user_facing_command().render_help().to_string();
+        assert!(help.contains("models"), "{help}");
+        assert!(
+            help.contains("Prefill the initial prompt in the interactive session"),
+            "{help}"
+        );
+        assert!(!ADVANCED_COMMANDS.contains(&"login"));
+        assert!(!ADVANCED_COMMANDS.contains(&"models"));
+    }
+
+    #[test]
     fn root_launch_facts_are_typed_and_prompt_whitespace_is_preserved() {
         let cli = parse_ok(&[
             "codewhale",
@@ -13514,6 +13949,28 @@ verbosity = "concise"
             root_tui_passthrough(&cli).unwrap(),
             vec!["--conversation-mode", "creator", "--prompt", "hello"]
         );
+    }
+
+    #[test]
+    fn top_level_agent_flag_is_forwarded_and_is_not_prompt_text() {
+        let cli = parse_ok(&["codewhale", "--agent", "opencode"]);
+        assert_eq!(cli.agent.as_deref(), Some("opencode"));
+        assert!(cli.prompt.is_empty());
+        assert_eq!(
+            root_tui_passthrough(&cli).unwrap(),
+            vec!["--agent", "opencode"]
+        );
+
+        let cli = parse_ok(&["codewhale", "--agent", "antigravity", "hello"]);
+        assert_eq!(
+            root_tui_passthrough(&cli).unwrap(),
+            vec!["--agent", "antigravity", "--prompt", "hello"]
+        );
+        let invalid_model = ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides {
+            model: Some("nonexistent-model-id".to_string()),
+            ..CliRuntimeOverrides::default()
+        });
+        assert!(ensure_dispatch_model_valid(&cli, &invalid_model).is_ok());
     }
 
     #[test]

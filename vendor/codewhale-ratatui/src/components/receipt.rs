@@ -1095,3 +1095,118 @@ impl Paint for ReceiptTable {
         grid_height(&self.grid(totals.as_ref()), width, theme)
     }
 }
+
+/// Localized words for [`TurnSummary`]. `Default` is English.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TurnSummaryWords {
+    /// Lead phrase before the elapsed duration (for example `"Worked for"`).
+    pub worked_for: Cow<'static, str>,
+    /// Singular step word (`"1 step"`).
+    pub step_one: Cow<'static, str>,
+    /// Plural step word (`"6 steps"`).
+    pub step_many: Cow<'static, str>,
+    /// Suffix after a formatted token count (`"12.4k tokens"`).
+    pub tokens: Cow<'static, str>,
+}
+
+impl Default for TurnSummaryWords {
+    fn default() -> Self {
+        Self {
+            worked_for: Cow::Borrowed("Worked for"),
+            step_one: Cow::Borrowed("step"),
+            step_many: Cow::Borrowed("steps"),
+            tokens: Cow::Borrowed("tokens"),
+        }
+    }
+}
+
+/// A compact one-line settled turn summary (`Worked for 2m 14s · 6 steps`),
+/// with optional token and cost receipts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TurnSummary<'a> {
+    pub duration: Duration,
+    pub steps: usize,
+    pub tokens: Option<u64>,
+    pub cost: Option<Cost>,
+    pub words: Cow<'a, TurnSummaryWords>,
+}
+
+impl<'a> TurnSummary<'a> {
+    /// Construct a turn summary for a settled duration and step count.
+    #[must_use]
+    pub fn new(duration: Duration, steps: usize) -> Self {
+        Self {
+            duration,
+            steps,
+            tokens: None,
+            cost: None,
+            words: Cow::Owned(TurnSummaryWords::default()),
+        }
+    }
+
+    /// Attach a reported token count.
+    #[must_use]
+    pub fn tokens(mut self, tokens: u64) -> Self {
+        self.tokens = Some(tokens);
+        self
+    }
+
+    /// Attach a reported cost.
+    #[must_use]
+    pub fn cost(mut self, cost: Cost) -> Self {
+        self.cost = Some(cost);
+        self
+    }
+
+    /// Override the localized words.
+    #[must_use]
+    pub fn words(mut self, words: TurnSummaryWords) -> Self {
+        self.words = Cow::Owned(words);
+        self
+    }
+
+    /// Format the summary text for Unicode or ASCII-safe terminals.
+    #[must_use]
+    pub fn render_text(&self, ascii: bool) -> String {
+        let sep = if ascii { " - " } else { " \u{00b7} " };
+        let lead = text::display_safe(&self.words.worked_for);
+        let mut parts = vec![format!("{lead} {}", format_duration(self.duration))];
+        if self.steps > 0 {
+            let word = if self.steps == 1 {
+                text::display_safe(&self.words.step_one)
+            } else {
+                text::display_safe(&self.words.step_many)
+            };
+            parts.push(format!("{} {word}", format_count(self.steps as u64)));
+        }
+        if let Some(tokens) = self.tokens {
+            let word = text::display_safe(&self.words.tokens);
+            parts.push(format!("{} {word}", format_tokens(tokens)));
+        }
+        if let Some(cost) = &self.cost {
+            parts.push(ReceiptValue::Cost(Some(cost.clone())).render(ascii));
+        }
+        parts.join(sep)
+    }
+}
+
+impl Paint for TurnSummary<'_> {
+    fn paint(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
+        let area = area.intersection(buf.area);
+        if area.is_empty() {
+            return;
+        }
+        let ascii = theme.ascii();
+        let text = self.render_text(ascii);
+        let clipped = text::truncate_words(&text, usize::from(area.width), ascii);
+        super::workbench::row(
+            Rect { height: 1, ..area },
+            buf,
+            &Line::from(Span::styled(clipped.into_owned(), theme.fg(Role::Muted))),
+        );
+    }
+
+    fn height(&self, width: u16, _theme: &Theme) -> u16 {
+        u16::from(width > 0)
+    }
+}

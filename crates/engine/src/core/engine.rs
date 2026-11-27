@@ -106,6 +106,7 @@ const SUBAGENT_COMPLETION_CHANNEL_CAPACITY: usize = 256;
 const MCP_BOOT_CHANNEL_CAPACITY: usize = 64;
 const EXTENSION_FIRST_SYNC_WAIT: Duration = Duration::from_secs(10);
 const RESTORE_POINT_TIMEOUT: Duration = Duration::from_secs(180);
+const RESTORE_POINT_ORDER_WAIT: Duration = Duration::from_secs(30);
 const TURN_META_GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const TURN_POOL_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const GOAL_CONTINUATION_FAILURE_DETAIL_MAX_BYTES: usize = 512;
@@ -404,9 +405,10 @@ pub struct EngineConfig {
     /// - reports on each receipt the paths changed since the turn's previous
     ///   one.
     ///
-    /// Interactive hosts keep `false`: the TUI does not record receipts,
-    /// keeps the post-turn snapshot off its input path (#234), and snapshots
-    /// only before file-writing tools.
+    /// The TUI and `codewhale exec` set it too, so `/undo` finds each
+    /// file-writing call closed by a `post_tool` snapshot. A host that keeps
+    /// `false` takes the post-turn snapshot after `TurnComplete`, off its
+    /// input path (#234), and snapshots only before file-writing tools.
     pub record_restore_points: bool,
     /// Post-edit LSP diagnostics injection (#136). When `None`, the engine
     /// constructs a disabled manager so the field is always present.
@@ -518,12 +520,13 @@ pub struct EngineConfig {
     /// from `[tui].stream_max_duration_secs`. Pre-R1 this was the hard-coded
     /// `DEFAULT_STREAM_MAX_DURATION_SECS`.
     pub stream_max_duration: Duration,
-    /// Proven pre-dispatch open retries from `[tui].stream_max_resumes`.
+    /// Proven pre-dispatch open retries from `[stream].max_resumes` and
+    /// response-header-timeout retries from `[stream].open_retries`.
     /// The parsed max_transparent_retries/max_errors values are inactive
     /// compatibility fields and cannot authorize an inference POST replay.
     pub stream_retry_limits: turn_budget::StreamRetryLimits,
     /// Bounded wait for SSE response headers (#6700). Resolved from
-    /// `[tui].stream_open_timeout_secs`, then
+    /// `[stream].open_timeout_secs`, then
     /// `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`; only the awaiting-model
     /// heartbeat bound reads it here — the client owns the real timeout.
     pub stream_open_timeout: Duration,
@@ -1141,6 +1144,8 @@ pub struct Engine {
     /// The local-fallback notice for an unavailable account profile is shown
     /// once per engine; later turns only log it.
     profile_constitution_fallback_noticed: bool,
+    profile_constitution_pending_noticed: bool,
+    account_constitution: crate::profile_constitution::AccountConstitution,
     turn_account_fence: Option<Arc<crate::profile_constitution::AccountFence>>,
     /// Model requests in a row that failed with the same upstream HTTP
     /// status on the same model (#6889). Cleared when a request opens its
@@ -1209,6 +1214,7 @@ pub struct Engine {
     /// turn's first snapshot and after one failed, so a span that cannot be
     /// accounted for is reported as unknown rather than folded into the next.
     restore_point_since: Option<codewhale_snapshot::SnapshotId>,
+    restore_point_landing: Option<tokio::sync::oneshot::Receiver<()>>,
     /// Post-edit LSP diagnostics injection (#136). Populated unconditionally
     /// — when LSP is disabled in config, this is an inert manager that
     /// always returns `None` from `diagnostics_for`.
@@ -2718,19 +2724,13 @@ impl Engine {
             None => codewhale_lsp::LspManager::disabled(),
         });
 
-        // External sandbox backend (#516). Logged but non-fatal: if the
-        // backend fails to construct, the engine continues with local
-        // execution as the fallback.
+        // External sandbox backend (#516). Keep a fail-closed backend when
+        // construction fails so shell execution never falls back to local.
         let sandbox_backend = host
             .as_ref()
             .map(|host| host.context().sandbox_backend.clone())
             .unwrap_or_else(|| {
-                codewhale_sandbox::backend::create_backend(api_config)
-                    .unwrap_or_else(|e| {
-                        tracing::warn!("Failed to create sandbox backend: {e}");
-                        None
-                    })
-                    .map(std::sync::Arc::from)
+                sandbox_backend_from_result(codewhale_sandbox::backend::create_backend(api_config))
             });
         let sandbox_enforcement = if sandbox_backend.is_some() {
             codewhale_sandbox::policy::SandboxEnforcement::ExternalBackend
@@ -2847,6 +2847,8 @@ impl Engine {
             creator_unavailable_noted: None,
             constitution_block: None,
             profile_constitution_fallback_noticed: false,
+            profile_constitution_pending_noticed: false,
+            account_constitution: Default::default(),
             turn_account_fence: None,
             repeated_upstream_failure: None,
             api_provider,
@@ -2881,6 +2883,7 @@ impl Engine {
             tool_exec_lock,
             turn_counter: 0,
             restore_point_since: None,
+            restore_point_landing: None,
             lsp_manager,
             pending_lsp_blocks: Vec::new(),
             sandbox_backend,
@@ -3195,6 +3198,13 @@ impl Engine {
     /// also carries the paths changed since the turn's previous snapshot,
     /// and a failure leaves the next span unknown instead of merging it into
     /// the one before.
+    ///
+    /// A cancelled turn returns at once while the snapshot is still written
+    /// off the async runtime. A `post_tool` or `post_turn` snapshot cut short
+    /// that way stays reserved until it lands, so a `/undo` typed right after
+    /// an interrupt waits for it, and the next snapshot is written after it,
+    /// or skipped when it has not landed within `RESTORE_POINT_ORDER_WAIT`.
+    /// A snapshot that timed out is not waited for.
     pub async fn take_restore_point(
         &mut self,
         kind: WorkspaceSnapshotKind,
@@ -3214,18 +3224,46 @@ impl Engine {
         let workspace = self.session.workspace.clone();
         let cap = self.config.snapshots_max_workspace_bytes;
         let sid = self.session.id.clone();
+        let pending = matches!(
+            kind,
+            WorkspaceSnapshotKind::PostTool | WorkspaceSnapshotKind::PostTurn
+        )
+        .then(codewhale_snapshot::PendingPostTurnSnapshot::reserve);
+        let earlier = self.restore_point_landing.take();
+        let (landed, landing) = tokio::sync::oneshot::channel::<()>();
         #[cfg(any(test, feature = "test-support"))]
         let env_ticket = crate::test_support::env_scope_ticket();
         let snapshot = tokio::task::spawn_blocking(move || {
             #[cfg(any(test, feature = "test-support"))]
             let _membership = crate::test_support::join_env_scope(env_ticket);
-            super::turn::restore_point_snapshot(&workspace, &label, cap, Some(&sid), since.as_ref())
+            if let Some(mut earlier) = earlier {
+                let deadline = std::time::Instant::now() + RESTORE_POINT_ORDER_WAIT;
+                while matches!(
+                    earlier.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                ) {
+                    if std::time::Instant::now() >= deadline {
+                        return None;
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+            }
+            let taken = super::turn::restore_point_snapshot(
+                &workspace,
+                &label,
+                cap,
+                Some(&sid),
+                since.as_ref(),
+            );
+            drop(pending);
+            drop(landed);
+            taken
         });
-        let taken = tokio::select! {
+        let (taken, detached) = tokio::select! {
             biased;
-            () = self.cancel_token.cancelled() => None,
+            () = self.cancel_token.cancelled() => (None, true),
             joined = tokio::time::timeout(RESTORE_POINT_TIMEOUT, snapshot) => match joined {
-                Ok(joined) => joined.ok().flatten(),
+                Ok(joined) => (joined.ok().flatten(), false),
                 Err(_) => {
                     tracing::warn!(
                         timeout_secs = RESTORE_POINT_TIMEOUT.as_secs(),
@@ -3237,10 +3275,13 @@ impl Engine {
                             RESTORE_POINT_TIMEOUT.as_secs()
                         )))
                         .await;
-                    None
+                    (None, false)
                 }
             },
         };
+        if detached {
+            self.restore_point_landing = Some(landing);
+        }
         let Some((taken, changed)) = taken else {
             self.restore_point_since = None;
             return false;
@@ -7284,12 +7325,55 @@ impl Engine {
             self.constitution_block.clone()
         } else {
             let host_supplied = profile_constitution.is_some();
-            match crate::profile_constitution::capture(
-                self.api_config.account_profile.as_deref(),
-                profile_constitution,
-            )
-            .await
-            {
+            let fence = if provenance.can_authorize_work() {
+                Some(Arc::new(
+                    crate::profile_constitution::AccountFence::capture(
+                        self.api_config.account_profile.as_deref(),
+                    )
+                    .await,
+                ))
+            } else {
+                None
+            };
+            let captured = match profile_constitution {
+                Some(snapshot) => snapshot
+                    .render()
+                    .map(Some)
+                    .map_err(|error| error.to_string()),
+                None => match self
+                    .account_constitution
+                    .capture(
+                        self.api_config.account_profile.as_deref(),
+                        fence.as_deref(),
+                        &self.cancel_token,
+                    )
+                    .await
+                {
+                    crate::profile_constitution::AccountRead::Ready(result) => result,
+                    crate::profile_constitution::AccountRead::Pending {
+                        last: Some(block), ..
+                    } => Ok(Some(block)),
+                    crate::profile_constitution::AccountRead::Pending {
+                        last: None,
+                        signed_in,
+                    } => {
+                        if signed_in && !self.profile_constitution_pending_noticed {
+                            self.profile_constitution_pending_noticed = true;
+                            let _ = self
+                                .send_event(Event::status(
+                                    codewhale_localization::tr(
+                                        codewhale_localization::resolve_locale(&self.config.locale_tag),
+                                        codewhale_localization::MessageId::ProfileConstitutionLoadingLocal,
+                                    )
+                                    .to_string(),
+                                ))
+                                .await;
+                        }
+                        Ok(crate::prompts::load_user_constitution_block())
+                    }
+                },
+            };
+            let block = match captured {
                 Ok(block) => block,
                 // Local use never depends on the Codewhale account: an expired
                 // sign-in or unreachable account service falls back to the
@@ -7329,9 +7413,13 @@ impl Engine {
                         error: Some(error.to_string()),
                     };
                 }
+            };
+            if fence.is_some() {
+                self.turn_account_fence = fence;
             }
+            block
         };
-        if provenance.can_authorize_work() {
+        if provenance.can_authorize_work() && (is_review || self.rlm_host.is_some()) {
             self.turn_account_fence = Some(Arc::new(
                 crate::profile_constitution::AccountFence::capture(
                     self.api_config.account_profile.as_deref(),
@@ -11726,6 +11814,20 @@ async fn spawn_engine_inner(
     handle
 }
 
+fn sandbox_backend_from_result(
+    result: anyhow::Result<Option<Box<dyn codewhale_sandbox::backend::SandboxBackend>>>,
+) -> Option<std::sync::Arc<dyn codewhale_sandbox::backend::SandboxBackend>> {
+    match result {
+        Ok(backend) => backend.map(std::sync::Arc::from),
+        Err(e) => {
+            tracing::warn!("Failed to create sandbox backend: {e}");
+            Some(std::sync::Arc::from(
+                codewhale_sandbox::backend::unavailable_backend(e.to_string()),
+            ))
+        }
+    }
+}
+
 /// Spawn the engine in a background task
 pub async fn spawn_engine(
     config: EngineConfig,
@@ -12622,4 +12724,78 @@ fn record_model_turn_telemetry(
         },
         turn.started_at.elapsed().as_secs(),
     );
+}
+
+#[cfg(test)]
+mod interrupted_restore_point_tests {
+    use super::*;
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    use crate::test_support::{EnvVarGuard, lock_test_env};
+
+    #[test]
+    fn interrupted_closing_restore_points_stay_reserved_and_land_in_order() {
+        let _env = lock_test_env();
+        let root = tempfile::tempdir().unwrap();
+        let _home = EnvVarGuard::set("CODEWHALE_HOME", root.path());
+        let _user_home = EnvVarGuard::set("HOME", root.path());
+        let _user_profile = EnvVarGuard::set("USERPROFILE", root.path());
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("out.md"), "out\n").unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let config = Config::default();
+            let client = Arc::new(MockLlmClient::new(vec![canned::simple_text_turn("unused")]));
+            let (mut engine, _handle) = Engine::new_with_model_client(
+                EngineConfig {
+                    workspace: workspace.clone(),
+                    session_id: Some("session-interrupted".into()),
+                    snapshots_enabled: true,
+                    snapshots_max_workspace_bytes: 0,
+                    record_restore_points: true,
+                    subagents_enabled: false,
+                    ..EngineConfig::default()
+                },
+                &config,
+                client,
+            );
+            engine.cancel_token.cancel();
+            let closed_tool = engine
+                .take_restore_point(
+                    WorkspaceSnapshotKind::PostTool,
+                    "post-tool:call-write".to_string(),
+                    Some("call-write"),
+                    None,
+                )
+                .await;
+            let closed_turn = engine
+                .take_restore_point(
+                    WorkspaceSnapshotKind::PostTurn,
+                    format_snapshot_label("post-turn", 1, Some("write out.md")),
+                    None,
+                    None,
+                )
+                .await;
+            assert!(!closed_tool && !closed_turn);
+        });
+        assert!(codewhale_snapshot::wait_for_pending_post_turn_snapshots(
+            Duration::from_secs(60)
+        ));
+        let repo = codewhale_snapshot::SnapshotRepo::open_existing(&workspace)
+            .unwrap()
+            .expect("snapshot repo");
+        let labels: Vec<String> = repo
+            .list(usize::MAX)
+            .unwrap()
+            .into_iter()
+            .map(|snapshot| snapshot.label)
+            .collect();
+        assert_eq!(labels.len(), 2, "{labels:?}");
+        assert!(labels[0].starts_with("post-turn:"), "{labels:?}");
+        assert_eq!(labels[1], "post-tool:call-write");
+        drop(runtime);
+    }
 }

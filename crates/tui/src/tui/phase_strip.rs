@@ -665,14 +665,9 @@ mod tests {
 // a glancing user looks; the clock lives here.
 // ---------------------------------------------------------------------------
 
-/// The context cap warning at ≥80% (spec §5a/§5e). The reading itself lives
-/// in the metrics line; this bar still says what to do about it.
-const DEPTH_WARN: &str = "surface soon — /compact";
-
-/// What the caller owes the posture bar. All injected, deterministic.
 pub struct TidelineFooter<'a> {
     pub theme: &'a codewhale_palette::UiTheme,
-    /// Permission dial chip (`ask` / `accept edits` / `plan` / `auto` /
+    /// Permission dial chip (`Ask` / `Accept Edits` / `Plan` / `Auto-Review` /
     /// `Full Access`, plus the filesystem scope notice when it deviates) in
     /// its ink. Never sheds.
     pub permission_chip: (&'a str, codewhale_palette::ChromeInk),
@@ -702,6 +697,7 @@ pub struct TidelineFooter<'a> {
     /// the remote-control state.
     pub right: Option<(&'a str, codewhale_palette::ChromeInk)>,
     pub ascii_safe: bool,
+    pub locale: codewhale_localization::Locale,
     /// `tui.posture_bar = "compact"` (#5950): start the shed ladder at
     /// the kit's compact rung instead of rung 0, so the row states its posture —
     /// the permission dial chip, and the cap warning when it is owed —
@@ -731,9 +727,16 @@ impl<'a> TidelineFooter<'a> {
             context_percent: 0,
             right: None,
             ascii_safe: false,
+            locale: codewhale_localization::Locale::En,
             compact: false,
             working_glow: None,
         }
+    }
+
+    #[must_use]
+    pub fn locale(mut self, locale: codewhale_localization::Locale) -> Self {
+        self.locale = locale;
+        self
     }
 
     #[must_use]
@@ -816,7 +819,7 @@ impl<'a> TidelineFooter<'a> {
         let mut bar = PostureBar::new(self.permission_chip.0)
             .permission_role(ink_role(self.permission_chip.1))
             .context_percent(self.context_percent)
-            .cap_warning(DEPTH_WARN)
+            .cap_warning(tr(self.locale, MessageId::PostureDepthWarn))
             .compact(self.compact);
         bar.permission_key = self.permission_key.map(Into::into);
         bar.turn_clock = self.turn_clock.map(posture_fact);
@@ -895,6 +898,7 @@ pub(crate) struct TidelineFooterFacts {
     pub hint: Option<(String, codewhale_palette::ChromeInk)>,
     pub context_percent: u8,
     pub right: Option<(String, codewhale_palette::ChromeInk)>,
+    pub locale: codewhale_localization::Locale,
 }
 
 impl TidelineFooterFacts {
@@ -919,6 +923,7 @@ impl TidelineFooterFacts {
         .context_percent(self.context_percent)
         .right(borrow(&self.right))
         .ascii_safe(ascii_safe)
+        .locale(self.locale)
     }
 }
 
@@ -1146,10 +1151,18 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
     // The right slot: the live status toast if one is owed, else the compact
     // MCP or plugin boot chip, else the remote-control state when it is on.
     // Clause-shed against half the row — the posture facts own the other
-    // half.
+    // half — and, while a turn runs, against what the turn clock leaves.
     let notice_budget = (usize::from(width) / 2)
         .max(8)
         .min(usize::from(width).saturating_sub(permission_chip.0.width() + 5));
+    let (turn_clock, session_clock) = working_clock(app, phase, &phase_label);
+    let beside_clock = turn_clock.as_ref().map(|(clock, _)| {
+        usize::from(width).saturating_sub(permission_chip.0.width() + clock.width() + 8)
+    });
+    let beside_hint = beside_clock.zip(hint.as_ref()).map(|(budget, (hint, _))| {
+        notice_budget.min(budget.saturating_sub(hint.width() + ITEM_SEPARATOR_WIDTH))
+    });
+    let notice_budget = beside_clock.map_or(notice_budget, |budget| notice_budget.min(budget));
     let right = selected_notice(app.active_status_toast(phase), &phase_label)
         .map(|(text, fallbacks, ink, urgent)| {
             (
@@ -1180,7 +1193,15 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
                 .map(|chip| (chip.text, Vec::new(), boot_activity_ink(chip.level), false))
         })
         .and_then(|(text, fallbacks, ink, urgent)| {
-            fit_notice_candidates(&text, &fallbacks, notice_budget, urgent)
+            beside_hint
+                .and_then(|budget| {
+                    std::iter::once(&text)
+                        .chain(&fallbacks)
+                        .map(|candidate| candidate.trim())
+                        .find(|candidate| !candidate.is_empty() && candidate.width() <= budget)
+                        .map(str::to_string)
+                })
+                .or_else(|| fit_notice_candidates(&text, &fallbacks, notice_budget, urgent))
                 .map(|fitted| (fitted, ink))
         })
         .or_else(|| {
@@ -1196,7 +1217,6 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
             }
         });
 
-    let (turn_clock, session_clock) = working_clock(app, phase, &phase_label);
     let (counts, count_actions) = live_counts(app, tier);
     TidelineFooterFacts {
         permission_chip,
@@ -1221,6 +1241,7 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
         hint,
         context_percent: context_percent_from_app(app),
         right,
+        locale: app.ui_locale,
     }
 }
 

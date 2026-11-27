@@ -93,6 +93,7 @@ pub const HOST_SERVICE_INJECTS: &[(&str, HostService)] = &[
     ("deepseekAccount", HostService::Catalog),
     ("terminal", HostService::Terminal),
     ("remote", HostService::Remote),
+    ("attachments", HostService::Attachments),
 ];
 
 #[cfg(any(test, feature = "test-support"))]
@@ -583,11 +584,7 @@ mod tests {
     #[test]
     fn every_host_service_is_offered_and_the_table_names_only_advertised_injects() {
         assert!(!HOST_SERVICE_INJECTS.is_empty());
-        assert!(
-            HostService::ALL
-                .into_iter()
-                .all(|service| (service == HostService::Attachments) ^ offered(service))
-        );
+        assert!(HostService::ALL.into_iter().all(offered));
         let table: serde_json::Value =
             serde_json::from_slice(crate::activation::DSH_COMPATIBILITY).unwrap();
         let advertised: BTreeSet<&str> = table["provided_services"]

@@ -11,8 +11,8 @@ use crate::tui::app::ScreenMode;
 use codewhale_command_contract::config::{
     CommandAccountState, CommandClaudeApplyOutcome, CommandClaudeArtifacts, CommandClaudePlan,
     CommandConfigContext, CommandLoginContext, CommandLoginStatus, CommandPetContext,
-    CommandPetControl, CommandPetLabel, CommandTrustContext, CommandWorkSurfaceContext,
-    CommandWorkflowSummary, ConfigReply, TrustPathError,
+    CommandPetLabel, CommandTrustContext, CommandWorkSurfaceContext, CommandWorkflowSummary,
+    ConfigReply, TrustPathError,
 };
 use codewhale_command_contract::types::CommandScreenMode;
 use codewhale_command_contract::types::{CommandRailPanel, CommandWorkSurfacePlacement};
@@ -178,37 +178,6 @@ impl CommandPetContext for PetAdapter<'_> {
         self.host.app.borrow().pet_watch.enabled
     }
 
-    fn is_open(&self) -> bool {
-        let app = self.host.app.borrow();
-        crate::tui::pet_watch::is_open(&app)
-    }
-
-    fn status(&self) -> String {
-        self.host.app.borrow().pet_watch.status()
-    }
-
-    fn avatar_choices(&self) -> String {
-        self.host.app.borrow().pet_watch.avatar_choices()
-    }
-
-    fn select_avatar(&mut self, key: &str) -> bool {
-        let mut app = self.host.app.borrow_mut();
-        let ok = app.pet_watch.select_avatar(key);
-        if ok {
-            app.needs_redraw = true;
-        }
-        ok
-    }
-
-    fn preview_avatar(&mut self, name: &str, view: bool) -> bool {
-        let mut app = self.host.app.borrow_mut();
-        let ok = app.pet_watch.preview_avatar(name, view);
-        if ok {
-            app.needs_redraw = true;
-        }
-        ok
-    }
-
     fn set_enabled(&mut self, enabled: bool, persist: bool) {
         let mut app = self.host.app.borrow_mut();
         crate::tui::pet_watch::set_enabled(&mut app, enabled);
@@ -220,40 +189,26 @@ impl CommandPetContext for PetAdapter<'_> {
         }
     }
 
-    fn set_sound(&mut self, enabled: bool) {
+    fn still(&self) -> bool {
+        self.host.app.borrow().pet_watch.still()
+    }
+
+    fn set_still(&mut self, still: bool) {
         let mut app = self.host.app.borrow_mut();
-        app.pet_watch.set_sound(enabled);
+        app.pet_watch.set_still(still);
         app.needs_redraw = true;
     }
 
-    fn sound_label(&self) -> String {
-        let app = self.host.app.borrow();
-        codewhale_localization::tr(app.ui_locale, app.pet_watch.sound_label()).into_owned()
-    }
-
-    fn export(&mut self) -> bool {
-        self.host.app.borrow_mut().pet_watch.export()
-    }
-
-    fn open_habitat(&mut self) {
+    fn set_name(&mut self, name: &str) {
         let mut app = self.host.app.borrow_mut();
-        crate::tui::pet_watch::open_habitat(&mut app);
+        app.pet_watch.set_name(Some(name.to_owned()));
+        app.needs_redraw = true;
     }
 
-    fn queue(&mut self, control: CommandPetControl) -> bool {
-        use crate::tui::pet_watch::{BodyStyle, Control};
-        let control = match control {
-            CommandPetControl::Sound => Control::Sound,
-            CommandPetControl::Browser => Control::Browser,
-            CommandPetControl::Select => Control::Select,
-            CommandPetControl::FocusAgents => Control::FocusAgents,
-            CommandPetControl::Appearance { body } => match BodyStyle::parse(body.as_str()) {
-                Some(body) => Control::Appearance { body },
-                None => return false,
-            },
-        };
+    fn set_color(&mut self, color: Option<[u8; 3]>) {
         let mut app = self.host.app.borrow_mut();
-        crate::tui::pet_watch::command(&mut app, control)
+        app.pet_watch.set_color(color);
+        app.needs_redraw = true;
     }
 
     fn label(&self, which: CommandPetLabel) -> String {
@@ -262,15 +217,11 @@ impl CommandPetContext for PetAdapter<'_> {
         let id = match which {
             CommandPetLabel::ModeOn => MessageId::PetModeOn,
             CommandPetLabel::ModeOff => MessageId::PetModeOff,
-            CommandPetLabel::ModeOnLabel => MessageId::PetModeOnLabel,
-            CommandPetLabel::ModeOffLabel => MessageId::PetModeOffLabel,
-            CommandPetLabel::ViewOpen => MessageId::PetViewOpen,
-            CommandPetLabel::ViewClosed => MessageId::PetViewClosed,
-            CommandPetLabel::HabitatQueued => MessageId::PetHabitatQueued,
-            CommandPetLabel::ExportQueued => MessageId::PetWatchExportQueued,
-            CommandPetLabel::ExportUnavailable => MessageId::PetWatchExportUnavailable,
-            CommandPetLabel::SoundOn => MessageId::PetWatchSoundOn,
-            CommandPetLabel::WatchUnavailable => MessageId::PetWatchUnavailable,
+            CommandPetLabel::StillOn => MessageId::WhaleStillOn,
+            CommandPetLabel::StillOff => MessageId::WhaleStillOff,
+            CommandPetLabel::Named => MessageId::WhaleNamed,
+            CommandPetLabel::Colored => MessageId::WhaleColored,
+            CommandPetLabel::ColorReset => MessageId::WhaleColorReset,
         };
         codewhale_localization::tr(app.ui_locale, id).into_owned()
     }
@@ -344,6 +295,7 @@ impl CommandLoginContext for LoginAdapter<'_> {
                     account: CommandAccountState::Unavailable(error.to_string()),
                     api_base: String::new(),
                     provider: app.provider_identity_for_persistence().to_string(),
+                    sign_in_open: crate::tui::account_login::ACCOUNT_SIGN_IN_ENABLED,
                 };
             }
         };
@@ -368,6 +320,7 @@ impl CommandLoginContext for LoginAdapter<'_> {
             account,
             api_base,
             provider: app.provider_identity_for_persistence().to_string(),
+            sign_in_open: crate::tui::account_login::ACCOUNT_SIGN_IN_ENABLED,
         }
     }
 
@@ -387,7 +340,12 @@ impl CommandLoginContext for LoginAdapter<'_> {
                 },
             ),
             Some(other) => ConfigReply::error(format!(
-                "Usage: /connect [account|<provider>]\nUnknown or inactive plugin provider: {other}\nCodewhale account sign-in is `/login`."
+                "Usage: /connect [account|<provider>]\nUnknown or inactive plugin provider: {other}{}",
+                if crate::tui::account_login::ACCOUNT_SIGN_IN_ENABLED {
+                    "\nCodewhale account sign-in is `/login`."
+                } else {
+                    ""
+                }
             )),
         }
     }

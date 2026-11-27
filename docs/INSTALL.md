@@ -25,7 +25,7 @@ there.
 
 Install commands that use `latest` resolve to the latest **published** GitHub
 Release or package. Between releases, `main` may already describe the next
-version (for example a v0.10.3 source candidate before its tag). A
+version (for example a v0.10.5 source candidate before its tag). A
 prebuilt candidate is available through the official installer only after its
 tag, checksums and release assets exist. Contributors can build `main` now.
 
@@ -143,7 +143,8 @@ box) to quit. It prints the command to resume the session later.
 Pick **one**. Several installs on one machine end up fighting over PATH (see
 [Troubleshooting](#13-troubleshooting)).
 
-**Privacy note:** Codewhale sends aggregate usage counts (PostHog) **by
+**Privacy note:** Codewhale sends aggregate usage counts to Codewhale's
+first-party endpoint (`https://telemetry.codewhale.net/v1/telemetry`) **by
 default**. To turn this off permanently:
 `codewhale config set telemetry false`, or export `CODEWHALE_TELEMETRY=0`,
 which always wins. The TUI also checks GitHub for updates at startup
@@ -471,8 +472,9 @@ command -v codewhale codew     # ~/.npm-global/bin/codewhale, ~/.npm-global/bin/
   prefix (`npm install -g --prefix <dir> codewhale`) took 3 s and linked
   `codewhale` and `codew`, both `codewhale 0.10.0 (1be1a703b975)`.
 * **Upgrade:** `npm install -g codewhale@latest`. `codewhale update` refuses
-  on npm installs. It prints migration instructions and exits 1 with
-  `error: The package-managed executable was not changed.`
+  on npm installs. It prints the one command that updates it, ends with
+  `Not updated: use the command above.` and exits 1 (`codewhale uninstall` does
+  the same for these copies: `Not removed: use the command above.`, exit 1)
 * **Specific version:** `npm install -g codewhale@0.9.13`.
 * **Uninstall:** `npm uninstall -g codewhale`. This removes only the program,
   not your data (§12).
@@ -664,7 +666,12 @@ Release-binary installs update themselves:
 3. The next time you start `codewhale`, before any session opens, the staged
    binary replaces the installed one. A running session is never touched.
    You see one line:
-   `Updated to v0.10.4 · What's new: https://codewhale.net/en/changelog/0.10.4 · Undo: codewhale update --rollback`.
+   `Updated to v0.10.5 · What's new: https://codewhale.net/en/changelog/0.10.5 · Undo: codewhale update --rollback (back to v0.10.4)`.
+   The Undo part appears only when the kept version can be rolled back to.
+   v0.10.3 and later refuse to roll back to v0.10.3 or earlier, because
+   workspace state they migrated cannot be checked against those releases;
+   the line then says `No rollback: …` instead, and `codewhale doctor` says
+   the same.
 
 **Until releases are signed, an update waits for your OK.** The download is
 checksum-verified, but the checksum comes from the same place as the binary, so
@@ -747,7 +754,7 @@ Every update, automatic or manual, keeps the version it replaced in
 
 ```bash
 codewhale update --rollback
-#   Rolled back to v0.10.3. v0.10.4 will not be installed automatically again; the next newer release will.
+#   Rolled back to v0.10.4. v0.10.5 will not be installed automatically again; the next newer release will.
 ```
 
 Run it again to swap forward. `codewhale update` never downgrades, and
@@ -821,25 +828,33 @@ reported.
 
 The Engine verifies `codewhale-artifacts-sha256.txt.sig`, a base64 Ed25519
 signature over `codewhale-release-manifest-v1\n<version>\n<manifest bytes>`
-(`crates/release/src/signing.rs`). With no key configured every release reads
-as unsigned and automatic updates wait for each user's OK. One key signs both
-the CLI manifest and the desktop appcast. To turn signing on:
+(`crates/release/src/signing.rs`). Releases are signed from 0.10.5, and the
+release public key is compiled in as `TRUSTED_RELEASE_KEYS`:
 
-1. Create the key offline with OpenSSL 3 and keep the private half outside
-   any repository:
+- A build that carries the key refuses a release whose signature is missing or
+  does not verify, in `codewhale update` and in automatic updates. Nothing is
+  installed and the message names the signature file.
+- A build from before 0.10.5 trusts no key, so the update to 0.10.5 itself
+  still asks once before installing.
+- From 0.10.5 on, the next release installs without asking.
+
+Every release after 0.10.5 must therefore be signed with this key. macOS
+desktop updates do not use it: they are trusted by Developer ID signing.
+
+How the key is set up:
+
+1. The key is created offline with OpenSSL 3 and its private half stays
+   outside any repository:
    `openssl genpkey -algorithm ed25519 -out codewhale-release-ed25519.pem`
-2. Add the PEM file's contents as the GitHub Actions secret
+2. The PEM file's contents are the GitHub Actions secret
    `CODEWHALE_RELEASE_SIGNING_KEY` on the Engine repository. The release
    workflow (`release-artifacts.yml`, assemble job) then runs
    `scripts/release/sign-release-manifest.sh` and publishes the `.sig`
    beside the manifest; without the secret it skips signing and says so.
-3. Print the public key:
+3. The public key is printed with
    `CODEWHALE_RELEASE_SIGNING_KEY="$(cat codewhale-release-ed25519.pem)" scripts/release/sign-release-manifest.sh --public-key`
-   and add it to `TRUSTED_RELEASE_KEYS` in `crates/release/src/signing.rs`
-   (or set `CODEWHALE_RELEASE_PUBLIC_KEY=<hex>` when building). Add the same
-   32 bytes to the desktop app's `TRUSTED_APPCAST_KEYS`.
-4. Ship a release built with the public key first; the release after it is the
-   first one installed without asking.
+   and listed in `TRUSTED_RELEASE_KEYS` in `crates/release/src/signing.rs`
+   (a build can add one more with `CODEWHALE_RELEASE_PUBLIC_KEY=<hex>`).
 
 To rotate, add the new public key next to the old one, release, then switch
 the secret and remove the old key a release later.
@@ -1227,8 +1242,10 @@ delete the two files first (§7 rollback), or install into a fresh
 The download was corrupted or tampered with. Nothing was installed. Retry, and
 if it repeats, don't use a mirror.
 
-**`error: The package-managed executable was not changed.` (from `codewhale update`)**
-You installed with npm, Cargo or Homebrew. Update with that tool instead.
+**`Not updated: use the command above.` (from `codewhale update`)**
+You installed with npm, Cargo or Homebrew. Run the command printed above that
+line; `codewhale update` exits 1 so scripts can tell nothing was updated.
+`codewhale uninstall` ends the same way (`Not removed: use the command above.`).
 
 **`error: failed to run custom build command for libdbus-sys` (Cargo).**
 Run `sudo apt-get install -y libdbus-1-dev pkg-config`.

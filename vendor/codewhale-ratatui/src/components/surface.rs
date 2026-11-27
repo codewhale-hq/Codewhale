@@ -31,6 +31,10 @@ pub enum Depth {
     Deep,
     /// The stage: full-screen sheets. No edge; a two-cell gutter.
     Stage,
+    /// Tonal elevation: borderless `Role::Surface` fill where terminal grounds
+    /// differ, degrading to a quiet left rail (`▏` / `|`) in `Role::Border`
+    /// when grounds cannot be distinguished.
+    Tonal,
     /// A card on the stage.
     Raised,
     /// A decision over everything else: always edged in `BorderStrong`.
@@ -43,9 +47,20 @@ impl Depth {
         match self {
             Depth::Deep => Role::Sidebar,
             Depth::Stage => Role::Background,
-            Depth::Raised | Depth::Overlay => Role::Surface,
+            Depth::Tonal | Depth::Raised | Depth::Overlay => Role::Surface,
         }
     }
+}
+
+fn surface_grounds_collapse(theme: &Theme) -> bool {
+    !theme.grounds_differ(Role::Surface, Role::Background)
+        || (theme.depth() == color::ColorDepth::Ansi256
+            && theme
+                .bg(Role::Surface)
+                .bg
+                .zip(theme.bg(Role::Background).bg)
+                .and_then(|(surface, background)| color::contrast_ratio(surface, background))
+                .is_some_and(|contrast| contrast < 1.2))
 }
 
 /// A titled panel. [`Panel::draw`] paints it and returns the content area.
@@ -70,6 +85,14 @@ impl<'a> Panel<'a> {
             focused: false,
             hints: None,
         }
+    }
+
+    /// A tonal panel: borderless `Role::Surface` fill where terminal grounds
+    /// differ, degrading to a quiet left rail (`▏` / `|`) in `Role::Border`
+    /// where grounds collapse.
+    #[must_use]
+    pub fn tonal() -> Self {
+        Self::new(Depth::Tonal)
     }
 
     #[must_use]
@@ -99,20 +122,13 @@ impl<'a> Panel<'a> {
     pub(crate) fn edged(&self, theme: &Theme) -> bool {
         match self.depth {
             Depth::Overlay => true,
-            Depth::Raised => {
-                !theme.grounds_differ(Role::Surface, Role::Background)
-                    || (theme.depth() == color::ColorDepth::Ansi256
-                        && theme
-                            .bg(Role::Surface)
-                            .bg
-                            .zip(theme.bg(Role::Background).bg)
-                            .and_then(|(surface, background)| {
-                                color::contrast_ratio(surface, background)
-                            })
-                            .is_some_and(|contrast| contrast < 1.2))
-            }
-            Depth::Deep | Depth::Stage => false,
+            Depth::Raised => surface_grounds_collapse(theme),
+            Depth::Deep | Depth::Stage | Depth::Tonal => false,
         }
+    }
+
+    fn tonal_rail(&self, theme: &Theme) -> bool {
+        self.depth == Depth::Tonal && surface_grounds_collapse(theme)
     }
 
     /// Where everything goes in `area`, without painting. [`Panel::draw`]
@@ -137,6 +153,10 @@ impl<'a> Panel<'a> {
             width: inner.width.saturating_sub(gutter * 2),
             height: inner.height.saturating_sub(vpad * 2),
         };
+        if gutter == 0 && self.tonal_rail(theme) && inner.width >= 2 {
+            inner.x += 1;
+            inner.width -= 1;
+        }
 
         let mut title_row = None;
         if self.title.is_some() && inner.height > 0 {
@@ -226,6 +246,12 @@ impl<'a> Panel<'a> {
                 buf[(area.x, y)]
                     .set_symbol(glyphs::pick("▏", theme.ascii()))
                     .set_style(theme.fg(Role::Accent).patch(ground));
+            }
+        } else if self.tonal_rail(theme) && area.width >= 2 {
+            for y in area.y..area.bottom() {
+                buf[(area.x, y)]
+                    .set_symbol(glyphs::pick("▏", theme.ascii()))
+                    .set_style(theme.fg(Role::Border).patch(ground));
             }
         }
 

@@ -475,6 +475,37 @@ textarea::placeholder {
   font-size: 11px;
 }
 
+.peek-header {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  padding-bottom: 12px;
+}
+
+.peek-header h2 {
+  margin: 0;
+}
+
+.peek-notice {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.peek-omitted-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 0;
+}
+
+.peek-tool .peek-text {
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+
 /* Narrow viewports: the peek must not force horizontal scrolling, and the
    kind label stacks above its text rather than squeezing it. */
 @media (max-width: 480px) {
@@ -882,8 +913,19 @@ textarea::placeholder {
   font-size: 15px;
 }
 
+.attention-card .approval-detail {
+  margin-top: 10px;
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+
+.attention-card .approval-detail p {
+  margin-top: 6px;
+  font-size: 12.5px;
+}
+
 .attention-card .approval-request {
-  margin: 0 0 12px;
+  margin: 12px 0;
   padding: 8px 10px;
   max-height: 240px;
   overflow: auto;

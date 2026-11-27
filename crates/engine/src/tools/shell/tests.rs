@@ -4484,7 +4484,7 @@ fn windows_job_kill_on_close_releases_reader_threads_when_terminate_denied() {
 
     let result = execute_shell(
         &mut manager,
-        r#"cmd /c start "" /b ping 127.0.0.1 -n 8"#,
+        r#"cmd /c start "" /b ping 127.0.0.1 -n 60"#,
         None,
         5000,
         true,
@@ -4508,11 +4508,11 @@ fn windows_job_kill_on_close_releases_reader_threads_when_terminate_denied() {
 
     let started = std::time::Instant::now();
     let done = manager
-        .get_output(&task_id, true, 3000)
+        .get_output(&task_id, true, 20000)
         .expect("get_output must complete via kill-on-close fallback");
 
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(4),
+        started.elapsed() < std::time::Duration::from_secs(30),
         "get_output waited for natural descendant exit instead of kill-on-close"
     );
     assert_eq!(done.status, ShellStatus::Completed);

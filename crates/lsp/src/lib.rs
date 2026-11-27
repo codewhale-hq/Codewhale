@@ -1174,8 +1174,7 @@ impl LspManager {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
-pub mod tests {
+mod fake_transport {
     use super::*;
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1214,6 +1213,17 @@ pub mod tests {
 
         async fn shutdown(&self) {}
     }
+}
+
+#[cfg(all(feature = "test-support", not(test)))]
+pub mod tests {
+    pub use super::fake_transport::FakeTransport;
+}
+
+#[cfg(test)]
+pub mod tests {
+    pub use super::fake_transport::FakeTransport;
+    use super::*;
 
     #[cfg(unix)]
     async fn cache_fixture(custom: bool) {

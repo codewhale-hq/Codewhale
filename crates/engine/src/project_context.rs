@@ -869,9 +869,6 @@ pub fn load_project_context_with_imports(
     ctx.notices.extend(rules.notices);
     ctx.rules_block = rules.block;
 
-    // Check for trust file
-    ctx.is_trusted = check_trust_status(workspace);
-
     ctx.rebuild_joined_instructions();
     ctx
 }
@@ -1257,7 +1254,6 @@ fn load_project_context_with_settings_uncached(
             ctx.source_path = global.source_path;
         }
     }
-    ctx.is_trusted = check_trust_status(&workspace_canonical);
     ctx.rebuild_joined_instructions();
 
     // Generate a bounded in-memory fallback when no context file exists
@@ -1385,19 +1381,6 @@ pub fn project_context_cache_candidate_paths(
                 let root = path.parent().and_then(Path::parent).map(Path::to_path_buf);
                 (path, root)
             }),
-    );
-    paths.push((
-        workspace.join(".deepseek").join("trusted"),
-        Some(workspace.clone()),
-    ));
-    paths.push((
-        workspace.join(".deepseek").join("trust.json"),
-        Some(workspace.clone()),
-    ));
-    paths.extend(
-        codewhale_runtime::config::workspace_trust_config_candidate_paths()
-            .into_iter()
-            .map(|path| (path, None)),
     );
 
     // Include auto-discovered rules directory files so cache invalidates
@@ -1941,27 +1924,6 @@ fn load_global_context_file_limited(path: &Path, cap: u64) -> Result<String, Pro
         }
     })?;
     read_context_file(file, path, cap)
-}
-
-/// Check if this project is marked as trusted
-fn check_trust_status(workspace: &Path) -> bool {
-    if codewhale_runtime::config::is_workspace_trusted(workspace) {
-        return true;
-    }
-
-    // Check for trust markers
-    let trust_markers = [
-        workspace.join(".deepseek").join("trusted"),
-        workspace.join(".deepseek").join("trust.json"),
-    ];
-
-    for marker in &trust_markers {
-        if marker.exists() {
-            return true;
-        }
-    }
-
-    false
 }
 
 /// Create a default AGENTS.md file for a project
@@ -2919,21 +2881,6 @@ mod tests {
     }
 
     #[test]
-    fn test_check_trust_status() {
-        let tmp = tempdir().expect("tempdir");
-
-        // Not trusted by default
-        assert!(!check_trust_status(tmp.path()));
-
-        // Create trust marker
-        let deepseek_dir = tmp.path().join(".deepseek");
-        fs::create_dir(&deepseek_dir).expect("mkdir");
-        fs::write(deepseek_dir.join("trusted"), "").expect("write");
-
-        assert!(check_trust_status(tmp.path()));
-    }
-
-    #[test]
     fn test_create_default_agents_md() {
         let tmp = tempdir().expect("tempdir");
         let path = create_default_agents_md(tmp.path()).expect("create");
@@ -3472,29 +3419,6 @@ mod tests {
         assert!(
             !generated_path.exists(),
             "cached generated context should remain in memory-only state"
-        );
-    }
-
-    #[test]
-    fn cached_context_reflects_trust_marker_created() {
-        crate::project_context_cache::clear();
-        let workspace = tempdir().expect("workspace tempdir");
-        let home = tempdir().expect("home tempdir");
-        fs::write(workspace.path().join("AGENTS.md"), "instructions").expect("write agents");
-
-        let first =
-            load_project_context_with_parents_cached_and_home(workspace.path(), Some(home.path()));
-        assert!(!first.is_trusted);
-
-        let trust_dir = workspace.path().join(".deepseek");
-        fs::create_dir(&trust_dir).expect("mkdir trust dir");
-        fs::write(trust_dir.join("trusted"), "").expect("write trust marker");
-
-        let second =
-            load_project_context_with_parents_cached_and_home(workspace.path(), Some(home.path()));
-        assert!(
-            second.is_trusted,
-            "cache must invalidate when trust marker appears"
         );
     }
 

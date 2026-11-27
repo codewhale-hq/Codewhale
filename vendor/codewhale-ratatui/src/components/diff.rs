@@ -659,3 +659,179 @@ impl Paint for Diff<'_> {
         u16::try_from(self.rows(width, theme).len()).unwrap_or(u16::MAX)
     }
 }
+
+/// Which git or session slice a diff review is inspecting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum DiffScope {
+    /// Unstaged working-tree changes.
+    #[default]
+    Unstaged,
+    /// Staged index changes.
+    Staged,
+    /// Changes compared against the base branch.
+    Branch,
+    /// Changes produced by a single turn.
+    Turn,
+}
+
+impl DiffScope {
+    /// Short display label for this diff scope.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Unstaged => "Unstaged",
+            Self::Staged => "Staged",
+            Self::Branch => "Branch",
+            Self::Turn => "Turn",
+        }
+    }
+}
+
+/// One file tracked in a diff review checklist.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiffReviewFile<'a> {
+    /// Repository-relative file path.
+    pub path: Cow<'a, str>,
+    /// Lines added in this file.
+    pub added: usize,
+    /// Lines removed in this file.
+    pub removed: usize,
+    /// Whether this file has been marked viewed.
+    pub viewed: bool,
+}
+
+impl<'a> DiffReviewFile<'a> {
+    /// Construct an unviewed review file entry.
+    #[must_use]
+    pub fn new(path: impl Into<Cow<'a, str>>, added: usize, removed: usize) -> Self {
+        Self {
+            path: path.into(),
+            added,
+            removed,
+            viewed: false,
+        }
+    }
+
+    /// Mark whether this file has been viewed.
+    #[must_use]
+    pub const fn viewed(mut self, viewed: bool) -> Self {
+        self.viewed = viewed;
+        self
+    }
+}
+
+/// Return the next unviewed file index after `current` in list order, wrapping around.
+///
+/// Never returns `current` when `current` is the only remaining unviewed file.
+/// When `current` is `None` or out of bounds, returns the first unviewed file.
+#[must_use]
+pub fn next_unviewed(files: &[DiffReviewFile<'_>], current: Option<usize>) -> Option<usize> {
+    if files.is_empty() {
+        return None;
+    }
+    match current {
+        Some(idx) if idx < files.len() => {
+            for offset in 1..files.len() {
+                let candidate = (idx + offset) % files.len();
+                if !files[candidate].viewed {
+                    return Some(candidate);
+                }
+            }
+            None
+        }
+        _ => files.iter().position(|file| !file.viewed),
+    }
+}
+
+/// Compact diff review summary header (`Scope · viewed/total · +N −M`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiffReviewHeader {
+    /// Active diff scope.
+    pub scope: DiffScope,
+    /// Number of viewed files.
+    pub viewed: usize,
+    /// Total number of files in the review.
+    pub total: usize,
+    /// Total lines added across the review.
+    pub added: usize,
+    /// Total lines removed across the review.
+    pub removed: usize,
+}
+
+impl DiffReviewHeader {
+    /// Construct a review header from explicit counts.
+    #[must_use]
+    pub const fn new(
+        scope: DiffScope,
+        viewed: usize,
+        total: usize,
+        added: usize,
+        removed: usize,
+    ) -> Self {
+        Self {
+            scope,
+            viewed,
+            total,
+            added,
+            removed,
+        }
+    }
+
+    /// Summarize a slice of [`DiffReviewFile`] entries under `scope`.
+    #[must_use]
+    pub fn from_files(scope: DiffScope, files: &[DiffReviewFile<'_>]) -> Self {
+        let mut viewed = 0usize;
+        let mut added = 0usize;
+        let mut removed = 0usize;
+        for file in files {
+            if file.viewed {
+                viewed += 1;
+            }
+            added = added.saturating_add(file.added);
+            removed = removed.saturating_add(file.removed);
+        }
+        Self {
+            scope,
+            viewed,
+            total: files.len(),
+            added,
+            removed,
+        }
+    }
+}
+
+impl Paint for DiffReviewHeader {
+    fn paint(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
+        let area = area.intersection(buf.area);
+        if area.is_empty() {
+            return;
+        }
+        let ascii = theme.ascii();
+        let sep = if ascii { " - " } else { " · " };
+        let minus = if ascii { "-" } else { "\u{2212}" };
+        let viewed = self.viewed.min(self.total);
+        let width = usize::from(area.width);
+        let scope_text = text::truncate(self.scope.label(), width, ascii).into_owned();
+        let mut used = text::width(&scope_text);
+        let mut spans = vec![Span::styled(
+            scope_text,
+            theme.fg(Role::Foreground).add_modifier(Modifier::BOLD),
+        )];
+        let progress = format!("{sep}{viewed}/{}", self.total);
+        let progress_w = text::width(&progress);
+        if used + progress_w <= width {
+            spans.push(Span::styled(progress, theme.fg(Role::Muted)));
+            used += progress_w;
+        }
+        let add_text = format!("+{}", self.added);
+        let rem_text = format!("{minus}{}", self.removed);
+        let counts_w = text::width(sep) + text::width(&add_text) + 1 + text::width(&rem_text);
+        if used + counts_w <= width {
+            spans.push(Span::styled(sep, theme.fg(Role::Muted)));
+            spans.push(Span::styled(add_text, theme.fg(Role::Live)));
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(rem_text, theme.fg(Role::Danger)));
+        }
+        buf.set_line(area.x, area.y, &Line::from(spans), area.width);
+    }
+}

@@ -266,8 +266,7 @@ pub enum InitialInput {
 /// composer vim mode is active the user starts in `Normal` mode and presses
 /// `i`, `a`, or `o` to enter `Insert` mode.  `Esc` from `Insert` returns to
 /// `Normal`.  Standard vim motions (`h`/`j`/`k`/`l`, `w`/`b`, `0`/`$`, `x`,
-/// `dd`) work in `Normal` mode.  `Visual` is reserved for future selection
-/// support and currently behaves like `Normal`.
+/// `dd`) work in `Normal` mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VimMode {
     /// Normal / command mode — motions and operators, no text insertion.
@@ -275,8 +274,6 @@ pub enum VimMode {
     Normal,
     /// Insert mode — characters are appended at the cursor as typed.
     Insert,
-    /// Visual mode — reserved for future selection support.
-    Visual,
 }
 
 impl VimMode {}
@@ -455,7 +452,7 @@ impl QueuedMessage {
             .is_some_and(|instruction| instruction.starts_with(WORKFLOW_DRAFT_INSTRUCTION_PREFIX))
     }
 
-    #[allow(dead_code)] // Tests and queue helpers use the display-only form; send path resolves @mentions.
+    #[cfg_attr(not(test), expect(dead_code))]
     pub fn content(&self) -> String {
         if let Some(skill_instruction) = self.skill_instruction.as_ref() {
             format!(

@@ -122,9 +122,18 @@ pub fn discover_external_sources(
 }
 
 fn discover_from_json_file(path: &Path, kind: ExternalMcpSourceKind) -> Vec<ImportCandidate> {
-    checked_source(path, kind)
-        .map(|(candidates, _)| candidates)
-        .unwrap_or_default()
+    match checked_source(path, kind) {
+        Ok((candidates, problems)) => {
+            for problem in &problems {
+                tracing::warn!(target: "mcp", source = %path.display(), %problem, "skipping MCP import entry");
+            }
+            candidates
+        }
+        Err(error) => {
+            tracing::warn!(target: "mcp", source = %path.display(), %error, "skipping MCP import source");
+            Vec::new()
+        }
+    }
 }
 
 /// Most per-entry problems reported for one source; the rest are counted.

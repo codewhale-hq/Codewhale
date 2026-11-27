@@ -3509,6 +3509,28 @@
       }
     },
     {
+      "id": "trustedrouter",
+      "label": "TrustedRouter",
+      "wire": "openai-compatible",
+      "base_url": "https://api.trustedrouter.com/v1",
+      "api_key_env": "TRUSTEDROUTER_API_KEY",
+      "default_model": "deepseek/deepseek-v4-flash",
+      "discovery": "public_models_endpoint",
+      "docs_url": "https://trustedrouter.com/docs",
+      "credential_url": "https://trustedrouter.com/console/api-keys",
+      "guidance": "OpenAI-compatible gateway (Chat Completions + GET /v1/models, which is public). Model ids are vendor-prefixed, such as deepseek/deepseek-v4-flash or anthropic/claude-sonnet-4.5; trustedrouter/auto routes each request across models. Live /v1/models is the model authority. Store TRUSTEDROUTER_API_KEY, not a raw key. A public listing does not verify the key.",
+      "aliases": [
+        "trusted-router"
+      ],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
+    },
+    {
       "id": "tsubasa",
       "label": "Tsubasa",
       "wire": "openai-compatible",
@@ -3518,6 +3540,28 @@
       "discovery": "models_endpoint",
       "docs_url": "https://tsubasa.sh/docs",
       "guidance": "OpenAI-compatible host (Chat Completions + GET /v1/models only). Public model ids: tsubasa-pro and tsubasa-fast, both with a 32,768-token context, so set context_window = 32768 on [providers.tsubasa]. Store TSUBASA_API_KEY, not a raw key.",
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
+    },
+    {
+      "id": "worldrouter",
+      "label": "WorldRouter",
+      "wire": "openai-compatible",
+      "base_url": "https://inference-api.worldrouter.ai/v1",
+      "api_key_env": "WORLDROUTER_API_KEY",
+      "default_model": "claude-sonnet-5-5",
+      "discovery": "models_endpoint",
+      "docs_url": "https://www.worldrouter.ai/docs/quickstart",
+      "credential_url": "https://www.worldrouter.ai/",
+      "guidance": "OpenAI-compatible gateway (Chat Completions + GET /v1/models). Bare model ids such as claude-sonnet-5-5, deepseek-v4-flash or gemini-4-neon, as listed at worldrouter.ai/models. Live /v1/models is the model authority. Store WORLDROUTER_API_KEY, not a raw key.",
+      "aliases": [
+        "world-router"
+      ],
       "models": {
         "ids": "catalog",
         "accept": [],
@@ -3538,6 +3582,25 @@
       "aliases": [
         "yolo"
       ],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
+    },
+    {
+      "id": "llmtr",
+      "label": "LLMTR",
+      "wire": "openai-compatible",
+      "base_url": "https://llmtr.com/v1",
+      "api_key_env": "LLMTR_API_KEY",
+      "default_model": "minimax/minimax-m3.1-flash",
+      "discovery": "models_endpoint",
+      "docs_url": "https://llmtr.com/docs/",
+      "credential_url": "https://llmtr.com/dashboard/keys",
+      "guidance": "Browse GET /v1/models for current vendor/model IDs. Use LLMTR_API_KEY for Chat Completions. Check the model’s published residency before sending data that must stay in Turkey.",
       "models": {
         "ids": "catalog",
         "accept": [],

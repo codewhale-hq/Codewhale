@@ -164,8 +164,8 @@ struct StderrCapture {
 }
 
 /// Long-lived Python REPL.
-#[derive(Debug)]
 pub struct PythonRuntime {
+    tree: Option<codewhale_runtime::process_tree::ProcessTree>,
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
@@ -184,6 +184,18 @@ pub struct PythonRuntime {
     /// interpreter and every later round refuses instead of reading another
     /// round's output as its own.
     broken: Option<String>,
+}
+
+impl std::fmt::Debug for PythonRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PythonRuntime")
+            .field("child", &self.child)
+            .field("session_id", &self.session_id)
+            .field("round_count", &self.round_count)
+            .field("round_timeout", &self.round_timeout)
+            .field("broken", &self.broken)
+            .finish_non_exhaustive()
+    }
 }
 
 pub const AGENT_PROJECT_ENV: &str = "CODEWHALE_AGENT_PROJECT";
@@ -207,10 +219,13 @@ impl PythonRuntime {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        #[cfg(unix)]
+        cmd.process_group(0);
 
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("failed to spawn Python interpreter: {e}"))?;
+        let tree = codewhale_runtime::process_tree::ProcessTree::attach_tokio(&child).ok();
 
         let stdin = child
             .stdin
@@ -244,6 +259,7 @@ impl PythonRuntime {
         });
 
         let mut rt = Self {
+            tree,
             child,
             stdin,
             stdout,
@@ -262,6 +278,7 @@ impl PythonRuntime {
         {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
+                rt.kill_tree();
                 let _ = rt.child.kill().await;
                 let detail = rt.drain_stderr().await;
                 return Err(startup_failure(
@@ -270,6 +287,7 @@ impl PythonRuntime {
                 ));
             }
             Err(_) => {
+                rt.kill_tree();
                 let _ = rt.child.kill().await;
                 return Err(format!(
                     "Python interpreter bootstrap did not signal ready within {}s",
@@ -280,6 +298,7 @@ impl PythonRuntime {
         if let Some(body) = context
             && let Err(error) = rt.load_context(body).await
         {
+            rt.kill_tree();
             let _ = rt.child.kill().await;
             return Err(format!(
                 "Python interpreter could not load context: {error}"
@@ -319,6 +338,13 @@ impl PythonRuntime {
             Ok(cmd)
         })
         .await
+    }
+
+    fn kill_tree(&mut self) {
+        if let Some(tree) = self.tree.take() {
+            let _ = tree.kill();
+        }
+        let _ = self.child.start_kill();
     }
 
     async fn read_until_ready(&mut self, ready_sentinel: &str) -> Result<(), String> {
@@ -450,7 +476,7 @@ impl PythonRuntime {
                 Err(message)
             }
             Err(error) => {
-                let _ = self.child.start_kill();
+                self.kill_tree();
                 self.broken = Some(error.clone());
                 Err(error)
             }
@@ -466,9 +492,14 @@ impl PythonRuntime {
     /// they frame, and `_SID`/`_DONE` are ordinary Python globals, so code in
     /// this round (or a subprocess inheriting fd 1) can still print its own
     /// round's DONE line and end the round early; only another round's DONE
-    /// is refused. A failed or timed-out round kills the interpreter process
-    /// itself, not its process group, so a grandchild it spawned may outlive
-    /// the kernel. Closing either needs an out-of-band protocol channel.
+    /// is refused. Closing that needs an out-of-band protocol channel.
+    ///
+    /// A failed or timed-out round, `shutdown` and drop kill the interpreter's
+    /// process tree: its process group on Unix, a Job Object on Windows. A
+    /// descendant that moved to its own session or process group on Unix, or
+    /// one started on Windows before the job was assigned, can still outlive
+    /// the kernel; if the tree could not be attached, only the interpreter is
+    /// killed.
     pub async fn run<D>(&mut self, code: &str, bridge: Option<&D>) -> Result<ReplRound, String>
     where
         D: RpcDispatcher + ?Sized,
@@ -620,10 +651,10 @@ impl PythonRuntime {
             None => read_loop.await,
         };
         if let Err(error) = outcome {
-            // The interpreter may still be executing this round. Kill it now
-            // (the handle is reaped on drop) rather than leave it running and
-            // let its late output land in a later round.
-            let _ = self.child.start_kill();
+            // The interpreter may still be executing this round. Kill it and
+            // what it started now (the handle is reaped on drop) rather than
+            // leave it running and let its late output land in a later round.
+            self.kill_tree();
             self.broken = Some(error.clone());
             return Err(error);
         }
@@ -708,6 +739,7 @@ impl PythonRuntime {
     /// Cleanly tear down the subprocess.
     pub async fn shutdown(mut self) {
         let _ = self.stdin.shutdown().await;
+        self.kill_tree();
         let _ = self.child.kill().await;
     }
 }
@@ -1665,6 +1697,44 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timed_out_round_kills_a_process_the_interpreter_started() {
+        use codewhale_runtime::process_tree::{read_pid_file, wait_for_pid_exit};
+        let dir = std::env::temp_dir().join(format!("repl-tree-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).expect("tempdir");
+        let pid_file = dir.join("grandchild.pid");
+        let mut rt = PythonRuntime::unconfined(&dir).await.expect("spawn");
+        rt.execute(&format!(
+            "import subprocess\n\
+             grandchild = subprocess.Popen(['sleep', '300'])\n\
+             open({:?}, 'w').write(str(grandchild.pid))",
+            pid_file.to_string_lossy()
+        ))
+        .await
+        .expect("start grandchild");
+        let grandchild = read_pid_file(&pid_file, Duration::from_secs(5));
+
+        rt.round_timeout = Some(Duration::from_millis(300));
+        let error = rt
+            .execute("import time\ntime.sleep(30)")
+            .await
+            .expect_err("the round must time out");
+        assert!(error.contains("timed out"), "{error}");
+
+        let gone = tokio::task::spawn_blocking(move || {
+            wait_for_pid_exit(grandchild, Duration::from_secs(5))
+        })
+        .await
+        .expect("cleanup probe");
+        drop(rt);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            gone,
+            "a process the timed-out round's interpreter started is still running"
+        );
     }
 
     #[tokio::test]

@@ -18,10 +18,12 @@ import {
   preservedChatStateFields,
   readJsonSafe,
   readSse,
+  splitAtCodePoint,
   splitMessage,
   stripGroupPrefix,
   ThreadStore,
-  writeFileDurable
+  writeFileDurable,
+  observeTurn
 } from "../src/lib.mjs";
 
 test("env and primitive parsers handle bridge env conventions", () => {
@@ -348,6 +350,20 @@ test("splitMessage splits CJK text by bytes when a byte cap is set", () => {
   assert.equal(chunks.join(""), cjk);
 });
 
+test("splitMessage byte cap keeps code fences balanced and splits on lines", () => {
+  let reply = "下面是修改后的代码：\n```js\n";
+  for (let i = 0; i < 120; i += 1) reply += `const v${i} = ${i}; // 这是第${i}行的中文注释说明\n`;
+  reply += "```\n完成。";
+  const chunks = splitMessage(reply, 3500, 3800);
+  assert.ok(chunks.length > 1);
+  for (const chunk of chunks) {
+    assert.ok(Buffer.byteLength(chunk, "utf8") <= 3800);
+    assert.equal((chunk.match(/^```/gm) || []).length % 2, 0, chunk.slice(-40));
+  }
+  assert.equal(chunks[0].endsWith("\n```"), true);
+  assert.equal(chunks[1].startsWith("```js\nconst v"), true);
+});
+
 test("splitMessage keeps short messages single under a byte cap", () => {
   assert.deepEqual(splitMessage("hello", 3500, 3800), ["hello"]);
   const mixed = "字".repeat(100) + "x".repeat(100); // 400 bytes
@@ -359,4 +375,31 @@ test("splitMessage byte cap is opt-in", () => {
   const chunks = splitMessage(cjk, 3500, 0);
   assert.equal(chunks.length, 2); // char limit only
   assert.ok(Buffer.byteLength(chunks[0], "utf8") > 3800);
+});
+
+test("splitAtCodePoint never leaves half a surrogate pair on either side", () => {
+  assert.deepEqual(splitAtCodePoint("ab😀cd", 3), ["ab", "😀cd"]);
+  assert.deepEqual(splitAtCodePoint("ab😀cd", 4), ["ab😀", "cd"]);
+  assert.deepEqual(splitAtCodePoint("abc", 10), ["abc", ""]);
+});
+
+test("observeTurn advances the cursor only after a record's effect succeeds", async () => {
+  const threadId = "thread-1";
+  const events = [
+    { seq: 1, thread_id: threadId, turn_id: "turn-1", event: "item.delta", payload: { kind: "agent_message", delta: "hi" } },
+    { seq: 2, thread_id: threadId, turn_id: "turn-1", event: "approval.required", payload: { id: "a1" } }
+  ];
+  const body = events.map((record) => `data: ${JSON.stringify(record)}\n\n`).join("");
+  const cursors = [];
+  await assert.rejects(observeTurn({
+    fetchEvents: async () => new Response(body),
+    threadId,
+    turnId: "turn-1",
+    sinceSeq: 0,
+    timeoutMs: 1000,
+    saveCursor: async (cursor) => { cursors.push(cursor); },
+    onApproval: async () => { throw new Error("send failed"); },
+    onTerminal: async () => {}
+  }), /send failed/);
+  assert.deepEqual(cursors, [{ lastSeq: 1, responseText: "hi" }]);
 });

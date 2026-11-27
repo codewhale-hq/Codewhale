@@ -112,8 +112,7 @@ pub struct FocusTextureStats {
 }
 
 impl FocusTextureStats {
-    /// The accounting identity asserted by the unit tests. This type's only
-    /// consumer is the test gate below, hence the `dead_code` allowance.
+    /// The accounting identity asserted by the unit tests.
     #[cfg(test)]
     #[must_use]
     pub fn accounted(&self) -> bool {

@@ -6,6 +6,7 @@
 //! module keeps registry construction, user-command precedence, and the
 //! fall-through behaviour.
 
+pub(crate) mod background_host;
 mod builtin_execution;
 mod config_group;
 mod config_host;
@@ -227,9 +228,9 @@ pub(crate) struct CommandTable;
 
 impl codewhale_engine::command_catalog::CommandCatalog for CommandTable {
     fn answers_to(&self, name: &str) -> bool {
-        // `jihua` and `zidong` are mode aliases the dispatcher answers ahead
-        // of the registry.
-        matches!(name, "jihua" | "zidong") || registry().get(name).is_some()
+        // `jihua` and `zidong` are mode aliases, and `pet` is the former name
+        // of `/whale`; the dispatcher answers them ahead of the registry.
+        matches!(name, "jihua" | "pet") || registry().get(name).is_some()
     }
 
     fn builtins(&self) -> Vec<codewhale_engine::command_catalog::BuiltinCommand> {
@@ -288,6 +289,43 @@ impl codewhale_engine::command_catalog::CommandCatalog for CommandTable {
             user_registry_entries,
         )
     }
+
+    fn expands_user_commands(&self) -> bool {
+        true
+    }
+
+    fn expand_user_command(
+        &self,
+        workspace: &std::path::Path,
+        plugins: &codewhale_plugins::PluginRegistry,
+        input: &str,
+    ) -> Option<Result<codewhale_engine::command_catalog::ExpandedUserCommand, String>> {
+        let found = user_registry::with_registry_for_workspace_plugins(
+            Some(workspace),
+            plugins,
+            |registry| user_registry::lookup(registry, input),
+        )?;
+        let (metadata, args) = match found {
+            Ok(found) => found,
+            Err(error) => return Some(Err(error)),
+        };
+        if metadata.extension.is_some() {
+            return None;
+        }
+        Some(
+            user_registry::expand_template(&metadata, &args).map(|message| {
+                codewhale_engine::command_catalog::ExpandedUserCommand {
+                    plugin_id: metadata
+                        .plugin_authority
+                        .as_ref()
+                        .map(|authority| authority.plugin_id.as_str().to_string()),
+                    name: metadata.name,
+                    message,
+                    allowed_tools: metadata.allowed_tools,
+                }
+            }),
+        )
+    }
 }
 
 fn user_registry_entries(
@@ -325,7 +363,11 @@ fn user_registry_entries(
 }
 
 pub fn command_infos() -> Vec<&'static CommandInfo> {
-    registry().infos()
+    let mut infos = registry().infos();
+    if !crate::tui::account_login::ACCOUNT_SIGN_IN_ENABLED {
+        infos.retain(|info| info.name != "login");
+    }
+    infos
 }
 
 pub fn get_command_info(name: &str) -> Option<&'static CommandInfo> {
@@ -446,15 +488,14 @@ fn execute_in_context(
     // rather than the canonical `/mode` behavior, so they still dispatch
     // before registry lookup. Ordinary compatibility aliases belong in their
     // command's `CommandInfo` metadata.
-    match command.as_str() {
-        "jihua" => {
-            return config_group::mode_alias(app, "plan");
-        }
-        "zidong" => {
-            return config_group::mode_alias(app, "yolo");
-        }
-        _ => {}
+    if command == "jihua" {
+        return config_group::mode_alias(app, "plan");
     }
+    let command = if command == "pet" {
+        "whale".to_string()
+    } else {
+        command
+    };
 
     if let Some(command_object) = registry().get(command.as_str()) {
         let command_arg = if matches!(command_object.info().name, "preview-request" | "plugin") {
@@ -477,8 +518,13 @@ fn execute_in_context(
                     capabilities,
                     handler: contextual,
                 } => {
+                    let mut background = background_host::host(app, capabilities);
                     let mut bundle = app.command_contexts_with_config(config);
-                    contextual(bundle.contexts(capabilities), command_arg)
+                    let mut contexts = bundle.contexts(capabilities);
+                    if let Some(background) = background.as_mut() {
+                        contexts = contexts.with_background(background);
+                    }
+                    contextual(contexts, command_arg)
                 }
             };
         }
@@ -751,13 +797,17 @@ mod tests {
     }
 
     #[test]
-    fn pet_command_is_registered_and_the_workbar_no_longer_advertises_watch() {
-        let pet = command_infos()
+    fn whale_command_is_registered_and_the_workbar_no_longer_advertises_watch() {
+        let whale = command_infos()
             .into_iter()
-            .find(|cmd| cmd.name == "pet")
-            .expect("pet command should exist");
-        assert_eq!(pet.description_id, MessageId::CmdPetDescription);
-        assert!(pet.usage.starts_with("/pet"));
+            .find(|cmd| cmd.name == "whale")
+            .expect("whale command should exist");
+        assert_eq!(whale.description_id, MessageId::CmdPetDescription);
+        assert!(whale.usage.starts_with("/whale"));
+        for verb in ["full", "still", "name", "color"] {
+            assert!(whale.subcommands().contains(&verb), "{verb}");
+        }
+        assert!(get_command_info("pet").is_none(), "/pet is unlisted");
         let rail = command_infos()
             .into_iter()
             .find(|cmd| cmd.name == "workbar")
@@ -808,7 +858,11 @@ mod tests {
         let message = status.message.expect("login status");
         assert!(message.contains("Codewhale login"), "{message}");
         assert!(message.contains("Account:"), "{message}");
-        assert!(message.contains("codewhale login"), "{message}");
+        assert_eq!(
+            message.contains("codewhale login"),
+            crate::tui::account_login::ACCOUNT_SIGN_IN_ENABLED,
+            "{message}"
+        );
         // No-brand invariant: the internal cloud-agent slot is not user
         // surface, so status never names it or teaches a set-slot command.
         assert!(!message.contains("Daytona"), "{message}");
@@ -852,7 +906,11 @@ mod tests {
             err.contains("Usage: /connect [account|<provider>]"),
             "{err}"
         );
-        assert!(err.contains("`/login`"), "{err}");
+        assert_eq!(
+            err.contains("`/login`"),
+            crate::tui::account_login::ACCOUNT_SIGN_IN_ENABLED,
+            "{err}"
+        );
         assert!(execute("/disconnect", &mut app).is_error);
         assert!(execute("/disconnect nothing-enabled", &mut app).is_error);
     }
@@ -904,8 +962,11 @@ mod tests {
         let Some(AppAction::SendMessage(message)) = result.action else {
             panic!("expected SendMessage action");
         };
-        assert!(message.contains("session-persistent working context"));
-        assert!(message.contains("Do not use legacy `rlm` tool actions"));
+        assert!(message.contains("`rlm` tool"));
+        assert!(message.contains("`open` with `file_path` or `content`"));
+        assert!(message.contains("`eval`"));
+        assert!(message.contains("`close`"));
+        assert!(!message.contains("`repl` block"));
     }
 
     /// `/kernel` was briefly introduced by an in-flight change and rejected:
@@ -1231,9 +1292,10 @@ mod tests {
             .iter()
             .filter(|info| info.name == "feat015ctx")
             .count();
+        let hidden_login = usize::from(!crate::tui::account_login::ACCOUNT_SIGN_IN_ENABLED);
         assert_eq!(
             total_commands + test_only_count,
-            command_infos().len(),
+            command_infos().len() + hidden_login,
             "group-iterated command count must match registry infos count"
         );
     }
@@ -2166,7 +2228,7 @@ mod tests {
             panic!("expected /rlm to send a model instruction");
         };
         assert!(message.contains(r#"this text: "inspect   this   corpus""#));
-        assert!(message.contains("session-persistent working context"));
+        assert!(message.contains("`rlm` tool"));
     }
 
     #[test]
@@ -2581,7 +2643,7 @@ mod tests {
             "disconnect",
             "auth",
             "workbar",
-            "pet",
+            "whale",
             "settings",
             "statusline",
             "mode",
@@ -2664,8 +2726,9 @@ mod tests {
             "{result:?}"
         );
 
-        // /update is Pure too; a bare check should reach the plan resolver and
-        // return a message (or a safe error in a test environment), never a panic.
+        // /update declares only the background facet; without a completion
+        // mailbox a bare check runs inline, reaches the plan resolver and
+        // returns a message (or a safe error in a test environment), never a panic.
         let result = execute("/update", &mut app);
         assert!(result.message.is_some() || result.is_error, "{result:?}");
     }
@@ -2727,7 +2790,9 @@ mod tests {
         for (name, expected) in [
             (
                 "init",
-                CommandCapabilities::WORKSPACE.union(CommandCapabilities::PRESENTATION),
+                CommandCapabilities::WORKSPACE
+                    .union(CommandCapabilities::PRESENTATION)
+                    .union(CommandCapabilities::BACKGROUND),
             ),
             ("lsp", CommandCapabilities::PROJECT),
             ("share", CommandCapabilities::SESSION_EXPORT),

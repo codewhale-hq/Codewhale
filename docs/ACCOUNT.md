@@ -9,6 +9,14 @@ service.
 
 ## Sign in
 
+In Codewhale 0.10.5, starting a new sign-in from the terminal is closed until
+accounts open: `codewhale login` and `/login` say that accounts are not open
+yet and point you to `/provider`, and `/login` is not listed in the command
+menu. A profile that is already signed in keeps working: `codewhale account
+status`, the other `codewhale account` commands, `/connect account` and
+`/logout` are unchanged, and so is a machine key in `CODEWHALE_API_KEY`. The
+rest of this section describes sign-in as it works when accounts are open.
+
 In the terminal UI:
 
 ```text

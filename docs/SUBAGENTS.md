@@ -1062,7 +1062,7 @@ scouts and reviewers should be precise here.
 
 ## What a child knows at start
 
-A child's system prompt carries, after its role contract, memory and skills:
+A child's system prompt carries, after its role contract and memory:
 
 - **Inherited instructions.** The same user-level and project-level
   instructions pinned for the parent session (`AGENTS.md`/`CLAUDE.md` chain,

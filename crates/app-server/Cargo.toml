@@ -27,20 +27,20 @@ test-support = ["codewhale-engine/test-support"]
 
 [dependencies]
 agent-client-protocol.workspace = true
-codewhale-account-cli = { path = "../account-cli", version = "0.10.3" }
-codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.10.3" }
+codewhale-account-cli = { path = "../account-cli", version = "0.10.5" }
+codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.10.5" }
 anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true
-codewhale-config = { path = "../config", version = "0.10.3" }
-codewhale-core = { path = "../core", version = "0.10.3" }
-codewhale-hooks = { path = "../hooks", version = "0.10.3" }
-codewhale-palette = { path = "../palette", version = "0.10.3", default-features = false }
-codewhale-paths = { path = "../paths", version = "0.10.3" }
-codewhale-protocol = { path = "../protocol", version = "0.10.3" }
-codewhale-release = { path = "../release", version = "0.10.3" }
-codewhale-runtime = { path = "../runtime", version = "0.10.3" }
-codewhale-state = { path = "../state", version = "0.10.3" }
+codewhale-config = { path = "../config", version = "0.10.5" }
+codewhale-core = { path = "../core", version = "0.10.5" }
+codewhale-hooks = { path = "../hooks", version = "0.10.5" }
+codewhale-palette = { path = "../palette", version = "0.10.5", default-features = false }
+codewhale-paths = { path = "../paths", version = "0.10.5" }
+codewhale-protocol = { path = "../protocol", version = "0.10.5" }
+codewhale-release = { path = "../release", version = "0.10.5" }
+codewhale-runtime = { path = "../runtime", version = "0.10.5" }
+codewhale-state = { path = "../state", version = "0.10.5" }
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order", "raw_value"] }
 rustls.workspace = true
@@ -54,29 +54,29 @@ sha2.workspace = true
 async-stream = "0.3.6"
 base64 = "0.23.1"
 clap.workspace = true
-codewhale-command-contract = { path = "../command-contract", version = "0.10.3" }
-codewhale-dependencies = { path = "../dependencies", version = "0.10.3" }
-codewhale-engine = { path = "../engine", version = "0.10.3" }
-codewhale-error-taxonomy = { path = "../error-taxonomy", version = "0.10.3" }
-codewhale-execpolicy = { path = "../execpolicy", version = "0.10.3" }
-codewhale-lane = { path = "../lane", version = "0.10.3" }
-codewhale-localization = { path = "../localization", version = "0.10.3" }
-codewhale-lsp = { path = "../lsp", version = "0.10.3" }
-codewhale-mcp = { path = "../mcp", version = "0.10.3" }
-codewhale-memory = { path = "../memory", version = "0.10.3" }
-codewhale-models = { path = "../models", version = "0.10.3" }
-codewhale-net = { path = "../net", version = "0.10.3" }
-codewhale-notify = { path = "../notify", version = "0.10.3" }
-codewhale-plugins = { path = "../plugins", version = "0.10.3" }
-codewhale-sandbox = { path = "../sandbox", version = "0.10.3" }
-codewhale-secrets = { path = "../secrets", version = "0.10.3" }
-codewhale-skill-install = { path = "../skill-install", version = "0.10.3" }
-codewhale-skills = { path = "../skills", version = "0.10.3" }
-codewhale-snapshot = { path = "../snapshot", version = "0.10.3" }
-codewhale-telemetry = { path = "../telemetry", version = "0.10.3" }
-codewhale-tools = { path = "../tools", version = "0.10.3" }
-codewhale-tui-kit = { path = "../tui-kit", version = "0.10.3" }
-codewhale-util = { path = "../util", version = "0.10.3" }
+codewhale-command-contract = { path = "../command-contract", version = "0.10.5" }
+codewhale-dependencies = { path = "../dependencies", version = "0.10.5" }
+codewhale-engine = { path = "../engine", version = "0.10.5" }
+codewhale-error-taxonomy = { path = "../error-taxonomy", version = "0.10.5" }
+codewhale-execpolicy = { path = "../execpolicy", version = "0.10.5" }
+codewhale-lane = { path = "../lane", version = "0.10.5" }
+codewhale-localization = { path = "../localization", version = "0.10.5" }
+codewhale-lsp = { path = "../lsp", version = "0.10.5" }
+codewhale-mcp = { path = "../mcp", version = "0.10.5" }
+codewhale-memory = { path = "../memory", version = "0.10.5" }
+codewhale-models = { path = "../models", version = "0.10.5" }
+codewhale-net = { path = "../net", version = "0.10.5" }
+codewhale-notify = { path = "../notify", version = "0.10.5" }
+codewhale-plugins = { path = "../plugins", version = "0.10.5" }
+codewhale-sandbox = { path = "../sandbox", version = "0.10.5" }
+codewhale-secrets = { path = "../secrets", version = "0.10.5" }
+codewhale-skill-install = { path = "../skill-install", version = "0.10.5" }
+codewhale-skills = { path = "../skills", version = "0.10.5" }
+codewhale-snapshot = { path = "../snapshot", version = "0.10.5" }
+codewhale-telemetry = { path = "../telemetry", version = "0.10.5" }
+codewhale-tools = { path = "../tools", version = "0.10.5" }
+codewhale-tui-kit = { path = "../tui-kit", version = "0.10.5" }
+codewhale-util = { path = "../util", version = "0.10.5" }
 colored = "3.0.0"
 futures-util = "0.3.31"
 tokio-tungstenite = "0.30"
@@ -99,13 +99,13 @@ rusqlite.workspace = true
 tempfile.workspace = true
 tower = "0.5"
 async-trait.workspace = true
-codewhale-agent-contract = { path = "../agent-contract", version = "0.10.3", features = [
+codewhale-agent-contract = { path = "../agent-contract", version = "0.10.5", features = [
     "test-support",
 ] }
-codewhale-config = { path = "../config", version = "0.10.3", features = ["schema", "test-support"] }
-codewhale-engine = { path = "../engine", version = "0.10.3", features = ["test-support"] }
-codewhale-notify = { path = "../notify", version = "0.10.3", features = ["test-thread-scoped-state"] }
-codewhale-runtime = { path = "../runtime", version = "0.10.3", features = [
+codewhale-config = { path = "../config", version = "0.10.5", features = ["schema", "test-support"] }
+codewhale-engine = { path = "../engine", version = "0.10.5", features = ["test-support"] }
+codewhale-notify = { path = "../notify", version = "0.10.5", features = ["test-thread-scoped-state"] }
+codewhale-runtime = { path = "../runtime", version = "0.10.5", features = [
     "test-support",
     "test-thread-scoped-state",
 ] }
@@ -119,7 +119,7 @@ reqwest = { workspace = true, features = ["stream"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_Pipes"] }
 
 [build-dependencies]
-codewhale-build-support = { path = "../build-support", version = "0.10.3" }
+codewhale-build-support = { path = "../build-support", version = "0.10.5" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

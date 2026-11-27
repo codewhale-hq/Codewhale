@@ -45,6 +45,12 @@ const eslintConfig = [
       "react-hooks/purity": "off",
     },
   },
+  {
+    files: ["vendor/legal-documents/**"],
+    rules: {
+      "@next/next/no-html-link-for-pages": "off",
+    },
+  },
 ];
 
 export default eslintConfig;

@@ -216,6 +216,16 @@ const COMMAND_TAB_PREFIX: &str = "cmd:";
 const FINISHED_COMMAND_TABS: usize = 5;
 
 #[cfg(all(unix, not(target_env = "ohos")))]
+fn clipped_command_label(command: &str) -> String {
+    let mut graphemes = unicode_segmentation::UnicodeSegmentation::graphemes(command, true);
+    let mut label: String = graphemes.by_ref().take(32).collect();
+    if graphemes.next().is_some() {
+        label.push('…');
+    }
+    label
+}
+
+#[cfg(all(unix, not(target_env = "ohos")))]
 fn command_job_id(tab: &str) -> Option<&str> {
     tab.strip_prefix(COMMAND_TAB_PREFIX)
 }
@@ -724,14 +734,9 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                     }
                     _ => app.tr(MessageId::SubagentsStatusRunning).into_owned(),
                 };
-                let command: String = job.command.chars().take(32).collect();
-                let ellipsis = if job.command.chars().count() > 32 {
-                    "…"
-                } else {
-                    ""
-                };
+                let command = clipped_command_label(&job.command);
                 let text = format!(
-                    "{}$ {command}{ellipsis} ({status} · {}s)  ",
+                    "{}$ {command} ({status} · {}s)  ",
                     if selected { "› " } else { "" },
                     job.elapsed_ms / 1000
                 );
@@ -864,4 +869,18 @@ pub(super) fn handle_mouse(app: &mut App, mouse: MouseEvent) -> bool {
         _ => {}
     }
     true
+}
+
+#[cfg(all(test, unix, not(target_env = "ohos")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clipped_command_label_keeps_whole_clusters_and_ends_with_ellipsis() {
+        let family = "👨‍👩‍👧‍👦";
+        let command = family.repeat(40);
+        let label = clipped_command_label(&command);
+        assert_eq!(label, format!("{}…", family.repeat(32)));
+        assert_eq!(clipped_command_label("cargo test"), "cargo test");
+    }
 }

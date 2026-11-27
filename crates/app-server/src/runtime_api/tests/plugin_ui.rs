@@ -30,7 +30,7 @@ const CONSUMER_REFUSALS: [(u16, &str); 6] = [
 
 const DSH_CLIENT: &str = "const react = require(\"react\");\n\
 const util = require(\"./util\");\n\
-const keys = [\"sidebar.right.pane.tab\", \"settings.section\", \"conversation.session.header.utilities\"];\n\
+const keys = [\"sidebar.right.pane.tab\", \"settings.section\", \"contextMenu.icon\"];\n\
 exports.apply = function apply(ctx) { return [react, util.v, keys, ctx]; };\n";
 
 fn write_dsh_package(dir: &Path, name: &str, client: &str) -> Result<PathBuf> {
@@ -280,7 +280,7 @@ async fn plugin_ui_dsh_client_serves_admitted_seats_and_denies_and_revokes() -> 
             (404, "plugin_ui_seat_not_admitted"),
         ),
         (
-            "slot=workpane.panel&dsh_slot=conversation.session.header.utilities",
+            "slot=workpane.panel&dsh_slot=contextMenu.icon",
             (422, "plugin_ui_seat_unsupported"),
         ),
         ("slot=chat.node", (400, "plugin_ui_seat_unknown")),
@@ -369,9 +369,9 @@ async fn plugin_ui_dsh_client_serves_admitted_seats_and_denies_and_revokes() -> 
         .header("If-Match", &revision)
         .send()
         .await?;
-    assert_eq!(routed.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(routed.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body: serde_json::Value = routed.json().await?;
-    assert_eq!(body["error"]["code"], "plugin_route_not_served");
+    assert_eq!(body["error"]["code"], "plugin_host_unavailable");
     assert_eq!(
         client.post(&route).send().await?.status(),
         StatusCode::PRECONDITION_REQUIRED
@@ -497,7 +497,7 @@ async fn plugin_ui_dsh_client_with_unprovided_modules_or_ambient_dependencies_is
     let host_module = write_dsh_package(
         tmp.path(),
         "hostmod",
-        "require(\"@deepseek-ai/dsh-client-ui-primitives\");\nconst k = \"sidebar.right.pane.tab\";\n",
+        "require(\"@deepseek-ai/dsh-unprovided-host-module\");\nconst k = \"sidebar.right.pane.tab\";\n",
     )?;
     let esm = write_dsh_package(
         tmp.path(),
@@ -683,6 +683,17 @@ exports.apply = function (ctx) {
             .and_then(|v| v.to_str().ok()),
         Some("text/css; charset=utf-8")
     );
+    let css_csp = css
+        .headers()
+        .get("content-security-policy")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let css_referrer = css
+        .headers()
+        .get("referrer-policy")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     assert!(css.text().await?.contains(".badge"));
 
     let svg = client
@@ -712,6 +723,240 @@ exports.apply = function (ctx) {
     assert_eq!(raw_js.status(), StatusCode::NOT_FOUND);
     let body: serde_json::Value = raw_js.json().await?;
     assert_eq!(body["error"]["code"], "plugin_ui_file_not_reviewed");
+
+    let css_via_query = client
+        .get(format!(
+            "{asset_base}source/lib/style.css?cw_rev={}",
+            urlencoding::encode(&revision)
+        ))
+        .send()
+        .await?;
+    assert_eq!(css_via_query.status(), StatusCode::PRECONDITION_REQUIRED);
+
+    assert_eq!(css_csp, "default-src 'none'; sandbox");
+    assert_eq!(css_referrer.as_deref(), Some("no-referrer"));
+
+    let oversized_route = client
+        .post(format!("{base}/{name}/route/api/upload"))
+        .header("If-Match", &revision)
+        .body(vec![b'a'; 4 * 1024 * 1024 + 64])
+        .send()
+        .await?;
+    assert_eq!(oversized_route.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn plugin_settings_round_trip_conflicts_and_security_boundaries() -> Result<()> {
+    let _policy = codewhale_plugins::activation::TestPolicyGuard::extension_host(true);
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().join("runtime");
+    let workspace = tmp.path().join("ws");
+    fs::create_dir_all(&root)?;
+    fs::write(
+        root.join("config.toml"),
+        "api_key = \"sk-host-secret\"\n\n[plugins.other.config]\nsecret = \"sibling-only\"\n",
+    )?;
+
+    let no_settings_pkg = tmp.path().join("nosettings");
+    fs::create_dir_all(no_settings_pkg.join("skills/greet"))?;
+    fs::write(
+        no_settings_pkg.join("package.json"),
+        serde_json::json!({
+            "name": "dsh-no-settings",
+            "version": "1.0.0",
+            "main": "./index.js",
+            "exports": { "./client": { "default": "./client.js" } },
+            "dsh": {
+                "engines": { "dsh": "^0.2.2-rc.1" },
+                "bundle": { "patch": "./cordis.patch.yml" },
+                "client": { "platform": "web" }
+            }
+        })
+        .to_string(),
+    )?;
+    fs::write(
+        no_settings_pkg.join("cordis.patch.yml"),
+        "- insert:\n  - id: main\n    name: \"./index.js\"\n  - id: skills\n    name: \"@deepseek-ai/dsh-skill-filesystem\"\n    config:\n      customSkillDirs:\n        - ./skills\n",
+    )?;
+    fs::write(
+        no_settings_pkg.join("skills/greet/SKILL.md"),
+        "---\nname: greet\ndescription: Greets a person\n---\nSay hi.\n",
+    )?;
+    fs::write(
+        no_settings_pkg.join("index.js"),
+        "export const name = 'no-settings';\nexport function apply() {}\n",
+    )?;
+    fs::write(
+        no_settings_pkg.join("client.js"),
+        "exports.apply = function apply() {};\n",
+    )?;
+    let settings_pkg = tmp.path().join("withsettings");
+    fs::create_dir_all(settings_pkg.join("skills/greet"))?;
+    fs::write(
+        settings_pkg.join("package.json"),
+        serde_json::json!({
+            "name": "dsh-with-settings",
+            "version": "1.0.0",
+            "main": "./index.js",
+            "exports": { "./client": { "default": "./client.js" } },
+            "dsh": {
+                "engines": { "dsh": "^0.2.2-rc.1" },
+                "bundle": { "patch": "./cordis.patch.yml" },
+                "client": { "platform": "web" }
+            }
+        })
+        .to_string(),
+    )?;
+    fs::write(
+        settings_pkg.join("cordis.patch.yml"),
+        "- insert:\n  - id: main\n    name: \"./index.js\"\n  - id: skills\n    name: \"@deepseek-ai/dsh-skill-filesystem\"\n    config:\n      customSkillDirs:\n        - ./skills\n",
+    )?;
+    fs::write(
+        settings_pkg.join("skills/greet/SKILL.md"),
+        "---\nname: greet\ndescription: Greets a person\n---\nSay hi.\n",
+    )?;
+    fs::write(
+        settings_pkg.join("index.js"),
+        "export const name = 'with-settings';\nexport const inject = ['settings'];\nexport function apply() {}\n",
+    )?;
+    fs::write(
+        settings_pkg.join("client.js"),
+        "exports.apply = function apply(ctx) { return ctx.settings; };\n",
+    )?;
+
+    let Some((addr, handle)) = spawn_plugin_api_server(root.clone(), workspace).await? else {
+        return Ok(());
+    };
+    let client = codewhale_release::tls::reqwest_client();
+    let base = format!("http://{addr}/v1/apps/plugins");
+
+    // 1. Active plugin WITHOUT `settings` host-service grant is refused (403).
+    let no_settings =
+        install_active(&client, &base, format!("dsh:{}", no_settings_pkg.display())).await?;
+    let no_settings_name = no_settings["name"].as_str().unwrap().to_string();
+    let denied_grant = client
+        .get(format!("{base}/{no_settings_name}/settings"))
+        .send()
+        .await?;
+    assert_eq!(denied_grant.status(), StatusCode::FORBIDDEN);
+    let denied_grant_body: serde_json::Value = denied_grant.json().await?;
+    assert_eq!(
+        denied_grant_body["error"]["code"],
+        "plugin_settings_not_granted"
+    );
+
+    // 2. Installed but untrusted/disabled plugin with `settings` is refused (403).
+    let installed = send_json_ok(
+        client
+            .post(format!("{base}/install"))
+            .json(&serde_json::json!({ "source": format!("dsh:{}", settings_pkg.display()) })),
+        "install settings plugin",
+    )
+    .await?;
+    let name = installed["name"].as_str().unwrap().to_string();
+    let denied_untrusted = client.get(format!("{base}/{name}/settings")).send().await?;
+    assert_eq!(denied_untrusted.status(), StatusCode::FORBIDDEN);
+    let denied_untrusted_body: serde_json::Value = denied_untrusted.json().await?;
+    assert_eq!(
+        denied_untrusted_body["error"]["code"],
+        "plugin_settings_not_admitted"
+    );
+
+    // 3. Trust with host_services_token and enable.
+    let detail = send_json_ok(client.get(format!("{base}/{name}")), "detail").await?;
+    let review_token = detail["review"]["token"].as_str().unwrap().to_string();
+    let hs_token = detail["review"]["host_services"]["token"]
+        .as_str()
+        .expect("settings host_services token")
+        .to_string();
+    let _ = send_json_ok(
+        client
+            .post(format!("{base}/{name}/trust"))
+            .json(&serde_json::json!({ "token": review_token, "host_services_token": hs_token })),
+        "trust settings plugin",
+    )
+    .await?;
+    let _ = send_json_ok(client.post(format!("{base}/{name}/enable")), "enable").await?;
+
+    // 3b. While `no_settings` is also active in the cohort, `settings` is withheld (403).
+    let withheld = client.get(format!("{base}/{name}/settings")).send().await?;
+    assert_eq!(withheld.status(), StatusCode::FORBIDDEN);
+    let withheld_body: serde_json::Value = withheld.json().await?;
+    assert_eq!(withheld_body["error"]["code"], "plugin_settings_withheld");
+
+    // Disable `no_settings` so the cohort holds the `settings` grant cleanly.
+    let _ = send_json_ok(
+        client.post(format!("{base}/{no_settings_name}/disable")),
+        "disable no_settings",
+    )
+    .await?;
+
+    // 4. GET returns empty namespace with zero host/sibling leakage.
+    let initial =
+        send_json_ok(client.get(format!("{base}/{name}/settings")), "get initial").await?;
+    assert_eq!(initial["value"], serde_json::json!({}));
+    assert_eq!(initial["writable"], true);
+    let rev1 = initial["revision"].as_str().unwrap().to_string();
+
+    // 5. PUT persists and GET reads back.
+    let written = send_json_ok(
+        client
+            .put(format!("{base}/{name}/settings"))
+            .json(&serde_json::json!({
+                "value": { "theme": "ocean", "nested": { "count": 2 } },
+                "expected_revision": rev1,
+            })),
+        "put settings",
+    )
+    .await?;
+    assert_eq!(written["written"], true);
+    assert_eq!(written["conflict"], false);
+    let rev2 = written["revision"].as_str().unwrap().to_string();
+    assert_ne!(rev1, rev2);
+
+    let reread = send_json_ok(client.get(format!("{base}/{name}/settings")), "get reread").await?;
+    assert_eq!(
+        reread["value"],
+        serde_json::json!({ "theme": "ocean", "nested": { "count": 2 } })
+    );
+    assert_eq!(reread["revision"], rev2);
+
+    // 6. Stale expected_revision reports conflict without overwriting.
+    let conflict = send_json_ok(
+        client
+            .put(format!("{base}/{name}/settings"))
+            .json(&serde_json::json!({
+                "value": { "theme": "forest" },
+                "expected_revision": rev1,
+            })),
+        "put stale",
+    )
+    .await?;
+    assert_eq!(conflict["written"], false);
+    assert_eq!(conflict["conflict"], true);
+    assert_eq!(conflict["revision"], rev2);
+
+    // 7. Oversized payload and invalid key return 400.
+    let oversized = client
+        .put(format!("{base}/{name}/settings"))
+        .json(&serde_json::json!({ "value": { "blob": "x".repeat(70 * 1024) } }))
+        .send()
+        .await?;
+    assert_eq!(oversized.status(), StatusCode::BAD_REQUEST);
+    let bad_key = client
+        .put(format!("{base}/{name}/settings"))
+        .json(&serde_json::json!({ "value": { "bad\nkey": "v" } }))
+        .send()
+        .await?;
+    assert_eq!(bad_key.status(), StatusCode::BAD_REQUEST);
+
+    // 8. Disabling the plugin immediately revokes settings access.
+    let _ = send_json_ok(client.post(format!("{base}/{name}/disable")), "disable").await?;
+    let after_disable = client.get(format!("{base}/{name}/settings")).send().await?;
+    assert_eq!(after_disable.status(), StatusCode::FORBIDDEN);
 
     handle.abort();
     Ok(())

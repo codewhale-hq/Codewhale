@@ -23,7 +23,8 @@
 //!   router timeout, and a retried decision would arrive after the turn has
 //!   already fallen back.
 //! * The router parses the `choice` answer shape; the shadow Decision Gate
-//!   (`crate::superfast`) also reads `noul`. The transport strictly validates
+//!   (`crate::superfast`), whose questions ride the router's request when
+//!   `shadow_gate = true`, also reads `noul`. The transport strictly validates
 //!   Choice, Noul and fractional Score responses before either policy uses them.
 
 use std::collections::BTreeMap;
@@ -547,6 +548,7 @@ pub fn router_failure_from_error(error: &anyhow::Error) -> AutoRouterFailure {
                 AutoRouterFailure::Http { status }
             }),
         LlmError::NetworkError(_)
+        | LlmError::HeaderTimeout { .. }
         | LlmError::ConnectError { .. }
         | LlmError::Timeout(_)
         | LlmError::ParseError(_) => AutoRouterFailure::Transport,

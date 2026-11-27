@@ -43,20 +43,17 @@ const FLEET_LIST_PAGE: usize = 10;
 
 /// What the host should do after this view acted on the store.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // OpenDetail/None are reserved for the qualified-name flow
 pub enum FleetListOutcome {
     /// A store mutation happened; show `message`, refresh, and pop the stack.
     Done { message: String },
-    /// Open the detail view for the given Fleet.
-    OpenDetail { name: String, scope: FleetScope },
-    /// Nothing to do.
-    None,
 }
 
 pub struct FleetListView {
     entries: Vec<FleetEntry>,
     /// The active selection snapshot (workspace then personal).
     selected: Option<SelectedFleet>,
+    summaries: Vec<String>,
+    scan_error: Option<String>,
     /// Legacy profile count (how many per-role files exist), for the banner.
     legacy_profile_count: usize,
     /// Whether a v2 Fleet named "Default" already exists (so migration is
@@ -89,14 +86,37 @@ impl FleetListView {
     #[must_use]
     pub fn new(app: &App, config: &Config) -> Self {
         let workspace = app.workspace.clone();
-        let entries = list_fleets(&workspace);
-        let selected = selected_fleet(&workspace);
-        let legacy_profile_count = legacy_profile_file_count(&workspace);
+        let scan_root = workspace.clone();
+        let locale = app.ui_locale;
+        let scanned = crate::commands::contract::run_owner_blocking(move || {
+            let entries = list_fleets(&scan_root);
+            let summaries: Vec<String> = entries
+                .iter()
+                .map(|entry| entry_summary(entry, locale))
+                .collect();
+            Ok((
+                entries,
+                summaries,
+                selected_fleet(&scan_root),
+                legacy_profile_file_count(&scan_root),
+            ))
+        });
+        let (entries, summaries, selected, legacy_profile_count, scan_error) = match scanned {
+            Ok((entries, summaries, selected, legacy_profile_count)) => {
+                (entries, summaries, selected, legacy_profile_count, None)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "fleet directory scan failed");
+                (Vec::new(), Vec::new(), None, 0, Some(error.to_string()))
+            }
+        };
         let default_fleet_exists = entries
             .iter()
             .any(|e| e.name.eq_ignore_ascii_case("default") && !e.legacy);
         Self {
             entries,
+            summaries,
+            scan_error,
             selected,
             legacy_profile_count,
             default_fleet_exists,
@@ -109,6 +129,14 @@ impl FleetListView {
             locale: app.ui_locale,
             back_to_fleet_roster: false,
         }
+    }
+
+    pub(crate) fn reload(&mut self, app: &App, config: &Config) {
+        let row = self.row;
+        let back_to_fleet_roster = self.back_to_fleet_roster;
+        *self = Self::new(app, config);
+        self.row = row.min(self.entries.len().saturating_sub(1));
+        self.back_to_fleet_roster = back_to_fleet_roster;
     }
 
     /// Mark this list as pushed on top of the Fleet roster (#5954), so the
@@ -196,15 +224,19 @@ impl FleetListView {
         }
         match set_selected(&entry.name, scope, &self.workspace) {
             Ok(path) => Some(FleetListOutcome::Done {
-                message: format!(
-                    "Selected Team `{}` ({}) — wrote {}",
-                    entry.name,
-                    scope.long_label(),
-                    path.display()
-                ),
+                message: tr(self.locale, MessageId::FleetSelectedNotice)
+                    .replace("{name}", &entry.name)
+                    .replace(
+                        "{scope}",
+                        &super::fleet_detail::long_scope_label(self.locale, scope),
+                    )
+                    .replace("{path}", &path.display().to_string()),
             }),
             Err(err) => Some(FleetListOutcome::Done {
-                message: format!("Selection failed: {err}"),
+                message: format!(
+                    "{}: {err}",
+                    tr(self.locale, MessageId::FleetSelectFailedTitle)
+                ),
             }),
         }
     }
@@ -440,6 +472,18 @@ impl FleetListView {
         if area.width == 0 || area.height == 0 {
             return;
         }
+        if let Some(error) = &self.scan_error {
+            Paragraph::new(Line::from(Span::styled(
+                format!(
+                    "  {}",
+                    tr(self.locale, MessageId::FleetListScanFailed).replace("{error}", error)
+                ),
+                Style::default().fg(palette::WHALE_HUMAN),
+            )))
+            .wrap(Wrap { trim: false })
+            .render(area, buf);
+            return;
+        }
         if self.entries.is_empty() {
             Paragraph::new(Line::from(vec![
                 Span::styled(
@@ -539,7 +583,7 @@ impl FleetListView {
             } else {
                 lines.push(Line::from(spans));
                 // Second line: source + operator summary (compact).
-                let summary = self.entry_summary(entry);
+                let summary = self.summaries.get(idx).map_or("", String::as_str);
                 lines.push(Line::from(Span::styled(
                     format!("    {summary}"),
                     Style::default().fg(palette::TEXT_DIM),
@@ -568,35 +612,6 @@ impl FleetListView {
         let text = ratatui::text::Text::from(lines);
         Paragraph::new(text).render(area, buf);
     }
-
-    fn entry_summary(&self, entry: &FleetEntry) -> String {
-        if entry.legacy {
-            return "legacy format — open for details".to_string();
-        }
-        // Read the file to summarize operator + members. Parsing errors are
-        // already shown on the row. Paths stay out of the primary row — they
-        // belong in receipts after an explicit write/select/delete.
-        let Ok(text) = std::fs::read_to_string(&entry.path) else {
-            return "unreadable".to_string();
-        };
-        match codewhale_engine::fleet::store::FleetFile::parse(&text) {
-            Ok(fleet) => {
-                let coordinator = match &fleet.operator {
-                    Some(op) => format!("{}/{}", op.provider, op.model),
-                    None => "uses the session's model".to_string(),
-                };
-                format!(
-                    "Coordinator: {coordinator} · members: {}",
-                    fleet
-                        .members
-                        .iter()
-                        .filter(|member| !member.shortlist)
-                        .count()
-                )
-            }
-            Err(err) => format!("unreadable: {err}"),
-        }
-    }
 }
 
 fn outcome_to_action(outcome: Option<FleetListOutcome>) -> ViewAction {
@@ -604,10 +619,39 @@ fn outcome_to_action(outcome: Option<FleetListOutcome>) -> ViewAction {
         Some(FleetListOutcome::Done { message }) => {
             ViewAction::EmitAndClose(ViewEvent::FleetStoreChanged { message })
         }
-        Some(FleetListOutcome::OpenDetail { name, scope }) => {
-            ViewAction::Emit(ViewEvent::FleetListOpenDetailRequested { name, scope })
+        None => ViewAction::None,
+    }
+}
+
+fn entry_summary(entry: &FleetEntry, locale: Locale) -> String {
+    if entry.legacy {
+        return tr(locale, MessageId::FleetListSummaryLegacy).into_owned();
+    }
+    // Read the file to summarize operator + members. Parsing errors are
+    // already shown on the row. Paths stay out of the primary row — they
+    // belong in receipts after an explicit write/select/delete.
+    let Ok(text) = std::fs::read_to_string(&entry.path) else {
+        return tr(locale, MessageId::FleetListSummaryUnreadable).into_owned();
+    };
+    match codewhale_engine::fleet::store::FleetFile::parse(&text) {
+        Ok(fleet) => {
+            let coordinator = match &fleet.operator {
+                Some(op) => format!("{}/{}", op.provider, op.model),
+                None => tr(locale, MessageId::FleetListSummarySessionModel).into_owned(),
+            };
+            let members = fleet
+                .members
+                .iter()
+                .filter(|member| !member.shortlist)
+                .count();
+            tr(locale, MessageId::FleetListSummaryCoordinator)
+                .replace("{coordinator}", &coordinator)
+                .replace("{members}", &members.to_string())
         }
-        Some(FleetListOutcome::None) | None => ViewAction::None,
+        Err(err) => format!(
+            "{}: {err}",
+            tr(locale, MessageId::FleetListSummaryUnreadable)
+        ),
     }
 }
 
@@ -1132,5 +1176,33 @@ provider = "deepseek"
                 "row {row}: {hitboxes:?}"
             );
         }
+    }
+
+    #[test]
+    fn reload_picks_up_a_saved_coordinator_change() {
+        unsafe { std::env::set_var("CODEWHALE_HOME", sealed_home()) };
+        let ws = tempfile::TempDir::new().unwrap();
+        save_in(ws.path(), FleetScope::Workspace, "Reload Probe");
+        let app = app_in(ws.path().to_path_buf());
+        let mut view = FleetListView::new(&app, &Config::default());
+        let summary = |view: &FleetListView| {
+            let idx = view
+                .entries
+                .iter()
+                .position(|e| e.name == "Reload Probe")
+                .unwrap();
+            view.summaries[idx].clone()
+        };
+        assert!(summary(&view).contains("deepseek-v4-flash"));
+
+        let mut fleet = sample_fleet("Reload Probe");
+        fleet.operator.as_mut().unwrap().model = "deepseek-v4-pro".to_string();
+        let _ = save_fleet(&fleet, FleetScope::Workspace, ws.path()).expect("save");
+        view.reload(&app, &Config::default());
+        assert!(
+            summary(&view).contains("deepseek-v4-pro"),
+            "{}",
+            summary(&view)
+        );
     }
 }

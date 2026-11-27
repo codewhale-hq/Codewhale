@@ -13,9 +13,9 @@ workspace = true
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
-codewhale-config = { path = "../config", version = "0.10.3" }
-codewhale-protocol = { path = "../protocol", version = "0.10.3" }
-codewhale-state = { path = "../state", version = "0.10.3" }
+codewhale-config = { path = "../config", version = "0.10.5" }
+codewhale-protocol = { path = "../protocol", version = "0.10.5" }
+codewhale-state = { path = "../state", version = "0.10.5" }
 regex = "1.11"
 sha2.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }

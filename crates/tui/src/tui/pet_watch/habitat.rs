@@ -1,6 +1,6 @@
 //! Full viewport ownership uses the existing modal stack. Hidden composer,
 //! history, selection and active Engine state are untouched. Escape returns
-//! to the pet backdrop and the real composer when pet mode is enabled.
+//! to the whale backdrop and the real composer when the whale view is on.
 use super::Control;
 use crate::tui::{
     shell_key_routing::{self, Focus, ShellBindingId as Id},
@@ -60,8 +60,6 @@ impl ModalView for Habitat {
                 }
                 None
             }
-            Some(Id::PetSound) => Some(Control::Sound),
-            Some(Id::PetBrowser) => Some(Control::Browser),
             _ => None,
         };
         if let Some(action) = action
@@ -95,18 +93,6 @@ impl ModalView for Habitat {
         self
     }
 }
-pub fn companion_hints(locale: codewhale_localization::Locale) -> String {
-    use codewhale_localization::{MessageId, tr};
-    let mut text = tr(locale, MessageId::PetModeCompanionHints).into_owned();
-    for (name, id) in [("sound", Id::PetSound), ("browser", Id::PetBrowser)] {
-        text = text.replace(
-            &format!("{{{name}}}"),
-            &shell_key_routing::display_chord(shell_key_routing::binding(id).footer_chord),
-        );
-    }
-    text
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,10 +136,10 @@ mod tests {
             Some(Id::PetInspect)
         );
         app.view_stack
-            .handle_key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE));
+            .handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert!(matches!(
             controls.lock().unwrap().as_slice(),
-            [Control::Sound]
+            [Control::FocusAgents]
         ));
         app.view_stack
             .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));

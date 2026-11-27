@@ -311,6 +311,7 @@ fn setup_status_leaves_a_sealed_home_untouched() {
 fn diagnostics_read_home_legacy_settings_without_migrating_them() {
     for args in [
         &["doctor"][..],
+        &["doctor", "--full"][..],
         &["doctor", "--json"][..],
         &["setup", "--status"][..],
     ] {
@@ -337,6 +338,24 @@ fn diagnostics_read_home_legacy_settings_without_migrating_them() {
 
         match args {
             ["doctor"] => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for part in [
+                    "Works:",
+                    "Needs attention:",
+                    "Next step:",
+                    "`codewhale doctor --full` prints every check.",
+                ] {
+                    assert!(
+                        stdout.contains(part),
+                        "the short report must print {part:?}\nstdout:\n{stdout}"
+                    );
+                }
+                assert!(
+                    !stdout.contains("default_mode=plan (settings)"),
+                    "the short report must leave the posture detail to --full\nstdout:\n{stdout}"
+                );
+            }
+            ["doctor", "--full"] => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 assert!(
                     stdout.contains("default_mode=plan (settings)"),
@@ -466,6 +485,7 @@ fn doctor_text_probe_uses_a_legacy_key_without_migrating_it() {
             config.to_str().expect("config path"),
             "doctor",
             "--probe-local",
+            "--full",
         ])
         .output()
         .expect("run doctor probe");
@@ -511,6 +531,30 @@ fn doctor_text_probe_uses_a_legacy_key_without_migrating_it() {
         legacy_before,
         "doctor must not rewrite the legacy secret store"
     );
+
+    let output = diagnostic_command(&workspace, &home)
+        .args([
+            "--config",
+            config.to_str().expect("config path"),
+            "doctor",
+            "--probe-local",
+        ])
+        .output()
+        .expect("run short doctor probe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "short doctor probe failed\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("(live check passed)"),
+        "the short report must say the live check passed\nstdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("API Connectivity"),
+        "the short report has no connectivity section\nstdout:\n{stdout}"
+    );
+    assert_eq!(server.received_requests().len(), 2);
 
     fs::write(&config, "").expect("write unconfigured route");
     let output = diagnostic_command(&workspace, &home)

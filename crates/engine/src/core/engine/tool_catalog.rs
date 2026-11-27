@@ -1613,7 +1613,7 @@ fn shell_tool_allow_shell_hint() -> &'static str {
      the next turn will expose shell again"
 }
 
-pub(super) fn is_shell_tool_name(tool_name: &str) -> bool {
+pub(crate) fn is_shell_tool_name(tool_name: &str) -> bool {
     matches!(
         tool_name,
         "bash"
@@ -2108,6 +2108,9 @@ fn execute_tool_search_inner(
             cache_rejected = delta.rejected;
             cache_held = delta.held;
             discovered = delta.admitted;
+            for name in discovered.iter().rev() {
+                cache.record_use(name);
+            }
         }
     }
     for name in &discovered {

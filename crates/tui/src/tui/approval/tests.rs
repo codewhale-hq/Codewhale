@@ -783,7 +783,7 @@ fn test_shell_formatter_preserves_unsupported_shell_quotes_in_full() {
 #[test]
 fn test_approval_view_initial_state() {
     let view = ApprovalView::new(benign_request());
-    assert_eq!(view.current_option(), ApprovalOption::Deny);
+    assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
     assert!(view.timeout.is_none());
     assert_eq!(view.risk(), RiskLevel::Benign);
 }
@@ -1179,16 +1179,16 @@ fn tab_toggles_collapsed_card_so_transcript_stays_visible() {
 #[test]
 fn test_approval_view_navigation() {
     let mut view = ApprovalView::new(benign_request());
-    assert_eq!(view.current_option(), ApprovalOption::Deny);
+    assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
 
     view.select_next();
-    assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
+    assert_eq!(view.current_option(), ApprovalOption::Deny);
     view.select_next();
-    assert_eq!(view.current_option(), ApprovalOption::Deny);
-    view.select_prev();
     assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
     view.select_prev();
     assert_eq!(view.current_option(), ApprovalOption::Deny);
+    view.select_prev();
+    assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
 
     view.handle_key(create_key_event(KeyCode::Char('m')));
     assert!(view.scopes_open);
@@ -1217,7 +1217,7 @@ fn permission_shortcut_and_full_access_choice_leave_the_approval_pending() {
             view.handle_key(KeyEvent::new(code, KeyModifiers::SHIFT)),
             ViewAction::Emit(ViewEvent::OpenPermissionSettings)
         ));
-        assert_eq!(view.current_option(), ApprovalOption::Deny);
+        assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
     }
     view.handle_key(create_key_event(KeyCode::Char('m')));
     assert!(
@@ -1477,15 +1477,191 @@ fn benign_one_key_approves_via_numeric_pad() {
 }
 
 #[test]
-fn benign_enter_denies_by_default() {
+fn benign_enter_allows_once_by_default() {
     let mut view = ApprovalView::new(benign_request());
     let action = view.handle_key(create_key_event(KeyCode::Enter));
     assert!(matches!(
         action,
         ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+            decision: ReviewDecision::Approved,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn enter_denies_when_deny_is_the_configured_default() {
+    let _serial = ENTER_GUARD_TESTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for request in one_request_per_card_shape() {
+        let mut view = ApprovalView::new_with_default_selection(
+            request,
+            Locale::En,
+            ApprovalDefaultSelection::Deny,
+        );
+        view.enter_guard = true;
+        assert_eq!(view.current_option(), ApprovalOption::Deny);
+        assert!(matches!(
+            view.handle_key(create_key_event(KeyCode::Enter)),
+            ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+                decision: ReviewDecision::Denied,
+                ..
+            })
+        ));
+    }
+}
+
+static ENTER_GUARD_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn guarded_view(request: ApprovalRequest) -> ApprovalView {
+    let mut view = ApprovalView::new(request);
+    view.enter_guard = true;
+    view
+}
+
+fn long_ago() -> Option<std::time::Instant> {
+    Some(std::time::Instant::now() - std::time::Duration::from_secs(5))
+}
+
+fn is_approved(action: &ViewAction) -> bool {
+    matches!(
+        action,
+        ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+            decision: ReviewDecision::Approved,
+            ..
+        })
+    )
+}
+
+fn enter_was_refused(action: &ViewAction) -> bool {
+    matches!(
+        action,
+        ViewAction::Emit(ViewEvent::StatusToast { message, .. })
+            if message == tr(Locale::En, MessageId::ApprovalEnterIgnored).as_ref()
+    )
+}
+
+fn at(base: std::time::Instant, millis: u64) -> std::time::Instant {
+    base + std::time::Duration::from_millis(millis)
+}
+
+#[test]
+fn enter_does_not_allow_a_card_that_only_just_became_answerable() {
+    for request in one_request_per_card_shape() {
+        let mut untouched = guarded_view(request.clone());
+        assert!(enter_was_refused(
+            &untouched.handle_key(create_key_event(KeyCode::Enter))
+        ));
+
+        let mut ticked = guarded_view(request.clone());
+        assert!(matches!(ticked.tick(), ViewAction::None));
+        assert!(ticked.answerable_since.is_some());
+        assert!(enter_was_refused(
+            &ticked.handle_key(create_key_event(KeyCode::Enter))
+        ));
+
+        let mut settled = guarded_view(request);
+        settled.answerable_since = long_ago();
+        assert!(is_approved(
+            &settled.handle_key(create_key_event(KeyCode::Enter))
+        ));
+    }
+}
+
+#[test]
+fn a_refused_enter_does_not_postpone_the_next_one() {
+    let base = std::time::Instant::now();
+    let mut view = guarded_view(shell_request());
+    ModalView::on_became_top(&mut view, base);
+    assert!(!view.enter_may_commit(ApprovalOption::ApproveOnce, at(base, 400)));
+    assert!(view.enter_may_commit(ApprovalOption::ApproveOnce, at(base, 900)));
+
+    let mut steady = guarded_view(shell_request());
+    ModalView::on_became_top(&mut steady, base);
+    assert!(!steady.enter_may_commit(ApprovalOption::ApproveOnce, at(base, 300)));
+    assert!(!steady.enter_may_commit(ApprovalOption::ApproveOnce, at(base, 600)));
+    assert!(steady.enter_may_commit(ApprovalOption::ApproveOnce, at(base, 900)));
+}
+
+#[test]
+fn held_enter_never_allows() {
+    let base = std::time::Instant::now();
+    let mut view = guarded_view(shell_request());
+    ModalView::on_became_top(&mut view, base);
+    for repeat in 0..200 {
+        assert!(
+            !view.enter_may_commit(ApprovalOption::ApproveOnce, at(base, repeat * 33)),
+            "repeat {repeat}"
+        );
+    }
+    assert!(view.enter_may_commit(ApprovalOption::ApproveOnce, at(base, 200 * 33 + 250)));
+
+    let mut deny = ApprovalView::new_with_default_selection(
+        shell_request(),
+        Locale::En,
+        ApprovalDefaultSelection::Deny,
+    );
+    deny.enter_guard = true;
+    assert!(matches!(
+        deny.handle_key(create_key_event(KeyCode::Enter)),
+        ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
             decision: ReviewDecision::Denied,
             ..
         })
+    ));
+
+    let mut explicit = guarded_view(shell_request());
+    assert!(is_approved(
+        &explicit.handle_key(create_key_event(KeyCode::Char('y')))
+    ));
+}
+
+#[test]
+fn a_card_revealed_again_is_armed_again() {
+    let mut stack = crate::tui::views::ViewStack::new();
+    stack.push(guarded_view(shell_request()));
+    let armed_first = stack
+        .top_approval_for_test()
+        .and_then(|view| view.answerable_since)
+        .expect("armed when pushed");
+    if let Some(view) = stack.top_approval_for_test() {
+        view.answerable_since = long_ago();
+    }
+    stack.push(guarded_view(shell_request()));
+    stack.pop();
+    let revealed = stack.top_approval_for_test().expect("first card on top");
+    let armed_again = revealed.answerable_since.expect("armed when revealed");
+    assert!(armed_again >= armed_first);
+    assert!(armed_again.elapsed() < super::view::ENTER_ARMING_DELAY);
+    assert!(enter_was_refused(
+        &revealed.handle_key(create_key_event(KeyCode::Enter))
+    ));
+}
+
+#[test]
+fn pasted_enter_never_allows() {
+    let mut view = guarded_view(shell_request());
+    view.answerable_since = long_ago();
+    assert!(!ModalView::handle_paste(&mut view, "y\n"));
+    assert!(!ModalView::handle_paste(&mut view, "\n"));
+    assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
+
+    // A terminal without bracketed paste delivers the text as key presses.
+    for ch in "tox -c".chars() {
+        assert!(matches!(
+            view.handle_key(create_key_event(KeyCode::Char(ch))),
+            ViewAction::None
+        ));
+    }
+    assert!(enter_was_refused(
+        &view.handle_key(create_key_event(KeyCode::Enter))
+    ));
+
+    view.last_char_key_at = long_ago();
+    view.last_enter_at = long_ago();
+    assert!(is_approved(
+        &view.handle_key(create_key_event(KeyCode::Enter))
     ));
 }
 
@@ -1644,16 +1820,16 @@ fn benign_esc_aborts() {
 fn test_approval_view_enter_uses_selected_option() {
     let mut view = ApprovalView::new(benign_request());
 
-    // The semantic default is Deny; navigate once (wrapping) to Allow once
-    // and commit it.
+    // The semantic default is Allow once; navigate once to Deny and commit
+    // it.
     view.select_next();
-    assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
+    assert_eq!(view.current_option(), ApprovalOption::Deny);
 
     let action = view.handle_key(create_key_event(KeyCode::Enter));
     assert!(matches!(
         action,
         ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
-            decision: ReviewDecision::Approved,
+            decision: ReviewDecision::Denied,
             ..
         })
     ));
@@ -1664,16 +1840,16 @@ fn test_approval_view_navigation_keys() {
     let mut view = ApprovalView::new(benign_request());
 
     view.handle_key(create_key_event(KeyCode::Up));
-    assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
+    assert_eq!(view.current_option(), ApprovalOption::Deny);
 
     view.handle_key(create_key_event(KeyCode::Down));
-    assert_eq!(view.current_option(), ApprovalOption::Deny);
-
-    view.handle_key(create_key_event(KeyCode::Char('j')));
     assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
 
-    view.handle_key(create_key_event(KeyCode::Char('k')));
+    view.handle_key(create_key_event(KeyCode::Char('j')));
     assert_eq!(view.current_option(), ApprovalOption::Deny);
+
+    view.handle_key(create_key_event(KeyCode::Char('k')));
+    assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
 
     view.handle_key(create_key_event(KeyCode::Char('m')));
     view.handle_key(create_key_event(KeyCode::Down));
@@ -1882,16 +2058,12 @@ fn one_request_per_card_shape() -> Vec<ApprovalRequest> {
 }
 
 #[test]
-fn default_selection_denies_on_every_card_shape() {
+fn default_selection_allows_once_on_every_card_shape() {
     for request in one_request_per_card_shape() {
-        let view = ApprovalView::new_for_locale(request, Locale::En);
-        assert_eq!(view.current_option(), ApprovalOption::Deny);
-    }
-}
+        let view = ApprovalView::new_for_locale(request.clone(), Locale::En);
+        assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
+        assert_eq!(view.current_decision(), ReviewDecision::Approved);
 
-#[test]
-fn allow_once_default_selection_preselects_approve_once() {
-    for request in one_request_per_card_shape() {
         let view = ApprovalView::new_with_default_selection(
             request,
             Locale::En,
@@ -1903,10 +2075,30 @@ fn allow_once_default_selection_preselects_approve_once() {
 }
 
 #[test]
+fn deny_default_selection_preselects_deny() {
+    for request in one_request_per_card_shape() {
+        let view = ApprovalView::new_with_default_selection(
+            request,
+            Locale::En,
+            ApprovalDefaultSelection::Deny,
+        );
+        assert_eq!(view.current_option(), ApprovalOption::Deny);
+        assert_eq!(view.current_decision(), ReviewDecision::Denied);
+    }
+}
+
+#[test]
 fn approval_config_resolves_default_selection() {
     let bare: codewhale_runtime::config::Config = toml::from_str("").expect("empty config");
     assert_eq!(
         bare.approval_default_selection(),
+        ApprovalDefaultSelection::AllowOnce
+    );
+
+    let deny: codewhale_runtime::config::Config =
+        toml::from_str("[approval]\ndefault_selection = \"deny\"").expect("approval table");
+    assert_eq!(
+        deny.approval_default_selection(),
         ApprovalDefaultSelection::Deny
     );
 
@@ -1955,20 +2147,23 @@ fn destructive_y_first_press_approves_once() {
 }
 
 #[test]
-fn destructive_enter_denies_by_default() {
+fn destructive_enter_allows_once_by_default() {
     let mut view = ApprovalView::new(destructive_request());
 
     // The persistent-allow row changes numeric indices, but the semantic
-    // default still starts at Deny.
-    assert_eq!(view.current_option(), ApprovalOption::Deny);
+    // default still starts at Allow once and never saves a rule.
+    assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
     let action = view.handle_key(create_key_event(KeyCode::Enter));
-    assert!(matches!(
-        action,
-        ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
-            decision: ReviewDecision::Denied,
-            ..
-        })
-    ));
+    let ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+        decision,
+        persistent_rules,
+        ..
+    }) = action
+    else {
+        panic!("Enter commits the highlighted option");
+    };
+    assert_eq!(decision, ReviewDecision::Approved);
+    assert!(persistent_rules.is_empty());
 }
 
 #[test]
@@ -1976,12 +2171,12 @@ fn destructive_navigation_then_enter_commits_highlighted_option() {
     let mut view = ApprovalView::new(destructive_request());
 
     view.handle_key(create_key_event(KeyCode::Down));
-    assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
+    assert_eq!(view.current_option(), ApprovalOption::Deny);
     let action = view.handle_key(create_key_event(KeyCode::Enter));
     assert!(matches!(
         action,
         ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
-            decision: ReviewDecision::Approved,
+            decision: ReviewDecision::Denied,
             ..
         })
     ));
@@ -2077,7 +2272,7 @@ fn compact_rendered_text(lines: &[String]) -> String {
 }
 
 fn assert_approval_key_badges_visible(joined: &str) {
-    for badge in ["Allow", "[▾ m]", "Deny", "[d]"] {
+    for badge in ["Details [d]", "Allow [Enter]", "[▾ m]", "Deny [n]"] {
         assert!(joined.contains(badge), "missing control {badge}:\n{joined}");
     }
 }
@@ -2156,25 +2351,59 @@ fn stderr_redirect_does_not_change_the_effect_badge() {
 
 #[test]
 fn highlighted_option_row_names_enter() {
-    let deny_view = ApprovalView::new(shell_request());
-    assert_eq!(deny_view.current_option(), ApprovalOption::Deny);
-    let deny_lines = render_lines(&deny_view, 100, 40)
-        .into_iter()
-        .filter(|line| line.contains("Deny"))
-        .collect::<Vec<_>>();
-    assert_eq!(deny_lines.len(), 1, "{deny_lines:?}");
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::Modifier;
 
-    let allow_view = ApprovalView::new_with_default_selection(
-        shell_request(),
-        Locale::En,
-        ApprovalDefaultSelection::AllowOnce,
+    let reversed = |view: &ApprovalView, width: u16, label: &str| {
+        let area = Rect::new(0, 0, width, 40);
+        let mut buf = Buffer::empty(area);
+        ModalView::render(view, area, &mut buf);
+        let target: Vec<String> = label.chars().map(|c| c.to_string()).collect();
+        (0..area.height)
+            .find_map(|y| {
+                let symbols: Vec<String> = (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect();
+                (0..=symbols.len().saturating_sub(target.len()))
+                    .find(|&x| symbols[x..x + target.len()] == target[..])
+                    .map(|x| {
+                        let x = u16::try_from(x).expect("column fits");
+                        buf[(x, y)].modifier.contains(Modifier::REVERSED)
+                    })
+            })
+            .unwrap_or_else(|| panic!("{label} is not on the bar at width {width}"))
+    };
+
+    for width in [40u16, 60, 100] {
+        let mut view = ApprovalView::new(shell_request());
+        assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
+        assert!(reversed(&view, width, "Allow [Enter]"), "width={width}");
+        assert!(!reversed(&view, width, "Deny [n]"), "width={width}");
+
+        view.handle_key(create_key_event(KeyCode::Right));
+        assert_eq!(view.current_option(), ApprovalOption::Deny);
+        assert!(reversed(&view, width, "Deny [Enter]"), "width={width}");
+        assert!(!reversed(&view, width, "Allow [y]"), "width={width}");
+
+        // With the scope menu open Enter picks a numbered scope row instead.
+        view.handle_key(create_key_event(KeyCode::Char('m')));
+        let menu = render_lines(&view, width, 40).join("\n");
+        assert!(!menu.contains("[Enter]"), "width={width}:\n{menu}");
+        for row in ["[1] Allow once", "[2] Allow in this conversation"] {
+            assert!(menu.contains(row), "width={width}: missing {row}:\n{menu}");
+        }
+    }
+
+    let wide = render_lines(&ApprovalView::new(shell_request()), 100, 40).join("\n");
+    let details = wide.find("Details [d]").expect("details hint");
+    let allow = wide.find("Allow [Enter]").expect("allow control");
+    let deny = wide.find("Deny [n]").expect("deny control");
+    assert!(details < allow && allow < deny, "{wide}");
+    assert!(
+        !wide.contains("Deny [d]") && !wide.contains("Deny  [d]"),
+        "{wide}"
     );
-    assert_eq!(allow_view.current_option(), ApprovalOption::ApproveOnce);
-    let allow_lines = render_lines(&allow_view, 100, 40)
-        .into_iter()
-        .filter(|line| line.contains("Allow"))
-        .collect::<Vec<_>>();
-    assert_eq!(allow_lines.len(), 1, "{allow_lines:?}");
 
     for &locale in Locale::shipped() {
         let view = ApprovalView::new_for_locale(shell_request(), locale);
@@ -2327,6 +2556,27 @@ fn approval_review_and_stop_hints_stay_on_one_row_at_80_columns() {
             .filter(|line| line.contains("Allow") && line.contains("Deny"))
             .collect::<Vec<_>>();
         assert_eq!(bar_rows.len(), 1, "{locale:?}:\n{}", lines.join("\n"));
+    }
+}
+
+#[test]
+fn critical_bar_at_80_columns_still_shows_the_command() {
+    let request = ApprovalRequest::new(
+        "test-id",
+        "exec_shell",
+        "Run a shell command",
+        &json!({"command": "rm -rf ~/projects/old-site"}),
+        "tool:exec_shell",
+    );
+    let view = ApprovalView::new(request);
+    let lines = render_lines(&view, 80, 24);
+    let bar = lines
+        .iter()
+        .find(|line| line.contains("Allow [Enter]"))
+        .unwrap_or_else(|| panic!("no bar:\n{}", lines.join("\n")));
+    assert!(bar.contains("rm -rf ~/projects"), "{bar}");
+    for control in ["[d]", "Allow [Enter]", "[m]", "Deny [n]"] {
+        assert!(bar.contains(control), "missing {control}: {bar}");
     }
 }
 
@@ -2901,8 +3151,12 @@ fn workflow_tool_is_agent_category_and_shows_plan_card_fields() {
 
     let view = ApprovalView::new(request);
     assert!(view.is_workflow_plan_approval());
-    assert_eq!(view.current_option(), ApprovalOption::Deny);
-    assert_eq!(view.current_decision(), ReviewDecision::Denied);
+    assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
+    assert_eq!(view.current_decision(), ReviewDecision::Approved);
+    let bar = render_lines(&view, 100, 40).join("\n");
+    for control in ["Approve [Enter]", "Edit [e]", "Cancel [n]"] {
+        assert!(bar.contains(control), "missing {control}:\n{bar}");
+    }
 }
 
 #[test]
@@ -3216,8 +3470,12 @@ fn kit_decision_band_last_wrapped_action_row_keeps_its_canonical_decision() {
 }
 
 #[test]
-fn kit_decision_band_keeps_parent_child_and_default_deny_authority() {
-    let mut parent = ApprovalView::new(shell_request());
+fn kit_decision_band_keeps_parent_child_and_configured_deny_authority() {
+    let mut parent = ApprovalView::new_with_default_selection(
+        shell_request(),
+        Locale::En,
+        ApprovalDefaultSelection::Deny,
+    );
     render_lines(&parent, 120, 40);
     assert!(matches!(
         parent.handle_key(create_key_event(KeyCode::Enter)),

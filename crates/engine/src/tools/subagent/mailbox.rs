@@ -57,6 +57,8 @@ pub enum MailboxMessage {
     Completed { agent_id: String, summary: String },
     /// Agent failed with the carried error message.
     Failed { agent_id: String, error: String },
+    /// Agent stopped at an own or shared token, step, or wall-time budget.
+    BudgetExhausted { agent_id: String, summary: String },
     /// Agent was interrupted (e.g. API timeout) with a continuable
     /// checkpoint; the worker is parked waiting for continuation input.
     Interrupted { agent_id: String, reason: String },
@@ -113,6 +115,7 @@ impl MailboxMessage {
             | Self::FileWrites { agent_id, .. }
             | Self::Completed { agent_id, .. }
             | Self::Failed { agent_id, .. }
+            | Self::BudgetExhausted { agent_id, .. }
             | Self::Interrupted { agent_id, .. }
             | Self::Cancelled { agent_id }
             | Self::WorkState { agent_id, .. }
@@ -621,6 +624,13 @@ mod tests {
                     error: "boom".into(),
                 },
                 "a7",
+            ),
+            (
+                MailboxMessage::BudgetExhausted {
+                    agent_id: "a7b".into(),
+                    summary: "step budget exhausted".into(),
+                },
+                "a7b",
             ),
             (
                 MailboxMessage::Cancelled {

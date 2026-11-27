@@ -1437,7 +1437,9 @@ fn mcp_model(app: &App, locale: Locale) -> ExtensionsTabModel {
             } else if observed.is_some_and(|server| server.connected) {
                 tr(locale, MessageId::ExtensionsStateConnected)
             } else if observed.is_some_and(|server| server.auth_required) {
-                Cow::Owned(crate::tui::session_boot::mcp_auth_required_state_label())
+                Cow::Owned(crate::tui::session_boot::mcp_auth_required_state_label(
+                    locale,
+                ))
             } else if observed.is_some_and(|server| server.error.is_some()) {
                 tr(locale, MessageId::ExtensionsStateError)
             } else if stale {
@@ -2787,11 +2789,6 @@ impl ModalView for ExtensionsView {
         } else {
             status.render(rows[3], buf);
         }
-        let mut compact_hints = vec![
-            super::ActionHint::new("Tab", tr(self.locale, MessageId::ExtensionsActionTabs)),
-            super::ActionHint::new("/", tr(self.locale, MessageId::SessionsActionSearch)),
-            super::ActionHint::new("Esc", tr(self.locale, MessageId::SessionsActionClose)),
-        ];
         let enter_label = match entries.get(selected).copied() {
             Some(VisibleEntry::Item(_, item)) => Some(
                 item.action
@@ -2810,41 +2807,48 @@ impl ModalView for ExtensionsView {
             }
             _ => None,
         };
-        if let Some(label) = enter_label.as_ref() {
-            compact_hints.insert(1, super::ActionHint::new("Enter", label.clone()));
-        }
-        let mut full_hints = vec![
-            super::ActionHint::new("Tab", tr(self.locale, MessageId::ExtensionsActionTabs)),
-            super::ActionHint::new("↑↓", tr(self.locale, MessageId::LaunchHintMove)),
+        let mut hints = vec![
+            (
+                0u8,
+                super::ActionHint::new("Tab", tr(self.locale, MessageId::ExtensionsActionTabs)),
+            ),
+            (
+                3,
+                super::ActionHint::new("↑↓", tr(self.locale, MessageId::LaunchHintMove)),
+            ),
         ];
         if let Some(label) = enter_label {
-            full_hints.push(super::ActionHint::new("Enter", label));
+            hints.push((0, super::ActionHint::new("Enter", label)));
         }
         if let Some(item) = self.selected_item() {
             if let Some(toggle) = item.toggle.as_ref() {
-                full_hints.push(super::ActionHint::new("Space", toggle.label().to_string()));
+                hints.push((
+                    1,
+                    super::ActionHint::new("Space", toggle.label().to_string()),
+                ));
             }
             if let Some(remove) = item.remove.as_ref() {
-                full_hints.push(super::ActionHint::new("d", remove.label().to_string()));
+                hints.push((2, super::ActionHint::new("d", remove.label().to_string())));
             }
         }
-        full_hints.push(super::ActionHint::new(
-            "/",
-            tr(self.locale, MessageId::SessionsActionSearch),
+        hints.push((
+            0,
+            super::ActionHint::new("/", tr(self.locale, MessageId::SessionsActionSearch)),
         ));
-        full_hints.push(super::ActionHint::new(
-            "Esc",
-            tr(self.locale, MessageId::SessionsActionClose),
+        hints.push((
+            0,
+            super::ActionHint::new("Esc", tr(self.locale, MessageId::SessionsActionClose)),
         ));
-        render_modal_footer(
-            rows[4],
-            buf,
-            if rows[4].width < 64 {
-                &compact_hints
-            } else {
-                &full_hints
-            },
-        );
+        let (mut ranks, mut hints): (Vec<u8>, Vec<super::ActionHint>) = hints.into_iter().unzip();
+        for shed in [3, 2, 1] {
+            if super::action_footer_lines(&hints, rows[4].width).len() <= 1 {
+                break;
+            }
+            let mut kept = ranks.iter().map(|rank| *rank != shed);
+            hints.retain(|_| kept.next().unwrap_or(true));
+            ranks.retain(|rank| *rank != shed);
+        }
+        render_modal_footer(rows[4], buf, &hints);
         *self.hits.borrow_mut() = hits;
     }
 
@@ -3577,7 +3581,7 @@ mod tests {
     fn login_row(name: &str) -> ExtensionItem {
         mcp_row(
             name,
-            &crate::tui::session_boot::mcp_auth_required_state_label(),
+            &crate::tui::session_boot::mcp_auth_required_state_label(Locale::En),
             "401 Unauthorized: the session is no longer accepted",
             ExtensionAction::Command {
                 label: "re-auth".into(),
@@ -3713,6 +3717,42 @@ mod tests {
         // Land on the item, not its group heading.
         view.selected[ExtensionsTab::Plugins.index()] = 1;
         view
+    }
+
+    #[test]
+    fn the_footer_sheds_row_hints_before_esc_close_at_every_width() {
+        let mut view = view_on_item(ExtensionAction::Command {
+            label: "diagnose".into(),
+            command: "/mcp diagnose demo".into(),
+            disposition: RowActionDisposition::InPlace,
+        });
+        {
+            let item = &mut view.snapshot.tabs[ExtensionsTab::Plugins.index()].groups[0].items[0];
+            item.toggle = Some(ExtensionAction::Command {
+                label: "disable".into(),
+                command: "/mcp disable demo".into(),
+                disposition: RowActionDisposition::InPlace,
+            });
+            item.remove = Some(ExtensionAction::Command {
+                label: "remove".into(),
+                command: "/mcp remove demo".into(),
+                disposition: RowActionDisposition::InPlace,
+            });
+        }
+        let footer = |width: u16| {
+            let screen = view.render_text_for_test(width, 24);
+            screen.lines().nth(22).unwrap_or_default().to_string()
+        };
+        for width in 60..=120u16 {
+            let footer = footer(width);
+            assert!(footer.contains("Enter diagnose"), "{width}: {footer}");
+            assert!(footer.contains("Esc close"), "{width}: {footer}");
+        }
+        assert_eq!(
+            footer(80).trim_matches(['│', ' ']),
+            "Tab filters · Enter diagnose · Space disable · / search · Esc close"
+        );
+        assert!(footer(120).contains("↑↓ move") && footer(120).contains("d remove"));
     }
 
     /// T10: right-click used to arm the row's removal and a second one ran

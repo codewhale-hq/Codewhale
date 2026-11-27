@@ -30,16 +30,23 @@ fn passthrough_help_leaves_configuration_and_legacy_credentials_untouched() {
 
         for subcommand in ["exec", "init", "setup", "mcp", "review", "rc", "uninstall"] {
             for flag in ["--help", "-h"] {
-                let output = Command::new(env!("CARGO_BIN_EXE_codewhale"))
-                    .env_clear()
-                    .env("HOME", &home)
-                    .env("USERPROFILE", &home)
-                    .env("CODEWHALE_SECRET_BACKEND", "file")
-                    // No CODEWHALE_HOME: this is the legacy-migration path.
-                    .current_dir(&home)
-                    .args([subcommand, flag])
-                    .output()
-                    .expect("run installed help");
+                let output = Command::new(
+                    std::env::var_os("CARGO_BIN_EXE_codewhale")
+                        .filter(|value| !value.is_empty())
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|| {
+                            std::path::PathBuf::from(env!("CARGO_BIN_EXE_codewhale"))
+                        }),
+                )
+                .env_clear()
+                .env("HOME", &home)
+                .env("USERPROFILE", &home)
+                .env("CODEWHALE_SECRET_BACKEND", "file")
+                // No CODEWHALE_HOME: this is the legacy-migration path.
+                .current_dir(&home)
+                .args([subcommand, flag])
+                .output()
+                .expect("run installed help");
                 assert!(output.status.success(), "{subcommand} {flag}");
                 assert!(output.stderr.is_empty(), "{subcommand} {flag}");
                 let help = String::from_utf8(output.stdout).expect("UTF-8 help");

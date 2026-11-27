@@ -21,11 +21,12 @@ use std::{
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
+    style::Modifier,
     text::{Line, Span},
     widgets::Widget,
 };
 
-use crate::{MotionMode, Paint, Role, State, StatusMark, Theme, text};
+use crate::{KeyHint, MotionMode, Paint, Role, State, StatusMark, Theme, text};
 
 /// How long a toast lives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -38,12 +39,12 @@ pub enum Ttl {
 }
 
 impl Ttl {
-    /// What [`Toast::new`] gives a state: failures and things that need the
-    /// person stay until seen, everything else lasts five seconds.
+    /// What [`Toast::new`] gives a state: failures, blocked states, and things
+    /// that need the person stay until seen; everything else lasts five seconds.
     #[must_use]
     pub const fn for_state(state: State) -> Self {
         match state {
-            State::Failed | State::NeedsYou => Self::UntilSeen,
+            State::Failed | State::NeedsYou | State::Blocked => Self::UntilSeen,
             _ => Self::Seconds(5),
         }
     }
@@ -51,6 +52,9 @@ impl Ttl {
 
 /// How long a seen [`Ttl::UntilSeen`] toast stays before it goes.
 pub const TOAST_SEEN_LINGER: Duration = Duration::from_secs(2);
+/// How long a timed error toast ([`Toast::timed_error`]) lasts before expiring,
+/// matching Desktop Wave 9 (`8000 ms`).
+pub const TOAST_ERROR_SECONDS: u16 = 8;
 /// A toast arrives over this long, in three steps of ink.
 pub const TOAST_FADE_IN: Duration = Duration::from_millis(180);
 /// A toast leaves over this long, in three steps of ink.
@@ -63,6 +67,8 @@ pub struct Toast {
     pub text: Cow<'static, str>,
     /// Draws `→`: there is more to open.
     pub opens: bool,
+    /// Optional right-aligned keyboard action hint.
+    pub action: Option<KeyHint>,
     pub ttl: Ttl,
     /// When the host raised it. `None` never expires by time and never fades.
     pub born: Option<Instant>,
@@ -77,15 +83,53 @@ impl Toast {
             state,
             text: text.into(),
             opens: false,
+            action: None,
             ttl: Ttl::for_state(state),
             born: None,
             seen: None,
         }
     }
 
+    /// A completed-action toast (`State::Done`, 5-second TTL).
+    #[must_use]
+    pub fn success(text: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(State::Done, text)
+    }
+
+    /// An attention-needed toast (`State::NeedsYou`, [`Ttl::UntilSeen`]).
+    #[must_use]
+    pub fn attention(text: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(State::NeedsYou, text)
+    }
+
+    /// A failure toast (`State::Failed`, [`Ttl::UntilSeen`]).
+    #[must_use]
+    pub fn error(text: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(State::Failed, text)
+    }
+
+    /// A timed failure toast (`State::Failed`, [`TOAST_ERROR_SECONDS`] seconds).
+    #[must_use]
+    pub fn timed_error(text: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(State::Failed, text).ttl(Ttl::Seconds(TOAST_ERROR_SECONDS))
+    }
+
+    /// A quiet informational toast (`State::Ready`, 5-second TTL).
+    #[must_use]
+    pub fn info(text: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(State::Ready, text)
+    }
+
     #[must_use]
     pub fn opens(mut self) -> Self {
         self.opens = true;
+        self
+    }
+
+    /// Attach an optional right-aligned keyboard action hint to this toast.
+    #[must_use]
+    pub fn action(mut self, action: KeyHint) -> Self {
+        self.action = Some(action);
         self
     }
 
@@ -155,15 +199,81 @@ impl Toast {
             ""
         };
         let fixed = 1 + text::width(glyph) + 1 + text::width(arrow) + 1;
-        let body = text::display_safe(&self.text);
-        let body =
-            text::truncate_words(&body, max.saturating_sub(fixed), theme.ascii()).into_owned();
+        let safe_body = text::display_safe(&self.text);
+        let min_body = text::width(&safe_body).min(4);
+        let mut action_spans: Option<(Vec<Span<'static>>, usize)> = None;
+        if let Some(hint) = &self.action {
+            let keys = text::display_safe(&hint.keys).into_owned();
+            let verb = text::display_safe(&hint.verb).into_owned();
+            let keys_w = text::width(&keys);
+            let verb_w = text::width(&verb);
+            let avail_for_action = max.saturating_sub(fixed + min_body + 2);
+            if keys_w > 0 && avail_for_action >= keys_w {
+                let (key_style, verb_style) = if hint.enabled {
+                    (
+                        theme.fg(Role::Foreground).add_modifier(Modifier::BOLD),
+                        theme.fg(Role::Muted),
+                    )
+                } else {
+                    (
+                        theme.fg(Role::Muted),
+                        theme.fg(Role::Muted).add_modifier(Modifier::DIM),
+                    )
+                };
+                if verb_w > 0 && avail_for_action >= keys_w + 1 + verb_w {
+                    action_spans = Some((
+                        vec![
+                            Span::raw("  "),
+                            Span::styled(keys, key_style),
+                            Span::raw(" "),
+                            Span::styled(verb, verb_style),
+                        ],
+                        2 + keys_w + 1 + verb_w,
+                    ));
+                } else if verb_w > 0 && avail_for_action >= keys_w + 2 {
+                    let cut = text::truncate(&verb, avail_for_action - keys_w - 1, theme.ascii())
+                        .into_owned();
+                    let cut_w = text::width(&cut);
+                    if cut_w > 0 {
+                        action_spans = Some((
+                            vec![
+                                Span::raw("  "),
+                                Span::styled(keys, key_style),
+                                Span::raw(" "),
+                                Span::styled(cut, verb_style),
+                            ],
+                            2 + keys_w + 1 + cut_w,
+                        ));
+                    } else {
+                        action_spans = Some((
+                            vec![Span::raw("  "), Span::styled(keys, key_style)],
+                            2 + keys_w,
+                        ));
+                    }
+                } else {
+                    action_spans = Some((
+                        vec![Span::raw("  "), Span::styled(keys, key_style)],
+                        2 + keys_w,
+                    ));
+                }
+            }
+        }
+        let action_w = action_spans.as_ref().map_or(0, |(_, w)| *w);
+        let body = text::truncate_words(
+            &safe_body,
+            max.saturating_sub(fixed + action_w),
+            theme.ascii(),
+        )
+        .into_owned();
         let mut spans = vec![
             Span::raw(" "),
             Span::styled(glyph, theme.fg(self.state.role())),
             Span::raw(" "),
             Span::styled(body, theme.fg(ink)),
         ];
+        if let Some((extra, _)) = action_spans {
+            spans.extend(extra);
+        }
         if !arrow.is_empty() {
             spans.push(Span::styled(arrow, theme.fg(Role::Muted)));
         }

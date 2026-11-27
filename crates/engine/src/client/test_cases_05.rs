@@ -1712,6 +1712,73 @@
     }
 
     #[test]
+    fn anthropic_body_omits_tool_choice_when_every_tool_is_over_the_name_limit() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let config = {
+            let mut config: codewhale_runtime::config::Config = Default::default();
+            config.provider = Some("anthropic".to_string());
+            config.providers = Some(codewhale_runtime::config::ProvidersConfig {
+                anthropic: codewhale_runtime::config::ProviderConfig {
+                    api_key: Some("test-key".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            config
+        };
+        let client = CodewhaleClient::new(&config).expect("anthropic client constructs");
+        let long = format!("mcp__tracker__{}.v2.issues.list", "a".repeat(140));
+        let request = MessageRequest {
+            model: "claude-sonnet-4-6".to_string(),
+            tools: Some(vec![Tool {
+                tool_type: None,
+                name: long.clone(),
+                description: "d".to_string(),
+                input_schema: json!({"type": "object", "additionalProperties": false}),
+                allowed_callers: None,
+                defer_loading: None,
+                input_examples: None,
+                strict: None,
+                cache_control: None,
+            }]),
+            messages: vec![],
+            max_tokens: 64,
+            system: None,
+            tool_choice: Some(json!({"type": "auto"})),
+            metadata: None,
+            thinking: None,
+            reasoning_effort: None,
+            stream: None,
+            temperature: None,
+            top_p: None,
+            safety_check: None,
+            title: None,
+        };
+        let (body, omitted) = client
+            .build_anthropic_wire_body(&request, true)
+            .expect("body builds");
+        assert_eq!(omitted.len(), 1);
+        assert!(body.get("tools").is_none());
+        assert!(body.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn receipt_tool_measurement_bounds_omitted_names_and_keeps_the_count() {
+        let names: Vec<String> = (0..20).map(|index| format!("omitted_tool_{index}")).collect();
+        let measurement = crate::llm_client::ToolWireMeasurement {
+            tool_schema_bytes: 0,
+            tool_schema_sha256: String::new(),
+            tool_count: 0,
+            omitted_tool_names: names,
+            omitted_tool_count: 20,
+        }
+        .bounded_for_receipt();
+        let value = serde_json::to_value(&measurement).expect("serializes");
+        assert!(value["omitted_tool_names"].as_array().expect("names").len() <= 8);
+        assert_eq!(value["omitted_tool_count"], 20);
+    }
+
+    #[test]
     fn openai_compatible_gateway_gets_no_deepseek_thinking_dialect_from_a_model_name() {
         for (effort, expected_effort) in [
             ("off", Some("none")),

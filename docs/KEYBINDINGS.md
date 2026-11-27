@@ -27,14 +27,14 @@ Global key chords are not yet user-configurable — tracked for a future release
 | `Ctrl-Alt-O`         | Open the whole-turn Turn Inspector, regardless of composer contents |
 | `Alt-V` / `Option-V` (macOS) | Open the details pager for the selected tool/sub-agent card; with nothing selected, the newest visible error, else the first visible card with details, else the most recent one. Click a card first to keep Alt-V on it while newer cards arrive. Terminals that emit the legacy Option-V glyph are also handled |
 | `Ctrl-Shift-E` / `Cmd-Shift-E` | Toggle the file tree in the workbar                   |
-| `Ctrl-]` or `Ctrl-Tab` | Cycle the pet view while the pet main view is showing; otherwise cycle the work dock: TODO → Agents → Jobs → Background. `Ctrl-]` is portable; `Ctrl-Tab` requires the kitty keyboard protocol. Terminal.app uses it to switch terminal tabs |
-| `Ctrl-Shift-Tab`     | Cycle the pet view or work dock backwards where the terminal sends the kitty keyboard chord. Terminal.app uses it to switch terminal tabs |
+| `Ctrl-]` or `Ctrl-Tab` | Cycle the work dock: TODO → Agents → Jobs → Background. `Ctrl-]` is portable; `Ctrl-Tab` requires the kitty keyboard protocol. Terminal.app uses it to switch terminal tabs |
+| `Ctrl-Shift-Tab`     | Cycle the work dock backwards where the terminal sends the kitty keyboard chord. Terminal.app uses it to switch terminal tabs |
 | `Alt-G` / `Alt-Shift-G` | Scroll transcript to top / bottom when the composer is empty |
 | `Alt-1`-`Alt-8`      | Dispatch Hotbar slots 1-8 when no modal or inline picker is open |
 | `Alt-!` / `Alt-@` / `Alt-#` / `Alt-$` | Select the workbar panel: Tasks / Agents / Context / Files |
 | `Ctrl-Alt-0`         | Toggle the workbar off / back to the bottom placement          |
 | `Alt-L`              | Open the pager for the last message (composer empty)             |
-| `Alt-P` / `Alt-A` / `Alt-Y` | Jump to Plan / Work, or request Full Access (`Alt-Y` is the legacy permission channel — Work + Full Access — not a separate mode; it honors a locked approval policy) |
+| `Alt-P` / `Alt-A` | Jump to Plan / Work |
 | `Ctrl-X` (Activity workbar) | Cancel all running background shell jobs                  |
 | `Esc`                | Close topmost modal · cancel slash menu · dismiss toast. During a compact that is serving an in-flight turn, Esc stops the turn (the compact is collateral). |
 
@@ -242,10 +242,7 @@ panel and placement. `Alt-!`/`Alt-@`/`Alt-#`/`Alt-$` switch panels.
 
 | Chord | Action |
 |---|---|
-| `F7` | View the OrcaRouter partner offer in `/provider` or `/model`, keeping the current selection |
-
-Click the OrcaRouter recommendation for the same offer. Its pager includes the
-redemption URL and referral disclosure. On Apple keyboards, hold Fn if needed.
+| `F7` | Opened the OrcaRouter partner offer in `/provider` or `/model` while its campaign ran. The campaign ended on 2026-11-21, so the key now does nothing and Help no longer lists it |
 
 ## Session Picker (`Ctrl-R` or `/sessions`)
 

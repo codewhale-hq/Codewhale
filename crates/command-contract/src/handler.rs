@@ -5,14 +5,15 @@
 //! `CommandHandler<crate::commands::CommandResult>`.
 
 use crate::facets::{
-    CommandConfigStatusContext, CommandCostContext, CommandDebugChangeContext,
-    CommandDebugDiagnosticsContext, CommandDebugDiffContext, CommandDebugHistoryContext,
-    CommandDebugReceiptsContext, CommandDebugUndoContext, CommandMediaContext,
-    CommandMemoryContext, CommandModePolicyContext, CommandModelContext, CommandPermissionsContext,
-    CommandPluginContext, CommandPresentationContext, CommandProjectContext, CommandSessionContext,
-    CommandSessionControlContext, CommandSessionExportContext, CommandSessionLifecycleContext,
-    CommandSessionStructcopyContext, CommandSkillGroupContext, CommandSkillsContext,
-    CommandSystemPromptContext, CommandWorkspaceContext,
+    CommandBackgroundContext, CommandConfigStatusContext, CommandCostContext,
+    CommandDebugChangeContext, CommandDebugDiagnosticsContext, CommandDebugDiffContext,
+    CommandDebugHistoryContext, CommandDebugReceiptsContext, CommandDebugUndoContext,
+    CommandMediaContext, CommandMemoryContext, CommandModePolicyContext, CommandModelContext,
+    CommandPermissionsContext, CommandPluginContext, CommandPresentationContext,
+    CommandProjectContext, CommandSessionContext, CommandSessionControlContext,
+    CommandSessionExportContext, CommandSessionLifecycleContext, CommandSessionStructcopyContext,
+    CommandSkillGroupContext, CommandSkillsContext, CommandSystemPromptContext,
+    CommandWorkspaceContext,
 };
 
 /// Exact host capabilities exposed to one contextual command handler.
@@ -21,7 +22,7 @@ use crate::facets::{
 /// declare least authority without naming the TUI host. The dispatcher uses
 /// the declaration to populate only those slots in [`CommandContexts`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct CommandCapabilities(u32);
+pub struct CommandCapabilities(u64);
 
 impl CommandCapabilities {
     pub const NONE: Self = Self(0);
@@ -92,7 +93,7 @@ impl CommandCapabilities {
     /// audit and login/logout observations for the config command group. It does
     /// not grant pet, trust, mode, or workspace authority.
     pub const CONFIG: Self = Self(1 << 25);
-    /// Pet presence/mode/sound/habitat host data (FEAT-028 D3), independent of
+    /// Whale view, stillness, name and colour host data (FEAT-028 D3), independent of
     /// general configuration and system settings.
     pub const PET: Self = Self(1 << 26);
     /// Workspace trust and trusted-path allow-list host data (FEAT-028 D3),
@@ -104,13 +105,14 @@ impl CommandCapabilities {
     pub const WORK_SURFACE: Self = Self(1 << 29);
     pub const NAVIGATION: Self = Self(1 << 30);
     pub const VOICE_INPUT: Self = Self(1 << 31);
+    pub const BACKGROUND: Self = Self(1 << 32);
 
     /// Raw bit pattern, for tests that pin the capability-space capacity.
     ///
-    /// Kept `#[cfg(test)]` so the `u32` backing stays an implementation detail
+    /// Kept `#[cfg(test)]` so the `u64` backing stays an implementation detail
     /// and nothing can widen it accidentally through a public accessor.
     #[cfg(test)]
-    pub(crate) const fn bits_for_test(self) -> u32 {
+    pub(crate) const fn bits_for_test(self) -> u64 {
         self.0
     }
 
@@ -179,6 +181,7 @@ pub struct CommandContexts<'a> {
     work_surface: Option<&'a mut dyn crate::config::CommandWorkSurfaceContext>,
     navigation: Option<&'a mut dyn crate::navigation::CommandNavigationContext>,
     voice_input: Option<&'a mut dyn crate::navigation::CommandVoiceInputContext>,
+    background: Option<&'a mut dyn CommandBackgroundContext>,
 }
 
 /// Consumed envelope used when one handler needs several independent facets.
@@ -252,6 +255,7 @@ impl<'a> CommandContexts<'a> {
             work_surface: None,
             navigation: None,
             voice_input: None,
+            background: None,
         }
     }
 
@@ -352,6 +356,18 @@ impl<'a> CommandContexts<'a> {
             "voice-input facet already set"
         );
         self
+    }
+
+    pub fn with_background(mut self, value: &'a mut dyn CommandBackgroundContext) -> Self {
+        assert!(
+            self.background.replace(value).is_none(),
+            "background facet already set"
+        );
+        self
+    }
+
+    pub fn take_background(&mut self) -> Option<&'a mut dyn CommandBackgroundContext> {
+        self.background.take()
     }
 
     pub fn with_permissions(mut self, value: &'a mut dyn CommandPermissionsContext) -> Self {

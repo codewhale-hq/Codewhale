@@ -17,7 +17,7 @@ use codewhale_core::ContextReference;
 use codewhale_execpolicy::ApprovalMode;
 
 use crate::tui::active_cell::ActiveCell;
-use crate::tui::clipboard::{ClipboardContent, ClipboardHandler};
+use crate::tui::clipboard::ClipboardHandler;
 use crate::tui::history::{
     HistoryCell, TranscriptActionOwner, TranscriptFold, TranscriptRenderOptions,
 };
@@ -327,7 +327,7 @@ pub(crate) fn is_stop_word(input: &str, stop_words: &[String]) -> Option<String>
 
 fn initial_onboarding_state(
     skip_onboarding: bool,
-    was_onboarded: bool,
+    _was_onboarded: bool,
     _needs_language: bool,
     needs_api_key: bool,
     needs_workspace_trust: bool,
@@ -336,7 +336,7 @@ fn initial_onboarding_state(
         return OnboardingState::None;
     }
 
-    if was_onboarded && needs_workspace_trust {
+    if needs_workspace_trust {
         OnboardingState::TrustDirectory
     } else {
         OnboardingState::None
@@ -345,11 +345,11 @@ fn initial_onboarding_state(
 
 fn onboarding_is_workspace_trust_gate(
     skip_onboarding: bool,
-    was_onboarded: bool,
+    _was_onboarded: bool,
     needs_api_key: bool,
     needs_workspace_trust: bool,
 ) -> bool {
-    !skip_onboarding && was_onboarded && !needs_api_key && needs_workspace_trust
+    !skip_onboarding && !needs_api_key && needs_workspace_trust
 }
 
 /// Resolve the launch onboarding state and the missing-key-recovery flag in one
@@ -678,6 +678,7 @@ pub struct LaunchRecentSession {
 /// [`crate::tui::underwater::launch_card_rows`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchRowId {
+    ConnectModel,
     NewSession,
     ReturnToSession,
     Recent(String),
@@ -1314,10 +1315,6 @@ pub struct SidebarHoverState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SidebarRowAction {
     Command(String),
-    /// Put a destructive command in the composer instead of executing it.
-    /// The user confirms with Enter or cancels by editing/clearing the draft.
-    #[allow(dead_code)]
-    PrefillCommand(String),
     /// Select the persistent Agents panel. This is deliberately a navigation
     /// action rather than a modal: the Subagents summary is a group door, so
     /// it should reveal the standing register instead of fabricating a detail
@@ -1621,6 +1618,8 @@ pub(crate) struct SkillCacheScope {
     pub(crate) plugins: std::sync::Arc<codewhale_plugins::PluginRegistry>,
 }
 
+pub(crate) const MAX_QUEUED_MESSAGES: usize = 64;
+
 pub struct App {
     pub mode: AppMode,
     /// Registered hotbar actions available for future slot config/render layers.
@@ -1719,6 +1718,9 @@ pub struct App {
     /// When the clipboard paste last ran, so a terminal that reports both the
     /// press and the release of Ctrl+V pastes once instead of twice.
     pub last_clipboard_paste: Option<Instant>,
+    /// A clipboard read still running off the UI thread.
+    pub(crate) pending_paste: Option<crate::tui::paste::PendingPaste>,
+    pub paste_shortcut_press_seen: bool,
     /// Whether the once-per-turn provider-wait incident (#3095) has already
     /// been logged for the current turn.
     pub provider_wait_incident_logged: bool,
@@ -1742,6 +1744,7 @@ pub struct App {
     /// `turn_error_posted`. A turn that then ends `Failed` persists exactly
     /// this text, so resume shows what the live transcript showed.
     pub(crate) turn_error_notice: Option<String>,
+    pub(crate) turn_error_cause: Option<codewhale_engine::llm_error_envelope::ProviderFailureCause>,
     /// Legacy status text sink retained for compatibility with existing call sites.
     pub status_message: Option<String>,
     /// Recent status toasts (ephemeral, newest at back).
@@ -1997,6 +2000,7 @@ pub struct App {
     /// grace of gentle motion the aquarium settles to a genuinely still
     /// scene instead of repainting an idle screen forever.
     pub ambient_idle_since: Option<Instant>,
+    pub ambient_life_held_ms: Option<u128>,
     /// Start of the underwater shell's one-shot successful-turn exhale.
     /// Kept separate from the ambient ocean clock so completion can settle
     /// once without restarting or repainting the transcript field.
@@ -2080,6 +2084,13 @@ pub struct App {
     /// restores the view mode and highlighted row instead of resetting to the
     /// top (#4109 picker memory). Session-scoped, never persisted.
     pub model_picker_memory: Option<ModelPickerMemory>,
+    pub external_agents: Vec<codewhale_app_server::runtime_api::ExternalAgentDiscoveryRow>,
+    pub external_agents_rx: Option<
+        tokio::sync::oneshot::Receiver<
+            Vec<codewhale_app_server::runtime_api::ExternalAgentDiscoveryRow>,
+        >,
+    >,
+    pub external_agent: Option<crate::tui::external_agent::ExternalAgentSession>,
     /// Browsing context from the last dismissed `/provider` picker.
     pub provider_picker_memory: Option<ProviderPickerMemory>,
     /// Last known mouse position for tooltip placement.
@@ -2279,10 +2290,6 @@ pub struct App {
     pub auto_review_reviewer_model: Option<String>,
     pub exec_policy_engine: codewhale_execpolicy::ExecPolicyEngine,
     pub auto_review_broad_allow_warnings: Vec<String>,
-    /// True when the interactive shell switch is user-owned (unset or root
-    /// config.toml). Profile / env / managed / project owners stay in charge
-    /// even when a YOLO entry point asks for Full Access.
-    shell_access_editable: bool,
     // Clipboard handler
     pub clipboard: ClipboardHandler,
     // Tool approval session allowlist
@@ -2939,6 +2946,19 @@ fn default_composer_arrows_scroll_for_platform(use_mouse_capture: bool, _is_wind
 }
 
 impl App {
+    /// The durable task manager this host currently owns.
+    ///
+    /// This is the one slot every consumer reads. A session switch can adopt
+    /// another Runtime store, which replaces the manager; a handle captured at
+    /// launch would then describe a store this host no longer holds, and its
+    /// admission is closed. `None` means this host is between managers — after
+    /// a failed adoption, before exit — and callers must treat that as "no task
+    /// work is available right now" rather than as an error.
+    #[must_use]
+    pub fn task_manager(&self) -> Option<crate::task_manager::SharedTaskManager> {
+        self.runtime_services.task_manager.clone()
+    }
+
     /// Start or end an MCP boot prediction, stamping when it starts.
     ///
     /// Every writer of [`App::mcp_initializing`] goes through here so a
@@ -3493,7 +3513,11 @@ impl App {
     pub fn finish_onboarding_without_feature_intro(&mut self) {
         self.onboarding = OnboardingState::None;
         if let Err(err) = crate::tui::onboarding::mark_onboarded() {
-            self.status_message = Some(format!("Failed to mark onboarding: {err}"));
+            tracing::warn!(error = %err, "onboarding marker write failed");
+            let message = self
+                .tr(MessageId::OnboardingMarkFailed)
+                .replace("{error}", &err.to_string());
+            self.push_status_toast(message, StatusToastLevel::Error, None);
         }
         self.needs_redraw = true;
     }
@@ -3525,8 +3549,11 @@ impl App {
             Ok(None) => return,
             Ok(Some(())) => {}
             Err(err) => {
-                self.status_message = Some(format!("Failed to save feature-intro flag: {err}"));
-                // Still show the nudge; the flag write may simply retry next launch.
+                tracing::warn!(error = %err, "feature intro flag write failed");
+                let message = self
+                    .tr(MessageId::FeatureIntroFlagSaveFailed)
+                    .replace("{error}", &err.to_string());
+                self.push_status_toast(message, StatusToastLevel::Error, None);
             }
         }
         self.status_message = Some(self.tr(MessageId::FleetReadyNotice).into_owned());
@@ -3595,69 +3622,6 @@ impl App {
         true
     }
 
-    /// Legacy YOLO entry points (`--yolo` launch, Alt+Y, the `/mode` yolo
-    /// alias, `/zidong`). YOLO is a permission change (Full Access + trust + shell),
-    /// not a mode change: the installed mode stays Act and the elevated
-    /// authority lives in transient full-access mirrors, never in the durable
-    /// Agent baseline (#3386/#3279).
-    pub fn set_mode_yolo_compat(&mut self) -> bool {
-        // YOLO is a permission change. A locked approval policy must not be
-        // sidestepped by --yolo, default_mode=yolo, /zidong, or Alt+Y.
-        if self.approval_policy_locked() {
-            return false;
-        }
-        let previous_mode = self.mode;
-        let permission_before = self.permission_receipt_label();
-        // Same baseline-refresh rule as a mode hop: the elevation must not
-        // bleed into the restored Agent surface.
-        if previous_mode.uses_agent_baseline() && !self.yolo {
-            self.mode_prefs = ModeSessionPrefs {
-                agent_allow_shell: self.allow_shell,
-                agent_trust_mode: self.trust_mode,
-                agent_approval_mode: self.approval_mode,
-            };
-        }
-        // The legacy alias always lands in Act, never in Plan or Operate.
-        self.mode = AppMode::Agent;
-        // Transient full-access mirrors; do not persist trust/shell elevation
-        // into the durable Agent baseline.
-        if self.shell_access_editable {
-            self.allow_shell = true;
-        }
-        self.trust_mode = true;
-        self.approval_mode = ApprovalMode::Bypass;
-        self.yolo = true;
-        self.notify_yolo_compat_once();
-        self.finish_mode_change(previous_mode, &permission_before);
-        true
-    }
-
-    /// Apply the legacy YOLO selection from a user-facing entry point
-    /// (Alt+Y, the `/mode` yolo alias, `/zidong`). A locked approval policy owns the
-    /// permission surface and refuses here; otherwise this behaves like
-    /// [`Self::select_mode`] and persists the mode actually installed (Act).
-    pub fn select_yolo_compat(&mut self) -> SettingSelection {
-        if self.approval_policy_locked() {
-            self.push_status_toast(
-                "Permissions are controlled by config or managed requirements".to_string(),
-                StatusToastLevel::Warning,
-                Some(6_000),
-            );
-            self.needs_redraw = true;
-            return SettingSelection::Refused;
-        }
-        let changed = self.set_mode_yolo_compat();
-        self.startup_defaults
-            .spawn(crate::tui::startup_defaults::StartupDefaults::mode(
-                self.mode,
-            ));
-        if changed {
-            SettingSelection::Changed
-        } else {
-            SettingSelection::PersistedSame
-        }
-    }
-
     /// Shared tail of every mode transition: ModeChange hooks plus redraw.
     /// Built from `base_hook_context` so this event carries the same session
     /// id, workspace, model, and token total as every other event — it used
@@ -3685,8 +3649,7 @@ impl App {
     /// session silently rewrite the startup default. Every interactive
     /// selector (the Shift+Tab permission dial, the Alt+A/P shortcuts, the
     /// hotbar mode actions) goes through here instead, so "I switched to Plan"
-    /// survives a restart (reported by Hunter against v0.9.1). The legacy
-    /// YOLO entry points go through [`Self::select_yolo_compat`] instead.
+    /// survives a restart (reported by Hunter against v0.9.1).
     ///
     /// The write is queued, not performed here: it is ordered behind every
     /// earlier selection by [`StartupDefaultsWriter`], and a failure surfaces
@@ -4469,8 +4432,17 @@ impl App {
         };
         self.revoke_approvable_auto_review_receipts();
         self.set_agent_runtime_baseline(self.mode_prefs.agent_allow_shell, trust_mode, next);
-        if !self.approval_policy_locked() {
-            let _ = Self::persist_permission_posture(next);
+        if !self.approval_policy_locked()
+            && let Err(err) = Self::persist_permission_posture(next)
+        {
+            tracing::warn!(%err, "failed to persist auto-review paused permission posture");
+            let warning = format!(
+                "Auto-Review paused for this session only: could not save TUI posture ({err}); previous posture will reload on restart"
+            );
+            self.add_message(HistoryCell::System {
+                content: warning.clone(),
+            });
+            self.push_status_toast(warning, StatusToastLevel::Warning, Some(10_000));
         }
         self.needs_redraw = true;
     }
@@ -7312,10 +7284,17 @@ impl App {
     pub fn ambient_idle_settled(&mut self, busy: bool, now: Instant) -> bool {
         if busy {
             self.ambient_idle_since = None;
+            self.ambient_life_held_ms = None;
             return false;
         }
         let since = *self.ambient_idle_since.get_or_insert(now);
-        now.duration_since(since) >= Duration::from_millis(Self::AMBIENT_IDLE_SETTLE_MS)
+        let settled =
+            now.duration_since(since) >= Duration::from_millis(Self::AMBIENT_IDLE_SETTLE_MS);
+        if settled {
+            self.ambient_life_held_ms
+                .get_or_insert(self.ambient_clock_ms);
+        }
+        settled
     }
 
     /// Resolve one motion policy for every surface that can request or paint
@@ -7484,6 +7463,14 @@ impl App {
     pub fn queue_message(&mut self, message: QueuedMessage) {
         if message.extension_command.is_some() {
             self.restore_unsent_message(message);
+            return;
+        }
+        if self.queued_messages.len() >= MAX_QUEUED_MESSAGES {
+            self.restore_unsent_message(message);
+            let notice = self
+                .tr(MessageId::QueueFullNotice)
+                .replace("{max}", &MAX_QUEUED_MESSAGES.to_string());
+            self.push_status_toast(notice, StatusToastLevel::Warning, None);
             return;
         }
         self.queued_messages.push_back(message);
@@ -8236,6 +8223,9 @@ impl App {
     }
 
     pub fn model_display_label(&self) -> String {
+        if let Some(session) = self.external_agent.as_ref() {
+            return session.agent_name.clone();
+        }
         if self.auto_model {
             if let Some(effective) = self.last_effective_model.as_deref()
                 && effective != "auto"
@@ -8268,6 +8258,9 @@ impl App {
     /// Exact non-secret route label for user-visible status surfaces.
     #[must_use]
     pub fn effective_route_identity_display(&self) -> (String, String) {
+        if let Some(session) = self.external_agent.as_ref() {
+            return ("ACP".to_string(), session.agent_name.clone());
+        }
         let (provider, model) = self.effective_route_display();
         let identity = if provider == ProviderKind::Custom {
             if self.pending_turn_route.is_none() && self.auto_model {
@@ -8439,6 +8432,9 @@ impl App {
     /// full via [`Self::reasoning_effort_display_label`].
     #[must_use]
     pub(crate) fn provable_reasoning_effort_label(&self) -> Option<String> {
+        if self.external_agent.is_some() {
+            return None;
+        }
         (self.effective_reasoning_effort_for_active_route(self.reasoning_effort)
             != EffectiveReasoningEffort::Unavailable)
             .then(|| self.reasoning_effort_display_label())

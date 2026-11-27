@@ -456,6 +456,8 @@ mod tests {
         for (key, value) in [
             ("approval_policy", " On-Request "),
             ("approval_policy", "never"),
+            ("approval_policy", "ask"),
+            ("approval_policy", "auto-review"),
             ("sandbox_mode", "workspace-write"),
             ("verbosity", "concise"),
         ] {
@@ -466,7 +468,7 @@ mod tests {
             );
         }
         for (key, value, fix) in [
-            ("approval_policy", "ask", "on-request"),
+            ("approval_policy", "full-access", "on-request"),
             ("sandbox_mode", "full", "read-only"),
             ("verbosity", "quiet", "normal"),
         ] {
@@ -482,7 +484,7 @@ mod tests {
         }
         let error = format!(
             "{:#}",
-            config_toml_value("approval_policy", "ask").unwrap_err()
+            config_toml_value("approval_policy", "full-access").unwrap_err()
         );
         assert!(error.contains("on-request, untrusted, never"), "{error}");
         assert!(error.contains("settings.toml"), "{error}");
@@ -519,7 +521,9 @@ mod tests {
     fn config_set_and_loader_accept_the_same_closed_vocabulary() {
         for (key, value, valid) in [
             ("approval_policy", " ON-REQUEST ", true),
-            ("approval_policy", "ask", false),
+            ("approval_policy", "ask", true),
+            ("approval_policy", "auto-review", true),
+            ("approval_policy", "full-access", false),
             ("verbosity", " CONCISE ", true),
             ("verbosity", "quiet", false),
             ("sandbox_mode", " WORKSPACE-WRITE ", true),

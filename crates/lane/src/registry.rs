@@ -298,6 +298,31 @@ impl LaneRegistry {
         Ok(record)
     }
 
+    /// Record a freshly provisioned worktree on the stored Lane.
+    ///
+    /// Runs under the per-Lane lock and changes only `worktree_path` and
+    /// `branch`, so whichever terminal record a failed start or a concurrent
+    /// stop leaves behind still references the worktree.
+    pub fn persist_worktree(&self, record: &LaneRecord) -> Result<()> {
+        let lock_path = self.root.join(format!("{}.lock", record.id));
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .with_context(|| format!("open lane lock {}", lock_path.display()))?;
+        let mut lock = fd_lock::RwLock::new(lock_file);
+        let _guard = lock
+            .write()
+            .with_context(|| format!("lock lane record {}", record.id))?;
+
+        let mut current = self.load(&record.id)?;
+        current.worktree_path = record.worktree_path.clone();
+        current.branch = record.branch.clone();
+        self.save(&current)
+    }
+
     /// Atomically promote a Pending Lane to Running.
     ///
     /// A concurrent `lane stop` is allowed to win while a backend is still

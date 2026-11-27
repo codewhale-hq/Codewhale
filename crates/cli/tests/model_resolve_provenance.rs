@@ -49,28 +49,6 @@ fn resolve_with_config(config: &str, args: &[&str]) -> BTreeMap<String, String> 
         .collect()
 }
 
-/// Run a model query that must fail without reading ambient configuration or
-/// credentials. Keeping the raw output lets the regression prove the CLI did
-/// not print a fabricated provider route before exiting.
-fn resolve_failure_with_config(config: &str, args: &[&str]) -> std::process::Output {
-    let fixture = TempDir::new().expect("fixture root");
-    let home = fixture.path().join("sealed-home");
-    fs::create_dir_all(home.join(".codewhale")).expect("sealed config dir");
-    fs::write(home.join(".codewhale").join("config.toml"), config).expect("seed config");
-
-    Command::new(codewhale_binary())
-        .arg("model")
-        .arg("resolve")
-        .args(args)
-        .env_clear()
-        .env("HOME", &home)
-        .env("USERPROFILE", &home)
-        .env("CODEWHALE_HOME", home.join(".codewhale"))
-        .env("CODEWHALE_SECRET_BACKEND", "file")
-        .output()
-        .expect("run failing model resolve")
-}
-
 #[test]
 fn resolve_reports_the_configured_provider_not_a_deepseek_fallback() {
     let report = resolve_with_config(
@@ -156,10 +134,26 @@ fn resolve_admits_when_nothing_was_configured() {
 
 #[test]
 fn a_foreign_model_argument_cannot_switch_the_configured_provider() {
-    let output = resolve_failure_with_config(
+    let fixture = TempDir::new().expect("fixture root");
+    let home = fixture.path().join("sealed-home");
+    fs::create_dir_all(home.join(".codewhale")).expect("sealed config dir");
+    fs::write(
+        home.join(".codewhale").join("config.toml"),
         "provider = \"zai\"\n\n[providers.zai]\napi_key = \"k\"\n",
-        &["deepseek-v4-flash"],
-    );
+    )
+    .expect("seed config");
+
+    let output = Command::new(codewhale_binary())
+        .arg("model")
+        .arg("resolve")
+        .arg("deepseek-v4-flash")
+        .env_clear()
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("CODEWHALE_HOME", home.join(".codewhale"))
+        .env("CODEWHALE_SECRET_BACKEND", "file")
+        .output()
+        .expect("run failing model resolve");
 
     assert!(!output.status.success());
     let combined = format!(
@@ -169,7 +163,7 @@ fn a_foreign_model_argument_cannot_switch_the_configured_provider() {
     )
     .to_ascii_lowercase();
     assert!(
-        combined.contains("not available from provider 'zai'"),
+        combined.contains("not served by direct provider zai"),
         "{combined}"
     );
     assert!(!combined.contains("provider: deepseek"), "{combined}");
@@ -198,22 +192,21 @@ fn an_explicit_matching_provider_can_resolve_its_model() {
 }
 
 #[test]
-fn unknown_providerless_model_fails_without_printing_a_deepseek_route() {
-    let output = resolve_failure_with_config(
+fn unknown_providerless_model_stays_on_configured_provider() {
+    let report = resolve_with_config(
         "provider = \"zai\"\n\n[providers.zai]\napi_key = \"k\"\n",
         &["totally-unknown-model"],
     );
 
-    assert!(!output.status.success(), "unknown model must fail closed");
-    let stdout = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
-    let combined = format!("{stdout}\n{stderr}");
-    assert!(
-        combined.contains("not available from provider 'zai'"),
-        "{combined}"
+    assert_eq!(report.get("provider").map(String::as_str), Some("zai"));
+    assert_eq!(
+        report.get("resolved").map(String::as_str),
+        Some("totally-unknown-model")
     );
-    assert!(!combined.contains("provider: deepseek"), "{combined}");
-    assert!(!combined.contains("deepseek-v4-pro"), "{combined}");
+    assert_eq!(
+        report.get("used_fallback").map(String::as_str),
+        Some("false")
+    );
 }
 
 #[test]
@@ -366,36 +359,23 @@ fn moonshot_k3_products_resolve_without_crossing_providers() {
     }
 }
 
-/// An id the selected provider cannot serve must fail closed. Falling back
-/// after a concrete request would silently run a different model.
 #[test]
-fn an_unservable_model_on_the_selected_provider_is_rejected() {
-    let output = resolve_failure_with_config(
+fn unlisted_model_on_selected_provider_passes_through_without_fallback() {
+    let report = resolve_with_config(
         "provider = \"moonshot\"\n\n[providers.moonshot]\napi_key = \"k\"\n",
         &["glm-5.2", "--provider", "moonshot"],
     );
 
-    assert!(!output.status.success());
-    let combined = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
-    .to_ascii_lowercase();
-    assert!(
-        combined.contains("model 'glm-5.2' is not available from provider 'moonshot'"),
-        "{combined}"
+    assert_eq!(report.get("provider").map(String::as_str), Some("moonshot"));
+    assert_eq!(report.get("resolved").map(String::as_str), Some("glm-5.2"));
+    assert_eq!(
+        report.get("used_fallback").map(String::as_str),
+        Some("false")
     );
 }
 
-/// Adding a model to the catalog must make it servable on the provider that
-/// carries it and nowhere else. `glm-5.3` was added as a peer of `glm-5.2`, so
-/// it has to answer on Z.ai without a fallback while a Moonshot-scoped question
-/// still refuses it — the same cross-provider boundary the `glm-5.2` case above
-/// pins, asserted on the newest sibling so the boundary cannot rot as the
-/// family grows.
 #[test]
-fn a_new_glm_sibling_is_servable_on_zai_but_not_on_moonshot() {
+fn a_new_glm_sibling_resolves_on_zai_and_passes_through_on_moonshot() {
     let served = resolve_with_global_flags(
         "provider = \"zai\"\n\n[providers.zai]\napi_key = \"k\"\n",
         &[],
@@ -414,21 +394,23 @@ fn a_new_glm_sibling_is_servable_on_zai_but_not_on_moonshot() {
         "a model the provider serves must not be reported as a fallback: {served:?}"
     );
 
-    let refused = resolve_failure_with_config(
+    let passthrough = resolve_with_global_flags(
         "provider = \"moonshot\"\n\n[providers.moonshot]\napi_key = \"k\"\n",
+        &[],
         &["glm-5.3", "--provider", "moonshot"],
     );
 
-    assert!(!refused.status.success());
-    let resolved = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&refused.stdout),
-        String::from_utf8_lossy(&refused.stderr)
-    )
-    .to_ascii_lowercase();
-    assert!(
-        resolved.contains("model 'glm-5.3' is not available from provider 'moonshot'"),
-        "a provider that cannot serve GLM must fail instead of choosing its default: {resolved}"
+    assert_eq!(
+        passthrough.get("provider").map(String::as_str),
+        Some("moonshot")
+    );
+    assert_eq!(
+        passthrough.get("resolved").map(String::as_str),
+        Some("glm-5.3")
+    );
+    assert_eq!(
+        passthrough.get("used_fallback").map(String::as_str),
+        Some("false")
     );
 }
 
@@ -518,10 +500,10 @@ fn explicit_glm_5_2_selection_survives_the_default_move() {
 }
 
 fn codewhale_binary() -> PathBuf {
-    if let Some(path) = option_env!("CARGO_BIN_EXE_codewhale") {
+    if let Some(path) = std::env::var_os("CARGO_BIN_EXE_codewhale").filter(|v| !v.is_empty()) {
         return PathBuf::from(path);
     }
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_codewhale") {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_codewhale") {
         return PathBuf::from(path);
     }
 

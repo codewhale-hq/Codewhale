@@ -164,6 +164,11 @@ pub(crate) fn preset_router_config(
                 model: Some(model.to_string()),
                 timeout_secs: Some(JEV_TIMEOUT_SECS),
                 min_confidence: Some(codewhale_runtime::config::DEFAULT_AUTO_ROUTER_MIN_CONFIDENCE),
+                shadow_gate: config
+                    .auto
+                    .as_ref()
+                    .and_then(|auto| auto.router.as_ref())
+                    .and_then(|router| router.shadow_gate),
                 ..Default::default()
             }))
         }
@@ -241,6 +246,9 @@ pub(crate) fn persist_auto_router(
         if let Some(min_confidence) = router.min_confidence {
             set_document_value(doc, &["auto", "router", "min_confidence"], min_confidence)?;
         }
+        if let Some(shadow_gate) = router.shadow_gate {
+            set_document_value(doc, &["auto", "router", "shadow_gate"], shadow_gate)?;
+        }
         Ok(())
     })?;
     Ok(path)
@@ -250,7 +258,6 @@ pub(crate) fn persist_auto_router(
 pub(crate) async fn handle_router_request(
     app: &mut App,
     config: &mut Config,
-    task_manager: &codewhale_engine::task_manager::TaskManager,
     request: RouterRequest,
 ) {
     match request {
@@ -266,7 +273,21 @@ pub(crate) async fn handle_router_request(
             });
         }
         RouterRequest::Test(preset) => test_preset(app, config, preset).await,
-        RouterRequest::Save(preset) => save_preset(app, config, task_manager, preset).await,
+        RouterRequest::Save(preset) => {
+            // Reads the App's slot: only a save needs the manager, so no other
+            // request has to wait for one to exist.
+            let Some(task_manager) = app.task_manager() else {
+                app.add_message(HistoryCell::System {
+                    content: codewhale_localization::tr(
+                        app.ui_locale,
+                        codewhale_localization::MessageId::TaskInventoryUnavailable,
+                    )
+                    .to_string(),
+                });
+                return;
+            };
+            save_preset(app, config, &task_manager, preset).await
+        }
     }
 }
 
@@ -502,7 +523,8 @@ provider = \"deepseek\"    # decision: \"openrouter\" or \"typesafe\"\n\
 model = \"deepseek-flash\"\n\
 thinking = \"off\"         # chat routers only\n\
 timeout_secs = 4\n\
-# min_confidence = 0.5     # decision routers only\n\n\
+# min_confidence = 0.5     # decision routers only\n\
+# shadow_gate = true       # decision routers only: log the Decision Gate's recommendation\n\n\
 {}",
         tr(locale, MessageId::RouterCurrent).replace("{router}", &current),
         tr(locale, MessageId::RouterCustomHelpIntro),
@@ -542,10 +564,7 @@ impl RouterSetupView {
             tr(locale, MessageId::RouterPresetUnavailable).replace("{reason}", &reason)
         };
         let mut rows = Vec::new();
-        for route in [
-            DecisionRouterRoute::Openrouter,
-            DecisionRouterRoute::Typesafe,
-        ] {
+        let make_jev_row = |route: DecisionRouterRoute| {
             let preset = RouterPreset::Jev(Some(route));
             let mut hint =
                 tr(locale, MessageId::RouterPresetJevHint).replace("{route}", route.display_name());
@@ -559,13 +578,14 @@ impl RouterSetupView {
                     tr(locale, MessageId::RouterTypesafeSignupPaused)
                 );
             }
-            rows.push(PresetRow {
+            PresetRow {
                 preset,
                 label: format!("Jev · {}", route.display_name()),
                 hint,
                 available,
-            });
-        }
+            }
+        };
+        rows.push(make_jev_row(DecisionRouterRoute::Openrouter));
         let fast = runnable_fast_tier(config);
         rows.push(PresetRow {
             preset: RouterPreset::Fast,
@@ -578,6 +598,7 @@ impl RouterSetupView {
             },
             available: fast.is_some(),
         });
+        rows.push(make_jev_row(DecisionRouterRoute::Typesafe));
         rows.push(PresetRow {
             preset: RouterPreset::Off,
             label: tr(locale, MessageId::ConfigValueOff).into_owned(),
@@ -973,6 +994,47 @@ mod tests {
     }
 
     #[test]
+    fn saving_the_decision_preset_keeps_shadow_gate() {
+        let _env = hermetic();
+        let dir = tempfile::tempdir().expect("config dir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[auto.router]\nkind = \"decision\"\nprovider = \"typesafe\"\nshadow_gate = true\n",
+        )
+        .expect("seed config");
+        let mut config = deepseek_with_openrouter_key(true);
+        config.auto = Some(codewhale_runtime::config::AutoConfig {
+            router: Some(AutoRouterConfig {
+                kind: Some("decision".to_string()),
+                shadow_gate: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let jev = preset_router_config(&config, RouterPreset::Jev(None), Locale::En)
+            .expect("jev")
+            .expect("table");
+        persist_auto_router(Some(&path), Some(&jev)).expect("persist jev");
+        let reloaded: Config =
+            toml::from_str(&std::fs::read_to_string(&path).expect("read back")).expect("reload");
+        let router = reloaded.auto.and_then(|auto| auto.router).expect("router");
+        assert_eq!(router.shadow_gate, Some(true));
+
+        let fast = AutoRouterConfig {
+            kind: Some("chat".to_string()),
+            provider: Some("deepseek".to_string()),
+            model: Some("deepseek-v4-flash".to_string()),
+            ..Default::default()
+        };
+        persist_auto_router(Some(&path), Some(&fast)).expect("persist chat");
+        let reloaded: Config =
+            toml::from_str(&std::fs::read_to_string(&path).expect("read back")).expect("reload");
+        let router = reloaded.auto.and_then(|auto| auto.router).expect("router");
+        assert_eq!(router.shadow_gate, None);
+    }
+
+    #[test]
     fn confirm_view_saves_only_on_enter() {
         use crossterm::event::KeyModifiers;
         let preset = RouterPreset::Jev(Some(DecisionRouterRoute::Openrouter));
@@ -1083,5 +1145,24 @@ mod tests {
         let reason = preset_router_config(&config, RouterPreset::Jev(None), Locale::Ja)
             .expect_err("no decision key");
         assert_eq!(reason, tr(Locale::Ja, MessageId::RouterNeedKey));
+    }
+
+    #[test]
+    fn paused_typesafe_preset_sits_below_runnable_fast_tier() {
+        let _env = hermetic();
+        let view = RouterSetupView::picker(&deepseek_with_openrouter_key(true), Locale::En);
+        let presets: Vec<RouterPreset> = view.rows.iter().map(|row| row.preset).collect();
+        let fast_idx = presets
+            .iter()
+            .position(|preset| *preset == RouterPreset::Fast)
+            .expect("fast preset");
+        let typesafe_idx = presets
+            .iter()
+            .position(|preset| *preset == RouterPreset::Jev(Some(DecisionRouterRoute::Typesafe)))
+            .expect("typesafe preset");
+        assert!(
+            fast_idx < typesafe_idx,
+            "runnable Fast tier must appear above paused Jev · TypeSafe: {presets:?}"
+        );
     }
 }

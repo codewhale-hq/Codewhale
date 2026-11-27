@@ -96,9 +96,6 @@ fn automations_editor_create_edit_cancel_and_reopen_across_terminal_sizes() {
         let second_workspace = workspace.workspace().join("second-workspace");
         std::fs::create_dir_all(&second_workspace).unwrap();
         std::fs::write(workspace.home().join(".codewhale/.onboarded"), "").unwrap();
-        let trust = workspace.workspace().join(".deepseek");
-        std::fs::create_dir_all(&trust).unwrap();
-        std::fs::write(trust.join("trusted"), "").unwrap();
         std::fs::write(
             workspace.home().join(".codewhale/config.toml"),
             r#"
@@ -119,6 +116,7 @@ completion_sound = "off"
 "#,
         )
         .unwrap();
+        workspace.trust_workspace().unwrap();
         let mut tui = open(&workspace, &store, rows, cols);
         click(&mut tui, "n New");
         wait(&mut tui, "Time zone: local");
@@ -269,9 +267,6 @@ fn plugin_review_control_keeps_trust_pinned_and_separate_from_enable() {
         let workspace = make_sealed_workspace().unwrap();
         let state_root = workspace.home().join(".codewhale");
         std::fs::write(state_root.join(".onboarded"), "").unwrap();
-        let trust = workspace.workspace().join(".deepseek");
-        std::fs::create_dir_all(&trust).unwrap();
-        std::fs::write(trust.join("trusted"), "").unwrap();
         std::fs::write(
             state_root.join("config.toml"),
             r#"
@@ -287,6 +282,7 @@ completion_sound = "off"
 "#,
         )
         .unwrap();
+        workspace.trust_workspace().unwrap();
         let bundle = workspace.workspace().join(".codewhale/plugins/fixture");
         let skill = bundle.join("skills/example/SKILL.md");
         std::fs::create_dir_all(skill.parent().unwrap()).unwrap();

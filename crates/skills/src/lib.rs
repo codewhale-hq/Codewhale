@@ -41,10 +41,11 @@ use codewhale_runtime::{
     logging,
 };
 
-/// Default per-entry ceiling for a skill's one-line description in the ambient index.
-/// Split between the summary and its `Use when:` trigger when a description
+/// Default per-entry ceiling for a skill's one-line description in the catalog
+/// preview and the `load_skill` list.
+/// Split between the summary and its trigger clause when a description
 /// carries one, so the trigger phrase — the part the model actually routes on
-/// — survives shortening. When the index shortens any row it ends with a
+/// — survives shortening. When the preview shortens any row it ends with a
 /// count footer that `/context report` repeats, and `/skills inspect` notes each
 /// description over this cap.
 pub const DEFAULT_SKILL_DESCRIPTION_CHARS: usize = 120;
@@ -78,9 +79,9 @@ fn read_skill_text(file: fs::File) -> io::Result<String> {
 /// this floor keeps tiny local windows from erasing the index altogether.
 const MIN_AVAILABLE_SKILLS_CHARS: usize = 2_400;
 /// Ceiling for the index budget: past this, `load_skill name="list"` is a
-/// better deal than the ambient page even on a 1M window.
+/// better deal than the preview page even on a 1M window.
 const MAX_AVAILABLE_SKILLS_CHARS_CEILING: usize = 40_000;
-/// Share of the context window the ambient index may take. Conservative on
+/// Share of the context window the catalog preview may take. Conservative on
 /// purpose — the index is routing metadata, not the work.
 const SKILL_BUDGET_CONTEXT_PERCENT: f64 = 0.2;
 /// Chars-per-token estimate for the budget; matches the conservative
@@ -98,9 +99,9 @@ const MIN_SHORTENED_DESCRIPTION_CHARS: usize = 40;
 pub const MAX_AVAILABLE_SKILLS_CHARS: usize =
     SkillListingConfig::DEFAULT.budget_chars(Some(SKILL_BUDGET_DEFAULT_WINDOW_TOKENS));
 
-/// Session-pinned description and route-window limits for the ambient skill
-/// index. Rebuild only when the session configuration or route changes, so
-/// unchanged turns retain the same prompt prefix (docs/CACHE.md).
+/// Session-pinned description and route-window limits for the skill catalog
+/// preview. Rebuild only when the session configuration or route changes, so
+/// the preview stays stable between turns (docs/CACHE.md).
 #[must_use]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SkillListingConfig {
@@ -577,8 +578,8 @@ impl SkillRegistry {
     /// The search walks `dir` recursively: any directory that contains a
     /// `SKILL.md` is loaded as a single skill, and the walk does **not**
     /// descend further into that directory (companion files live next to
-    /// `SKILL.md`, and `tools::skill::collect_companion_files` already
-    /// treats nested subdirs as out-of-scope). This lets users organize
+    /// `SKILL.md`; `tools::skill::collect_companion_files` lists them,
+    /// including those in nested subdirectories). This lets users organize
     /// skills by vendor / category — e.g.
     /// `<root>/<vendor>/<skill>/SKILL.md` — instead of being forced into
     /// a flat `<root>/<skill>/SKILL.md` layout.
@@ -1857,7 +1858,7 @@ fn render_skills_block(registry: &SkillRegistry, locale: &str, workspace: &Path)
 /// Joins a summary to its trigger phrase in a rendered row.
 const TRIGGER_JOIN: &str = " — Use when: ";
 
-/// One model-selectable row of the ambient index, before budget fitting.
+/// One model-selectable row of the catalog preview, before budget fitting.
 struct IndexRow<'a> {
     name: &'a str,
     /// Summary half of the description (everything before `Use when:`).
@@ -1868,7 +1869,7 @@ struct IndexRow<'a> {
 }
 
 impl IndexRow<'_> {
-    fn render(&self, summary_chars: usize, trigger_chars: usize) -> String {
+    fn description(&self, summary_chars: usize, trigger_chars: usize) -> String {
         let summary = truncate_for_prompt(&self.summary, summary_chars);
         let trigger = self
             .trigger
@@ -1885,6 +1886,11 @@ impl IndexRow<'_> {
             }
             description.push_str(&trigger);
         }
+        description
+    }
+
+    fn render(&self, summary_chars: usize, trigger_chars: usize) -> String {
+        let description = self.description(summary_chars, trigger_chars);
         match (description.is_empty(), &self.source) {
             (true, Some(source)) => format!("- {}: ({source})\n", self.name),
             (true, None) => format!("- {}\n", self.name),
@@ -1895,6 +1901,13 @@ impl IndexRow<'_> {
 
     fn render_name_only(&self) -> String {
         format!("- {}\n", self.name)
+    }
+
+    fn render_name_with_source(&self) -> String {
+        match &self.source {
+            Some(source) => format!("- {} ({source})\n", self.name),
+            None => format!("- {}\n", self.name),
+        }
     }
 
     fn summary_len(&self) -> usize {
@@ -1910,26 +1923,74 @@ impl IndexRow<'_> {
     }
 }
 
-/// Split a description into its summary and `Use when:` trigger phrase, so
-/// shortening can favour the half the model routes on.
+fn find_marker_case_insensitive(haystack: &str, marker: &str) -> Option<(usize, usize)> {
+    let marker_chars: Vec<char> = marker.chars().collect();
+    if marker_chars.is_empty() {
+        return None;
+    }
+    for (start_byte, _) in haystack.char_indices() {
+        let mut hay_iter = haystack[start_byte..].char_indices();
+        let mut matched_len = 0usize;
+        let mut ok = true;
+        for &mc in &marker_chars {
+            let Some((rel_byte, hc)) = hay_iter.next() else {
+                ok = false;
+                break;
+            };
+            let mut lower = hc.to_lowercase();
+            if lower.next() != Some(mc) || lower.next().is_some() {
+                ok = false;
+                break;
+            }
+            matched_len = rel_byte + hc.len_utf8();
+        }
+        if ok {
+            return Some((start_byte, start_byte + matched_len));
+        }
+    }
+    None
+}
+
 fn split_trigger(description: &str) -> (String, Option<String>) {
     let single_line = description.split_whitespace().collect::<Vec<_>>().join(" ");
-    let lower = single_line.to_ascii_lowercase();
     for marker in [
+        "use this skill when ",
+        "use this when ",
         "use when:",
         "use when ",
-        "use this when ",
-        "use this skill when ",
+        "triggers:",
+        "trigger:",
+        "триггеры:",
+        "триггер:",
+        "использовать, когда ",
+        "используй, когда ",
+        "использовать при ",
+        "используй при ",
+        "触发条件：",
+        "触发条件:",
+        "适用场景：",
+        "适用场景:",
+        "使用时机：",
+        "使用时机:",
+        "トリガー：",
+        "トリガー:",
+        "使用条件：",
+        "使用条件:",
+        "트리거:",
+        "사용 조건:",
+        "usar cuando ",
+        "utilisez quand ",
+        "verwenden, wenn ",
     ] {
-        if let Some(pos) = lower.find(marker) {
-            let (head, tail) = single_line.split_at(pos);
-            let trigger = tail[marker.len()..]
+        if let Some((start, end)) = find_marker_case_insensitive(&single_line, marker) {
+            let head = &single_line[..start];
+            let trigger = single_line[end..]
                 .trim()
-                .trim_end_matches('.')
+                .trim_end_matches(['.', '。'])
                 .to_string();
             let summary = head
                 .trim()
-                .trim_end_matches(['.', ';', ',', '—', '-'])
+                .trim_end_matches(['.', ';', ',', '—', '-', '。', '；', '，'])
                 .trim();
             if !trigger.is_empty() {
                 return (summary.to_string(), Some(trigger));
@@ -1957,6 +2018,24 @@ fn description_split(row: &IndexRow<'_>, cap: usize) -> (usize, usize) {
     (cap.saturating_sub(trigger_share).min(s), trigger_share)
 }
 
+/// Shorten a description to `cap` chars with the same rule the catalog
+/// preview uses: a recognised trigger clause survives ahead of the summary.
+pub fn compact_description(description: &str, cap: usize) -> String {
+    let single_line = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    if single_line.chars().count() <= cap {
+        return single_line;
+    }
+    let (summary, trigger) = split_trigger(&single_line);
+    let row = IndexRow {
+        name: "",
+        summary,
+        trigger,
+        source: None,
+    };
+    let (summary_chars, trigger_chars) = description_split(&row, cap);
+    row.description(summary_chars, trigger_chars)
+}
+
 pub fn description_exceeds_index_cap(description: &str, cap: usize) -> bool {
     let (summary, trigger) = split_trigger(description);
     IndexRow {
@@ -1968,7 +2047,7 @@ pub fn description_exceeds_index_cap(description: &str, cap: usize) -> bool {
     .exceeds_index_cap(cap)
 }
 
-/// Render the ambient skill index in three tiers, never dropping a skill's
+/// Render the skill catalog preview in three tiers, never dropping a skill's
 /// name while the budget can hold it:
 ///
 /// 1. Full descriptions, each capped by the configured description limit.
@@ -2041,7 +2120,7 @@ Skills are optional instruction packs. This index exposes routing metadata; bodi
         row.exceeds_index_cap(listing_config.max_description_chars) && row.trigger.is_none()
     }) {
         let warning = format!(
-            "Skill `{}` description exceeds the {}-character index limit without a `Use when:` trigger; `load_skill` returns its full text.",
+            "Skill `{}` description exceeds the {}-character index limit without a recognized trigger clause; `load_skill` returns its full text.",
             row.name, listing_config.max_description_chars
         );
         logging::warn(&warning);
@@ -2146,12 +2225,21 @@ Skills are optional instruction packs. This index exposes routing metadata; bodi
                 out.push_str(line);
             }
         } else {
-            // Tier 3: names only. Omission is the last resort and only when
-            // even the names overflow.
+            // Tier 3: names + source when all fit, otherwise bare names;
+            // omission is the last resort only when even bare names overflow.
             let names_budget = shortened_budget.saturating_sub(skill_omission_reserve);
+            let with_source_total: usize = rows
+                .iter()
+                .map(|row| row.render_name_with_source().chars().count())
+                .sum();
+            let include_source = with_source_total <= names_budget;
             let mut used = 0usize;
             for row in &rows {
-                let line = row.render_name_only();
+                let line = if include_source {
+                    row.render_name_with_source()
+                } else {
+                    row.render_name_only()
+                };
                 let len = line.chars().count();
                 if used + len > names_budget {
                     omitted += 1;

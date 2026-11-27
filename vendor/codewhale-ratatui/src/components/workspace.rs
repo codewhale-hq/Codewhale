@@ -13,7 +13,6 @@ use ratatui::{
     layout::Rect,
     style::Modifier,
     text::{Line, Span},
-    widgets::Widget,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -188,6 +187,10 @@ pub struct ToolCard<'a> {
     pub omitted_lines: usize,
     /// Words after the count. Hosts can supply translated copy.
     pub omission_label: Cow<'a, str>,
+    /// Optional `+added −removed` diff summary shown on the header row.
+    pub diff_outcome: Option<(usize, usize)>,
+    /// Style `subject` as a file path (`dir/` muted, `basename` bold foreground).
+    pub path_subject: bool,
 }
 
 impl<'a> ToolCard<'a> {
@@ -205,7 +208,24 @@ impl<'a> ToolCard<'a> {
             output: Cow::Borrowed(""),
             omitted_lines: 0,
             omission_label: Cow::Borrowed("output lines not fully shown"),
+            diff_outcome: None,
+            path_subject: false,
         }
+    }
+
+    /// Attach a compact `+added −removed` diff summary to the card header.
+    #[must_use]
+    pub fn diff_outcome(mut self, added: usize, removed: usize) -> Self {
+        self.diff_outcome = Some((added, removed));
+        self
+    }
+
+    /// Style the subject as a file path (`dir/` in [`Role::Muted`] and
+    /// `basename` in bold [`Role::Foreground`]).
+    #[must_use]
+    pub fn path_subject(mut self, enabled: bool) -> Self {
+        self.path_subject = enabled;
+        self
     }
 
     #[must_use]
@@ -239,19 +259,36 @@ impl<'a> ToolCard<'a> {
     }
 
     fn heading(&self, width: u16, theme: &Theme) -> Vec<Line<'static>> {
-        let mut lines = vec![activity_header(
-            &self.title,
-            &self.status,
-            self.elapsed.as_deref(),
-            theme,
-        )];
+        let mut header = activity_header(&self.title, &self.status, self.elapsed.as_deref(), theme);
+        if let Some((added, removed)) = self.diff_outcome {
+            let minus = if theme.ascii() { "-" } else { "\u{2212}" };
+            header.spans.push(Span::raw("  "));
+            header
+                .spans
+                .push(Span::styled(format!("+{added}"), theme.fg(Role::Live)));
+            header.spans.push(Span::raw(" "));
+            header.spans.push(Span::styled(
+                format!("{minus}{removed}"),
+                theme.fg(Role::Danger),
+            ));
+        }
+        let mut lines = vec![header];
         let subject = wrapped(&self.subject, width, theme.ascii());
-        lines.extend(
-            subject
-                .lines
-                .into_iter()
-                .map(|line| Line::from(Span::styled(line, theme.fg(Role::Accent)))),
-        );
+        if self.path_subject {
+            lines.extend(
+                subject
+                    .lines
+                    .into_iter()
+                    .map(|line| path_subject_line(&line, theme)),
+            );
+        } else {
+            lines.extend(
+                subject
+                    .lines
+                    .into_iter()
+                    .map(|line| Line::from(Span::styled(line, theme.fg(Role::Accent)))),
+            );
+        }
         lines
     }
 }
@@ -296,17 +333,17 @@ impl Paint for ToolCard<'_> {
             buf,
         );
         if needs_footer && omitted > 0 {
-            let footer = Line::from(Span::styled(
-                format!("{omitted} {}", safe(&self.omission_label)),
-                theme.fg(Role::Hint),
-            ));
-            footer.render(
+            let raw = format!("{omitted} {}", safe(&self.omission_label));
+            let clipped = text::truncate(&raw, usize::from(output_area.width), theme.ascii());
+            let footer = Line::from(Span::styled(clipped.into_owned(), theme.fg(Role::Hint)));
+            super::workbench::row(
                 Rect {
                     y: output_area.y.saturating_add(rows(shown)),
                     height: 1,
                     ..output_area
                 },
                 buf,
+                &footer,
             );
         }
     }
@@ -661,18 +698,32 @@ impl Paint for Fleet<'_> {
         if inner.is_empty() {
             return;
         }
-        Line::from(Span::styled(
-            safe(&self.title),
-            theme.fg(Role::Foreground).add_modifier(Modifier::BOLD),
-        ))
-        .render(Rect { height: 1, ..inner }, buf);
+        let title = safe(&self.title);
+        let title_clipped = text::truncate_words(&title, usize::from(inner.width), theme.ascii());
+        super::workbench::row(
+            Rect { height: 1, ..inner },
+            buf,
+            &Line::from(Span::styled(
+                title_clipped.into_owned(),
+                theme.fg(Role::Foreground).add_modifier(Modifier::BOLD),
+            )),
+        );
         let body = below(inner, 1);
         if body.is_empty() {
             return;
         }
         if self.agents.is_empty() {
-            Line::from(Span::styled(safe(&self.empty_label), theme.fg(Role::Hint)))
-                .render(body, buf);
+            let empty = safe(&self.empty_label);
+            let empty_clipped =
+                text::truncate_words(&empty, usize::from(body.width), theme.ascii());
+            super::workbench::row(
+                Rect { height: 1, ..body },
+                buf,
+                &Line::from(Span::styled(
+                    empty_clipped.into_owned(),
+                    theme.fg(Role::Hint),
+                )),
+            );
             return;
         }
         let mut lines = Vec::new();
@@ -698,17 +749,19 @@ impl Paint for Fleet<'_> {
             let hidden = ends
                 .len()
                 .saturating_sub(ends.partition_point(|end| *end <= visible));
-            Line::from(Span::styled(
-                format!("{hidden} {}", safe(&self.omission_label)),
-                theme.fg(Role::Hint),
-            ))
-            .render(
+            let raw = format!("{hidden} {}", safe(&self.omission_label));
+            let footer_clipped = text::truncate_words(&raw, usize::from(body.width), theme.ascii());
+            super::workbench::row(
                 Rect {
                     y: body.y.saturating_add(rows(visible)),
                     height: 1,
                     ..body
                 },
                 buf,
+                &Line::from(Span::styled(
+                    footer_clipped.into_owned(),
+                    theme.fg(Role::Hint),
+                )),
             );
         }
     }
@@ -852,18 +905,40 @@ fn activity_header(
     Line::from(spans)
 }
 
+fn path_subject_line(line: &str, theme: &Theme) -> Line<'static> {
+    if let Some(cut) = line.rfind(['/', '\\']) {
+        let dir = &line[..=cut];
+        let base = &line[cut + 1..];
+        if base.is_empty() {
+            return Line::from(Span::styled(dir.to_owned(), theme.fg(Role::Muted)));
+        }
+        return Line::from(vec![
+            Span::styled(dir.to_owned(), theme.fg(Role::Muted)),
+            Span::styled(
+                base.to_owned(),
+                theme.fg(Role::Foreground).add_modifier(Modifier::BOLD),
+            ),
+        ]);
+    }
+    Line::from(Span::styled(
+        line.to_owned(),
+        theme.fg(Role::Foreground).add_modifier(Modifier::BOLD),
+    ))
+}
+
 fn paint_lines(lines: &[Line<'_>], area: Rect, buf: &mut Buffer) {
     if area.is_empty() {
         return;
     }
     for (index, line) in lines.iter().take(usize::from(area.height)).enumerate() {
-        line.render(
+        super::workbench::row(
             Rect {
                 y: area.y.saturating_add(rows(index)),
                 height: 1,
                 ..area
             },
             buf,
+            line,
         );
     }
 }

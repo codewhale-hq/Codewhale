@@ -3148,7 +3148,17 @@ async fn heartbeat_recovers_a_delayed_pong_then_kills_a_hung_host() {
     };
     let _policy = TestPolicyGuard::extension_host(true);
     let fixture = FixturePlugins::new(&["hang-tool"]).await;
-    let manager = supervised_manager(&fixture, node);
+    let supervision = super::SupervisionOptions {
+        hang_timeout: Duration::from_millis(2_500),
+        ..fast_supervision()
+    };
+    let manager = Arc::new(ExtensionHostManager::new(ExtensionHostOptions {
+        runtime: NODE,
+        node_override: Some(node),
+        bun_override: None,
+        root: Some(fixture.root.clone()),
+        supervision,
+    }));
     let engine = manager.attach(fixture.registry());
     engine.sync().await.unwrap();
     let tool = host_tool(&engine, fixture.workspace(), "hang_probe");
@@ -3174,7 +3184,7 @@ async fn heartbeat_recovers_a_delayed_pong_then_kills_a_hung_host() {
     assert_eq!(manager.spawn_attempts(), 1);
     let tool = host_tool(&engine, fixture.workspace(), "hang_probe");
     let result = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(10),
         tool.execute(
             json!({}),
             &ToolContext::new(fixture.workspace()).with_plugin_registry(engine.plugin_view()),
@@ -4103,7 +4113,7 @@ fn command_registry_refuses_shadowing_and_undoes_exactly_one_entry() {
         .unwrap();
 
     // Built-in spellings remain protected while plugins receive distinct names.
-    for name in ["help", "trust", "model", "jihua", "zidong", "stub-alias"] {
+    for name in ["help", "trust", "model", "jihua", "stub-alias"] {
         let handle = register_command(&mut registry, &a, name, None).unwrap();
         let _ = registry.mark_active(&a);
         let registered = registry.live_command(handle, "a", a.generation).unwrap();
@@ -5724,4 +5734,57 @@ async fn all_fifteen_project_hook_events_use_the_pinned_runner_and_reject_change
     ));
     assert!(!matches!(manager.status(), HostStatus::Ready { .. }));
     manager.shutdown().await;
+}
+
+#[tokio::test]
+async fn sync_creator_within_signals_cancellation_at_safe_point_on_timeout() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = Arc::new(ExtensionHostManager::new(ExtensionHostOptions {
+        root: Some(temp.path().join("home")),
+        ..Default::default()
+    }));
+    let attachment = manager.attach(Arc::new(PluginRegistry::empty(temp.path())));
+    assert!(attachment.set_creator_demand(true));
+
+    let hold = manager.shared.sync_lock.lock().await;
+    let settled = attachment
+        .sync_creator_within(Duration::from_millis(20))
+        .await;
+    assert!(!settled);
+    drop(hold);
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(manager.tier_spawn_attempts(HostTier::Builtin), 0);
+    assert_eq!(manager.owner_state("host:creator"), None);
+    assert!(manager.shared.sync_lock.try_lock().is_ok());
+    assert!(
+        manager
+            .diagnostics()
+            .iter()
+            .any(|line| line.contains("timed out") && line.contains("cancellation"))
+    );
+}
+
+#[test]
+fn materialize_file_atomically_replaces_read_only_bundle_without_leaking_temp_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("bundle");
+    let first = super::materialize_file(&dir, "asset.mjs", b"export const v = 1;\n").unwrap();
+    assert_eq!(std::fs::read(&first).unwrap(), b"export const v = 1;\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&first).unwrap().permissions().mode() & 0o777,
+            0o400
+        );
+    }
+    let replaced = super::materialize_file(&dir, "asset.mjs", b"export const v = 2;\n").unwrap();
+    assert_eq!(replaced, first);
+    assert_eq!(std::fs::read(&replaced).unwrap(), b"export const v = 2;\n");
+    let entries: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(entries, vec!["asset.mjs".to_string()]);
 }

@@ -10,7 +10,7 @@ is the source. Translations live in [`id/`](id) and [`zh_hans/`](zh_hans).
 - [User guide](GUIDE.md): first run, sessions, commands, everyday workflows
 - [Sign in to a Codewhale account](ACCOUNT.md)
 - [Keybindings](KEYBINDINGS.md)
-- [Pet mode](PET_MODE.md): a glanceable whale view per terminal, with replies and agents on demand
+- [The whale view](PET_MODE.md): `/whale` shows a glanceable whale per terminal, with replies and agents on demand
 - [Modes and permission postures](MODES.md), [Auto-Review](AUTO_REVIEW.md), and [Creator mode](CREATOR_MODE.md)
 - [Configuration](CONFIGURATION.md)
 - [Providers and local models](PROVIDERS.md), [models and providers](MODELS_AND_PROVIDERS.md), and the [Model Lab roadmap](MODEL_LAB.md)
@@ -43,8 +43,9 @@ is the source. Translations live in [`id/`](id) and [`zh_hans/`](zh_hans).
 - [LSP: PHP and custom language servers](LSP_PHP_CUSTOM.md)
 - [Runtime API and integration contract](RUNTIME_API.md)
 - [GitHub App setup](GITHUB_APP.md)
-- [DeepSeek Harness integration](INTEGRATIONS_DSH.md) and
-  [DSH plugin compatibility](DSH_PLUGIN_COMPAT.md)
+- [DeepSeek Harness integration](INTEGRATIONS_DSH.md),
+  [DSH plugin compatibility](DSH_PLUGIN_COMPAT.md) and the
+  [published DSH package table](DSH_COMPATIBILITY.md)
 
 ## Safety and trust
 

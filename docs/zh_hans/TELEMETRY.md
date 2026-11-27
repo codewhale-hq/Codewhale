@@ -1,15 +1,15 @@
 # Codewhale 产品遥测
 
-> 英文原文：[TELEMETRY.md](../TELEMETRY.md)（schema v3 / 告知版本 5）。
-> 最后与英文同步日期（last synced with English revision）：2026-09-29。
+> 英文原文：[TELEMETRY.md](../TELEMETRY.md)（schema v4 / 告知版本 6）。
+> 最后与英文同步日期（last synced with English revision）：2026-11-24。
 
-**当前源码默认开启使用统计，可随时退出。** 首次交互启动显示本地化、非阻塞告知，列明 **Codewhale 和 PostHog**，并提供关闭入口。第 `5` 版告知说明这一默认开启政策；显示告知不等于代替用户记录同意。新安装缺少旧同意记录时仍默认开启；此前明确退出的选择继续有效，隐私状态不可读时保持关闭。环境和命令行关闭开关仍然优先。
+**当前源码默认开启使用统计，可随时退出。** 首次交互启动显示本地化、非阻塞告知，说明 **Codewhale** 为唯一第一方收集方，并提供关闭入口。第 `6` 版告知说明这一默认开启政策以及 schema v4 的聚合内容；显示告知不等于代替用户记录同意。新安装缺少旧同意记录时仍默认开启；此前明确退出的选择继续有效，隐私状态不可读时保持关闭。环境和命令行关闭开关仍然优先。
 
-PostHog 转发是可选的，在采集服务的运维方明确配置项目令牌和获准的区域主机、并记录预发布验证证据（证明实际出口路径不会转发原始客户端 IP）之前不会生效。源码就绪不代表已经部署、已激活处理服务、已有出口回执或已设置保留期限。
+计数仅保存在 Codewhale 自己的第一方 Cloudflare Analytics Engine 采集服务中，不使用任何第三方分析处理方。
 
-可用 `codewhale config telemetry` 阅读告知。通过 `/settings` 或 `codewhale config set telemetry false` 关闭统计。在 Settings 中明确重新开启，或执行 `codewhale config set telemetry true`，会更新现有偏好和隐私记录，供新会话使用。兼容命令 `codewhale config telemetry --accept-notice 5` 仍可使用，但新安装无需执行该命令。采集内容从不包含工作内容或凭据。
+可用 `codewhale config telemetry` 阅读告知。通过 `/settings` 或 `codewhale config set telemetry false` 关闭统计。在 Settings 中明确重新开启，或执行 `codewhale config set telemetry true`，会更新现有偏好和隐私记录，供新会话使用。兼容命令 `codewhale config telemetry --accept-notice 6` 仍可使用，但新安装无需执行该命令。采集内容从不包含工作内容、自定义/私有模型名称或凭据。
 
-Codewhale 不会收集对话、代码、提示词、文件、文件/仓库/分支名称、模型内容或凭据。它不发送任何按回合或按工具的时间线。它只发送下面这个封闭的聚合 schema：版本和平台类别、会话时长/结果、功能/错误计数器，以及一个每 90 天轮换一次的随机安装 id。
+Codewhale 不会收集对话、代码、提示词、文件、文件/仓库/分支名称、自定义/私有模型名称或凭据。它不发送任何按回合或按工具的时间线。它只发送封闭的聚合 schema v4：版本和平台类别、会话时长/结果、内置提供商 ID、`model_usage`（仅限内置公开目录中的模型 ID，自定义/私有/本地模型映射为 `"other"`，以及汇总 token 数量与回合耗时分桶）、`tool_usage`（封闭列表中的内置工具名或 `"mcp"`/`"other"` 及调用/错误计数）、功能/错误计数器，以及一个每 90 天轮换一次的随机安装 id。完整字段定义见英文原文 [TELEMETRY.md](../TELEMETRY.md)。
 
 **现在有了一个真实的端点。** 已启用的会话会将其批次发送到第一方采集服务 `https://telemetry.codewhale.net/v1/telemetry`，这也是 `telemetry_endpoint` 的出厂默认值。该服务是什么、存储什么、结构上不可能存储什么，都在下面的"端点做什么"一节中说明。
 
@@ -45,14 +45,16 @@ codewhale --telemetry false              # 同样的终止开关，仅对单条�
 
 | 文件 | 作用 |
 |---|---|
-| `buffer.jsonl` | 待处理事件，每行一个 JSON 对象 |
+| `spool/<nonce>.jsonl` | 单个进程的待发送事件。首行记录模式版本、告知版本、应用版本、发布提交、使用界面和终端状态，其余各行各存一个事件。 |
+| `spool/<nonce>.lock` | 进程运行时持有该锁。锁已释放表示进程已结束。 |
+| `buffer.jsonl` | 旧版本遗留的缓冲文件。客户端只清空它，不再写入或发送其中的内容。 |
 | `buffer.jsonl.lock` | 兄弟排序锁，写入、投递、启动和擦除共享 |
 | `dryrun.jsonl` | 端点配置为空时批次的去向 |
 | `state.json` | 上次看到的应用版本和上次的 flush 尝试 |
 | `install_id.json` | 随机安装 id 及其生成时间 |
 | `disabled` | tombstone；存在即表示不会追加或发送任何内容 |
 
-`buffer.jsonl` 和 `dryrun.jsonl` 都是环形缓冲，上限为 512 条记录或 256 KiB，先到先截，最旧的被丢弃。因此整个目录有记录的占用上限为 **512 KiB 加几百字节元数据**。
+文件名中的随机数仅用于本机，不会发送。每个进程的暂存文件和 `dryrun.jsonl` 各自最多保存 512 条记录（含首行）或 256 KiB，达到任一上限就丢弃最旧的事件。因此磁盘占用上限是每个运行中的进程 256 KiB，另加 `dryrun.jsonl` 的 256 KiB。每次启动 TUI、`exec` 或 `serve` 后，最多保留四个已结束进程的暂存文件，此外还有几百字节的元数据。
 
 安装 id 是一个随机的 v4 UUID。它绝不从你的主机名、MAC 地址、`machine-id`、主目录、用户名或可执行文件路径派生——派生的 id 就是设备指纹，重装后依然存在，并在你自己选择退出之后重新识别你。每当 `$CODEWHALE_HOME/telemetry/` 被清空时它都会重新生成（选择退出会自动清空），并且在任何情况下每 90 天轮换一次。
 
@@ -74,7 +76,7 @@ Codewhale 没有恢复出厂设置命令，因此本文档也不会声称有。
 
 ## 事件 schema
 
-`SCHEMA_VERSION = 3`，`notice_version = 5` 表示已公开说明的默认开启政策，不表示用户已同意或已看到告知。保留 v2 的封闭格式及 `consent_version = 4` 原有明确同意含义，各版本字段不能混用。v1 批次仍只写入第一方 Analytics Engine，绝不转发到 PostHog，也不接受新字段、新界面或 product_usage 事件。除恰好三个有界字符串（`app_version`、`git_sha`、`panic_site`）外，每个字段都是整数、布尔值或**封闭枚举字符串**。这三个字符串各自都有成文规则和一个钉住该规则的测试。**该 schema 中没有自由格式字符串类型，也没有开放键映射。** 正是这一性质使红线 3 可强制执行，而不是停留在愿望层面。
+`SCHEMA_VERSION = 3`，`notice_version = 5` 表示已公开说明的默认开启政策，不表示用户已同意或已看到告知。保留 v2 的封闭格式及 `consent_version = 4` 原有明确同意含义，各版本字段不能混用。所有版本批次均只写入第一方 Analytics Engine，不转发给任何第三方分析处理方；v1 批次仍不接受新字段、新界面或 product_usage 事件。除恰好三个有界字符串（`app_version`、`git_sha`、`panic_site`）外，每个字段都是整数、布尔值或**封闭枚举字符串**。这三个字符串各自都有成文规则和一个钉住该规则的测试。**该 schema 中没有自由格式字符串类型，也没有开放键映射。** 正是这一性质使红线 3 可强制执行，而不是停留在愿望层面。
 
 ### 批次信封——每次 POST 都会发送
 
@@ -288,19 +290,13 @@ Codewhale 没有恢复出厂设置命令，因此本文档也不会声称有。
 - 限流以校验过主体中的 `install_id` 为键，绝不基于网络地址。按 IP 键控的限流器意味着这个 Worker 要处理 IP。它是更弱的限流器，也是正确的取舍。
 - `telemetry-ingest/test/no-ip.test.ts` 将已发布的源码作为文本读取，如果出现任何地址或地理名称、读取的头集合增长到两个以上、新增 `console.*` 调用，或构造带主体的 `Response`，构建就会失败。
 
-**保留期：三个月。** 这是 Analytics Engine 的固定窗口，不可配置，因此它是上限而非策略——没有任何设置能让它更长。与只写的采集 Worker 分开，所有者运行一个受 Cloudflare Access 保护的私有统计页面，直接从 Analytics Engine 读取并只展示聚合图表（绝不显示安装 id），另有每日汇总任务把不含安装 id 的每日总数保存在我们自己的 Cloudflare 存储中、超过三个月，而原始行仍在三个月后过期。
-
-**可选 PostHog 数据处理方。** 第一方存储完成后，明确配置的采集服务可把已验证的 schema-v3 / notice-v5 批次及保留原有含义的 schema-v2 / consent-v4 批次发往 [PostHog 批量采集 API](https://posthog.com/docs/api/capture)。只允许 `https://us.i.posthog.com` 和 `https://eu.i.posthog.com`；v1 批次永不进入此路径。PostHog 接收相同的有限字段，以批次时间作为事件时间，以 `codewhale:<install_id>` 作为匿名 `distinct_id`；事件名分别为 `codewhale_install_or_upgrade`、`codewhale_session_start`、`codewhale_session_end`、`codewhale_panic`、`codewhale_product_usage` 或 `codewhale_operations_summary`。固定设置 `$process_person_profile = false`、`$geoip_disable = true`、`$ip = null`。不转发请求元数据、身份识别、自动采集、会话回放、广告或工作内容，不添加 SDK。全新的服务端请求不携带用户 cookie 或身份验证头，不跟随重定向，限时 1.5 秒，不重试、不记录日志；处理方失败不改变已成功的第一方响应。
-
-PostHog 项目的保留期限和隐私设置是单独的部署配置，启用前必须复核。Analytics Engine 的三个月上限不能代表 PostHog 的保留期限。本地退出统计不会删除已经发送到处理方的数据；客户端没有远程删除 API。
-
-**边缘网络出口还需预发布验证。** [Cloudflare 文档](https://developers.cloudflare.com/fundamentals/reference/http-headers/#cf-connecting-ip-in-worker-subrequests)说明，Worker 向非 Cloudflare 区域发出的子请求可能被平台添加客户端 IP 请求头。新建 JavaScript 请求头和本地 fetch 模拟测试无法证明平台不会添加这些头。除主机和令牌外，`POSTHOG_IP_SAFE_EGRESS_VERIFIED="true"` 是单独的运维前提；在实际部署和所选区域目的地的验证证据确认所有接收头（包括 `CF-Connecting-IP`、`X-Forwarded-For`、`X-Real-IP`）均不含原始客户端 IP 之前，必须保持未设置。该标志本身不删除平台头。出口变化后需重新验证；若无法满足要求，保持转发关闭，或将发送环节移到与入站请求上下文分离的第一方环境。此源码变更不构成任何线上出口验证。
+**保留期：三个月。** 这是 Analytics Engine 的固定窗口，不可配置，因此它是上限而非策略——没有任何设置能让它更长。与只写的采集 Worker 分开，所有者运行一个受 Cloudflare Access 保护的私有统计页面，直接从 Analytics Engine 读取并只展示聚合图表（绝不显示安装 id），另有每日汇总任务把不含安装 id 的每日总数保存在我们自己的 Cloudflare 存储中、超过三个月，而原始行仍在三个月后过期。没有任何第三方分析处理方接收或存储这些批次。
 
 **每个响应都是带空主体的裸状态码**——`204` 接受、`400` schema 违规、`404`/`405` 路径或方法错误、`413` 过大、`415` 内容类型错误、`429` 被限流、`500` 内部错误。端点无法回显它收到或持有的内容，而且由于客户端会在任何非 2xx 时丢弃批次，拒绝对你而言在构造上就是不可见的，服务器错误也永远不会表现为客户端可见的失败。
 
 `install_id` 每 90 天在客户端轮换（`install_id.json` 中的 `rotated_at`），因此没有任何单一标识符跨越很长的历史。这牺牲了纵向准确性，文档也如实说明：**任何由 `install_id` 推导出的计数都不是用户数。** 它是某个窗口内不同机器安装数的下界，并且会在一次轮换中少算一个回访用户。
 
-**关闭它会删除本地保留的内容，而不是已经发送的内容。** `codewhale config set telemetry false` 会擦除你机器上的安装 id、缓冲区和 dry-run 记录，并停止后续一切。端点已经接受的行只由现在已消失的轮换随机 id 键控；其中第一方的行随三个月窗口一起过期。如果启用了 PostHog 处理，已投递给处理方的记录遵循该项目自行配置的保留期限。客户端没有远程删除 API，也不声称本地退出统计会擦除已投递的记录。
+**关闭它会删除本地保留的内容，而不是已经发送的内容。** `codewhale config set telemetry false` 会擦除你机器上的安装 id、缓冲区和 dry-run 记录，并停止后续一切。端点已经接受的行只由现在已消失的轮换随机 id 键控；第一方的行随三个月窗口一起过期。客户端没有远程删除 API，也不声称本地退出统计会擦除已投递的记录。
 
 ### 所有者回读的内容——观察到的活跃安装数
 
@@ -328,7 +324,7 @@ CF_ACCOUNT_ID=... CF_API_TOKEN=... npm run report:active-installs
 网站扩展使用 `FUNNEL_SCHEMA_VERSION = 5` 和告知版本 `7`。Rust 运行时仍使用
 `SCHEMA_VERSION = 4`、告知版本 `6`；现有浏览器 schema `3`、告知版本 `5`，以及
 旧 schema `1` 和 `2` 均保留原有约定。显示新版告知不会覆盖退出选择，也不代表
-用户接受。Schema 5 仅进入第一方采集，不会启用 PostHog。
+用户接受。Schema 5 仅进入第一方采集。
 
 Schema 5 的批次保持原有十二个字段。`surface` 必须是 `website`，`git_sha` 为 null，
 `os` 和 `arch` 为 `other`，`libc` 为 `none`，`tty` 为 false。一个批次包含一至

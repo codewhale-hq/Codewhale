@@ -14,6 +14,19 @@ use std::path::PathBuf;
 const DETAIL_PAGE: usize = 10;
 const ROUTE_PICK_PAGE: usize = 10;
 
+pub(super) fn long_scope_label(
+    locale: Locale,
+    scope: FleetScope,
+) -> std::borrow::Cow<'static, str> {
+    tr(
+        locale,
+        match scope {
+            FleetScope::Personal => MessageId::FleetScopeLongUser,
+            FleetScope::Workspace => MessageId::FleetScopeLongFolder,
+        },
+    )
+}
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     buffer::Buffer,
@@ -129,8 +142,7 @@ pub struct FleetDetailView {
 }
 
 impl FleetDetailView {
-    /// Open a saved Fleet by name and scope. The caller (the list view) names
-    /// the scope explicitly, so ambiguity is impossible here.
+    #[cfg(test)]
     pub fn open(app: &App, config: &Config, name: &str, scope: FleetScope) -> Option<Self> {
         Self::open_for_member(app, config, name, scope, None)
     }
@@ -144,7 +156,12 @@ impl FleetDetailView {
         scope: FleetScope,
         member_id: Option<&str>,
     ) -> Option<Self> {
-        let (fleet, source) = load_fleet_in_scope(name, scope, &app.workspace).ok()?;
+        let fleet_name = name.to_string();
+        let workspace = app.workspace.clone();
+        let (fleet, source) = crate::commands::contract::run_owner_blocking(move || {
+            load_fleet_in_scope(&fleet_name, scope, &workspace).map_err(|error| error.to_string())
+        })
+        .ok()?;
         let session_provider = if app.auto_model {
             app.last_effective_provider_identity
                 .clone()
@@ -191,9 +208,13 @@ impl FleetDetailView {
         session_model: &str,
     ) -> Self {
         let routes = build_route_rows(config);
-        let saved_source = std::fs::read_to_string(&source)
-            .ok()
-            .filter(|text| FleetFile::parse(text).ok().as_ref() == Some(&fleet));
+        let source_path = source.clone();
+        let saved_source = crate::commands::contract::run_owner_blocking(move || {
+            Ok(std::fs::read_to_string(&source_path).ok())
+        })
+        .ok()
+        .flatten()
+        .filter(|text| FleetFile::parse(text).ok().as_ref() == Some(&fleet));
         let mut view = Self {
             fleet,
             editor_id: uuid::Uuid::new_v4(),
@@ -257,21 +278,22 @@ impl FleetDetailView {
     /// Known limitation: this is check-then-write, not a lock; a write that
     /// lands between the check and the atomic rename is not detected.
     fn source_unchanged(&self) -> bool {
+        let source = self.source.clone();
         self.saved_source.is_some()
-            && std::fs::read_to_string(&self.source).ok() == self.saved_source
+            && crate::commands::contract::run_owner_blocking(move || {
+                Ok(std::fs::read_to_string(&source).ok())
+            })
+            .ok()
+            .flatten()
+                == self.saved_source
     }
 
     /// The pager shown when the source moved underneath the editor.
     fn stale_source_action(&self, title: &str) -> ViewAction {
         ViewAction::Emit(ViewEvent::OpenTextPager {
             title: title.to_string(),
-            content: format!(
-                "Nothing was written.\n\n{} changed on disk after this editor opened it \
-                 (another session or an external edit). Saving now would overwrite \
-                 that newer version.\n\nClose this editor and reopen the team to load \
-                 the current file, then make the change again.",
-                self.source.display()
-            ),
+            content: tr(self.locale, MessageId::FleetSaveStaleSourceBody)
+                .replace("{path}", &self.source.display().to_string()),
         })
     }
 
@@ -292,7 +314,9 @@ impl FleetDetailView {
         }
         if !self.source_unchanged() {
             self.rename_mode = false;
-            return Some(self.stale_source_action("Rename refused"));
+            return Some(
+                self.stale_source_action(&tr(self.locale, MessageId::FleetRenameRefusedTitle)),
+            );
         }
         // The rename must not collide with a different Fleet of the same slug
         // in this scope (the store refuses that at save).
@@ -301,16 +325,16 @@ impl FleetDetailView {
         self.rename_mode = false;
         match save_fleet(&self.fleet, self.scope, &self.workspace) {
             Ok(path) => Some(ViewAction::EmitAndClose(ViewEvent::FleetStoreChanged {
-                message: format!(
-                    "Renamed Team `{old_name}` → `{new_name}` ({}) — wrote {}",
-                    self.scope.label(),
-                    path.display()
-                ),
+                message: tr(self.locale, MessageId::FleetRenamedNotice)
+                    .replace("{old_name}", &old_name)
+                    .replace("{new_name}", &new_name)
+                    .replace("{scope}", &long_scope_label(self.locale, self.scope))
+                    .replace("{path}", &path.display().to_string()),
             })),
             Err(err) => {
                 self.fleet.name = old_name;
                 Some(ViewAction::Emit(ViewEvent::OpenTextPager {
-                    title: "Rename failed".to_string(),
+                    title: tr(self.locale, MessageId::FleetRenameFailedTitle).into_owned(),
                     content: format!("{err:#}"),
                 }))
             }
@@ -671,22 +695,21 @@ impl FleetDetailView {
 
     fn save(&self) -> Option<ViewAction> {
         if !self.source_unchanged() {
-            return Some(self.stale_source_action("Save refused"));
+            return Some(
+                self.stale_source_action(&tr(self.locale, MessageId::FleetSaveRefusedTitle)),
+            );
         }
         match save_fleet(&self.fleet, self.scope, &self.workspace) {
             Ok(path) => Some(ViewAction::EmitAndClose(ViewEvent::FleetStoreChanged {
-                message: format!(
-                    "Saved Team `{}` ({}) — wrote {}",
-                    self.fleet.name,
-                    self.scope.long_label(),
-                    path.display()
-                ),
+                message: tr(self.locale, MessageId::FleetSavedNotice)
+                    .replace("{name}", &self.fleet.name)
+                    .replace("{scope}", &long_scope_label(self.locale, self.scope))
+                    .replace("{path}", &path.display().to_string()),
             })),
             Err(err) => Some(ViewAction::Emit(ViewEvent::OpenTextPager {
-                title: "Save failed".to_string(),
-                content: format!(
-                    "Nothing was written.\n\n{err:#}\n\nFix the issue and save again."
-                ),
+                title: tr(self.locale, MessageId::FleetSaveFailedTitle).into_owned(),
+                content: tr(self.locale, MessageId::FleetSaveFailedBody)
+                    .replace("{error}", &format!("{err:#}")),
             })),
         }
     }
@@ -695,15 +718,13 @@ impl FleetDetailView {
         let target = self.scope.toggled();
         match save_fleet(&self.fleet, target, &self.workspace) {
             Ok(path) => Some(ViewAction::EmitAndClose(ViewEvent::FleetStoreChanged {
-                message: format!(
-                    "Copied Team `{}` to {} scope — wrote {}",
-                    self.fleet.name,
-                    target.label(),
-                    path.display()
-                ),
+                message: tr(self.locale, MessageId::FleetCopiedNotice)
+                    .replace("{name}", &self.fleet.name)
+                    .replace("{scope}", &long_scope_label(self.locale, target))
+                    .replace("{path}", &path.display().to_string()),
             })),
             Err(err) => Some(ViewAction::Emit(ViewEvent::OpenTextPager {
-                title: "Copy failed".to_string(),
+                title: tr(self.locale, MessageId::FleetCopyFailedTitle).into_owned(),
                 content: format!("{err:#}"),
             })),
         }
@@ -712,15 +733,13 @@ impl FleetDetailView {
     fn select_scope(&self, scope: FleetScope) -> Option<ViewAction> {
         match set_selected(&self.fleet.name, scope, &self.workspace) {
             Ok(path) => Some(ViewAction::EmitAndClose(ViewEvent::FleetStoreChanged {
-                message: format!(
-                    "Selected Team `{}` as {} default — wrote {}",
-                    self.fleet.name,
-                    scope.label(),
-                    path.display()
-                ),
+                message: tr(self.locale, MessageId::FleetSelectedNotice)
+                    .replace("{name}", &self.fleet.name)
+                    .replace("{scope}", &long_scope_label(self.locale, scope))
+                    .replace("{path}", &path.display().to_string()),
             })),
             Err(err) => Some(ViewAction::Emit(ViewEvent::OpenTextPager {
-                title: "Selection failed".to_string(),
+                title: tr(self.locale, MessageId::FleetSelectFailedTitle).into_owned(),
                 content: format!("{err:#}"),
             })),
         }
@@ -2213,6 +2232,34 @@ model = "fixture-review-model"
         view.handle_key(key(KeyCode::Char('d')));
         view.handle_key(key(KeyCode::Char('y')));
         assert_eq!(view.fleet.members, fleet.members);
+    }
+
+    #[test]
+    fn stale_save_title_follows_the_ui_locale() {
+        let ws = tempfile::TempDir::new().unwrap();
+        let fleet = sample_fleet("Fleet L");
+        save_fleet(&fleet, FleetScope::Workspace, ws.path()).unwrap();
+        let mut view = FleetDetailView::open(
+            &app_in(ws.path().to_path_buf()),
+            &Config::default(),
+            "Fleet L",
+            FleetScope::Workspace,
+        )
+        .expect("open");
+        view.locale = Locale::Fr;
+        let mut newer = fleet.clone();
+        newer.operator = Some(FleetOperator {
+            provider: "openai".to_string(),
+            model: "gpt-5.6".to_string(),
+            reasoning: None,
+        });
+        save_fleet(&newer, FleetScope::Workspace, ws.path()).unwrap();
+        let action = view.save();
+        let Some(ViewAction::Emit(ViewEvent::OpenTextPager { title, .. })) = action else {
+            panic!("expected a stale-source pager, got {action:?}");
+        };
+        assert_ne!(title, "Save refused");
+        assert_eq!(title, tr(Locale::Fr, MessageId::FleetSaveRefusedTitle));
     }
 
     /// U09-01: an ordinary Save or rename never overwrites a Fleet file that

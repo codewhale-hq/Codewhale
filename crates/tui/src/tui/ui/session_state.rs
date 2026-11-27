@@ -187,6 +187,9 @@ pub(crate) fn expect_fresh_session(app: &mut App, id: &str) -> Result<(), String
 }
 
 pub(crate) async fn persist_pending_work_checkpoint(app: &mut App) -> Result<bool, String> {
+    if app.dispatch_in_flight {
+        return Ok(false);
+    }
     let Some(work) = app.runtime_services.work.clone() else {
         return Ok(false);
     };
@@ -358,6 +361,9 @@ pub(crate) fn reconcile_turn_liveness_supervised(
     heartbeat: &codewhale_engine::core::engine::turn_heartbeat::HeartbeatSnapshot,
     engine: &EngineHandle,
 ) -> bool {
+    if app.external_agent.is_some() {
+        return false;
+    }
     let turn_in_progress = matches!(app.runtime_turn_status.as_deref(), Some("in_progress"));
     if (app.is_loading || matches!(app.runtime_turn_status.as_deref(), Some("in_progress")))
         && let Some(stall) = heartbeat.stall.as_ref()
@@ -391,9 +397,9 @@ pub(crate) fn reconcile_turn_liveness_with(
     has_running_agents: bool,
     heartbeat: Option<&codewhale_engine::core::engine::turn_heartbeat::HeartbeatSnapshot>,
 ) -> bool {
-    // The engine is inside a wait it bounds itself and has not reported as
-    // overdue (a quiet model, a live stream). Its watchdog owns that bound;
-    // the UI does not second-guess it with a timer of its own.
+    if app.external_agent.is_some() {
+        return false;
+    }
     let engine_owns_wait = heartbeat.is_some_and(|snapshot| snapshot.engine_owns_live_wait());
     // #6872: human decisions can wait indefinitely. Their configured timeout,
     // answer or withdrawal owns the wait, including buried or hidden cards.
@@ -528,42 +534,68 @@ pub(crate) fn reconcile_turn_liveness_with(
 /// written to disk, so `--continue` loads the *previous* save — effectively
 /// losing the entire in-progress turn.
 pub(crate) fn persist_recovery_snapshot(app: &mut App) {
-    if let Ok(manager) = SessionManager::default_location()
-        && let Ok(mut session) = build_session_snapshot(app, &manager)
-    {
-        if let Some(turn) = app.active_turn.as_ref()
-            && app.runtime_turn_id.as_deref() == Some(turn.turn_id.as_str())
-            && !app.suppress_stream_events_until_turn_complete
-            && app
-                .api_messages
-                .last()
-                .is_some_and(|message| message.role == codewhale_models::Role::User)
-            && let Some(HistoryCell::Assistant {
-                content,
-                streaming: true,
-            }) = app
-                .streaming_message_index
-                .and_then(|index| app.history.get(index))
-            && !content.is_empty()
-            && let Some(journal) = session.journal.as_mut()
-        {
-            session.leaf_id = Some(journal.append_message(Message::interrupted_assistant(content)));
-            session.metadata.message_count += 1;
-        }
-        let projection = saved_work_projection(app, &session);
-        if app.current_session_id.is_none() {
-            app.set_current_session_id(Some(session.metadata.id.clone()));
-        }
-        if let Err(err) = persist_with_pending_work_boundary(
-            app,
-            PersistRequest::SaveCheckpoint { session },
-            &projection,
-        ) {
-            app.status_message = Some(format!(
-                "To-do list update pending while saving recovery snapshot ({err})"
-            ));
-        }
+    if app.dispatch_in_flight {
+        return;
     }
+    let built = SessionManager::default_location()
+        .map_err(|err| err.to_string())
+        .and_then(|manager| build_session_snapshot(app, &manager));
+    let mut session = match built {
+        Ok(session) => session,
+        Err(err) => {
+            tracing::warn!(%err, "recovery snapshot could not be built; in-progress turn not persisted");
+            return;
+        }
+    };
+    if let Some(turn) = app.active_turn.as_ref()
+        && app.runtime_turn_id.as_deref() == Some(turn.turn_id.as_str())
+        && !app.suppress_stream_events_until_turn_complete
+        && app
+            .api_messages
+            .last()
+            .is_some_and(|message| message.role == codewhale_models::Role::User)
+        && let Some(HistoryCell::Assistant {
+            content,
+            streaming: true,
+        }) = app
+            .streaming_message_index
+            .and_then(|index| app.history.get(index))
+        && !content.is_empty()
+        && let Some(journal) = session.journal.as_mut()
+    {
+        session.leaf_id = Some(journal.append_message(Message::interrupted_assistant(content)));
+        session.metadata.message_count += 1;
+    }
+    let projection = saved_work_projection(app, &session);
+    if app.current_session_id.is_none() {
+        app.set_current_session_id(Some(session.metadata.id.clone()));
+    }
+    if let Err(err) = persist_with_pending_work_boundary(
+        app,
+        PersistRequest::SaveCheckpoint { session },
+        &projection,
+    ) {
+        tracing::error!(%err, "recovery snapshot save failed; in-progress turn not durably persisted");
+        surface_session_save_failure(app, &err);
+    }
+}
+
+fn surface_session_save_failure(app: &mut App, error: &str) {
+    let id = app
+        .current_session_id
+        .as_deref()
+        .map(codewhale_engine::session_manager::truncate_id)
+        .unwrap_or("—");
+    let message = app
+        .tr(MessageId::SessionSaveFailed)
+        .replace("{id}", id)
+        .replace("{error}", error);
+    app.add_message(HistoryCell::Error {
+        message: message.clone(),
+        severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+        code: None,
+    });
+    app.set_sticky_status(message, StatusToastLevel::Error, None);
 }
 
 pub(crate) fn persist_full_reset_snapshot(app: &mut App) {
@@ -573,21 +605,8 @@ pub(crate) fn persist_full_reset_snapshot(app: &mut App) {
     let session = match session {
         Ok(session) => session,
         Err(err) => {
-            let id = app
-                .current_session_id
-                .as_deref()
-                .map(codewhale_engine::session_manager::truncate_id)
-                .unwrap_or("—");
-            let message = app
-                .tr(MessageId::SessionSaveFailed)
-                .replace("{id}", id)
-                .replace("{error}", &err);
-            app.add_message(crate::tui::history::HistoryCell::Error {
-                message: message.clone(),
-                severity: codewhale_error_taxonomy::ErrorSeverity::Error,
-                code: None,
-            });
-            app.status_message = Some(message);
+            tracing::error!(%err, "reset snapshot could not be built");
+            surface_session_save_failure(app, &err);
             return;
         }
     };
@@ -598,9 +617,8 @@ pub(crate) fn persist_full_reset_snapshot(app: &mut App) {
         PersistRequest::CompletedCommit { session },
         &projection,
     ) {
-        app.status_message = Some(format!(
-            "To-do list update pending while saving reset snapshot ({err})"
-        ));
+        tracing::error!(%err, "reset snapshot save failed");
+        surface_session_save_failure(app, &err);
     }
 }
 
@@ -609,7 +627,9 @@ pub(crate) fn maybe_throttled_recovery_snapshot(
     now: Instant,
     last_snapshot_at: &mut Option<Instant>,
 ) {
-    if !app.is_loading && !matches!(app.runtime_turn_status.as_deref(), Some("in_progress")) {
+    if app.dispatch_in_flight
+        || (!app.is_loading && !matches!(app.runtime_turn_status.as_deref(), Some("in_progress")))
+    {
         return;
     }
     if last_snapshot_at
@@ -1102,17 +1122,20 @@ pub(crate) fn begin_launch_session(
     })
 }
 
-pub(crate) async fn sync_runtime_workspace_state(
-    task_manager: &SharedTaskManager,
-    workspace: PathBuf,
-) {
-    task_manager.set_default_workspace(workspace).await;
+/// Point the manager the App currently owns at `workspace`.
+///
+/// Reads through the slot rather than a captured handle: a session switch can
+/// replace the manager, and a stale handle would update a store this host no
+/// longer holds.
+pub(crate) async fn sync_runtime_workspace_state(app: &App, workspace: PathBuf) {
+    if let Some(current) = app.runtime_services.task_manager.as_ref() {
+        current.set_default_workspace(workspace).await;
+    }
 }
 
 pub(crate) async fn switch_workspace(
     app: &mut App,
     engine_handle: &mut EngineHandle,
-    task_manager: &SharedTaskManager,
     config: &Config,
     workspace: PathBuf,
 ) {
@@ -1133,7 +1156,7 @@ pub(crate) async fn switch_workspace(
     }
 
     apply_workspace_runtime_state(app, config, workspace.clone());
-    sync_runtime_workspace_state(task_manager, workspace.clone()).await;
+    sync_runtime_workspace_state(app, workspace.clone()).await;
 
     replace_tui_engine(app, config, engine_handle).await;
     if !app.api_messages.is_empty() {

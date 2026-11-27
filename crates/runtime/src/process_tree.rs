@@ -41,6 +41,8 @@ use windows::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND
 pub struct ProcessTree {
     #[cfg(unix)]
     pgid: libc::pid_t,
+    #[cfg(unix)]
+    armed: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     job: WindowsJob,
 }
@@ -108,8 +110,11 @@ impl ProcessTree {
     fn attach_parts(pid: u32) -> std::io::Result<Self> {
         #[cfg(unix)]
         {
+            let pgid = pid as libc::pid_t;
+            contained_exit_groups().push(pgid);
             Ok(Self {
-                pgid: pid as libc::pid_t,
+                pgid,
+                armed: std::sync::atomic::AtomicBool::new(true),
             })
         }
         #[cfg(not(unix))]
@@ -119,11 +124,15 @@ impl ProcessTree {
         }
     }
 
-    /// Kill every process in the tree. A tree that is already gone is not an
-    /// error. On failure the caller should fall back to killing the child.
+    /// Kill every process in the tree. A tree that is already gone, or was
+    /// disarmed after its leader was reaped, is not an error. On failure the
+    /// caller should fall back to killing the child.
     pub fn kill(&self) -> std::io::Result<()> {
         #[cfg(unix)]
         {
+            if !self.armed.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(());
+            }
             // SAFETY: kill(2) dereferences no pointers; a negative pid names
             // the process group.
             let result = unsafe { libc::kill(-self.pgid, libc::SIGKILL) };
@@ -167,19 +176,136 @@ impl ProcessTree {
             // first. If clearing fails, the close still kills: the safe side.
             let _ = self.job.clear_kill_on_close();
         }
-        #[cfg(not(windows))]
-        std::mem::forget(self);
+        self.disarm();
+    }
+
+    /// The leader has been reaped: never signal this group again. Unix stops
+    /// `kill`, Drop and the signal-exit path from addressing a group id the
+    /// OS may now reuse. Windows holds a Job handle, which has no such
+    /// hazard, so the tree stays killable there.
+    pub fn disarm(&self) {
+        #[cfg(unix)]
+        let _ = self.take_armed();
+    }
+
+    #[cfg(unix)]
+    fn take_armed(&self) -> bool {
+        let was_armed = self.armed.swap(false, std::sync::atomic::Ordering::SeqCst);
+        if was_armed {
+            let mut groups = contained_exit_groups();
+            if let Some(index) = groups.iter().position(|pgid| *pgid == self.pgid) {
+                groups.swap_remove(index);
+            }
+        }
+        was_armed
+    }
+
+    /// Non-blocking. Unix: when the leader has exited, SIGKILL the group
+    /// while the unreaped leader still pins its id, disarm, and return
+    /// `true`; the caller then reaps. A leader someone else already reaped is
+    /// disarmed without a signal. Elsewhere this does nothing and returns
+    /// `false`: reap first, then [`ProcessTree::kill`].
+    pub fn kill_if_leader_exited(&self) -> bool {
+        #[cfg(unix)]
+        {
+            if !self.armed.load(std::sync::atomic::Ordering::SeqCst) {
+                return true;
+            }
+            match observe_leader_exit(self.pgid, false) {
+                Ok(false) => false,
+                Ok(true) => {
+                    let _ = self.kill();
+                    self.disarm();
+                    true
+                }
+                Err(_) => {
+                    self.disarm();
+                    true
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    }
+
+    /// Resolve once `child`, this tree's leader, has exited. Unix observes
+    /// the exit on the blocking pool without reaping, so the group id stays
+    /// pinned while the caller decides between [`ProcessTree::kill`] and
+    /// [`ProcessTree::release`]; the caller then reaps with `child.wait()`
+    /// and calls [`ProcessTree::disarm`]. Elsewhere this is `child.wait()`.
+    pub async fn leader_exit(&self, child: &mut tokio::process::Child) {
+        #[cfg(unix)]
+        {
+            if child.id().is_none() {
+                self.disarm();
+                return;
+            }
+            let pid = self.pgid;
+            let observed =
+                tokio::task::spawn_blocking(move || observe_leader_exit(pid, true)).await;
+            if matches!(observed, Ok(Err(_))) {
+                self.disarm();
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = child.wait().await;
+        }
+    }
+
+    /// `child.wait()` for this tree's leader that kills the rest of the tree
+    /// when the leader exits: before the reap on Unix, then disarmed.
+    pub async fn wait_then_kill(
+        &self,
+        child: &mut tokio::process::Child,
+    ) -> std::io::Result<std::process::ExitStatus> {
+        self.leader_exit(child).await;
+        let _ = self.kill();
+        let status = child.wait().await;
+        self.disarm();
+        status
+    }
+}
+
+/// Whether child `pid` has exited and still awaits its reap. Non-blocking and
+/// non-reaping (`WNOWAIT`): while this is `true` the pid, and the process
+/// group it leads, cannot be reused. Errors when `pid` is not an unreaped
+/// child of this process.
+#[cfg(unix)]
+pub fn leader_exited_unreaped(pid: u32) -> std::io::Result<bool> {
+    observe_leader_exit(pid as libc::pid_t, false)
+}
+
+#[cfg(unix)]
+fn observe_leader_exit(pid: libc::pid_t, block: bool) -> std::io::Result<bool> {
+    let options = libc::WEXITED | libc::WNOWAIT | if block { 0 } else { libc::WNOHANG };
+    loop {
+        // SAFETY: all-zero bytes are a valid `siginfo_t`.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is live and writable for the duration of the call.
+        let result = unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, options) };
+        if result == 0 {
+            return Ok(block || info.si_signo == libc::SIGCHLD);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
     }
 }
 
 impl Drop for ProcessTree {
     fn drop(&mut self) {
         #[cfg(unix)]
-        // SAFETY: kill(2) dereferences no pointers.
-        unsafe {
-            // The leader may have exited while a descendant still holds an
-            // inherited pipe. Reaping the group keeps lifetimes bounded.
-            let _ = libc::kill(-self.pgid, libc::SIGKILL);
+        if self.take_armed() {
+            // SAFETY: kill(2) dereferences no pointers.
+            unsafe {
+                // The leader may have exited while a descendant still holds an
+                // inherited pipe. Reaping the group keeps lifetimes bounded.
+                let _ = libc::kill(-self.pgid, libc::SIGKILL);
+            }
         }
         // On Windows, dropping `WindowsJob` closes a Job Object configured
         // with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
@@ -373,10 +499,6 @@ async fn contained_run_with_limits(
     // Never report a contained run when attachment failed. The child's
     // kill-on-drop guard still cleans up the direct child on this error path.
     let tree = attach(&child)?;
-    // Declared after `tree`, so a dropped future unlists the group first and
-    // the tree guard then kills it.
-    #[cfg(unix)]
-    let _listed = child.id().map(ContainedExitListing::new);
     let mut stdout_pipe = child.stdout.take();
     let mut stderr_pipe = child.stderr.take();
     let stdin_pipe = child.stdin.take();
@@ -407,11 +529,11 @@ async fn contained_run_with_limits(
                 limits.map(|limits| limits.1),
             );
             let wait = async {
-                let status = child.wait().await?;
                 if limits.is_some() {
-                    let _ = tree.kill();
+                    tree.wait_then_kill(&mut child).await
+                } else {
+                    child.wait().await
                 }
-                Ok::<_, std::io::Error>(status)
             };
             if limits.is_some() {
                 let (_, _, status, ()) = tokio::try_join!(out, err, wait, async {
@@ -514,48 +636,28 @@ async fn drain_pipe_with_limit<R: tokio::io::AsyncRead + Unpin>(
     }
 }
 
-/// Process groups of [`contained_output_until`] runs still in flight.
+/// Process groups of every armed [`ProcessTree`]: listed on attach, unlisted
+/// when the tree is dropped, released or disarmed.
 #[cfg(unix)]
-static CONTAINED_EXIT_GROUPS: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashSet<u32>>,
-> = std::sync::OnceLock::new();
+static CONTAINED_EXIT_GROUPS: std::sync::Mutex<Vec<libc::pid_t>> =
+    std::sync::Mutex::new(Vec::new());
 
 #[cfg(unix)]
-fn contained_exit_groups() -> std::sync::MutexGuard<'static, std::collections::HashSet<u32>> {
+fn contained_exit_groups() -> std::sync::MutexGuard<'static, Vec<libc::pid_t>> {
     CONTAINED_EXIT_GROUPS
-        .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Lists one in-flight process group until dropped.
-#[cfg(unix)]
-struct ContainedExitListing(u32);
-
-#[cfg(unix)]
-impl ContainedExitListing {
-    fn new(process_group_id: u32) -> Self {
-        contained_exit_groups().insert(process_group_id);
-        Self(process_group_id)
-    }
-}
-
-#[cfg(unix)]
-impl Drop for ContainedExitListing {
-    fn drop(&mut self) {
-        contained_exit_groups().remove(&self.0);
-    }
-}
-
-/// Kill every in-flight contained tree. The process-wide signal path calls
-/// this immediately before `process::exit`, where Rust destructors cannot run.
+/// Kill every armed contained tree. The process-wide signal path calls this
+/// immediately before `process::exit`, where Rust destructors cannot run.
 #[cfg(unix)]
 pub fn kill_contained_trees_for_exit() {
-    let groups = contained_exit_groups().drain().collect::<Vec<_>>();
+    let groups = std::mem::take(&mut *contained_exit_groups());
     for process_group_id in groups {
-        if let Ok(process_group_id) = libc::pid_t::try_from(process_group_id) {
+        if process_group_id > 0 {
             // SAFETY: the id is a child spawned with `process_group(0)` whose
-            // run is still in flight. A negative pid names that group, never
+            // tree is still armed. A negative pid names that group, never
             // Codewhale's own.
             unsafe {
                 libc::kill(-process_group_id, libc::SIGKILL);
@@ -876,10 +978,9 @@ mod tests {
             &pid_file,
         )
         .await;
-        let leader_group = u32::try_from(leader).expect("pid");
-        assert!(contained_exit_groups().contains(&leader_group));
+        assert!(contained_exit_groups().contains(&leader));
         drop(run);
-        assert!(!contained_exit_groups().contains(&leader_group));
+        assert!(!contained_exit_groups().contains(&leader));
         // Let this current-thread runtime poll Tokio's orphan reaper while the
         // cleanup probe waits; kill(pid, 0) still sees an unreaped macOS child.
         assert!(
@@ -887,6 +988,66 @@ mod tests {
                 .await
                 .expect("cleanup probe")
         );
+    }
+
+    #[test]
+    fn attached_tree_is_listed_until_dropped_or_released() {
+        for release in [false, true] {
+            let mut cmd = std::process::Command::new("/bin/sleep");
+            cmd.arg("300");
+            let (mut child, tree) = spawn_contained_std(&mut cmd).expect("spawn");
+            let group = libc::pid_t::try_from(child.id()).expect("pid");
+            assert!(contained_exit_groups().contains(&group));
+            if release {
+                tree.release();
+            } else {
+                drop(tree);
+            }
+            assert!(!contained_exit_groups().contains(&group));
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    #[tokio::test]
+    async fn leader_exit_kills_the_rest_of_the_group_before_the_reap() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut cmd = tokio::process::Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg("sleep 300 >/dev/null 2>&1 & echo $! > member.pid")
+            .current_dir(tmp.path())
+            .process_group(0);
+        let mut child = cmd.spawn().expect("spawn");
+        let group = libc::pid_t::try_from(child.id().expect("pid")).expect("pid");
+        let tree = ProcessTree::attach_tokio(&child).expect("attach");
+        let status = tokio::time::timeout(Duration::from_secs(30), tree.wait_then_kill(&mut child))
+            .await
+            .expect("the leader exits on its own")
+            .expect("wait");
+        assert!(status.success());
+        let member = read_pid_file(&tmp.path().join("member.pid"), Duration::from_secs(5));
+        assert!(
+            wait_for_pid_exit(member, Duration::from_secs(5)),
+            "a group member outlived its exited leader"
+        );
+        assert!(!contained_exit_groups().contains(&group));
+    }
+
+    #[test]
+    fn reaped_disarmed_tree_sends_no_signal() {
+        let mut cmd = std::process::Command::new("/bin/sleep");
+        cmd.arg("300");
+        let (mut bystander, tree) = spawn_contained_std(&mut cmd).expect("spawn");
+        let group = libc::pid_t::try_from(bystander.id()).expect("pid");
+        tree.disarm();
+        assert!(!contained_exit_groups().contains(&group));
+        tree.kill().expect("a disarmed kill is a no-op");
+        drop(tree);
+        std::thread::sleep(Duration::from_millis(200));
+        let survived = bystander.try_wait().expect("probe").is_none();
+        let _ = bystander.kill();
+        let _ = bystander.wait();
+        assert!(survived, "a disarmed tree signalled its former group id");
     }
 }
 

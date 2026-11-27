@@ -7,7 +7,7 @@ const EN: DocsPageDict = {
   bodyClassName: "text-ink-soft leading-relaxed",
   title: "Sign in to Codewhale",
   lede:
-    "A Codewhale account is optional, and anyone can create one by signing in. This page shows how to sign in from the web, the desktop app or the terminal, and how to sign out again. Cloud computers are invite-only.",
+    "Codewhale accounts are not open yet, and you do not need one to use Codewhale. This page describes how sign-in works for an account that already exists, from the web, the desktop app or the terminal, and how to sign out again. Cloud computers are invite-only.",
   sections: [
     {
       id: "no-account",
@@ -20,7 +20,7 @@ const EN: DocsPageDict = {
           list: [
             "The terminal: run `codewhale` in a project folder.",
             "The local browser client: run `codewhale web` and use it in a browser tab on the same machine. See [Open the browser client](/docs/web).",
-            "Local work in the desktop app, which is a development build with no public download yet.",
+            "Local work in the desktop app, which is available for macOS from [the app page](/app).",
           ],
         },
         {
@@ -33,7 +33,7 @@ const EN: DocsPageDict = {
       title: "Sign in on the web",
       blocks: [
         {
-          p: "Open `app.codewhale.net/login` and choose how to continue: Continue with GitHub, Continue with Google, or Continue with email. For email, Codewhale sends a code or a link to your address, depending on how sign-in is set up; follow it to finish. The page needs JavaScript.",
+          p: "With an existing account, open `app.codewhale.net/login` and choose how to continue: Continue with GitHub, Continue with Google, or Continue with email. For email, Codewhale sends a code or a link to your address, depending on how sign-in is set up; follow it to finish. The page needs JavaScript.",
         },
         {
           note: "The hosted browser app at app.codewhale.net is not open yet. Its sign-in page is live, and it is the page where you approve a sign-in that you started from the desktop app or the terminal.",
@@ -45,7 +45,7 @@ const EN: DocsPageDict = {
       title: "Sign in from the desktop app",
       blocks: [
         {
-          note: "The desktop app is a development build. There is no public download yet, and these steps describe the build as it stands today.",
+          note: "The desktop app is available for macOS. Sign-in is not available in every build yet, and these steps describe the app as it stands today.",
         },
         {
           steps: [
@@ -65,6 +65,9 @@ const EN: DocsPageDict = {
       id: "terminal",
       title: "Sign in from the terminal",
       blocks: [
+        {
+          p: "In Codewhale 0.10.5, starting a new sign-in from the terminal is closed until accounts open: `codewhale login` and `/login` say that accounts are not open yet and point you to `/provider`. A profile that is already signed in keeps working, including `codewhale account status`, the other `codewhale account` commands and `/logout`. The rest of this section describes the sign-in as it works when accounts are open.",
+        },
         { p: "Run the login command in any terminal:" },
         { code: "codewhale login", lang: "Terminal" },
         {
@@ -196,7 +199,7 @@ const ZH: DocsPageDict = {
   bodyClassName: "text-ink-soft leading-[1.9] tracking-wide",
   title: "登录 Codewhale",
   lede:
-    "Codewhale 账户是可选的，任何人登录即可创建账户。本页说明如何在网页、桌面应用或终端登录，以及如何退出登录。云端计算机仅限受邀使用。",
+    "Codewhale 账户尚未开放，使用 Codewhale 也不需要账户。本页说明已有账户如何在网页、桌面应用或终端登录，以及如何退出登录。云端计算机仅限受邀使用。",
   sections: [
     {
       id: "no-account",
@@ -209,7 +212,7 @@ const ZH: DocsPageDict = {
           list: [
             "终端：在项目文件夹里运行 `codewhale`。",
             "本地浏览器客户端：运行 `codewhale web`，在同一台机器的浏览器标签页中使用。详见[打开浏览器客户端](/docs/web)。",
-            "桌面应用中的本地工作。桌面应用目前是开发版本，还没有公开下载。",
+            "桌面应用中的本地工作。桌面应用已提供 macOS 版，可在[应用页面](/app)下载。",
           ],
         },
         {
@@ -222,7 +225,7 @@ const ZH: DocsPageDict = {
       title: "在网页登录",
       blocks: [
         {
-          p: "打开 `app.codewhale.net/login`，选择登录方式：使用 GitHub 继续、使用 Google 继续，或使用邮箱继续。选择邮箱时，Codewhale 会根据登录的设置向你的地址发送验证码或链接，按提示完成即可。该页面需要 JavaScript。",
+          p: "已有账户时，打开 `app.codewhale.net/login`，选择登录方式：使用 GitHub 继续、使用 Google 继续，或使用邮箱继续。选择邮箱时，Codewhale 会根据登录的设置向你的地址发送验证码或链接，按提示完成即可。该页面需要 JavaScript。",
         },
         {
           note: "app.codewhale.net 上的托管浏览器应用尚未开放。它的登录页是可用的，你在桌面应用或终端发起登录后，就是在这个页面批准。",
@@ -234,7 +237,7 @@ const ZH: DocsPageDict = {
       title: "从桌面应用登录",
       blocks: [
         {
-          note: "桌面应用是开发版本，目前没有公开下载。下面的步骤描述的是它今天的状态。",
+          note: "桌面应用已提供 macOS 版。并非所有版本都已提供登录，下面的步骤描述的是它今天的状态。",
         },
         {
           steps: [
@@ -254,6 +257,9 @@ const ZH: DocsPageDict = {
       id: "terminal",
       title: "从终端登录",
       blocks: [
+        {
+          p: "在 Codewhale 0.10.5 中，账户开放之前无法从终端发起新的登录：`codewhale login` 和 `/login` 会提示账户尚未开放，并引导你使用 `/provider`。已经登录的配置档继续可用，包括 `codewhale account status`、其他 `codewhale account` 命令和 `/logout`。本节其余内容描述的是账户开放后的登录方式。",
+        },
         { p: "在任意终端运行登录命令：" },
         { code: "codewhale login", lang: "终端" },
         {

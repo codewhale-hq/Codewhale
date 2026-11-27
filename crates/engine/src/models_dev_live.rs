@@ -391,9 +391,49 @@ fn current_source_fingerprint() -> String {
     }
 }
 
-/// Best-effort background refresh: never panics, never blocks callers.
+const CI_ENV_VARS: &[&str] = &[
+    "CI",
+    "CONTINUOUS_INTEGRATION",
+    "GITHUB_ACTIONS",
+    "GITLAB_CI",
+    "BUILDKITE",
+    "CIRCLECI",
+    "JENKINS_URL",
+    "TRAVIS",
+    "TF_BUILD",
+    "TEAMCITY_VERSION",
+    "CODEBUILD_BUILD_ID",
+];
+
+fn is_ci_env() -> bool {
+    CI_ENV_VARS.iter().any(|name| {
+        std::env::var(name).is_ok_and(|raw| {
+            let trimmed = raw.trim();
+            !trimmed.is_empty()
+                && !matches!(
+                    trimmed.to_ascii_lowercase().as_str(),
+                    "0" | "false" | "no" | "off"
+                )
+        })
+    })
+}
+
+pub fn background_fetch_disabled(auto_refresh: bool) -> bool {
+    if std::env::var(ENV_MODELS_DEV_PATH).is_ok_and(|p| !p.trim().is_empty()) {
+        return false;
+    }
+    !auto_refresh
+        || env_truthy(ENV_DISABLE_FETCH)
+        || is_ci_env()
+        || codewhale_config::do_not_track()
+}
+
 pub fn spawn_background_refresh() {
-    if env_truthy(ENV_DISABLE_FETCH) && std::env::var(ENV_MODELS_DEV_PATH).is_err() {
+    spawn_background_refresh_if_enabled(true);
+}
+
+pub fn spawn_background_refresh_if_enabled(auto_refresh: bool) {
+    if background_fetch_disabled(auto_refresh) {
         return;
     }
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
@@ -1016,5 +1056,31 @@ mod tests {
             "status should retain prior live row count after failure"
         );
         clear_live_snapshot();
+    }
+
+    #[test]
+    fn background_fetch_respects_config_ci_and_do_not_track() {
+        let _lock = lock_test_env();
+        let _disable = EnvVarGuard::remove(ENV_DISABLE_FETCH);
+        let _ci = EnvVarGuard::remove("CI");
+        let _gha = EnvVarGuard::remove("GITHUB_ACTIONS");
+        let _gl = EnvVarGuard::remove("GITLAB_CI");
+        let _dnt = EnvVarGuard::remove("DO_NOT_TRACK");
+
+        assert!(!background_fetch_disabled(true));
+        assert!(background_fetch_disabled(false));
+
+        {
+            let _ci_on = EnvVarGuard::set("CI", "true");
+            assert!(background_fetch_disabled(true));
+        }
+        {
+            let _dnt_on = EnvVarGuard::set("DO_NOT_TRACK", "1");
+            assert!(background_fetch_disabled(true));
+        }
+        {
+            let _dnt_off = EnvVarGuard::set("DO_NOT_TRACK", "0");
+            assert!(!background_fetch_disabled(true));
+        }
     }
 }

@@ -1526,12 +1526,12 @@ fn legacy_rlm_actions_are_not_advertised_to_new_model_turns() {
         AppMode::Agent,
         &always_load,
     );
-    // The session-persistent kernel is now the normal RLM path. These tools
-    // stay registered solely for saved-transcript replay and an explicitly
-    // named compatibility call; letting a fresh model discover them would
-    // recreate the old action-by-action workflow.
+    let canonical = catalog
+        .iter()
+        .find(|tool| tool.name == "rlm")
+        .expect("canonical rlm tool must be in the model catalog");
+    assert_eq!(canonical.defer_loading, Some(true));
     for legacy_name in [
-        "rlm",
         "rlm_session_objects",
         "rlm_open",
         "rlm_eval",

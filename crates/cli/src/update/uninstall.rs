@@ -32,17 +32,12 @@ impl CommandReceipt {
         receipt.verify_owned()?;
         let bytes = receipt.read_bounded(MAX_RECEIPT)?;
         let text = std::str::from_utf8(&bytes).context("command receipt is not UTF-8")?;
-        let hashes = parse_checksum_manifest(text)?;
-        if hashes.is_empty()
-            || hashes.len() > COMMANDS.len()
-            || text.lines().count() != hashes.len()
-            || hashes.keys().any(|name| !COMMANDS.contains(&name.as_str()))
-        {
-            bail!(
+        let hashes = installs::parse_command_receipt(text).with_context(|| {
+            format!(
                 "Invalid command ownership receipt {}; no files were changed",
                 directory.join(RECEIPT).display()
-            );
-        }
+            )
+        })?;
         let names: Vec<&str> = hashes.keys().map(String::as_str).collect();
         let mut files = GuardedFile::open_command_siblings(&directory, &names)?;
         for (name, digest) in &hashes {
@@ -136,29 +131,35 @@ pub(crate) fn run(yes: bool, purge_data: bool) -> Result<()> {
     if purge_data {
         purge_targets(selected.as_deref())?;
     }
-    let result = remove(yes);
+    let mut package_managed = false;
+    let result = remove(yes, &mut package_managed);
     report_path_copies(selected.as_deref());
     let removed = result?;
-    if purge_data {
+    let outcome = if purge_data {
         if !yes {
-            return purge(false, selected.as_deref());
+            purge(false, selected.as_deref())
+        } else if removed {
+            purge(true, selected.as_deref())
+        } else {
+            println!(
+                "Data was not purged: this run did not remove a receipted installation. Data is shared by every install and is kept."
+            );
+            Ok(())
         }
-        if removed {
-            return purge(true, selected.as_deref());
-        }
-        println!(
-            "Data was not purged: this run did not remove a receipted installation. Data is shared by every install and is kept."
-        );
-        Ok(())
     } else {
         println!(
             "User data was not touched. To also delete Codewhale's own data directory, add --purge-data."
         );
         Ok(())
+    };
+    outcome?;
+    if package_managed {
+        return Err(super::PackageManaged("Not removed: use the command above.").into());
     }
+    Ok(())
 }
 
-fn remove(yes: bool) -> Result<bool> {
+fn remove(yes: bool, package_managed: &mut bool) -> Result<bool> {
     let identity = update_executable_identity()?;
     #[cfg(not(windows))]
     let identity = UpdateExecutableIdentity {
@@ -173,25 +174,14 @@ fn remove(yes: bool) -> Result<bool> {
     println!(
         "Program removal preserves user state, credentials, sessions, workspaces and services. For a receipted release copy it also removes this install's exact Codewhale PATH block from your shell profiles and Codewhale-generated completion files at the documented paths; nothing else in a profile is touched."
     );
-    if !method.supports_self_update() {
+    if !method.supports_self_update() || method == InstallMethod::WindowsInstaller {
         println!(
             "This copy belongs to {}. Remove it with: {}",
             method.label(),
             codewhale_release::installs::manager_command(method, &identity.path)
         );
+        *package_managed = true;
         return Ok(false);
-    }
-    if let Some(uninstaller) = windows_installer_uninstaller(&identity.path) {
-        println!(
-            "This copy belongs to the Codewhale Windows installer. Remove it from Settings > Apps > CodeWhale, or run: \"{}\"",
-            uninstaller.display()
-        );
-        return Ok(false);
-    }
-    if protected_update_path(&identity.path) {
-        bail!(
-            "System/package path was preserved. Identify its owning package manager and remove it through that manager."
-        );
     }
     let primary_name = identity
         .path
@@ -919,22 +909,6 @@ fn curl_install_entries(identity: &UpdateExecutableIdentity) -> Result<Option<Cu
             .any(|(name, _)| file_name == std::ffi::OsStr::new(name))
     });
     Ok(selected_listed.then_some((directory, entries)))
-}
-
-fn windows_installer_uninstaller(executable: &Path) -> Option<PathBuf> {
-    let bin = executable.parent()?;
-    if !bin
-        .file_name()
-        .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
-    {
-        return None;
-    }
-    let root = bin.parent()?;
-    let uninstaller = root.join("Uninstall.exe");
-    [&uninstaller, &root.join("update-user-path.ps1")]
-        .iter()
-        .all(|path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file()))
-        .then_some(uninstaller)
 }
 
 #[cfg(windows)]

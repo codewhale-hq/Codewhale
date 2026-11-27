@@ -311,13 +311,14 @@ impl BrokerSession {
     }
 
     pub async fn exit_status(&self) -> Option<std::process::ExitStatus> {
-        self.child.lock().await.try_wait().ok().flatten()
+        let mut child = self.child.lock().await;
+        observe_exit(&mut child, self.process_tree.as_deref())
     }
 
     /// Never await or spawn for readiness; a contended child still reads live.
     pub fn probe_dead(&self) -> bool {
         match self.child.try_lock() {
-            Ok(mut child) => matches!(child.try_wait(), Ok(Some(_))),
+            Ok(mut child) => observe_exit(&mut child, self.process_tree.as_deref()).is_some(),
             Err(_) => false,
         }
     }
@@ -449,19 +450,38 @@ async fn terminate_child_for_authority_change(
     terminate_child(&mut child, Some(tree)).await;
 }
 
+/// Non-blocking exit probe that keeps the kill ahead of the reap. On Unix an
+/// exited server's group is SIGKILLed while the unreaped leader still pins
+/// the group id, then the leader is reaped and the tree disarmed, so nothing
+/// signals that id afterwards. Elsewhere the Job is terminated once the exit
+/// is seen.
+fn observe_exit(
+    child: &mut Child,
+    tree: Option<&codewhale_runtime::process_tree::ProcessTree>,
+) -> Option<std::process::ExitStatus> {
+    #[cfg(unix)]
+    if let Some(tree) = tree
+        && !tree.kill_if_leader_exited()
+    {
+        return None;
+    }
+    let status = child.try_wait().ok().flatten();
+    if status.is_some()
+        && let Some(tree) = tree
+    {
+        let _ = tree.kill();
+        tree.disarm();
+    }
+    status
+}
+
 async fn terminate_child(
     child: &mut Child,
     tree: Option<&codewhale_runtime::process_tree::ProcessTree>,
 ) {
-    // Reap an already-exited child before resolving its PID. Until it is
-    // reaped, the OS cannot recycle that identity; after it is reaped there is
-    // nothing left to signal. This avoids a PID-only watcher ever targeting an
-    // unrelated process after rapid PID reuse.
-    if child.try_wait().is_ok_and(|status| status.is_some()) {
-        // The server is gone, but what it started may not be.
-        if let Some(tree) = tree {
-            let _ = tree.kill();
-        }
+    // An already-exited server is reaped here after its group was killed, so
+    // the PID resolved below always belongs to an unreaped child.
+    if observe_exit(child, tree).is_some() {
         return;
     }
 
@@ -471,18 +491,22 @@ async fn terminate_child(
     #[cfg(not(unix))]
     let _ = child.start_kill();
 
-    match tokio::time::timeout(STDIO_SHUTDOWN_GRACE, child.wait()).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(_)) | Err(_) => {
-            // SIGTERM is advisory. Revocation and explicit shutdown must not
-            // leave the reviewed child alive indefinitely.
-            let _ = child.start_kill();
-            let _ = child.wait().await;
+    let exited = tokio::time::timeout(STDIO_SHUTDOWN_GRACE, async {
+        match tree {
+            Some(tree) => tree.wait_then_kill(child).await,
+            None => child.wait().await,
         }
-    }
-    // Descendants that outlived the grace (or ignored SIGTERM) go now.
-    if let Some(tree) = tree {
-        let _ = tree.kill();
+    })
+    .await;
+    if !matches!(exited, Ok(Ok(_))) {
+        if let Some(tree) = tree {
+            let _ = tree.kill();
+        }
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+        if let Some(tree) = tree {
+            tree.disarm();
+        }
     }
 }
 
@@ -508,7 +532,7 @@ impl Drop for BrokerSession {
             return;
         }
         if let Ok(mut child) = self.child.try_lock()
-            && !child.try_wait().is_ok_and(|status| status.is_some())
+            && observe_exit(&mut child, self.process_tree.as_deref()).is_none()
         {
             send_sigterm(&child, self.process_tree.is_some());
         }

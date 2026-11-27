@@ -171,6 +171,11 @@ pub(crate) fn subagent_terminal_projection_from_mailbox(
             SubAgentStatus::Failed(error.clone()),
             Some(error.clone()),
         )),
+        MailboxMessage::BudgetExhausted { agent_id, summary } => Some((
+            agent_id.as_str(),
+            SubAgentStatus::BudgetExhausted,
+            Some(summary.clone()),
+        )),
         MailboxMessage::Interrupted { agent_id, reason } => Some((
             agent_id.as_str(),
             SubAgentStatus::Interrupted(reason.clone()),
@@ -252,9 +257,6 @@ pub(crate) fn enter_alt_screen<W: Write>(writer: &mut W) -> io::Result<()> {
 
 /// Leave the alternate screen; the counterpart of [`enter_alt_screen`].
 pub(crate) fn leave_alt_screen<W: Write>(writer: &mut W) -> io::Result<()> {
-    if codewhale_tui_kit::mark::kitty_graphics_supported() {
-        crate::tui::pet_watch::clear_images(writer)?;
-    }
     execute!(writer, LeaveAlternateScreen)?;
     set_live_alt_screen(false);
     Ok(())
@@ -663,9 +665,6 @@ pub(crate) fn disable_alternate_scroll_mode<W: Write>(writer: &mut W) {
 /// raw mode + kitty keyboard flags cleared, which is what causes the
 /// `^[[>5u` shell pollution reported in #1583.
 pub fn emergency_restore_terminal() {
-    if codewhale_tui_kit::mark::kitty_graphics_supported() {
-        let _ = crate::tui::pet_watch::clear_images(&mut std::io::stdout());
-    }
     let mut stdout = std::io::stdout();
     codewhale_tui_kit::cursor_accent::restore_cursor_accent();
     pop_keyboard_enhancement_flags(&mut stdout);
@@ -862,6 +861,13 @@ pub(crate) struct IdleFacts {
     pub(crate) pending_engine_op: bool,
 }
 
+pub(crate) fn has_live_durable_tasks(app: &App) -> bool {
+    app.task_panel.iter().any(|task| {
+        task.kind == crate::tui::app::TaskPanelEntryKind::Background
+            && matches!(task.status.as_str(), "queued" | "running" | "waiting")
+    })
+}
+
 /// Whether the UI has nothing to do *right now*: no turn, no live work, no
 /// animation, no pending redraw, no toast about to expire, no modal ticking.
 /// Pure on purpose. A state that is not listed here keeps the 48 ms poll, so
@@ -1011,6 +1017,34 @@ mod idle_poll_tests {
 
     const FAST: Duration = Duration::from_millis(UI_IDLE_POLL_MS);
     const SLOW: Duration = Duration::from_millis(UI_QUIESCENT_POLL_MS);
+
+    #[test]
+    fn a_running_background_shell_job_does_not_hold_the_ambient_scene_awake() {
+        let mut app = quiet_app();
+        let shell = crate::tui::app::TaskPanelEntry {
+            exit_code: None,
+            id: "shell-live".to_string(),
+            status: "running".to_string(),
+            prompt_summary: "shell: sleep 900".to_string(),
+            duration_ms: Some(60_000),
+            kind: crate::tui::app::TaskPanelEntryKind::Shell,
+            stale: false,
+            elapsed_since_output_ms: None,
+            owner_agent_id: None,
+            owner_agent_name: None,
+            current_tool: None,
+            role: None,
+            files_touched: 0,
+        };
+        app.task_panel.push(shell.clone());
+        assert!(!has_live_durable_tasks(&app));
+
+        app.task_panel.push(crate::tui::app::TaskPanelEntry {
+            kind: crate::tui::app::TaskPanelEntryKind::Background,
+            ..shell
+        });
+        assert!(has_live_durable_tasks(&app));
+    }
 
     #[test]
     fn a_settled_ui_relaxes_only_after_the_quiet_period() {

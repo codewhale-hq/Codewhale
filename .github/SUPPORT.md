@@ -7,7 +7,7 @@
   answer many questions already.
 - **A bug, a crash or behavior that surprised you:** open a
   [bug report](https://github.com/codewhale-hq/Codewhale/issues/new?template=bug_report.yml).
-  `codewhale doctor` prints the version and setup details a report needs.
+  `codewhale doctor --full` prints the version and setup details a report needs.
 - **An idea or feedback:** open an
   [issue](https://github.com/codewhale-hq/Codewhale/issues/new/choose), or talk it
   through first in

@@ -12,6 +12,10 @@ cat >"${tmp_dir}/CHANGELOG.md" <<'EOF'
 
 Release summary and highlights.
 
+### Upgrade notes
+
+- Run the required migration once.
+
 ### Fixed
 
 - A release fix.
@@ -27,6 +31,8 @@ body="$("${repo_root}/scripts/release/generate-release-body.sh" v1.2.3 "${tmp_di
 
 [[ "${body%%$'\n'*}" == "## What's in v1.2.3" ]]
 [[ "${body%%## Install*}" == *"Release summary and highlights."* ]]
+[[ "${body%%Release summary and highlights.*}" == *$'### Upgrade notes\n\n- Run the required migration once.'* ]]
+[[ "$(grep -c -- '- Run the required migration once.' <<<"${body}")" == 1 ]]
 grep -Fq -- '<summary>Full release notes</summary>' <<<"${body}"
 grep -Fq -- "- A release fix." <<<"${body}"
 grep -Fq -- "## Contributors" <<<"${body}"

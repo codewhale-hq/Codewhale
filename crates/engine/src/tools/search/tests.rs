@@ -815,3 +815,84 @@ async fn test_grep_files_clips_huge_single_line_matches_around_the_match() {
     assert!(text.contains("NEEDLE"), "{text}");
     assert!(text.contains("bytes]"), "{text}");
 }
+
+#[tokio::test]
+async fn test_grep_blocking_wrapper_cancels_worker_on_timeout() {
+    use std::time::Duration;
+
+    let (finished, worker_finished) = tokio::sync::oneshot::channel();
+    let err = super::run_blocking_grep(Duration::from_millis(1), None, move |cancel_token| {
+        while !cancel_token.is_cancelled() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let _ = finished.send(cancel_token.is_cancelled());
+        Err(super::grep_cancelled())
+    })
+    .await
+    .expect_err("slow grep_files worker should time out");
+
+    assert!(
+        matches!(err, crate::tools::spec::ToolError::Timeout { seconds: 1 }),
+        "unexpected error: {err:?}"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), worker_finished)
+            .await
+            .expect("timed-out worker must stop")
+            .expect("worker completion"),
+        "timeout must cancel the worker without a parent cancellation token"
+    );
+
+    // Timeout with a parent token must cancel only the worker child token.
+    let parent = CancellationToken::new();
+    let (finished2, worker_finished2) = tokio::sync::oneshot::channel();
+    let err2 = super::run_blocking_grep(
+        Duration::from_millis(1),
+        Some(parent.clone()),
+        move |cancel_token| {
+            while !cancel_token.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let _ = finished2.send(cancel_token.is_cancelled());
+            Err(super::grep_cancelled())
+        },
+    )
+    .await
+    .expect_err("slow grep_files worker with parent token should time out");
+
+    assert!(
+        matches!(err2, crate::tools::spec::ToolError::Timeout { seconds: 1 }),
+        "unexpected error: {err2:?}"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), worker_finished2)
+            .await
+            .expect("timed-out worker must stop")
+            .expect("worker completion"),
+    );
+    assert!(
+        !parent.is_cancelled(),
+        "timeout must not cancel the caller's parent token"
+    );
+}
+
+#[tokio::test]
+async fn test_grep_files_clamps_oversized_max_results() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path().to_path_buf());
+    let content = "needle\n".repeat(super::MAX_RESULTS_LIMIT + 50);
+    fs::write(tmp.path().join("many.txt"), content).expect("write");
+
+    let result = GrepFilesTool
+        .execute(json!({"pattern": "needle", "max_results": 1_000_000}), &ctx)
+        .await
+        .expect("execute");
+    assert!(result.success);
+    let parsed: Value = serde_json::from_str(&result.content).expect("valid json");
+    assert_eq!(
+        parsed["matches"].as_array().expect("matches").len(),
+        super::MAX_RESULTS_LIMIT
+    );
+    assert_eq!(parsed["total_matches"], json!(super::MAX_RESULTS_LIMIT));
+    assert_eq!(parsed["truncated"], json!(true));
+}

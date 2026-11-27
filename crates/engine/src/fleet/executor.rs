@@ -1145,6 +1145,7 @@ impl FleetExecutor {
     }
 
     /// True once every started worker has reached a terminal state.
+    #[cfg(test)]
     pub fn all_terminal(&self) -> bool {
         !self.streams.is_empty() && self.streams.values().all(|s| s.terminal)
     }

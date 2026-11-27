@@ -212,6 +212,8 @@ impl ToolSpec for AgentsMessageTool {
                 },
                 "message": {
                     "type": "string",
+                    "minLength": 1,
+                    "maxLength": super::MAX_PARENT_MESSAGE_BYTES,
                     "description": "Message text to queue."
                 }
             },
@@ -238,6 +240,13 @@ impl ToolSpec for AgentsMessageTool {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| ToolError::missing_field("message"))?
             .to_string();
+        if message.len() > super::MAX_PARENT_MESSAGE_BYTES {
+            return Err(ToolError::invalid_input(format!(
+                "message is {} bytes; maximum allowed is {} bytes",
+                message.len(),
+                super::MAX_PARENT_MESSAGE_BYTES
+            )));
+        }
 
         let receipt = {
             let mut manager = self.manager.write().await;
@@ -422,7 +431,7 @@ impl ToolSpec for AgentsFollowupTool {
                 "agent_id": {"type": "string"},
                 "agent_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 32},
                 "all_parked": {"type": "boolean", "description": "Continue every owned parked child, up to 32."},
-                "message": {"type": "string", "minLength": 1}
+                "message": {"type": "string", "minLength": 1, "maxLength": super::MAX_PARENT_MESSAGE_BYTES}
             },
             "required": ["message"],
             "oneOf": [{"required": ["agent_id"]}, {"required": ["agent_ids"]}, {"required": ["all_parked"]}]
@@ -445,6 +454,13 @@ impl ToolSpec for AgentsFollowupTool {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| ToolError::missing_field("message"))?;
+        if message.len() > super::MAX_PARENT_MESSAGE_BYTES {
+            return Err(ToolError::invalid_input(format!(
+                "followup message is {} bytes; maximum allowed is {} bytes",
+                message.len(),
+                super::MAX_PARENT_MESSAGE_BYTES
+            )));
+        }
         let single = parse_agent_ref(&input)?;
         let all_parked = super::parse_optional_bool(&input, &["all_parked"])?.unwrap_or(false);
         let batch = input.get("agent_ids");
@@ -551,7 +567,6 @@ impl AgentsInterruptTool {
     }
 
     #[must_use]
-    #[allow(dead_code)] // arms self-interrupt fail-closed when child registries thread caller (P1.2)
     pub fn with_caller(mut self, caller_agent_id: impl Into<String>) -> Self {
         self.caller_agent_id = Some(caller_agent_id.into());
         self
@@ -2507,5 +2522,100 @@ mod tests {
         guard.get_result(resumed_id).expect("resumed agent exists");
         let prior = guard.get_result(&agent_id).expect("prior record");
         assert!(matches!(prior.status, SubAgentStatus::Interrupted(_)));
+    }
+
+    #[tokio::test]
+    async fn followup_rejects_oversized_message_before_queueing_and_keeps_count_cap() {
+        let tmp = tempdir().unwrap();
+        let manager = Arc::new(tokio::sync::RwLock::new(
+            super::super::SubAgentManager::new(tmp.path().to_path_buf(), 4),
+        ));
+        let make_paused = |name: &str| {
+            let messages = vec![codewhale_models::Message {
+                role: Role::User,
+                content: vec![codewhale_models::ContentBlock::Text {
+                    text: "prior work".to_string(),
+                    cache_control: None,
+                }],
+            }];
+            (name.to_string(), messages)
+        };
+        let (agent_id, _) = {
+            let mut guard = manager.write().await;
+            let (name, messages) = make_paused("bounded_count");
+            guard.insert_test_interrupted_continuable_agent(&name, tmp.path(), messages)
+        };
+        let tool = AgentsFollowupTool::new(Arc::clone(&manager));
+        let context = ToolContext::new(tmp.path());
+
+        let oversized = "x".repeat(super::super::MAX_PARENT_MESSAGE_BYTES + 1);
+        let err = tool
+            .execute(
+                json!({ "agent_id": agent_id, "message": oversized }),
+                &context,
+            )
+            .await
+            .expect_err("oversized followup message must be rejected");
+        assert!(matches!(err, ToolError::InvalidInput { .. }), "{err:?}");
+        assert_eq!(
+            manager
+                .read()
+                .await
+                .queued_mail_depth(&agent_id)
+                .unwrap_or(0),
+            0
+        );
+
+        for index in 0..super::super::MAX_QUEUED_PARENT_MESSAGES {
+            tool.execute(
+                json!({ "agent_id": agent_id, "message": format!("ping {index}") }),
+                &context,
+            )
+            .await
+            .expect("small followup within count cap should queue");
+        }
+        assert_eq!(
+            manager.read().await.queued_mail_depth(&agent_id).unwrap(),
+            super::super::MAX_QUEUED_PARENT_MESSAGES
+        );
+        let count_err = tool
+            .execute(
+                json!({ "agent_id": agent_id, "message": "one too many" }),
+                &context,
+            )
+            .await
+            .expect_err("65th queued message must hit count cap");
+        assert!(
+            matches!(count_err, ToolError::InvalidInput { .. }),
+            "{count_err:?}"
+        );
+
+        let (byte_agent_id, _) = {
+            let mut guard = manager.write().await;
+            let (name, messages) = make_paused("bounded_bytes");
+            guard.insert_test_interrupted_continuable_agent(&name, tmp.path(), messages)
+        };
+        let max_msg = "y".repeat(super::super::MAX_PARENT_MESSAGE_BYTES);
+        let full_chunks =
+            super::super::MAX_QUEUED_PARENT_MAIL_BYTES / super::super::MAX_PARENT_MESSAGE_BYTES;
+        for _ in 0..full_chunks {
+            tool.execute(
+                json!({ "agent_id": byte_agent_id, "message": max_msg }),
+                &context,
+            )
+            .await
+            .expect("chunk within aggregate byte budget should queue");
+        }
+        let byte_err = tool
+            .execute(
+                json!({ "agent_id": byte_agent_id, "message": "overflow" }),
+                &context,
+            )
+            .await
+            .expect_err("exceeding aggregate mail byte budget must fail");
+        assert!(
+            matches!(byte_err, ToolError::InvalidInput { .. }),
+            "{byte_err:?}"
+        );
     }
 }

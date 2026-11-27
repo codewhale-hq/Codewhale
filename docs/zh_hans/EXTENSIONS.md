@@ -98,7 +98,7 @@ CommonJS 解析也需要 Node；这些情况会明确提示使用
 
 宿主提供同一个 Cordis、schemastery、cosmokit 及有限的 DSH 兼容导出。支持的服务名为
 `tools`、`commands`、`prompt`、`storage`、`skills`、`shellHooks`、`avatars`、`mcp`、`logger`、`events`、`reflect`、`registry`。`ctx.avatars.registerPack({path})` 注册已审查包内的头像包，
-参见 [whale-avatar 示例](../examples/plugins/whale-avatar/README.md)。
+参见 [whale-avatar 示例](../examples/plugins/whale-avatar/README.md)。自 0.10.5 起，终端的鲸鱼视图不再绘制已注册的头像包；注册方式和列出头像包的 Runtime API 保持不变。
 需要未提供服务的插件会激活失败，并显示原因。目前没有已发布的插件编写 SDK；
 普通 ESM 示例使用这些文档规定的适配服务。
 

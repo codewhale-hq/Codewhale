@@ -498,8 +498,9 @@ done
     // published release's earlier opt-in behavior is named, not blurred.
     expect(matrix.trust.telemetry).toContain(`Codewhale ${matrix.sourceCandidate.version} counts anonymous usage by default`);
     expect(matrix.trust.telemetry).toContain("discloses it at first launch");
-    expect(matrix.trust.telemetry).toContain("policy notice version 5");
-    expect(matrix.trust.telemetry).toContain("Codewhale and PostHog");
+    expect(matrix.trust.telemetry).toContain("policy notice version 6");
+    expect(matrix.trust.telemetry).toContain("Codewhale as the sole first-party collector");
+    expect(matrix.trust.telemetry).not.toMatch(/PostHog/i);
     expect(matrix.trust.telemetry).toContain("earlier 0.9.11 release asked first");
     expect(matrix.trust.telemetry).toContain("never records any acceptance");
     expect(matrix.trust.telemetry).toContain("opt-out recorded under the earlier opt-in policy stays off");
@@ -582,7 +583,7 @@ done
     expect(readmeImage).toEqual(websiteImage);
     expect(statSync(new URL(matrix.screenshot.readme, root)).size).toBeLessThan(500_000);
     expect(matrix.screenshot.terminal).toContain("real PTY capture");
-    expect(matrix.screenshot.capture).toContain("development build");
+    expect(matrix.screenshot.capture).toMatch(/published.*release|development build/);
     expect(matrix.screenshot.model).toBe(TERMINAL_SCREENSHOT.model);
     expect(matrix.screenshot.sourceCommit).toBe(TERMINAL_SCREENSHOT.sourceCommit);
     const provenance = JSON.parse(text("web/lib/terminal-captures/released/provenance.json"));

@@ -8,7 +8,8 @@ use codewhale_command_contract::facets::{
     CommandDebugDiagnosticsContext, CommandPresentationContext, DebugBalanceProjection,
     DebugCacheInspectionObservation, DebugCacheInspectionUnavailable, DebugCacheTelemetry,
     DebugCostProjection, DebugPromptContext, DebugPromptInspection, DebugPromptSourceMap,
-    DebugSystemProjection, DebugTokenProjection, DebugToolSnapshot, DebugWarmupKey,
+    DebugSystemProjection, DebugSystemPrompt, DebugTokenProjection, DebugToolSnapshot,
+    DebugWarmupKey,
 };
 use codewhale_command_contract::handler::CommandContexts;
 
@@ -20,6 +21,7 @@ struct FakeDiagnostics {
     observation: Option<Result<DebugCacheInspectionObservation, DebugCacheInspectionUnavailable>>,
     remembered: Option<DebugPromptInspection>,
     balance_supported: bool,
+    system_prompt: Option<DebugSystemProjection>,
 }
 
 impl CommandDebugDiagnosticsContext for FakeDiagnostics {
@@ -31,7 +33,9 @@ impl CommandDebugDiagnosticsContext for FakeDiagnostics {
         }
     }
     fn system_projection(&self) -> DebugSystemProjection {
-        panic!("system authority is unrelated to cache inspection")
+        self.system_prompt
+            .clone()
+            .expect("system authority is unrelated to cache inspection")
     }
     fn token_projection(&self) -> DebugTokenProjection {
         panic!("usage authority is unrelated to cache inspection")
@@ -273,4 +277,26 @@ fn json_serialization_fallback_still_commits_the_observed_inspection_once() {
     );
     assert_eq!(&*fake.events.borrow(), &["remember"]);
     assert_eq!(fake.remembered.as_ref(), Some(&inspection("current")));
+}
+
+#[test]
+fn system_prompt_truncation_reports_char_count_for_multibyte_text() {
+    let mut fake = FakeDiagnostics {
+        system_prompt: Some(DebugSystemProjection {
+            mode_label: "Agent".into(),
+            prompt: DebugSystemPrompt::Text("你".repeat(300)),
+        }),
+        ..FakeDiagnostics::default()
+    };
+    let result = tokens::system_prompt(CommandContexts::empty().with_debug_diagnostics(&mut fake));
+    assert!(!result.is_error);
+    let message = result.message.as_deref().unwrap();
+    assert!(
+        message.contains("(truncated, 300 chars total)"),
+        "expected char count 300 in: {message}"
+    );
+    assert!(
+        !message.contains("900 chars total"),
+        "must not report UTF-8 byte length as chars: {message}"
+    );
 }

@@ -12,7 +12,10 @@ run against the commit that landed the behavior. It is not a release
 qualification, and hosted CI, Linux and Windows runs are listed separately.
 
 For the separate launcher that runs your own installed `dsh`, see
-[DeepSeek Harness integration](INTEGRATIONS_DSH.md).
+[DeepSeek Harness integration](INTEGRATIONS_DSH.md). Which published DSH
+packages activate unmodified, and what each of the others is missing, is in
+[DSH compatibility](DSH_COMPATIBILITY.md): most published packages do not
+activate in this version.
 
 ## Packages, review and trust
 
@@ -67,7 +70,10 @@ and `@deepseek-ai/dsh-host-webserver`). DSH package conversion uses a
 `16,384`-file / `256 MiB` bundle budget, normalizes package metadata for
 validation, treats `@deepseek-ai/dsh-agent-presets` rows as inert alongside
 executable composition rows, and stages reviewed `registry.npmjs.org`
-transitive server dependencies when network policy allows. The changed table
+transitive server dependencies when network policy allows (`registry.npmjs.org`
+in `allow` under `[network]` in `config.toml`, or `/network allow
+registry.npmjs.org` in the terminal UI); the review lists every package it
+fetched. The changed table
 digest requires fresh Native review and trust. The legacy preset adapter remains
 explicitly pinned to `0d1f5000`; its replacement upstream runtime packages
 are not adopted. Node support remains `^22.19.0 || >=24.0.0`, and Bun remains
@@ -91,9 +97,14 @@ walkthroughs below.
 | `subagents.getProvider('spawn')`, `subagents.startActivation`, caller delivery, `result`, `dispose` | the existing sub-agent manager, through the same approval planning as the model's `agent` tool | Verified on Linux over the Runtime API: the child start raised its own approval card, the child's request carried the persona and lacked the denied tools, and the result came back to the plugin; see the mapping below |
 | `subagents.start` (older DSH form) | refused | Not implemented |
 | `tools.get(name, agent)` | read-only lookup in the calling tool's catalog | Verified with the child-agent probe |
-| `tools.restrict` outside a child's `agent/created` handler | refused | Not implemented |
+| `tools.restrict` outside a child's `agent/created` handler | absent: the root `tools` service has no `restrict` method, so a call fails as not a function | Not implemented |
+| `tools.guard`, `agent.ctx.tools.guard`, and the other upstream `ToolsService` methods (`view`, `executable`, `resolve`, `definitions`, `schemas`, `setExecutor`, `selectExecutor`, `execute`, `checkGuards`) | absent, so plugins that test for them can carry on without them; a plugin that calls one fails activation as not a function | Not implemented |
+| `subagents.getProvider('fork')`, `inheritsParentContext`, command `invocation.agent.session` | not provided | Not implemented |
 | `agents`, `systemPrompt` | injectable so plugins that name them activate; `agents` offers nothing and `systemPrompt` methods refuse outside a child's `agent/created` context | Verified with the child-agent probe |
 | `llm`, `credentials` | grant-gated brokered host services in `compatibility.json` v3 | Grant-gated brokered |
+| `sessionPersistence`, `storageDomain`, `invariants`, `permissionPresets` | read-only / owner-scoped `0.10.5` P1/P2 host services (bounded JSON-serializable `storageDomain` values at 64 KiB, 64-entry per-owner `invariants` cap, fail-closed on mutating/escalation paths; all 4 in `refused_services` so plugins cannot override them) | Verified by focused extension-host tests (`e42ec6f09f0`, `e5571935a95`) |
+| `@deepseek-ai/dsh-agent`, `@deepseek-ai/dsh-app-boot` | `0.10.5` P1/P2 module singletons (`assembleContextFor`, `installModelSelection`, `getDshRuntimeVersion`; fail-closed `loadProfileDirectory`, `resolveBundleDir`, `createRuntimeResolution`) | Verified by focused extension-host tests (`e42ec6f09f0`) |
+| `agentPresets`, `agentDefaultModel`, `sessionProjections`, `workspaceRegistry`, `typertGateway`, `web` | `0.10.5` read-only/scoped adapters plus pure-API module exports (`ReasoningEffortId`, `deriveEventMessage`, `KNOWN_SESSION_EVENT_TYPES`, `credentialRef`, `settingsNamespace`, `resolveDshHome`, `writeFileAtomic`, `Remote`, `TypertRemoteService`) | Verified by focused extension-host tests and `0.10.5` 36-tarball cold-activate survey (15/36 pass) |
 | `approval`, `fs`, `subprocess` | refused by design until each maps to Engine authority | Not implemented |
 | Rich or media tool output | dropped | Not implemented |
 | Git review scopes | Bounded `execFile` metadata requests use the Engine Git tool and its approval path; the Native host still cannot read the repository directly | Current-source qualification pending |
@@ -102,11 +113,13 @@ walkthroughs below.
 
 The same DSH-format probe plugin (a tool that saves the session and asks one
 question, plus two commands), run against a local fake model provider on
-macOS with no account or spend:
+macOS with no account or spend, plus the `0.10.5` loopback `codewhale web`
+dist check (`6f093967ae3`):
 
 | Surface | What was seen | Status |
 | --- | --- | --- |
-| Runtime API | preview → exact-hash install → review → trust → enable; first-turn tool; approval; question answered through `POST /v1/user-input`; command result | Verified |
+| Runtime API | preview → exact-hash install → review → trust → enable; first-turn tool; approval; question answered through `POST /v1/user-input`; command result; plus `0.10.5` pinned 33-row lifecycle (`13` full local lifecycle pass, `3` pinned `BLOCKED`, `17` npm-approval gated) | Verified |
+| `codewhale web` (`CODEWHALE_WEB_DIST`) | `GET /` HTTP 200 (byte-for-byte match with `codewhale-app/apps/web/dist/index.html`) and `GET /v1/apps/plugins` HTTP 200 on loopback (`6f093967ae3`) | Verified |
 | `codewhale exec --auto` | first-turn tool runs and saves the session; the plugin's question is refused with `NO_PROVIDER` because no person is present to answer | Verified |
 | Desktop app | the tool's approval card; the plugin's question rendered as a native card (option descriptions, your own answer, Skip, Send answers); the answer reaches the plugin; `/probe-count` in the command palette with plugin attribution | Verified (plugin installed through the Runtime API, not the app's own settings flow) |
 | Terminal UI (interactive) | — | Not walked through; its question and approval code is covered by focused tests only |
@@ -146,8 +159,11 @@ An imported DSH plugin's client UI is served, on the seats the Engine admits.
 The importer retains the reviewed client closure; at serve time the Engine
 re-verifies it byte for byte against the reviewed hashes, maps each declared
 slot key to a seat, and loads one Engine-generated bootstrap built from those
-bytes. A native client is admitted only on `customize.plugins.detail`. A slot
-key with no seat answers `plugin_ui_seat_unsupported`; several keys on one seat
+bytes. A native client is admitted only on `customize.plugins.detail`. In `0.10.5`,
+`DSH_FRAME_MODULES` admits `@deepseek-ai/dsh-settings`,
+`@deepseek-ai/dsh-tools`, and `@deepseek-ai/dsh-credentials`, and
+`DSH_SEAT_TABLE` is synced to 41 entries matching desktop `DSH_SLOT_ALIASES`
+(`5cdf092bc77`). A slot key with no seat answers `plugin_ui_seat_unsupported`; several keys on one seat
 need the caller to name one (`plugin_ui_dsh_slot_required`). A closure that needs
 a host module the frame does not provide, uses ES module syntax or is not valid
 JSON answers `plugin_ui_unsupported`. Code Review 1.0.8's client decorates
@@ -179,6 +195,7 @@ them. See [Host services](EXTENSIONS.md#host-services).
 | Services offered by this build | Grant-gated host services (`workspace`, `llm`, `credentials`, `settings`, `pluginManager`, `deepseekAccount`, `terminal`, `remote`) and reviewed compatibility adapters |
 | Reasoning-translation bridge (`cot-translation`, anonymous Bing/Google over network broker) | Bridge built and verified with mocked broker responses; not offered in this build (paid DeepSeek routes unavailable) |
 | `attachments` (`validate`, `save`, `read`, `read_request`, `imageLimits`, single-image tool-result projection) | Built and verified by focused Engine, adapter, and consumer-shaped real-host fixture tests on Linux; not offered or registered in this build |
+| `settings.describe()` | outside a live tool call holding a settings grant it throws the refusal at once, so a plugin can catch it while it loads; inside one it returns a Promise of the plugin's own namespace and never a host row such as `locale` | Verified by focused extension-host tests (CW-8369) |
 | A real plugin using a granted service end to end | Not verified |
 
 ## Containment
@@ -202,7 +219,10 @@ workspace, disables hooks, filters, paging and lazy fetch, caps output, and
 contains the process under a deadline and cancellation. Other Git commands and
 subprocess APIs retain the Native sandbox restrictions. Native v8 requires
 re-review before this additional compatibility path is admitted. The
-published plugin's end-to-end review flow is not yet qualified.
+published plugin's end-to-end review flow is not yet qualified with a real
+model. Version 1.0.9 activates unmodified in the terminal, and in one terminal
+turn against a scripted local model its `dsh_code_review` tool started its
+reviewer sub-agent and returned the report ([DSH compatibility](DSH_COMPATIBILITY.md)).
 
 ## Reviewed client module map (CW-8288)
 

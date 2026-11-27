@@ -72,12 +72,11 @@ impl SubagentUsage {
     fn text(self, ascii: bool) -> String {
         let missing = if ascii { "-" } else { "—" };
         let number = |n: Option<u64>| n.map_or_else(|| missing.to_owned(), |n| n.to_string());
-        let cost = self.cost_microusd.map_or_else(
-            || missing.to_owned(),
-            |n| format!("{}.{:06}", n / 1_000_000, n % 1_000_000),
-        );
+        let cost = self
+            .cost_microusd
+            .map_or_else(|| format!("${missing}"), |n| crate::format_cost(n, "$"));
         format!(
-            "{} {} / {} {} / ${cost}",
+            "{} {} / {} {} / {cost}",
             if ascii { "in" } else { "↓" },
             number(self.input_tokens),
             if ascii { "out" } else { "↑" },
@@ -615,6 +614,156 @@ impl Default for SubagentViewWords<'_> {
             steps_label: None,
             summary: None,
         }
+    }
+}
+
+impl SubagentViewWords<'static> {
+    /// Unified wording for rosters that group subagents and background tasks
+    /// together.
+    #[must_use]
+    pub fn unified() -> Self {
+        Self {
+            title: "Agents & Tasks".into(),
+            empty: "No agents or tasks reported".into(),
+            ..Self::default()
+        }
+    }
+
+    /// Unified roster wording with a formatted `N agents / M tasks` summary.
+    #[must_use]
+    pub fn unified_summary(agents: usize, tasks: usize) -> Self {
+        let agent_word = if agents == 1 { "agent" } else { "agents" };
+        let task_word = if tasks == 1 { "task" } else { "tasks" };
+        Self {
+            summary: Some(format!("{agents} {agent_word} / {tasks} {task_word}").into()),
+            ..Self::unified()
+        }
+    }
+}
+
+/// Group header for a partitioned roster (`In Progress (N)` / `Idle (N)`),
+/// with an optional right-aligned attention jump cue.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionGroupHeader<'a> {
+    /// Group label (for example `"In Progress"` or `"Idle"`).
+    pub label: Cow<'a, str>,
+    /// Number of items in this group.
+    pub count: usize,
+    /// Whether this group holds active work.
+    pub active: bool,
+    /// Optional attention jump cue painted right-aligned when width permits.
+    pub attention_cue: Option<Cow<'a, str>>,
+}
+
+impl<'a> SessionGroupHeader<'a> {
+    /// Create a group header with a custom `label` and item `count`.
+    #[must_use]
+    pub fn new(label: impl Into<Cow<'a, str>>, count: usize) -> Self {
+        Self {
+            label: label.into(),
+            count,
+            active: false,
+            attention_cue: None,
+        }
+    }
+
+    /// Preset header for active work: `In Progress (count)`.
+    #[must_use]
+    pub fn in_progress(count: usize) -> Self {
+        Self::new("In Progress", count).active(true)
+    }
+
+    /// Preset header for settled or waiting sessions: `Idle (count)`.
+    #[must_use]
+    pub fn idle(count: usize) -> Self {
+        Self::new("Idle", count)
+    }
+
+    /// Mark whether this group holds active work (emphasized glyph and label).
+    #[must_use]
+    pub const fn active(mut self, active: bool) -> Self {
+        self.active = active;
+        self
+    }
+
+    /// Attach a right-aligned attention jump cue (for example `"Tab · 2 need you"`).
+    #[must_use]
+    pub fn attention_cue(mut self, cue: impl Into<Cow<'a, str>>) -> Self {
+        let cue = cue.into();
+        self.attention_cue = (!cue.is_empty()).then_some(cue);
+        self
+    }
+}
+
+impl Paint for SessionGroupHeader<'_> {
+    fn paint(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
+        let area = area.intersection(buf.area);
+        if area.is_empty() {
+            return;
+        }
+        let ascii = theme.ascii();
+        let width = usize::from(area.width);
+        let glyph = if self.active {
+            glyphs::pick(glyphs::CURRENT, ascii)
+        } else {
+            glyphs::pick(glyphs::AVAILABLE, ascii)
+        };
+        let safe_label = text::display_safe(&self.label);
+        let title = format!("{safe_label} ({})", self.count);
+        let cue = self
+            .attention_cue
+            .as_deref()
+            .map(|c| text::display_safe(c).into_owned())
+            .filter(|c| !c.is_empty());
+
+        let glyph_w = text::width(glyph);
+        let prefix_w = glyph_w.saturating_add(1);
+        let show_cue = cue.as_deref().filter(|c| {
+            let cw = text::width(c);
+            cw + 2 + prefix_w + 4 <= width
+        });
+        let left_budget = match show_cue {
+            Some(c) => width.saturating_sub(text::width(c) + 2),
+            None => width,
+        };
+        let title_budget = left_budget.saturating_sub(prefix_w);
+        let label_style = if self.active {
+            theme.fg(Role::Foreground).add_modifier(Modifier::BOLD)
+        } else {
+            theme.fg(Role::Muted)
+        };
+        let glyph_role = if self.active {
+            Role::Accent
+        } else {
+            Role::Muted
+        };
+
+        let mut spans = Vec::new();
+        if width >= prefix_w {
+            spans.push(Span::styled(format!("{glyph} "), theme.fg(glyph_role)));
+            if title_budget > 0 {
+                spans.push(Span::styled(
+                    text::truncate(&title, title_budget, ascii).into_owned(),
+                    label_style,
+                ));
+            }
+        } else {
+            spans.push(Span::styled(
+                text::truncate(&title, width, ascii).into_owned(),
+                label_style,
+            ));
+        }
+        row(Rect { height: 1, ..area }, buf, &Line::from(spans));
+
+        if let Some(cue) = show_cue {
+            let cw = u16::try_from(text::width(cue)).unwrap_or(0);
+            let x = area.right().saturating_sub(cw);
+            buf.set_stringn(x, area.y, cue, usize::from(cw), theme.fg(Role::Attention));
+        }
+    }
+
+    fn height(&self, _width: u16, _theme: &Theme) -> u16 {
+        1
     }
 }
 

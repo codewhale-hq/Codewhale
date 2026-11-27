@@ -511,6 +511,54 @@ export function approvalRequestText(input) {
   return parts.join("\n\n");
 }
 
+export const PEEK_DEFAULT_ENTRIES = 12;
+export const PEEK_EXPANDED_ENTRIES = 100;
+
+export function approvalCardCopy(approval) {
+  const summary = String(approval?.summary || "").trim();
+  const description = String(approval?.description || "").trim();
+  if (summary) {
+    return { lead: summary, detail: description && description !== summary ? description : "" };
+  }
+  if (!description) return { lead: "Codewhale is waiting for permission.", detail: "" };
+  const sentence = description.match(/^[\s\S]*?[.!?](?=\s|$)/);
+  let lead = sentence ? sentence[0] : description;
+  if (lead.length > 160) lead = `${lead.slice(0, 159).trimEnd()}…`;
+  return { lead, detail: description !== lead ? description : "" };
+}
+
+export function peekOmittedLabel(peek) {
+  const omitted = Number(peek?.omitted_before) || 0;
+  if (omitted <= 0) return "";
+  const shown = Array.isArray(peek?.entries) ? peek.entries.length : 0;
+  return `Showing the last ${shown} of ${shown + omitted} messages`;
+}
+
+export function peekCanShowEarlier(peek, requestedEntries) {
+  return (Number(peek?.omitted_before) || 0) > 0 && requestedEntries < PEEK_EXPANDED_ENTRIES;
+}
+
+export function savedSessionNotice() {
+  return "This is a saved recording, so it is read-only. Resume it to continue in a live thread.";
+}
+
+export function composerPlaceholderFor(target, fallback) {
+  return target?.kind === "session"
+    ? "Saved session. Click Resume to continue it."
+    : fallback;
+}
+
+export function showNoMatchingThreads(summaries, sessionSummaries) {
+  return summaries.length === 0 && sessionSummaries.length === 0;
+}
+
+export function headerTitleFor({ thread, summary, target, peek }) {
+  if (thread) return thread.title || summary?.title || "New thread";
+  if (summary?.title) return summary.title;
+  if (target?.kind === "session") return peek?.title || "Saved session";
+  return "Choose a thread";
+}
+
 export function createWebSessionFetch({ location, history, storage, fetch }) {
   const key = "codewhale_web_request_proof";
   const fragmentProof = new URLSearchParams(location.hash.slice(1)).get("p");
@@ -917,6 +965,8 @@ function startBrowserClient() {
     session: document.querySelector(".session"),
   };
 
+  const composerDefaultPlaceholder = dom.composerInput.getAttribute("placeholder") || "";
+
   const app = {
     summaries: [],
     sessionSummaries: [],
@@ -925,6 +975,7 @@ function startBrowserClient() {
     target: NO_TARGET,
     // Bounded, redacted peek for the selected saved session, or null.
     peek: null,
+    peekEntries: PEEK_DEFAULT_ENTRIES,
     // Set when the SSE stream reported a sequence gap and a re-snapshot is
     // pending. Surfaced in the connection label rather than hidden.
     streamGap: false,
@@ -1129,9 +1180,11 @@ function startBrowserClient() {
   function renderThreadList() {
     dom.threadList.replaceChildren();
     if (app.summaries.length === 0) {
-      const empty = element("p", "thread-preview", "No matching threads");
-      empty.style.padding = "8px 10px";
-      dom.threadList.append(empty);
+      if (showNoMatchingThreads(app.summaries, app.sessionSummaries)) {
+        const empty = element("p", "thread-preview", "No matching threads");
+        empty.style.padding = "8px 10px";
+        dom.threadList.append(empty);
+      }
       return;
     }
 
@@ -1236,6 +1289,7 @@ function startBrowserClient() {
       // hide the section rather than blocking the thread view behind an error.
       app.sessionSummaries = [];
     }
+    renderThreadList();
     renderSessionList();
     return app.sessionSummaries;
   }
@@ -1245,8 +1299,9 @@ function startBrowserClient() {
   // Selecting a saved session shows a read-only peek. It does NOT resume:
   // resuming spawns a real thread and an engine, which must be a deliberate
   // act, not a side effect of clicking a row to see what it was about.
-  async function peekSession(sessionId) {
+  async function peekSession(sessionId, entries = PEEK_DEFAULT_ENTRIES) {
     stopStream();
+    app.peekEntries = entries;
     app.selectedThreadId = "";
     app.threadState = createThreadState();
     app.target = sessionTarget(sessionId);
@@ -1258,7 +1313,7 @@ function startBrowserClient() {
       // tool payloads summarised — so the browser never receives the full
       // transcript in order to display a preview of it.
       app.peek = await api(
-        `/v1/sessions/${encodeURIComponent(sessionId)}?peek=true&entries=12`,
+        `/v1/sessions/${encodeURIComponent(sessionId)}?peek=true&entries=${entries}`,
       );
     } catch (error) {
       app.peek = null;
@@ -1307,17 +1362,31 @@ function startBrowserClient() {
         `${basename(peek.workspace) || "local"} · ${peek.message_count} messages · ${relativeTime(peek.updated_at)}${peek.archived ? " · archived" : ""}`,
       ),
     );
+    header.append(element("p", "peek-notice", savedSessionNotice()));
+    const resume = element("button", "primary-button", "Resume into a live thread");
+    resume.type = "button";
+    resume.addEventListener("click", () => resumeSession(peek.session_id));
+    header.append(resume);
     dom.peek.append(header);
 
-    if (peek.omitted_before > 0) {
-      dom.peek.append(
-        element("p", "peek-omitted", `${peek.omitted_before} earlier messages not shown`),
-      );
+    const omittedLabel = peekOmittedLabel(peek);
+    if (omittedLabel) {
+      const omitted = element("div", "peek-omitted-row");
+      omitted.append(element("span", "peek-omitted", omittedLabel));
+      if (peekCanShowEarlier(peek, app.peekEntries)) {
+        const more = element("button", "quiet-button", "Show earlier messages");
+        more.type = "button";
+        more.addEventListener("click", () => peekSession(peek.session_id, PEEK_EXPANDED_ENTRIES));
+        omitted.append(more);
+      }
+      dom.peek.append(omitted);
     }
 
     for (const entry of peek.entries || []) {
       const row = element("div", `peek-entry peek-${entry.kind}`);
-      row.append(element("span", "peek-kind", entry.kind));
+      if (entry.kind !== "tool") {
+        row.append(element("span", "peek-kind", entry.kind === "assistant" ? "Codewhale" : entry.kind === "user" ? "You" : entry.kind));
+      }
       // `element()` assigns via textContent. Peek text is recorded user/model
       // content and must never reach an HTML sink; this is the XSS boundary.
       row.append(element("p", "peek-text", entry.text));
@@ -1325,11 +1394,6 @@ function startBrowserClient() {
       if (entry.truncated) row.append(element("span", "peek-flag", "truncated"));
       dom.peek.append(row);
     }
-
-    const resume = element("button", "primary-button", "Resume into a live thread");
-    resume.type = "button";
-    resume.addEventListener("click", () => resumeSession(peek.session_id));
-    dom.peek.append(resume);
   }
 
   const { connectStream, stopStream } = createStreamConnector({
@@ -1467,9 +1531,12 @@ function startBrowserClient() {
   function renderHeader() {
     const thread = app.threadState.thread;
     const summary = app.summaries.find((item) => item.id === app.selectedThreadId);
-    const title = thread?.title || summary?.title || (thread ? "New thread" : "Choose a thread");
+    const title = headerTitleFor({ thread, summary, target: app.target, peek: app.peek });
     setSafeText(dom.title, title);
-    setSafeText(dom.kicker, thread ? "Local Runtime thread" : "Local Runtime");
+    setSafeText(
+      dom.kicker,
+      thread ? "Local Runtime thread" : app.target.kind === "session" ? "Saved session" : "Local Runtime",
+    );
     dom.rename.disabled = !thread;
     dom.archive.disabled = !thread;
     dom.facts.replaceChildren();
@@ -1764,15 +1831,8 @@ function startBrowserClient() {
     const title = element("h2", "", approval.tool_name || "Tool request");
     title.id = titleId;
     card.append(title);
-    card.append(element("p", "", approval.summary || approval.description || "Codewhale is waiting for permission."));
-    if (approval.summary && approval.description && approval.description !== approval.summary) {
-      card.append(element("p", "approval-reason", approval.description));
-    }
-    const request = approvalRequestText(approval.input);
-    if (request) card.append(element("pre", "approval-request", request));
-    if (approval.intent_summary) {
-      card.append(element("p", "approval-claim", `The model says: ${approval.intent_summary}`));
-    }
+    const copy = approvalCardCopy(approval);
+    card.append(element("p", "approval-reason", copy.lead));
     const actions = element("div", "attention-actions");
     const rememberLabel = element("label", "remember-field");
     const remember = document.createElement("input");
@@ -1786,6 +1846,17 @@ function startBrowserClient() {
     allow.addEventListener("click", () => resolveApproval(approvalId, "allow", remember.checked));
     actions.append(rememberLabel, deny, allow);
     card.append(actions);
+    const request = approvalRequestText(approval.input);
+    if (request) card.append(element("pre", "approval-request", request));
+    if (approval.intent_summary) {
+      card.append(element("p", "approval-claim", `The model says: ${approval.intent_summary}`));
+    }
+    if (copy.detail) {
+      const more = element("details", "approval-detail");
+      more.append(element("summary", "", "Tool instructions"));
+      more.append(element("p", "", copy.detail));
+      card.append(more);
+    }
     return card;
   }
 
@@ -1943,6 +2014,7 @@ function startBrowserClient() {
     const active = activeTurn();
     const sending = app.inFlightActions.has(composerSendAction);
     dom.composerInput.disabled = sending || !ready;
+    dom.composerInput.placeholder = composerPlaceholderFor(app.target, composerDefaultPlaceholder);
     dom.send.disabled = sending || !ready || !dom.composerInput.value.trim();
     dom.composer.setAttribute("aria-busy", sending ? "true" : "false");
     dom.interrupt.hidden = !active;

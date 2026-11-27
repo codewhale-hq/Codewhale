@@ -23,5 +23,5 @@ event: response.output_item.done
 data: {"type":"response.output_item.done","output_index":1,"item":{"type":"message","id":"msg_conf","role":"assistant","content":[{"type":"output_text","text":"ISO 8601 it is."}]}}
 
 event: response.completed
-data: {"type":"response.completed","response":{"id":"resp_conf","status":"completed","usage":{"input_tokens":30,"input_tokens_details":{"cached_tokens":10},"output_tokens":12,"output_tokens_details":{"reasoning_tokens":5},"total_tokens":42}}}
+data: {"type":"response.completed","response":{"id":"resp_conf","status":"completed","usage":{"input_tokens":30,"input_tokens_details":{"cached_tokens":10,"audio_tokens":3},"output_tokens":12,"output_tokens_details":{"reasoning_tokens":5,"audio_tokens":2},"total_tokens":42}}}
 

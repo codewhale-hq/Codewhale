@@ -31,7 +31,8 @@ impl<T> SettingValues<T> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingAvailability {
     Available,
-    #[allow(dead_code)] // disabled rows with reasons for model/provider pickers (TUI-DOG-009)
+    #[cfg_attr(not(test), expect(dead_code))]
+    // disabled rows with reasons for model/provider pickers (TUI-DOG-009)
     Disabled {
         reason: Cow<'static, str>,
     },
@@ -44,7 +45,7 @@ impl SettingAvailability {
     }
 
     #[must_use]
-    #[allow(dead_code)] // reason chrome for disabled rows (TUI-DOG-009)
+    #[cfg_attr(not(test), expect(dead_code))] // reason chrome for disabled rows (TUI-DOG-009)
     pub fn disabled_reason(&self) -> Option<&str> {
         match self {
             Self::Available => None,
@@ -152,7 +153,7 @@ impl SettingOptionBuilder {
     }
 
     #[must_use]
-    #[allow(dead_code)] // per-row secondary actions for model/provider hosts (TUI-DOG-009)
+    #[cfg_attr(not(test), expect(dead_code))] // per-row secondary actions for model/provider hosts (TUI-DOG-009)
     pub fn action(mut self, action: SettingItemAction) -> Self {
         self.action = Some(action);
         self

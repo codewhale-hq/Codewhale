@@ -123,6 +123,9 @@ doctor check:
 codewhale doctor
 ```
 
+It prints a short verdict: whether Codewhale is ready, what works, what needs
+attention and the next step. `codewhale doctor --full` prints every check.
+
 Use the JSON form when you need a machine-readable report for an issue:
 
 ```bash
@@ -423,7 +426,11 @@ Common commands for first-time users:
 | `/workflow` | Orchestrate the current work as a Workflow; `status`, `cancel`, `settings` answer without a model turn |
 | `/workflows` | Open the live Workflow run dashboard: every run this workspace's journal keeps, with phases, children, progress, and host-side cancel |
 | `/config` | Edit runtime and provider settings |
+| `/settings` | Open the typed settings editor; `/settings text` prints the resolved values |
 | `/statusline` | Choose which footer status chips are visible |
+| `/anchor` | Pin a fact that stays when Codewhale makes room; `/anchor list` and `/anchor remove <n>` manage pins |
+| `/structcopy` | Copy one session object (`turn <n>`, `tool <call-id>`, `plan`, `workflow <run-id>`) as redacted JSON |
+| `/remote-env` | Show hosted Work options; `/remote-env open` opens new hosted Work from a GitHub or CNB branch tip |
 | `/color` | Give this chat's composer box its own color: bare `/color` cycles red, orange, amber, green, cyan, blue, purple and pink, `/color blue` picks one, `/color off` returns to the theme |
 | `/receipts` | List what this session did: files changed, commands run, web and MCP calls, agents, approvals and who gave them, failures |
 | `/compact` | Summarize long context to recover token budget |
@@ -709,14 +716,14 @@ Start with doctor output:
 codewhale doctor
 ```
 
-Use JSON when filing a detailed issue:
+Add `--full` for every check. Use JSON when filing a detailed issue:
 
 ```bash
 codewhale doctor --json
 ```
 
-For authentication problems, use the structural source state to identify what
-is declared. Doctor deliberately does not inspect environment, secret-store,
+For authentication problems, use the structural source state in
+`codewhale doctor --full` to identify what is declared. Doctor deliberately does not inspect environment, secret-store,
 keyring, or OAuth token values. When a live check is appropriate, opt in with
 `codewhale doctor --probe-api` (or `--probe-local` for a local endpoint).
 

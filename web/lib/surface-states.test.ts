@@ -9,12 +9,13 @@ import { middleware } from "../middleware";
 import { footerDocsLinks, footerLegalLinks, footerProductLinks, footerProjectLinks, navLinks, signInLink } from "./i18n/links";
 import { PERMANENT_ROUTE_REDIRECTS, REDIRECTED_ROUTES } from "./route-redirects";
 import { AVAILABILITY_ROWS, describeRow } from "./content/availability";
-import { DESKTOP_RELEASE, desktopDownload, parseDesktopRelease, type DesktopReleaseFact } from "./desktop-release";
+import { desktopDownload, desktopDownloads, linuxDownloads, parseDesktopRelease, type DesktopReleaseFact } from "./desktop-release";
 import { FOUNDER_SWITCHES, FOUNDER_SWITCH_VALUES } from "./founder-switches";
 import { STATE_CHROME_KEY, SURFACE_IDS, SURFACE_STATES, stateLabel, surfaceCapabilities, surfaceState } from "./surface-states";
-import { DesktopDownloadBlock } from "../components/desktop-download";
+import { DesktopDownloadBlock, LinuxDownloadBlock, aptInstallLines } from "../components/desktop-download";
 import HomePage from "../app/[locale]/page";
 import ContributePage from "../app/[locale]/contribute/page";
+import { extractHtmlText } from "./test-html-text";
 
 const holder = vi.hoisted(() => ({ release: null as unknown }));
 vi.mock("./desktop-release", async (importOriginal) => {
@@ -51,6 +52,37 @@ const fixture: DesktopReleaseFact = {
   ],
 };
 
+const APT = {
+  repository: "https://downloads.codewhale.net/desktop/apt",
+  keyUrl: "https://downloads.codewhale.net/desktop/apt/codewhale-archive-keyring.asc",
+  suite: "stable",
+  component: "main",
+  architecture: "amd64",
+  package: "codewhale-desktop",
+  keyFingerprint: "FE6EED0815F6796F0617D07A8D1B59648C382CE9",
+};
+const APPIMAGE_SHA = "c".repeat(64);
+const deb = {
+  name: "codewhale-desktop_1.2.3_amd64.deb",
+  platform: "linux",
+  kind: "deb",
+  arch: "x64",
+  size: 98_000_000,
+  sha256: "d".repeat(64),
+  url: "https://downloads.codewhale.net/apt/pool/main/c/codewhale-desktop/codewhale-desktop_1.2.3_amd64.deb",
+  apt: APT,
+} as const;
+const appImage = {
+  name: "Codewhale-1.2.3-x64.AppImage",
+  platform: "linux",
+  kind: "appimage",
+  arch: "x64",
+  size: 105_300_000,
+  sha256: APPIMAGE_SHA,
+  url: "https://downloads.codewhale.net/desktop/Codewhale-1.2.3-x64.AppImage",
+} as const;
+const withLinux = { ...fixture, assets: [...fixture.assets, deb, appImage] } as DesktopReleaseFact;
+
 type Page = (props: { params: Promise<{ locale: string }>; searchParams: Promise<Record<string, string>> }) => Promise<unknown> | unknown;
 const render = async (page: Page, locale = "en") =>
   renderToStaticMarkup((await page({ params: Promise.resolve({ locale }), searchParams: Promise.resolve({}) })) as never);
@@ -78,7 +110,7 @@ describe("every surface state has copy in every locale", () => {
     expect(chrome.numbersAsOf).toContain("{date}");
     expect(chrome.downloadVersion).toContain("{version}");
     expect(chrome.downloadSize).toContain("{size}");
-    for (const key of ["downloadMacos", "downloadChecksum", "downloadSigned"] as const) expect(chrome[key]).toBeTruthy();
+    for (const key of ["downloadMacos", "downloadChecksum", "downloadSigned", "downloadLinux", "downloadAptTitle", "downloadAptTrust", "downloadAppImage", "downloadAppImageTrust"] as const) expect(chrome[key]).toBeTruthy();
   });
 
   it("gives every state its own word within a locale", () => {
@@ -120,7 +152,7 @@ describe("today's surface states", () => {
     for (const row of AVAILABILITY_ROWS) {
       const view = describeRow(row, "en");
       expect(view.status).toBe(stateLabel(surfaceState(row.id), "en"));
-      expect(view.download).toBeNull();
+      expect(view.downloads).toEqual([]);
     }
   });
 
@@ -133,7 +165,7 @@ describe("today's surface states", () => {
 
 describe("founder-set switches", () => {
   it("default to off, each with the decision that set it", () => {
-    expect(FOUNDER_SWITCH_VALUES).toEqual({ cloudInvitationsOpen: false, plansPublished: false, cloudComputersBeyondInvite: false, namedVendorAgentsOverAcp: false });
+    expect(FOUNDER_SWITCH_VALUES).toEqual({ cloudInvitationsOpen: false, plansPublished: false, cloudComputersBeyondInvite: false, namedVendorAgentsOverAcp: false, accountSignInOffered: false });
     for (const entry of Object.values(FOUNDER_SWITCHES)) expect(entry.decision).toMatch(/§\d/);
   });
 
@@ -159,11 +191,13 @@ describe("founder-set switches", () => {
 });
 
 describe("the desktop download", () => {
-  it("is absent today, so the desktop state is a development build with no download", () => {
-    expect(DESKTOP_RELEASE).toBeNull();
-    expect(readFileSync(join(WEB, "data/desktop-published-release.json"), "utf8").trim()).toBe("null");
-    expect(surfaceState("desktop")).toBe("dev");
-    expect(surfaceCapabilities("desktop").download).toBe(false);
+  it("is the published macOS release today, and without release data the desktop is a development build", () => {
+    const published = parseDesktopRelease(JSON.parse(readFileSync(join(WEB, "data/desktop-published-release.json"), "utf8")));
+    expect(published).not.toBeNull();
+    expect(desktopDownloads(published).map((download) => download.arch)).toEqual(["arm64", "x64"]);
+    expect(surfaceState("desktop", { desktopRelease: published })).toBe("released");
+    expect(surfaceCapabilities("desktop", { desktopRelease: published }).download).toBe(true);
+    expect(surfaceState("desktop", { desktopRelease: null })).toBe("dev");
     expect(desktopDownload(null)).toBeNull();
   });
 
@@ -193,12 +227,26 @@ describe("the desktop download", () => {
     const view = describeRow(row, "en", fixture);
     expect(view.status).toBe("Released");
     expect(view.detail).not.toMatch(/No public download/);
-    const html = renderToStaticMarkup(DesktopDownloadBlock({ download: view.download!, locale: "en" }));
+    const html = renderToStaticMarkup(DesktopDownloadBlock({ downloads: view.downloads, locale: "en" }));
     expect(html).toContain("Download for macOS");
+    expect(html).not.toContain("Apple silicon");
     expect(html).toContain(fixture.assets[0].url);
     expect(html).toContain("Version 1.2.3");
     expect(html).toContain("123.5 MB");
     expect(html).toContain(SHA);
+  });
+
+  it("offers the Apple silicon and Intel installers separately, each with its own size and checksum", () => {
+    const arm = fixture.assets[0];
+    const intelSha = "b".repeat(64);
+    const intel = { ...arm, name: "Codewhale-1.2.3-x64.dmg", size: 234_567_890, sha256: intelSha, url: arm.url.replace("arm64", "x64") };
+    const both = { ...fixture, assets: [intel, arm] };
+    expect(desktopDownloads(both).map((download) => download.arch)).toEqual(["arm64", "x64"]);
+    expect(desktopDownload(both)?.url).toBe(arm.url);
+    const html = renderToStaticMarkup(DesktopDownloadBlock({ downloads: desktopDownloads(both), locale: "en" }));
+    expect(html.indexOf("Apple silicon")).toBeGreaterThan(-1);
+    expect(html.indexOf("Intel")).toBeGreaterThan(html.indexOf("Apple silicon"));
+    for (const expected of [arm.url, intel.url, SHA, intelSha, "123.5 MB", "234.6 MB"]) expect(html).toContain(expected);
   });
 
   it.each(["en", "zh"])("renders on /app in %s only when the release object is present", async (locale) => {
@@ -212,6 +260,102 @@ describe("the desktop download", () => {
       expect(html).toContain(getChrome(locale).downloadMacos);
       expect(html).toContain("1.2.3");
     }
+  });
+});
+
+describe("the Linux desktop download", () => {
+  it("parses only the exact deb and AppImage shapes", () => {
+    expect(parseDesktopRelease(withLinux)).toEqual(withLinux);
+    const bad: unknown[] = [
+      { ...deb, notarized: true },
+      { ...deb, signed: true },
+      { ...appImage, notarized: true },
+      { ...appImage, signed: true },
+      { ...appImage, apt: APT },
+      { ...appImage, sha256: undefined },
+      { ...deb, sha256: "abc" },
+      { ...deb, apt: undefined },
+      { ...deb, apt: { ...APT, repository: "https://example.com/apt" } },
+      { ...deb, apt: { ...APT, repository: "http://downloads.codewhale.net/apt" } },
+      { ...deb, apt: { ...APT, keyUrl: "http://downloads.codewhale.net/k.asc" } },
+      { ...deb, apt: { ...APT, keyUrl: "https://downloads.codewhale.net/k.asc; rm -rf ~" } },
+      { ...deb, apt: { ...APT, package: "codewhale desktop" } },
+      { ...deb, apt: { ...APT, suite: "$(id)" } },
+      { ...deb, apt: { ...APT, extra: "x" } },
+      { ...deb, apt: { ...APT, architecture: undefined } },
+      { ...deb, apt: { ...APT, architecture: "i386" } },
+      { ...deb, apt: { ...APT, architecture: "amd64; id" } },
+      { ...deb, apt: { ...APT, keyFingerprint: undefined } },
+      { ...deb, apt: { ...APT, keyFingerprint: APT.keyFingerprint.toLowerCase() } },
+      { ...deb, apt: { ...APT, keyFingerprint: APT.keyFingerprint.slice(1) } },
+      { ...deb, apt: { ...APT, keyFingerprint: `${APT.keyFingerprint}0` } },
+      { ...deb, apt: { ...APT, keyFingerprint: `${APT.keyFingerprint.slice(0, 39)}G` } },
+      { ...deb, apt: { ...APT, keyUrl: "https://downloads.codewhale.net/desktop/apt/" } },
+      { ...deb, apt: { ...APT, keyUrl: "https://downloads.codewhale.net/desktop/apt/.asc" } },
+      { ...deb, arch: "arm64" },
+      { ...appImage, arch: undefined },
+      { ...appImage, kind: "rpm" },
+      { ...appImage, kind: undefined },
+      { ...appImage, url: "https://example.com/x.AppImage" },
+    ];
+    for (const asset of bad) expect(parseDesktopRelease({ ...fixture, assets: [...fixture.assets, asset] }), JSON.stringify(asset)).toBeNull();
+  });
+
+  it("leaves the macOS download and the primary download unchanged", () => {
+    expect(desktopDownloads(withLinux)).toEqual(desktopDownloads(fixture));
+    expect(desktopDownload(withLinux)).toEqual(desktopDownload(fixture));
+    expect(linuxDownloads(fixture)).toBeNull();
+    expect(linuxDownloads(null)).toBeNull();
+  });
+
+  it("renders the apt lines, the key URL and the AppImage checksum", () => {
+    const linux = linuxDownloads(withLinux)!;
+    const lines = aptInstallLines(linux.apt!).split("\n");
+    expect(lines).toEqual([
+      "sudo install -d -m 0755 /etc/apt/keyrings",
+      "curl -fsSL https://downloads.codewhale.net/desktop/apt/codewhale-archive-keyring.asc | sudo tee /etc/apt/keyrings/codewhale-archive-keyring.asc >/dev/null",
+      'echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/codewhale-archive-keyring.asc] https://downloads.codewhale.net/desktop/apt stable main" | sudo tee /etc/apt/sources.list.d/codewhale.list >/dev/null',
+      "sudo apt update && sudo apt install codewhale-desktop",
+    ]);
+    expect(lines.join("\n")).not.toContain("gpg");
+    const html = renderToStaticMarkup(LinuxDownloadBlock({ linux, locale: "en" }));
+    expect(html).toContain(APT.keyUrl);
+    expect(html).toContain("FE6E ED08 15F6 796F 0617 D07A 8D1B 5964 8C38 2CE9");
+    expect(html).toContain("should have the fingerprint");
+    expect(html).toContain(APPIMAGE_SHA);
+    expect(html).toContain(appImage.url);
+    expect(html).toContain("105.3 MB");
+    expect(html).toContain("does not update itself yet");
+    expect(html).not.toMatch(/notarized/i);
+  });
+
+  it("says macOS only, or macOS and Linux, from the data on the page and the row", async () => {
+    const row = AVAILABILITY_ROWS.find((candidate) => candidate.id === "desktop")!;
+    expect(describeRow(row, "en", fixture).detail).not.toContain("Linux");
+    expect(describeRow(row, "en", withLinux).detail).toContain("macOS and Linux");
+    expect(describeRow(row, "zh", withLinux).detail).toContain("Linux");
+    const { appHeaderCopy } = await import("./content/app-page");
+    expect(appHeaderCopy("en", fixture).lede).not.toContain("Linux");
+    expect(appHeaderCopy("en", fixture).description).not.toContain("Linux");
+    expect(appHeaderCopy("en", withLinux).lede).toContain("macOS and Linux");
+    expect(appHeaderCopy("en", withLinux).description).toContain("macOS and Linux");
+  });
+
+  it.each(["en", "zh"])("renders on /app in %s only when Linux assets are present, and macOS-only output is unchanged", async (locale) => {
+    const { default: AppPage } = await import("../app/[locale]/app/page");
+    holder.release = fixture;
+    const macOnly = await render(AppPage as Page, locale);
+    expect(macOnly).toContain(SHA);
+    expect(macOnly).not.toContain("apt install");
+    expect(macOnly).not.toContain(APPIMAGE_SHA);
+    holder.release = withLinux;
+    const both = await render(AppPage as Page, locale);
+    expect(both).toContain(SHA);
+    expect(both).toContain(APPIMAGE_SHA);
+    expect(both).toContain(APT.keyUrl);
+    expect(both).toContain(`sudo apt update &amp;&amp; sudo apt install ${APT.package}`);
+    holder.release = { ...fixture, assets: [deb, appImage] } as DesktopReleaseFact;
+    expect(await render(AppPage as Page, locale)).not.toContain(APPIMAGE_SHA);
   });
 });
 
@@ -239,7 +383,7 @@ describe("with both founder switches off, no page offers a download or a request
     const downloadWords = [getChrome("en").downloadMacos, getChrome("zh").downloadMacos];
     for (const [name, load] of pages) {
       const html = await render((await load()).default as Page, locale);
-      const text = html.replace(/<script[\s\S]*?<\/script>/g, " ").replace(/<[^>]+>/g, " ");
+      const text = extractHtmlText(html, { stripScripts: true, tagReplacement: " " });
       const hrefs = [...html.matchAll(/href="([^"]*)"/g)].map((match) => match[1]);
       expect(hrefs.find((href) => INSTALLER.test(href)), `${locale}/${name} installer link`).toBeUndefined();
       expect(text.match(REQUEST_PATH)?.[0], `${locale}/${name} request path`).toBeUndefined();

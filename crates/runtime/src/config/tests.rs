@@ -3395,6 +3395,22 @@ fn workspace_trust_reads_existing_projects_table() -> Result<()> {
 }
 
 #[test]
+fn needs_trust_ignores_repository_self_trust_markers() -> Result<()> {
+    let _lock = lock_test_env();
+    let temp_root = tempfile::tempdir()?;
+    let _guard = EnvGuard::new(temp_root.path());
+    let workspace = temp_root.path().join("project");
+    let legacy_dir = workspace.join(".deepseek");
+    fs::create_dir_all(&legacy_dir)?;
+    fs::write(legacy_dir.join("trusted"), "")?;
+    fs::write(legacy_dir.join("trust.json"), "{}")?;
+
+    assert!(!is_workspace_trusted(&workspace));
+    assert!(crate::config::needs_trust(&workspace));
+    Ok(())
+}
+
+#[test]
 fn saved_credential_describe_returns_config_file_path() {
     let cf = SavedCredential::ConfigFile(PathBuf::from("/tmp/x.toml"));
     assert_eq!(cf.describe(), "/tmp/x.toml");
@@ -11917,18 +11933,87 @@ fn config_set_provider_typo_reuses_the_invalid_provider_wording() {
 #[test]
 fn deepseek_missing_key_message_keeps_commands_copyable_and_harness_advice_conditional() {
     let plain = deepseek_missing_key_message();
+    assert_eq!(plain.lines().count(), 2, "{plain}");
     assert!(
-        plain.contains("\n  codewhale auth set --provider deepseek\n"),
+        plain.contains("codewhale auth set --provider deepseek"),
         "{plain}"
     );
+    assert!(plain.contains("codewhale login"), "{plain}");
     assert!(
-        plain.contains("If you already use DeepSeek Harness, grant read-only access:"),
+        plain.contains("codewhale auth external-consent --provider deepseek --mode read-only"),
         "{plain}"
     );
-    assert!(
-        plain.ends_with("\n  codewhale auth external-consent --provider deepseek --mode read-only"),
-        "{plain}"
+}
+
+#[test]
+fn ambient_default_provider_detects_cloud_env_keys_in_priority_order() {
+    struct RestoreEnv(Vec<(&'static str, Option<OsString>)>);
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            for (key, value) in self.0.drain(..) {
+                unsafe { EnvGuard::restore_var(key, value) };
+            }
+        }
+    }
+
+    let _guard = lock_test_env();
+    let keys = [
+        "CODEWHALE_PROVIDER",
+        "DEEPSEEK_PROVIDER",
+        "CODEWHALE_BASE_URL",
+        "DEEPSEEK_BASE_URL",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "OPENROUTER_API_KEY",
+    ];
+    let _restore = RestoreEnv(keys.iter().map(|&k| (k, env::var_os(k))).collect());
+    for key in keys {
+        unsafe { env::remove_var(key) };
+    }
+
+    let mut cfg = Config::default();
+    apply_env_overrides_unlocked(&mut cfg, ConfigEnvironmentPolicy::Runtime);
+    assert_eq!(cfg.provider, None);
+    assert_eq!(
+        cfg.active_provider_identity().expect("default").provider,
+        ProviderKind::Deepseek
     );
+
+    unsafe { env::set_var("OPENROUTER_API_KEY", "sk-or-test") };
+    assert_eq!(
+        Config::default()
+            .active_provider_identity()
+            .expect("pure default")
+            .provider,
+        ProviderKind::Deepseek
+    );
+
+    let mut openrouter_cfg = Config::default();
+    apply_env_overrides_unlocked(&mut openrouter_cfg, ConfigEnvironmentPolicy::Runtime);
+    assert_eq!(openrouter_cfg.provider.as_deref(), Some("openrouter"));
+    assert!(openrouter_cfg.route_provenance.provider_from_env);
+
+    unsafe { env::set_var("ANTHROPIC_API_KEY", "sk-ant-test") };
+    let mut anthropic_cfg = Config::default();
+    apply_env_overrides_unlocked(&mut anthropic_cfg, ConfigEnvironmentPolicy::Runtime);
+    assert_eq!(anthropic_cfg.provider.as_deref(), Some("anthropic"));
+    assert!(anthropic_cfg.route_provenance.provider_from_env);
+
+    let mut diagnostic_cfg = Config::default();
+    apply_env_overrides_unlocked(
+        &mut diagnostic_cfg,
+        ConfigEnvironmentPolicy::StructuralDiagnostic,
+    );
+    assert_eq!(diagnostic_cfg.provider, None);
+
+    let mut explicit_model_cfg = Config {
+        default_text_model: Some("deepseek-chat".to_string()),
+        ..Config::default()
+    };
+    apply_env_overrides_unlocked(&mut explicit_model_cfg, ConfigEnvironmentPolicy::Runtime);
+    assert_eq!(explicit_model_cfg.provider, None);
 }
 
 #[test]
@@ -12041,8 +12126,10 @@ fn canonical_stream_config_env_clamps_and_keepalive_disable() {
     assert_eq!(config.tcp_keepalive(), None);
     assert_eq!(config.http2_keep_alive_interval(), None);
     assert_eq!(config.http2_keep_alive_timeout(), Duration::from_secs(20));
-    let positive: Config = toml::from_str("[stream]\nopen_timeout_secs=12\nchunk_timeout_secs=14\ntcp_keepalive_secs=9000\nhttp2_keep_alive_interval_secs=9000\nhttp2_keep_alive_timeout_secs=9000\n").unwrap();
+    let positive: Config = toml::from_str("[stream]\nopen_timeout_secs=12\nopen_retries=0\nchunk_timeout_secs=14\ntcp_keepalive_secs=9000\nhttp2_keep_alive_interval_secs=9000\nhttp2_keep_alive_timeout_secs=9000\n").unwrap();
     assert_eq!(positive.stream_open_timeout(), Duration::from_secs(12));
+    assert_eq!(config.stream_retry_limits().open_retries, 1);
+    assert_eq!(positive.stream_retry_limits().open_retries, 0);
     assert_eq!(positive.stream_chunk_timeout_secs(), 14);
     assert_eq!(positive.tcp_keepalive(), Some(Duration::from_secs(3600)));
     assert_eq!(
@@ -12551,4 +12638,94 @@ fn tool_launcher_is_refused_from_a_managed_file_the_user_config_names() -> Resul
         "{error:#}"
     );
     Ok(())
+}
+
+#[test]
+fn env_bool_overrides_accept_yes_and_on() {
+    let _lock = lock_test_env();
+    let _legacy_shell = EnvVarGuard::remove("DEEPSEEK_ALLOW_SHELL");
+    let _legacy_yolo = EnvVarGuard::remove("DEEPSEEK_YOLO");
+    let _legacy_net = EnvVarGuard::remove("DEEPSEEK_SANDBOX_NETWORK_ACCESS");
+    let _legacy_bwrap = EnvVarGuard::remove("DEEPSEEK_PREFER_BWRAP");
+
+    for truthy in ["yes", "YES", "on", " ON ", "1", "true"] {
+        let _shell = EnvVarGuard::set("CODEWHALE_ALLOW_SHELL", truthy);
+        let _yolo = EnvVarGuard::set("CODEWHALE_YOLO", truthy);
+        let _net = EnvVarGuard::set("CODEWHALE_SANDBOX_NETWORK_ACCESS", truthy);
+        let _bwrap = EnvVarGuard::set("CODEWHALE_PREFER_BWRAP", truthy);
+        let mut config = Config::default();
+        apply_env_overrides_unlocked(&mut config, ConfigEnvironmentPolicy::Runtime);
+        assert_eq!(config.allow_shell, Some(true), "allow_shell={truthy}");
+        assert_eq!(config.yolo, Some(true), "yolo={truthy}");
+        assert_eq!(config.sandbox_network_access, Some(true), "net={truthy}");
+        assert_eq!(config.prefer_bwrap, Some(true), "bwrap={truthy}");
+    }
+
+    for falsy in ["no", "off", "0", "false", ""] {
+        let _shell = EnvVarGuard::set("CODEWHALE_ALLOW_SHELL", falsy);
+        let mut config = Config::default();
+        apply_env_overrides_unlocked(&mut config, ConfigEnvironmentPolicy::Runtime);
+        assert_eq!(config.allow_shell, Some(false), "allow_shell={falsy}");
+    }
+}
+
+#[test]
+fn unknown_provider_env_does_not_skip_later_env_overrides() {
+    let _lock = lock_test_env();
+    let _provider = EnvVarGuard::set("CODEWHALE_PROVIDER", "nonexistent-provider-id");
+    let _shell = EnvVarGuard::set("CODEWHALE_ALLOW_SHELL", "yes");
+    let _verbosity = EnvVarGuard::set("CODEWHALE_VERBOSITY", "concise");
+    let _max_subagents = EnvVarGuard::set("CODEWHALE_MAX_SUBAGENTS", "5");
+
+    let mut config = Config::default();
+    apply_env_overrides_unlocked(&mut config, ConfigEnvironmentPolicy::Runtime);
+
+    assert_eq!(config.provider.as_deref(), Some("nonexistent-provider-id"));
+    assert_eq!(config.allow_shell, Some(true));
+    assert_eq!(config.verbosity.as_deref(), Some("concise"));
+    assert_eq!(config.max_subagents(), 5);
+    assert_eq!(config.base_url_env_receipt, BaseUrlEnvReceipt::NoOwner);
+}
+
+#[test]
+fn max_subagents_env_and_overlay_override_file_subagents_max_concurrent() {
+    let _lock = lock_test_env();
+    let _legacy = EnvVarGuard::remove("DEEPSEEK_MAX_SUBAGENTS");
+    let _env = EnvVarGuard::set("CODEWHALE_MAX_SUBAGENTS", "4");
+
+    let mut config = Config {
+        subagents: Some(SubagentsConfig {
+            max_concurrent: Some(12),
+            ..SubagentsConfig::default()
+        }),
+        ..Config::default()
+    };
+    assert_eq!(config.max_subagents(), 12);
+    apply_env_overrides_unlocked(&mut config, ConfigEnvironmentPolicy::Runtime);
+    assert_eq!(config.max_subagents(), 4);
+
+    let mut project_target = Config {
+        subagents: Some(SubagentsConfig {
+            max_concurrent: Some(12),
+            ..SubagentsConfig::default()
+        }),
+        ..Config::default()
+    };
+    project_target.set_max_subagents_override(6);
+    assert_eq!(project_target.max_subagents(), 6);
+
+    let merged = merge_config(
+        Config {
+            subagents: Some(SubagentsConfig {
+                max_concurrent: Some(12),
+                ..SubagentsConfig::default()
+            }),
+            ..Config::default()
+        },
+        Config {
+            max_subagents: Some(7),
+            ..Config::default()
+        },
+    );
+    assert_eq!(merged.max_subagents(), 7);
 }

@@ -220,7 +220,7 @@ fn leading_literal_token(alternative: &str) -> Option<&str> {
     {
         return None;
     }
-    if USAGE_METAVARIABLES.contains(&token) {
+    if USAGE_METAVARIABLES.contains(&token) && !trailing.trim_start().starts_with('<') {
         return None;
     }
     Some(token)

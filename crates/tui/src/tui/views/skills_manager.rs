@@ -17,6 +17,7 @@ use super::{
     render_modal_footer, render_underwater_surface, truncate_view_text,
 };
 use crate::tui::app::App;
+use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_skills::audit::{
     AuditedSkill, AuditedSkillId, DigestState, IntegrityState, ParserState, PrecedenceState,
@@ -69,6 +70,7 @@ pub struct SkillsManagerView {
     import_scope: SkillTargetScope,
     pending: Option<PendingConfirm>,
     status: Option<String>,
+    locale: Locale,
 }
 
 impl SkillsManagerView {
@@ -117,6 +119,7 @@ impl SkillsManagerView {
             import_scope,
             pending: None,
             status,
+            locale: app.ui_locale,
         };
         if let Some(id) = focus
             && let Some(idx) = view.skills.iter().position(|s| &s.id == id)
@@ -374,11 +377,11 @@ impl SkillsManagerView {
         block.render(area, buf);
 
         if self.skills.is_empty() {
-            EmptyState::new(
-                "No skills in this scan",
-                "Press c to include compatible roots, or /skill install <spec>.",
-            )
-            .render(inner, buf);
+            let hint = tr(self.locale, MessageId::SkillsManagerEmptyHint)
+                .replace("{key}", "c")
+                .replace("{command}", "/skill install <spec>");
+            EmptyState::new(tr(self.locale, MessageId::SkillsManagerEmptyTitle), hint)
+                .render(inner, buf);
             return;
         }
 
@@ -890,6 +893,25 @@ mod tests {
             }
         }
         assert!(found, "expected Skills title on 80x24 surface");
+    }
+
+    #[test]
+    fn empty_state_follows_the_ui_locale() {
+        let tmp = TempDir::new().unwrap();
+        let _home = IsolatedHome::new(&tmp);
+        let app = app_in(&tmp);
+        let mut view = SkillsManagerView::new(&app);
+        view.skills.clear();
+        view.locale = Locale::Fr;
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        view.render(area, &mut buf);
+        let text: String = (0..area.height)
+            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+            .map(|(x, y)| buf.cell((x, y)).map_or(" ", |c| c.symbol()).to_string())
+            .collect();
+        assert!(!text.contains("No skills in this scan"), "{text}");
+        assert!(text.contains("Aucune"), "{text}");
     }
 
     #[test]

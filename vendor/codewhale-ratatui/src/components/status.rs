@@ -22,10 +22,16 @@ pub enum State {
     Ready,
     /// Nobody reported a state. Shown as unknown, never as a failure.
     Unknown,
+    /// Blocked on a hard precondition or external gate.
+    Blocked,
+    /// Resting calmly between active runs.
+    Resting,
+    /// Asleep or suspended.
+    Asleep,
 }
 
 impl State {
-    pub const ALL: [State; 7] = [
+    pub const ALL: [State; 10] = [
         State::Working,
         State::Done,
         State::NeedsYou,
@@ -33,6 +39,9 @@ impl State {
         State::Stopped,
         State::Ready,
         State::Unknown,
+        State::Blocked,
+        State::Resting,
+        State::Asleep,
     ];
 
     #[must_use]
@@ -40,8 +49,10 @@ impl State {
         match self {
             State::Working | State::Done => Role::Live,
             State::NeedsYou => Role::Attention,
-            State::Failed => Role::Danger,
-            State::Stopped | State::Ready | State::Unknown => Role::Muted,
+            State::Failed | State::Blocked => Role::Danger,
+            State::Stopped | State::Ready | State::Unknown | State::Resting | State::Asleep => {
+                Role::Muted
+            }
         }
     }
 
@@ -55,6 +66,9 @@ impl State {
             State::Stopped => glyphs::STOPPED,
             State::Ready => glyphs::READY,
             State::Unknown => glyphs::UNKNOWN,
+            State::Blocked => glyphs::BLOCKED,
+            State::Resting => glyphs::RESTING,
+            State::Asleep => glyphs::ASLEEP,
         }
     }
 
@@ -94,6 +108,9 @@ impl StateWords {
             State::Stopped => "Stopped",
             State::Ready => "Ready",
             State::Unknown => "Unknown",
+            State::Blocked => "Blocked",
+            State::Resting => "Resting",
+            State::Asleep => "Asleep",
         }
     }
 
@@ -108,6 +125,7 @@ impl StateWords {
             State::Stopped => &self.stopped,
             State::Ready => &self.ready,
             State::Unknown => &self.unknown,
+            State::Blocked | State::Resting | State::Asleep => Self::english(state),
         }
     }
 }
@@ -133,6 +151,8 @@ impl Default for StateWords {
 pub struct StatusMark {
     pub state: State,
     pub word: Cow<'static, str>,
+    /// Optional quiet detail clause rendered after `word` as `word · detail`.
+    pub detail: Option<Cow<'static, str>>,
     /// Paint the word in the state's hue too, for a mark that stands alone.
     pub tinted: bool,
 }
@@ -143,6 +163,7 @@ impl StatusMark {
         Self {
             state,
             word: Cow::Borrowed(state.word()),
+            detail: None,
             tinted: false,
         }
     }
@@ -153,6 +174,7 @@ impl StatusMark {
         Self {
             state,
             word: Cow::Owned(words.get(state).to_owned()),
+            detail: None,
             tinted: false,
         }
     }
@@ -160,6 +182,13 @@ impl StatusMark {
     #[must_use]
     pub fn word(mut self, word: impl Into<Cow<'static, str>>) -> Self {
         self.word = word.into();
+        self
+    }
+
+    /// Attach a quiet detail clause rendered as `word · detail`.
+    #[must_use]
+    pub fn detail(mut self, detail: impl Into<Cow<'static, str>>) -> Self {
+        self.detail = Some(detail.into());
         self
     }
 
@@ -177,23 +206,54 @@ impl StatusMark {
 
     #[must_use]
     pub fn spans(&self, theme: &Theme) -> Vec<Span<'static>> {
+        self.spans_for_width(theme, None)
+    }
+
+    fn spans_for_width(&self, theme: &Theme, max_width: Option<usize>) -> Vec<Span<'static>> {
         let hue = theme.fg(self.state.role());
         let word_style = if self.tinted {
             hue
         } else {
             theme.fg(Role::Foreground)
         };
-        vec![
-            Span::styled(self.glyph(theme), hue),
+        let glyph = self.glyph(theme);
+        let safe_word = text::display_safe(&self.word).into_owned();
+        let mut spans = vec![
+            Span::styled(glyph, hue),
             Span::raw(" "),
-            Span::styled(text::display_safe(&self.word).into_owned(), word_style),
-        ]
+            Span::styled(safe_word.clone(), word_style),
+        ];
+        if let Some(raw_detail) = self.detail.as_deref() {
+            let safe_detail = text::display_safe(raw_detail);
+            let trimmed = safe_detail.trim();
+            if !trimmed.is_empty() {
+                let sep = format!(" {} ", glyphs::pick(glyphs::NEUTRAL, theme.ascii()));
+                if let Some(limit) = max_width {
+                    let prefix_width = text::width(glyph) + 1 + text::width(&safe_word);
+                    let sep_width = text::width(&sep);
+                    if let Some(avail) = limit.checked_sub(prefix_width + sep_width)
+                        && avail > 0
+                    {
+                        let fitted = text::truncate_words(trimmed, avail, theme.ascii());
+                        if !fitted.is_empty() {
+                            spans.push(Span::styled(sep, theme.fg(Role::Muted)));
+                            spans.push(Span::styled(fitted.into_owned(), theme.fg(Role::Muted)));
+                        }
+                    }
+                } else {
+                    spans.push(Span::styled(sep, theme.fg(Role::Muted)));
+                    spans.push(Span::styled(trimmed.to_owned(), theme.fg(Role::Muted)));
+                }
+            }
+        }
+        spans
     }
 }
 
 impl Paint for StatusMark {
     fn paint(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
-        ratatui::text::Line::from(self.spans(theme)).render(area, buf);
+        let max_width = self.detail.as_ref().map(|_| usize::from(area.width));
+        ratatui::text::Line::from(self.spans_for_width(theme, max_width)).render(area, buf);
     }
 }
 
@@ -244,5 +304,34 @@ mod tests {
         });
         assert_eq!(crate::testing::text(&buf), "\u{25c6} Braucht dich");
         assert_eq!(host.get(State::Done), "Done");
+    }
+
+    #[test]
+    fn detail_renders_and_truncates_safely_in_unicode_and_ascii() {
+        let dark = Profile::DarkTrue.theme();
+        let ascii = Profile::Ascii.theme();
+        let mark = StatusMark::new(State::Blocked).detail("waiting on CI approval");
+
+        let wide = crate::testing::render(40, 1, |area, buf| mark.paint(area, buf, &dark));
+        assert_eq!(
+            crate::testing::text(&wide),
+            "\u{2298} Blocked \u{00b7} waiting on CI approval"
+        );
+
+        let narrow = crate::testing::render(22, 1, |area, buf| mark.paint(area, buf, &dark));
+        let narrow_text = crate::testing::text(&narrow);
+        assert!(
+            narrow_text.starts_with("\u{2298} Blocked \u{00b7} "),
+            "{narrow_text}"
+        );
+        assert!(narrow_text.contains('\u{2026}'), "{narrow_text}");
+
+        let ascii_buf = crate::testing::render(22, 1, |area, buf| mark.paint(area, buf, &ascii));
+        let ascii_text = crate::testing::text(&ascii_buf);
+        assert!(ascii_text.is_ascii(), "{ascii_text}");
+        assert!(ascii_text.starts_with("! Blocked . "), "{ascii_text}");
+
+        let tiny = crate::testing::render(9, 1, |area, buf| mark.paint(area, buf, &dark));
+        assert_eq!(crate::testing::text(&tiny), "\u{2298} Blocked");
     }
 }

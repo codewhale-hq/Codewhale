@@ -28,9 +28,10 @@ SOFTWARE.
 //! Bounded native poses for the habitat: fish, minnow, jellyfish, whale and
 //! a single-dot mote. The ASCII fallback keeps fish, jellyfish and bubbles.
 //! These are authored dot poses, not another simulation. The habitat owns
-//! travel, collision and lifetime from caller-supplied elapsed time. Two tiny immutable tables
-//! retain their rows so a frame borrows glyphs without allocating strings.
-//! Braille remains discrete: half-column / quarter-row motion is not pixels.
+//! travel, collision and lifetime from caller-supplied elapsed time. Five tiny
+//! immutable tables retain their rows so a frame borrows glyphs without
+//! allocating strings. Braille remains discrete: half-column / quarter-row
+//! motion is not pixels.
 
 use crate::whale::BITS as BRAILLE_BITS;
 use std::sync::LazyLock;
@@ -97,7 +98,6 @@ static JELLY: LazyLock<Vec<[String; 3]>> = LazyLock::new(|| {
         .collect()
 });
 
-// Far fish: 2 directions × 2 tail poses × 2 horizontal × 2 vertical dot offsets.
 static MINNOW: LazyLock<Vec<String>> = LazyLock::new(|| {
     (0..16)
         .map(|index| {
@@ -121,7 +121,6 @@ static MINNOW: LazyLock<Vec<String>> = LazyLock::new(|| {
         .collect()
 });
 
-// Whale: 2 directions × 4 fluke poses × 2 horizontal × 4 vertical dot offsets.
 static WHALE: LazyLock<Vec<[String; 3]>> = LazyLock::new(|| {
     (0..64)
         .map(|index| {

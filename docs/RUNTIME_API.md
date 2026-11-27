@@ -54,7 +54,7 @@ For the read-only record of what a thread or turn did, see
 
 | Entry | Transport | Use |
 |---|---|---|
-| `codewhale web [--port 7878]` | HTTP/SSE on `127.0.0.1:7878` + embedded client | First-class loopback-only browser client; opens the default browser |
+| `codewhale web [--port 7878]` | HTTP/SSE on `127.0.0.1:7878` + embedded client | First-class loopback-only browser client; opens the default browser. Can serve the shared app build via `CODEWHALE_WEB_DIST` ([WEB.md](WEB.md#serving-the-shared-app-build)) |
 | `codewhale app-server --http` | HTTP/SSE on `127.0.0.1:7878` | Full `/v1/*` runtime API (canonical) |
 | `codewhale app-server --mobile` | HTTP/SSE on loopback + `/mobile` | Runtime API + local mobile control page |
 | `codewhale app-server --stdio` | Initialized JSONL over stdio | Compatibility controls and explicit tool-free turns through the held manager; no hidden TCP listener or full Codex interaction channel. |
@@ -1131,6 +1131,11 @@ browser does not open, the printed URL remains usable for ten minutes. The
 command cannot bind to a non-loopback host and cannot run with Runtime auth
 disabled.
 
+By default the embedded client is served. Setting `CODEWHALE_WEB_DIST` to a
+built `apps/web` directory serves the shared app build instead; an invalid
+value is refused at startup with the reason. See
+[Serving the shared app build](WEB.md#serving-the-shared-app-build).
+
 The browser-launch URL contains a random, short-lived, one-time bootstrap
 capability, never the Runtime token. A loopback request exchanges that
 capability for a
@@ -1369,8 +1374,8 @@ Nothing is deleted. `GET /v1/sessions/repair` and `codewhale doctor` report the
 last run; `codewhale doctor --repair-sessions [--dry-run]` runs one on demand.
 
 `GET /v1/sessions/{id}?peek=true` returns a bounded, redacted, read-only view
-instead of the transcript: at most 12 entries of at most 400 characters each
-(`&entries=N` lowers the budget, never raises it past the cap), tool calls and
+instead of the transcript: 12 entries by default, of at most 400 characters
+each (`&entries=N` asks for fewer or for up to 100), tool calls and
 results summarised to a name and a size rather than inlined, and
 credential-shaped substrings masked. `omitted_before` reports how many earlier
 messages were dropped. The payload carries `"live": false` and deliberately has
@@ -4026,9 +4031,10 @@ usage and outcome. An observed send or absent response headers do not prove
 provider acceptance or free work. Unknown primary outcomes remain unpriced in
 the turn diagnostics and usage totals; known primary usage stays in parent
 accounting. These receipts do not yet reconcile late cumulative primary usage.
-Inference automatically retries only an ordinary rate limit or a proven
-transient connection failure before dispatch. A later explicit user turn is a
-new request, not an automatic replay of an uncertain request.
+Inference automatically retries only an ordinary rate limit, a proven
+transient connection failure before dispatch, or a request that received no
+response headers (`stream.open_retries` times, default once). A later explicit
+user turn is a new request, not an automatic replay of an uncertain request.
 
 `turn.completed` carries the turn's authoritative cumulative token usage in
 `payload.turn.usage`, including routed work. It replaces the running token

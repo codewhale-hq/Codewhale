@@ -572,6 +572,7 @@ a.dir-row:hover .dir-action { color: var(--text); }
 /* ---------- code with copy ---------- */
 .code { position: relative; min-width: 0; }
 .code pre.code-block { padding-right: 6.5rem; }
+.desktop-download-linux .code pre.code-block { white-space: pre-wrap; overflow-wrap: anywhere; }
 /* A long command scrolls under the button, so the button sits flush with the
    block's edge and a short fade on its leading side hides the text beneath
    it instead of letting a sliver show on either side. Commands are always

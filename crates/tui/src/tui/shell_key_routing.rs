@@ -57,7 +57,6 @@ pub enum FocusScope {
     RoutePicker,
     AccountLogin,
     PetHabitat,
-    Pet,
     /// Only the sandbox-elevation decision card.
     Elevation,
     /// Only the model-bound redaction consent gate.
@@ -86,7 +85,6 @@ impl FocusScope {
                 Focus::Modal(ModalKind::ProviderPicker | ModalKind::ModelPicker)
             ),
             Self::PetHabitat => focus == Focus::Modal(ModalKind::PetHabitat),
-            Self::Pet => matches!(focus, Focus::Composer | Focus::Modal(ModalKind::PetHabitat)),
             Self::Elevation => focus == Focus::Modal(ModalKind::Elevation),
             Self::RedactionGate => focus == Focus::RedactionGate,
             Self::SessionShell => {
@@ -136,8 +134,6 @@ pub enum ShellBindingId {
     PetFocusAgents,
     PetOpenAgent,
     PetCopyReply,
-    PetSound,
-    PetBrowser,
     RedactionGateConfirm,
     RedactionGateKeepOrBack,
     RedactionGateQuit,
@@ -225,8 +221,6 @@ impl ShellBinding {
             ShellBindingId::PetCopyReply => {
                 key.code == KeyCode::Char('c') && key.modifiers.is_empty()
             }
-            ShellBindingId::PetSound => key.code == KeyCode::F(6) && key.modifiers.is_empty(),
-            ShellBindingId::PetBrowser => key.code == KeyCode::F(8) && key.modifiers.is_empty(),
 
             ShellBindingId::RedactionGateConfirm => is_redaction_gate_choice(key, '1', 'y'),
             ShellBindingId::RedactionGateKeepOrBack => is_redaction_gate_choice(key, '2', 'u'),
@@ -352,7 +346,7 @@ pub const SHELL_BINDINGS: &[ShellBinding] = &[
     },
     ShellBinding {
         id: ShellBindingId::PetInspect,
-        catalog_chord: "F5 / /pet inspect",
+        catalog_chord: "F5",
         footer_chord: "F5",
         focus: FocusScope::AnyShell,
     },
@@ -415,18 +409,6 @@ pub const SHELL_BINDINGS: &[ShellBinding] = &[
         catalog_chord: "c",
         footer_chord: "c",
         focus: FocusScope::PetHabitat,
-    },
-    ShellBinding {
-        id: ShellBindingId::PetSound,
-        catalog_chord: "F6",
-        footer_chord: "F6",
-        focus: FocusScope::Pet,
-    },
-    ShellBinding {
-        id: ShellBindingId::PetBrowser,
-        catalog_chord: "F8",
-        footer_chord: "F8",
-        focus: FocusScope::Pet,
     },
     ShellBinding {
         id: ShellBindingId::RedactionGateConfirm,

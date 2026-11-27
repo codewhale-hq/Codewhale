@@ -153,7 +153,7 @@ clients that need thread resume semantics.
 ## Mode Persistence
 
 Choosing a mode interactively also sets the mode a fresh session starts in.
-The `Shift+Tab` dial, the `Alt+A` / `Alt+P` / `Alt+Y` shortcuts, the hotbar's
+The `Shift+Tab` dial, the `Alt+A` / `Alt+P` shortcuts, the hotbar's
 Plan/Work actions, and `/mode` all write `default_mode` to
 `~/.codewhale/settings.toml`, so switching to Plan survives a restart. The
 write happens off the event loop; if it fails, the TUI says so in a warning
@@ -263,6 +263,34 @@ therefore visible to the next turn. Untrusted runtime-generated input is
 narrowed before metadata is built and cannot invent approval authority. An
 explicit Full Access sub-agent handoff preserves the parent's standing posture
 so ordinary child work does not begin prompting again.
+
+### Answering an approval
+
+When a call needs your say, the terminal shows a one-line approval bar: what
+will run, then `Details [d]`, `Allow [Enter]`, `[▾ m]` and `Deny [n]`.
+
+- `Enter` commits the highlighted control, which is the one tagged `[Enter]`.
+  A new bar highlights **Allow**, so `Enter` allows the one action shown,
+  once. `y` allows once wherever the highlight is.
+- `n` denies the action and the turn carries on. `Esc` refuses it too and
+  stops the turn; on a sub-agent's card `Esc` only hides the card and the
+  request stays pending.
+- The arrow keys move the highlight between Allow and Deny.
+- `d` or `Tab` opens the details. `m` opens the scope menu, whose rows keep
+  their numbers: `[1] Allow once`, `[2] Allow in this conversation` and, where
+  it is offered, `[3] Always allow in this repo`.
+- An `Enter` that would allow is ignored for the first three quarters of a
+  second the bar is the prompt in front of you (again each time it comes back
+  to the front after another prompt covered it), and straight after another
+  `Enter` or typed characters. An `Enter` already in flight, held or pasted
+  therefore does not approve, and a notice says the key was ignored and why;
+  press `Enter` again to allow. Denying is never delayed, and the letter keys
+  (`y`, `a`, `1`) answer at once.
+- To make `Enter` deny instead, set `[approval] default_selection = "deny"`
+  (see [Configuration](CONFIGURATION.md)).
+
+The sandbox elevation prompt is a separate card. It still starts on the
+option that skips the call, and takes no letter shortcuts.
 
 ### Children (sub-agents and fleet workers)
 

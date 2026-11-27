@@ -626,7 +626,12 @@ mod tests {
         }
         assert_eq!(
             collapsed,
-            ["Dark Background=Surface", "Light Sidebar=Surface"],
+            [
+                "Dark Background=Surface",
+                "Light Sidebar=Background",
+                "Light Sidebar=Surface",
+                "Light Background=Surface",
+            ],
             "Raised panels add edges when Surface=Background; workbench separates its sidebar"
         );
     }

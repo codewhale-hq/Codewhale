@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased — 0.2.0
+## 0.2.1
+
+- The posture bar keeps the turn clock while a turn runs on a narrow row. Its
+  shed ladder drops the session clock, permission key, hint and counts first
+  (cap warning and mode still outrank the clock), and the right notice is
+  clipped against the permission chip plus the turn clock instead of covering
+  it.
+- Requires Codewhale Protocol 0.10.4.
+
+## 0.2.0
 
 - The Ocean column's waiting, approval and failure tints now ease off near the
   surface where they would push `Hint` below 4.5:1 or `Dim` below 3:1, for a

@@ -24,37 +24,7 @@ to contact nobody sets `telemetry_endpoint = ""`, which writes batches to
 
 ---
 
-## Optional PostHog processor
-
-The new sink is **unconfigured by default**. It uses no analytics SDK and does
-not create a second collector. `POSTHOG_HOST` must be exactly
-`https://us.i.posthog.com` or `https://eu.i.posthog.com`, and
-`POSTHOG_PROJECT_TOKEN` must be supplied as a Worker secret. The separate
-`POSTHOG_IP_SAFE_EGRESS_VERIFIED="true"` prerequisite requires the staging
-receipt below. Never commit a real token. Missing any prerequisite or using
-an untrusted host leaves the sink off.
-Deployment, token configuration, retention/privacy settings, and activation
-require separate operator approval; none is established by the local tests.
-
-Validated schema 3 batches carrying `notice_version: 5` and legacy schema 2
-batches carrying explicit `consent_version: 4` can reach the processor. Schema 1
-and schema 4 and 6 batches remain first-party only. Capture uses
-`/batch/`, fixed anonymous/no-geo controls, no incoming headers, no cookies,
-no redirects, no response parsing, no retries, and a 1.5-second timeout.
-PostHog failure is isolated from the successful Analytics Engine write.
-See [the complete disclosure](../docs/TELEMETRY.md) and
-[PostHog's capture contract](https://posthog.com/docs/api/capture).
-
-**Egress activation remains unproved.** Cloudflare can add client-IP headers to
-Worker subrequests destined for non-Cloudflare zones, even when application
-code builds fresh headers. The guard is an operator prerequisite, not code
-that strips platform headers. Before setting it, record a staging receipt for
-the actual deployment and regional destination proving original client IPs
-are absent from all received headers, including `CF-Connecting-IP`,
-`X-Forwarded-For`, and `X-Real-IP`. Requalify if the egress path changes. Without
-that receipt, leave the sink disabled; use a detached first-party delivery
-context if the deployed network cannot satisfy the invariant. Local fetch
-mocks do not prove edge behavior. See [Cloudflare's header behavior](https://developers.cloudflare.com/fundamentals/reference/http-headers/#cf-connecting-ip-in-worker-subrequests).
+## Cross-repository CWC contract
 
 The cross-repository CWC contract is generated, not independently authored:
 `node scripts/export-product-schema.mjs` (Node 22.18+) exports

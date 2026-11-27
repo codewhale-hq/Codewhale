@@ -275,6 +275,8 @@ pub struct PaneHeader<'a> {
     pub meta: Cow<'a, str>,
     pub focused: bool,
     pub divider: bool,
+    /// Optional right-aligned item count pill shown beside `meta`.
+    pub count: Option<usize>,
 }
 impl<'a> PaneHeader<'a> {
     #[must_use]
@@ -284,6 +286,7 @@ impl<'a> PaneHeader<'a> {
             meta: Cow::Borrowed(""),
             focused: false,
             divider: true,
+            count: None,
         }
     }
     #[must_use]
@@ -301,6 +304,12 @@ impl<'a> PaneHeader<'a> {
         self.divider = divider;
         self
     }
+    /// Show a right-aligned count pill in the header.
+    #[must_use]
+    pub const fn count(mut self, count: usize) -> Self {
+        self.count = Some(count);
+        self
+    }
 }
 impl Paint for PaneHeader<'_> {
     fn paint(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
@@ -310,11 +319,27 @@ impl Paint for PaneHeader<'_> {
         }
         let title = safe(&self.title);
         let meta = safe(&self.meta);
+        let count_pill = self.count.map(|n| format!(" {n} "));
+        let pill_width = count_pill.as_deref().map_or(0, text::width);
         let meta_width = text::width(&meta);
-        let show_meta =
-            !meta.is_empty() && meta_width + text::width(&title) + 2 <= usize::from(area.width);
-        let width =
-            usize::from(area.width).saturating_sub(if show_meta { meta_width + 2 } else { 0 });
+        let right_width = match (meta_width > 0, pill_width > 0) {
+            (true, true) => meta_width + 1 + pill_width,
+            (true, false) => meta_width,
+            (false, true) => pill_width,
+            (false, false) => 0,
+        };
+        let show_right =
+            right_width > 0 && right_width + text::width(&title) + 2 <= usize::from(area.width);
+        let show_pill_only =
+            !show_right && pill_width > 0 && pill_width + 2 < usize::from(area.width);
+        let reserved = if show_right {
+            right_width + 2
+        } else if show_pill_only {
+            pill_width + 2
+        } else {
+            0
+        };
+        let width = usize::from(area.width).saturating_sub(reserved);
         row(
             area,
             buf,
@@ -323,16 +348,40 @@ impl Paint for PaneHeader<'_> {
                 theme.fg(Role::Foreground).add_modifier(Modifier::BOLD),
             ),
         );
-        if show_meta {
+        if show_right {
+            let mut spans = Vec::new();
+            if meta_width > 0 {
+                spans.push(Span::styled(meta, theme.fg(Role::Muted)));
+            }
+            if let Some(pill) = count_pill {
+                if meta_width > 0 {
+                    spans.push(Span::raw(" "));
+                }
+                spans.push(Span::styled(
+                    pill,
+                    theme.fg(Role::Muted).patch(theme.bg(Role::Surface)),
+                ));
+            }
             row(
                 Rect::new(
-                    area.right().saturating_sub(meta_width as u16),
+                    area.right().saturating_sub(right_width as u16),
                     area.y,
-                    meta_width as u16,
+                    right_width as u16,
                     1,
                 ),
                 buf,
-                &Line::styled(meta, theme.fg(Role::Muted)),
+                &Line::from(spans),
+            );
+        } else if show_pill_only && let Some(pill) = count_pill {
+            row(
+                Rect::new(
+                    area.right().saturating_sub(pill_width as u16),
+                    area.y,
+                    pill_width as u16,
+                    1,
+                ),
+                buf,
+                &Line::styled(pill, theme.fg(Role::Muted).patch(theme.bg(Role::Surface))),
             );
         }
         if self.divider && area.height > 1 {

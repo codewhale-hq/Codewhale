@@ -3,698 +3,407 @@
 'use strict';
 if(!global.structuredClone)global.structuredClone=value=>JSON.parse(JSON.stringify(value));
 const factories={},cache={};
-factories["pet-native"]=function(exports,require){
+factories["pet-engine"]=function(exports,require){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PetNative = void 0;
-const pet_world_js_1 = require("./pet-world.js");
-const pet_telemetry_js_1 = require("./pet-telemetry.js");
+exports.PetEngineTelemetry = exports.ENGINE_OWNER_STALE_MS = void 0;
 const pet_sim_js_1 = require("./pet-sim.js");
-const pet_audio_js_1 = require("./pet-audio.js");
-const pet_engine_js_1 = require("./pet-engine.js");
-const dot_field_js_1 = require("./dot-field.js");
-const activity_labels_js_1 = require("./activity-labels.js");
-/** Synchronous native boundary: JSON state and directly transferable PCM.
- * Native hosts share the actual world / score implementation, not a rewrite. */
-class PetNative {
-    world;
-    engine = new pet_engine_js_1.PetEngineTelemetry();
-    expressionActivity = this.engine.activity(0);
-    expressionTransition;
-    expressionOptions = { bodyStyle: 'smooth' };
-    engineTick = 0;
-    segment;
-    liveTape = new pet_telemetry_js_1.PetLiveTape();
-    stillProjection;
-    constructor(pointsJSON, tapeJSONL = '', interactionsJSON = '[]', live = false, expressionVersion = 2) {
-        const points = JSON.parse(pointsJSON);
-        if (!Array.isArray(points) || points.length !== 980 || points.some(p => !Array.isArray(p) || p.length !== 2 || !p.every(n => Number.isFinite(n) && Math.abs(n) <= 1)))
-            throw new Error('Invalid native whale body.');
-        this.world = new pet_world_js_1.PetWorld(points, live ? (0, pet_telemetry_js_1.compilePetTelemetry)([]) : (0, pet_telemetry_js_1.decodePetJSONL)(tapeJSONL), JSON.parse(interactionsJSON), expressionVersion, true);
+const pet_telemetry_js_1 = require("./pet-telemetry.js");
+// Engine emits a liveness pulse every 10 seconds for a running operation.
+// Keep a small scheduling margin so one delayed pulse does not erase a valid
+// long operation from the owner projection; after that, it becomes generic.
+// The physics tape keeps its own, shorter coverage rule (see `pulse`).
+exports.ENGINE_OWNER_STALE_MS = 12_000;
+const ACTIVITY_KINDS = [
+    'reading', 'editing', 'searching', 'testing', 'executing', 'browsing', 'computer',
+    'memory', 'tool', 'thinking', 'responding', 'delegating',
+];
+const TURN_OUTCOMES = ['completed', 'interrupted', 'failed'];
+const OPERATION_OUTCOMES = ['succeeded', 'failed', 'cancelled', 'denied'];
+const APPROVAL_OUTCOMES = ['approved', 'denied', 'cancelled'];
+function categoryFor(kind) {
+    switch (kind) {
+        case 'reading':
+        case 'editing':
+        case 'searching': return 'filesystem';
+        case 'testing':
+        case 'executing': return 'code';
+        case 'browsing': return 'browser';
+        case 'computer':
+        case 'tool': return 'tool';
+        case 'memory': return 'memory';
+        case 'thinking': return 'reasoning';
+        case 'responding': return 'communication';
+        case 'delegating': return 'agent';
     }
-    step(dt, motion) { this.world.step(dt, { motion, sensitivity: 1 }); return this.snapshot(); }
-    snapshot() { return JSON.stringify({ ...this.world.frame, voices: this.world.voices, digest: (0, pet_sim_js_1.digest)(this.world.sim) }); }
-    expression() {
-        const { frame } = this.world;
-        const target = (0, dot_field_js_1.projectDotField)(this.expressionActivity, frame.timeMs, false, this.expressionTransition?.at ?? 0, this.expressionOptions);
-        return this.expressionTransition
-            ? (0, dot_field_js_1.blendDotFields)(this.expressionTransition.from, target, (frame.timeMs - this.expressionTransition.at) / 560)
-            : target;
-    }
-    prepareExpression(activity) {
-        if ((0, dot_field_js_1.dotFieldKey)(activity) !== (0, dot_field_js_1.dotFieldKey)(this.expressionActivity))
-            this.expressionTransition = { at: this.world.frame.timeMs, from: this.expression() };
-        this.expressionActivity = activity;
-    }
-    /** View-only projection. Display cadence and accessibility preferences never
-     * advance the owner, consume randomness, or change its score/checkpoint. */
-    presentation(options = {}, interfaceLanguage = 'en') {
-        if (!['smooth', 'pixel'].includes(options.bodyStyle ?? 'smooth'))
-            throw new Error('Invalid pet presentation preferences.');
-        const next = { bodyStyle: options.bodyStyle ?? 'smooth' };
-        if (next.bodyStyle !== this.expressionOptions.bodyStyle) {
-            const from = this.expression();
-            this.expressionOptions = next;
-            this.expressionTransition = { at: this.world.frame.timeMs, from };
+}
+/** Read-only reducer for the Engine owner's typed metadata. It keeps using the
+ * existing pet telemetry tape and physics owner; it neither recognizes tool
+ * names from content nor accepts transcript text, arguments, commands, or results. */
+class PetEngineTelemetry {
+    events = [];
+    active = new Map();
+    waiting;
+    sequence = 0;
+    lastTime = 0;
+    lastObservedAt;
+    turnId;
+    turnOutcome;
+    terminalAt;
+    lastFailedTool;
+    completedSpans = new Set();
+    completedTurns = new Set();
+    /** Ephemeral safe read projection. Span ids are retained only in this
+     * reducer to correlate trusted lifecycle events and never leave the owner. */
+    activity(at) {
+        const observed = this.lastObservedAt !== undefined;
+        const freshness = !observed ? 'missing'
+            : at - this.lastObservedAt <= exports.ENGINE_OWNER_STALE_MS ? 'fresh' : 'stale';
+        const fresh = freshness === 'fresh';
+        const active = fresh
+            ? [...this.active.values()]
+                .filter(span => at >= span.startedAtMs && at - span.event.endTime <= exports.ENGINE_OWNER_STALE_MS)
+                // The parent's own work leads; delegated agents are counted in
+                // `parallelAgentCount` and only lead when nothing else is active.
+                .sort((a, b) => Number(a.group === 'agent') - Number(b.group === 'agent')
+                || b.startedAtMs - a.startedAtMs || a.key.localeCompare(b.key))
+            : [];
+        const agents = active.filter(span => span.group === 'agent').length;
+        const terminalFresh = fresh && this.terminalAt !== undefined
+            && at >= this.terminalAt && at - this.terminalAt <= exports.ENGINE_OWNER_STALE_MS;
+        let authoritativePresence = 'unknown';
+        if (fresh) {
+            if (this.waiting)
+                authoritativePresence = 'needs_you';
+            else if (terminalFresh && this.turnOutcome === 'completed' && this.turnId)
+                authoritativePresence = 'done';
+            else if (terminalFresh)
+                authoritativePresence = 'idle';
+            else if (active.length > 0 || this.turnId)
+                authoritativePresence = 'working';
         }
-        const { sim, frame } = this.world;
-        const activity = this.engine.activity(frame.timeMs);
-        const observed = activity.observed && activity.freshness === 'fresh';
-        const state = { ...frame.state, observed: observed ? 1 : 0, roamX: 0, roamY: 0, flip: 1,
-            lit: observed ? 1 : frame.behaviour === 'doze' ? .18 : 1 };
-        const key = JSON.stringify([state, frame.pod]);
-        if (this.stillProjection?.key !== key) {
-            const still = new pet_sim_js_1.PetSim(sim.p.map(p => [p.hx, p.hy]), 0xC0FFEE, sim.expressionVersion);
-            const peers = frame.pod.filter(p => p.present);
-            still.step(1 / 30, state, { motion: false, sensitivity: 1,
-                podSlots: peers.length >= 3 ? peers.map(p => [[0, 2, 4, 1, 3, 5][p.slot], p.phase]) : undefined });
-            this.stillProjection = { key, style: still.frame };
+        const activityKind = fresh && authoritativePresence !== 'needs_you'
+            && authoritativePresence !== 'done' && authoritativePresence !== 'idle'
+            ? active[0]?.activityKind
+                ?? (this.lastFailedTool && at >= this.lastFailedTool.failedAtMs
+                    && at - this.lastFailedTool.failedAtMs <= exports.ENGINE_OWNER_STALE_MS
+                    ? this.lastFailedTool.activityKind : null)
+            : null;
+        const failedAge = fresh && this.lastFailedTool
+            && at >= this.lastFailedTool.failedAtMs
+            && at - this.lastFailedTool.failedAtMs <= exports.ENGINE_OWNER_STALE_MS
+            ? { activityKind: this.lastFailedTool.activityKind,
+                ...(this.lastFailedTool.actionId ? { actionId: this.lastFailedTool.actionId } : {}),
+                ageMs: at - this.lastFailedTool.failedAtMs }
+            : null;
+        const actionId = activityKind ? (active.length ? active[0].actionId : failedAge?.actionId) : undefined;
+        const doneEffectId = authoritativePresence === 'done' && terminalFresh
+            && this.turnOutcome === 'completed' && this.turnId ? this.turnId : null;
+        return {
+            schemaVersion: 1,
+            sessionId: null,
+            cursor: 0,
+            observed,
+            freshness,
+            authoritativePresence,
+            activityKind: activityKind ?? null,
+            ...(actionId ? { actionId } : {}),
+            observedAtMs: this.lastObservedAt ?? null,
+            parallelAgentCount: fresh ? agents : 0,
+            activeSpans: active.slice(0, 4).map(span => ({
+                activityKind: span.activityKind,
+                ...(span.actionId ? { actionId: span.actionId } : {}),
+                startedAtMs: span.startedAtMs,
+            })),
+            turnId: this.turnId ?? null,
+            turnOutcome: this.turnOutcome ?? null,
+            doneEffectId,
+            failedToolAge: failedAge,
+        };
+    }
+    add(name, category, at, agentId = 'parent', continuation = false) {
+        if (this.events.length >= 8192)
+            throw new Error('Pet Engine observation window is full.');
+        const event = {
+            schemaVersion: 1,
+            id: `engine:${this.sequence++}`,
+            traceId: 'foreground',
+            startTime: at,
+            endTime: at,
+            name,
+            category,
+            agentId,
+            status: 'running',
+            attributes: continuation ? { 'whalesong.continuation': true } : {},
+        };
+        this.events.push(event);
+        return event;
+    }
+    start(key, kind, group, at, agentId = 'parent', actionId) {
+        if (this.active.has(key))
+            return;
+        if (this.active.size >= 256)
+            throw new Error('Too many active Engine pet spans.');
+        const event = this.add(group === 'agent' ? 'agent' : group === 'thinking' ? 'thinking'
+            : group === 'responding' ? 'assistant_message' : 'operation', categoryFor(kind), at, agentId);
+        this.active.set(key, { key, activityKind: kind, actionId, startedAtMs: at, event, group });
+    }
+    pulse(key, at) {
+        const span = this.active.get(key);
+        if (!span)
+            return;
+        // A resumed stream does not assert tape coverage across its silent
+        // interval; the span itself (and its start) stays active.
+        if (at - span.event.endTime > pet_telemetry_js_1.PET_BIN_MS * 2) {
+            const event = this.add(span.event.name, span.event.category, at, span.event.agentId, true);
+            this.active.set(key, { ...span, event });
         }
-        const still = (0, dot_field_js_1.projectDotField)(activity, frame.timeMs, true, 0, this.expressionOptions);
-        const language = (0, activity_labels_js_1.labelLanguage)(interfaceLanguage);
-        const label = activity.authoritativePresence === 'needs_you' ? 'waiting'
-            : activity.authoritativePresence === 'done' ? 'done' : activity.activityKind;
-        return JSON.stringify({ ...frame, digest: (0, pet_sim_js_1.digest)(sim), state, style: { ...sim.frame, hollow: !observed }, activity,
-            ...this.expression(), displayLanguage: language,
-            displayPhrase: observed && label ? activity_labels_js_1.ACTIVITY_LABELS[language][label] : '',
-            still: { ...still, style: { ...this.stillProjection.style, hollow: !observed }, state } });
+        else {
+            span.event.endTime = at;
+        }
     }
-    /** Losing a producer invalidates outstanding coverage, never the creature. */
-    disconnectEngine() {
-        this.engine = new pet_engine_js_1.PetEngineTelemetry();
-        this.world.voices = [];
-        this.expressionActivity = this.engine.activity(this.world.frame.timeMs);
-        this.expressionTransition = undefined;
+    finish(key, at, status = 'success') {
+        if (!this.active.has(key))
+            return undefined;
+        this.pulse(key, at);
+        const span = this.active.get(key);
+        if (!span)
+            return undefined;
+        span.event.endTime = at;
+        span.event.status = status;
+        this.active.delete(key);
+        return span;
     }
-    interact(kind, x, y) { this.world.interact(kind, x, y); }
-    interactions() { return JSON.stringify(this.world.interactions); }
-    accept(packet) { this.world.acceptTelemetry(JSON.parse(packet)); }
-    acceptLiveTail(text) {
-        const packet = this.liveTape.readTail(text);
-        if (!packet)
+    addOnce(set, id, maximum) {
+        if (set.has(id))
             return false;
-        this.world.acceptTelemetry(packet);
+        set.add(id);
+        while (set.size > maximum)
+            set.delete(set.values().next().value);
         return true;
     }
-    resetLiveInput() { this.liveTape.reset(); return this.resumeEngine(); }
-    recording(withCheckpoint = false) { return JSON.stringify(this.world.recording(withCheckpoint)); }
-    needsSegment() { return this.world.needsSegment; }
-    prepareSegment() { this.segment = this.world.prepareSegment(); return JSON.stringify(this.segment.recording); }
-    commitSegment() { if (!this.segment)
-        throw new Error('No pet segment was prepared.'); this.segment.commit(); this.segment = undefined; }
-    checkpoint() { return JSON.stringify(this.world.checkpoint()); }
-    recordingChunk(index, completed = false) { return this.world.recordingChunk(index, completed); }
-    restoreCheckpoint(text) {
-        if (text.length > 512 * 1024)
-            throw new Error('Pet checkpoint exceeds its size limit.');
-        this.restoreRecording(JSON.stringify({ ...this.world.recording(false), checkpoint: JSON.parse(text) }));
+    /** Transactional batch copy; validation errors cannot accept half a batch. */
+    clone() {
+        const next = new PetEngineTelemetry();
+        const copy = (value) => JSON.parse(JSON.stringify(value));
+        next.events = copy(this.events);
+        const spans = new Map(next.events.map(event => [event.id, event]));
+        next.active = new Map(Array.from(this.active, ([key, span]) => [key, {
+                ...span,
+                event: spans.get(span.event.id) ?? copy(span.event),
+            }]));
+        next.waiting = this.waiting ? spans.get(this.waiting.id) ?? copy(this.waiting) : undefined;
+        next.sequence = this.sequence;
+        next.lastTime = this.lastTime;
+        next.lastObservedAt = this.lastObservedAt;
+        next.turnId = this.turnId;
+        next.turnOutcome = this.turnOutcome;
+        next.terminalAt = this.terminalAt;
+        next.lastFailedTool = this.lastFailedTool ? { ...this.lastFailedTool } : undefined;
+        next.completedSpans = new Set(this.completedSpans);
+        next.completedTurns = new Set(this.completedTurns);
+        return next;
     }
-    restoreRecording(text) {
-        if (text.length > 8 * 1024 * 1024)
-            throw new Error('Native habitat exceeds 8 MiB.');
-        const points = this.world.sim.p.map(p => [p.hx, p.hy]);
-        this.world = pet_world_js_1.PetWorld.fromRecording(points, JSON.parse(text));
-        this.liveTape.reset();
-        this.segment = undefined;
-        this.engineTick = Math.round(this.world.frame.timeMs * 30 / 1000);
-        this.engine = new pet_engine_js_1.PetEngineTelemetry();
-        this.expressionActivity = this.engine.activity(this.world.frame.timeMs);
-        this.expressionTransition = undefined;
-    }
-    /** Resume a live host at the first unrecorded bucket. Keep every accepted
-     * interval, but never present its last observed frame as current evidence. */
-    resumeEngine() {
-        this.world.resumeObservation();
-        this.engineTick = Math.round(this.world.frame.timeMs * 30 / 1000);
-        this.engine = new pet_engine_js_1.PetEngineTelemetry();
-        this.expressionActivity = this.engine.activity(this.world.frame.timeMs);
-        this.expressionTransition = undefined;
-        this.world.voices = [];
-        return this.world.frame.timeMs;
-    }
-    /** A rejected observation leaves the reducer exactly as it was, like a batch. */
-    observeEngine(metadataJSON, timeMs) {
-        const next = this.engine.clone();
-        next.observe(JSON.parse(metadataJSON), timeMs);
-        this.prepareExpression(next.activity(this.world.frame.timeMs));
-        this.engine = next;
-    }
-    observeEngineBatch(metadataJSON, timeMs) {
-        const events = JSON.parse(metadataJSON);
-        if (!Array.isArray(events) || events.length > 64)
-            throw new Error('Invalid Engine batch.');
-        const next = this.engine.clone();
-        for (const event of events)
-            next.observe(event, timeMs);
-        this.prepareExpression(next.activity(this.world.frame.timeMs));
-        this.engine = next;
-    }
-    advanceEngine(timeMs, motion, waiting) {
-        const target = Math.floor(timeMs * 30 / 1000 + 1e-8);
-        if (!Number.isFinite(timeMs) || target < this.engineTick || target - this.engineTick > 300)
-            throw new Error('Engine pet clock jump.');
-        this.engine.confirmWaiting(timeMs, waiting);
-        const voices = [];
-        while (this.engineTick < target) {
-            if ((this.engineTick + 1) % 12 === 0)
-                this.world.acceptTelemetry(this.engine.bucket(Math.floor(this.engineTick / 12)));
-            this.world.step(1 / 30, { motion, sensitivity: 1 });
-            this.prepareExpression(this.engine.activity(this.world.frame.timeMs));
-            voices.push(...this.world.voices);
-            this.engineTick++;
+    /** Mutates in place: clock, freshness and the event window change before
+     * type-specific fields are checked. Callers that continue after a throw must
+     * observe on a clone() and swap it in on success, as the dot whale does. */
+    observe(value, at) {
+        if (!Number.isFinite(at) || at < this.lastTime || at > pet_sim_js_1.PET_MAX_SECONDS * 1000)
+            throw new Error('Invalid Engine pet clock.');
+        if (!value || typeof value !== 'object' || Array.isArray(value))
+            throw new Error('Invalid Engine pet metadata.');
+        const event = value;
+        const allowed = ['event', 'index', 'channel', 'span_id', 'activity_kind', 'action_id', 'outcome', 'id', 'worker_status', 'turn_id', 'turn_outcome'];
+        const stringFields = ['action_id', 'event', 'span_id', 'id', 'worker_status', 'turn_id', 'turn_outcome'];
+        if (Object.keys(event).some(key => !allowed.includes(key)) || typeof event.event !== 'string'
+            || Object.values(event).some(v => typeof v === 'string' && v.length > 256)
+            || stringFields.some(key => event[key] !== undefined && typeof event[key] !== 'string')
+            || event.action_id !== undefined && (typeof event.action_id !== 'string' || !event.action_id
+                || /[\u0000-\u001f\u007f-\u009f]/.test(event.action_id)
+                || [...event.action_id].reduce((bytes, char) => {
+                    const cp = char.codePointAt(0);
+                    return bytes + (cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4);
+                }, 0) > 256)
+            || event.channel !== undefined && !['text', 'reasoning'].includes(event.channel)
+            || event.activity_kind !== undefined && !ACTIVITY_KINDS.includes(event.activity_kind)
+            || event.outcome !== undefined && (typeof event.outcome !== 'string'
+                || (event.event === 'approval_resolved'
+                    ? !APPROVAL_OUTCOMES.includes(event.outcome)
+                    : event.event === 'operation_activity_completed'
+                        ? !OPERATION_OUTCOMES.includes(event.outcome)
+                        : true))
+            || event.turn_outcome !== undefined && !TURN_OUTCOMES.includes(event.turn_outcome)
+            || event.index !== undefined && (!Number.isSafeInteger(event.index) || event.index < 0))
+            throw new Error('Invalid Engine pet metadata fields.');
+        this.lastTime = at;
+        this.lastObservedAt = at;
+        this.events = this.events.filter(item => item.endTime >= at - 12_800);
+        const required = (key) => {
+            const value = event[key];
+            if (typeof value !== 'string' || !value)
+                throw new Error(`Missing Engine ${key}.`);
+            return value;
+        };
+        const index = () => {
+            if (!Number.isSafeInteger(event.index))
+                throw new Error('Missing Engine index.');
+            return String(event.index);
+        };
+        const activityKind = () => {
+            if (!ACTIVITY_KINDS.includes(event.activity_kind))
+                throw new Error('Missing Engine activity kind.');
+            return event.activity_kind;
+        };
+        const startMessage = (key, kind, group) => {
+            this.start(key, kind, group, at);
+            this.waiting = undefined;
+        };
+        switch (event.event) {
+            case 'turn_started': {
+                const id = required('turn_id');
+                if (this.turnId !== id) {
+                    this.active.clear();
+                    this.waiting = undefined;
+                    this.lastFailedTool = undefined;
+                    this.turnId = id;
+                    this.turnOutcome = undefined;
+                    this.terminalAt = undefined;
+                }
+                break;
+            }
+            case 'message_started':
+                startMessage(`message:${index()}`, 'responding', 'responding');
+                break;
+            case 'thinking_started':
+                startMessage(`thinking:${index()}`, 'thinking', 'thinking');
+                break;
+            case 'response_delta': {
+                const reasoning = event.channel === 'reasoning';
+                const key = `${reasoning ? 'thinking' : 'message'}:${index()}`;
+                if (!this.active.has(key))
+                    this.start(key, reasoning ? 'thinking' : 'responding', reasoning ? 'thinking' : 'responding', at);
+                else
+                    this.pulse(key, at);
+                this.waiting = undefined;
+                break;
+            }
+            case 'message_complete':
+                this.finish(`message:${index()}`, at);
+                break;
+            case 'thinking_complete':
+                this.finish(`thinking:${index()}`, at);
+                break;
+            case 'operation_activity_started': {
+                const spanId = required('span_id');
+                const kind = activityKind();
+                if (!this.completedSpans.has(spanId))
+                    this.start(`operation:${spanId}`, kind, 'operation', at, 'parent', event.action_id);
+                this.waiting = undefined;
+                break;
+            }
+            case 'operation_activity_completed': {
+                const spanId = required('span_id');
+                const kind = activityKind();
+                if (!OPERATION_OUTCOMES.includes(event.outcome))
+                    throw new Error('Missing Engine operation outcome.');
+                const outcome = event.outcome;
+                // A failure is recorded once, as its own onset event below; marking
+                // the span `error` too would count it twice on the tape.
+                const completed = this.finish(`operation:${spanId}`, at, outcome === 'succeeded' ? 'success' : 'unknown');
+                if (completed && this.addOnce(this.completedSpans, spanId, 4096)) {
+                    if (outcome === 'failed') {
+                        this.add('operation_failed', 'error', at).status = 'error';
+                        this.lastFailedTool = { activityKind: kind, actionId: completed.actionId, failedAtMs: at };
+                    }
+                    if (outcome === 'denied' || outcome === 'cancelled')
+                        this.waiting = undefined;
+                }
+                break;
+            }
+            case 'tool_call_heartbeat':
+                for (const [key, span] of this.active)
+                    if (span.group === 'operation')
+                        this.pulse(key, at);
+                break;
+            case 'approval_resolved': {
+                required('id');
+                if (!APPROVAL_OUTCOMES.includes(event.outcome))
+                    throw new Error('Invalid Engine approval outcome.');
+                this.waiting = undefined;
+                break;
+            }
+            case 'agent_spawned': {
+                const id = required('id');
+                this.start(`agent:${id}`, 'delegating', 'agent', at, id);
+                break;
+            }
+            case 'agent_progress': {
+                const id = required('id');
+                const key = `agent:${id}`;
+                if (['completed', 'failed', 'cancelled', 'interrupted', 'budget_exhausted'].includes(event.worker_status)) {
+                    this.finish(key, at);
+                    break;
+                }
+                if (!this.active.has(key))
+                    this.start(key, 'delegating', 'agent', at, id);
+                else
+                    this.pulse(key, at);
+                break;
+            }
+            case 'agent_complete':
+                this.finish(`agent:${required('id')}`, at);
+                break;
+            case 'approval_required':
+            case 'user_input_required': {
+                required('id');
+                if (!this.waiting) {
+                    this.waiting = this.add('human_request', 'human', at);
+                    this.waiting.status = 'pending';
+                }
+                break;
+            }
+            case 'turn_complete': {
+                const outcome = event.turn_outcome;
+                if (!TURN_OUTCOMES.includes(outcome))
+                    throw new Error('Missing Engine turn outcome.');
+                const id = typeof event.turn_id === 'string' && event.turn_id.length ? event.turn_id : undefined;
+                this.active.clear();
+                this.waiting = undefined;
+                this.turnId = id;
+                // An outcome belongs to a turn. `/purge`, an edit rejection or a
+                // session switch mid-turn completes with no turn id; recording the
+                // outcome alone would break the projection invariant the Rust
+                // contract checks (`turn_outcome` requires `turn_id`).
+                this.turnOutcome = id ? outcome : undefined;
+                this.terminalAt = at;
+                if (outcome === 'completed' && id && this.addOnce(this.completedTurns, id, 256))
+                    this.add('turn_completed', 'communication', at).status = 'success';
+                break;
+            }
+            default: throw new Error('Unsupported Engine pet event.');
         }
-        this.world.voices = voices;
-        this.prepareExpression(this.engine.activity(this.world.frame.timeMs));
     }
-    terminal(width, height) {
-        if (![width, height].every(n => Number.isSafeInteger(n) && n >= 1 && n <= 512))
-            throw new Error('Invalid pet raster size.');
-        const { sim, frame } = this.world, l = (0, pet_sim_js_1.layout)(width * 2, height * 4, frame.state);
-        const cells = Array(width * height).fill(0), bits = [[1, 8], [2, 16], [4, 32], [64, 128]];
-        sim.p.forEach((p, i) => {
-            if (frame.state.observed < .92 && i % 2 === 1)
-                return;
-            const x = Math.round(l.ox + p.x * l.scale * l.flipX), y = Math.round(l.oy + p.y * l.scale);
-            if (x >= 0 && x < width * 2 && y >= 0 && y < height * 4)
-                cells[Math.floor(y / 4) * width + Math.floor(x / 2)] |= bits[y % 4][x % 2];
-        });
-        return JSON.stringify({ width, height, cells, timeMs: frame.timeMs, channel: frame.state.channel, arch: pet_sim_js_1.ARCH_OF[frame.state.channel],
-            hollow: frame.state.observed < .92, dozing: frame.behaviour === 'doze', lit: frame.state.lit });
-    }
-    pcmChannels(voicesJSON, startSample, length, rate) {
-        const p = (0, pet_audio_js_1.renderPetPCM)(JSON.parse(voicesJSON), startSample, length, rate);
-        return [p.left, p.right];
-    }
-    pcm(voicesJSON, startSample, length, rate) {
-        return JSON.stringify(this.pcmChannels(voicesJSON, startSample, length, rate).map(channel => Array.from(channel)));
-    }
-}
-exports.PetNative = PetNative;
-
-};
-factories["pet-world"]=function(exports,require){
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.PetWorld = exports.PET_MAX_SECONDS = void 0;
-const model_js_1 = require("./model.js");
-const pet_sim_js_1 = require("./pet-sim.js");
-const pet_telemetry_js_1 = require("./pet-telemetry.js");
-const pet_audio_js_1 = require("./pet-audio.js");
-const HZ = 30;
-var pet_sim_js_2 = require("./pet-sim.js");
-Object.defineProperty(exports, "PET_MAX_SECONDS", { enumerable: true, get: function () { return pet_sim_js_2.PET_MAX_SECONDS; } });
-const seedFor = (name) => (0xC0FFEE ^ (0, model_js_1.stableHash)(name)) >>> 0;
-/** Fixed-tick creature controller. Wall clocks and pointer APIs belong to drivers.
- * Reconstructing with the same tape and interactions is also the seek operation.
- * Particle, behaviour and identity randomness never consume one another's stream. */
-class PetWorld {
-    sim;
-    tapeLog;
-    tapeHashes = [];
-    get tape() { return this.tapeLog; }
-    interactionLog;
-    get interactions() { return this.interactionLog.map(e => ({ ...e })); }
-    frame;
-    voices = [];
-    score = new pet_audio_js_1.PetScore();
-    accumulator = 0;
-    tick = 0;
-    bucketIndex = -1;
-    interactionIndex = 0;
-    branchTick = -1;
-    random = (0, pet_sim_js_1.mulberry32)(seedFor('behaviour'));
-    behaviour = 'swim';
-    until = 6;
-    targetX = .35;
-    targetY = -.08;
-    x = 0;
-    y = 0;
-    flip = 1;
-    lit = 1;
-    lastActivity = 0;
-    addressedAt = -Infinity;
-    waitSince = -1;
-    food = null;
-    members = new Map();
-    lastStill = '';
-    origin;
-    segmented = false;
-    hasTelemetry = false;
-    get startTimeMs() { return this.origin?.frame.timeMs ?? 0; }
-    get endTimeMs() { return Math.max(this.frame.timeMs, (this.tapeLog.at(-1)?.simTimeMs ?? 0) + 400); }
-    get needsSegment() {
-        return !this.segmented && this.tapeLog.length < 1024 && this.interactionLog.length < 4096
-            || this.bucketIndex >= 1024 || this.interactionIndex >= 4096;
-    }
-    constructor(points, tape = [], interactions = [], expressionVersion = 2, segmented = false) {
-        if (tape.length > 216_000 || interactions.length > 100_000)
-            throw new Error('Pet recording exceeds its input limit.');
-        this.sim = new pet_sim_js_1.PetSim(points, 0xC0FFEE, expressionVersion);
-        this.segmented = segmented;
-        this.hasTelemetry = tape.length > 0;
-        this.tapeLog = structuredClone([...tape]);
-        this.interactionLog = structuredClone([...interactions]);
-        for (let i = 0; i < this.tape.length; i++) {
-            const b = this.tape[i];
-            (0, pet_telemetry_js_1.validatePetBucket)(b);
-            if (segmented ? i > 0 && b.sequence <= this.tape[i - 1].sequence : b.sequence !== i)
-                throw new Error('World requires contiguous version 1 pet buckets.');
-        }
-        for (let i = 0; i < this.interactionLog.length; i++) {
-            const e = this.interactionLog[i];
-            if (!Number.isFinite(e.timeMs) || e.timeMs < 0 || i > 0 && e.timeMs < this.interactionLog[i - 1].timeMs
-                || !['attention', 'food'].includes(e.kind) || !Number.isFinite(e.x) || !Number.isFinite(e.y)
-                || Math.abs(e.x) > 1 || Math.abs(e.y) > 1)
-                throw new Error('Invalid pet interaction.');
-        }
-        this.hashTape(0);
-        this.frame = this.makeFrame(0);
-        this.voices = this.score.voices(this.frame);
-        if (segmented)
-            this.origin = this.checkpoint();
-    }
-    checkpoint() {
-        return structuredClone({ petCheckpointVersion: this.segmented ? 2 : 1,
-            ...(this.segmented ? { historyStart: (this.origin?.tick ?? this.tick), hasTelemetry: this.hasTelemetry } : {}), history: this.historyDigest(),
-            sim: this.sim.checkpoint(), score: this.score.checkpoint(), accumulator: this.accumulator,
-            tick: this.tick, bucketIndex: this.bucketIndex, interactionIndex: this.interactionIndex, branchTick: this.branchTick,
-            random: this.random.state(), behaviour: this.behaviour, until: this.until,
-            targetX: this.targetX, targetY: this.targetY, x: this.x, y: this.y, flip: this.flip, lit: this.lit,
-            lastActivity: this.lastActivity, addressedAt: Number.isFinite(this.addressedAt) ? this.addressedAt : null,
-            waitSince: this.waitSince, food: this.food, members: [...this.members.values()], lastStill: this.lastStill,
-            frame: this.frame, voices: this.voices });
-    }
-    recording(withCheckpoint = true, completed = false) {
-        const tapeEnd = completed ? this.bucketIndex + 1 : this.tapeLog.length;
-        const inputEnd = completed ? this.interactionIndex : this.interactionLog.length;
-        const history = this.historyDigest(tapeEnd, inputEnd);
-        return { petReplayVersion: this.segmented ? 2 : 1, expressionVersion: this.sim.expressionVersion,
-            tape: this.tapeLog.slice(0, tapeEnd), interactions: this.interactionLog.slice(0, inputEnd).map(e => ({ ...e })),
-            ...(this.origin ? { start: { ...structuredClone(this.origin), hasTelemetry: this.hasTelemetry, history } } : {}),
-            ...(withCheckpoint ? { checkpoint: { ...this.checkpoint(), history } } : {}) };
-    }
-    static fromRecording(points, value) {
-        const r = value;
-        if (!r || ![1, 2].includes(r.petReplayVersion) || !Array.isArray(r.tape) || !Array.isArray(r.interactions))
-            throw new Error('Invalid pet recording.');
-        const version = r.expressionVersion === undefined ? 1 : r.expressionVersion;
-        if (![1, 2].includes(version))
-            throw new Error('Unsupported pet expression version.');
-        if (r.checkpoint !== undefined && !r.checkpoint || r.start !== undefined && !r.start)
-            throw new Error('Invalid pet checkpoint.');
-        for (const c of [r.start, r.checkpoint])
-            if (c && (c.sim?.expressionVersion ?? 1) !== version)
-                throw new Error('Pet expression version does not match its checkpoint.');
-        if (r.petReplayVersion === 1 && (r.start || r.checkpoint && r.checkpoint.petCheckpointVersion !== 1))
-            throw new Error('Invalid legacy pet recording.');
-        if (r.petReplayVersion === 2 && (!r.start || r.start.petCheckpointVersion !== 2 || r.start.historyStart !== r.start.tick))
-            throw new Error('The recording segment is missing its starting checkpoint.');
-        const first = r.start && PetWorld.restore(points, r.tape, r.interactions, r.start);
-        const world = r.checkpoint ? PetWorld.restore(points, r.tape, r.interactions, r.checkpoint) : first ?? new PetWorld(points, r.tape, r.interactions, version);
-        if (first) {
-            if (!world.segmented || world.tick < first.tick || r.checkpoint && r.checkpoint.historyStart !== first.tick)
-                throw new Error('Pet segment checkpoints do not agree.');
-            world.origin = first.checkpoint();
-        }
-        return world;
-    }
-    /** Retire only consumed input. The exact origin makes each archived segment
-     * independently replayable; no particle, random stream or score is reset. */
-    prepareSegment() {
-        const dropTape = Math.max(0, this.bucketIndex), dropInputs = this.interactionIndex, previous = this.origin;
-        const tape = this.tapeLog.slice(dropTape), interactions = this.interactionLog.slice(dropInputs);
-        const points = this.sim.p.map(p => [p.hx, p.hy]);
-        const c = this.checkpoint();
-        c.petCheckpointVersion = 2;
-        c.historyStart = this.tick;
-        c.hasTelemetry = this.hasTelemetry;
-        c.bucketIndex -= dropTape;
-        c.interactionIndex = 0;
-        c.history = new PetWorld(points, tape, interactions, this.sim.expressionVersion, true).historyDigest();
-        const next = PetWorld.restore(points, tape, interactions, c);
-        next.origin = next.checkpoint();
-        let committed = false;
-        return { recording: next.recording(), archive: this.recording(true, true), commit: () => {
-                if (committed || this.origin !== previous || this.tick < c.tick)
-                    throw new Error('The pet recording segment has changed.');
-                this.tapeLog.splice(0, dropTape);
-                this.interactionLog.splice(0, dropInputs);
-                this.bucketIndex -= dropTape;
-                this.interactionIndex -= dropInputs;
-                this.tapeHashes = [];
-                this.hashTape(0);
-                this.segmented = true;
-                this.origin = next.origin;
-                committed = true;
-            } };
-    }
-    /** Lossless version 1 export, including the current pose and score. Drivers
-     * consume all chunks synchronously on the world's owner before another tick.
-     * Only a small slice is serialized inside an embedded runtime at a time. */
-    recordingChunk(index, completed = false) {
-        if (!Number.isSafeInteger(index) || index < 0)
-            throw new Error('Invalid pet export cursor.');
-        const size = 16, tapeEnd = completed ? this.bucketIndex + 1 : this.tapeLog.length;
-        const inputEnd = completed ? this.interactionIndex : this.interactionLog.length;
-        const tapes = Math.ceil(tapeEnd / size), inputs = Math.ceil(inputEnd / size);
-        if (index === 0)
-            return `{"petReplayVersion":${this.segmented ? 2 : 1},"expressionVersion":${this.sim.expressionVersion},"tape":[`;
-        if (index <= tapes)
-            return (index === 1 ? '' : ',') + JSON.stringify(this.tapeLog.slice((index - 1) * size, Math.min(tapeEnd, index * size))).slice(1, -1);
-        if (index === tapes + 1)
-            return '],"interactions":[';
-        const part = index - tapes - 2;
-        if (part < inputs)
-            return (part === 0 ? '' : ',') + JSON.stringify(this.interactionLog.slice(part * size, Math.min(inputEnd, (part + 1) * size))).slice(1, -1);
-        if (part === inputs) {
-            const history = this.historyDigest(tapeEnd, inputEnd);
-            return `]${this.origin ? ',"start":' + JSON.stringify({ ...this.origin, hasTelemetry: this.hasTelemetry, history }) : ''},"checkpoint":${JSON.stringify({ ...this.checkpoint(), history })}}`;
-        }
-        return null;
-    }
-    /** Prefix states preserve the original FNV checksum byte for byte. Live
-     * appends and replacements hash only the changed suffix, so checkpointing
-     * does not rescan hours of accepted telemetry on the world worker. */
-    hashTape(from) {
-        for (let i = from; i < this.tapeLog.length; i++)
-            this.tapeHashes[i] = (0, model_js_1.stableHash)((i ? ',' : '') + JSON.stringify(this.tapeLog[i]), this.tapeHashes[i - 1] ?? (0, model_js_1.stableHash)('[['));
-    }
-    historyDigest(tapeEnd = this.tapeLog.length, inputEnd = this.interactionLog.length) {
-        let hash = (0, model_js_1.stableHash)('],[', this.tapeHashes[tapeEnd - 1] ?? (0, model_js_1.stableHash)('[['));
-        for (let i = 0; i < inputEnd; i++)
-            hash = (0, model_js_1.stableHash)((i ? ',' : '') + JSON.stringify(this.interactionLog[i]), hash);
-        return (0, model_js_1.stableHash)(']]', hash);
-    }
-    /** Hydrate a new world without stepping history. Validation finishes before
-     * the caller receives it, so a corrupt checkpoint never mutates a live pet. */
-    static restore(points, tape, interactions, value) {
-        const c = value;
-        const range = (n, low, high) => Number.isFinite(n) && n >= low && n <= high;
-        const integer = (n, low, high) => Number.isSafeInteger(n) && range(n, low, high);
-        if (!c || ![1, 2].includes(c.petCheckpointVersion) || JSON.stringify(c).length > 512 * 1024
-            || c.petCheckpointVersion === 2 && (!integer(c.historyStart, 0, c.tick) || typeof c.hasTelemetry !== 'boolean')
-            || !integer(c.tick, 0, pet_sim_js_1.PET_MAX_SECONDS * HZ) || !range(c.accumulator, -1e-8, 1 / HZ + 1e-8)
-            || !integer(c.bucketIndex, -1, tape.length - 1) || !integer(c.interactionIndex, 0, interactions.length)
-            || !integer(c.branchTick, -1, c.tick) || !integer(c.random, 0, 0xffffffff)
-            || !['swim', 'dive', 'roll', 'breathe', 'drift', 'doze', 'wake'].includes(c.behaviour)
-            || !range(c.until, 0, pet_sim_js_1.PET_MAX_SECONDS + 10) || ![c.targetX, c.targetY, c.x, c.y, c.flip].every(n => range(n, -1, 1))
-            || !range(c.lit, 0, 1) || !range(c.lastActivity, 0, c.tick / HZ)
-            || c.addressedAt !== null && !range(c.addressedAt, 0, c.tick / HZ)
-            || !range(c.waitSince, -1, c.tick / HZ) || typeof c.lastStill !== 'string' || c.lastStill.length > 2048
-            || !Array.isArray(c.members) || c.members.length > 6
-            || c.members.some(m => !m || typeof m.id !== 'string' || !m.id || m.id.length > 4096
-                || !integer(m.slot, 0, 5) || !range(m.phase, 0, Math.PI * 2) || typeof m.present !== 'boolean')
-            || new Set(c.members.map(m => m.id)).size !== c.members.length || new Set(c.members.map(m => m.slot)).size !== c.members.length
-            || c.food !== null && (!c.food || !range(c.food.time, 0, c.tick / HZ) || ![c.food.x, c.food.y].every(n => range(n, -1, 1)))
-            || !c.frame || c.frame.timeMs !== c.tick * 1000 / HZ || c.frame.behaviour !== c.behaviour
-            || !['none', 'orient', 'approach', 'call'].includes(c.frame.needs)
-            || !range(c.frame.surface, -.9, -.8) || !range(c.frame.caustic, 0, 1)
-            || c.frame.food !== null && (!c.frame.food || !range(c.frame.food.x, -1, 1) || !range(c.frame.food.y, -1, 1.21) || !range(c.frame.food.life, 0, 1))
-            || JSON.stringify(c.frame.pod) !== JSON.stringify(c.members)
-            || !Array.isArray(c.voices) || c.voices.length > 1024
-            || c.voices.some(v => !v || typeof v.id !== 'string' || v.id.length > 256))
-            throw new Error('Invalid pet world checkpoint.');
-        (0, pet_sim_js_1.validatePetState)(c.frame.state);
-        (0, pet_audio_js_1.renderPetPCM)(c.voices, 0, 0);
-        const world = new PetWorld(points, tape, interactions, c.sim?.expressionVersion ?? 1, c.petCheckpointVersion === 2);
-        if (c.petCheckpointVersion === 2) {
-            world.hasTelemetry = c.hasTelemetry;
-            world.origin = structuredClone(c);
-        }
-        if (c.history !== world.historyDigest()
-            || c.bucketIndex >= 0 && world.tape[c.bucketIndex].simTimeMs > c.frame.timeMs + 1e-7
-            // acceptTelemetry may fill past gaps after the most recent fixed tick.
-            // Preserve that pending cursor exactly; it may lag only over empty gaps.
-            || world.tape.some((b, i) => i > c.bucketIndex && b.simTimeMs <= c.frame.timeMs + 1e-7
-                && (b.observed !== 0 || b.channel !== 'other' || b.errors || b.waiting || b.agentIds.length
-                    || b.onsets.some(Boolean) || b.activeMs.some(Boolean)))
-            || world.interactionLog.slice(0, c.interactionIndex).some(e => e.timeMs > c.frame.timeMs + 1e-7)
-            || world.interactionLog[c.interactionIndex]?.timeMs <= c.frame.timeMs + 1e-7)
-            throw new Error('Pet checkpoint does not match its recording.');
-        const candidate = world.tape[c.bucketIndex];
-        const telemetry = candidate && c.frame.timeMs < candidate.simTimeMs + candidate.durationMs ? candidate : undefined;
-        if (JSON.stringify(c.frame.telemetry) !== JSON.stringify(telemetry))
-            throw new Error('Pet checkpoint telemetry does not match its clock.');
-        world.sim.restore(c.sim);
-        world.score.restore(c.score);
-        world.random.restore(c.random);
-        world.accumulator = c.accumulator;
-        world.tick = c.tick;
-        world.bucketIndex = c.bucketIndex;
-        world.interactionIndex = c.interactionIndex;
-        world.branchTick = c.branchTick;
-        world.behaviour = c.behaviour;
-        world.until = c.until;
-        world.targetX = c.targetX;
-        world.targetY = c.targetY;
-        world.x = c.x;
-        world.y = c.y;
-        world.flip = c.flip;
-        world.lit = c.lit;
-        world.lastActivity = c.lastActivity;
-        world.addressedAt = c.addressedAt ?? -Infinity;
-        world.waitSince = c.waitSince;
-        world.food = structuredClone(c.food);
-        world.members = new Map(c.members.map(m => [m.id, { ...m }]));
-        world.lastStill = c.lastStill;
-        // JSON omits undefined properties; keep the same frame shape as makeFrame.
-        world.frame = { ...structuredClone(c.frame), telemetry: telemetry ? structuredClone(telemetry) : undefined };
-        world.voices = structuredClone(c.voices);
-        return world;
-    }
-    /** Resume observation beyond all already accepted live packets, without
-     * replaying their sound or exposing a stale request as current work. */
-    resumeObservation() {
-        const last = this.tapeLog.at(-1), end = last ? (last.sequence + 1) * 12 : 0;
-        if (!end || end - this.tick > 24)
-            throw new Error('Only a live recording can resume observation.');
-        while (this.tick < end)
-            this.step(1 / 30, { motion: false, sensitivity: 1 });
-        this.voices = [];
-    }
-    /** Branch at the current playhead; input is journalled for the next fixed tick.
-     * A live touch never needs to re-simulate the creature's entire lifetime. */
-    interact(kind, x, y) {
-        if (!['attention', 'food'].includes(kind) || !Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x) > 1 || Math.abs(y) > 1)
-            throw new Error('Invalid pet interaction.');
-        if (this.branchTick !== this.tick)
-            this.interactionLog.splice(this.interactionIndex);
-        this.branchTick = this.tick;
-        this.interactionLog.push({ timeMs: (this.tick + 1) * 1000 / HZ, kind, x, y });
-    }
-    /** Accept a live source packet at the next 400ms boundary. The accepted tape,
-     * including any missing intervals, is the exact replay authority for this host. */
-    acceptTelemetry(input) {
-        (0, pet_telemetry_js_1.validatePetBucket)(input);
-        const sequence = Math.floor(this.tick / 12) + 1;
-        if (this.tapeLog.length >= 216_000)
-            throw new Error('Archive this pet recording before accepting more telemetry.');
-        this.hasTelemetry = true;
-        if (this.segmented) {
-            const at = this.tapeLog.findIndex(b => b.sequence >= sequence);
-            const index = at < 0 ? this.tapeLog.length : at;
-            this.tapeLog.splice(index, at >= 0 && this.tapeLog[at].sequence === sequence ? 1 : 0, { ...structuredClone(input), sequence, simTimeMs: sequence * 400 });
-            this.hashTape(index);
+    /** The typed shell may extend a request already witnessed in Engine events,
+     * but a mid-turn attach cannot invent a NeedsYou state. */
+    confirmWaiting(at, waiting) {
+        if (!waiting) {
+            this.waiting = undefined;
             return;
         }
-        if (sequence >= 216_000)
-            throw new Error('Archive the legacy recording before accepting more telemetry.');
-        const changedFrom = Math.min(sequence, this.tapeLog.length);
-        while (this.tapeLog.length <= sequence) {
-            const at = this.tapeLog.length;
-            this.tapeLog.push({ version: 1, sequence: at, simTimeMs: at * 400, durationMs: 400,
-                activity: .12, coherence: .25, attention: 0, channel: 'other', observed: 0, roamX: 0, roamY: 0, flip: 1, lit: 1,
-                onsets: Array(13).fill(0), activeMs: Array(13).fill(0), errors: 0, agentIds: [], waiting: false });
+        if (this.waiting && at >= this.waiting.endTime) {
+            this.waiting.endTime = at;
+            this.lastObservedAt = at;
+            this.lastTime = Math.max(this.lastTime, at);
         }
-        this.tapeLog[sequence] = { ...structuredClone(input), sequence, simTimeMs: sequence * 400 };
-        this.hashTape(changedFrom);
     }
-    /** dt is bounded so suspending a surface cannot cause an unbounded catch-up. */
-    step(dt, opts = { motion: true, sensitivity: 1 }) {
-        if (!Number.isFinite(dt) || dt < 0 || dt > 10)
-            throw new Error('World dt must be in [0, 10] seconds.');
-        this.accumulator += dt;
-        this.voices = [];
-        while (this.accumulator + 1e-10 >= 1 / HZ) {
-            this.accumulator -= 1 / HZ;
-            const time = ++this.tick / HZ;
-            this.frame = this.makeFrame(time);
-            this.voices.push(...this.score.voices(this.frame));
-            if (!opts.motion) {
-                this.frame.state = { ...this.frame.state, roamX: 0, roamY: 0, flip: 1, lit: this.behaviour === 'doze' ? .18 : 1 };
-                this.frame.surface = -.86;
-                this.frame.caustic = .5;
-                if (this.frame.food)
-                    this.frame.food.y = this.food.y;
-            }
-            const signature = JSON.stringify(this.frame.state);
-            const peers = this.frame.pod.filter(p => p.present);
-            const podSlots = peers.length >= 3 ? peers.map(p => [[0, 2, 4, 1, 3, 5][p.slot], p.phase]) : undefined;
-            if (opts.motion || signature !== this.lastStill || podSlots)
-                this.sim.step(1 / HZ, this.frame.state, { ...opts, podSlots });
-            this.lastStill = signature;
-        }
-        return this.frame;
-    }
-    makeFrame(time) {
-        const timeMs = this.tick * 1000 / HZ;
-        while (this.bucketIndex + 1 < this.tape.length && this.tape[this.bucketIndex + 1].simTimeMs <= timeMs + 1e-7)
-            this.bucketIndex++;
-        const candidate = this.tape[this.bucketIndex];
-        const telemetry = candidate && timeMs < candidate.simTimeMs + candidate.durationMs ? candidate : undefined;
-        while (this.interactionIndex < this.interactionLog.length && this.interactionLog[this.interactionIndex].timeMs <= timeMs + 1e-7) {
-            const e = this.interactionLog[this.interactionIndex++];
-            this.addressedAt = time;
-            this.lastActivity = time;
-            this.targetX = e.x * .65;
-            this.targetY = e.y * .65;
-            if (e.kind === 'food')
-                this.food = { time, x: e.x, y: e.y };
-        }
-        const busy = telemetry && telemetry.observed >= .92 && telemetry.activity > .2;
-        if (busy)
-            this.lastActivity = time;
-        if (telemetry?.waiting) {
-            if (this.waitSince < 0)
-                this.waitSince = time;
-        }
-        else
-            this.waitSince = -1;
-        const waitingFor = this.waitSince < 0 ? 0 : time - this.waitSince;
-        const needs = this.waitSince < 0 ? 'none' : waitingFor < 8 ? 'orient' : waitingFor < 25 ? 'approach' : 'call';
-        const addressed = time - this.addressedAt < 2;
-        if (this.behaviour === 'doze' && (busy || addressed)) {
-            this.behaviour = 'wake';
-            this.until = time + 2;
-        }
-        else if (!busy && !addressed && time - this.lastActivity >= 75)
-            this.behaviour = 'doze';
-        else if (time >= this.until) {
-            const choices = ['swim', 'swim', 'dive', 'roll', 'breathe', 'drift'];
-            this.behaviour = choices[Math.floor(this.random() * choices.length)];
-            this.until = time + 3 + this.random() * 7;
-            this.targetX = (this.random() * 2 - 1) * .75;
-            this.targetY = this.behaviour === 'dive' ? .6 : this.behaviour === 'breathe' ? -.65 : (this.random() * 2 - 1) * .4;
-        }
-        const sleeping = this.behaviour === 'doze';
-        if (sleeping) {
-            this.targetY = .65;
-            this.targetX = .15;
-        }
-        if (this.sim.expressionVersion === 1 && (needs === 'approach' || needs === 'call')) {
-            this.targetX = 0;
-            this.targetY = .3;
-        }
-        const move = sleeping ? .004 : this.behaviour === 'drift' ? .006 : .018;
-        const dx = this.targetX - this.x;
-        this.x += dx * move;
-        this.y += (this.targetY - this.y) * move;
-        this.flip += ((Math.abs(dx) < .015 ? this.flip < 0 ? -1 : 1 : dx < 0 ? -1 : 1) - this.flip) * .035;
-        this.lit += ((sleeping ? .18 : 1) - this.lit) * .03;
-        const wild = !this.hasTelemetry;
-        const state = {
-            activity: telemetry?.activity ?? (wild ? sleeping ? .05 : .18 : .12),
-            coherence: telemetry?.coherence ?? (wild ? .94 : .25),
-            attention: Math.max(telemetry?.attention ?? 0, addressed ? .85 : 0, this.sim.expressionVersion === 1 && needs === 'call' ? 1 : 0),
-            // A touch changes orientation, never hides an instrumentation gap.
-            channel: addressed ? 'human' : telemetry?.channel ?? 'other',
-            observed: telemetry?.observed ?? (wild ? 1 : 0),
-            roamX: this.x, roamY: this.y, flip: this.flip, lit: this.lit,
-        };
-        const activeIds = new Set(telemetry?.agentIds ?? []);
-        for (const member of this.members.values())
-            member.present = activeIds.has(member.id);
-        for (const id of activeIds) {
-            if (!this.members.has(id)) {
-                const vacant = [...this.members.values()].find(m => !m.present);
-                const slot = this.members.size < 6 ? this.members.size : vacant?.slot;
-                if (slot !== undefined) {
-                    if (this.members.size >= 6 && vacant)
-                        this.members.delete(vacant.id);
-                    this.members.set(id, { id, slot, phase: (0, pet_sim_js_1.mulberry32)(seedFor(`pod:${id}`))() * Math.PI * 2, present: true });
-                }
-            }
-            const member = this.members.get(id);
-            if (member)
-                member.present = true;
-        }
-        return { timeMs, behaviour: this.behaviour, state, telemetry, needs,
-            pod: [...this.members.values()].map(m => ({ ...m })),
-            surface: -.86 + .012 * Math.sin(time * .8), caustic: .5 + .5 * Math.sin(time * .31),
-            food: this.food && time - this.food.time < 5
-                ? { x: this.food.x, y: this.food.y + (time - this.food.time) * .04, life: (0, model_js_1.clamp)(1 - (time - this.food.time) / 5, 0, 1) } : null };
+    bucket(sequence) {
+        const end = (sequence + 1) * pet_telemetry_js_1.PET_BIN_MS;
+        const input = this.events.filter(event => event.startTime < end && event.endTime >= end - 12_400)
+            .map(event => ({ ...event, endTime: Math.min(event.endTime, end) }));
+        return (0, pet_telemetry_js_1.compilePetTelemetry)(input, end, sequence)[0];
     }
 }
-exports.PetWorld = PetWorld;
-
-};
-factories["model"]=function(exports,require){
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.durationOf = exports.EMPTY_FILTERS = exports.CATEGORIES = void 0;
-exports.eventMatches = eventMatches;
-exports.errorOnsetOf = errorOnsetOf;
-exports.stableHash = stableHash;
-exports.quantile = quantile;
-exports.clamp = clamp;
-exports.formatTime = formatTime;
-/** Versioned, vendor-neutral trace and signal contracts. All internal time is ms. */
-exports.CATEGORIES = [
-    'reasoning', 'tool', 'memory', 'code', 'filesystem', 'network', 'browser',
-    'communication', 'agent', 'orchestration', 'error', 'human', 'other',
-];
-exports.EMPTY_FILTERS = { query: '', category: '', agent: '', model: '', tool: '', status: '' };
-function eventMatches(e, f) {
-    if (f.category && e.category !== f.category)
-        return false;
-    if (f.agent && e.agentId !== f.agent)
-        return false;
-    if (f.model && e.model !== f.model)
-        return false;
-    if (f.tool && e.tool !== f.tool)
-        return false;
-    if (f.status && e.status !== f.status)
-        return false;
-    if (f.query) {
-        const q = f.query.toLowerCase();
-        // Search is deliberately content-aware but runs only over locally retained fields.
-        if (![e.name, e.id, e.agentId, e.model, e.tool, e.provider, e.category,
-            JSON.stringify(e.attributes), JSON.stringify(e.payload), JSON.stringify(e.raw)].filter(Boolean).join(' ').toLowerCase().includes(q))
-            return false;
-    }
-    return true;
-}
-const durationOf = (e) => Math.max(0, e.endTime - e.startTime);
-exports.durationOf = durationOf;
-/** An explicit failure receipt can arrive after a span began or ended. Keep
- * its timestamp distinct from the operation onset in every signal view. */
-function errorOnsetOf(e) {
-    const time = e.attributes['whalesong.error_onset_ms'];
-    if (time === undefined)
-        return e.startTime;
-    if (typeof time !== 'number' || !Number.isFinite(time) || time < e.startTime)
-        throw new Error('Invalid failure observation time.');
-    return time;
-}
-function stableHash(text, seed = 2166136261) {
-    let h = seed;
-    for (let i = 0; i < text.length; i++) {
-        h ^= text.charCodeAt(i);
-        h = Math.imul(h, 16777619);
-    }
-    return h >>> 0;
-}
-function quantile(a, q) {
-    if (!a.length)
-        return 0;
-    const s = [...a].sort((a, b) => a - b), x = Math.min(1, Math.max(0, q)) * (s.length - 1);
-    return s[Math.floor(x)] + (s[Math.ceil(x)] - s[Math.floor(x)]) * (x % 1);
-}
-function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
-function formatTime(ms, precise = false) {
-    const m = Math.floor(Math.max(0, ms) / 60000), s = Math.floor(Math.max(0, ms) / 1000) % 60;
-    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}${precise ? '.' + String(Math.floor(ms % 1000)).padStart(3, '0') : ''}`;
-}
+exports.PetEngineTelemetry = PetEngineTelemetry;
 
 };
 factories["pet-sim"]=function(exports,require){
@@ -1201,9 +910,17 @@ class PetLiveTape {
             throw error;
         }
         const previous = this.sequence;
-        this.sequence = packet.sequence;
-        if (previous === undefined || packet.sequence <= previous)
+        if (previous === undefined) {
+            this.sequence = packet.sequence;
             return;
+        }
+        if (packet.sequence === 0 && previous > 0) {
+            this.sequence = 0;
+            return;
+        }
+        if (packet.sequence <= previous)
+            return;
+        this.sequence = packet.sequence;
         return packet;
     }
 }
@@ -1335,6 +1052,75 @@ function encodePetTSV(buckets) {
     return 'dt\tactivity\tcoherence\tattention\tchannel\tobserved\troamX\troamY\tflip\tlit\n'
         + buckets.map(b => [b.durationMs / 1000, b.activity, b.coherence, b.attention, b.channel,
             b.observed, b.roamX, b.roamY, b.flip, b.lit].join('\t')).join('\n') + '\n';
+}
+
+};
+factories["model"]=function(exports,require){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.durationOf = exports.EMPTY_FILTERS = exports.CATEGORIES = void 0;
+exports.eventMatches = eventMatches;
+exports.errorOnsetOf = errorOnsetOf;
+exports.stableHash = stableHash;
+exports.quantile = quantile;
+exports.clamp = clamp;
+exports.formatTime = formatTime;
+/** Versioned, vendor-neutral trace and signal contracts. All internal time is ms. */
+exports.CATEGORIES = [
+    'reasoning', 'tool', 'memory', 'code', 'filesystem', 'network', 'browser',
+    'communication', 'agent', 'orchestration', 'error', 'human', 'other',
+];
+exports.EMPTY_FILTERS = { query: '', category: '', agent: '', model: '', tool: '', status: '' };
+function eventMatches(e, f) {
+    if (f.category && e.category !== f.category)
+        return false;
+    if (f.agent && e.agentId !== f.agent)
+        return false;
+    if (f.model && e.model !== f.model)
+        return false;
+    if (f.tool && e.tool !== f.tool)
+        return false;
+    if (f.status && e.status !== f.status)
+        return false;
+    if (f.query) {
+        const q = f.query.toLowerCase();
+        // Search is deliberately content-aware but runs only over locally retained fields.
+        if (![e.name, e.id, e.agentId, e.model, e.tool, e.provider, e.category,
+            JSON.stringify(e.attributes), JSON.stringify(e.payload), JSON.stringify(e.raw)].filter(Boolean).join(' ').toLowerCase().includes(q))
+            return false;
+    }
+    return true;
+}
+const durationOf = (e) => Math.max(0, e.endTime - e.startTime);
+exports.durationOf = durationOf;
+/** An explicit failure receipt can arrive after a span began or ended. Keep
+ * its timestamp distinct from the operation onset in every signal view. */
+function errorOnsetOf(e) {
+    const time = e.attributes['whalesong.error_onset_ms'];
+    if (time === undefined)
+        return e.startTime;
+    if (typeof time !== 'number' || !Number.isFinite(time) || time < e.startTime)
+        throw new Error('Invalid failure observation time.');
+    return time;
+}
+function stableHash(text, seed = 2166136261) {
+    let h = seed;
+    for (let i = 0; i < text.length; i++) {
+        h ^= text.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+}
+function quantile(a, q) {
+    if (!a.length)
+        return 0;
+    const s = [...a].sort((a, b) => a - b), x = Math.min(1, Math.max(0, q)) * (s.length - 1);
+    return s[Math.floor(x)] + (s[Math.ceil(x)] - s[Math.floor(x)]) * (x % 1);
+}
+function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
+function formatTime(ms, precise = false) {
+    const m = Math.floor(Math.max(0, ms) / 60000), s = Math.floor(Math.max(0, ms) / 1000) % 60;
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}${precise ? '.' + String(Math.floor(ms % 1000)).padStart(3, '0') : ''}`;
 }
 
 };
@@ -1595,513 +1381,6 @@ function unionDuration(events, start = 0, end = Infinity) {
     }
     return total + right - left;
 }
-
-};
-factories["pet-audio"]=function(exports,require){
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.PetScore = void 0;
-exports.renderPetPCM = renderPetPCM;
-const pet_sim_js_1 = require("./pet-sim.js");
-const model_js_1 = require("./model.js");
-/** Core emits score events; WebAudio / AVAudioEngine only present their PCM.
- * Calling at any display cadence produces the same score when all world ticks
- * are supplied. Calling twice for a world tick cannot retrigger a voice. */
-class PetScore {
-    lastWindow = -1;
-    lastSequence = -1;
-    lastAddress = false;
-    checkpoint() { return [this.lastWindow, this.lastSequence, this.lastAddress]; }
-    restore(value) {
-        if (!Array.isArray(value) || value.length !== 3
-            || !value.slice(0, 2).every(n => Number.isSafeInteger(n) && n >= -1 && n <= pet_sim_js_1.PET_MAX_SECONDS * 2.5) || typeof value[2] !== 'boolean')
-            throw new Error('Invalid pet score checkpoint.');
-        [this.lastWindow, this.lastSequence, this.lastAddress] = value;
-    }
-    voices(frame) {
-        const time = frame.timeMs / 1000, window = Math.floor((frame.timeMs + 1e-7) / 400);
-        const out = [];
-        const add = (id, frequency, duration, gain, pan = 0, delay = 0, kind = 'tone') => out.push({ id, start: time + delay, duration, frequency, gain, pan, kind });
-        const t = frame.telemetry, fresh = t !== undefined && t.sequence !== this.lastSequence;
-        if (fresh) {
-            this.lastSequence = t.sequence;
-            for (let c = 0; c < pet_sim_js_1.CHANNELS.length; c++) {
-                const channel = pet_sim_js_1.CHANNELS[c], n = t.onsets[c];
-                if (!n || channel.sustained || ['human', 'error'].includes(channel.key))
-                    continue;
-                add(`onset:${t.sequence}:${c}`, channel.freq, .24, .035 * Math.min(2, Math.sqrt(n)), (c / 12 - .5) * .7);
-            }
-            if (t.errors)
-                add(`tear:${t.sequence}`, pet_sim_js_1.CHANNELS.find(c => c.key === 'error').freq, .22, .05, 0, 0, 'noise');
-        }
-        const address = frame.state.channel === 'human' && frame.state.attention > .5;
-        if (address && (!this.lastAddress || fresh && t.onsets[11] > 0)) {
-            const frequency = pet_sim_js_1.CHANNELS[11].freq;
-            for (let i = 0; i < 3; i++)
-                add(`address:${frame.timeMs}:${i}`, frequency * [1, 1.25, 1.5][i], .23, .032, 0, i * .14);
-        }
-        this.lastAddress = address;
-        if (window !== this.lastWindow) {
-            this.lastWindow = window;
-            if (frame.state.observed >= .92) {
-                const channel = pet_sim_js_1.CHANNELS.find(c => c.key === frame.state.channel);
-                if (channel.sustained && frame.behaviour !== 'doze') {
-                    const peers = frame.state.channel === 'agent' ? Math.max(1, frame.pod.filter(p => p.present).length) : 1;
-                    for (let i = 0; i < peers; i++)
-                        add(`sustain:${window}:${i}`, channel.freq * (1 + (i - (peers - 1) / 2) * .004), .44, (.02 + frame.state.activity * .02) / Math.sqrt(peers), peers === 1 ? 0 : i / (peers - 1) - .5);
-                }
-                if (frame.behaviour === 'doze' && window % 5 === 0) {
-                    add(`heart:${window}:0`, 49, .3, .035);
-                    add(`heart:${window}:1`, 49, .24, .023, 0, .33);
-                }
-                if (frame.needs === 'call' && window % 10 === 0)
-                    add(`call:${window}`, pet_sim_js_1.CHANNELS[11].freq * 1.5, .38, .03);
-            }
-        }
-        return out;
-    }
-}
-exports.PetScore = PetScore;
-/** Sample-addressed noise: no global RNG, identical samples when chunked/seeking. */
-function noise(seed, sample) {
-    let x = (seed + Math.imul(sample, 0x6D2B79F5)) >>> 0;
-    x = Math.imul(x ^ x >>> 15, x | 1);
-    x ^= x + Math.imul(x ^ x >>> 7, x | 61);
-    return ((x ^ x >>> 14) >>> 0) / 2147483648 - 1;
-}
-function renderPetPCM(voices, startSample, length, sampleRate = 48_000) {
-    if (!Number.isInteger(sampleRate) || sampleRate < 8000 || sampleRate > 96000
-        || !Number.isSafeInteger(startSample) || startSample < 0 || !Number.isInteger(length) || length < 0 || length > sampleRate * 120)
-        throw new Error('Invalid pet PCM range.');
-    const left = new Float32Array(length), right = new Float32Array(length);
-    for (const v of voices) {
-        if (![v.start, v.duration, v.frequency, v.gain, v.pan].every(Number.isFinite)
-            || v.start < 0 || v.duration <= 0 || v.duration > 10 || v.frequency <= 0 || v.frequency > sampleRate / 2
-            || v.gain < 0 || v.gain > 1 || Math.abs(v.pan) > 1 || !['tone', 'noise'].includes(v.kind))
-            throw new Error('Invalid pet voice.');
-        const first = Math.max(startSample, Math.ceil(v.start * sampleRate));
-        const last = Math.min(startSample + length, Math.ceil((v.start + v.duration) * sampleRate));
-        const pan = (v.pan + 1) * Math.PI / 4, seed = (0xC0FFEE ^ (0, model_js_1.stableHash)(v.id)) >>> 0;
-        for (let absolute = first; absolute < last; absolute++) {
-            const age = absolute / sampleRate - v.start;
-            const envelope = Math.min(1, age / .015, (v.duration - age) / .045);
-            const sample = v.kind === 'noise' ? noise(seed, absolute) * Math.exp(-age * 14)
-                : Math.sin(2 * Math.PI * v.frequency * age) * .88 + Math.sin(4 * Math.PI * v.frequency * age) * .12;
-            const value = sample * Math.max(0, envelope) * v.gain, at = absolute - startSample;
-            left[at] += value * Math.cos(pan);
-            right[at] += value * Math.sin(pan);
-        }
-    }
-    // Limiting is a presentation operation and cannot perturb voice scheduling.
-    for (let i = 0; i < length; i++) {
-        left[i] = (0, model_js_1.clamp)(left[i], -1, 1);
-        right[i] = (0, model_js_1.clamp)(right[i], -1, 1);
-    }
-    return { left, right };
-}
-
-};
-factories["pet-engine"]=function(exports,require){
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.PetEngineTelemetry = exports.ENGINE_OWNER_STALE_MS = void 0;
-const pet_sim_js_1 = require("./pet-sim.js");
-const pet_telemetry_js_1 = require("./pet-telemetry.js");
-// Engine emits a liveness pulse every 10 seconds for a running operation.
-// Keep a small scheduling margin so one delayed pulse does not erase a valid
-// long operation from the owner projection; after that, it becomes generic.
-// The physics tape keeps its own, shorter coverage rule (see `pulse`).
-exports.ENGINE_OWNER_STALE_MS = 12_000;
-const ACTIVITY_KINDS = [
-    'reading', 'editing', 'searching', 'testing', 'executing', 'browsing', 'computer',
-    'memory', 'tool', 'thinking', 'responding', 'delegating',
-];
-const TURN_OUTCOMES = ['completed', 'interrupted', 'failed'];
-const OPERATION_OUTCOMES = ['succeeded', 'failed', 'cancelled', 'denied'];
-const APPROVAL_OUTCOMES = ['approved', 'denied', 'cancelled'];
-function categoryFor(kind) {
-    switch (kind) {
-        case 'reading':
-        case 'editing':
-        case 'searching': return 'filesystem';
-        case 'testing':
-        case 'executing': return 'code';
-        case 'browsing': return 'browser';
-        case 'computer':
-        case 'tool': return 'tool';
-        case 'memory': return 'memory';
-        case 'thinking': return 'reasoning';
-        case 'responding': return 'communication';
-        case 'delegating': return 'agent';
-    }
-}
-/** Read-only reducer for the Engine owner's typed metadata. It keeps using the
- * existing pet telemetry tape and physics owner; it neither recognizes tool
- * names from content nor accepts transcript text, arguments, commands, or results. */
-class PetEngineTelemetry {
-    events = [];
-    active = new Map();
-    waiting;
-    sequence = 0;
-    lastTime = 0;
-    lastObservedAt;
-    turnId;
-    turnOutcome;
-    terminalAt;
-    lastFailedTool;
-    completedSpans = new Set();
-    completedTurns = new Set();
-    /** Ephemeral safe read projection. Span ids are retained only in this
-     * reducer to correlate trusted lifecycle events and never leave the owner. */
-    activity(at) {
-        const observed = this.lastObservedAt !== undefined;
-        const freshness = !observed ? 'missing'
-            : at - this.lastObservedAt <= exports.ENGINE_OWNER_STALE_MS ? 'fresh' : 'stale';
-        const fresh = freshness === 'fresh';
-        const active = fresh
-            ? [...this.active.values()]
-                .filter(span => at >= span.startedAtMs && at - span.event.endTime <= exports.ENGINE_OWNER_STALE_MS)
-                // The parent's own work leads; delegated agents are counted in
-                // `parallelAgentCount` and only lead when nothing else is active.
-                .sort((a, b) => Number(a.group === 'agent') - Number(b.group === 'agent')
-                || b.startedAtMs - a.startedAtMs || a.key.localeCompare(b.key))
-            : [];
-        const agents = active.filter(span => span.group === 'agent').length;
-        const terminalFresh = fresh && this.terminalAt !== undefined
-            && at >= this.terminalAt && at - this.terminalAt <= exports.ENGINE_OWNER_STALE_MS;
-        let authoritativePresence = 'unknown';
-        if (fresh) {
-            if (this.waiting)
-                authoritativePresence = 'needs_you';
-            else if (terminalFresh && this.turnOutcome === 'completed' && this.turnId)
-                authoritativePresence = 'done';
-            else if (terminalFresh)
-                authoritativePresence = 'idle';
-            else if (active.length > 0 || this.turnId)
-                authoritativePresence = 'working';
-        }
-        const activityKind = fresh && authoritativePresence !== 'needs_you'
-            && authoritativePresence !== 'done' && authoritativePresence !== 'idle'
-            ? active[0]?.activityKind
-                ?? (this.lastFailedTool && at >= this.lastFailedTool.failedAtMs
-                    && at - this.lastFailedTool.failedAtMs <= exports.ENGINE_OWNER_STALE_MS
-                    ? this.lastFailedTool.activityKind : null)
-            : null;
-        const failedAge = fresh && this.lastFailedTool
-            && at >= this.lastFailedTool.failedAtMs
-            && at - this.lastFailedTool.failedAtMs <= exports.ENGINE_OWNER_STALE_MS
-            ? { activityKind: this.lastFailedTool.activityKind,
-                ...(this.lastFailedTool.actionId ? { actionId: this.lastFailedTool.actionId } : {}),
-                ageMs: at - this.lastFailedTool.failedAtMs }
-            : null;
-        const actionId = activityKind ? (active.length ? active[0].actionId : failedAge?.actionId) : undefined;
-        const doneEffectId = authoritativePresence === 'done' && terminalFresh
-            && this.turnOutcome === 'completed' && this.turnId ? this.turnId : null;
-        return {
-            schemaVersion: 1,
-            sessionId: null,
-            cursor: 0,
-            observed,
-            freshness,
-            authoritativePresence,
-            activityKind: activityKind ?? null,
-            ...(actionId ? { actionId } : {}),
-            observedAtMs: this.lastObservedAt ?? null,
-            parallelAgentCount: fresh ? agents : 0,
-            activeSpans: active.slice(0, 4).map(span => ({
-                activityKind: span.activityKind,
-                ...(span.actionId ? { actionId: span.actionId } : {}),
-                startedAtMs: span.startedAtMs,
-            })),
-            turnId: this.turnId ?? null,
-            turnOutcome: this.turnOutcome ?? null,
-            doneEffectId,
-            failedToolAge: failedAge,
-        };
-    }
-    add(name, category, at, agentId = 'parent', continuation = false) {
-        if (this.events.length >= 8192)
-            throw new Error('Pet Engine observation window is full.');
-        const event = {
-            schemaVersion: 1,
-            id: `engine:${this.sequence++}`,
-            traceId: 'foreground',
-            startTime: at,
-            endTime: at,
-            name,
-            category,
-            agentId,
-            status: 'running',
-            attributes: continuation ? { 'whalesong.continuation': true } : {},
-        };
-        this.events.push(event);
-        return event;
-    }
-    start(key, kind, group, at, agentId = 'parent', actionId) {
-        if (this.active.has(key))
-            return;
-        if (this.active.size >= 256)
-            throw new Error('Too many active Engine pet spans.');
-        const event = this.add(group === 'agent' ? 'agent' : group === 'thinking' ? 'thinking'
-            : group === 'responding' ? 'assistant_message' : 'operation', categoryFor(kind), at, agentId);
-        this.active.set(key, { key, activityKind: kind, actionId, startedAtMs: at, event, group });
-    }
-    pulse(key, at) {
-        const span = this.active.get(key);
-        if (!span)
-            return;
-        // A resumed stream does not assert tape coverage across its silent
-        // interval; the span itself (and its start) stays active.
-        if (at - span.event.endTime > pet_telemetry_js_1.PET_BIN_MS * 2) {
-            const event = this.add(span.event.name, span.event.category, at, span.event.agentId, true);
-            this.active.set(key, { ...span, event });
-        }
-        else {
-            span.event.endTime = at;
-        }
-    }
-    finish(key, at, status = 'success') {
-        if (!this.active.has(key))
-            return undefined;
-        this.pulse(key, at);
-        const span = this.active.get(key);
-        if (!span)
-            return undefined;
-        span.event.endTime = at;
-        span.event.status = status;
-        this.active.delete(key);
-        return span;
-    }
-    addOnce(set, id, maximum) {
-        if (set.has(id))
-            return false;
-        set.add(id);
-        while (set.size > maximum)
-            set.delete(set.values().next().value);
-        return true;
-    }
-    /** Transactional batch copy; validation errors cannot accept half a batch. */
-    clone() {
-        const next = new PetEngineTelemetry();
-        const copy = (value) => JSON.parse(JSON.stringify(value));
-        next.events = copy(this.events);
-        const spans = new Map(next.events.map(event => [event.id, event]));
-        next.active = new Map(Array.from(this.active, ([key, span]) => [key, {
-                ...span,
-                event: spans.get(span.event.id) ?? copy(span.event),
-            }]));
-        next.waiting = this.waiting ? spans.get(this.waiting.id) ?? copy(this.waiting) : undefined;
-        next.sequence = this.sequence;
-        next.lastTime = this.lastTime;
-        next.lastObservedAt = this.lastObservedAt;
-        next.turnId = this.turnId;
-        next.turnOutcome = this.turnOutcome;
-        next.terminalAt = this.terminalAt;
-        next.lastFailedTool = this.lastFailedTool ? { ...this.lastFailedTool } : undefined;
-        next.completedSpans = new Set(this.completedSpans);
-        next.completedTurns = new Set(this.completedTurns);
-        return next;
-    }
-    /** Mutates in place: clock, freshness and the event window change before
-     * type-specific fields are checked. Callers that continue after a throw must
-     * observe on a clone() and swap it in on success, as PetNative does. */
-    observe(value, at) {
-        if (!Number.isFinite(at) || at < this.lastTime || at > pet_sim_js_1.PET_MAX_SECONDS * 1000)
-            throw new Error('Invalid Engine pet clock.');
-        if (!value || typeof value !== 'object' || Array.isArray(value))
-            throw new Error('Invalid Engine pet metadata.');
-        const event = value;
-        const allowed = ['event', 'index', 'channel', 'span_id', 'activity_kind', 'action_id', 'outcome', 'id', 'worker_status', 'turn_id', 'turn_outcome'];
-        const stringFields = ['action_id', 'event', 'span_id', 'id', 'worker_status', 'turn_id', 'turn_outcome'];
-        if (Object.keys(event).some(key => !allowed.includes(key)) || typeof event.event !== 'string'
-            || Object.values(event).some(v => typeof v === 'string' && v.length > 256)
-            || stringFields.some(key => event[key] !== undefined && typeof event[key] !== 'string')
-            || event.action_id !== undefined && (typeof event.action_id !== 'string' || !event.action_id
-                || /[\u0000-\u001f\u007f-\u009f]/.test(event.action_id)
-                || [...event.action_id].reduce((bytes, char) => {
-                    const cp = char.codePointAt(0);
-                    return bytes + (cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4);
-                }, 0) > 256)
-            || event.channel !== undefined && !['text', 'reasoning'].includes(event.channel)
-            || event.activity_kind !== undefined && !ACTIVITY_KINDS.includes(event.activity_kind)
-            || event.outcome !== undefined && (typeof event.outcome !== 'string'
-                || (event.event === 'approval_resolved'
-                    ? !APPROVAL_OUTCOMES.includes(event.outcome)
-                    : event.event === 'operation_activity_completed'
-                        ? !OPERATION_OUTCOMES.includes(event.outcome)
-                        : true))
-            || event.turn_outcome !== undefined && !TURN_OUTCOMES.includes(event.turn_outcome)
-            || event.index !== undefined && (!Number.isSafeInteger(event.index) || event.index < 0))
-            throw new Error('Invalid Engine pet metadata fields.');
-        this.lastTime = at;
-        this.lastObservedAt = at;
-        this.events = this.events.filter(item => item.endTime >= at - 12_800);
-        const required = (key) => {
-            const value = event[key];
-            if (typeof value !== 'string' || !value)
-                throw new Error(`Missing Engine ${key}.`);
-            return value;
-        };
-        const index = () => {
-            if (!Number.isSafeInteger(event.index))
-                throw new Error('Missing Engine index.');
-            return String(event.index);
-        };
-        const activityKind = () => {
-            if (!ACTIVITY_KINDS.includes(event.activity_kind))
-                throw new Error('Missing Engine activity kind.');
-            return event.activity_kind;
-        };
-        const startMessage = (key, kind, group) => {
-            this.start(key, kind, group, at);
-            this.waiting = undefined;
-        };
-        switch (event.event) {
-            case 'turn_started': {
-                const id = required('turn_id');
-                if (this.turnId !== id) {
-                    this.active.clear();
-                    this.waiting = undefined;
-                    this.lastFailedTool = undefined;
-                    this.turnId = id;
-                    this.turnOutcome = undefined;
-                    this.terminalAt = undefined;
-                }
-                break;
-            }
-            case 'message_started':
-                startMessage(`message:${index()}`, 'responding', 'responding');
-                break;
-            case 'thinking_started':
-                startMessage(`thinking:${index()}`, 'thinking', 'thinking');
-                break;
-            case 'response_delta': {
-                const reasoning = event.channel === 'reasoning';
-                const key = `${reasoning ? 'thinking' : 'message'}:${index()}`;
-                if (!this.active.has(key))
-                    this.start(key, reasoning ? 'thinking' : 'responding', reasoning ? 'thinking' : 'responding', at);
-                else
-                    this.pulse(key, at);
-                this.waiting = undefined;
-                break;
-            }
-            case 'message_complete':
-                this.finish(`message:${index()}`, at);
-                break;
-            case 'thinking_complete':
-                this.finish(`thinking:${index()}`, at);
-                break;
-            case 'operation_activity_started': {
-                const spanId = required('span_id');
-                const kind = activityKind();
-                if (!this.completedSpans.has(spanId))
-                    this.start(`operation:${spanId}`, kind, 'operation', at, 'parent', event.action_id);
-                this.waiting = undefined;
-                break;
-            }
-            case 'operation_activity_completed': {
-                const spanId = required('span_id');
-                const kind = activityKind();
-                if (!OPERATION_OUTCOMES.includes(event.outcome))
-                    throw new Error('Missing Engine operation outcome.');
-                const outcome = event.outcome;
-                // A failure is recorded once, as its own onset event below; marking
-                // the span `error` too would count it twice on the tape.
-                const completed = this.finish(`operation:${spanId}`, at, outcome === 'succeeded' ? 'success' : 'unknown');
-                if (completed && this.addOnce(this.completedSpans, spanId, 4096)) {
-                    if (outcome === 'failed') {
-                        this.add('operation_failed', 'error', at).status = 'error';
-                        this.lastFailedTool = { activityKind: kind, actionId: completed.actionId, failedAtMs: at };
-                    }
-                    if (outcome === 'denied' || outcome === 'cancelled')
-                        this.waiting = undefined;
-                }
-                break;
-            }
-            case 'tool_call_heartbeat':
-                for (const [key, span] of this.active)
-                    if (span.group === 'operation')
-                        this.pulse(key, at);
-                break;
-            case 'approval_resolved': {
-                required('id');
-                if (!APPROVAL_OUTCOMES.includes(event.outcome))
-                    throw new Error('Invalid Engine approval outcome.');
-                this.waiting = undefined;
-                break;
-            }
-            case 'agent_spawned': {
-                const id = required('id');
-                this.start(`agent:${id}`, 'delegating', 'agent', at, id);
-                break;
-            }
-            case 'agent_progress': {
-                const id = required('id');
-                const key = `agent:${id}`;
-                if (['completed', 'failed', 'cancelled', 'interrupted', 'budget_exhausted'].includes(event.worker_status)) {
-                    this.finish(key, at);
-                    break;
-                }
-                if (!this.active.has(key))
-                    this.start(key, 'delegating', 'agent', at, id);
-                else
-                    this.pulse(key, at);
-                break;
-            }
-            case 'agent_complete':
-                this.finish(`agent:${required('id')}`, at);
-                break;
-            case 'approval_required':
-            case 'user_input_required': {
-                required('id');
-                if (!this.waiting) {
-                    this.waiting = this.add('human_request', 'human', at);
-                    this.waiting.status = 'pending';
-                }
-                break;
-            }
-            case 'turn_complete': {
-                const outcome = event.turn_outcome;
-                if (!TURN_OUTCOMES.includes(outcome))
-                    throw new Error('Missing Engine turn outcome.');
-                const id = typeof event.turn_id === 'string' && event.turn_id.length ? event.turn_id : undefined;
-                this.active.clear();
-                this.waiting = undefined;
-                this.turnId = id;
-                // An outcome belongs to a turn. `/purge`, an edit rejection or a
-                // session switch mid-turn completes with no turn id; recording the
-                // outcome alone would break the projection invariant the Rust
-                // contract checks (`turn_outcome` requires `turn_id`).
-                this.turnOutcome = id ? outcome : undefined;
-                this.terminalAt = at;
-                if (outcome === 'completed' && id && this.addOnce(this.completedTurns, id, 256))
-                    this.add('turn_completed', 'communication', at).status = 'success';
-                break;
-            }
-            default: throw new Error('Unsupported Engine pet event.');
-        }
-    }
-    /** The typed shell may extend a request already witnessed in Engine events,
-     * but a mid-turn attach cannot invent a NeedsYou state. */
-    confirmWaiting(at, waiting) {
-        if (!waiting) {
-            this.waiting = undefined;
-            return;
-        }
-        if (this.waiting && at >= this.waiting.endTime) {
-            this.waiting.endTime = at;
-            this.lastObservedAt = at;
-            this.lastTime = Math.max(this.lastTime, at);
-        }
-    }
-    bucket(sequence) {
-        const end = (sequence + 1) * pet_telemetry_js_1.PET_BIN_MS;
-        const input = this.events.filter(event => event.startTime < end && event.endTime >= end - 12_400)
-            .map(event => ({ ...event, endTime: Math.min(event.endTime, end) }));
-        return (0, pet_telemetry_js_1.compilePetTelemetry)(input, end, sequence)[0];
-    }
-}
-exports.PetEngineTelemetry = PetEngineTelemetry;
 
 };
 factories["dot-field"]=function(exports,require){
@@ -4803,84 +4082,6 @@ function formPoint(kind, style, i, t, agents = 3) {
 }
 
 };
-factories["activity-labels"]=function(exports,require){
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.ACTIVITY_LABELS = void 0;
-exports.labelLanguage = labelLanguage;
-exports.ACTIVITY_LABELS = {
-    "en": {
-        "reading": "read",
-        "editing": "patch",
-        "searching": "find",
-        "testing": "verify",
-        "executing": "run",
-        "browsing": "Using the browser",
-        "computer": "Using the computer",
-        "memory": "Retrieving context",
-        "tool": "tool",
-        "thinking": "think",
-        "responding": "Reply",
-        "delegating": "agents underway",
-        "waiting": "needs you",
-        "done": "Done"
-    },
-    "zh-Hans": {
-        "reading": "读取",
-        "editing": "编辑",
-        "searching": "搜索",
-        "testing": "验证",
-        "executing": "运行",
-        "browsing": "使用浏览器",
-        "computer": "操作电脑",
-        "memory": "检索上下文",
-        "tool": "调用工具",
-        "thinking": "思考",
-        "responding": "回复",
-        "delegating": "智能体工作中",
-        "waiting": "等你处理",
-        "done": "完成"
-    },
-    "zh-Hant": {
-        "reading": "讀取",
-        "editing": "編輯",
-        "searching": "搜尋",
-        "testing": "驗證",
-        "executing": "執行",
-        "browsing": "使用瀏覽器",
-        "computer": "操作電腦",
-        "memory": "檢索上下文",
-        "tool": "呼叫工具",
-        "thinking": "思考",
-        "responding": "回覆",
-        "delegating": "代理程式工作中",
-        "waiting": "等你處理",
-        "done": "完成"
-    },
-    "ja": {
-        "reading": "読込",
-        "editing": "パッチ",
-        "searching": "検索",
-        "testing": "検証",
-        "executing": "実行",
-        "browsing": "ブラウザーを操作中",
-        "computer": "コンピューターを操作中",
-        "memory": "コンテキストを検索中",
-        "tool": "ツール",
-        "thinking": "思考",
-        "responding": "返信",
-        "delegating": "サブエージェント実行中",
-        "waiting": "応答待ち",
-        "done": "完了"
-    }
-};
-function labelLanguage(interfaceLanguage = 'en') {
-    const tag = interfaceLanguage.toLowerCase();
-    return tag.startsWith('ja') ? 'ja' : /^(zh-hant|zh-tw|zh-hk|zh-mo)/.test(tag) ? 'zh-Hant'
-        : tag.startsWith('zh') ? 'zh-Hans' : 'en';
-}
-
-};
 function load(id){id=id.replace(/^\.\//,'').replace(/\.js$/,'');if(cache[id])return cache[id];if(!factories[id])throw Error('Missing core module');const e=cache[id]={};factories[id](e,load);return e;}
-global.PetNative=load('pet-native').PetNative;
+global.PetDotField=load('dot-field');global.PetEngineTelemetry=load('pet-engine').PetEngineTelemetry;
 })(globalThis);

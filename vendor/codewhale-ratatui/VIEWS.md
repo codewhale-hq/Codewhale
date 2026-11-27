@@ -101,7 +101,7 @@ catalog connects them to the kit without introducing another controller.
 <!-- modal-inventory:start -->
 | Modal kind | Native source | Reusable parts | Gallery recipe / coverage |
 | --- | --- | --- | --- |
-| `PetHabitat` | `pet_watch/habitat.rs`, `ambient_life.rs` | `Habitat`, `FishSchool`, `Jellyfish`, `BubbleField`, `Whale` | `habitat-scene`: extracted marine visuals; pet interaction belongs to the host |
+| `PetHabitat` | `pet_watch/habitat.rs`, `ambient_life.rs` | `Habitat`, `FishSchool`, `Shoal`, `Jellyfish`, `BubbleField`, `MarineSnow`, `DistantWhale`, `Whale` | `habitat-scene`: extracted marine visuals; pet interaction belongs to the host |
 | `Approval` | `approval/view.rs` | `ApprovalCard`, `ApprovalState`, `KeyHint` | `approval-command`, `approval-patch`: approval composition; host owns policy |
 | `Elevation` | `approval/elevation.rs` | `ApprovalCard`, `KeyHint` | `approval-elevation`: recipe reuse for the elevation subject and choices |
 | `UserInput` | `user_input.rs` | `Form`, `TextInput`, `Picker`, `KeyHint` | `form`: recipe reuse; host supplies the question schema and answers |

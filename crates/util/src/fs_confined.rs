@@ -111,6 +111,43 @@ pub fn open_append(root: &Path, path: &Path) -> io::Result<File> {
     target(root, path, true)?.open_write(true)
 }
 
+/// Append `contents` to a confined regular file and fsync its data. When the
+/// file or any ancestor directory inside `root` did not exist yet, also issue
+/// best-effort parent directory syncs so the new entries survive a crash
+/// without failing on network/FUSE mounts.
+pub fn append_durable(root: &Path, path: &Path, contents: &[u8]) -> io::Result<()> {
+    let existed = path.exists();
+    let mut missing_parents = Vec::new();
+    if !existed {
+        let mut cursor = path.parent();
+        while let Some(dir) = cursor {
+            if dir.exists() || !dir.starts_with(root) {
+                break;
+            }
+            missing_parents.push(dir.to_path_buf());
+            if dir == root {
+                break;
+            }
+            cursor = dir.parent();
+        }
+    }
+    let target = target(root, path, true)?;
+    let mut file = target.open_write(true)?;
+    file.write_all(contents)?;
+    file.sync_all()?;
+    if !existed {
+        crate::utils::report_directory_sync(path.parent().unwrap_or(root), target.sync_parent());
+        for created_dir in &missing_parents {
+            if let Some(ancestor) = created_dir.parent()
+                && ancestor.starts_with(root)
+            {
+                crate::utils::sync_directory(ancestor);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn write(root: &Path, path: &Path, contents: &[u8]) -> io::Result<()> {
     let mut file = target(root, path, true)?.open_write(false)?;
     // Validate the opened file before truncating it.
@@ -319,5 +356,18 @@ mod tests {
         write(root.path(), &path, b"next").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "next");
+    }
+
+    #[test]
+    fn append_durable_creates_nested_file_and_appends_records() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("state/nested/journal.jsonl");
+        append_durable(root.path(), &path, b"{\"seq\":1}\n").unwrap();
+        append_durable(root.path(), &path, b"{\"seq\":2}\n").unwrap();
+        assert_eq!(
+            read_to_string(root.path(), &path).unwrap(),
+            "{\"seq\":1}\n{\"seq\":2}\n"
+        );
+        assert!(append_durable(root.path(), &root.path().join("../escape.jsonl"), b"x").is_err());
     }
 }

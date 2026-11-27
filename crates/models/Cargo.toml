@@ -16,9 +16,9 @@ workspace = true
 
 [dependencies]
 chrono.workspace = true
-codewhale-config = { path = "../config", version = "0.10.3" }
-codewhale-core = { path = "../core", version = "0.10.3" }
-codewhale-sanitize = { path = "../sanitize", version = "0.10.3" }
+codewhale-config = { path = "../config", version = "0.10.5" }
+codewhale-core = { path = "../core", version = "0.10.5" }
+codewhale-sanitize = { path = "../sanitize", version = "0.10.5" }
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror.workspace = true

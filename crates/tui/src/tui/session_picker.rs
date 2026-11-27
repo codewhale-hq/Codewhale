@@ -612,7 +612,15 @@ impl SessionPickerView {
 
     fn delete_selected(&mut self) -> Option<ViewEvent> {
         let session = self.selected_session().cloned()?;
-        let manager = SessionManager::default_location().ok()?;
+        let manager = match SessionManager::default_location() {
+            Ok(manager) => manager,
+            Err(error) => {
+                tracing::warn!(%error, "sessions directory unavailable for delete");
+                self.status =
+                    Some(tr(self.locale, MessageId::SessionsDirectoryFailed).into_owned());
+                return None;
+            }
+        };
         // A deleted document the live session still owns refuses every later
         // save, so the conversation on screen would silently stop persisting.
         let refusal = if self.current_session_id.as_deref() == Some(session.id.as_str()) {
@@ -1876,8 +1884,7 @@ fn build_preview_lines(session: &SavedSession, locale: Locale) -> Vec<String> {
     // empty-session tests key on it), not a display one.
     //
     // Known limitation: the list row still shows the persisted total, because
-    // rows are rendered from the session index without loading messages. For
-    // an Operate session the row can therefore read higher than the preview.
+    // rows are rendered from the session index without loading messages.
     out.push(
         tr(locale, MessageId::SessionsPreviewMessagesModel)
             .replace("{count}", &rendered_turns.to_string())
@@ -1907,42 +1914,30 @@ fn message_text_for_history(message: &codewhale_models::Message, locale: Locale)
                 }
             }
             codewhale_models::ContentBlock::Thinking { .. } => String::new(),
-            codewhale_models::ContentBlock::ToolUse { name, input, .. } => {
+            codewhale_models::ContentBlock::ToolUse { name, .. } => {
                 tr(locale, MessageId::SessionsToolCall)
                     .replace("{name}", name)
-                    .replace("{input}", &truncate(&input.to_string(), 180))
+                    .replace("{input}", "")
             }
-            codewhale_models::ContentBlock::ToolResult {
-                content, is_error, ..
-            } => {
-                let id = if is_error.unwrap_or(false) {
-                    MessageId::SessionsToolError
-                } else {
-                    MessageId::SessionsToolResult
-                };
-                tr(locale, id).replace("{content}", &truncate(&content.replace('\n', " "), 220))
-            }
-            codewhale_models::ContentBlock::ServerToolUse { name, input, .. } => {
+            codewhale_models::ContentBlock::ServerToolUse { name, .. } => {
                 tr(locale, MessageId::SessionsServerTool)
                     .replace("{name}", name)
-                    .replace("{input}", &truncate(&input.to_string(), 180))
+                    .replace("{input}", "")
             }
-            codewhale_models::ContentBlock::ToolSearchToolResult { content, .. }
-            | codewhale_models::ContentBlock::CodeExecutionToolResult { content, .. }
-            | codewhale_models::ContentBlock::WebSearchToolResult { content, .. }
-            | codewhale_models::ContentBlock::WebFetchToolResult { content, .. } => {
-                tr(locale, MessageId::SessionsToolResult)
-                    .replace("{content}", &truncate(&content.to_string(), 220))
-            }
+            codewhale_models::ContentBlock::ToolResult { .. }
+            | codewhale_models::ContentBlock::ToolSearchToolResult { .. }
+            | codewhale_models::ContentBlock::CodeExecutionToolResult { .. }
+            | codewhale_models::ContentBlock::WebSearchToolResult { .. }
+            | codewhale_models::ContentBlock::WebFetchToolResult { .. } => String::new(),
             codewhale_models::ContentBlock::WebSearchCall { kind, .. } => {
                 tr(locale, MessageId::SessionsServerTool)
                     .replace("{name}", kind.as_deref().unwrap_or("web_search"))
                     .replace("{input}", "")
             }
-            codewhale_models::ContentBlock::ServerToolCalls { steps } => {
+            codewhale_models::ContentBlock::ServerToolCalls { .. } => {
                 tr(locale, MessageId::SessionsServerTool)
                     .replace("{name}", "server_tool_calls")
-                    .replace("{input}", &steps.len().to_string())
+                    .replace("{input}", "")
             }
             codewhale_models::ContentBlock::File { file_id } => format!("[file: {file_id}]"),
             codewhale_models::ContentBlock::ImageUrl { .. } => {
@@ -2081,22 +2076,7 @@ pub(crate) fn format_relative_time(dt: &DateTime<chrono::Utc>, locale: Locale) -
 }
 
 fn truncate(text: &str, width: u16) -> String {
-    let max = width.max(1) as usize;
-    if text.width() <= max {
-        return text.to_string();
-    }
-    let mut out = String::new();
-    let mut current = 0;
-    for ch in text.chars() {
-        let w = ch.width().unwrap_or(0);
-        if current + w >= max.saturating_sub(3) {
-            break;
-        }
-        out.push(ch);
-        current += w;
-    }
-    out.push_str("...");
-    out
+    codewhale_tui_kit::ui_text::truncate_line_to_width(text, width.max(1) as usize)
 }
 
 /// Best-effort canonicalisation of a path so two recordings of the same
@@ -2653,6 +2633,49 @@ mod tests {
             .filter(|line| *line == "USER:" || *line == "ASSISTANT:")
             .count();
         assert_eq!(drawn, 2, "header count must equal drawn turns: {preview}");
+    }
+
+    #[test]
+    fn preview_omits_tool_results_and_tool_call_json() {
+        let tool_use: codewhale_models::Message = serde_json::from_value(serde_json::json!({
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "t1",
+                "name": "bash",
+                "input": {"command": "ls -la /secret"}
+            }]
+        }))
+        .expect("tool use message");
+        let tool_result: codewhale_models::Message = serde_json::from_value(serde_json::json!({
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "t1",
+                "content": "file-listing-output"
+            }]
+        }))
+        .expect("tool result message");
+        let saved = saved_session_with_messages(vec![
+            text_message("user", "list files"),
+            tool_use,
+            tool_result,
+            text_message("assistant", "done"),
+        ]);
+
+        let preview = build_preview_lines(&saved, Locale::En).join("\n");
+
+        assert!(!preview.contains("ls -la"), "tool input leaked: {preview}");
+        assert!(
+            !preview.contains("file-listing-output"),
+            "tool result leaked: {preview}"
+        );
+        assert!(preview.contains("bash"), "tool name stays: {preview}");
+        assert_eq!(
+            preview.lines().filter(|l| *l == "USER:").count(),
+            1,
+            "a tool result is not a USER turn: {preview}"
+        );
     }
 
     #[test]
@@ -3546,5 +3569,42 @@ mod tests {
             .join("\n");
         assert!(text.contains("Could not open sessions"), "{text}");
         assert!(!text.contains("No saved sessions yet"), "{text}");
+    }
+
+    #[test]
+    fn delete_selected_sets_status_when_sessions_directory_fails() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let blocking_file = tmp.path().join("not-a-directory");
+        std::fs::write(&blocking_file, b"x").expect("write blocking file");
+        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &blocking_file);
+        let mut view = picker_with(vec![test_session(1, "Saved session")], None);
+
+        assert!(view.delete_selected().is_none());
+        assert_eq!(
+            view.status.as_deref(),
+            Some(tr(view.locale, MessageId::SessionsDirectoryFailed).as_ref())
+        );
+    }
+
+    #[test]
+    fn truncate_keeps_zwj_emoji_and_cjk_within_width() {
+        for width in 4u16..=14 {
+            let out = truncate("session 👨‍👩‍👧‍👦 notes", width);
+            assert!(
+                codewhale_tui_kit::ui_text::text_display_width(&out) <= usize::from(width),
+                "width {width} exceeded: {out:?}"
+            );
+            assert!(
+                out.contains("👨‍👩‍👧‍👦") || (!out.contains('👨') && !out.contains('\u{200d}')),
+                "ZWJ cluster split at width {width}: {out:?}"
+            );
+        }
+        let cjk = truncate("作業ディレクトリ一覧", 10);
+        assert!(
+            codewhale_tui_kit::ui_text::text_display_width(&cjk) <= 10,
+            "CJK width exceeded: {cjk:?}"
+        );
+        assert!(cjk.ends_with("..."), "{cjk:?}");
     }
 }

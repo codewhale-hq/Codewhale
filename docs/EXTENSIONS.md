@@ -115,7 +115,7 @@ Under `auto`, if the Bun it found fails to start the host, `/plugin` reports
 why once and Node runs the host for the rest of the session. The runtime is
 pinned once a host on it completes its handshake, and restarts reuse it. A
 runtime binary replaced at that path mid-session is refused; restart Codewhale
-to use it. `codewhale doctor` and `/plugin` show which runtime runs the host,
+to use it. `codewhale doctor --full` and `/plugin` show which runtime runs the host,
 its version and path, how its memory cap is enforced, and, when `auto` used
 Node, why Bun was not used.
 
@@ -173,7 +173,9 @@ one shared Cordis and the supported DSH compatibility services. The example's
 supplied service names are `tools`, `commands`, `prompt`, `storage`, `skills`, `shellHooks`, `avatars`, `mcp`, `logger`,
 `events`, `reflect` and `registry`. `ctx.avatars.registerPack({path})` registers a
 reviewed bundle-relative avatar pack; see
-[the whale-avatar example](examples/plugins/whale-avatar/README.md). A tool can ask the core to run a core tool through
+[the whale-avatar example](examples/plugins/whale-avatar/README.md). Since
+0.10.5 the terminal's whale view no longer draws registered packs; the
+registration and the Runtime API that lists packs are unchanged. A tool can ask the core to run a core tool through
 `exec.core` (see [Asking the core to run a tool](#asking-the-core-to-run-a-tool));
 Reviewed Native entries can propose MCP definitions through `ctx.mcp` as
 described below. Programmable pre-execute listeners use `ctx.on` as described below. A required
@@ -628,8 +630,9 @@ A host service is something the core does for an extension beyond running a
 core tool: workspace files and commands, the model provider, network requests,
 settings, the plugin catalog, terminal sessions and remote pairing. Each is
 served by the core, never by the host process, and each is off until a review
-grants it. This version of Codewhale offers none of them yet: the mechanism is
-in place, and each service is switched on separately.
+grants it. This version of Codewhale offers every service except attachments.
+The core serves one only during a live tool call by a plugin whose review
+granted it, so no service is available while a plugin activates.
 
 **Asking.** Name the services in the manifest. A name outside this list fails
 validation.

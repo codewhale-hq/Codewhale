@@ -58,7 +58,12 @@ fn search_text_stays_in_modal_and_out_of_composer() {
         for ch in query.chars() {
             tui.send(ch.to_string()).unwrap();
             typed.push(ch);
-            tui.wait_for_text(&format!("{prefix}{typed}"), timeout)
+            let shown = if title == "Settings" {
+                typed.trim_start()
+            } else {
+                typed.as_str()
+            };
+            tui.wait_for_text(&format!("{prefix}{shown}"), timeout)
                 .unwrap_or_else(|error| panic!("{title} query {typed:?}: {error}"));
         }
         for _ in 0..escapes {

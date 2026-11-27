@@ -19,6 +19,9 @@ use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent, centered_mo
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 
+const MIN_HEIGHT: u16 = 7;
+pub(crate) const MIN_CANVAS_HEIGHT: u16 = MIN_HEIGHT + 2;
+
 pub struct LaunchResumeConfirmView {
     session_id: String,
     title: String,
@@ -126,7 +129,7 @@ impl ModalView for LaunchResumeConfirmView {
     }
 
     fn occupied_region(&self, area: Rect) -> Rect {
-        centered_modal_area(area, 64, 11, 32, 7)
+        centered_modal_area(area, 64, 11, 32, MIN_HEIGHT)
     }
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
@@ -335,6 +338,43 @@ mod tests {
                 "{modifiers:?}+Esc must still back out"
             );
         }
+    }
+
+    #[test]
+    fn the_popup_stays_above_the_composer_on_a_short_terminal() {
+        let area = Rect::new(0, 0, 60, 20);
+        let composer_top = 14;
+        let mut stack = crate::tui::views::ViewStack::new();
+        stack.push(view());
+        assert_eq!(
+            stack.top_occupied_region(area).map(|popup| popup.bottom()),
+            Some(15),
+            "centered in the whole frame, the popup's border lands on the composer's"
+        );
+        stack.set_composer_top(Some(composer_top));
+        let popup = stack.top_occupied_region(area).expect("a popup is open");
+        assert!(popup.bottom() <= composer_top, "{popup:?}");
+        let mut buf = Buffer::empty(area);
+        stack.render(area, &mut buf);
+        for y in composer_top..area.height {
+            let row: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
+            assert!(row.trim().is_empty(), "row {y} is the composer's: {row:?}");
+        }
+        let painted: String = (0..composer_top)
+            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+            .map(|at| buf[at].symbol())
+            .collect();
+        assert!(
+            painted.contains("12 msgs") && painted.contains("Esc"),
+            "{painted}"
+        );
+
+        stack.set_composer_top(Some(MIN_CANVAS_HEIGHT - 1));
+        assert_eq!(
+            stack.top_occupied_region(area).map(|popup| popup.bottom()),
+            Some(15),
+            "too little room above the composer keeps the popup readable over it"
+        );
     }
 
     #[test]

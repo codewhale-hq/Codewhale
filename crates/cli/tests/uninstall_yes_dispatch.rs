@@ -8,6 +8,9 @@ use std::process::Command;
 use sha2::{Digest, Sha256};
 
 fn codewhale_binary() -> PathBuf {
+    if let Some(path) = std::env::var_os("CARGO_BIN_EXE_codewhale").filter(|v| !v.is_empty()) {
+        return PathBuf::from(path);
+    }
     if let Some(path) = option_env!("CARGO_BIN_EXE_codewhale") {
         return PathBuf::from(path);
     }

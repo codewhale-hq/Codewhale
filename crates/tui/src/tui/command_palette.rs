@@ -917,9 +917,13 @@ impl ModalView for CommandPaletteView {
         let mut lines = Vec::new();
         let mut entry_line_indices = Vec::new();
         let query_label = if self.query.is_empty() {
-            "Type to filter".to_string()
+            tr(self.locale, MessageId::HelpFilterPlaceholder).into_owned()
         } else {
-            format!("Filter: {}", self.query)
+            format!(
+                "{}{}",
+                tr(self.locale, MessageId::HelpFilterPrefix),
+                self.query
+            )
         };
         lines.push(Line::from(Span::styled(
             query_label,
@@ -961,7 +965,7 @@ impl ModalView for CommandPaletteView {
         }
         if self.filtered.is_empty() {
             lines.push(Line::from(Span::styled(
-                "No matches",
+                tr(self.locale, MessageId::PaletteNoMatches),
                 Style::default().fg(palette::TEXT_MUTED).italic(),
             )));
         } else {

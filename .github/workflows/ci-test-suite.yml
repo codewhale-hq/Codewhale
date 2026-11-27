@@ -9,7 +9,10 @@ name: CI test suite
 # Trust boundary: this runs with the caller's event. For a pull request from a
 # fork that is the read-only token and no secrets; nothing here writes a cache
 # (rust-cache and sccache save only on main) or uses a write permission. The
-# artifacts passed between jobs live inside one run.
+# artifacts passed between jobs live inside one run. With self_hosted, which
+# ci.yml sets only for a dispatch in this repository, the macOS build and its
+# one shard run on the codewhale-mac runner and keep a local target, Cargo and
+# rustup home under the runner's work directory between those trusted runs.
 
 on:
   workflow_call:
@@ -18,6 +21,11 @@ on:
         description: Hosted runner label
         required: true
         type: string
+      self_hosted:
+        description: Run on the self-hosted codewhale-mac runner instead of the hosted label (ci.yml sets it only for dispatches in this repository)
+        required: false
+        default: false
+        type: boolean
       shards:
         description: Number of shards, equal to the length of shard_list
         required: true
@@ -51,7 +59,7 @@ jobs:
     # 43216596942) and the old one-job cap was 210; this job only compiles, so
     # it keeps real margin without the test run in it.
     timeout-minutes: 150
-    runs-on: ${{ inputs.os == 'ubuntu-latest' && 'ubuntu-24.04' || inputs.os }}
+    runs-on: ${{ inputs.self_hosted && fromJSON('["self-hosted","macOS","ARM64","codewhale-mac"]') || (inputs.os == 'ubuntu-latest' && 'ubuntu-24.04' || inputs.os) }}
     env:
       # Test builds compile all features of the whole workspace. One Cargo job
       # kept hosted runners inside memory (exit 143 on 2026-10-19 with four);
@@ -60,7 +68,24 @@ jobs:
       CARGO_BUILD_JOBS: ${{ inputs.build_jobs }}
       CARGO_PROFILE_DEV_DEBUG: ${{ inputs.debug }}
       CARGO_PROFILE_TEST_DEBUG: ${{ inputs.debug }}
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
     steps:
+      - name: Isolate homes, temp and target on the self-hosted Mac
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="${RUNNER_WORKSPACE}/ci-state"
+          job_tmp="$(mktemp -d /tmp/cwci.XXXXXX)"
+          mkdir -p "${state}/home" "${state}/target"
+          {
+            echo "HOME=${state}/home"
+            echo "CARGO_HOME=${state}/home/.cargo"
+            echo "RUSTUP_HOME=${state}/home/.rustup"
+            echo "CARGO_TARGET_DIR=${state}/target"
+            echo "TMPDIR=${job_tmp}"
+            echo "CW_JOB_TMP=${job_tmp}"
+          } >> "${GITHUB_ENV}"
       - uses: actions/checkout@v7
       - name: Test Windows installer PATH helper
         if: inputs.os == 'windows-latest'
@@ -78,7 +103,22 @@ jobs:
       - name: Install macOS LLVM tools
         if: inputs.os == 'macos-latest'
         run: rustup component add llvm-tools
+      - name: Start the persistent target from a known toolchain
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          set -euo pipefail
+          stamp="${CARGO_TARGET_DIR}/.toolchain"
+          want="$(rustc -V)"
+          free_kib="$(df -Pk "${CARGO_TARGET_DIR}" | awk 'NR==2{print $4}')"
+          if [ "$(cat "${stamp}" 2>/dev/null || true)" != "${want}" ] || [ "${free_kib}" -lt 104857600 ]; then
+            echo "Starting an empty target for ${want} (${free_kib} KiB free)."
+            rm -rf "${CARGO_TARGET_DIR}"
+            mkdir -p "${CARGO_TARGET_DIR}"
+            printf '%s\n' "${want}" > "${stamp}"
+          fi
       - uses: mozilla-actions/sccache-action@v0.0.11
+        if: runner.environment != 'self-hosted'
         with:
           version: "v0.19.0"
         id: sccache
@@ -108,6 +148,7 @@ jobs:
         shell: bash
         run: bash scripts/prepare-ubuntu-build-headroom.sh
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment != 'self-hosted'
         with:
           cache-bin: false
           cache-on-failure: true
@@ -118,6 +159,30 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
+      - name: Hold this machine's build lock (self-hosted)
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          if [ -z "${CODEWHALE_BUILD_LOCK_FILE:-}" ]; then
+            echo "CODEWHALE_BUILD_LOCK_FILE is not set on this runner; building without the machine lock."
+            exit 0
+          fi
+          hold="$RUNNER_TEMP/cw-build-lock.hold"
+          ready="$RUNNER_TEMP/cw-build-lock.ready"
+          log="$RUNNER_TEMP/cw-build-lock.log"
+          touch "$hold"
+          rm -f "$ready"
+          # shellcheck disable=SC2016
+          nohup python3 scripts/build-lock.py "$CODEWHALE_BUILD_LOCK_FILE" -- \
+            sh -c 'touch "$1"; while [ -e "$2" ]; do sleep 2; done' _ "$ready" "$hold" \
+            >"$log" 2>&1 &
+          shown=0
+          until [ -e "$ready" ]; do
+            if [ "$shown" -eq 0 ] && [ -s "$log" ]; then cat "$log"; shown=1; fi
+            sleep 2
+          done
+          cat "$log"
+          echo "CODEWHALE_BUILD_LOCK_HELD=1" >> "$GITHUB_ENV"
       - name: Build canonical executable for acceptance tests
         shell: bash
         run: sh scripts/with-hermetic-test-home.sh cargo test --workspace --all-features --locked --no-run --test help_dispatch
@@ -149,7 +214,7 @@ jobs:
             --archive-file "$RUNNER_TEMP/test-archive/nextest-archive.tar.zst"
           exe=codewhale
           if [ "$RUNNER_OS" = Windows ]; then exe=codewhale.exe; fi
-          cp "target/debug/$exe" "$RUNNER_TEMP/test-archive/$exe"
+          cp "${CARGO_TARGET_DIR:-target}/debug/$exe" "$RUNNER_TEMP/test-archive/$exe"
         env:
           RUSTC_WRAPPER: ${{ inputs.os != 'windows-latest' && env.RUSTC_WRAPPER || '' }}
       - name: Count the tests the archive selects
@@ -176,6 +241,10 @@ jobs:
         continue-on-error: true
         shell: bash
         run: sccache --show-stats
+      - name: Release this machine's build lock (self-hosted)
+        if: always() && runner.environment == 'self-hosted'
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/cw-build-lock.hold"
       - name: Retain test archive for the shards
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -191,12 +260,16 @@ jobs:
           path: ${{ runner.temp }}/test-expected/
           if-no-files-found: error
           retention-days: 7
+      - name: Remove the job temp directory (self-hosted)
+        if: always() && runner.environment == 'self-hosted'
+        shell: bash
+        run: chmod -R u+w -- "$CW_JOB_TMP" 2>/dev/null || true; rm -rf -- "$CW_JOB_TMP"
 
   shard:
     name: Shard ${{ matrix.shard }}/${{ inputs.shards }}
     needs: build
     timeout-minutes: 60
-    runs-on: ${{ inputs.os == 'ubuntu-latest' && 'ubuntu-24.04' || inputs.os }}
+    runs-on: ${{ inputs.self_hosted && fromJSON('["self-hosted","macOS","ARM64","codewhale-mac"]') || (inputs.os == 'ubuntu-latest' && 'ubuntu-24.04' || inputs.os) }}
     strategy:
       # A failure in one shard must not erase the others' results; the suite
       # gate needs every conclusion.
@@ -227,6 +300,22 @@ jobs:
         test(=extension_host::windows::tests::windows_profile_retirement_removes_only_its_grants_and_inherited_data_on_restarts) |
         test(=extension_host::windows::tests::windows_profile_directory_budget_and_recorded_identity_refuse_before_overwrite))
     steps:
+      - name: Isolate homes and temp on the self-hosted Mac
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="${RUNNER_WORKSPACE}/ci-state"
+          job_tmp="$(mktemp -d /tmp/cwci.XXXXXX)"
+          mkdir -p "${state}/home"
+          {
+            echo "HOME=${state}/home"
+            echo "CARGO_HOME=${state}/home/.cargo"
+            echo "RUSTUP_HOME=${state}/home/.rustup"
+            echo "TMPDIR=${job_tmp}"
+            echo "CW_JOB_TMP=${job_tmp}"
+            echo "NEXTEST_TEST_THREADS=8"
+          } >> "${GITHUB_ENV}"
       - uses: actions/checkout@v7
       - name: Point terminal failure diagnostics at the runner temp directory
         shell: bash
@@ -377,6 +466,10 @@ jobs:
           path: ${{ runner.temp }}/test-count/
           if-no-files-found: error
           retention-days: 7
+      - name: Remove the job temp directory (self-hosted)
+        if: always() && runner.environment == 'self-hosted'
+        shell: bash
+        run: chmod -R u+w -- "$CW_JOB_TMP" 2>/dev/null || true; rm -rf -- "$CW_JOB_TMP"
 
   check:
     # The job that answers "did this OS's whole suite pass": the build and every

@@ -179,8 +179,6 @@ def public_models_dev_document(data: dict[str, Any]) -> dict[str, Any]:
         out["_meta"] = strip_sensitive_fields(data["_meta"])
     if isinstance(data.get("models"), dict):
         out["models"] = strip_sensitive_fields(data["models"])
-    if isinstance(data.get("_reviewed"), dict):
-        out["_reviewed"] = strip_sensitive_fields(data["_reviewed"])
     if isinstance(data.get("providers"), dict):
         out["providers"] = strip_sensitive_fields(data["providers"])
     return out
@@ -1027,8 +1025,8 @@ def render_seed(spec: dict[str, Any], lock: dict[str, Any], reviewed_source: dic
         f"{len(providers_out)} providers, {row_count} provider model rows, "
         f"{len(models_out)} canonical model entries."
     )
-    reviewed_source = validate_reviewed(reviewed_source)
-    document = {"_meta": meta, "models": models_out, "providers": providers_out, "_reviewed": reviewed_source}
+    validate_reviewed(reviewed_source)
+    document = {"_meta": meta, "models": models_out, "providers": providers_out}
     ensure_models_dev_shape(document, "rendered seed")
     return json.dumps(document, indent=2, ensure_ascii=False) + "\n"
 

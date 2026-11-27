@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 /// Maximum number of results to return to avoid overwhelming output
 const MAX_RESULTS: usize = 100;
+const MAX_RESULTS_LIMIT: usize = 1_000;
 
 /// Maximum file size to search (skip large binaries)
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB
@@ -148,7 +149,8 @@ impl ToolSpec for GrepFilesTool {
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Max matches (or files in files_only/count) to return (default: 100)."
+                    "maximum": MAX_RESULTS_LIMIT,
+                    "description": "Max matches (or files in files_only/count) to return (default: 100, max: 1000)."
                 }
             },
             "required": ["pattern"]
@@ -178,7 +180,8 @@ impl ToolSpec for GrepFilesTool {
         let replace_default_excludes = optional_bool(&input, "replace_default_excludes", false)?;
         let mode = parse_grep_mode(&input)?;
         let max_results = usize::try_from(optional_u64(&input, "max_results", MAX_RESULTS as u64)?)
-            .unwrap_or(MAX_RESULTS);
+            .unwrap_or(MAX_RESULTS)
+            .min(MAX_RESULTS_LIMIT);
 
         // Parse include patterns
         let include_patterns: Vec<String> = input
@@ -231,98 +234,104 @@ impl ToolSpec for GrepFilesTool {
         // The directory walk and per-file regex are synchronous blocking work.
         // Run them on a blocking worker bounded by a hard timeout so a huge tree
         // can't pin the async runtime and leave the stop button unresponsive.
-        let result = run_blocking_grep(GREP_FILES_TIMEOUT, cancel_token.clone(), move || {
-            let cancel_token = cancel_token.as_ref();
-            let workspace_canonical = workspace.canonicalize().ok();
+        let result = run_blocking_grep(
+            GREP_FILES_TIMEOUT,
+            cancel_token,
+            move |worker_cancel_token| {
+                let cancel_token = Some(&worker_cancel_token);
+                let workspace_canonical = workspace.canonicalize().ok();
 
-            // Stream the walk: each file is searched as it is discovered and
-            // the traversal stops as soon as the match budget is exhausted.
-            // Files are never materialized in a big Vec and file contents are
-            // read line-by-line, so memory stays bounded by the result set.
-            let mut results: Vec<GrepMatch> = Vec::new();
-            let mut matched_files: Vec<String> = Vec::new();
-            let mut file_counts: Vec<GrepFileCount> = Vec::new();
-            let mut files_searched = 0;
-            let mut total_matches = 0;
-            // Set when the cap stopped the search before it covered the whole
-            // tree: a match was seen beyond `max_results` in the file that
-            // filled the budget, or another candidate file was left unread.
-            // The walk never scans past the file that fills the budget.
-            let mut truncated = false;
-            let mut unreadable_files = 0usize;
+                // Stream the walk: each file is searched as it is discovered and
+                // the traversal stops as soon as the match budget is exhausted.
+                // Files are never materialized in a big Vec and file contents are
+                // read line-by-line, so memory stays bounded by the result set.
+                let mut results: Vec<GrepMatch> = Vec::new();
+                let mut matched_files: Vec<String> = Vec::new();
+                let mut file_counts: Vec<GrepFileCount> = Vec::new();
+                let mut files_searched = 0;
+                let mut total_matches = 0;
+                // Set when the cap stopped the search before it covered the whole
+                // tree: a match was seen beyond `max_results` in the file that
+                // filled the budget, or another candidate file was left unread.
+                // The walk never scans past the file that fills the budget.
+                let mut truncated = false;
+                let mut unreadable_files = 0usize;
 
-            let skipped_dirs = visit_files(
-                &search_path,
-                &include_patterns,
-                &exclude_patterns,
-                cancel_token,
-                follow_symlinks,
-                &mut |file_path| {
-                    let budget_reached = match mode {
-                        GrepMode::Matches => results.len() >= max_results,
-                        GrepMode::FilesOnly => matched_files.len() >= max_results,
-                        GrepMode::Count => file_counts.len() >= max_results,
-                    };
-                    if truncated || budget_reached {
-                        truncated = true;
-                        return Ok(WalkControl::Stop);
-                    }
-                    check_cancelled(cancel_token)?;
-
-                    // Skip files that are too large
-                    if let Ok(metadata) = fs::metadata(file_path)
-                        && metadata.len() > MAX_FILE_SIZE
-                    {
-                        return Ok(WalkControl::Continue);
-                    }
-
-                    // Get relative path from workspace
-                    let relative_path = file_path
-                        .strip_prefix(&workspace)
-                        .ok()
-                        .or_else(|| {
-                            workspace_canonical
-                                .as_deref()
-                                .and_then(|canonical| file_path.strip_prefix(canonical).ok())
-                        })
-                        .unwrap_or(file_path)
-                        .to_string_lossy()
-                        .to_string();
-
-                    match mode {
-                        GrepMode::Matches => {
-                            let budget = max_results.saturating_sub(results.len());
-                            let (file_matches, overflowed) = match search_file_streaming(
-                                file_path,
-                                &relative_path,
-                                &regex,
-                                context_lines,
-                                budget,
-                                cancel_token,
-                            )? {
-                                FileScan::Scanned {
-                                    matches,
-                                    overflowed,
-                                } => (matches, overflowed),
-                                FileScan::NotText => return Ok(WalkControl::Continue),
-                                FileScan::Unreadable => {
-                                    unreadable_files += 1;
-                                    return Ok(WalkControl::Continue);
-                                }
-                            };
-
-                            files_searched += 1;
-                            total_matches += file_matches.len();
-                            results.extend(file_matches);
-                            if overflowed {
-                                truncated = true;
-                                return Ok(WalkControl::Stop);
-                            }
+                let skipped_dirs = visit_files(
+                    &search_path,
+                    &include_patterns,
+                    &exclude_patterns,
+                    cancel_token,
+                    follow_symlinks,
+                    &mut |file_path| {
+                        let budget_reached = match mode {
+                            GrepMode::Matches => results.len() >= max_results,
+                            GrepMode::FilesOnly => matched_files.len() >= max_results,
+                            GrepMode::Count => file_counts.len() >= max_results,
+                        };
+                        if truncated || budget_reached {
+                            truncated = true;
+                            return Ok(WalkControl::Stop);
                         }
-                        GrepMode::FilesOnly => {
-                            let matched =
-                                match scan_file_match_count(file_path, &regex, true, cancel_token)?
-                                {
+                        check_cancelled(cancel_token)?;
+
+                        // Skip files that are too large
+                        if let Ok(metadata) = fs::metadata(file_path)
+                            && metadata.len() > MAX_FILE_SIZE
+                        {
+                            return Ok(WalkControl::Continue);
+                        }
+
+                        // Get relative path from workspace
+                        let relative_path = file_path
+                            .strip_prefix(&workspace)
+                            .ok()
+                            .or_else(|| {
+                                workspace_canonical
+                                    .as_deref()
+                                    .and_then(|canonical| file_path.strip_prefix(canonical).ok())
+                            })
+                            .unwrap_or(file_path)
+                            .to_string_lossy()
+                            .to_string();
+
+                        match mode {
+                            GrepMode::Matches => {
+                                let budget = max_results.saturating_sub(results.len());
+                                let (file_matches, overflowed) = match search_file_streaming(
+                                    file_path,
+                                    &relative_path,
+                                    &regex,
+                                    context_lines,
+                                    budget,
+                                    cancel_token,
+                                )? {
+                                    FileScan::Scanned {
+                                        matches,
+                                        overflowed,
+                                    } => (matches, overflowed),
+                                    FileScan::NotText => return Ok(WalkControl::Continue),
+                                    FileScan::Unreadable => {
+                                        unreadable_files += 1;
+                                        return Ok(WalkControl::Continue);
+                                    }
+                                };
+
+                                files_searched += 1;
+                                total_matches += file_matches.len();
+                                results.extend(file_matches);
+                                if overflowed {
+                                    truncated = true;
+                                    return Ok(WalkControl::Stop);
+                                }
+                            }
+                            GrepMode::FilesOnly => {
+                                let matched = match scan_file_match_count(
+                                    file_path,
+                                    &regex,
+                                    true,
+                                    cancel_token,
+                                )? {
                                     FileCountScan::Scanned(count) => count > 0,
                                     FileCountScan::NotText => return Ok(WalkControl::Continue),
                                     FileCountScan::Unreadable => {
@@ -330,87 +339,89 @@ impl ToolSpec for GrepFilesTool {
                                         return Ok(WalkControl::Continue);
                                     }
                                 };
-                            files_searched += 1;
-                            if matched {
-                                matched_files.push(relative_path);
-                            }
-                        }
-                        GrepMode::Count => {
-                            let count = match scan_file_match_count(
-                                file_path,
-                                &regex,
-                                false,
-                                cancel_token,
-                            )? {
-                                FileCountScan::Scanned(count) => count,
-                                FileCountScan::NotText => return Ok(WalkControl::Continue),
-                                FileCountScan::Unreadable => {
-                                    unreadable_files += 1;
-                                    return Ok(WalkControl::Continue);
+                                files_searched += 1;
+                                if matched {
+                                    matched_files.push(relative_path);
                                 }
-                            };
-                            files_searched += 1;
-                            if count > 0 {
-                                total_matches += count;
-                                file_counts.push(GrepFileCount {
-                                    file: relative_path,
-                                    count,
-                                });
+                            }
+                            GrepMode::Count => {
+                                let count = match scan_file_match_count(
+                                    file_path,
+                                    &regex,
+                                    false,
+                                    cancel_token,
+                                )? {
+                                    FileCountScan::Scanned(count) => count,
+                                    FileCountScan::NotText => return Ok(WalkControl::Continue),
+                                    FileCountScan::Unreadable => {
+                                        unreadable_files += 1;
+                                        return Ok(WalkControl::Continue);
+                                    }
+                                };
+                                files_searched += 1;
+                                if count > 0 {
+                                    total_matches += count;
+                                    file_counts.push(GrepFileCount {
+                                        file: relative_path,
+                                        count,
+                                    });
+                                }
                             }
                         }
-                    }
-                    Ok(WalkControl::Continue)
-                },
-            )?;
+                        Ok(WalkControl::Continue)
+                    },
+                )?;
 
-            let mut output = match mode {
-                GrepMode::Matches => {
-                    let matches_json: Vec<Value> = results
-                        .iter()
-                        .map(|item| grep_match_to_json(item, context_lines))
-                        .collect();
-                    json!({
-                        "matches": matches_json,
-                        "total_matches": total_matches,
-                        "files_searched": files_searched,
-                        "truncated": truncated,
-                    })
+                let mut output = match mode {
+                    GrepMode::Matches => {
+                        let matches_json: Vec<Value> = results
+                            .iter()
+                            .map(|item| grep_match_to_json(item, context_lines))
+                            .collect();
+                        json!({
+                            "matches": matches_json,
+                            "total_matches": total_matches,
+                            "files_searched": files_searched,
+                            "truncated": truncated,
+                        })
+                    }
+                    GrepMode::FilesOnly => {
+                        matched_files.sort_unstable();
+                        let total_files = matched_files.len();
+                        json!({
+                            "files": matched_files,
+                            "total_files": total_files,
+                            "files_searched": files_searched,
+                            "truncated": truncated,
+                        })
+                    }
+                    GrepMode::Count => {
+                        file_counts.sort_by(|a, b| {
+                            b.count.cmp(&a.count).then_with(|| a.file.cmp(&b.file))
+                        });
+                        let total_files = file_counts.len();
+                        json!({
+                            "counts": file_counts,
+                            "total_matches": total_matches,
+                            "total_files": total_files,
+                            "files_searched": files_searched,
+                            "truncated": truncated,
+                        })
+                    }
+                };
+                if truncated {
+                    output["max_results"] = json!(max_results);
                 }
-                GrepMode::FilesOnly => {
-                    matched_files.sort_unstable();
-                    let total_files = matched_files.len();
-                    json!({
-                        "files": matched_files,
-                        "total_files": total_files,
-                        "files_searched": files_searched,
-                        "truncated": truncated,
-                    })
+                // Anything the walk could not read (a directory, a directory
+                // entry, or a file) is counted so the caller knows coverage was
+                // incomplete rather than reading silence as "no matches there".
+                let unreadable = skipped_dirs + unreadable_files;
+                if unreadable > 0 {
+                    output["unreadable_paths_skipped"] = json!(unreadable);
                 }
-                GrepMode::Count => {
-                    file_counts
-                        .sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.file.cmp(&b.file)));
-                    let total_files = file_counts.len();
-                    json!({
-                        "counts": file_counts,
-                        "total_matches": total_matches,
-                        "total_files": total_files,
-                        "files_searched": files_searched,
-                        "truncated": truncated,
-                    })
-                }
-            };
-            if truncated {
-                output["max_results"] = json!(max_results);
-            }
-            // Anything the walk could not read (a directory, a directory
-            // entry, or a file) is counted so the caller knows coverage was
-            // incomplete rather than reading silence as "no matches there".
-            let unreadable = skipped_dirs + unreadable_files;
-            if unreadable > 0 {
-                output["unreadable_paths_skipped"] = json!(unreadable);
-            }
-            Ok(output)
-        })
+                Ok(output)
+            },
+        )
         .await?;
 
         ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))
@@ -425,7 +436,7 @@ async fn run_blocking_grep<F>(
     search: F,
 ) -> Result<Value, ToolError>
 where
-    F: FnOnce() -> Result<Value, ToolError> + Send + 'static,
+    F: FnOnce(CancellationToken) -> Result<Value, ToolError> + Send + 'static,
 {
     if cancel_token
         .as_ref()
@@ -434,7 +445,12 @@ where
         return Err(grep_cancelled());
     }
 
-    let task = tokio::task::spawn_blocking(search);
+    let worker_cancel_token = cancel_token
+        .as_ref()
+        .map(CancellationToken::child_token)
+        .unwrap_or_default();
+    let _worker_cancel_guard = worker_cancel_token.clone().drop_guard();
+    let task = tokio::task::spawn_blocking(move || search(worker_cancel_token));
     let result = match cancel_token {
         Some(token) => {
             tokio::select! {

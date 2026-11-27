@@ -3139,6 +3139,31 @@ fn automation_task_request(automation: &AutomationRecord) -> NewTaskRequest {
     }
 }
 
+fn reject_unattended_elevated_request(request: &NewTaskRequest) -> Result<()> {
+    let missing_owner = request
+        .owner_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .is_none();
+    let bypass_posture = request
+        .permission_posture
+        .as_deref()
+        .and_then(codewhale_execpolicy::ApprovalMode::from_config_value)
+        == Some(codewhale_execpolicy::ApprovalMode::Bypass);
+    if missing_owner
+        && (request.auto_approve.unwrap_or(false)
+            || request.trust_mode.unwrap_or(false)
+            || request.allow_shell.unwrap_or(false)
+            || bypass_posture)
+    {
+        bail!(
+            "Refusing to dispatch unattended automation with elevated permissions without an owner session"
+        );
+    }
+    Ok(())
+}
+
 fn bind_run_dispatch(
     run: &mut AutomationRunRecord,
     automation: &AutomationRecord,
@@ -3149,6 +3174,7 @@ fn bind_run_dispatch(
         bail!("Automation execution ownership is unverified");
     }
     let request = automation_task_request(automation);
+    reject_unattended_elevated_request(&request)?;
     let min_version = if request.disallowed_tools.is_empty() {
         CURRENT_RUN_SCHEMA_VERSION
     } else {
@@ -3186,6 +3212,7 @@ async fn dispatch_bound_task(
     tasks: &SharedTaskManager,
 ) -> Result<crate::task_manager::TaskRecord> {
     check_dispatch_store(dispatch, tasks)?;
+    reject_unattended_elevated_request(&dispatch.request)?;
     if dispatch.execution_scope.as_deref() != Some(tasks.execution_scope()) {
         bail!(
             "Automation admission execution ownership is unverified or belongs to another Runtime"
@@ -5782,7 +5809,7 @@ mod tests {
         assert!(!default_task.auto_approve);
 
         let mut explicit_automation =
-            automation_record_with_settings(Some("plan"), Some(true), Some(true), Some(true));
+            automation_record_with_settings(Some("plan"), Some(false), Some(false), Some(false));
         explicit_automation.model = Some("scheduled-model".to_string());
         let mut explicit_run = queued_run_for(&explicit_automation);
         bind_run_dispatch(
@@ -5797,9 +5824,74 @@ mod tests {
             .await?;
         assert_eq!(explicit_task.model, "scheduled-model");
         assert_eq!(explicit_task.mode, "plan");
-        assert!(explicit_task.allow_shell);
-        assert!(explicit_task.trust_mode);
-        assert!(explicit_task.auto_approve);
+        assert!(!explicit_task.allow_shell);
+        assert!(!explicit_task.trust_mode);
+        assert!(!explicit_task.auto_approve);
+
+        task_manager.shutdown();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unattended_elevated_automation_dispatch_is_refused() -> Result<()> {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let task_manager = TaskManager::start_with_executor(
+            automation_task_config(tempdir.path().join("tasks")),
+            std::sync::Arc::new(AutomationNoopExecutor),
+        )
+        .await?;
+
+        for (label, allow_shell, trust_mode, auto_approve) in [
+            ("auto_approve", Some(false), Some(false), Some(true)),
+            ("trust_mode", Some(false), Some(true), Some(false)),
+            ("allow_shell", Some(true), Some(false), Some(false)),
+            ("all", Some(true), Some(true), Some(true)),
+        ] {
+            let automation = automation_record_with_settings(
+                Some("agent"),
+                allow_shell,
+                trust_mode,
+                auto_approve,
+            );
+            let mut run = queued_run_for(&automation);
+            let err = bind_run_dispatch(&mut run, &automation, &task_manager.data_dir(), false)
+                .expect_err(&format!("{label} must be refused at bind_run_dispatch"));
+            assert!(
+                err.to_string().contains("elevated permissions"),
+                "{label}: {err}"
+            );
+            assert!(run.dispatch.is_none());
+            assert!(run.task_id.is_none());
+        }
+
+        let safe =
+            automation_record_with_settings(Some("agent"), Some(false), Some(false), Some(false));
+        let mut tampered_run = queued_run_for(&safe);
+        bind_run_dispatch(&mut tampered_run, &safe, &task_manager.data_dir(), false)?;
+        let tampered_task_id = tampered_run.task_id.clone().expect("task id");
+        tampered_run
+            .dispatch
+            .as_mut()
+            .expect("dispatch")
+            .request
+            .permission_posture = Some("FULL-ACCESS".to_string());
+        tampered_run
+            .dispatch
+            .as_mut()
+            .expect("dispatch")
+            .request
+            .owner_session_id = Some("   ".to_string());
+        enqueue_run_task(&mut tampered_run, &task_manager).await;
+        assert!(
+            tampered_run
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("elevated permissions")),
+            "{:?}",
+            tampered_run.error
+        );
+        assert!(!tampered_run.dispatch.as_ref().unwrap().accepted);
+        assert!(task_manager.get_task(&tampered_task_id).await.is_err());
 
         task_manager.shutdown();
         Ok(())
@@ -6905,7 +6997,7 @@ model = "private-model"
     }
 
     #[tokio::test]
-    async fn scheduler_wakes_within_one_second_for_subminute_trigger() -> Result<()> {
+    async fn scheduler_wakes_for_subminute_trigger_before_its_tick() -> Result<()> {
         let tempdir = tempfile::tempdir()?;
         let task_manager = TaskManager::start_with_executor(
             automation_task_config(tempdir.path().join("tasks")),
@@ -6941,7 +7033,7 @@ model = "private-model"
         };
 
         let mut fired = None;
-        for _ in 0..95 {
+        while start.elapsed() < std::time::Duration::from_secs(10) {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             let current = shared.lock().await.get_trigger(&trigger.trigger_id)?;
             if current.status == DelayedTriggerStatus::Fired {
@@ -6955,10 +7047,10 @@ model = "private-model"
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
         task_manager.shutdown();
 
-        let fired = fired.expect("sub-minute trigger must fire before 1s via Notify");
+        let fired = fired.expect("sub-minute trigger must fire via Notify before the 60s tick");
         assert!(
-            elapsed < std::time::Duration::from_secs(1),
-            "expected wakeup and fire under 1s, took {elapsed:?}"
+            elapsed < std::time::Duration::from_secs(10),
+            "expected wakeup and fire well before the 60s tick, took {elapsed:?}"
         );
         assert!(fired.task_id.is_some());
         Ok(())

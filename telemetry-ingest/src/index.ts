@@ -46,7 +46,6 @@
  */
 
 import { writeBatch, type DataPointSink } from "./datapoint";
-import { deliverPostHog, type PostHogConfig } from "./posthog";
 import { INGEST_PATH } from "./route";
 import { MAX_BODY_BYTES, validateBatch } from "./schema";
 
@@ -62,17 +61,24 @@ export interface RateLimiter {
   limit(options: { key: string }): Promise<{ success: boolean }>;
 }
 
-export interface Env extends PostHogConfig {
+export interface Env {
   /** `analytics_engine_datasets` binding. */
   TELEMETRY: DataPointSink;
+  /**
+   * Optional per-location ingest rate limiter keyed on the server-controlled
+   * route path (`INGEST_PATH`) before body reading, parsing, or downstream
+   * delivery. Caps aggregate throughput even when a caller rotates `install_id`
+   * on every request, without reading any client IP or network header.
+   */
+  INGEST_RATE_LIMITER?: RateLimiter;
   /**
    * Optional per-install rate limiter.
    *
    * Keyed on `install_id` — the identifier the batch already carries — and
-   * never on a network address. That is a weaker limiter than an IP-keyed one
-   * (a `install_id.json` can be rewritten between POSTs) and it is the right
-   * trade: Cloudflare's edge already absorbs volumetric abuse, and the failure
-   * mode of an IP-keyed limiter is that this Worker starts handling IPs.
+   * never on a network address. Known limitation: `install_id` is caller-
+   * supplied and can be rotated between POSTs; `INGEST_RATE_LIMITER` above and
+   * Cloudflare edge rules provide the rotation-resistant cap so this Worker
+   * never handles IPs.
    */
   RATE_LIMITER?: RateLimiter;
 }
@@ -146,6 +152,13 @@ async function ingest(request: Request, env: Env): Promise<Response> {
     }
   }
 
+  if (env.INGEST_RATE_LIMITER !== undefined) {
+    const { success } = await env.INGEST_RATE_LIMITER.limit({
+      key: INGEST_PATH,
+    });
+    if (!success) return status(429);
+  }
+
   const raw = await readBounded(request.body, MAX_BODY_BYTES);
   if (raw === null) return status(413);
 
@@ -182,10 +195,6 @@ async function ingest(request: Request, env: Env): Promise<Response> {
 
   // `writeDataPoint` is non-blocking and returns void; it is never awaited.
   writeBatch(env.TELEMETRY, result.batch);
-
-  // The optional processor sees only the same validated batch, never the
-  // incoming request. Its bounded, best-effort failure cannot reject AE data.
-  await deliverPostHog(result.batch, env);
 
   return status(204);
 }

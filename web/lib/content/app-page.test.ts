@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { APP_COPY } from "./app-page";
 import { AVAILABILITY_ROWS } from "./availability";
+import desktopMedia from "../../data/desktop-media.json";
 
 function strings(value: unknown): string[] {
   if (typeof value === "string") return [value];
@@ -28,8 +29,8 @@ describe("/app copy", () => {
   });
 
   it("pairs every capture with alt text and a caption, under a scope that names the build and the model", () => {
-    expect(APP_COPY.shotsScope.en).toContain("development build");
-    expect(APP_COPY.shotsScope.en).toContain("qwen3:4b");
+    expect(APP_COPY.shotsScope.en).toContain("development build of the desktop app");
+    expect(APP_COPY.shotsScope.en).toContain(desktopMedia.capture.provider);
     for (const shot of APP_COPY.shots) {
       expect(shot.alt.en.length).toBeGreaterThan(40);
       expect(shot.caption.en.length).toBeGreaterThan(20);

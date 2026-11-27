@@ -71,7 +71,14 @@ test('every curated method is defined on the class that serves it', () => {
     workspace: ['dsh/workspace.ts', 'WorkspaceService'], llm: ['dsh/llm.ts', 'LlmService'],
     credentials: ['dsh/network.ts', 'CredentialsService'], settings: ['dsh/settings.ts', 'SettingsService'],
     pluginManager: ['dsh/catalog.ts', 'PluginManagerService'], deepseekAccount: ['dsh/catalog.ts', 'DeepSeekAccountService'],
-    terminal: ['dsh/terminal.ts', 'TerminalService'],
+    terminal: ['dsh/terminal.ts', 'TerminalService'], attachments: ['dsh/attachments.ts', 'AttachmentsService'],
+    agentPresets: ['dsh/host-services.ts', 'AgentPresetsService'], agentDefaultModel: ['dsh/host-services.ts', 'AgentDefaultModelService'],
+    sessionProjections: ['dsh/host-services.ts', 'SessionProjectionsService'], workspaceRegistry: ['dsh/host-services.ts', 'WorkspaceRegistryService'],
+    typertGateway: ['dsh/host-services.ts', 'TypertGatewayService'], web: ['dsh/host-services.ts', 'WebService'],
+    sessionPersistence: ['dsh/host-services.ts', 'SessionPersistenceService'], storageDomain: ['dsh/host-services.ts', 'StorageDomainService'],
+    invariants: ['dsh/host-services.ts', 'InvariantsService'], permissionPresets: ['dsh/host-services.ts', 'PermissionPresetsService'],
+    webServer: ['dsh/webserver.ts', 'WebServerService'], connection: ['dsh/webserver.ts', 'ConnectionService'],
+    sessionTitle: ['dsh/webserver.ts', 'SessionTitleService'], profileContext: ['dsh/webserver.ts', 'ProfileContextService'],
   }
   const cordis = { events: ['events', ['on', 'once', 'emit']], reflect: ['reflect', ['provide', 'get']], registry: ['registry', ['get', 'resolve']] }
   const agentsSource = text(src('dsh/agents.ts'))
@@ -89,6 +96,9 @@ test('every curated method is defined on the class that serves it', () => {
     for (const m of service.methods) {
       if (service.key === 'subagents' && m.name === 'result') assert.match(agentsSource, /^\s*get result\(\)/m, 'subagents.result is a getter')
       else if (service.key === 'subagents' && m.name === 'dispose') assert.match(agentsSource, /^\s*dispose\(\)/m, 'subagents.dispose')
+      else if (service.key === 'connection' && (m.name === 'fetch.register' || m.name === 'rpc.handle')) assert.match(body, new RegExp(`^\\s*get\\s+${m.name.split('.')[0]}\\(\\)`, 'm'), `${service.key}.${m.name}`)
+      else if (service.key === 'profileContext' && (m.name === 'dir' || m.name === 'installAnchor')) assert.match(body, new RegExp(`^\\s*get\\s+${m.name}\\(\\)`, 'm'), `${service.key}.${m.name}`)
+      else if (service.key === 'permissionPresets' && (m.name === 'availability' || m.name === 'defaultPreset' || m.name === 'names')) assert.match(body, new RegExp(`^\\s*get\\s+${m.name}\\(\\)`, 'm'), `${service.key}.${m.name}`)
       else assert.ok(defines(body, m.name), `${service.key}.${m.name}`)
     }
   }
@@ -118,7 +128,7 @@ test('an output that is not JSON is refused as DSH refuses it', async () => {
 test('every slot and its seat equal the Engine seat table', () => {
   const block = seatSource.slice(seatSource.indexOf('const DSH_SEAT_TABLE'), seatSource.indexOf('];', seatSource.indexOf('const DSH_SEAT_TABLE')))
   const names = [...block.matchAll(/\(\s*"([^"]+)",\s*DshSeat::/g)].map((m) => m[1])
-  assert.equal(names.length, 33)
+  assert.equal(names.length, 41)
   assert.deepEqual(catalog.client.slots.map((s) => s.slot), names)
   const unsupported = [...block.matchAll(/\(\s*"([^"]+)",\s*DshSeat::Unsupported/g)].map((m) => m[1])
   assert.deepEqual(catalog.client.slots.filter((s) => !s.supported).map((s) => s.slot), unsupported)
@@ -131,14 +141,14 @@ test('every slot and its seat equal the Engine seat table', () => {
 test('the refused events equal the list in root.ts', () => {
   const body = rootSource.slice(rootSource.indexOf('unsupportedDshLifecycle = new Set(['), rootSource.indexOf('])', rootSource.indexOf('unsupportedDshLifecycle = new Set([')))
   const refused = [...body.matchAll(/'([^']+)'/g)].map((m) => m[1])
-  assert.equal(refused.length, 4)
+  assert.equal(refused.length, 5)
   assert.deepEqual(catalog.host.events.filter((e) => e.status === 'refused').map((e) => e.name), refused)
   for (const name of catalog.host.events.filter((e) => e.status === 'supported').map((e) => e.name)) assert.ok(rootSource.includes(`'${name}'`) || text(src('dsh/agents.ts')).includes(`'${name}'`), name)
 })
 
 test('the Service provider answers a directory, one contract, and refuses a name the host lacks', async () => {
   const directory = await ask('host', 'Service', 'listService')
-  assert.equal(directory.services.length, 25)
+  assert.equal(directory.services.length, 40)
   assert.ok(!directory.services.some((s) => s.key === 'fs'))
   const one = await ask('host', 'Service', 'listService', { service: 'prompt' })
   assert.equal(one.service.methods[0].name, 'registerSection')
@@ -147,7 +157,7 @@ test('the Service provider answers a directory, one contract, and refuses a name
 
 test('the Event provider separates supported from refused', async () => {
   const { events } = await ask('host', 'Event', 'listEvents')
-  assert.deepEqual(events.map((e) => e.status), ['supported', 'supported', 'supported', 'refused', 'refused', 'refused', 'refused'])
+  assert.deepEqual(events.map((e) => e.status), ['supported', 'supported', 'supported', 'supported', 'refused', 'refused', 'refused', 'refused', 'refused'])
   assert.equal((await ask('host', 'Event', 'listEvents', { event: 'tools/pre-execute' })).event.name, 'tools/pre-execute')
   await assert.rejects(ask('host', 'Event', 'listEvents', { event: 'subagent/start-x' }), /not known/)
 })
@@ -192,7 +202,7 @@ test('Slots says no client is connected in a terminal and marks no slot drawn', 
   const out = await ask('client', 'Slots', 'listSubTree')
   assert.equal(out.client.connected, false)
   assert.match(out.client.message, /No client is connected/)
-  assert.equal(out.trees.length, 33)
+  assert.equal(out.trees.length, 41)
   assert.ok(out.trees.every((s) => s.drawn === false))
   assert.deepEqual((await ask('client', 'Slots', 'listSubTree', { root: 'conversation.composer.dock' })).selected.seat, 'conversation.composer.dock')
   assert.equal((await ask('client', 'Slots', 'listSubTree', { root: 'nope' })).requestedRoot.available, false)
@@ -202,7 +212,7 @@ test('Slots marks only the drawn seats when a client is connected', async () => 
   const connected = createCordisInspect({ client: () => ({ connected: true }) })
   const out = await connected.query('client', 'Slots', 'listSubTree')
   const drawn = out.trees.filter((s) => s.drawn).map((s) => s.name)
-  assert.deepEqual(drawn, ['plugins.bundle.config', 'plugins.row.config', 'plugins.tab', 'plugins.detail.section', 'plugins.item', 'plugins.detail.actions', 'plugins.detail.badge', 'settings.section', 'settings.plugin.item', 'settings.general.item', 'settings.plugins.tab'])
+  assert.deepEqual(drawn, ['plugins.bundle.config', 'plugins.row.config', 'plugins.tab', 'plugins.detail.section', 'plugins.item', 'plugins.detail.actions', 'plugins.detail.badge', 'settings.section', 'settings.section.icon', 'settings.plugin.item', 'settings.general.item', 'settings.plugins.tab', 'web-ui.plugin.item'])
   const all = createCordisInspect({ client: () => ({ connected: true, drawnSeats: ['conversation.composer.dock'] }) })
   const composer = (await all.query('client', 'Slots', 'listSubTree')).trees.filter((s) => s.drawn).map((s) => s.name)
   assert.ok(composer.includes('conversation.input.dock') && !composer.includes('plugins.tab'))

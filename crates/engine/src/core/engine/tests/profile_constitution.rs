@@ -263,3 +263,203 @@ async fn host_supplied_invalid_profile_refuses_the_turn_without_a_local_fallback
             .any(|event| matches!(event, Event::Status { message } if *message == notice))
     );
 }
+
+fn account_me(notes: &str) -> serde_json::Value {
+    serde_json::json!({"user":{"id":"acct_fixture","settingsRevision":7,
+        "preferences":{"constitution":ProfileConstitution { notes: notes.into(), ..Default::default() }}}})
+}
+
+async fn slow_account_service(delay: Duration) -> wiremock::MockServer {
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/me"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(account_me("Account profile preference."))
+                .set_delay(delay),
+        )
+        .mount(&server)
+        .await;
+    server
+}
+
+async fn account_requests(server: &wiremock::MockServer) -> usize {
+    server
+        .received_requests()
+        .await
+        .map_or(0, |requests| requests.len())
+}
+
+async fn prompt_turn(
+    engine: &mut Engine,
+    config: &Config,
+    mock: &crate::llm_client::mock::MockLlmClient,
+) -> String {
+    let Op::SendMessage(spec) = external_user_message_op("Say hello", AppMode::Agent, config)
+    else {
+        unreachable!()
+    };
+    let started = std::time::Instant::now();
+    let outcome = engine.handle_send_message(spec).await;
+    assert!(!matches!(outcome, SendMessageOutcome::NotStarted { .. }));
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "the turn waited {:?} on a 4 s account read",
+        started.elapsed()
+    );
+    serde_json::to_string(mock.captured_requests().last().unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn slow_account_service_does_not_delay_the_turn_and_its_read_is_used_next_turn() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    let _home = crate::test_support::SealedHome::new();
+    save_local_constitution();
+    let server = slow_account_service(Duration::from_secs(4)).await;
+    let _account = crate::profile_constitution::serve_account_for_test(
+        crate::profile_constitution::fixture_account_store(&server.uri()),
+        server.uri(),
+        crate::profile_constitution::TURN_WAIT,
+    );
+    let workspace = tempfile::tempdir().unwrap();
+    let config = Config::default();
+    let mock = Arc::new(MockLlmClient::new(vec![
+        canned::simple_text_turn("Done"),
+        canned::simple_text_turn("Done again"),
+    ]));
+    let (mut engine, handle) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &config,
+        mock.clone(),
+    );
+    let events = collect_events(handle);
+    let first = prompt_turn(&mut engine, &config, &mock).await;
+    assert!(first.contains("Local fallback preference."));
+    assert!(!first.contains("Account profile preference."));
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while engine.account_constitution.read_in_flight() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the account read never finished"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let second = prompt_turn(&mut engine, &config, &mock).await;
+    assert!(
+        second.contains("Account profile preference."),
+        "the finished read reaches the next turn"
+    );
+    assert!(account_requests(&server).await >= 2);
+    let loading = codewhale_localization::tr(
+        codewhale_localization::resolve_locale(&engine.config.locale_tag),
+        codewhale_localization::MessageId::ProfileConstitutionLoadingLocal,
+    )
+    .to_string();
+    let unavailable = fallback_notice(&engine);
+    engine
+        .send_event(Event::status(END_OF_EVENTS))
+        .await
+        .unwrap();
+    let events = events.await.unwrap();
+    let count = |wanted: &str| {
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::Status { message } if message == wanted))
+            .count()
+    };
+    assert_eq!(
+        count(&loading),
+        1,
+        "the person is told once that the account read is late"
+    );
+    assert_eq!(count(&unavailable), 0);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::TurnStarted { .. }))
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn stop_ends_a_slow_account_read_at_once_for_interactive_and_hosted_turns() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    let _home = crate::test_support::SealedHome::new();
+    let server = slow_account_service(Duration::from_secs(30)).await;
+    let _account = crate::profile_constitution::serve_account_for_test(
+        crate::profile_constitution::fixture_account_store(&server.uri()),
+        server.uri(),
+        Duration::from_secs(60),
+    );
+    let workspace = tempfile::tempdir().unwrap();
+    let config = Config::default();
+    let hosted = EngineConfig {
+        runtime_services: crate::tools::spec::RuntimeToolServices {
+            active_thread_id: Some("thr_host_managed".to_string()),
+            ..crate::tools::spec::RuntimeToolServices::default()
+        },
+        ..deterministic_engine_config(workspace.path())
+    };
+    for (engine_config, host_managed) in [
+        (deterministic_engine_config(workspace.path()), false),
+        (hosted, true),
+    ] {
+        let mock = Arc::new(MockLlmClient::new(vec![canned::simple_text_turn(
+            "must not run",
+        )]));
+        let (mut engine, handle) =
+            Engine::new_with_model_client(engine_config, &config, mock.clone());
+        assert_eq!(engine.host_managed_turns(), host_managed);
+        let stopper = handle.clone();
+        let events = collect_events(handle);
+        let Op::SendMessage(spec) = external_user_message_op("Say hello", AppMode::Agent, &config)
+        else {
+            unreachable!()
+        };
+        let seen = account_requests(&server).await;
+        let ((outcome, ended), stopped) = tokio::join!(
+            async {
+                let outcome = engine.handle_send_message(spec).await;
+                (outcome, std::time::Instant::now())
+            },
+            async {
+                while account_requests(&server).await == seen {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                stopper.cancel();
+                std::time::Instant::now()
+            }
+        );
+        let after_stop = ended.saturating_duration_since(stopped);
+        assert!(
+            after_stop < Duration::from_secs(3),
+            "Stop took {after_stop:?} while the account read was pending"
+        );
+        assert_eq!(mock.call_count(), 0);
+        engine
+            .send_event(Event::status(END_OF_EVENTS))
+            .await
+            .unwrap();
+        let lifecycle: Vec<_> = events
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::TurnStarted { .. } => Some(None),
+                Event::TurnComplete { status, .. } => Some(Some(status)),
+                _ => None,
+            })
+            .collect();
+        if host_managed {
+            assert_eq!(lifecycle, [None, Some(TurnOutcomeStatus::Interrupted)]);
+        } else {
+            assert!(matches!(outcome, SendMessageOutcome::NotStarted { .. }));
+            assert!(lifecycle.is_empty());
+        }
+    }
+}

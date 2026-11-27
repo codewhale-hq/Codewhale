@@ -40,9 +40,9 @@ test('canonical Native composition adopts existing contributions and withdraws t
 function counterComposition(t, id) {
   const root = temporary(t)
   mkdirSync(join(root, 'source'))
-  const source = `export const inject = ['prompt']; export function apply(ctx, config) { ctx.prompt.registerSection({id:${JSON.stringify(id)},text:String(config.count)}) }`
+  const source = "export const inject = ['prompt']; export function apply(ctx, config) { ctx.prompt.registerSection({id:String(config.id),text:String(config.count)}) }"
   writeFileSync(join(root, 'source', 'row.mjs'), source)
-  const layer = `- insert:\n  - id: count\n    name: ./row.mjs\n    config:\n      count: !!js '(globalThis.__CW_COMPOSITION_COUNT = (globalThis.__CW_COMPOSITION_COUNT ?? 0) + 1)'\n`
+  const layer = `- insert:\n  - id: count\n    name: ./row.mjs\n    config:\n      id: ${JSON.stringify(id)}\n      count: !!js '(globalThis.__CW_COMPOSITION_COUNT = (globalThis.__CW_COMPOSITION_COUNT ?? 0) + 1)'\n`
   const spec = { version: 1, layers: [{ path: 'base.yml', sha256: hash(layer), source: layer }], modules: [{ name: './row.mjs', path: 'row.mjs', sha256: hash(source) }], files: { 'row.mjs': hash(source) } }
   writeFileSync(join(root, 'composition.json'), JSON.stringify(spec))
   const entry = join(root, 'index.mjs')
@@ -79,12 +79,12 @@ test('trusted offline reviewer preserves expressions and never imports row modul
   assert.equal(existsSync(join(root, 'row.mjs')), false, 'review did not need any row module to exist')
 })
 
-function moduleClosureComposition(t, rowSource, files, extraRows = {}) {
+function moduleClosureComposition(t, rowSource, files, extraRows = {}, rowConfigs = {}) {
   const root=temporary(t)
   mkdirSync(join(root,'source'))
   const rows={'row.mjs':rowSource,...extraRows}
   for (const [name,source] of Object.entries({...rows,...files})) writeFileSync(join(root,'source',name),source)
-  const layer=JSON.stringify([{insert:Object.keys(rows).map((name,index)=>({id:`row-${index}`,name:`./${name}`,config:{}}))}])
+  const layer=JSON.stringify([{insert:Object.keys(rows).map((name,index)=>({id:`row-${index}`,name:`./${name}`,config:rowConfigs[name]??{}}))}])
   const closure=Object.fromEntries(Object.entries({...rows,...files}).map(([name,source])=>[name,hash(source)]))
   const spec={version:1,layers:[{path:'base.json',sha256:hash(layer),source:layer}],modules:Object.entries(rows).map(([name,source])=>({name:`./${name}`,path:name,sha256:hash(source)})),files:closure}
   writeFileSync(join(root,'composition.json'),JSON.stringify(spec))
@@ -92,6 +92,37 @@ function moduleClosureComposition(t, rowSource, files, extraRows = {}) {
   writeFileSync(entry,`import {mountReviewedComposition} from '@codewhale/dsh-composition';import spec from './composition.json' with {type:'json'};export async function apply(ctx){await mountReviewedComposition(ctx,new URL('./source/',import.meta.url).href,spec)}`)
   return {root,entry}
 }
+
+test('a row that reads settings.describe() in a synchronous try/catch during apply activates and stays live',async t=>{
+  const host=await startHost();t.after(()=>host.stop())
+  const probe=moduleClosureComposition(t,"export const inject=['commands'];export function apply(ctx){let l='zh';try{const f=ctx.get('settings').describe();if(Array.isArray(f) && f.some(item=>item.ns==='locale'))l='host'}catch{}ctx.commands.register({name:'probe-'+l,description:'locale probe',handler(){return {kind:'success',text:l}}})}",{})
+  const {ref,result}=await activate(host,'settings-probe',probe.entry)
+  assert.equal(result.status,'ok',result.diagnostic)
+  assert.deepEqual(result.commands,['probe-host'])
+  await new Promise(resolve=>setTimeout(resolve,100))
+  assert.deepEqual(host.faulted,[])
+  assert.deepEqual(host.brokerCalls,[])
+  assert.deepEqual(await host.call('ext/deactivate',{owner:ref}),{disposed:true,leaked:[]})
+})
+
+test('a failed composition row names its import error, and a waiting row names only the services it lacks',async t=>{
+  const host=await startHost();t.after(()=>host.stop())
+  const peer=moduleClosureComposition(t,"import {setApprovalPolicy} from '@deepseek-ai/dsh-user-approval';export function apply(){return setApprovalPolicy}",{})
+  const imported=(await activate(host,'row-peer',peer.entry)).result
+  assert.equal(imported.status,'failed')
+  assert.match(imported.diagnostic,/composition row "row-0" failed activation: UnsupportedPeerError: requires `@deepseek-ai\/dsh-user-approval`/)
+  const web=moduleClosureComposition(t,"export const inject=['tools','@deepseek-ai/dsh-client-panel'];export function apply(){}",{})
+  const waiting=(await activate(host,'row-web',web.entry)).result
+  assert.equal(waiting.status,'failed')
+  assert.match(waiting.diagnostic,/composition row "row-0" requires `@deepseek-ai\/dsh-client-panel`, not provided by the Codewhale extension host in this phase \(DSH client UI services\)/)
+  assert.doesNotMatch(waiting.diagnostic,/`tools`/)
+  const webOk=moduleClosureComposition(t,"export const inject=['tools','webServer','connection'];export function apply(){}",{})
+  assert.equal((await activate(host,'row-web-ok',webOk.entry)).result.status,'ok')
+  const spawn=moduleClosureComposition(t,"export const inject=['subprocess'];export function apply(){}",{})
+  const owned=(await activate(host,'row-subprocess',spawn.entry)).result
+  assert.equal(owned.status,'failed')
+  assert.match(owned.diagnostic,/composition row "row-0" requires `subprocess`, not provided .*; `subprocess` belongs to the Codewhale core and no reviewed bridge exposes it yet/)
+})
 
 test('a transitive reviewed relative helper executes but an undeclared helper never does',async t=>{
   const host=await startHost();t.after(()=>host.stop())
@@ -173,8 +204,8 @@ test('unreviewed computed imports refuse before module side effects', async t =>
 
 test('separate reviewed rows retain the same transitive module instance', async t => {
   const host=await startHost();t.after(()=>host.stop())
-  const row=id=>`import {next} from './helper.mjs';export const inject=['prompt'];export function apply(ctx){ctx.prompt.registerSection({id:${JSON.stringify(id)},text:String(next())})}`
-  const composition=moduleClosureComposition(t,row('first'),{'helper.mjs':'let count=0;export function next(){return ++count}'},{'second.mjs':row('second')})
+  const sharedRow="import {next} from './helper.mjs';export const inject=['prompt'];export function apply(ctx,config){ctx.prompt.registerSection({id:String(config.id),text:String(next())})}"
+  const composition=moduleClosureComposition(t,sharedRow,{'helper.mjs':'let count=0;export function next(){return ++count}'},{'second.mjs':sharedRow},{'row.mjs':{id:'first'},'second.mjs':{id:'second'}})
   const mounted=await activate(host,'closure-shared-instance',composition.entry)
   assert.equal(mounted.result.status,'ok',mounted.result.diagnostic)
   const registrations=host.registry.filter(row=>row.op==='register' && row.kind==='prompt_section')

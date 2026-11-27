@@ -3,7 +3,9 @@
 use ratatui::{buffer::Buffer, layout::Rect};
 
 use super::Entry;
-use crate::{AttentionItem, AttentionQueue, KeyHint, KeyHints, Paint, State, Theme};
+use crate::{
+    AttentionItem, AttentionQueue, KeyHint, KeyHints, NeedsAttentionPill, Paint, State, Theme,
+};
 
 fn requests<'a>(hints: &'a KeyHints) -> Vec<AttentionItem<'a>> {
     vec![
@@ -87,6 +89,10 @@ fn empty(area: Rect, buf: &mut Buffer, theme: &Theme) {
     AttentionQueue::new(&[]).paint(area, buf, theme);
 }
 
+fn pill(area: Rect, buf: &mut Buffer, theme: &Theme) {
+    NeedsAttentionPill::new(3).paint(area, buf, theme);
+}
+
 pub(crate) fn entries() -> Vec<Entry> {
     vec![
         Entry {
@@ -112,6 +118,12 @@ pub(crate) fn entries() -> Vec<Entry> {
             width: 64,
             height: 10,
             draw: empty,
+        },
+        Entry {
+            name: "attention-pill",
+            width: 32,
+            height: 1,
+            draw: pill,
         },
     ]
 }

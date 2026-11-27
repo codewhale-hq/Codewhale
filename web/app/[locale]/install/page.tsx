@@ -106,6 +106,13 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
                 <li><Rich text={t(INSTALL_COPY.newMac3)} /></li>
               </ol>
             </Channel>
+            <Channel id="install-new-linux" title={t(INSTALL_COPY.newLinuxTitle)}>
+              <ol>
+                <li><Rich text={t(INSTALL_COPY.newLinux1)} /></li>
+                <li><Rich text={t(INSTALL_COPY.newLinux2)} />{code(INSTALL_COMMANDS.shell)}</li>
+                <li><Rich text={t(INSTALL_COPY.newLinux3)} /></li>
+              </ol>
+            </Channel>
             <Channel id="install-new-windows" title={t(INSTALL_COPY.newWinTitle)}>
               <ol>
                 <li><Rich text={t(INSTALL_COPY.newWin1)} /></li>
@@ -135,7 +142,10 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
             {p(INSTALL_COPY.pathOptOut)}
             {code(C.noModifyPath)}
             {p(INSTALL_COPY.pathManualIntro)}
-            {code(C.pathManual)}
+            {p(INSTALL_COPY.pathManualBash)}
+            {code(C.pathManualBash)}
+            {p(INSTALL_COPY.pathManualZsh)}
+            {code(C.pathManualZsh)}
           </Block>
 
           <Block id="install-verify" title={t(INSTALL_COPY.verifyTitle)}>
@@ -162,7 +172,6 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
             {p(INSTALL_COPY.usageBody)}
             {code(C.telemetryOff)}
             {p(INSTALL_COPY.usageInstaller)}
-            {code(C.installTelemetryOff)}
             <p>
               <Link href={`/${locale}/legal/privacy#usage-counting`} className="section-link">
                 {t(INSTALL_COPY.usageLink)}
@@ -221,6 +230,7 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
               {p(INSTALL_COPY.npmBody)}
               {p(INSTALL_COPY.npmEacces)}
               {code(C.npmPrefix)}
+              {p(INSTALL_COPY.npmScripts)}
               {p(INSTALL_COPY.npmUpdate)}
             </Channel>
             <Channel id="install-cargo" title={t(INSTALL_COPY.cargoTitle)}>

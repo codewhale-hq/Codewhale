@@ -80,14 +80,8 @@ impl ModePickerView {
                 id: mode.id.clone(),
                 name: modes::display_name(locale, mode),
                 description: modes::display_description(locale, mode),
-                unavailable: (!mode.available).then(|| {
-                    modes::display_reason(
-                        locale,
-                        mode.reason
-                            .as_deref()
-                            .unwrap_or("This mode is unavailable."),
-                    )
-                }),
+                unavailable: (!mode.available)
+                    .then(|| modes::display_reason(locale, mode.reason.as_deref())),
                 current: mode.id == current_id,
             })
             .collect();
@@ -696,5 +690,26 @@ mod tests {
             view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             ViewAction::EmitAndClose(ViewEvent::ConversationModeSelected { ref id }) if id == "creator"
         ));
+    }
+
+    #[test]
+    fn unavailable_mode_without_reason_uses_localized_default() {
+        let table = ConversationModeTable {
+            default: conversation_modes::STANDARD,
+            modes: vec![conversation_modes::ConversationMode {
+                id: "unavailable-id".to_string(),
+                name: "Unavailable".to_string(),
+                description: "Unavailable mode".to_string(),
+                source: "builtin",
+                available: false,
+                reason: None,
+            }],
+        };
+        let view = ModePickerView::from_table(AppMode::Agent, Locale::ZhHans, &table, None, false);
+        let expected = tr(
+            Locale::ZhHans,
+            MessageId::ConversationModeUnavailableDefault,
+        );
+        assert_eq!(view.rows[0].unavailable.as_deref(), Some(expected.as_ref()));
     }
 }

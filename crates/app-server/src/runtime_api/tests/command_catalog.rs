@@ -67,7 +67,7 @@ fn command_catalog_marks_user_shadowing_of_builtin_names_and_aliases() {
         builtin("subagents", vec!["agents".to_string()]),
     ];
     let users = [user("model"), user("agents")];
-    let commands = command_catalog(&builtins, &users);
+    let commands = command_catalog(&builtins, &users, false);
 
     let model = entry(&commands, "model");
     assert_eq!(model.shadowed_by.as_deref(), Some("model"));
@@ -785,7 +785,7 @@ async fn get_v1_hooks_serves_the_runtime_hook_set() -> Result<()> {
         .get(format!("http://{addr}/v1/hooks?thread_id=thr_missing"))
         .send()
         .await?;
-    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     handle.abort();
     Ok(())
 }
@@ -973,6 +973,152 @@ async fn post_thread_builtin_command_serves_only_the_host_allowlist() -> Result<
         .await?;
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
 
+    handle.abort();
+    Ok(())
+}
+
+static SHIP_REVOKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+struct ShipCatalog;
+impl CommandCatalog for ShipCatalog {
+    fn answers_to(&self, _name: &str) -> bool {
+        false
+    }
+    fn builtins(&self) -> Vec<BuiltinCommand> {
+        Vec::new()
+    }
+    fn user_commands(&self, _workspace: &Path) -> Vec<UserCommand> {
+        let mut ship = user("ship");
+        ship.builtin_bindings.clear();
+        ship.plugin_id = Some("user/fixture/release-kit".into());
+        vec![ship]
+    }
+    fn expands_user_commands(&self) -> bool {
+        true
+    }
+    fn expand_user_command(
+        &self,
+        _workspace: &Path,
+        _plugins: &codewhale_plugins::PluginRegistry,
+        input: &str,
+    ) -> Option<Result<codewhale_engine::command_catalog::ExpandedUserCommand, String>> {
+        (input.split_whitespace().next() == Some("/ship")).then(|| {
+            if SHIP_REVOKED.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err("Plugin command '/ship' was denied: revoked".into());
+            }
+            Ok(codewhale_engine::command_catalog::ExpandedUserCommand {
+                name: "ship".into(),
+                message: "Reply with the single word shipped. Do not use tools.".into(),
+                allowed_tools: Some(vec!["read_file".into()]),
+                plugin_id: Some("user/fixture/release-kit".into()),
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_runtime_turn_sends_a_prompt_bound_user_command_as_its_expanded_template() -> Result<()> {
+    let _env = lock_test_env();
+    let temp = tempfile::tempdir()?;
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace)?;
+    SHIP_REVOKED.store(false, std::sync::atomic::Ordering::SeqCst);
+    let _catalog = codewhale_engine::command_catalog::CatalogGuard::install(Arc::new(ShipCatalog));
+    let config = Config::default().with_legacy_root(
+        Some("ship-fixture-key".into()),
+        Some("http://127.0.0.1:1/v1".into()),
+    );
+    let Some((addr, runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            temp.path().join("runtime"),
+            temp.path().join("sessions"),
+            None,
+            false,
+            workspace,
+            TestServerOverrides {
+                config: Some(config),
+                ..TestServerOverrides::default()
+            },
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    let client = codewhale_release::tls::reqwest_client();
+    let model = Arc::new(codewhale_engine::llm_client::mock::MockLlmClient::new(
+        vec![codewhale_engine::llm_client::mock::canned::simple_text_turn("shipped")],
+    ));
+    runtime_threads.set_test_model_client(model.clone());
+    let thread = runtime_threads
+        .create_thread(CreateThreadRequest {
+            model: Some("deepseek-v4-pro".into()),
+            ..Default::default()
+        })
+        .await?;
+
+    let catalog: Value = client
+        .get(format!("http://{addr}/v1/commands?thread_id={}", thread.id))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let ship = catalog["commands"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["name"] == "ship"))
+        .context("ship row")?;
+    assert_eq!(ship["binding"], "prompt");
+    assert_eq!(ship["runtime_expands"], true);
+
+    let started: Value = client
+        .post(format!("http://{addr}/v1/threads/{}/turns", thread.id))
+        .json(&json!({ "prompt": "/ship", "operation_key": "ship-once" }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(started["user_command"]["name"], "ship");
+    assert_eq!(
+        started["user_command"]["plugin_id"],
+        "user/fixture/release-kit"
+    );
+    assert_eq!(started["turn"]["input_summary"], "/ship");
+    let turn_id = started["turn"]["id"].as_str().context("turn id")?;
+    assert_eq!(
+        wait_for_terminal_turn_status(&client, addr, &thread.id, turn_id, Duration::from_secs(20))
+            .await?,
+        "completed"
+    );
+    let requests = model.captured_requests();
+    assert_eq!(requests.len(), 1);
+    let sent = format!("{:?}", requests[0]);
+    assert!(
+        sent.contains("Reply with the single word shipped. Do not use tools."),
+        "the model must receive the command template: {sent}"
+    );
+    assert!(!sent.contains("\"/ship\""), "{sent}");
+
+    SHIP_REVOKED.store(true, std::sync::atomic::Ordering::SeqCst);
+    let retry = client
+        .post(format!("http://{addr}/v1/threads/{}/turns", thread.id))
+        .json(&json!({ "prompt": "/ship", "operation_key": "ship-once" }))
+        .send()
+        .await?;
+    assert_eq!(retry.status(), StatusCode::OK);
+    let retry: Value = retry.json().await?;
+    assert_eq!(retry["idempotent_replay"], true);
+    assert_eq!(retry["turn"]["id"], turn_id);
+    let denied = client
+        .post(format!("http://{addr}/v1/threads/{}/turns", thread.id))
+        .json(&json!({ "prompt": "/ship", "operation_key": "ship-twice" }))
+        .send()
+        .await?;
+    assert_eq!(denied.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let denied: Value = denied.json().await?;
+    assert_eq!(denied["error"]["code"], "user_command_denied");
+    assert_eq!(model.captured_requests().len(), 1);
+    SHIP_REVOKED.store(false, std::sync::atomic::Ordering::SeqCst);
     handle.abort();
     Ok(())
 }

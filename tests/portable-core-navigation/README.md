@@ -45,9 +45,10 @@ insertions must not silently admit runtime or storage services into the closure.
 
 ## Capability limitations
 
-`NAVIGATION` and `VOICE_INPUT` occupy the last two bits of the existing `u32`.
-No free bit remains. A future capability must first make an explicit, reviewed
-representation/scoping decision; do not silently widen or renumber identities.
+The capability set is a `u64`. `NAVIGATION` and `VOICE_INPUT` occupy bits 30
+and 31, the last two of the original `u32`; `BACKGROUND` (commands that run
+their work off the UI loop) is bit 32, added when the set was widened for it.
+A future capability takes the next free bit; do not renumber identities.
 
 The current `WORKSPACE` facet includes confined anchor read/append/replace,
 path inspection and home-directory resolution, not just path reads. Other

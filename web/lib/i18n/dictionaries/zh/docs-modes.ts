@@ -99,7 +99,7 @@ export const docsModes: DocsModesDict = {
           p: "Workflow 计划卡片有不同的选项，包括编辑或取消计划。请按照该卡片上的标签操作，而非套用上面的普通工具快捷键。",
         },
         {
-          p: "新审批卡片默认选中“拒绝”，所以除非你更改了设置，按 Enter 会拒绝调用。审批提示默认无限等待；可以在用户配置中设置超时，让未答复的提示在 300 秒后被拒绝：",
+          p: "新审批卡片默认选中“允许”，所以按 Enter 会允许所显示的这一个操作，仅此一次。设置 `default_selection = \"deny\"` 可让 Enter 改为拒绝调用。审批提示默认无限等待；可以在用户配置中设置超时，让未答复的提示在 300 秒后被拒绝：",
         },
         {
           code: `[approval]\ndefault_selection = "deny"\ntimeout_seconds = 300`,

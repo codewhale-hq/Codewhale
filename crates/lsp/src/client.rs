@@ -11,7 +11,7 @@
 //!
 //! - [`LspTransport`] is the trait the [`super::LspManager`] talks to. The
 //!   real implementation is [`StdioLspTransport`] (forks an LSP server with
-//!   `tokio::process::Command`); tests use `super::tests::FakeTransport`.
+//!   `tokio::process::Command`); tests use `FakeTransport`.
 //! - [`StdioLspTransport`] runs three tokio tasks: a reader, a writer, and
 //!   the public API. Communication uses tokio mpsc channels.
 //! - We parse `Content-Length`-framed JSON-RPC and route inbound messages
@@ -743,8 +743,7 @@ pub(super) fn path_from_uri(uri: &str) -> Option<PathBuf> {
     url.to_file_path().ok()
 }
 
-#[cfg(any(test, feature = "test-support"))]
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+#[cfg(test)]
 pub(super) mod tests {
     use super::*;
 

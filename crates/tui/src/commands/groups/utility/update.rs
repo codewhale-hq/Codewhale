@@ -18,11 +18,17 @@
 //!   Telling the user to restart is the honest slice; that is also the only
 //!   possible answer on Windows, where the replaced image is the one running.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
-use codewhale_command_contract::handler::CommandHandler;
+use codewhale_command_contract::facets::{BackgroundCancel, BackgroundRequest};
+use codewhale_command_contract::handler::{CommandCapabilities, CommandContexts, CommandHandler};
 use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
+use codewhale_command_contract::outcome::BackgroundCommandResult;
 use codewhale_release::InstallMethod;
 
 use crate::commands::CommandResult;
@@ -30,7 +36,7 @@ use crate::commands::CommandResult;
 pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
     name: "update",
     aliases: &["upgrade"],
-    usage: "/update [check|install]",
+    usage: "/update [check|install|cancel]",
     description_key: "cmd_update_description",
 };
 
@@ -42,7 +48,10 @@ impl RegisterCommand<CommandResult> for UpdateCmd {
     }
 
     fn handler() -> CommandHandler<CommandResult> {
-        CommandHandler::Pure(update)
+        CommandHandler::Contextual {
+            capabilities: CommandCapabilities::BACKGROUND,
+            handler: update,
+        }
     }
 }
 
@@ -54,6 +63,10 @@ pub(super) enum UpdateMode {
     Check,
     /// Actually run the updater.
     Install,
+}
+
+fn is_cancel(arg: Option<&str>) -> bool {
+    arg.is_some_and(|arg| matches!(arg.trim().to_ascii_lowercase().as_str(), "cancel" | "stop"))
 }
 
 fn parse_mode(arg: Option<&str>) -> Result<UpdateMode, String> {
@@ -128,18 +141,13 @@ pub(super) fn resolve_updater(
 }
 
 /// Instructions for an install this command must not update in place.
-pub(super) fn managed_install_message(method: InstallMethod) -> String {
-    if method == InstallMethod::DesktopApp {
-        return codewhale_release::install::DESKTOP_APP_UPDATE_HELP.to_string();
-    }
+pub(super) fn managed_install_message(method: InstallMethod, exe: Option<&Path>) -> String {
     format!(
-        "Codewhale was installed with {label}, which owns this binary.\n\
-         {migration_help}\n\n\
-         To keep this secondary {label} installation, run `{command}` in a shell.\n\
-         /update will not replace a binary owned by {label}; restart Codewhale after changing installs.",
-        label = method.label(),
-        migration_help = codewhale_release::install::GITHUB_MIGRATION_HELP,
-        command = method.update_command(),
+        "{} Restart Codewhale after updating.",
+        codewhale_release::installs::update_answer(
+            method,
+            exe.unwrap_or(Path::new(UPDATER_BIN_STEM))
+        )
     )
 }
 
@@ -160,12 +168,22 @@ fn install_preamble(updater: &Path) -> String {
          downloads the binary for this platform, verifies its SHA256 checksum, and atomically \
          replaces {updater}.\n\
          It does not restart Codewhale — you will need to do that yourself once it finishes. \
-         The UI is paused while the updater runs.",
+         The updater runs in the background and reports here when it is done; \
+         `/update cancel` stops it.",
         updater = updater.display(),
     )
 }
 
-fn update(arg: Option<&str>) -> CommandResult {
+fn update(mut contexts: CommandContexts<'_>, arg: Option<&str>) -> CommandResult {
+    let background = contexts.take_background();
+    if is_cancel(arg) {
+        return match background {
+            Some(background) => background
+                .cancel(COMMAND_INFO.name)
+                .map_or_else(CommandResult::error, CommandResult::message),
+            None => CommandResult::error("Command capability unavailable: background"),
+        };
+    }
     let mode = match parse_mode(arg) {
         Ok(mode) => mode,
         Err(message) => return CommandResult::error(message),
@@ -178,20 +196,119 @@ fn update(arg: Option<&str>) -> CommandResult {
     };
 
     match resolve_updater(exe.as_deref(), method, &|path: &Path| path.is_file()) {
-        UpdaterPlan::Managed(method) => CommandResult::message(managed_install_message(method)),
+        UpdaterPlan::Managed(method) => {
+            CommandResult::message(managed_install_message(method, exe.as_deref()))
+        }
         UpdaterPlan::NoUpdater { exe } => CommandResult::message(no_updater_message(&exe)),
-        UpdaterPlan::Run(updater) => run_updater(&updater, mode),
+        UpdaterPlan::Run(updater) => match background {
+            Some(background) => background
+                .start(
+                    COMMAND_INFO.name,
+                    update_job,
+                    BackgroundRequest {
+                        updater,
+                        argument: arg.unwrap_or_default().to_string(),
+                        ..BackgroundRequest::default()
+                    },
+                )
+                .map_or_else(CommandResult::error, CommandResult::message),
+            None => crate::commands::contract::run_owner_blocking(move || {
+                Ok(run_updater(&updater, mode))
+            })
+            .unwrap_or_else(CommandResult::error),
+        },
     }
 }
 
-fn run_updater(updater: &Path, mode: UpdateMode) -> CommandResult {
+fn updater_command(updater: &Path, mode: UpdateMode) -> Command {
     let mut command = Command::new(updater);
     command.arg("update");
     if mode == UpdateMode::Check {
         command.arg("--check");
     }
+    command
+}
 
-    let output = match command.output() {
+fn run_updater(updater: &Path, mode: UpdateMode) -> CommandResult {
+    updater_result(updater, mode, updater_command(updater, mode).output())
+}
+
+fn update_job(request: BackgroundRequest, cancel: BackgroundCancel) -> BackgroundCommandResult {
+    let mode = match parse_mode(Some(&request.argument)) {
+        Ok(mode) => mode,
+        Err(message) => return BackgroundCommandResult::error(message),
+    };
+    let updater = request.updater;
+    match run_until_cancelled(updater_command(&updater, mode), &cancel) {
+        Some(output) => updater_result(&updater, mode, output),
+        None => {
+            BackgroundCommandResult::error(format!("`{} update` was cancelled.", updater.display()))
+        }
+    }
+}
+
+const CANCEL_POLL: Duration = Duration::from_millis(50);
+
+fn run_until_cancelled(
+    mut command: Command,
+    cancel: &AtomicBool,
+) -> Option<std::io::Result<Output>> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) => return Some(Err(err)),
+    };
+    let stdout = child.stdout.take().map(drain);
+    let stderr = child.stderr.take().map(drain);
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Some(Ok(Output {
+                    status,
+                    stdout: collected(stdout),
+                    stderr: collected(stderr),
+                }));
+            }
+            Ok(None) => std::thread::sleep(CANCEL_POLL),
+            Err(err) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Some(Err(err));
+            }
+        }
+    }
+}
+
+fn drain(mut pipe: impl Read + Send + 'static) -> JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = pipe.read_to_end(&mut bytes);
+        bytes
+    })
+}
+
+fn collected(reader: Option<JoinHandle<Vec<u8>>>) -> Vec<u8> {
+    reader
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default()
+}
+
+fn updater_result<A>(
+    updater: &Path,
+    mode: UpdateMode,
+    output: std::io::Result<Output>,
+) -> codewhale_command_contract::outcome::CommandResult<A> {
+    use codewhale_command_contract::outcome::CommandResult;
+
+    let output = match output {
         Ok(output) => output,
         Err(err) => {
             return CommandResult::error(format!(
@@ -274,15 +391,14 @@ mod tests {
             );
             assert_eq!(plan, UpdaterPlan::Managed(method), "{method:?}");
 
-            let message = managed_install_message(method);
-            assert!(message.contains(codewhale_release::install::GITHUB_MIGRATION_HELP));
-            assert!(message.contains("mktemp -d"));
+            let message =
+                managed_install_message(method, Some(Path::new("/opt/whatever/codewhale")));
             assert!(
                 message.contains(method.update_command()),
                 "{method:?} message must name its own update command: {message}"
             );
             assert!(
-                message.contains("restart Codewhale"),
+                message.contains("Restart Codewhale"),
                 "{method:?} message must tell the user to restart: {message}"
             );
         }
@@ -385,6 +501,7 @@ mod tests {
         );
         assert!(preamble.contains("SHA256"), "{preamble}");
         assert!(preamble.contains("does not restart"), "{preamble}");
+        assert!(preamble.contains("/update cancel"), "{preamble}");
     }
 
     #[test]
@@ -402,9 +519,126 @@ mod tests {
         assert!(bounded.chars().count() < flood.chars().count());
     }
 
+    #[derive(Default)]
+    struct Background {
+        cancelled: Vec<&'static str>,
+    }
+
+    impl codewhale_command_contract::facets::CommandBackgroundContext for Background {
+        fn start(
+            &mut self,
+            command: &'static str,
+            _job: codewhale_command_contract::facets::BackgroundJob,
+            _request: BackgroundRequest,
+        ) -> Result<String, String> {
+            Err(format!("/{command} must not start in this test"))
+        }
+
+        fn cancel(&mut self, command: &'static str) -> Result<String, String> {
+            self.cancelled.push(command);
+            Ok(format!("/{command} cancelled"))
+        }
+    }
+
     #[test]
-    fn handler_is_pure_and_argument_only() {
-        assert!(matches!(UpdateCmd::handler(), CommandHandler::Pure(_)));
+    fn cancel_goes_to_the_background_facet_and_never_reaches_the_updater() {
+        assert!(is_cancel(Some(" Cancel ")));
+        assert!(is_cancel(Some("stop")));
+        assert!(!is_cancel(None));
+        assert!(!is_cancel(Some("install")));
+
+        let mut background = Background::default();
+        let result = update(
+            CommandContexts::empty().with_background(&mut background),
+            Some("cancel"),
+        );
+        assert!(!result.is_error, "{result:?}");
+        assert_eq!(result.message.as_deref(), Some("/update cancelled"));
+        assert_eq!(background.cancelled, ["update"]);
+
+        let unavailable = update(CommandContexts::empty(), Some("cancel"));
+        assert!(unavailable.is_error, "{unavailable:?}");
+    }
+
+    #[test]
+    fn an_updater_that_cannot_be_spawned_is_reported_as_the_commands_error() {
+        let result: BackgroundCommandResult = updater_result(
+            Path::new("/usr/local/bin/codewhale"),
+            UpdateMode::Install,
+            Err(std::io::Error::other("no such file")),
+        );
+        assert!(result.is_error);
+        assert!(result.action.is_none());
+        let message = result.message.expect("error message");
+        assert!(
+            message.contains("/usr/local/bin/codewhale update"),
+            "{message}"
+        );
+        assert!(message.contains("no such file"), "{message}");
+    }
+
+    #[test]
+    fn a_background_updater_job_reports_a_missing_binary() {
+        let missing = std::env::temp_dir().join("codewhale-update-test-missing-binary");
+        let result = update_job(
+            BackgroundRequest {
+                updater: missing.clone(),
+                argument: "check".to_string(),
+                ..BackgroundRequest::default()
+            },
+            BackgroundCancel::default(),
+        );
+        assert!(result.is_error);
+        assert!(
+            result
+                .message
+                .expect("error message")
+                .contains(&missing.display().to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_finished_child_returns_its_output() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "echo out; echo err >&2"]);
+        let output = run_until_cancelled(command, &AtomicBool::new(false))
+            .expect("not cancelled")
+            .expect("spawned");
+        assert!(output.status.success());
+        assert_eq!(
+            updater_transcript(&output.stdout, &output.stderr),
+            "out\nerr"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelling_kills_and_reaps_the_running_updater() {
+        let cancel = BackgroundCancel::default();
+        let trigger = cancel.clone();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            trigger.store(true, Ordering::SeqCst);
+        });
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let started = std::time::Instant::now();
+        assert!(run_until_cancelled(command, &cancel).is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the child was killed, not waited out: {:?}",
+            started.elapsed()
+        );
+        canceller.join().unwrap();
+    }
+
+    #[test]
+    fn handler_declares_only_the_background_facet() {
+        let CommandHandler::Contextual { capabilities, .. } = UpdateCmd::handler() else {
+            panic!("/update must be contextual");
+        };
+        assert_eq!(capabilities, CommandCapabilities::BACKGROUND);
         assert_eq!(UpdateCmd::info().description_key, "cmd_update_description");
         assert_eq!(UpdateCmd::info().aliases, &["upgrade"]);
     }

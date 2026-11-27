@@ -125,6 +125,12 @@ export interface ChromeDict {
   downloadSize: string;
   downloadChecksum: string;
   downloadSigned: string;
+  downloadLinux: string;
+  downloadAptTitle: string;
+  downloadAptTrust: string;
+  downloadAppImage: string;
+  downloadAppImageTrust: string;
+  downloadAptFingerprint: string;
 }
 
 export interface FeaturesDict {

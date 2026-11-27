@@ -133,8 +133,8 @@ export async function startStub() {
         return json(res, 200, { ok: true });
       }
       return runtime(req, res, url, body);
-    } catch (error) {
-      json(res, 500, { message: String(error?.message || error) });
+    } catch {
+      json(res, 500, { message: "stub server error" });
     }
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));

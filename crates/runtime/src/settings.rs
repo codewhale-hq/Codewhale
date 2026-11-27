@@ -2498,6 +2498,28 @@ fn reject_settings_lock_symlink(lock_path: &Path) -> Result<()> {
 /// owner-only otherwise. `NamedTempFile` removes itself if anything below fails,
 /// so a failed save leaves no debris and never damages the previous file.
 fn atomically_replace_settings_file(path: &Path, body: &[u8]) -> Result<()> {
+    atomically_replace_settings_file_with_dir_sync(
+        path,
+        body,
+        codewhale_config::persistence::sync_parent_dir,
+    )
+}
+
+fn sync_settings_dir_best_effort(dir: &Path, sync_dir: impl FnOnce(&Path) -> Result<()>) {
+    if let Err(err) = sync_dir(dir) {
+        tracing::warn!(
+            dir = %dir.display(),
+            error = %format!("{err:#}"),
+            "failed to sync settings directory after write; new file is already in place"
+        );
+    }
+}
+
+fn atomically_replace_settings_file_with_dir_sync(
+    path: &Path,
+    body: &[u8],
+    sync_dir: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
     use std::io::Write as _;
 
     let dir = path
@@ -2540,6 +2562,7 @@ fn atomically_replace_settings_file(path: &Path, body: &[u8]) -> Result<()> {
                 // ReplaceFileW consumed the temporary pathname. Do not ask
                 // TempPath to clean up that now-nonexistent source on drop.
                 temporary.disable_cleanup(true);
+                sync_settings_dir_best_effort(dir, sync_dir);
                 return Ok(());
             }
             // A directory that refuses every rename — Codewhale's own home is
@@ -2556,6 +2579,7 @@ fn atomically_replace_settings_file(path: &Path, body: &[u8]) -> Result<()> {
                 temporary.disable_cleanup(true);
                 drop(temporary);
                 rewrite_settings_in_place(path, body)?;
+                sync_settings_dir_best_effort(dir, sync_dir);
                 return Ok(());
             }
             Err(error) => {
@@ -2568,6 +2592,7 @@ fn atomically_replace_settings_file(path: &Path, body: &[u8]) -> Result<()> {
     tmp.persist(path)
         .map_err(|error| error.error)
         .with_context(|| format!("Failed to write settings to {}", path.display()))?;
+    sync_settings_dir_best_effort(dir, sync_dir);
     Ok(())
 }
 
@@ -4189,6 +4214,33 @@ mod tests {
         assert!(
             !saved.contains("launch_screen"),
             "the retired setting must not be written back: {saved}"
+        );
+    }
+
+    #[test]
+    fn atomic_settings_replace_syncs_parent_dir_best_effort_after_persist() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("settings.toml");
+
+        let mut synced_dir = None;
+        atomically_replace_settings_file_with_dir_sync(&path, b"first = true\n", |dir| {
+            synced_dir = Some(dir.to_path_buf());
+            assert_eq!(
+                std::fs::read_to_string(&path).expect("persisted before dir sync"),
+                "first = true\n"
+            );
+            Ok(())
+        })
+        .expect("initial save");
+        assert_eq!(synced_dir.as_deref(), Some(tmp.path()));
+
+        atomically_replace_settings_file_with_dir_sync(&path, b"second = true\n", |_| {
+            anyhow::bail!("injected directory sync failure")
+        })
+        .expect("best-effort parent directory sync must not fail a landed write");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("updated settings"),
+            "second = true\n"
         );
     }
 

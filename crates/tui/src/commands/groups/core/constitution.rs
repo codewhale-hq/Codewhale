@@ -439,8 +439,8 @@ fn format_status(app: &App, locale: Locale, account: &Result<bool, String>) -> S
 
     let _ = writeln!(out, "{}", copy.manager_header);
     out.push_str(match locale {
-        Locale::ZhHans => "\n下方为本机宪章设置。已登录账户的宪章（包括默认值）优先于本机设置，由引擎在每轮开始时加载。在应用的设置 → 账户 → 宪章中编辑；更改从下一轮生效。\n",
-        _ => "\nLocal constitution settings follow. The signed-in profile constitution, including its defaults, takes precedence and is loaded by the Engine at each turn. Edit it in Settings → Accounts → Constitution; changes apply from the next turn.\n",
+        Locale::ZhHans => "\n下方为本机宪章设置。已登录账户的宪章（包括默认值）优先于本机设置，由引擎在每轮开始时加载；账户服务响应较慢时，该轮使用上次加载的账户宪章。在应用的设置 → 账户 → 宪章中编辑；更改从下一轮生效。\n",
+        _ => "\nLocal constitution settings follow. The signed-in profile constitution, including its defaults, takes precedence and is loaded by the Engine at each turn; when the account service is slow, a turn uses the last one it loaded. Edit it in Settings → Accounts → Constitution; changes apply from the next turn.\n",
     });
     out.push('\n');
     let _ = writeln!(out, "{}", copy.active_stack_header);

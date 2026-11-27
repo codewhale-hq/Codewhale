@@ -11,7 +11,6 @@ pub(super) fn wall_deadline(runtime: &SubAgentRuntime) -> Option<Instant> {
         })
 }
 
-#[cfg(test)]
 pub(super) fn repair_stopped_tool_calls(messages: &mut Vec<Message>, cause: &str) {
     // Keep the final call blocks, so keys remain borrowed from their original
     // identities while repair changes the message vector.

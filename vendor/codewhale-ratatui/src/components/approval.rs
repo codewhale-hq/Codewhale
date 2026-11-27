@@ -227,6 +227,8 @@ pub struct ApprovalSubject<'a> {
     /// The exact command, path, URL or tool call.
     pub target: Cow<'a, str>,
     pub cwd: Option<Cow<'a, str>>,
+    /// Optional target file or directory path affected by this approval.
+    pub path: Option<Cow<'a, str>>,
     pub scope: ApprovalScope,
     pub agent: Option<ApprovalAgent<'a>>,
     /// Risk notes the caller supplies, one per row.
@@ -242,6 +244,7 @@ impl<'a> ApprovalSubject<'a> {
             kind,
             target: target.into(),
             cwd: None,
+            path: None,
             scope: ApprovalScope::Unchecked,
             agent: None,
             risk_notes: Vec::new(),
@@ -252,6 +255,16 @@ impl<'a> ApprovalSubject<'a> {
     #[must_use]
     pub fn cwd(mut self, cwd: impl Into<Cow<'a, str>>) -> Self {
         self.cwd = Some(cwd.into());
+        self
+    }
+
+    /// Attach the file or directory path affected by this approval.
+    ///
+    /// Used as the fallback subject when [`Self::target`] is empty, and shown
+    /// in the details section when both are present.
+    #[must_use]
+    pub fn path(mut self, path: impl Into<Cow<'a, str>>) -> Self {
+        self.path = Some(path.into());
         self
     }
 
@@ -977,6 +990,12 @@ impl ApprovalChoice {
         }
     }
 
+    /// Convenience constructor for a session-scoped grant choice.
+    #[must_use]
+    pub fn allow_session(id: ChoiceId, label: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(id, label, ApprovalEffect::Grants)
+    }
+
     #[must_use]
     pub fn key(mut self, key: ApprovalKey) -> Self {
         self.keys.push(key);
@@ -1169,6 +1188,8 @@ struct Styles {
     border: Style,
     attention: Style,
     danger: Style,
+    live: Style,
+    diff_remove: Style,
     primary: Style,
     token: Style,
 }
@@ -1184,6 +1205,8 @@ impl Styles {
             border: theme.fg(Role::Border),
             attention: theme.fg(Role::Attention).add_modifier(bold),
             danger: theme.fg(Role::Danger).add_modifier(bold),
+            live: theme.fg(Role::Live),
+            diff_remove: theme.fg(Role::Danger),
             primary: theme.fg(Role::Accent).add_modifier(bold),
             // Reversed and bold: a token is told from text by shape and
             // video, not hue, so it reads at 16 colors and under NO_COLOR.
@@ -1305,6 +1328,7 @@ pub struct ApprovalCard<'a> {
     pub state: &'a ApprovalState,
     words: Cow<'a, ApprovalWords>,
     flag_non_ascii: bool,
+    diff_preview: bool,
 }
 
 impl<'a> ApprovalCard<'a> {
@@ -1315,6 +1339,7 @@ impl<'a> ApprovalCard<'a> {
             state,
             words: Cow::Owned(ApprovalWords::default()),
             flag_non_ascii: true,
+            diff_preview: false,
         }
     }
 
@@ -1331,6 +1356,14 @@ impl<'a> ApprovalCard<'a> {
     #[must_use]
     pub fn flag_non_ascii(mut self, on: bool) -> Self {
         self.flag_non_ascii = on;
+        self
+    }
+
+    /// Color diff-shaped preview lines (`+`, `-`, `@@`) with semantic tones
+    /// while keeping full [`visible_text`] escaping intact.
+    #[must_use]
+    pub fn diff_preview(mut self, on: bool) -> Self {
+        self.diff_preview = on;
         self
     }
 
@@ -1444,7 +1477,16 @@ impl<'a> ApprovalCard<'a> {
             format!("{} ", glyphs::pick("›", ascii))
         };
         let gutter = Some((first.as_str(), st.primary, "  ", st.plain));
-        if subject.target.is_empty() {
+        let fallback_path = subject
+            .target
+            .is_empty()
+            .then(|| subject.path.as_deref().filter(|p| !p.is_empty()))
+            .flatten();
+        if let Some(path) = fallback_path {
+            main.line(width, gutter, |w| {
+                non_ascii += w.subject(path, ascii, &st.looks(st.strong));
+            });
+        } else if subject.target.is_empty() {
             main.line(width, gutter, |w| w.words(&words.clip.empty, st.muted));
         } else {
             main.line(width, gutter, |w| {
@@ -1485,6 +1527,14 @@ impl<'a> ApprovalCard<'a> {
                 non_ascii += w.subject(dir, ascii, &st.looks(st.plain));
             });
         }
+        if !subject.target.is_empty()
+            && let Some(path) = subject.path.as_deref().filter(|p| !p.is_empty())
+        {
+            cwd.line(width, None, |w| {
+                w.words(&format!("{} ", glyphs::pick("›", ascii)), st.muted);
+                non_ascii += w.subject(path, ascii, &st.looks(st.plain));
+            });
+        }
 
         let mut notes = Section::new(cap);
         for note in &subject.risk_notes {
@@ -1500,8 +1550,21 @@ impl<'a> ApprovalCard<'a> {
             let rail = format!("{} ", glyphs::pick("│", ascii));
             for line in &subject.preview {
                 let gutter = Some((rail.as_str(), st.border, rail.as_str(), st.border));
+                let line_style = if self.diff_preview {
+                    if line.starts_with("@@") {
+                        st.muted
+                    } else if line.starts_with('+') && !line.starts_with("+++") {
+                        st.live
+                    } else if line.starts_with('-') && !line.starts_with("---") {
+                        st.diff_remove
+                    } else {
+                        st.plain
+                    }
+                } else {
+                    st.plain
+                };
                 preview.line(width, gutter, |w| {
-                    w.prose(line, ascii, &st.looks(st.plain));
+                    w.prose(line, ascii, &st.looks(line_style));
                 });
             }
         }

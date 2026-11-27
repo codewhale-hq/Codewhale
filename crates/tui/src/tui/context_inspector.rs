@@ -569,19 +569,26 @@ fn push_references(out: &mut String, references: &[SessionContextReference], loc
     let _ = writeln!(out, "{}", tr(locale, MessageId::CtxInspReferences));
     let _ = writeln!(out, "----------");
 
+    let reference_key = |reference: &codewhale_core::ContextReference| {
+        format!(
+            "{:?}:{:?}:{}:{}",
+            reference.source, reference.kind, reference.target, reference.label
+        )
+    };
+    let unique_total = references
+        .iter()
+        .map(|record| reference_key(&record.reference))
+        .collect::<HashSet<_>>()
+        .len();
     let mut seen = HashSet::new();
     let mut rendered = 0usize;
     for record in references {
         let reference = &record.reference;
-        let key = format!(
-            "{:?}:{:?}:{}:{}",
-            reference.source, reference.kind, reference.target, reference.label
-        );
-        if !seen.insert(key) {
+        if !seen.insert(reference_key(reference)) {
             continue;
         }
         if rendered >= MAX_REFERENCE_ROWS {
-            let remaining = references.len().saturating_sub(rendered);
+            let remaining = unique_total.saturating_sub(rendered);
             if remaining > 0 {
                 let _ = writeln!(
                     out,
@@ -641,7 +648,7 @@ fn push_tools(out: &mut String, app: &App, locale: Locale) {
         push_tool_row(out, locale, &location, detail);
         rendered += 1;
         if rendered >= MAX_TOOL_ROWS {
-            return;
+            break;
         }
     }
     for (cell_idx, detail) in rows
@@ -1118,6 +1125,30 @@ mod tests {
     use std::path::PathBuf;
 
     use codewhale_localization::Locale;
+
+    #[test]
+    fn reference_overflow_counts_only_distinct_references() {
+        let reference = |label: String| SessionContextReference {
+            message_index: 0,
+            reference: ContextReference {
+                kind: ContextReferenceKind::File,
+                source: ContextReferenceSource::AtMention,
+                badge: "file".to_string(),
+                target: format!("/tmp/project/{label}"),
+                label,
+                included: true,
+                expanded: true,
+                detail: None,
+            },
+        };
+        let mut references: Vec<_> = (0..MAX_REFERENCE_ROWS + 1)
+            .map(|index| reference(format!("f{index}.rs")))
+            .collect();
+        references.insert(1, reference("f0.rs".to_string()));
+        let mut out = String::new();
+        push_references(&mut out, &references, Locale::En);
+        assert!(out.contains("- ... 1 "), "{out}");
+    }
 
     fn test_app() -> App {
         let mut app = App::new(
@@ -1601,5 +1632,33 @@ mod tests {
         let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
         assert!(rendered.contains("Auto compact: off"), "{rendered}");
         assert!(!rendered.contains("makes room at"), "{rendered}");
+    }
+
+    #[test]
+    fn push_tools_keeps_details_hint_when_active_tools_fill_cap() {
+        let mut app = test_app();
+        for index in 0..=MAX_TOOL_ROWS {
+            let tool_id = format!("tool-{index}");
+            app.active_tool_details.insert(
+                tool_id.clone(),
+                ToolDetailRecord {
+                    tool_id,
+                    tool_name: format!("read_file_{index}"),
+                    input: serde_json::json!({}),
+                    output: None,
+                },
+            );
+        }
+        let mut out = String::new();
+        push_tools(&mut out, &app, Locale::En);
+        let details = crate::tui::shell_key_routing::display_chord(
+            crate::tui::shell_key_routing::binding(
+                crate::tui::shell_key_routing::ShellBindingId::ToolDetails,
+            )
+            .footer_chord,
+        );
+        let expected_hint =
+            tr(Locale::En, MessageId::CtxInspVHint).replace("{details}", details.as_ref());
+        assert!(out.contains(&expected_hint), "{out}");
     }
 }

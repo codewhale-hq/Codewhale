@@ -445,32 +445,37 @@ pub(crate) fn show_single_setting(app: &App, key: &str) -> ConfigReply {
                 .as_setting_for_provider(app.api_provider)
                 .to_string(),
         ),
-        "workspace_follow_symlinks" | "follow_symlinks" => Settings::load().ok().map(|settings| {
-            format!(
+        "workspace_follow_symlinks" | "follow_symlinks" => match Settings::load() {
+            Ok(settings) => Some(format!(
                 "{} (restart required for engine tools)",
                 settings.workspace_follow_symlinks
-            )
+            )),
+            Err(err) => return config_lookup_failed(app.ui_locale, &key, err),
+        },
+        "search" | "search.provider" | "search_provider" => match load_command_config(app) {
+            Ok(config) => Some(search_provider_display(&config, app.ui_locale)),
+            Err(err) => return config_lookup_failed(app.ui_locale, &key, err),
+        },
+        "telemetry" => match load_command_config(app) {
+            Ok(config) => Some(
+                codewhale_engine::telemetry_notice::saved_preference_enabled(&config).to_string(),
+            ),
+            Err(err) => return config_lookup_failed(app.ui_locale, &key, err),
+        },
+        "prompt_suggestion" => match load_command_config(app) {
+            Ok(config) => Some(prompt_suggestion_display(&config)),
+            Err(err) => return config_lookup_failed(app.ui_locale, &key, err),
+        },
+        "auto_review.reviewer_model" => Some(match app.auto_review_reviewer_model.clone() {
+            Some(model) => model,
+            None => match load_command_config(app) {
+                Ok(config) => config
+                    .auto_review
+                    .and_then(|cfg| cfg.reviewer_model)
+                    .unwrap_or_else(|| "auto (default)".to_string()),
+                Err(err) => return config_lookup_failed(app.ui_locale, &key, err),
+            },
         }),
-        "search" | "search.provider" | "search_provider" => load_command_config(app)
-            .ok()
-            .map(|config| search_provider_display(&config, app.ui_locale)),
-        "telemetry" => load_command_config(app).ok().map(|config| {
-            codewhale_engine::telemetry_notice::saved_preference_enabled(&config).to_string()
-        }),
-        "prompt_suggestion" => load_command_config(app)
-            .ok()
-            .map(|config| prompt_suggestion_display(&config)),
-        "auto_review.reviewer_model" => Some(
-            app.auto_review_reviewer_model
-                .clone()
-                .or_else(|| {
-                    load_command_config(app)
-                        .ok()
-                        .and_then(|config| config.auto_review)
-                        .and_then(|cfg| cfg.reviewer_model)
-                })
-                .unwrap_or_else(|| "auto (default)".to_string()),
-        ),
         "notifications" => Some(notifications_summary_value(&app.notification_settings)),
         _ => {
             // Any spelling `/set` accepts; internal flags, actions and
@@ -487,6 +492,18 @@ pub(crate) fn show_single_setting(app: &App, key: &str) -> ConfigReply {
         Some(v) => ConfigReply::message(format!("{key} = {v}")),
         None => ConfigReply::error(unknown_setting_message(&key)),
     }
+}
+
+fn config_lookup_failed(
+    locale: codewhale_localization::Locale,
+    key: &str,
+    err: impl std::fmt::Display,
+) -> ConfigReply {
+    ConfigReply::error(
+        tr(locale, MessageId::ConfigLookupFailed)
+            .replace("{key}", key)
+            .replace("{error}", &format!("{err:#}")),
+    )
 }
 
 /// Error for `/config <key>` when `key` is not a known setting: name the
@@ -1776,7 +1793,7 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                     ));
                 }
             };
-            // /pet and the settings editor share the ordered background writer.
+            // /whale and the settings editor share the ordered background writer.
             // A failed save is reported by the existing warning mailbox.
             return select_pet_mode(app, enabled, persist);
         }
@@ -2204,19 +2221,32 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             };
             let suffix = if persist {
                 match persist_root_bool_key(app.config_path.as_deref(), "allow_shell", enabled) {
-                    Ok(path) => format!(" (saved to {})", path.display()),
+                    Ok(path) => format!(
+                        " ({})",
+                        app.tr(MessageId::ConfigSavedTo)
+                            .replace("{path}", &path.display().to_string())
+                    ),
                     Err(err) => return ConfigReply::error(format!("Failed to save: {err}")),
                 }
             } else {
-                " (session only, add --save to persist)".to_string()
+                format!(" ({})", app.tr(MessageId::ConfigSessionOnlyHint))
             };
             app.set_agent_shell_access(enabled);
             let mode_hint = if enabled {
-                " Work mode will expose shell on the next turn with approval gating. Full Access (Shift+Tab) also enables shell and auto-approves."
+                app.tr(MessageId::ConfigAllowShellEnabledHint).replace(
+                    "{chord}",
+                    &crate::tui::shell_key_routing::display_chord(
+                        crate::tui::shell_key_routing::binding(
+                            crate::tui::shell_key_routing::ShellBindingId::PermissionCycle,
+                        )
+                        .footer_chord,
+                    ),
+                )
             } else {
-                " Shell tools will be hidden on the next turn. Re-enable with `/config allow_shell true`."
+                app.tr(MessageId::ConfigAllowShellDisabledHint)
+                    .replace("{command}", "`/config allow_shell true`")
             };
-            return ConfigReply::message(format!("allow_shell = {enabled}{suffix}.{mode_hint}"));
+            return ConfigReply::message(format!("allow_shell = {enabled}{suffix}. {mode_hint}"));
         }
         "mcp_config_path" | "mcp" => {
             if value.trim().is_empty() {
@@ -3048,12 +3078,12 @@ mod tests {
             is_error: result.is_error,
         }
     }
-    /// Invoke the portable `/pet` handler through the real PET envelope and
+    /// Invoke the portable `/whale` handler through the real PET envelope and
     /// convert the contract result back.
-    fn pet_command(app: &mut App, arg: Option<&str>) -> CommandResult {
-        let result = crate::commands::groups::config::config::pet(
+    fn whale_command(app: &mut App, arg: Option<&str>) -> CommandResult {
+        let result = crate::commands::groups::config::config::whale(
             app.command_contexts_with_config(None)
-                .contexts(crate::commands::groups::config::config::PET_CAPS),
+                .contexts(crate::commands::groups::config::config::WHALE_CAPS),
             arg,
         );
         CommandResult {
@@ -3611,31 +3641,14 @@ mod tests {
     }
 
     #[test]
-    fn pet_sound_command_is_opt_in_and_rejects_invalid_changes() {
-        let mut app = create_test_app();
-        let status = pet_command(&mut app, Some("sound"));
-        assert!(!status.is_error);
-        assert_eq!(app.pet_watch.sound_label(), MessageId::PetWatchSoundOff);
-
-        assert!(!pet_command(&mut app, Some(" SOUND ON ")).is_error);
-        assert_eq!(app.pet_watch.sound_label(), MessageId::PetWatchSoundPaused);
-        for invalid in ["sound yes", "sound off extra", "sound on --save"] {
-            assert!(pet_command(&mut app, Some(invalid)).is_error, "{invalid}");
-            assert_eq!(app.pet_watch.sound_label(), MessageId::PetWatchSoundPaused);
-        }
-        assert!(!pet_command(&mut app, Some("sound off")).is_error);
-        assert_eq!(app.pet_watch.sound_label(), MessageId::PetWatchSoundOff);
-    }
-
-    #[test]
-    fn pet_command_selects_the_main_view_without_taking_composer_focus() {
+    fn whale_command_selects_the_main_view_without_taking_composer_focus() {
         let mut app = create_test_app();
         app.onboarding = crate::tui::app::OnboardingState::None;
         app.redaction_gate = false;
         app.input = "kept draft".into();
         app.pet_watch.detach_for_test();
 
-        let on = pet_command(&mut app, None);
+        let on = whale_command(&mut app, None);
         assert!(!on.is_error);
         assert!(app.pet_watch.enabled);
         assert!(crate::tui::pet_watch::is_open(&app));
@@ -3645,11 +3658,11 @@ mod tests {
         );
         assert!(app.view_stack.is_empty());
         // Repeating `on` leaves the composer in the same shell focus.
-        assert!(!pet_command(&mut app, Some(" ON ")).is_error);
+        assert!(!whale_command(&mut app, Some(" ON ")).is_error);
         assert!(app.pet_watch.enabled);
         assert!(crate::tui::pet_watch::is_open(&app));
 
-        let off = pet_command(&mut app, Some("off"));
+        let off = whale_command(&mut app, Some("off"));
         assert!(!off.is_error);
         assert!(!app.pet_watch.enabled);
         assert!(!crate::tui::pet_watch::is_open(&app));
@@ -3660,21 +3673,50 @@ mod tests {
             Some(&*tr(app.ui_locale, MessageId::PetModeOff))
         );
 
-        // Bare /pet toggles back on; unknown verbs are refused with usage.
-        app.pet_watch.detach_for_test();
-        assert!(!pet_command(&mut app, None).is_error);
+        // Bare /whale toggles back on; removed verbs are refused with usage.
+        assert!(!whale_command(&mut app, None).is_error);
         assert!(app.pet_watch.enabled);
-        assert!(pet_command(&mut app, Some("bogus")).is_error);
-        let status = pet_command(&mut app, Some("status"));
-        assert!(!status.is_error);
-        let message = status.message.unwrap_or_default();
+        for removed in ["bogus", "status", "sound on", "export", "avatar"] {
+            assert!(whale_command(&mut app, Some(removed)).is_error, "{removed}");
+        }
+        assert!(app.pet_watch.enabled);
+    }
+
+    #[test]
+    fn whale_still_name_and_colour_reach_this_terminal_s_whale() {
+        let mut app = create_test_app();
+        app.pet_watch.detach_for_test();
+        assert!(!whale_command(&mut app, Some("still")).is_error);
+        assert!(app.pet_watch.still());
+        assert!(!whale_command(&mut app, Some("name Moby")).is_error);
+        assert_eq!(app.pet_watch.name(), Some("Moby"));
+        assert!(!whale_command(&mut app, Some("color #7fb2e0")).is_error);
+        assert_eq!(app.pet_watch.color(), Some([0x7f, 0xb2, 0xe0]));
+        assert!(!whale_command(&mut app, Some("color default")).is_error);
+        assert_eq!(app.pet_watch.color(), None);
+        assert!(!whale_command(&mut app, Some("still")).is_error);
+        assert!(!app.pet_watch.still());
+    }
+
+    #[test]
+    fn pet_is_an_unlisted_alias_that_runs_whale() {
+        let mut app = create_test_app();
+        app.onboarding = crate::tui::app::OnboardingState::None;
+        app.redaction_gate = false;
+        app.pet_watch.detach_for_test();
+        assert!(!crate::commands::execute("/pet", &mut app).is_error);
+        assert!(app.pet_watch.enabled);
+        assert!(!crate::commands::execute("/PET still", &mut app).is_error);
+        assert!(app.pet_watch.still());
+        assert!(!crate::commands::execute("/whale", &mut app).is_error);
+        assert!(!app.pet_watch.enabled);
+        let infos = crate::commands::command_infos();
+        assert!(infos.iter().any(|info| info.name == "whale"));
         assert!(
-            message.contains(&*tr(app.ui_locale, MessageId::PetModeOnLabel)),
-            "{message}"
-        );
-        assert!(
-            message.contains(&*tr(app.ui_locale, MessageId::PetViewOpen)),
-            "{message}"
+            infos
+                .iter()
+                .all(|info| info.name != "pet" && !info.aliases.contains(&"pet")),
+            "/pet is not listed"
         );
     }
 
@@ -3731,32 +3773,35 @@ mod tests {
     }
 
     #[test]
-    fn test_mode_yolo_sets_all_flags() {
-        for use_alias in [false, true] {
+    fn test_mode_yolo_hints_shift_tab_and_zidong_aliases_auto() {
+        for legacy in ["yolo", "bypass", "4"] {
             let mut app = create_test_app();
-            // Switch to Agent first to guarantee a clean starting state regardless of
-            // user settings on the host machine.
             let _ = mode_command(&mut app, Some("agent"));
-            let result = if use_alias {
-                crate::commands::execute("/zidong", &mut app)
-            } else {
-                mode_command(&mut app, Some("yolo"))
-            };
-            // YOLO is invisible Work+Bypass shorthand — user-facing copy names Full Access (Work).
+            let before_approval = app.approval_mode;
+            let before_trust = app.trust_mode;
+            let before_shell = app.allow_shell;
+            let result = mode_command(&mut app, Some(legacy));
             assert!(
                 result
                     .message
-                    .unwrap()
-                    .contains("Switched to Full Access (Work)")
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("Shift+Tab"),
+                "expected Shift+Tab hint for /mode {legacy}, got {:?}",
+                result.message
             );
-            assert_eq!(result.action, Some(AppAction::ModeChanged(AppMode::Agent)));
-            assert!(app.allow_shell);
-            assert!(app.trust_mode);
-            assert!(app.yolo);
-            assert_eq!(app.approval_mode, ApprovalMode::Bypass);
-            // The deprecated YOLO alias remaps to Agent mode (M6 compat shim).
-            assert_eq!(app.mode, AppMode::Agent);
+            assert_eq!(result.action, None);
+            assert!(!app.yolo);
+            assert_eq!(app.approval_mode, before_approval);
+            assert_eq!(app.trust_mode, before_trust);
+            assert_eq!(app.allow_shell, before_shell);
         }
+
+        let mut app = create_test_app();
+        let zidong = crate::commands::execute("/zidong", &mut app);
+        let auto = crate::commands::execute("/auto", &mut app);
+        assert_eq!(zidong.action, auto.action);
+        assert!(!app.yolo);
     }
 
     #[test]
@@ -3786,11 +3831,17 @@ mod tests {
         assert!(result.is_error);
         assert_eq!(app.mode, AppMode::Agent);
         let result = mode_command(&mut app, Some("4"));
-        // "4" still routes to the deprecated YOLO alias, which lands in Agent
-        // mode with bypass approvals (M6 compat shim).
-        assert_eq!(result.action, Some(AppAction::ModeChanged(AppMode::Agent)));
+        assert!(result.action.is_none());
         assert_eq!(app.mode, AppMode::Agent);
-        assert!(app.yolo);
+        assert!(!app.yolo);
+        assert!(
+            result
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("Full Access is a permission posture")),
+            "{:?}",
+            result.message
+        );
     }
 
     #[test]
@@ -4935,6 +4986,48 @@ completion_sound = "bell"
             notifications_msg.contains("completion_sound = bell"),
             "{notifications_msg}"
         );
+    }
+
+    #[test]
+    fn unparseable_config_reports_lookup_failure_not_unknown_setting() {
+        let temp_root = tempfile::tempdir().expect("isolated config dir");
+        let _guard = EnvGuard::new(temp_root.path());
+        let config_path = temp_root.path().join("custom-config.toml");
+        fs::write(&config_path, "search = [unterminated").unwrap();
+
+        let mut app = create_test_app();
+        app.config_path = Some(config_path);
+
+        let result = show_single_setting(&app, "search");
+        assert!(result.is_error, "{:?}", result.message);
+        let message = result.message.expect("lookup failure message");
+        assert!(message.contains("Failed to load config"), "{message}");
+        assert!(!message.contains("Unknown setting"), "{message}");
+    }
+
+    #[test]
+    fn allow_shell_reply_follows_the_ui_locale() {
+        let temp_root = tempfile::tempdir().expect("isolated config dir");
+        let _guard = EnvGuard::new(temp_root.path());
+        let config_path = temp_root.path().join("custom-config.toml");
+        fs::write(&config_path, "").unwrap();
+
+        let mut app = create_test_app();
+        app.config_path = Some(config_path);
+        let mut replies = Vec::new();
+        for locale in [
+            codewhale_localization::Locale::En,
+            codewhale_localization::Locale::ZhHans,
+        ] {
+            app.ui_locale = locale;
+            for value in ["true", "false"] {
+                let result = set_config_value(&mut app, "allow_shell", value, false);
+                assert!(!result.is_error, "{:?}", result.message);
+                replies.push(result.message.expect("allow_shell reply"));
+            }
+        }
+        assert_ne!(replies[0], replies[2]);
+        assert_ne!(replies[1], replies[3]);
     }
 
     #[test]

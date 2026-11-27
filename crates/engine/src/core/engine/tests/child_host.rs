@@ -2320,3 +2320,310 @@ async fn child_auto_review_blocks_propagate_to_parent_without_retry_grant_or_pau
         Event::ApprovalRequired { .. } | Event::AutoReviewPaused { .. }
     )));
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn dropped_child_approval_decision_logs_warning_before_denying_unavailable() {
+    struct CaptureWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for CaptureWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let dir = tempdir().unwrap();
+    let _home = crate::test_support::SealedHome::at(dir.path());
+    let mut api = Config::default().with_legacy_root(Some("child-local-fixture".into()), None);
+    api.allow_shell = Some(true);
+    let (mut parent, _parent_handle) = Engine::new(
+        EngineConfig {
+            workspace: dir.path().into(),
+            session_id: Some("origin-session".into()),
+            allow_shell: true,
+            snapshots_enabled: false,
+            memory_enabled: false,
+            ..Default::default()
+        },
+        &api,
+    );
+    parent.config.features.disable(Feature::Mcp);
+    let route = TurnRouteContext {
+        provider: ProviderKind::Deepseek,
+        model: DEFAULT_TEXT_MODEL.into(),
+        capabilities: Default::default(),
+        limits: None,
+        client: parent.codewhale_client.clone(),
+        api_config: Box::new(api.clone()),
+        locale_tag: parent.config.locale_tag.clone(),
+        role_models: HashMap::new(),
+        auto_model: false,
+        reasoning_effort: None,
+        reasoning_effort_auto: false,
+    };
+    let policy = TurnAuthority::from_effective_fields(
+        AppMode::Agent,
+        true,
+        false,
+        false,
+        ApprovalMode::Suggest,
+    );
+    let context = parent.build_tool_context_for_turn(&policy, &route);
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(32);
+    let runtime = SubAgentRuntime::new(
+        parent.codewhale_client.clone().unwrap(),
+        DEFAULT_TEXT_MODEL.into(),
+        context,
+        true,
+        Some(event_tx),
+        parent.subagent_manager.clone(),
+    )
+    .with_api_config(api.clone())
+    .with_approval_receipt_store(parent.approval_receipt_store.clone())
+    .with_permission_posture(
+        Arc::new(crate::core::authority::auto_review::AutoReviewPolicy::default()),
+        true,
+    );
+    let authority = ChildAuthority::capture(
+        runtime,
+        FleetRole::Worker,
+        "child-approval-err".into(),
+        "run command".into(),
+        None,
+    );
+    let (child_engine, _child_handle) = Engine::new_child_admitted(
+        EngineConfig {
+            workspace: dir.path().into(),
+            model: DEFAULT_TEXT_MODEL.into(),
+            ..Default::default()
+        },
+        &api,
+        authority.clone(),
+        SystemPrompt::Text("captured child role".into()),
+        None,
+    )
+    .unwrap();
+    let build = child_engine.acp_tool_build(&policy, &route, None);
+    let warm: Vec<String> = build
+        .surface
+        .catalog
+        .iter()
+        .map(|tool| tool.name.clone())
+        .collect();
+    let mut surface = ChildSurfaceProbe::new(build.surface.catalog, &warm);
+    let execution_id = authority.new_execution_id();
+
+    let manager_for_close = Arc::clone(&authority.runtime.manager);
+    let closer = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(event) = event_rx.recv().await {
+                if let Event::ApprovalRequired { id, .. } = event {
+                    manager_for_close.write().await.cancel_child_approval(&id);
+                    return id;
+                }
+            }
+            panic!("event channel closed before child ApprovalRequired");
+        })
+        .await
+        .expect("child ApprovalRequired arrives")
+    });
+
+    let buffer = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let writer = Arc::clone(&buffer);
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(move || CaptureWriter(Arc::clone(&writer)))
+        .finish();
+    let _log_guard = tracing::subscriber::set_default(subscriber);
+
+    let err = Engine::probe_child_call(
+        authority,
+        build.surface.registry,
+        &mut surface,
+        ChildProbeCall {
+            id: execution_id.clone(),
+            execution_id,
+            name: "bash".into(),
+            input: json!({ "command": "echo gated" }),
+        },
+    )
+    .await
+    .expect_err("dropped approval decision must fail closed");
+    let approval_id = closer.await.expect("closer task");
+    drop(_log_guard);
+
+    assert!(
+        matches!(
+            err.downcast_ref::<ToolError>(),
+            Some(ToolError::ExecutionFailed { message, .. })
+                if message.contains("no longer current")
+        ),
+        "{err}"
+    );
+    let logs = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+    assert!(
+        logs.contains("child approval decision failed; denying as unavailable"),
+        "{logs}"
+    );
+    assert!(logs.contains(&approval_id), "{logs}");
+    assert!(logs.contains("channel closed"), "{logs}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn child_engine_inherits_parent_tools_overrides_and_excludes_disabled_tools() {
+    let dir = tempdir().unwrap();
+    let _home = crate::test_support::SealedHome::at(dir.path());
+    let plugin_dir = dir.path().join("empty-plugins");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+
+    let build_child =
+        |tools: Option<codewhale_runtime::config::ToolsConfig>,
+         child_tools: Option<codewhale_runtime::config::ToolsConfig>| {
+            let mut api =
+                Config::default().with_legacy_root(Some("child-local-fixture".into()), None);
+            api.allow_shell = Some(true);
+            api.tools = tools;
+            let (mut parent, _parent_handle) = Engine::new(
+                EngineConfig {
+                    workspace: dir.path().into(),
+                    session_id: Some("origin-session".into()),
+                    allow_shell: true,
+                    tools: api.tools.clone(),
+                    snapshots_enabled: false,
+                    memory_enabled: false,
+                    ..Default::default()
+                },
+                &api,
+            );
+            parent.config.features.disable(Feature::Mcp);
+            let route = TurnRouteContext {
+                provider: ProviderKind::Deepseek,
+                model: DEFAULT_TEXT_MODEL.into(),
+                capabilities: Default::default(),
+                limits: None,
+                client: parent.codewhale_client.clone(),
+                api_config: Box::new(api.clone()),
+                locale_tag: parent.config.locale_tag.clone(),
+                role_models: HashMap::new(),
+                auto_model: false,
+                reasoning_effort: None,
+                reasoning_effort_auto: false,
+            };
+            let policy = TurnAuthority::from_effective_fields(
+                AppMode::Agent,
+                true,
+                false,
+                false,
+                ApprovalMode::Suggest,
+            );
+            let context = parent.build_tool_context_for_turn(&policy, &route);
+            let runtime = SubAgentRuntime::new(
+                parent.codewhale_client.clone().unwrap(),
+                DEFAULT_TEXT_MODEL.into(),
+                context,
+                true,
+                None,
+                parent.subagent_manager.clone(),
+            )
+            .with_api_config(api.clone())
+            .with_approval_receipt_store(parent.approval_receipt_store.clone());
+            let authority = ChildAuthority::capture(
+                runtime,
+                FleetRole::Worker,
+                "child-overrides".into(),
+                "inspect".into(),
+                None,
+            );
+            let (child, _child_handle) = Engine::new_child_admitted(
+                EngineConfig {
+                    workspace: dir.path().into(),
+                    model: DEFAULT_TEXT_MODEL.into(),
+                    tools: child_tools,
+                    ..Default::default()
+                },
+                &api,
+                authority,
+                SystemPrompt::Text("captured child role".into()),
+                None,
+            )
+            .unwrap();
+            (child, policy, route)
+        };
+
+    let (mut baseline_child, baseline_policy, baseline_route) = build_child(None, None);
+    let baseline = baseline_child
+        .build_turn_tool_registry_and_catalog(
+            &baseline_policy,
+            &[],
+            None,
+            SubAgentWiring::Inert,
+            McpAccess::PassiveSnapshot,
+            baseline_route,
+            "",
+        )
+        .await;
+    assert!(
+        baseline.surface.registry.names().contains(&"diagnostics"),
+        "control: worker child includes diagnostics without overrides"
+    );
+
+    let mut overrides = std::collections::HashMap::new();
+    overrides.insert(
+        "diagnostics".to_string(),
+        codewhale_runtime::config::ToolOverride::Disabled,
+    );
+    overrides.insert(
+        "tasks".to_string(),
+        codewhale_runtime::config::ToolOverride::Disabled,
+    );
+    let plugin_dir_str = plugin_dir.to_string_lossy().into_owned();
+    let tools_cfg = codewhale_runtime::config::ToolsConfig {
+        plugin_dir: Some(plugin_dir_str.clone()),
+        overrides: Some(overrides),
+        ..Default::default()
+    };
+    for child_tools in [
+        None,
+        Some(codewhale_runtime::config::ToolsConfig::default()),
+    ] {
+        let (mut restricted_child, restricted_policy, restricted_route) =
+            build_child(Some(tools_cfg.clone()), child_tools);
+        assert_eq!(
+            restricted_child
+                .config
+                .tools
+                .as_ref()
+                .and_then(|t| t.plugin_dir.as_deref()),
+            Some(plugin_dir_str.as_str())
+        );
+        let restricted = restricted_child
+            .build_turn_tool_registry_and_catalog(
+                &restricted_policy,
+                &[],
+                None,
+                SubAgentWiring::Inert,
+                McpAccess::PassiveSnapshot,
+                restricted_route,
+                "",
+            )
+            .await;
+        for disabled in ["diagnostics", "tasks"] {
+            assert!(
+                !restricted.surface.registry.names().contains(&disabled),
+                "child registry must exclude disabled tool {disabled}"
+            );
+            assert!(
+                !restricted
+                    .surface
+                    .catalog
+                    .iter()
+                    .any(|tool| tool.name == disabled),
+                "child catalog must exclude disabled tool {disabled}"
+            );
+        }
+    }
+}

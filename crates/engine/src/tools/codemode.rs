@@ -893,6 +893,14 @@ impl CodemodeInvoker {
                 "`{name}` needs approval; without a session permission gate code mode executes only auto-approved calls"
             ));
         }
+        if !self.context.auto_approve
+            && self.context.approval_mode == codewhale_execpolicy::ApprovalMode::Suggest
+            && crate::core::engine::tool_catalog::is_shell_tool_name(name)
+        {
+            return Err(format!(
+                "`{name}` runs a command, and Ask asks before every command; without a session permission gate code mode cannot ask, so call it directly"
+            ));
+        }
         enforce_tool_authority(name, input, spec.as_ref(), &self.context)
             .map_err(|err| err.to_string())
     }

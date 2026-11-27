@@ -207,8 +207,8 @@ export const DOC_TASKS: DocTask[] = [
     id: "watch-sessions",
     label: { en: "Watch each session at a glance", zh: "一眼查看每个会话" },
     description: {
-      en: "Turn on pet mode in each terminal to see which session is working, waiting for you, done, or failed.",
-      zh: "在每个终端开启 Pet 模式，看清哪个会话在工作、在等你、已完成或失败。",
+      en: "Run /whale in each terminal to see which session is working, waiting for you, done, or failed.",
+      zh: "在每个终端运行 /whale，看清哪个会话在工作、在等你、已完成或失败。",
     },
     href: "/docs/pet",
     topicId: "pet",

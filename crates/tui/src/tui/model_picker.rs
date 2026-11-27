@@ -88,6 +88,14 @@ const CODEX_PICKER_EFFORTS: &[ReasoningEffort] = &[
     ReasoningEffort::High,
     ReasoningEffort::Max,
 ];
+const OLLAMA_CLOUD_PICKER_EFFORTS: &[ReasoningEffort] = &[
+    ReasoningEffort::Auto,
+    ReasoningEffort::Off,
+    ReasoningEffort::Low,
+    ReasoningEffort::Medium,
+    ReasoningEffort::High,
+    ReasoningEffort::Max,
+];
 /// Auto model routing has no concrete provider dialect yet, so retain the
 /// complete preference vocabulary and defer normalization to dispatch.
 const AUTO_MODEL_PICKER_EFFORTS: &[ReasoningEffort] = &[
@@ -220,6 +228,7 @@ pub struct ModelPickerView {
     initial_provider: ProviderKind,
     initial_provider_identity: String,
     initial_identity: Option<codewhale_runtime::config::ProviderIdentity>,
+    initial_external_agent_id: Option<String>,
     /// Raw preference before the picker opened. An absent explicit preference
     /// is represented by Auto so applying a visible fixed-route tier is still
     /// recognized as an intentional picker choice.
@@ -328,6 +337,21 @@ impl std::ops::Index<usize> for VisibleModelRows<'_> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct ExternalAgentRowInfo {
+    agent_id: String,
+    agent_name: String,
+    state: String,
+    runnable: bool,
+    needs_update: bool,
+    version: Option<String>,
+    reason_code: Option<String>,
+    reason: Option<String>,
+    login: Option<String>,
+    upgrade: Option<String>,
+    website: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ModelPickerRow {
     id: String,
     provider: Option<ProviderKind>,
@@ -351,6 +375,7 @@ struct ModelPickerRow {
     credentialed: bool,
     /// The route's fresh live roster does not list this id.
     not_listed: Option<NotListed>,
+    external_agent: Option<ExternalAgentRowInfo>,
 }
 
 /// Sections of the default view, in display order (#6533).
@@ -361,6 +386,7 @@ enum DefaultSection {
     Recent,
     ProviderDefault,
     Roster,
+    ExternalAgent,
 }
 
 /// Most rows the default view's recent section shows.
@@ -562,7 +588,7 @@ impl ModelPickerView {
             );
         }
         self.model_rows
-            .retain(|row| allow_inherit || row.id != "auto");
+            .retain(|row| row.external_agent.is_none() && (allow_inherit || row.id != "auto"));
         for row in &mut self.model_rows {
             if row.id == "auto" && row.provider.is_none() {
                 row.hint = format!("{}/{}", app.provider_identity_for_persistence(), app.model);
@@ -618,15 +644,30 @@ impl ModelPickerView {
             ModelListView::Configured,
             &pins,
         );
-        let mut selected_model_idx = default_visible_rows.iter().position(|row| {
-            row.id == initial_model
-                && model_row_matches_route(
-                    row,
-                    app.api_provider,
-                    app.provider_identity_for_persistence(),
-                )
-        });
-        let show_custom_model_row = selected_model_idx.is_none();
+        let initial_external_agent_id = app
+            .external_agent
+            .as_ref()
+            .map(|session| session.agent_id.clone());
+        let mut selected_model_idx =
+            if let Some(active_agent) = initial_external_agent_id.as_deref() {
+                default_visible_rows.iter().position(|row| {
+                    row.external_agent
+                        .as_ref()
+                        .is_some_and(|agent| agent.agent_id == active_agent)
+                })
+            } else {
+                default_visible_rows.iter().position(|row| {
+                    row.external_agent.is_none()
+                        && row.id == initial_model
+                        && model_row_matches_route(
+                            row,
+                            app.api_provider,
+                            app.provider_identity_for_persistence(),
+                        )
+                })
+            };
+        let show_custom_model_row =
+            initial_external_agent_id.is_none() && selected_model_idx.is_none();
         if show_custom_model_row {
             selected_model_idx = Some(default_visible_rows.len());
         }
@@ -669,6 +710,7 @@ impl ModelPickerView {
             initial_provider: app.api_provider,
             initial_provider_identity: app.provider_identity_for_persistence().to_string(),
             initial_identity: app.admitted_provider_identity().ok().cloned(),
+            initial_external_agent_id,
             initial_effort,
             selected_effort_request,
             active_accepts_custom_model_ids: app.accepts_custom_model_ids(),
@@ -846,15 +888,18 @@ impl ModelPickerView {
             .iter()
             .map(|row| (row, pin_for_row(&self.pinned_models, row)))
             .map(|(row, pin)| {
-                let route = row
-                    .provider
-                    .map(|provider| {
-                        route_labels
-                            .get(row_provider_identity(row).unwrap_or(provider.as_str()))
-                            .cloned()
-                            .unwrap_or_else(|| row_provider_label(row).to_string())
-                    })
-                    .unwrap_or_default();
+                let route = if row.external_agent.is_some() {
+                    tr(self.locale, MessageId::ModelPickerExternalAgentRoute).into_owned()
+                } else {
+                    row.provider
+                        .map(|provider| {
+                            route_labels
+                                .get(row_provider_identity(row).unwrap_or(provider.as_str()))
+                                .cloned()
+                                .unwrap_or_else(|| row_provider_label(row).to_string())
+                        })
+                        .unwrap_or_default()
+                };
                 let (group, group_scoped_by_route) = if provider_groups {
                     (Some(route.clone()), true)
                 } else if configured_sections {
@@ -864,6 +909,9 @@ impl ModelPickerView {
                         DefaultSection::Recent => MessageId::ModelPickerSectionRecent,
                         DefaultSection::ProviderDefault => MessageId::ModelPickerSectionProviders,
                         DefaultSection::Roster => MessageId::ModelPickerSectionMore,
+                        DefaultSection::ExternalAgent => {
+                            MessageId::ModelPickerSectionExternalAgents
+                        }
                     });
                     let label = label.map(|id| tr(self.locale, id).into_owned());
                     (label, false)
@@ -871,16 +919,26 @@ impl ModelPickerView {
                     (
                         (grouped && pin.is_none())
                             .then(|| {
-                                row.provider.and_then(|provider| {
-                                    catalog_family_for_identity(
-                                        provider,
-                                        row.provider_identity.as_deref(),
-                                        &row.id,
+                                if row.external_agent.is_some() {
+                                    Some(
+                                        tr(
+                                            self.locale,
+                                            MessageId::ModelPickerSectionExternalAgents,
+                                        )
+                                        .into_owned(),
                                     )
-                                })
+                                } else {
+                                    row.provider.and_then(|provider| {
+                                        catalog_family_for_identity(
+                                            provider,
+                                            row.provider_identity.as_deref(),
+                                            &row.id,
+                                        )
+                                    })
+                                }
                             })
                             .flatten(),
-                        true,
+                        row.external_agent.is_none(),
                     )
                 };
                 PaneRow {
@@ -897,7 +955,7 @@ impl ModelPickerView {
                             .unwrap_or_else(|| row.id.clone())
                     },
                     route,
-                    meta: if row.provider.is_none() {
+                    meta: if row.external_agent.is_some() || row.provider.is_none() {
                         vec![row.hint.clone()]
                     } else {
                         let mut chips = model_row_meta_chips(row);
@@ -921,12 +979,17 @@ impl ModelPickerView {
                     },
                     group,
                     group_scoped_by_route,
-                    active: row.id == self.initial_model
-                        && model_row_matches_route(
-                            row,
-                            self.initial_provider,
-                            &self.initial_provider_identity,
-                        ),
+                    active: if let Some(agent) = row.external_agent.as_ref() {
+                        self.initial_external_agent_id.as_deref() == Some(agent.agent_id.as_str())
+                    } else {
+                        self.initial_external_agent_id.is_none()
+                            && row.id == self.initial_model
+                            && model_row_matches_route(
+                                row,
+                                self.initial_provider,
+                                &self.initial_provider_identity,
+                            )
+                    },
                     locked: !row.selectable,
                     dim: row.not_listed.is_some(),
                 }
@@ -1002,6 +1065,9 @@ impl ModelPickerView {
         }
         let rows = self.visible_model_rows();
         if let Some(row) = rows.get(self.selected_model_idx) {
+            if let Some(agent) = row.external_agent.as_ref() {
+                return agent.runnable;
+            }
             return row.selectable
                 && row.admitted_identity.as_ref().is_some_and(|identity| {
                     self.route_config.verify_provider_identity(identity).is_ok()
@@ -1021,11 +1087,58 @@ impl ModelPickerView {
     /// Feedback when Enter/apply is pressed on a locked (unauthenticated) model.
     /// Surfaces the readiness reason instead of a silent no-op, and routes the
     /// user toward provider authentication/setup when possible.
-    fn explain_unselectable_selection(&self) -> ViewAction {
+    fn explain_unselectable_selection(&mut self) -> ViewAction {
         let rows = self.visible_model_rows();
         let Some(row) = rows.get(self.selected_model_idx) else {
             return ViewAction::None;
         };
+        if let Some(agent) = row.external_agent.as_ref() {
+            let not_ready = tr(self.locale, MessageId::ModelPickerExternalAgentNotReady);
+            let mut detail = agent
+                .reason
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(not_ready.as_ref())
+                .to_string();
+            if agent.needs_update
+                && let Some(upgrade) = agent
+                    .upgrade
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                && !detail.contains(upgrade)
+            {
+                detail.push_str(&format!(" · {upgrade}"));
+            } else if agent.state == "not_installed"
+                && !agent.website.trim().is_empty()
+                && !detail.contains(agent.website.trim())
+            {
+                detail.push_str(&format!(" · {}", agent.website.trim()));
+            } else if agent.state == "installed"
+                && !agent.needs_update
+                && agent.reason_code.as_deref() != Some("adapter_missing")
+                && let Some(login) = agent
+                    .login
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                && !detail.contains(login)
+            {
+                let sign_in = tr(self.locale, MessageId::ModelPickerExternalAgentSignInHint)
+                    .replace("{command}", login);
+                detail.push_str(&format!(" · {sign_in}"));
+            }
+            let message = tr(
+                self.locale,
+                MessageId::ModelPickerExternalAgentBlockedNotice,
+            )
+            .replace("{agent}", &agent.agent_name)
+            .replace("{reason}", &detail);
+            drop(rows);
+            self.notice = Some((message.clone(), StatusToastLevel::Warning));
+            return ViewAction::Emit(ViewEvent::StatusMessage { message });
+        }
         let reason = if row.hint.trim().is_empty() {
             "This model is not available with the current provider credentials.".to_string()
         } else {
@@ -1043,7 +1156,10 @@ impl ModelPickerView {
         // The ordinary setup wizard switches the session after auth. A
         // Fleet edit must keep that session route intact.
         if self.purpose != ModelPickerPurpose::Session {
-            return ViewAction::Emit(ViewEvent::StatusMessage { message });
+            return ViewAction::Emit(ViewEvent::StatusToast {
+                message,
+                level: crate::tui::app::StatusToastLevel::Error,
+            });
         }
         // Prefer opening provider setup so the user can remediate in one step.
         if let Some(identity) = row
@@ -1057,7 +1173,10 @@ impl ModelPickerView {
                 reason: message,
             });
         }
-        ViewAction::Emit(ViewEvent::StatusMessage { message })
+        ViewAction::Emit(ViewEvent::StatusToast {
+            message,
+            level: crate::tui::app::StatusToastLevel::Error,
+        })
     }
 
     /// Exact route identity of the highlighted row, when it names one.
@@ -1372,6 +1491,16 @@ impl ModelPickerView {
     fn build_apply_event(&self, save_as_startup_default: bool) -> ViewEvent {
         let (initial_reasoning, allow_inherit) = match self.purpose {
             ModelPickerPurpose::Session => {
+                if let Some(agent) = self
+                    .visible_model_rows()
+                    .get(self.selected_model_idx)
+                    .and_then(|row| row.external_agent.as_ref())
+                {
+                    return ViewEvent::ExternalAgentSelected {
+                        agent_id: agent.agent_id.clone(),
+                        agent_name: agent.agent_name.clone(),
+                    };
+                }
                 return self.build_event_with_startup_default(save_as_startup_default);
             }
             ModelPickerPurpose::FleetRoute {
@@ -1430,6 +1559,13 @@ impl ModelPickerView {
     }
 
     fn can_edit_effort(&self) -> bool {
+        if self
+            .visible_model_rows()
+            .get(self.selected_model_idx)
+            .is_some_and(|row| row.external_agent.is_some())
+        {
+            return false;
+        }
         match self.purpose {
             ModelPickerPurpose::Session => true,
             ModelPickerPurpose::FleetProfileRoute { .. } => self.resolved_model() != "auto",
@@ -2354,6 +2490,7 @@ fn picker_model_rows_for_app(app: &App, config: &Config) -> Vec<ModelPickerRow> 
             default_rank: None,
             credentialed: false,
             not_listed: None,
+            external_agent: None,
         });
     }
 
@@ -2364,7 +2501,144 @@ fn picker_model_rows_for_app(app: &App, config: &Config) -> Vec<ModelPickerRow> 
         )
     });
     assign_default_sections(&mut rows, app, config, current, &pins);
+    push_external_agent_rows(&mut rows, app);
     rows
+}
+
+fn push_external_agent_rows(rows: &mut Vec<ModelPickerRow>, app: &App) {
+    let active_agent_id = app
+        .external_agent
+        .as_ref()
+        .map(|session| session.agent_id.as_str());
+    if active_agent_id.is_some() {
+        for row in rows.iter_mut() {
+            if matches!(row.default_rank, Some((DefaultSection::Current, _))) {
+                row.default_rank = Some((DefaultSection::ProviderDefault, 0));
+            }
+        }
+    }
+    for (idx, agent) in app.external_agents.iter().enumerate() {
+        let is_active = active_agent_id == Some(agent.id.as_str());
+        let is_installed = agent.state == "installed" || agent.runnable || agent.custom;
+        let mut hint_parts = Vec::new();
+        if let Some(version) = agent
+            .version
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            hint_parts.push(format!("v{version}"));
+        }
+        let not_ready = tr(app.ui_locale, MessageId::ModelPickerExternalAgentNotReady);
+        if agent.runnable {
+            hint_parts.push(
+                tr(
+                    app.ui_locale,
+                    MessageId::ModelPickerExternalAgentRunnableHint,
+                )
+                .into_owned(),
+            );
+            if let Some(login) = agent
+                .login
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                && !hint_parts.iter().any(|part| part.contains(login))
+            {
+                hint_parts.push(
+                    tr(app.ui_locale, MessageId::ModelPickerExternalAgentSignInHint)
+                        .replace("{command}", login),
+                );
+            }
+        } else {
+            if let Some(reason) = agent
+                .reason
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                hint_parts.push(reason.to_string());
+            } else {
+                hint_parts.push(not_ready.to_string());
+            }
+            if agent.needs_update
+                && let Some(upgrade) = agent
+                    .upgrade
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                && !hint_parts.iter().any(|part| part.contains(upgrade))
+            {
+                hint_parts.push(upgrade.to_string());
+            } else if agent.state == "not_installed"
+                && !agent.website.trim().is_empty()
+                && !hint_parts
+                    .iter()
+                    .any(|part| part.contains(agent.website.trim()))
+            {
+                hint_parts.push(agent.website.trim().to_string());
+            } else if agent.state == "installed"
+                && !agent.needs_update
+                && agent.reason_code.as_deref() != Some("adapter_missing")
+                && let Some(login) = agent
+                    .login
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                && !hint_parts.iter().any(|part| part.contains(login))
+            {
+                hint_parts.push(
+                    tr(app.ui_locale, MessageId::ModelPickerExternalAgentSignInHint)
+                        .replace("{command}", login),
+                );
+            }
+        }
+        let default_rank = if is_active {
+            Some((DefaultSection::Current, 0))
+        } else if is_installed {
+            Some((DefaultSection::ExternalAgent, idx))
+        } else {
+            None
+        };
+        let blocked_reason = if agent.runnable {
+            None
+        } else {
+            agent
+                .reason
+                .clone()
+                .or_else(|| Some(not_ready.into_owned()))
+        };
+        rows.push(ModelPickerRow {
+            id: agent.id.clone(),
+            provider: None,
+            provider_identity: None,
+            admitted_identity: None,
+            route_selection: None,
+            hint: hint_parts.join(" · "),
+            metadata: EffectivePickerMetadata {
+                display_name: Some(agent.name.clone()),
+                ..EffectivePickerMetadata::default()
+            },
+            selectable: agent.runnable,
+            blocked_reason,
+            default_rank,
+            credentialed: agent.runnable,
+            not_listed: None,
+            external_agent: Some(ExternalAgentRowInfo {
+                agent_id: agent.id.clone(),
+                agent_name: agent.name.clone(),
+                state: agent.state.clone(),
+                runnable: agent.runnable,
+                needs_update: agent.needs_update,
+                version: agent.version.clone(),
+                reason_code: agent.reason_code.clone(),
+                reason: agent.reason.clone(),
+                login: agent.login.clone(),
+                upgrade: agent.upgrade.clone(),
+                website: agent.website.clone(),
+            }),
+        });
+    }
 }
 
 /// Place rows into the default view's sections (#6533): the current route,
@@ -2930,9 +3204,10 @@ fn push_model_id(models: &mut Vec<String>, model: &str) {
     if model.is_empty() {
         return;
     }
+    let reserved = model.eq_ignore_ascii_case("auto");
     if !models
         .iter()
-        .any(|existing| existing.eq_ignore_ascii_case(model))
+        .any(|existing| existing == model || (reserved && existing.eq_ignore_ascii_case("auto")))
     {
         models.push(model.to_string());
     }
@@ -3010,6 +3285,7 @@ fn push_model_row(
         default_rank: None,
         credentialed: false,
         not_listed: None,
+        external_agent: None,
     });
 }
 
@@ -3058,6 +3334,14 @@ fn model_row_matches_query(
             || normalize_picker_search_text(&candidate).contains(&normalized_query)
             || (!compact_query.is_empty() && compact(&candidate).contains(&compact_query))
     };
+    if let Some(agent) = row.external_agent.as_ref() {
+        return matches(&agent.agent_id)
+            || matches(&agent.agent_name)
+            || matches("acp")
+            || matches("external agent")
+            || agent.reason.as_deref().is_some_and(matches)
+            || agent.login.as_deref().is_some_and(matches);
+    }
     let provider_matches = row.provider.is_some_and(|provider| {
         row.provider_identity.as_deref().is_some_and(matches)
             || matches(provider.as_str())
@@ -3351,9 +3635,9 @@ fn model_row_visible_in_view(row: &ModelPickerRow, view: ModelListView) -> bool 
         | ModelListView::Coding
         | ModelListView::Cheap
         | ModelListView::LongContext => {
-            // Discoverability views browse the full lake but hide the synthetic
-            // `auto` row — it is not a catalog offering.
-            (row.provider.is_some() || row.id != "auto") && !model_is_non_language(row)
+            row.external_agent.is_none()
+                && (row.provider.is_some() || row.id != "auto")
+                && !model_is_non_language(row)
         }
     }
 }
@@ -3367,10 +3651,10 @@ fn model_is_non_language(row: &ModelPickerRow) -> bool {
     )
 }
 
-/// Whether a model row shows up without the user typing a search query:
-/// `auto` and every row placed in a default-view section (#6533). The rest of
-/// every roster, the active one included, is one search or ⇧A away.
 fn model_row_visible_by_default(row: &ModelPickerRow) -> bool {
+    if row.external_agent.is_some() {
+        return row.default_rank.is_some();
+    }
     row.provider.is_none() || row.default_rank.is_some()
 }
 
@@ -4211,6 +4495,10 @@ impl ModelPickerView {
             });
         self.provider_health = app.provider_health.clone();
         self.route_config = config.clone();
+        self.initial_external_agent_id = app
+            .external_agent
+            .as_ref()
+            .map(|session| session.agent_id.clone());
         self.pinned_models = picker_pins_for_app(app);
         self.model_rows = picker_model_rows_for_app(app, config);
         self.apply_fleet_route_rows(app, config);
@@ -4597,63 +4885,26 @@ impl ModelPickerView {
         *self.catalog_action_hitbox.borrow_mut() = pill_hitbox;
         let searching = !self.query.is_empty();
         let show_advanced_hints = inner.width >= 88 && inner.height >= 24;
-        let mut footer_hints = vec![
-            ActionHint::new("↑↓", tr(self.locale, MessageId::PickerActionMove)),
-            ActionHint::new("Tab", tr(self.locale, MessageId::PickerActionSwitch)),
-            ActionHint::new(
-                tr(self.locale, MessageId::RouteActionType),
-                tr(self.locale, MessageId::RouteActionSearchAnyModel),
-            ),
-            ActionHint::new("Enter", tr(self.locale, self.apply_action_id())),
-        ];
+        let mut footer_hints = vec![ActionHint::new(
+            "↑↓",
+            tr(self.locale, MessageId::PickerActionMove),
+        )];
+        if self.can_edit_effort() {
+            footer_hints.push(ActionHint::new(
+                "Tab",
+                tr(self.locale, MessageId::PickerActionSwitch),
+            ));
+        }
+        footer_hints.push(ActionHint::new(
+            tr(self.locale, MessageId::RouteActionType),
+            tr(self.locale, MessageId::RouteActionSearchAnyModel),
+        ));
+        footer_hints.push(ActionHint::new(
+            "Enter",
+            tr(self.locale, self.apply_action_id()),
+        ));
         if !searching {
             footer_hints.push(ActionHint::new("⇧A", view_action));
-            footer_hints.push(ActionHint::new(
-                "⇧T",
-                match self.provider_filter.as_deref() {
-                    Some(filter) => format!(
-                        "{}: {}",
-                        tr(self.locale, MessageId::RouteProviderLabel),
-                        provider_filter_label(filter)
-                    ),
-                    None => tr(self.locale, MessageId::RouteProviderLabel).into_owned(),
-                },
-            ));
-        }
-        if show_advanced_hints {
-            footer_hints.push(ActionHint::new(
-                "Ctrl+S",
-                tr(self.locale, MessageId::SessionsActionSort),
-            ));
-        }
-        if !self.can_edit_effort() {
-            footer_hints.remove(1);
-        }
-        if self.purpose == ModelPickerPurpose::Session && show_advanced_hints && !searching {
-            footer_hints.insert(
-                4,
-                ActionHint::new(
-                    "⇧D",
-                    tr(self.locale, MessageId::PickerActionSetStartupDefault),
-                ),
-            );
-        }
-        if show_advanced_hints && self.highlighted_route().is_some() {
-            let (fleet_key, pin_key) = if searching {
-                ("Ctrl+F", "Ctrl+P")
-            } else {
-                ("⇧F", "⇧P")
-            };
-            if self.purpose == ModelPickerPurpose::Session {
-                footer_hints.push(ActionHint::new(
-                    fleet_key,
-                    tr(self.locale, MessageId::PickerActionFleet),
-                ));
-            }
-            footer_hints.push(ActionHint::new(
-                pin_key,
-                tr(self.locale, MessageId::PickerActionPin),
-            ));
         }
         footer_hints.push(ActionHint::new(
             "Esc",
@@ -4862,8 +5113,80 @@ impl ModelPickerView {
                 PaneRow::effort(label, hint)
             })
             .collect();
+        let detail_pane = if show_advanced_hints && layout.detail.height >= 4 {
+            let sep = if crate::tui::color_compat::ascii_safe_enabled() {
+                " - "
+            } else {
+                " · "
+            };
+            let mut parts = Vec::new();
+            if !searching {
+                parts.push(match self.provider_filter.as_deref() {
+                    Some(filter) => format!(
+                        "⇧T {}: {}",
+                        tr(self.locale, MessageId::RouteProviderLabel),
+                        provider_filter_label(filter)
+                    ),
+                    None => format!("⇧T {}", tr(self.locale, MessageId::RouteProviderLabel)),
+                });
+            }
+            parts.push(format!(
+                "Ctrl+S {}",
+                tr(self.locale, MessageId::SessionsActionSort)
+            ));
+            if self.purpose == ModelPickerPurpose::Session && !searching {
+                parts.push(format!(
+                    "⇧D {}",
+                    tr(self.locale, MessageId::PickerActionSetStartupDefault)
+                ));
+            }
+            if self.highlighted_route().is_some() {
+                let (fleet_key, pin_key) = if searching {
+                    ("Ctrl+F", "Ctrl+P")
+                } else {
+                    ("⇧F", "⇧P")
+                };
+                if self.purpose == ModelPickerPurpose::Session {
+                    parts.push(format!(
+                        "{fleet_key} {}",
+                        tr(self.locale, MessageId::PickerActionFleet)
+                    ));
+                }
+                parts.push(format!(
+                    "{pin_key} {}",
+                    tr(self.locale, MessageId::PickerActionPin)
+                ));
+            }
+            let hint_paragraph = Paragraph::new(Line::from(Span::styled(
+                parts.join(sep),
+                Style::default().fg(palette::TEXT_DIM),
+            )))
+            .wrap(ratatui::widgets::Wrap { trim: true });
+            let max_hint_height = layout.detail.height.saturating_sub(3).min(4);
+            let hint_height = u16::try_from(hint_paragraph.line_count(layout.detail.width.max(1)))
+                .unwrap_or(max_hint_height)
+                .clamp(1, max_hint_height.max(1));
+            if layout.detail.height >= hint_height.saturating_add(2) {
+                let body_height = layout.detail.height.saturating_sub(hint_height);
+                let hint_area = Rect::new(
+                    layout.detail.x,
+                    layout.detail.y.saturating_add(body_height),
+                    layout.detail.width,
+                    hint_height,
+                );
+                hint_paragraph.render(hint_area, buf);
+                Rect {
+                    height: body_height,
+                    ..layout.detail
+                }
+            } else {
+                layout.detail
+            }
+        } else {
+            layout.detail
+        };
         self.render_pane(
-            layout.detail,
+            detail_pane,
             buf,
             "Thinking",
             &effort_rows,
@@ -4994,6 +5317,9 @@ fn route_picker_efforts(
         // does carry tiers when the account publishes them (#6396).
         return CODEX_PICKER_EFFORTS.to_vec();
     }
+    if provider == ProviderKind::OllamaCloud {
+        return OLLAMA_CLOUD_PICKER_EFFORTS.to_vec();
+    }
     if provider == ProviderKind::Vllm
         && let Some(spec) = codewhale_config::local_reasoning::local_reasoning_spec(wire_model)
     {
@@ -5001,7 +5327,7 @@ fn route_picker_efforts(
             .chain(
                 spec.tiers
                     .iter()
-                    .filter_map(|tier| catalog_effort_value(tier)),
+                    .filter_map(|tier| ReasoningEffort::from_catalog_token(tier)),
             )
             .collect();
     }
@@ -5035,38 +5361,45 @@ fn route_picker_efforts(
 fn catalog_picker_efforts(
     offering: &codewhale_config::catalog::CatalogOffering,
 ) -> Option<Vec<ReasoningEffort>> {
+    if let Some(mut efforts) = ReasoningEffort::catalog_effort_values_for_offering(offering) {
+        if !efforts.contains(&ReasoningEffort::Auto) {
+            efforts.insert(0, ReasoningEffort::Auto);
+        }
+        return Some(efforts);
+    }
+
     let mut efforts = Vec::new();
-    let mut saw_effort_list = false;
     let mut has_toggle = false;
     for option in &offering.reasoning_options {
-        let option_type = option
-            .get("type")
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        if option_type == "toggle" {
+        let Some(option_type) = option.get("type").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if option_type.eq_ignore_ascii_case("toggle") {
             has_toggle = true;
             continue;
         }
-        if option_type != "effort" && option_type != "thinking" {
+        if !option_type.eq_ignore_ascii_case("thinking") {
             continue;
         }
         let Some(values) = option.get("values").and_then(|value| value.as_array()) else {
             continue;
         };
-        saw_effort_list = true;
         for value in values {
             let Some(raw) = value.as_str() else {
                 continue;
             };
-            if let Some(effort) = catalog_effort_value(raw)
+            let effort = match raw.trim().to_ascii_lowercase().as_str() {
+                "always_on" | "always-on" => Some(ReasoningEffort::Max),
+                _ => ReasoningEffort::from_catalog_token(raw),
+            };
+            if let Some(effort) = effort
                 && !efforts.contains(&effort)
             {
                 efforts.push(effort);
             }
         }
     }
-    if !saw_effort_list || efforts.is_empty() {
+    if efforts.is_empty() {
         return None;
     }
     if has_toggle && !efforts.contains(&ReasoningEffort::Off) {
@@ -5076,23 +5409,6 @@ fn catalog_picker_efforts(
         efforts.insert(0, ReasoningEffort::Auto);
     }
     Some(efforts)
-}
-
-fn catalog_effort_value(raw: &str) -> Option<ReasoningEffort> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "off" | "disabled" | "false" => Some(ReasoningEffort::Off),
-        "none" => Some(ReasoningEffort::Off),
-        "minimal" | "minimum" => Some(ReasoningEffort::Minimal),
-        "low" | "light" => Some(ReasoningEffort::Low),
-        "medium" | "mid" => Some(ReasoningEffort::Medium),
-        "high" => Some(ReasoningEffort::High),
-        "xhigh" => Some(ReasoningEffort::XHigh),
-        "ultra" | "ultracode" => Some(ReasoningEffort::Ultra),
-        "max" | "maximum" => Some(ReasoningEffort::Max),
-        "auto" | "automatic" | "adaptive" => Some(ReasoningEffort::Auto),
-        "always_on" | "always-on" => Some(ReasoningEffort::Max),
-        _ => None,
-    }
 }
 
 fn normalize_picker_effort(
@@ -5297,6 +5613,7 @@ mod tests {
             default_rank: in_default_view.then_some((DefaultSection::Current, 0)),
             credentialed: false,
             not_listed: None,
+            external_agent: None,
         }
     }
 
@@ -5416,6 +5733,7 @@ mod tests {
                     .builtin_provider_identity(ProviderKind::Openai)
                     .unwrap(),
             ),
+            initial_external_agent_id: None,
             initial_effort: ReasoningEffort::Auto,
             selected_effort_request: ReasoningEffort::Auto,
             active_accepts_custom_model_ids: false,
@@ -5556,7 +5874,10 @@ mod tests {
         *picker.projection.get_mut() = None;
         assert!(matches!(
             picker.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-            ViewAction::Emit(ViewEvent::StatusMessage { .. })
+            ViewAction::Emit(ViewEvent::StatusToast {
+                level: crate::tui::app::StatusToastLevel::Error,
+                ..
+            })
         ));
     }
 
@@ -5571,9 +5892,13 @@ mod tests {
         };
         picker.model_rows[0].selectable = false;
         *picker.projection.get_mut() = None;
-        assert!(
-            matches!(picker.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), ViewAction::Emit(ViewEvent::StatusMessage { message }) if message.contains("/provider"))
-        );
+        assert!(matches!(
+            picker.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            ViewAction::Emit(ViewEvent::StatusToast {
+                message,
+                level: crate::tui::app::StatusToastLevel::Error,
+            }) if message.contains("/provider")
+        ));
     }
 
     #[test]
@@ -5977,6 +6302,33 @@ mod tests {
         assert!(text.contains("⇧A"), "missing shifted view hint: {text}");
         assert!(text.contains("⇧P"), "missing shifted pin hint: {text}");
         assert!(text.contains("⇧F"), "missing shifted fleet hint: {text}");
+
+        let lines: Vec<&str> = text.lines().collect();
+        let esc_idx = lines
+            .iter()
+            .rposition(|line| line.contains("Esc"))
+            .expect("footer line");
+        let start_idx = lines[..=esc_idx]
+            .iter()
+            .rposition(|line| line.contains("↑↓"))
+            .unwrap_or(esc_idx);
+        let footer_block = lines[start_idx..=esc_idx].join("\n");
+        assert!(
+            footer_block.contains("↑↓"),
+            "footer missing move: {footer_block}"
+        );
+        assert!(
+            footer_block.contains("Enter"),
+            "footer missing apply: {footer_block}"
+        );
+        assert!(
+            footer_block.contains("⇧A"),
+            "footer missing views: {footer_block}"
+        );
+        assert!(
+            !footer_block.contains("Ctrl+S") && !footer_block.contains("⇧D"),
+            "footer must stay calm at 6 core actions: {footer_block}"
+        );
     }
 
     #[test]
@@ -6314,6 +6666,7 @@ mod tests {
             default_rank: None,
             credentialed: false,
             not_listed: None,
+            external_agent: None,
         };
         let labels = route_labels_for_rows(&[&row]);
         // No compiled display names: the route label is the table key itself.
@@ -6741,9 +7094,11 @@ model = "deepseek/deepseek-v4-flash"
         picker.model_rows = vec![row];
         assert!(matches!(
             picker.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-            ViewAction::Emit(ViewEvent::StatusMessage { message })
-                if message.contains("other_code/model")
-                    && message.contains("Open /provider and select other_code")
+            ViewAction::Emit(ViewEvent::StatusToast {
+                message,
+                level: crate::tui::app::StatusToastLevel::Error,
+            }) if message.contains("other_code/model")
+                && message.contains("Open /provider and select other_code")
         ));
 
         // Built-in providers retain their existing guided-auth handoff.
@@ -7121,5 +7476,177 @@ api_key = "fixture-xai-key"
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    #[test]
+    fn external_agents_appear_in_model_picker_with_runnable_and_blocked_reasons() {
+        use codewhale_app_server::runtime_api::ExternalAgentDiscoveryRow;
+        let temp = tempfile::tempdir().unwrap();
+        let config = Config::default();
+        let options = crate::tui::app::TuiOptions {
+            model: "deepseek-chat".to_string(),
+            workspace: temp.path().to_path_buf(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            screen_mode: crate::tui::app::ScreenMode::Fullscreen,
+            use_mouse_capture: false,
+            mouse_capture_preference: false,
+            use_bracketed_paste: false,
+            max_subagents: 1,
+            skills_dir: temp.path().join("skills"),
+            memory_path: temp.path().join("memory"),
+            notes_path: temp.path().join("notes"),
+            mcp_config_path: temp.path().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: false,
+            skip_onboarding: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+            startup_notice: None,
+        };
+        let mut app = App::new(options, &config);
+        app.external_agents = vec![
+            ExternalAgentDiscoveryRow {
+                id: "opencode".to_string(),
+                name: "OpenCode".to_string(),
+                state: "installed".to_string(),
+                version: Some("1.20.0".to_string()),
+                acp: Some("native".to_string()),
+                website: "https://opencode.ai".to_string(),
+                min_version: Some("1.15.5".to_string()),
+                upgrade: Some("npm i -g opencode-ai@latest".to_string()),
+                login: Some("opencode auth login".to_string()),
+                adapter: None,
+                adapter_installed: false,
+                needs_update: false,
+                runnable: true,
+                custom: false,
+                reason_code: None,
+                reason: None,
+            },
+            ExternalAgentDiscoveryRow {
+                id: "claude".to_string(),
+                name: "Claude Agent".to_string(),
+                state: "installed".to_string(),
+                version: Some("2.2.0".to_string()),
+                acp: Some("adapter".to_string()),
+                website: "https://github.com/agentclientprotocol/claude-agent-acp".to_string(),
+                min_version: Some("2.1.226".to_string()),
+                upgrade: None,
+                login: Some("claude auth login".to_string()),
+                adapter: Some("@agentclientprotocol/claude-agent-acp".to_string()),
+                adapter_installed: false,
+                needs_update: false,
+                runnable: false,
+                custom: false,
+                reason_code: Some("adapter_missing".to_string()),
+                reason: Some(
+                    "It runs through the ACP adapter @agentclientprotocol/claude-agent-acp, which is not installed."
+                        .to_string(),
+                ),
+            },
+            ExternalAgentDiscoveryRow {
+                id: "copilot".to_string(),
+                name: "GitHub Copilot CLI".to_string(),
+                state: "not_installed".to_string(),
+                version: None,
+                acp: None,
+                website: "https://docs.github.com/copilot".to_string(),
+                min_version: None,
+                upgrade: None,
+                login: Some("copilot login".to_string()),
+                adapter: None,
+                adapter_installed: false,
+                needs_update: false,
+                runnable: false,
+                custom: false,
+                reason_code: Some("not_installed".to_string()),
+                reason: Some("GitHub Copilot CLI is not installed.".to_string()),
+            },
+        ];
+
+        let mut picker = ModelPickerView::new(&app, &config);
+        let visible_ids: Vec<String> = picker
+            .visible_model_rows()
+            .iter()
+            .map(|row| row.id.clone())
+            .collect();
+        assert!(visible_ids.contains(&"opencode".to_string()));
+        assert!(visible_ids.contains(&"claude".to_string()));
+        assert!(!visible_ids.contains(&"copilot".to_string()));
+
+        let opencode_idx = visible_ids.iter().position(|id| id == "opencode").unwrap();
+        picker.selected_model_idx = opencode_idx;
+        assert!(picker.selected_model_is_selectable());
+        assert!(!picker.can_edit_effort());
+        let action = picker.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ExternalAgentSelected {
+                ref agent_id,
+                ref agent_name,
+            }) if agent_id == "opencode" && agent_name == "OpenCode"
+        ));
+
+        let claude_idx = visible_ids.iter().position(|id| id == "claude").unwrap();
+        picker.selected_model_idx = claude_idx;
+        assert!(!picker.selected_model_is_selectable());
+        let blocked = picker.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        match blocked {
+            ViewAction::Emit(ViewEvent::StatusMessage { message }) => {
+                assert!(message.contains("Claude Agent"), "{message}");
+                assert!(
+                    message.contains("@agentclientprotocol/claude-agent-acp"),
+                    "{message}"
+                );
+                assert!(!message.contains("claude auth login"), "{message}");
+            }
+            other => panic!("expected StatusMessage for blocked external agent, got {other:?}"),
+        }
+
+        picker.update_query("copilot".to_string());
+        let searched: Vec<String> = picker
+            .visible_model_rows()
+            .iter()
+            .map(|row| row.id.clone())
+            .collect();
+        assert!(searched.contains(&"copilot".to_string()));
+
+        let fleet_picker = ModelPickerView::new_for_fleet_route(
+            &app,
+            &config,
+            FleetRouteTarget::Member(0),
+            uuid::Uuid::new_v4(),
+            FleetRouteSelection {
+                provider: None,
+                model: None,
+                reasoning: None,
+                allow_inherit: true,
+            },
+        );
+        assert!(
+            fleet_picker
+                .model_rows
+                .iter()
+                .all(|row| row.external_agent.is_none())
+        );
+    }
+}
+
+#[cfg(test)]
+mod push_model_id_tests {
+    use super::push_model_id;
+
+    #[test]
+    fn case_variant_model_ids_stay_listed_but_auto_stays_reserved() {
+        let mut models = Vec::new();
+        push_model_id(&mut models, "auto");
+        push_model_id(&mut models, "Auto");
+        push_model_id(&mut models, "Org/Model-A");
+        push_model_id(&mut models, "org/model-a");
+        push_model_id(&mut models, "org/model-a");
+        assert_eq!(models, ["auto", "Org/Model-A", "org/model-a"]);
     }
 }

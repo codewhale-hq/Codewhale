@@ -73,6 +73,17 @@ use output::{
 };
 
 const READONLY_ENV_MARKER: &str = "CODEWHALE_INTERNAL_READONLY_ARGV";
+const GIT_HARDENING_ENV_MARKER: &str = "CODEWHALE_INTERNAL_GIT_HARDENING";
+
+#[derive(Clone, Copy)]
+pub(super) enum ReadonlyCommandHardening<'a> {
+    None,
+    StrictReadOnly(&'a std::path::Path),
+    GitReadOnlyIfAdmitted {
+        workspace: &'a std::path::Path,
+        require_native_sandbox: bool,
+    },
+}
 pub const AGENT_PROJECT_ENV: &str = "CODEWHALE_AGENT_PROJECT";
 pub const AGENT_POSTURE_ENV: &str = "CODEWHALE_AGENT_POSTURE";
 pub const AGENT_THREAD_ID_ENV: &str = "CODEWHALE_AGENT_THREAD_ID";
@@ -693,6 +704,24 @@ fn wait_child_bounded(child: &mut Child, grace: Duration) -> bool {
     }
 }
 
+/// Bounded wait for the direct child to exit without reaping it. Returns true
+/// once it has exited (or is no longer an unreaped child of this process),
+/// false when the grace elapsed first.
+#[cfg(unix)]
+fn wait_leader_exit_bounded(child: &Child, grace: Duration) -> bool {
+    let deadline = Instant::now() + grace;
+    loop {
+        match codewhale_runtime::process_tree::leader_exited_unreaped(child.id()) {
+            Ok(true) | Err(_) => return true,
+            Ok(false) => {}
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Terminate a shell's whole process group with a bounded SIGTERM → SIGKILL
 /// escalation (#52). The previous kill path SIGKILLed only the direct child
 /// and then joined output-reader threads with no timeout, so the tool
@@ -704,11 +733,13 @@ fn terminate_child_process_group(child: &mut Child) -> std::io::Result<()> {
     // Cooperative stop first so shells and their children can run traps and
     // clean up; bounded so a SIGTERM-ignoring command cannot stall the caller.
     let _ = signal_child_process_group(child, libc::SIGTERM);
-    if wait_child_bounded(child, KILL_TERM_GRACE) {
+    if wait_leader_exit_bounded(child, KILL_TERM_GRACE) {
         // The leader exited on SIGTERM; descendants may linger, so SIGKILL
-        // the rest of the group (ESRCH when it is already empty).
-        kill_child_process_group(child)?;
-        return Ok(());
+        // the rest of the group (ESRCH when it is already empty) while the
+        // unreaped leader still pins the group id, then reap it.
+        let killed = kill_child_process_group(child);
+        let _ = child.try_wait();
+        return killed;
     }
     kill_child_process_group(child)?;
     let _ = wait_child_bounded(child, KILL_REAP_GRACE);
@@ -2746,6 +2777,51 @@ impl ShellManager {
         persist_pending: bool,
         timeout_bounds_ms: (u64, u64),
     ) -> Result<ShellResult> {
+        self.execute_with_options_env_for_owner_and_work_hardened(
+            command,
+            program_args,
+            working_dir,
+            timeout_ms,
+            background,
+            stdin_data,
+            tty,
+            policy_override,
+            extra_env,
+            owner_agent,
+            owner_session_id,
+            origin_tool_call_id,
+            origin_turn_id,
+            work_lifecycle,
+            readonly_workspace.map_or(
+                ReadonlyCommandHardening::None,
+                ReadonlyCommandHardening::StrictReadOnly,
+            ),
+            persist_pending,
+            timeout_bounds_ms,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_with_options_env_for_owner_and_work_hardened(
+        &mut self,
+        command: &str,
+        program_args: Option<(&str, &[String])>,
+        working_dir: Option<&str>,
+        timeout_ms: u64,
+        background: bool,
+        stdin_data: Option<&str>,
+        tty: bool,
+        policy_override: Option<ExecutionSandboxPolicy>,
+        extra_env: HashMap<String, String>,
+        owner_agent: Option<ShellJobOwner>,
+        owner_session_id: String,
+        origin_tool_call_id: Option<String>,
+        origin_turn_id: Option<String>,
+        work_lifecycle: Option<ShellWorkLifecycle>,
+        readonly_hardening: ReadonlyCommandHardening<'_>,
+        persist_pending: bool,
+        timeout_bounds_ms: (u64, u64),
+    ) -> Result<ShellResult> {
         // Log execution via ShellDispatcher when SHELL_DISPATCHER_LOG is set.
         codewhale_sandbox::shell_dispatcher::ShellDispatcher::log_exec(command);
 
@@ -2763,7 +2839,7 @@ impl ShellManager {
         // Create command spec and prepare sandboxed environment
         let spec = if let Some((program, args)) = program_args {
             anyhow::ensure!(
-                readonly_workspace.is_none(),
+                matches!(readonly_hardening, ReadonlyCommandHardening::None),
                 "explicit argv cannot use shell read-only validation"
             );
             CommandSpec::program(
@@ -2772,24 +2848,57 @@ impl ShellManager {
                 work_dir.clone(),
                 Duration::from_millis(timeout_ms),
             )
-        } else if let Some(workspace) = readonly_workspace {
-            if readonly_command_needs_shell(command) {
-                let script = hardened_readonly_script(command, workspace)?;
-                CommandSpec::shell(&script, work_dir.clone(), Duration::from_millis(timeout_ms))
-            } else {
-                let (program, args) = hardened_readonly_argv(command)?;
-                let program = resolve_readonly_program(&program, workspace)?;
-                CommandSpec::program(
-                    program
-                        .to_str()
-                        .ok_or_else(|| anyhow!("read-only executable path is not valid UTF-8"))?,
-                    args,
-                    work_dir.clone(),
-                    Duration::from_millis(timeout_ms),
-                )
-            }
         } else {
-            CommandSpec::shell(command, work_dir.clone(), Duration::from_millis(timeout_ms))
+            match readonly_hardening {
+                ReadonlyCommandHardening::StrictReadOnly(workspace) => {
+                    if readonly_command_needs_shell(command) {
+                        let script = hardened_readonly_script(command, workspace)?;
+                        CommandSpec::shell(
+                            &script,
+                            work_dir.clone(),
+                            Duration::from_millis(timeout_ms),
+                        )
+                    } else {
+                        let (program, args) = hardened_readonly_argv(command)?;
+                        let program = resolve_readonly_program(&program, workspace)?;
+                        CommandSpec::program(
+                            program.to_str().ok_or_else(|| {
+                                anyhow!("read-only executable path is not valid UTF-8")
+                            })?,
+                            args,
+                            work_dir.clone(),
+                            Duration::from_millis(timeout_ms),
+                        )
+                    }
+                }
+                ReadonlyCommandHardening::GitReadOnlyIfAdmitted { workspace, .. }
+                    if command_is_admitted_readonly_git(command) =>
+                {
+                    if readonly_command_needs_shell(command) {
+                        let script = hardened_readonly_script(command, workspace)?;
+                        CommandSpec::shell(
+                            &script,
+                            work_dir.clone(),
+                            Duration::from_millis(timeout_ms),
+                        )
+                    } else {
+                        let (program, args) = hardened_readonly_argv(command)?;
+                        let program = resolve_readonly_program(&program, workspace)?;
+                        CommandSpec::program(
+                            program.to_str().ok_or_else(|| {
+                                anyhow!("read-only executable path is not valid UTF-8")
+                            })?,
+                            args,
+                            work_dir.clone(),
+                            Duration::from_millis(timeout_ms),
+                        )
+                    }
+                }
+                ReadonlyCommandHardening::GitReadOnlyIfAdmitted { .. }
+                | ReadonlyCommandHardening::None => {
+                    CommandSpec::shell(command, work_dir.clone(), Duration::from_millis(timeout_ms))
+                }
+            }
         };
         let spec = spec.with_policy(policy).with_env(extra_env);
         let spec = if matches!(spec.sandbox_policy, ExecutionSandboxPolicy::ReadOnly { .. }) {
@@ -2802,8 +2911,16 @@ impl ShellManager {
                 .context(ShellLaunchNotStarted)
                 .context(message)
         })?;
+        let needs_native_readonly = match readonly_hardening {
+            ReadonlyCommandHardening::StrictReadOnly(_) => false,
+            ReadonlyCommandHardening::None => true,
+            ReadonlyCommandHardening::GitReadOnlyIfAdmitted {
+                require_native_sandbox,
+                ..
+            } => require_native_sandbox,
+        };
         if matches!(spec.sandbox_policy, ExecutionSandboxPolicy::ReadOnly { .. })
-            && readonly_workspace.is_none()
+            && needs_native_readonly
         {
             // Arbitrary code with a read-only policy needs kernel enforcement;
             // only the separately hardened argv subset may run without it.
@@ -5547,13 +5664,49 @@ fn hardened_readonly_argv(command: &str) -> Result<(String, Vec<String>)> {
     Ok((program, argv))
 }
 
+fn command_first_program(command: &str) -> Option<String> {
+    shell_words::split(&normalize_windows_command_paths(command))
+        .ok()
+        .and_then(|argv| argv.into_iter().next())
+}
+
+fn command_is_admitted_readonly_git(command: &str) -> bool {
+    agent_readonly_verdict(command).is_ok_and(|segments| {
+        segments.iter().any(|segment| {
+            command_first_program(&segment.command).is_some_and(|program| program == "git")
+        })
+    })
+}
+
+fn has_git_dir_ancestor(start: &std::path::Path) -> bool {
+    start.ancestors().any(|dir| dir.join(".git").exists())
+}
+
 /// The directory each `git` segment of a read-only command runs in: `cwd`
 /// followed through any leading `-C` hops, as git itself resolves them.
+#[cfg(test)]
 fn readonly_git_dirs(command: &str, cwd: &std::path::Path) -> Vec<std::path::PathBuf> {
+    readonly_git_dirs_with_cwd_repo(command, cwd, false)
+}
+
+fn readonly_git_dirs_with_cwd_repo(
+    command: &str,
+    cwd: &std::path::Path,
+    include_cwd_if_repo: bool,
+) -> Vec<std::path::PathBuf> {
+    let mut base_cwd = cwd.to_path_buf();
+    let mut remaining = command.to_string();
+    for _ in 0..4 {
+        let Some((dir, rest)) = split_leading_cd(&remaining) else {
+            break;
+        };
+        base_cwd = base_cwd.join(dir);
+        remaining = rest;
+    }
     // Split with the same lexer the classifier and executor use (#6637), so a
     // `git` segment after `&&`, `||` or `;` gets its filter hardening too.
-    let segments = agent_readonly_verdict(command).map_or_else(
-        |_| command.split('|').map(str::to_string).collect::<Vec<_>>(),
+    let segments = agent_readonly_verdict(&remaining).map_or_else(
+        |_| remaining.split('|').map(str::to_string).collect::<Vec<_>>(),
         |segments| {
             segments
                 .into_iter()
@@ -5561,26 +5714,40 @@ fn readonly_git_dirs(command: &str, cwd: &std::path::Path) -> Vec<std::path::Pat
                 .collect()
         },
     );
-    segments
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    let mut push_unique = |dir: std::path::PathBuf| {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    };
+    for argv in segments
         .iter()
         .filter_map(|segment| shell_words::split(&normalize_windows_command_paths(segment)).ok())
         .filter(|argv| argv.first().is_some_and(|program| program == "git"))
-        .map(|argv| {
-            let mut dir = cwd.to_path_buf();
-            let mut args = argv.iter().skip(1);
-            while let Some(flag) = args.next() {
-                match flag.as_str() {
-                    "--no-pager" => {}
-                    "-C" => match args.next() {
-                        Some(target) => dir = dir.join(target),
-                        None => break,
-                    },
-                    _ => break,
-                }
+    {
+        let mut dir = base_cwd.clone();
+        let mut args = argv.iter().skip(1);
+        while let Some(flag) = args.next() {
+            match flag.as_str() {
+                "--no-pager" => {}
+                "-C" => match args.next() {
+                    Some(target) => dir = dir.join(target),
+                    None => break,
+                },
+                _ => break,
             }
-            dir
-        })
-        .collect()
+        }
+        push_unique(dir);
+    }
+    if include_cwd_if_repo {
+        if has_git_dir_ancestor(cwd) {
+            push_unique(cwd.to_path_buf());
+        }
+        if base_cwd != cwd && has_git_dir_ancestor(&base_cwd) {
+            push_unique(base_cwd);
+        }
+    }
+    dirs
 }
 
 fn enforce_readonly_workspace_operands(
@@ -5786,21 +5953,25 @@ fn resolve_readonly_program_from_path(
 }
 
 fn remove_readonly_redirect_env(cmd: &mut Command, env: &HashMap<String, String>) {
-    if env.get(READONLY_ENV_MARKER).map(String::as_str) != Some("1") {
+    let readonly_mode = env.get(READONLY_ENV_MARKER).map(String::as_str) == Some("1");
+    let git_hardening_mode =
+        readonly_mode || env.get(GIT_HARDENING_ENV_MARKER).map(String::as_str) == Some("1");
+    if !git_hardening_mode {
         return;
     }
     cmd.env_remove(READONLY_ENV_MARKER);
+    cmd.env_remove(GIT_HARDENING_ENV_MARKER);
     let removals = cmd
         .get_envs()
         .filter_map(|(key, _)| {
             let upper = key.to_string_lossy().to_ascii_uppercase();
             let guarded = upper.starts_with("GIT_")
-                || upper.starts_with("GH_")
-                || upper.starts_with("GITHUB_");
+                || (readonly_mode && (upper.starts_with("GH_") || upper.starts_with("GITHUB_")));
             let safe = matches!(
                 upper.as_str(),
                 "GIT_OPTIONAL_LOCKS"
                     | "GIT_NO_LAZY_FETCH"
+                    | "GIT_NO_REPLACE_OBJECTS"
                     | "GIT_PAGER"
                     | "GIT_CONFIG_NOSYSTEM"
                     | "GIT_CONFIG_GLOBAL"
@@ -5813,7 +5984,11 @@ fn remove_readonly_redirect_env(cmd: &mut Command, env: &HashMap<String, String>
                     | "GH_NO_UPDATE_NOTIFIER"
                     | "GH_HOST"
                     | "GH_REPO"
-            ) || upper.starts_with("GIT_CONFIG_KEY_")
+            ) || (matches!(
+                upper.as_str(),
+                "GIT_SSH_COMMAND" | "GIT_EDITOR" | "GIT_ASKPASS"
+            ) && env.contains_key(upper.as_str()))
+                || upper.starts_with("GIT_CONFIG_KEY_")
                 || upper.starts_with("GIT_CONFIG_VALUE_");
             (guarded && !safe).then(|| key.to_os_string())
         })
@@ -5868,7 +6043,7 @@ async fn execute_foreground_via_background(
     tty: bool,
     policy_override: Option<ExecutionSandboxPolicy>,
     extra_env: HashMap<String, String>,
-    direct_argv: bool,
+    readonly_hardening: ReadonlyCommandHardening<'_>,
     timeout_bounds_ms: (u64, u64),
     wants_receipt: bool,
     receipt_identity: &mut Option<ShellExecutionIdentity>,
@@ -5893,6 +6068,13 @@ async fn execute_foreground_via_background(
         None
     };
     let working_dir = receipt_cwd.clone().or(working_dir);
+    let rewritten_argv = matches!(
+        readonly_hardening,
+        ReadonlyCommandHardening::StrictReadOnly(_)
+    ) || (matches!(
+        readonly_hardening,
+        ReadonlyCommandHardening::GitReadOnlyIfAdmitted { .. }
+    ) && command_is_admitted_readonly_git(command));
     let (task_id, detach) = {
         let mut manager = context
             .shell_manager
@@ -5900,7 +6082,7 @@ async fn execute_foreground_via_background(
             .map_err(|_| anyhow!("shell manager lock poisoned"))?;
         let owner = shell_job_owner_from_context(context);
         let lifecycle = shell_work_lifecycle_from_context(context);
-        let spawned = manager.execute_with_options_env_for_owner_and_work(
+        let spawned = manager.execute_with_options_env_for_owner_and_work_hardened(
             command,
             None,
             working_dir.as_deref(),
@@ -5915,7 +6097,7 @@ async fn execute_foreground_via_background(
             context.origin_tool_call_id.clone(),
             context.origin_turn_id.clone(),
             lifecycle,
-            direct_argv.then_some(context.workspace.as_path()),
+            readonly_hardening,
             false,
             timeout_bounds_ms,
         )?;
@@ -5941,7 +6123,7 @@ async fn execute_foreground_via_background(
         if receipt_cwd.is_some()
             && !cfg!(windows)
             && !tty
-            && !direct_argv
+            && !rewritten_argv
             && !spawned.sandboxed
             && !spawned.sandbox_denied
             && !codewhale_sandbox::shell_dispatcher::global_dispatcher()
@@ -7237,8 +7419,14 @@ impl ToolSpec for BashTool {
         // synchronously, captures stdout, parses `KEY=VAL` lines, audit-logs
         // the keys (never the values). Empty / no-op when no hook is
         // configured.
-        let read_only_shell =
-            matches!(context.shell_policy, ShellPolicy::ReadOnly) || enforced_readonly;
+        let policy_readonly = matches!(context.shell_policy, ShellPolicy::ReadOnly);
+        let read_only_shell = policy_readonly || enforced_readonly;
+        let auto_approved_readonly =
+            !read_only_shell && exec_shell_input_is_parallel_readonly(&input);
+        let auto_approved_readonly_git = auto_approved_readonly
+            && command_first_program(command)
+                .is_some_and(|program| matches!(program.as_str(), "git" | "gh"));
+        let harden_git_env = read_only_shell || auto_approved_readonly_git;
         let mut extra_env = if read_only_shell {
             // shell_env hooks are arbitrary operator-configured processes.
             // They cannot run inside the evidence-only execution boundary.
@@ -7266,22 +7454,6 @@ impl ToolSpec for BashTool {
             std::collections::HashMap::new()
         };
         if read_only_shell {
-            let null_device = if cfg!(windows) { "NUL" } else { "/dev/null" };
-            let inert_git_helper = if cfg!(windows) {
-                "cmd.exe /d /c exit 1"
-            } else {
-                "/usr/bin/false"
-            };
-            // Read-only Bash is intentionally a small inspection surface. Git
-            // can otherwise invoke operator/repository configured helpers
-            // while performing nominal reads (a pager or fsmonitor), and it
-            // may opportunistically refresh the index. These environment
-            // overrides make those reads non-interactive and suppress the
-            // optional mutation/extension seams; the command classifier and
-            // machine authority gate remain authoritative as well.
-            extra_env.insert("GIT_OPTIONAL_LOCKS".to_string(), "0".to_string());
-            extra_env.insert("GIT_NO_LAZY_FETCH".to_string(), "1".to_string());
-            extra_env.insert("GIT_PAGER".to_string(), String::new());
             extra_env.insert("GH_PAGER".to_string(), String::new());
             extra_env.insert("GH_PROMPT_DISABLED".to_string(), "1".to_string());
             extra_env.insert("GH_NO_UPDATE_NOTIFIER".to_string(), "1".to_string());
@@ -7290,15 +7462,32 @@ impl ToolSpec for BashTool {
             // cannot redirect the call after api.github.com was approved.
             extra_env.insert("GH_HOST".to_string(), "github.com".to_string());
             extra_env.insert("GH_REPO".to_string(), String::new());
-            extra_env.insert("PAGER".to_string(), String::new());
             extra_env.insert("ENV".to_string(), String::new());
             extra_env.insert("BASH_ENV".to_string(), String::new());
             extra_env.insert("CDPATH".to_string(), String::new());
             extra_env.insert("RIPGREP_CONFIG_PATH".to_string(), String::new());
+            if let Some(path) = readonly_sanitized_path(&context.workspace) {
+                extra_env.insert("PATH".to_string(), path);
+            }
+            extra_env.insert(READONLY_ENV_MARKER.to_string(), "1".to_string());
+        }
+        if harden_git_env {
+            let null_device = if cfg!(windows) { "NUL" } else { "/dev/null" };
+            let inert_git_helper = codewhale_dependencies::Git::INERT_HELPER;
+            extra_env.retain(|key, _| {
+                let upper = key.to_ascii_uppercase();
+                !upper.starts_with("GIT_CONFIG_KEY_") && !upper.starts_with("GIT_CONFIG_VALUE_")
+            });
+            extra_env.insert("GIT_OPTIONAL_LOCKS".to_string(), "0".to_string());
+            extra_env.insert("GIT_NO_LAZY_FETCH".to_string(), "1".to_string());
+            extra_env.insert("GIT_NO_REPLACE_OBJECTS".to_string(), "1".to_string());
+            extra_env.insert("GIT_PAGER".to_string(), String::new());
+            extra_env.insert("PAGER".to_string(), String::new());
             // Ignore user/system Git configuration and replace any repository
-            // external diff helper with a fixed inert executable. Repository
-            // config and attributes are attacker-controlled evidence inputs;
-            // a nominal `git diff/log/show` must not turn them into programs.
+            // external diff/gpg/ssh/editor/askpass helper with a fixed inert
+            // executable. Repository config and attributes are attacker-controlled
+            // evidence inputs; a nominal `git diff/log/show/status/blame` must not
+            // turn them into programs.
             extra_env.insert("GIT_CONFIG_NOSYSTEM".to_string(), "1".to_string());
             extra_env.insert("GIT_CONFIG_GLOBAL".to_string(), null_device.to_string());
             extra_env.insert("GIT_CONFIG_PARAMETERS".to_string(), String::new());
@@ -7307,30 +7496,51 @@ impl ToolSpec for BashTool {
                 inert_git_helper.to_string(),
             );
             extra_env.insert("GIT_ATTR_NOSYSTEM".to_string(), "1".to_string());
-            if let Some(path) = readonly_sanitized_path(&context.workspace) {
-                extra_env.insert("PATH".to_string(), path);
+            extra_env.insert("GIT_SSH_COMMAND".to_string(), inert_git_helper.to_string());
+            extra_env.insert("GIT_EDITOR".to_string(), inert_git_helper.to_string());
+            extra_env.insert("GIT_ASKPASS".to_string(), inert_git_helper.to_string());
+            let static_git_config = [
+                ("core.fsmonitor", "false"),
+                ("core.hooksPath", null_device),
+                ("core.pager", ""),
+                ("core.sshCommand", inert_git_helper),
+                ("core.editor", inert_git_helper),
+                ("core.askPass", inert_git_helper),
+                ("core.alternateRefsCommand", ""),
+                ("credential.helper", ""),
+                ("log.showSignature", "false"),
+                ("diff.submodule", "short"),
+                ("diff.ignoreSubmodules", "dirty"),
+                ("protocol.ext.allow", "never"),
+                ("gpg.program", inert_git_helper),
+                ("gpg.openpgp.program", inert_git_helper),
+                ("gpg.x509.program", inert_git_helper),
+                ("gpg.ssh.program", inert_git_helper),
+            ];
+            let mut count = 0usize;
+            for (key, value) in static_git_config {
+                extra_env.insert(format!("GIT_CONFIG_KEY_{count}"), key.to_string());
+                extra_env.insert(format!("GIT_CONFIG_VALUE_{count}"), value.to_string());
+                count += 1;
             }
-            extra_env.insert("GIT_CONFIG_KEY_0".to_string(), "core.fsmonitor".to_string());
-            extra_env.insert("GIT_CONFIG_VALUE_0".to_string(), "false".to_string());
-            extra_env.insert("GIT_CONFIG_KEY_1".to_string(), "core.hooksPath".to_string());
-            extra_env.insert("GIT_CONFIG_VALUE_1".to_string(), null_device.to_string());
-            extra_env.insert(
-                "GIT_CONFIG_KEY_2".to_string(),
-                "log.showSignature".to_string(),
-            );
-            extra_env.insert("GIT_CONFIG_VALUE_2".to_string(), "false".to_string());
             // A working-tree read (diff, status, blame) runs the repository's
-            // clean filters, which no command-line flag disables.
-            let git_dirs = readonly_git_dirs(
+            // clean filters and diff drivers; discover and neutralize every
+            // dynamic repository driver key.
+            let git_dirs = readonly_git_dirs_with_cwd_repo(
                 command,
                 working_dir
                     .as_deref()
                     .map_or(context.workspace.as_path(), std::path::Path::new),
+                enforced_readonly || auto_approved_readonly_git,
             );
             let overrides = tokio::task::spawn_blocking(move || {
-                let mut overrides = std::collections::BTreeSet::new();
+                let mut overrides = std::collections::BTreeMap::new();
                 for dir in git_dirs {
-                    overrides.extend(codewhale_dependencies::Git::review_filter_overrides(&dir)?);
+                    for (key, value) in
+                        codewhale_dependencies::Git::review_shell_config_overrides(&dir)?
+                    {
+                        overrides.insert(key, value);
+                    }
                 }
                 anyhow::Ok(overrides)
             })
@@ -7338,17 +7548,16 @@ impl ToolSpec for BashTool {
             .map_err(|e| ToolError::execution_failed(format!("git task panicked: {e}")))?
             .map_err(|e| {
                 ToolError::permission_denied(format!(
-                    "Read-only shell could not inspect the repository's Git filters: {e:#}"
+                    "Read-only shell could not inspect the repository's Git configuration: {e:#}"
                 ))
             })?;
-            let mut count = 3;
             for (key, value) in overrides {
                 extra_env.insert(format!("GIT_CONFIG_KEY_{count}"), key);
                 extra_env.insert(format!("GIT_CONFIG_VALUE_{count}"), value.to_string());
                 count += 1;
             }
             extra_env.insert("GIT_CONFIG_COUNT".to_string(), count.to_string());
-            extra_env.insert(READONLY_ENV_MARKER.to_string(), "1".to_string());
+            extra_env.insert(GIT_HARDENING_ENV_MARKER.to_string(), "1".to_string());
         }
         insert_agent_mark_env(&mut extra_env, context);
 
@@ -7393,7 +7602,19 @@ impl ToolSpec for BashTool {
             }
 
             let started = std::time::Instant::now();
-            let backend_result = backend.exec(command, &extra_env).await;
+            let backend_command =
+                if auto_approved_readonly_git && command_is_admitted_readonly_git(command) {
+                    let (program, args) = hardened_readonly_argv(command)
+                        .map_err(|e| ToolError::permission_denied(e.to_string()))?;
+                    std::iter::once(program)
+                        .chain(args)
+                        .map(|word| shell_words::quote(&word).into_owned())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                } else {
+                    command.to_string()
+                };
+            let backend_result = backend.exec(&backend_command, &extra_env).await;
 
             let (result, persisted_artifact) = match backend_result {
                 Ok(output) => {
@@ -7603,6 +7824,21 @@ impl ToolSpec for BashTool {
             }
             result.map(|result| (result, None))
         } else {
+            let readonly_hardening = if policy_readonly && !enforced_readonly {
+                ReadonlyCommandHardening::StrictReadOnly(context.workspace.as_path())
+            } else if enforced_readonly {
+                ReadonlyCommandHardening::GitReadOnlyIfAdmitted {
+                    workspace: context.workspace.as_path(),
+                    require_native_sandbox: true,
+                }
+            } else if auto_approved_readonly_git {
+                ReadonlyCommandHardening::GitReadOnlyIfAdmitted {
+                    workspace: context.workspace.as_path(),
+                    require_native_sandbox: false,
+                }
+            } else {
+                ReadonlyCommandHardening::None
+            };
             execute_foreground_via_background(
                 context,
                 command,
@@ -7614,7 +7850,7 @@ impl ToolSpec for BashTool {
                 combined_output,
                 policy_override,
                 extra_env,
-                matches!(context.shell_policy, ShellPolicy::ReadOnly) && !enforced_readonly,
+                readonly_hardening,
                 timeout_bounds_ms,
                 wants_receipt,
                 &mut receipt_identity,
@@ -8876,6 +9112,9 @@ impl ToolSpec for NoteTool {
 #[cfg(test)]
 #[path = "shell/tests/enforced_readonly.rs"]
 mod enforced_readonly_tests;
+#[cfg(test)]
+#[path = "shell/tests/git_config_hardening.rs"]
+mod git_config_hardening_tests;
 #[cfg(test)]
 mod tests;
 

@@ -2931,6 +2931,120 @@ async fn workspace_and_automation_endpoints_work() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn automation_endpoints_reject_permission_elevation_and_unattended_elevated_dispatch()
+-> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (automation_tx, automation_rx) = oneshot::channel();
+    let Some((addr, _runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            root.path().to_path_buf(),
+            root.path().join("sessions"),
+            None,
+            false,
+            root.path().join("workspace"),
+            TestServerOverrides {
+                automation_handles: Some(automation_tx),
+                ..Default::default()
+            },
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    let (automations, tasks) = automation_rx.await?;
+    let client = codewhale_release::tls::reqwest_client();
+
+    for (label, extra) in [
+        ("auto_approve", json!({"auto_approve": true})),
+        ("trust_mode", json!({"trust_mode": true})),
+        ("allow_shell", json!({"allow_shell": true})),
+        (
+            "all",
+            json!({"auto_approve": true, "trust_mode": true, "allow_shell": true}),
+        ),
+    ] {
+        let mut body = json!({
+            "name": format!("elevated-{label}"),
+            "prompt": "summarize",
+            "rrule": "FREQ=HOURLY;INTERVAL=1",
+        });
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let response = client
+            .post(format!("http://{addr}/v1/automations"))
+            .json(&body)
+            .send()
+            .await?;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "create {label}");
+        assert!(
+            response
+                .text()
+                .await?
+                .contains("automation permissions may not be elevated"),
+            "create {label}"
+        );
+    }
+    assert!(automations.lock().await.list_automations()?.is_empty());
+
+    let created: serde_json::Value = client
+        .post(format!("http://{addr}/v1/automations"))
+        .json(&json!({
+            "name": "safe-automation",
+            "prompt": "summarize",
+            "rrule": "FREQ=HOURLY;INTERVAL=1",
+            "status": "paused"
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let automation_id = created["id"]
+        .as_str()
+        .context("missing automation id")?
+        .to_string();
+
+    for (label, patch) in [
+        ("auto_approve", json!({"auto_approve": true})),
+        ("trust_mode", json!({"trust_mode": true})),
+        ("allow_shell", json!({"allow_shell": true})),
+    ] {
+        let response = client
+            .patch(format!("http://{addr}/v1/automations/{automation_id}"))
+            .json(&patch)
+            .send()
+            .await?;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "patch {label}");
+        assert!(
+            response
+                .text()
+                .await?
+                .contains("automation permissions may not be elevated"),
+            "patch {label}"
+        );
+    }
+
+    let mut tampered = automations.lock().await.get_automation(&automation_id)?;
+    tampered.auto_approve = Some(true);
+    tampered.trust_mode = Some(true);
+    tampered.allow_shell = Some(true);
+    automations.lock().await.save_automation(&tampered)?;
+
+    let run_response = client
+        .post(format!("http://{addr}/v1/automations/{automation_id}/run"))
+        .json(&json!({}))
+        .send()
+        .await?;
+    assert_eq!(run_response.status(), StatusCode::BAD_REQUEST);
+    assert!(run_response.text().await?.contains("elevated permissions"));
+    assert!(tasks.list_tasks(None).await?.is_empty());
+
+    handle.abort();
+    Ok(())
+}
+
 fn test_fleet_route_config() -> codewhale_runtime::config::Config {
     let mut providers = codewhale_runtime::config::ProvidersConfig::default();
     providers.deepseek.api_key = Some("test-key".to_string());
@@ -13972,6 +14086,69 @@ async fn get_settings_schema(client: &reqwest::Client, addr: &SocketAddr) -> ser
 }
 
 #[tokio::test]
+async fn settings_schema_allow_shell_reports_interactive_default_and_explicit_opt_out() -> Result<()>
+{
+    let _lock = lock_test_env();
+    let root = tempfile::tempdir()?;
+    let fresh_config = root.path().join("fresh-config.toml");
+    let _config = EnvVarGuard::set("CODEWHALE_CONFIG_PATH", &fresh_config);
+    let Some((addr, _runtime_threads, handle)) =
+        spawn_test_server_with_config_path(fresh_config.clone()).await?
+    else {
+        return Ok(());
+    };
+    let client = codewhale_release::tls::reqwest_client();
+    let fresh_body = get_settings_schema(&client, &addr).await;
+    handle.abort();
+
+    let fresh_row = fresh_body["settings"]
+        .as_array()
+        .expect("settings array")
+        .iter()
+        .find(|row| row["key"] == "allow_shell")
+        .expect("allow_shell row present");
+    assert_eq!(fresh_row["value"], "true");
+    assert_eq!(fresh_row["persisted"], false);
+
+    let explicit_config = root.path().join("explicit-config.toml");
+    fs::write(&explicit_config, "allow_shell = false\n")?;
+    let _config2 = EnvVarGuard::set("CODEWHALE_CONFIG_PATH", &explicit_config);
+    let Some((addr2, _runtime_threads2, handle2)) =
+        spawn_test_server_with_config_path(explicit_config.clone()).await?
+    else {
+        return Ok(());
+    };
+    let explicit_body = get_settings_schema(&client, &addr2).await;
+    handle2.abort();
+
+    let explicit_row = explicit_body["settings"]
+        .as_array()
+        .expect("settings array")
+        .iter()
+        .find(|row| row["key"] == "allow_shell")
+        .expect("allow_shell row present");
+    assert_eq!(explicit_row["value"], "false");
+    assert_eq!(explicit_row["persisted"], true);
+
+    // Default-config launch (state.config_path == None, discovered via CODEWHALE_CONFIG_PATH)
+    // must still detect persisted config.toml entries.
+    let Some((addr3, _runtime_threads3, handle3)) = spawn_test_server().await? else {
+        return Ok(());
+    };
+    let default_launch_body = get_settings_schema(&client, &addr3).await;
+    handle3.abort();
+    let default_launch_row = default_launch_body["settings"]
+        .as_array()
+        .expect("settings array")
+        .iter()
+        .find(|row| row["key"] == "allow_shell")
+        .expect("allow_shell row present");
+    assert_eq!(default_launch_row["value"], "true");
+    assert_eq!(default_launch_row["persisted"], true);
+    Ok(())
+}
+
+#[tokio::test]
 async fn settings_schema_serves_every_declared_row_with_runtime_state() -> Result<()> {
     let _lock = lock_test_env();
     let root = tempfile::tempdir()?;
@@ -14028,7 +14205,7 @@ async fn settings_schema_serves_every_declared_row_with_runtime_state() -> Resul
         );
         let label = entry["label"].as_str().expect("label");
         assert!(
-            !label.is_empty() && !label.starts_with("Config"),
+            !label.is_empty() && !(label.starts_with("Config") && !label.contains(' ')),
             "label must be resolved prose, not a message key: {label}"
         );
         assert!(entry["visible"].is_boolean());
@@ -14051,6 +14228,8 @@ async fn settings_schema_serves_every_declared_row_with_runtime_state() -> Resul
     assert_eq!(row("notifications.condition")["value"], "always");
     assert_eq!(row("notifications.condition")["persisted"], true);
     assert_eq!(row("telemetry")["value"], "false");
+    assert_eq!(row("allow_shell")["value"], "true");
+    assert_eq!(row("allow_shell")["persisted"], false);
 
     // Row kinds and editability agree with the TUI's own semantics:
     // model/provider open pickers (actions), approval_mode is the
@@ -14060,7 +14239,7 @@ async fn settings_schema_serves_every_declared_row_with_runtime_state() -> Resul
     assert_eq!(row("approval_mode")["row"], "session");
     assert_eq!(row("approval_mode")["editable"], true);
     assert_eq!(row("provider_url")["editable"], false);
-    assert_eq!(row("telemetry")["editable"], false);
+    assert_eq!(row("telemetry")["editable"], true);
     for action in ["mcp_open", "plugins_open"] {
         assert_eq!(row(action)["row"], "action");
         assert_eq!(row(action)["editable"], false);
@@ -14071,6 +14250,65 @@ async fn settings_schema_serves_every_declared_row_with_runtime_state() -> Resul
     assert_eq!(row("permission_posture")["visible"], true);
     assert_eq!(row("approval_policy")["visible"], false);
     assert_eq!(row("managed_approval_policy")["visible"], false);
+    Ok(())
+}
+
+#[tokio::test]
+async fn settings_schema_telemetry_config_toggle_persists_and_validates() -> Result<()> {
+    let _lock = lock_test_env();
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    fs::create_dir_all(&home)?;
+    let config_file = home.join("config.toml");
+    fs::write(
+        &config_file,
+        "provider = \"deepseek\"\napi_key = \"runtime-api-test-key\"\nbase_url = \"http://127.0.0.1:1/v1\"\n",
+    )?;
+    let _home = EnvVarGuard::set("CODEWHALE_HOME", &home);
+    let _config = EnvVarGuard::set("CODEWHALE_CONFIG_PATH", &config_file);
+    let Some((addr, _runtime_threads, handle)) =
+        spawn_test_server_with_config_path(config_file.clone()).await?
+    else {
+        return Ok(());
+    };
+    let client = codewhale_release::tls::reqwest_client();
+
+    let off = client
+        .post(format!("http://{addr}/v1/config"))
+        .json(&json!({"key": "telemetry", "value": "false", "persist": true}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+    assert_eq!(off["key"], "telemetry");
+    assert_eq!(off["value"], "false");
+    assert_eq!(off["persisted"], true);
+    assert_eq!(off["requires_reload"], false);
+    assert!(fs::read_to_string(&config_file)?.contains("telemetry = false"));
+
+    let on = client
+        .post(format!("http://{addr}/v1/config"))
+        .json(&json!({"key": "telemetry", "value": "true", "persist": true}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+    assert_eq!(on["key"], "telemetry");
+    assert_eq!(on["value"], "true");
+    assert_eq!(on["persisted"], true);
+    assert_eq!(on["requires_reload"], true);
+    assert!(fs::read_to_string(&config_file)?.contains("telemetry = true"));
+
+    let invalid = client
+        .post(format!("http://{addr}/v1/config"))
+        .json(&json!({"key": "telemetry", "value": "maybe", "persist": true}))
+        .send()
+        .await?;
+    assert_eq!(invalid.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    handle.abort();
     Ok(())
 }
 
@@ -18869,6 +19107,69 @@ async fn skill_detail_404s_for_unknown_skill() -> Result<()> {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
     handle.abort();
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn list_skills_and_set_skill_enabled_offload_discovery_from_async_worker() -> Result<()> {
+    let _env = lock_test_env();
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().join("runtime");
+    let sessions_dir = tmp.path().join("sessions");
+    let workspace = tmp.path().join("workspace");
+    let (state_tx, state_rx) = oneshot::channel();
+    let Some((_listener, _app, _addr, _runtime_threads, _owner)) = build_test_server(
+        root,
+        sessions_dir,
+        None,
+        false,
+        workspace,
+        TestServerOverrides {
+            state_handle: Some(state_tx),
+            ..Default::default()
+        },
+    )
+    .await?
+    else {
+        return Ok(());
+    };
+    let state = state_rx.await?;
+
+    let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let holder_state = state.clone();
+    let holder = std::thread::spawn(move || {
+        let _config_write = holder_state.config.write();
+        let _ = locked_tx.send(());
+        let _ = release_rx.recv();
+    });
+    locked_rx.await?;
+    let list_task = tokio::spawn(super::list_skills(State(state.clone())));
+    let enable_task = tokio::spawn(super::set_skill_enabled(
+        State(state.clone()),
+        axum::extract::Path("no-such-skill".to_string()),
+        Json(super::SetSkillEnabledRequest { enabled: false }),
+    ));
+    tokio::task::yield_now().await;
+    assert!(!list_task.is_finished());
+    assert!(!enable_task.is_finished());
+    drop(release_tx);
+    holder
+        .join()
+        .map_err(|_| anyhow::anyhow!("config write holder panicked"))?;
+
+    let list_resp = list_task
+        .await?
+        .map_err(|err| anyhow::anyhow!(err.message))?;
+    assert!(
+        list_resp
+            .0
+            .skills
+            .iter()
+            .all(|row| row.name != "no-such-skill")
+    );
+    let err = enable_task.await?.unwrap_err();
+    assert_eq!(err.status, StatusCode::NOT_FOUND);
     Ok(())
 }
 
@@ -24135,39 +24436,24 @@ async fn targets_report_self_and_probe_remote_endpoints() -> Result<()> {
     assert_eq!(remote["auth_required"], true);
     assert_eq!(remote["port"], json!(addr.port()));
 
-    // The probe identifies this same server as a Codewhale runtime.
-    let probed: Value = client
-        .post(format!("{base}/v1/remote/connect"))
-        .bearer_auth("targets-token")
-        .json(&json!({"endpoint": base}))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    assert_eq!(probed["ok"], true);
-    assert_eq!(probed["remote"]["service"], "codewhale-runtime-api");
-    assert_eq!(probed["remote"]["auth_required"], true);
-    assert_eq!(probed["attach"], "client");
-
-    // A closed port is an honest negative verdict, not a server error.
-    let refused: Value = client
-        .post(format!("{base}/v1/remote/connect"))
-        .bearer_auth("targets-token")
-        .json(&json!({"endpoint": "http://127.0.0.1:1"}))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    assert_eq!(refused["ok"], false);
-    assert_eq!(refused["reason"], "unreachable");
-
-    // Malformed, non-http, and credentialed endpoints fail closed at 400.
+    // Loopback, link-local/metadata, unspecified, multicast, malformed,
+    // non-http, and credentialed endpoints fail closed at 400.
     for endpoint in [
+        base.as_str(),
+        "http://127.0.0.1:1",
+        "http://[::1]:7878",
+        "http://localhost:7878",
+        "http://169.254.169.254",
+        "http://[fe80::1]:7878",
+        "http://0.0.0.0:7878",
+        "http://[::]:7878",
+        "http://[64:ff9b::127.0.0.1]:7878",
+        "http://[::ffff:0:127.0.0.1]:7878",
+        "http://[2002:7f00:1::]:7878",
+        "http://224.0.0.1:7878",
         "not-a-url",
         "ftp://example.com",
-        "http://user:pass@127.0.0.1:7878",
+        "http://user:pass@192.168.1.5:7878",
     ] {
         let status = client
             .post(format!("{base}/v1/remote/connect"))
@@ -29914,7 +30200,19 @@ async fn anthropic_browser_connect_follows_control_plane_availability() -> Resul
     let control = wiremock::MockServer::start().await;
     let _env = claude_org_test_env(&tmp, &control.uri())?;
     seed_claude_org_session(&control.uri())?;
-    mount_claude_org_status(&control, unlinked(), None).await;
+    let (release_probe, probe_released) = std::sync::mpsc::channel::<()>();
+    let probe_released = std::sync::Mutex::new(probe_released);
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/api/claude-billing"))
+        .respond_with(move |_: &wiremock::Request| {
+            let _ = probe_released
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5));
+            wiremock::ResponseTemplate::new(200).set_body_json(unlinked())
+        })
+        .mount(&control)
+        .await;
     let config_path = tmp.path().join("config.toml");
     fs::write(&config_path, "provider = \"deepseek\"\n")?;
     let live_config = Arc::new(parking_lot::RwLock::new(Config::default()));
@@ -29941,6 +30239,7 @@ async fn anthropic_browser_connect_follows_control_plane_availability() -> Resul
     };
 
     assert!(!anthropic_offers_connect().await?);
+    drop(release_probe);
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !anthropic_offers_connect().await? {
         anyhow::ensure!(

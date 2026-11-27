@@ -1,7 +1,7 @@
 //! Config-group command facets (FEAT-028 D3/D4).
 //!
 //! These traits let `/config`, `/settings`, `/mode`, `/theme`, `/verbose`,
-//! `/login`, `/logout`, `/pet` and `/trust` express their intent without naming
+//! `/login`, `/logout`, `/whale` and `/trust` express their intent without naming
 //! `App`, a service locator, a callback, or any concrete host type. Hosts own
 //! persistence, services and I/O; the values here grant no terminal, TUI or
 //! runtime authority, and a missing facet must fail safely rather than panic.
@@ -280,80 +280,28 @@ pub trait CommandConfigContext {
     fn display_path(&self, path: &Path) -> String;
 }
 
-/// Pet presence, mode, sound and habitat actions for `/pet`.
+/// Localized whale labels the `/whale` command composes into its messages.
 ///
 /// The command owns the verb parsing and message composition; the facet only
-/// observes and mutates the pet state and resolves the localized labels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandPetControl {
-    Sound,
-    Browser,
-    Select,
-    FocusAgents,
-    /// Body style for `/pet style`.
-    Appearance {
-        body: CommandPetBodyStyle,
-    },
-}
-
-/// Portable pet body style for `/pet style`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandPetBodyStyle {
-    Smooth,
-    Pixel,
-}
-
-impl CommandPetBodyStyle {
-    /// Canonical `pet_watch` token.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Smooth => "smooth",
-            Self::Pixel => "pixel",
-        }
-    }
-
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "smooth" => Some(Self::Smooth),
-            "pixel" => Some(Self::Pixel),
-            _ => None,
-        }
-    }
-}
-
-/// Localized pet labels the command composes into its messages.
+/// observes and mutates the whale view and resolves these labels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandPetLabel {
     ModeOn,
     ModeOff,
-    ModeOnLabel,
-    ModeOffLabel,
-    ViewOpen,
-    ViewClosed,
-    HabitatQueued,
-    ExportQueued,
-    ExportUnavailable,
-    SoundOn,
-    /// The habitat control could not be queued.
-    WatchUnavailable,
+    StillOn,
+    StillOff,
+    Named,
+    Colored,
+    ColorReset,
 }
 
 pub trait CommandPetContext {
     fn enabled(&self) -> bool;
-    fn is_open(&self) -> bool;
-    fn status(&self) -> String;
-    fn avatar_choices(&self) -> String;
-    fn select_avatar(&mut self, key: &str) -> bool;
-    fn preview_avatar(&mut self, name: &str, view: bool) -> bool;
     fn set_enabled(&mut self, enabled: bool, persist: bool);
-    fn set_sound(&mut self, enabled: bool);
-    fn sound_label(&self) -> String;
-    fn export(&mut self) -> bool;
-    fn open_habitat(&mut self);
-    /// Queue a habitat control; `false` when it could not be delivered.
-    fn queue(&mut self, control: CommandPetControl) -> bool;
+    fn still(&self) -> bool;
+    fn set_still(&mut self, still: bool);
+    fn set_name(&mut self, name: &str);
+    fn set_color(&mut self, color: Option<[u8; 3]>);
     fn label(&self, which: CommandPetLabel) -> String;
 }
 
@@ -374,6 +322,7 @@ pub struct CommandLoginStatus {
     pub account: CommandAccountState,
     pub api_base: String,
     pub provider: String,
+    pub sign_in_open: bool,
 }
 
 /// Account/provider session state for `/login` and `/logout`.
@@ -577,7 +526,7 @@ pub enum CommandSourceStatus {
     Found,
     NotFound,
     Oversize(u64),
-    InvalidJson,
+    InvalidJson(String),
     Unreadable(String),
 }
 
@@ -594,7 +543,7 @@ impl CommandSourceStatus {
             Self::Oversize(bytes) => {
                 format!("skipped, too large ({bytes} bytes): {display_path}")
             }
-            Self::InvalidJson => format!("invalid JSON: {display_path}"),
+            Self::InvalidJson(error) => format!("invalid JSON: {display_path} ({error})"),
             Self::Unreadable(error) => format!("unreadable: {display_path} ({error})"),
         }
     }

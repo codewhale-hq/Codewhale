@@ -539,7 +539,10 @@ impl ConfigToml {
                 // are u64. Reject invalid types before touching the document.
                 let max = if matches!(
                     field,
-                    "max_resumes" | "max_transparent_retries" | "max_stream_errors"
+                    "open_retries"
+                        | "max_resumes"
+                        | "max_transparent_retries"
+                        | "max_stream_errors"
                 ) {
                     i64::from(u32::MAX)
                 } else {
@@ -827,7 +830,9 @@ impl ConfigToml {
 
     /// Resolve runtime options using an explicit secrets façade.
     ///
-    /// API-key precedence is **CLI flag → config-file → secret store → environment**.
+    /// API-key precedence is **CLI flag → config-file `api_key` → the variable
+    /// named by `api_key_env` → secret store → environment**. The two file-owned
+    /// sources apply only while the file owns the endpoint.
     #[must_use]
     pub fn resolve_runtime_options_with_secrets(
         &self,
@@ -887,6 +892,10 @@ impl ConfigToml {
             .or_else(|| provider_cfg.auth_mode.clone())
             .or_else(|| self.auth_mode.clone());
         let from_file = provider_cfg.api_key.clone();
+        let bound_env_api_key = provider_cfg
+            .api_key_env_name()
+            .and_then(|name| std::env::var(name).ok())
+            .filter(|value| !value.trim().is_empty());
         let cli_base_url = cli.base_url.clone();
         let env_base_url = env.base_url_for(provider);
         let file_base_url = provider_cfg.base_url.clone();
@@ -967,6 +976,12 @@ impl ConfigToml {
             })
         {
             (Some(value), Some(RuntimeApiKeySource::ConfigFile))
+        } else if (!custom_endpoint || base_url_from_file)
+            && let Some(value) = bound_env_api_key
+        {
+            (Some(value), Some(RuntimeApiKeySource::Env))
+        } else if provider == ProviderKind::Custom && provider_cfg.api_key_env_name().is_some() {
+            (None, None)
         } else if !custom_endpoint
             && let Some(value) = xiaomi_mimo_env_api_key.filter(|v| !v.trim().is_empty())
         {

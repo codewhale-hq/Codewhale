@@ -1,6 +1,4 @@
-use codewhale_models::schema_sanitize::{
-    sanitize_for_kimi_parameters, sanitize_for_xai_parameters,
-};
+use codewhale_models::schema_sanitize::{sanitize_for_kimi_parameters, sanitize_for_responses};
 use serde_json::{Value, json};
 
 fn root_one_of_apply_patch_fixture() -> Value {
@@ -44,7 +42,7 @@ fn xai_sanitize_flattens_apply_patch_root_one_of() {
     let mut schema = root_one_of_apply_patch_fixture();
     assert!(schema.get("oneOf").is_some(), "fixture must match the tool");
 
-    let note = sanitize_for_xai_parameters(&mut schema);
+    let note = sanitize_for_responses(&mut schema);
 
     assert_eq!(schema["type"], "object");
     assert!(schema.get("oneOf").is_none());

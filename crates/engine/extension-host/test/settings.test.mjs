@@ -17,11 +17,15 @@ before(async () => {
   process.on('exit', () => rmSync(dir, { recursive: true, force: true }))
 })
 
-function service(answers, pluginName = 'fixture.plugin') {
+function service(answers, pluginName = 'fixture.plugin', { ticketed = true } = {}) {
   const calls = []
   const host = {
     tier: 'plugin',
     ownerOf: () => ({ pluginName }),
+    brokerTicket: (ctx, name) => {
+      if (!ticketed) throw new Error(`the ${name} broker is only available to a live tool invocation the core gave a ticket for it`)
+      return { invocation: {}, ticket: 'ticket-1' }
+    },
     broker: async (ctx, name, method, input) => {
       calls.push({ name, method, input })
       const answer = answers[method]
@@ -43,7 +47,11 @@ test('settings read and edit go to the settings broker as typed methods', async 
     replace: { written: true, conflict: false, revision: 'r3', applies: 'reload' },
     mutate: { written: false, conflict: false, revision: 'r3', applies: 'reload' },
   })
-  assert.deepEqual(await settings.describe(), [row])
+  const described = await settings.describe()
+  assert.deepEqual(described[0], row)
+  assert.equal(described[1].ns, 'locale')
+  assert.equal(described[1].writable, false)
+  assert.equal(typeof described[1].value.preference, 'string')
   assert.deepEqual(await settings.update('fixture.plugin', { model: 'large' }, 'r1'), { written: true, revision: 'r2', applies: 'reload' })
   await settings.replace('fixture.plugin', { model: 'tiny' })
   assert.equal((await settings.mutate('fixture.plugin', [{ op: 'unset', path: ['model'] }])).written, false)
@@ -80,4 +88,17 @@ test('a stale edit is a conflict and a broker refusal reaches the plugin as the 
   const refused = service({ update: new Error('that setting is outside this plugin\'s reviewed settings'), describe: new Error('the settings broker is not available yet') })
   await assert.rejects(refused.settings.update('fixture.plugin', { internal: 1 }), /outside this plugin's reviewed settings/)
   await assert.rejects(refused.settings.describe(), /not available yet/)
+})
+
+test('describe outside a ticketed tool invocation returns read-only host locale without any broker call', () => {
+  const { settings, calls } = service({ describe: row }, 'fixture.plugin', { ticketed: false })
+  const forms = settings.describe()
+  assert.ok(Array.isArray(forms))
+  assert.equal(forms.length, 1)
+  assert.equal(forms[0].ns, 'locale')
+  assert.equal(forms[0].writable, false)
+  assert.equal(typeof forms[0].value.preference, 'string')
+  assert.ok(forms[0].value.preference.length > 0)
+  assert.equal(settings.locale.preference, forms[0].value.preference)
+  assert.deepEqual(calls, [])
 })

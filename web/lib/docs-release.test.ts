@@ -16,7 +16,31 @@ import { DOC_TOPICS } from "./docs-map";
 if (!RELEASE_BASELINE) throw new Error("release baseline missing");
 const baseline = RELEASE_BASELINE;
 
-const publishedV0102: CapabilityContext = { release: { tag: baseline.tag, version: baseline.version }, baseline };
+const published: CapabilityContext = { release: { tag: baseline.tag, version: baseline.version }, baseline };
+
+const DIAL_ROWS = ["modes", "permission-postures"];
+const beforeTheDial: CapabilityContext = {
+  release: published.release,
+  baseline: {
+    ...baseline,
+    features: baseline.features.map((row) => (DIAL_ROWS.includes(row.id) ? { ...row, summary: "The row as an earlier release described it." } : row)),
+  },
+};
+
+const atTheDial: CapabilityContext = {
+  release: published.release,
+  baseline: {
+    ...baseline,
+    features: [
+      ...baseline.features.filter((row) => !DIAL_ROWS.includes(row.id)),
+      ...FEATURE_CATALOGUE.features
+        .filter((row) => DIAL_ROWS.includes(row.id))
+        .map((row) => ({ id: row.id, name: row.name, summary: row.summary, status: row.status, since: row.since })),
+    ],
+  },
+};
+
+const presentUnreleased = FEATURE_CATALOGUE.features.map((row) => (row.id === "present-handoff" ? { ...row, since: "unreleased" } : row));
 
 const raisedFeatures = FEATURE_CATALOGUE.features.map((row) => (row.since === "unreleased" ? { ...row, since: "99.0.0" } : row));
 
@@ -54,23 +78,26 @@ const PAGES: Record<string, (locale: string) => DocsPageDict> = {
 };
 
 describe("docs describe the published release first", () => {
-  it("keeps the permission dial and Accept Edits out of every docs body while the published release is v0.10.2", () => {
+  it("keeps the permission dial and Accept Edits out of every docs body for a release whose tagged rows predate them", () => {
     for (const [slug, getPage] of Object.entries(PAGES)) {
       for (const locale of ["en", "zh"]) {
-        const text = bodyText(getPage(locale), publishedV0102);
+        const text = bodyText(getPage(locale), beforeTheDial);
         expect(text, `${locale}/${slug}`).not.toMatch(/Accept Edits/);
         expect(text, `${locale}/${slug}`).not.toMatch(/Ask → Accept Edits/);
       }
     }
-    const vocabulary = controlTermsFor(publishedV0102).body.map((row) => row.term);
+    const vocabulary = controlTermsFor(beforeTheDial).body.map((row) => row.term);
     expect(vocabulary).toEqual(["Plan", "Work", "Operate", "Ask", "Auto-Review", "Full Access"]);
   });
 
   it("shows the in-source modes and dial only in the labelled section, and moves them into the body when a release carries them", () => {
     const modes = getDocsModes("en");
-    expect(sourceText(modes, publishedV0102)).toMatch(/Accept Edits/);
-    expect(bodyText(modes, publishedV0102)).toMatch(/Plan → Work → Operate/);
-    expect(bodyText(modes, publishedV0102)).toMatch(/Ask → Auto-Review → Full Access/);
+    expect(sourceText(modes, beforeTheDial)).toMatch(/Accept Edits/);
+    expect(bodyText(modes, beforeTheDial)).toMatch(/Plan → Work → Operate/);
+    expect(bodyText(modes, beforeTheDial)).toMatch(/Ask → Auto-Review → Full Access/);
+
+    expect(sourceText(modes, atTheDial)).toBe("");
+    expect(bodyText(modes, atTheDial)).toMatch(/Accept Edits/);
 
     expect(sourceText(modes, raised, raisedFeatures)).toBe("");
     expect(bodyText(modes, raised, raisedFeatures)).toMatch(/Ask → Accept Edits → Plan → Auto-Review → Full Access/);
@@ -82,9 +109,9 @@ describe("docs describe the published release first", () => {
   });
 
   it("lists source-only tools in the labelled set and moves them into the list when released", () => {
-    const published = toolRowsFor(publishedV0102);
-    expect(published.body.map((row) => row.name)).not.toContain("present");
-    expect(published.source.map((row) => row.name)).toEqual(expect.arrayContaining(["present", "grep_files"]));
+    const current = toolRowsFor(published, presentUnreleased);
+    expect(current.body.map((row) => row.name)).not.toContain("present");
+    expect(current.source.map((row) => row.name)).toEqual(expect.arrayContaining(["present", "grep_files"]));
     const next = toolRowsFor(raised, raisedFeatures);
     expect(next.source).toEqual([]);
     expect(next.body.map((row) => row.name)).toEqual(expect.arrayContaining(["present", "grep_files"]));

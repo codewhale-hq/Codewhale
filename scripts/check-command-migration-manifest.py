@@ -589,7 +589,20 @@ def detect_local_baseline_ref(root: Path = REPO_ROOT) -> str | None:
 # ---------------------------------------------------------------------------
 
 GROUPS_ROOT = REPO_ROOT / "crates" / "tui" / "src" / "commands" / "groups"
-CONCRETE_APP_PARAM = re.compile(r"&\s*mut\s+(crate::tui::app::)?App\b")
+CONCRETE_APP_PARAM = re.compile(
+    r"&\s*(?:'[A-Za-z_][A-Za-z0-9_]*\s+)?(?:mut\s+)?(?:crate::tui::app::|crate::app::|tui::app::)?App\b"
+)
+CFG_TEST_ATTR = re.compile(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]")
+MOD_TESTS_HEAD = re.compile(r"\bmod\s+tests\s*\{")
+ATTRIBUTE_HEAD = re.compile(r"#\s*!?\s*\[")
+CONST_FN_TAIL = r"(?:(?:async|unsafe)\s+|extern\s*(?:\"[^\"]*\"\s*)?)*fn\b"
+SEMICOLON_ITEM = re.compile(
+    r"(?:pub(?:\s*\([^)]*\))?\s+)?(?:use|static|type|const(?!\s+" + CONST_FN_TAIL + r"))\b"
+)
+ITEM_HEAD = re.compile(
+    r"(?:pub(?:\s*\([^)]*\))?\s+)?(?:default\s+)?"
+    r"(?:fn|async|unsafe|extern|mod|use|impl|struct|enum|union|trait|const|static|type|macro_rules)\b"
+)
 
 
 class RustItem:
@@ -774,6 +787,7 @@ def _first_param_type(fn_sig: str) -> str | None:
 # portable handlers (D7).
 RETAINED_HOST_MACHINERY: dict[str, list[dict]] = {
     "skills": [
+        {"kind": "free", "item": ["crate", "commands", "groups", "skills", "skills", "discover_visible_skills"]},
         {"kind": "free", "item": ["crate", "commands", "groups", "skills", "skills", "run_skill_by_name"]},
         {"kind": "free", "item": ["crate", "commands", "groups", "skills", "skills", "activate_skill_with_task"]},
         {"kind": "free", "item": ["crate", "commands", "groups", "skills", "skills", "activate_skill"]},
@@ -789,6 +803,78 @@ def _is_concrete_app_type(param_type: str | None) -> bool:
     return bool(CONCRETE_APP_PARAM.search(param_type))
 
 
+def _skip_balanced(code: str, start: int, opener: str, closer: str) -> int:
+    depth = 0
+    i = start
+    n = len(code)
+    while i < n:
+        if code[i] == opener:
+            depth += 1
+        elif code[i] == closer:
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return n
+
+
+def _item_end(code: str, start: int) -> int:
+    """Index just past the Rust item starting at `start` (attributes already
+    skipped): the matching `}` of its body, or its terminating `;`."""
+    n = len(code)
+    semicolon_only = bool(SEMICOLON_ITEM.match(code, start))
+    depth = 0
+    i = start
+    while i < n:
+        ch = code[i]
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+        elif ch == "{" and depth == 0:
+            if semicolon_only:
+                i = _skip_balanced(code, i, "{", "}")
+                continue
+            return _skip_balanced(code, i, "{", "}")
+        elif ch == ";" and depth == 0:
+            return i + 1
+        i += 1
+    return n
+
+
+def _blank_span(chars: list[str], start: int, end: int) -> None:
+    for k in range(start, min(end, len(chars))):
+        if chars[k] != "\n":
+            chars[k] = " "
+
+
+def _blank_test_only_items(code: str) -> str:
+    """Blank `#[cfg(test)]` items and `mod tests { .. }` bodies so test-only
+    helpers are never counted as handlers. Offsets and newlines are kept.
+    On a field, variant, parameter or match arm only the attribute is blanked,
+    so the scan never runs past the enclosing item."""
+    chars = list(code)
+    for match in CFG_TEST_ATTR.finditer(code):
+        if chars[match.start()] == " ":
+            continue
+        j = match.end()
+        while True:
+            while j < len(code) and code[j].isspace():
+                j += 1
+            attr = ATTRIBUTE_HEAD.match(code, j)
+            if not attr:
+                break
+            j = _skip_balanced(code, code.index("[", j), "[", "]")
+        end = _item_end(code, j) if ITEM_HEAD.match(code, j) else j
+        _blank_span(chars, match.start(), end)
+    for match in MOD_TESTS_HEAD.finditer(code):
+        if chars[match.start()] == " ":
+            continue
+        brace = code.index("{", match.start())
+        _blank_span(chars, match.start(), _skip_balanced(code, brace, "{", "}"))
+    return "".join(chars)
+
+
 def parse_rust_file(file: Path, root: Path) -> list[RustItem]:
     """Structurally parse one Rust file for handler-relevant items.
 
@@ -802,7 +888,7 @@ def parse_rust_file(file: Path, root: Path) -> list[RustItem]:
     Hermetic fixtures may supply their own module root.
     """
     raw = file.read_text(encoding="utf-8")
-    code = _strip_comments_and_strings(raw)
+    code = _blank_test_only_items(_strip_comments_and_strings(raw))
     # Module paths derive from the source owner; hermetic tests use a synthetic
     # root, in which case the passed root is the module-path base.
     commands_root = root / "crates/commands/src"
@@ -1102,20 +1188,37 @@ def scan_leaf_handlers(leaf_scope: list[str], root: Path) -> tuple[list[RustItem
     return items, violations
 
 
-def group_source_scope(group_name: str, node: dict, root: Path) -> list[str]:
-    """Preserve the immutable historical topology and scan every debug source.
+UNLISTED_SLICE_ASSIGNMENT: dict[str, dict[str, list[str]]] = {
+    "core": {
+        "core::navigation": ["crates/tui/src/commands/groups/core/copy.rs"],
+        "core::coordination": ["crates/tui/src/commands/groups/core/router.rs"],
+    },
+}
 
-    Recursive discovery includes receipts, module roots, helpers, tests and new
-    nested files even when the historical manifest never listed them. Relocating
+
+def slice_source_scope(group_name: str, slice_node: dict) -> list[str]:
+    """A slice's historical scope plus the unlisted files the immutable
+    topology never assigned to it."""
+    extra = UNLISTED_SLICE_ASSIGNMENT.get(group_name, {}).get(slice_node["name"], [])
+    return sorted(set(slice_node.get("scope", [])) | set(extra))
+
+
+def group_source_scope(group_name: str, node: dict, root: Path) -> list[str]:
+    """Preserve the immutable historical topology and scan every group source.
+
+    Recursive discovery includes receipts, module roots, helpers and new
+    nested files even when the historical manifest never listed them, so a
+    handler added outside the frozen scope cannot pass unseen. Relocating
     declared debug paths preserves missing-file diagnostics after extraction.
     """
     scope = set(node.get("scope", []))
+    directories = [root / "crates/tui/src/commands/groups" / group_name]
     if group_name == "debug":
         scope = {path.replace("crates/tui/src/commands/groups/debug/",
                               "crates/commands/src/debug/", 1) for path in scope}
-        for directory in (root / "crates/commands/src/debug",
-                          root / "crates/tui/src/commands/groups/debug"):
-            scope.update(path.relative_to(root).as_posix() for path in directory.rglob("*.rs"))
+        directories.append(root / "crates/commands/src/debug")
+    for directory in directories:
+        scope.update(path.relative_to(root).as_posix() for path in directory.rglob("*.rs"))
     return sorted(scope)
 
 
@@ -1183,7 +1286,7 @@ def check_source_frontier(topology: dict, frontier: list[str], root: Path = REPO
                 # Documented split: verify each slice scope holds its handlers.
                 for slice_node in slices:
                     slice_items, slice_violations = scan_leaf_handlers(
-                        slice_node.get("scope", []), root
+                        slice_source_scope(group_name, slice_node), root
                     )
                     violations.extend(slice_violations)
                     slice_handlers = [it for it in slice_items if it.is_concrete_app]

@@ -8,6 +8,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
+use codewhale_engine::git_status::{self, GitStatusSnapshot, WorktreeEntry};
+use codewhale_localization::{Locale, MessageId, tr};
+use codewhale_palette as palette;
+use codewhale_tui_kit::menu_style;
+use codewhale_tui_kit::ui_text::truncate_line_to_width;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     buffer::Buffer,
@@ -16,12 +22,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Widget},
 };
-use unicode_width::UnicodeWidthStr;
-
-use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
-use codewhale_engine::git_status::{self, GitStatusSnapshot, WorktreeEntry};
-use codewhale_palette as palette;
-use codewhale_tui_kit::menu_style;
 
 /// Modes inside the worktree manager.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +55,7 @@ pub struct WorktreeManagerView {
     last_snapshot: GitStatusSnapshot,
     current_flags: Vec<bool>,
     pending_create: Option<PendingWorktreeCreate>,
+    locale: Locale,
 }
 
 impl WorktreeManagerView {
@@ -74,6 +75,7 @@ impl WorktreeManagerView {
             last_snapshot,
             current_flags: Vec::new(),
             pending_create: None,
+            locale: Locale::En,
         };
         view.recompute_current_flags();
         view
@@ -117,17 +119,17 @@ fn same_path(a: &Path, b: &Path) -> bool {
     a == b
 }
 
-fn worktree_name_error(name: &str) -> Option<&'static str> {
+fn worktree_name_error(name: &str) -> Option<MessageId> {
     if name.is_empty() {
-        Some("Enter a branch / path name")
+        Some(MessageId::WorktreeNameEmpty)
     } else if name.starts_with('-') {
-        Some("Name cannot start with '-'")
+        Some(MessageId::WorktreeNameLeadingDash)
     } else if name.contains("..") {
-        Some("Name cannot contain '..'")
+        Some(MessageId::WorktreeNameDotDot)
     } else if name.contains('\\') {
-        Some("Name cannot contain '\\'")
+        Some(MessageId::WorktreeNameBackslash)
     } else if name.chars().any(char::is_control) {
-        Some("Name cannot contain control characters")
+        Some(MessageId::WorktreeNameControlChars)
     } else {
         None
     }
@@ -136,6 +138,10 @@ fn worktree_name_error(name: &str) -> Option<&'static str> {
 impl ModalView for WorktreeManagerView {
     fn kind(&self) -> ModalKind {
         ModalKind::WorktreeManager
+    }
+
+    fn set_locale(&mut self, locale: Locale) {
+        self.locale = locale;
     }
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
@@ -289,7 +295,7 @@ impl WorktreeManagerView {
                 }
                 let name = self.create_buffer.trim();
                 if let Some(message) = worktree_name_error(name) {
-                    self.status = Some(message.into());
+                    self.status = Some(tr(self.locale, message).into_owned());
                     return ViewAction::None;
                 }
                 let path = self
@@ -382,7 +388,7 @@ impl WorktreeManagerView {
 
         if self.entries().is_empty() {
             lines.push(Line::from(Span::styled(
-                "No worktrees listed (not a git repo?)",
+                tr(self.locale, MessageId::WorktreeNoneListed),
                 Style::default().fg(palette::TEXT_MUTED),
             )));
         } else {
@@ -411,7 +417,7 @@ impl WorktreeManagerView {
                 lines.push(Line::from(vec![
                     Span::styled(rail, Style::default().fg(palette::WHALE_ACTION)),
                     Span::styled(
-                        truncate(&text, usize::from(area.width.saturating_sub(2))),
+                        truncate_line_to_width(&text, usize::from(area.width.saturating_sub(2))),
                         style,
                     ),
                 ]));
@@ -457,7 +463,7 @@ impl WorktreeManagerView {
             ]),
             Line::from(""),
             Line::from(Span::styled(
-                "Enter create · Esc back",
+                tr(self.locale, MessageId::WorktreeCreateFooter),
                 Style::default().fg(palette::TEXT_HINT),
             )),
             if let Some(status) = &self.status {
@@ -487,7 +493,7 @@ impl WorktreeManagerView {
             )),
             Line::from(""),
             Line::from(Span::styled(
-                truncate(&path, usize::from(area.width)),
+                truncate_line_to_width(&path, usize::from(area.width)),
                 Style::default().fg(palette::WHALE_LIVE),
             )),
             Line::from(""),
@@ -517,28 +523,6 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
-fn truncate(text: &str, max: usize) -> String {
-    if UnicodeWidthStr::width(text) <= max {
-        return text.to_string();
-    }
-    if max <= 1 {
-        return "…".to_string();
-    }
-    let mut out = String::new();
-    let mut w = 0usize;
-    let limit = max.saturating_sub(1);
-    for ch in text.chars() {
-        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if w + cw > limit {
-            break;
-        }
-        out.push(ch);
-        w += cw;
-    }
-    out.push('…');
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,5 +531,23 @@ mod tests {
     fn manager_constructs_from_workspace() {
         let view = WorktreeManagerView::new(std::env::temp_dir());
         assert_eq!(view.mode, Mode::List);
+    }
+
+    #[test]
+    fn truncation_keeps_whole_emoji_and_cjk_clusters_within_width() {
+        let family = "👨‍👩‍👧‍👦".repeat(8);
+        let clipped = truncate_line_to_width(&family, 10);
+        assert!(unicode_width::UnicodeWidthStr::width(clipped.as_str()) <= 10);
+        assert!(clipped.ends_with("..."));
+        assert!(
+            clipped
+                .trim_end_matches("...")
+                .chars()
+                .count()
+                .is_multiple_of(7)
+        );
+        let cjk = truncate_line_to_width("工作树工作树工作树", 7);
+        assert!(unicode_width::UnicodeWidthStr::width(cjk.as_str()) <= 7);
+        assert!(cjk.ends_with("..."));
     }
 }

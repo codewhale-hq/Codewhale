@@ -19,9 +19,8 @@ Implementation sources:
 
 ## Default-active contract
 
-The 0.10.3 source candidate starts new turns with twelve eager native names
-plus synthetic `tool_search`. This is the current source contract, not a
-claim about the published v0.10.2 release.
+Current `main` starts new turns with twelve eager native names plus synthetic
+`tool_search`.
 
 1. `read`
 2. `write`
@@ -218,7 +217,8 @@ against the eager-tool baseline. An adapter that cannot measure the wire reports
 unknown bytes; internal `Tool` serialization is not substituted. To make room it
 evicts MCP tools before first-party tools, and within each group evicts tools
 that were never called first (oldest activation first), then the least recently
-called; a tool called in the current or previous turn is never evicted. When such
+called; a tool called or admitted by a search in the current or previous turn is
+never evicted, so a later search cannot evict an earlier search's results. When such
 tools already fill the
 cache, a search still activates its best match over the bound and holds the
 rest; a later activation restores the bound once those tools go unused. Every

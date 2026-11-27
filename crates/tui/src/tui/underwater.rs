@@ -43,6 +43,7 @@ pub enum ShellTier {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchAction {
     None,
+    ConnectModel,
     /// The prominent new-session entry: begin a fresh session in the
     /// current workspace.
     NewSession,
@@ -167,11 +168,22 @@ fn launch_recent_entries(app: &App) -> (Vec<LaunchRecentEntry>, bool) {
 }
 
 /// Both painting and input use the same primary action on revisited home.
-fn home_card_rows(app: &App, recent: &[LaunchRecentEntry], has_more: bool) -> Vec<LaunchCardRow> {
+fn home_card_rows(
+    app: &App,
+    recent: &[LaunchRecentEntry],
+    has_more: bool,
+    show_connect_model: bool,
+) -> Vec<LaunchCardRow> {
     let mut rows = launch_card_rows(app.ui_locale, recent, has_more);
-    if !app.launch.recent_expanded && has_more && !app.launch.recent.is_empty() {
-        rows[1].id = crate::tui::app::LaunchRowId::ShowRecent;
-        rows[1].label = format!(
+    if !app.launch.recent_expanded
+        && has_more
+        && !app.launch.recent.is_empty()
+        && let Some(row) = rows
+            .iter_mut()
+            .find(|r| r.id == crate::tui::app::LaunchRowId::SeeAll)
+    {
+        row.id = crate::tui::app::LaunchRowId::ShowRecent;
+        row.label = format!(
             "{}  {}",
             tr(app.ui_locale, MessageId::LaunchRecentHeading),
             if crate::tui::color_compat::ascii_safe_enabled() {
@@ -182,10 +194,31 @@ fn home_card_rows(app: &App, recent: &[LaunchRecentEntry], has_more: bool) -> Ve
         );
     }
     if app.launch.return_to_session {
-        rows[0].id = crate::tui::app::LaunchRowId::ReturnToSession;
-        rows[0].label = format!(
-            "{}  Esc",
-            tr(app.ui_locale, MessageId::HomeBackToConversation)
+        if let Some(row) = rows
+            .iter_mut()
+            .find(|r| r.id == crate::tui::app::LaunchRowId::NewSession)
+        {
+            row.id = crate::tui::app::LaunchRowId::ReturnToSession;
+            row.label = format!(
+                "{}  Esc",
+                tr(app.ui_locale, MessageId::HomeBackToConversation)
+            );
+        }
+    } else if show_connect_model {
+        if let Some(row) = rows
+            .iter_mut()
+            .find(|r| r.id == crate::tui::app::LaunchRowId::NewSession)
+        {
+            row.prominent = false;
+        }
+        rows.insert(
+            0,
+            LaunchCardRow {
+                id: crate::tui::app::LaunchRowId::ConnectModel,
+                label: "Connect a model".to_string(),
+                detail: "/connect".to_string(),
+                prominent: true,
+            },
         );
     }
     rows
@@ -209,7 +242,12 @@ pub fn launch_rows_for_app(app: &App) -> Vec<LaunchCardRow> {
     } else {
         &[]
     };
-    let mut superset = home_card_rows(app, recent, true);
+    let mut superset = home_card_rows(
+        app,
+        recent,
+        true,
+        app.onboarding_needs_api_key && !app.launch.return_to_session,
+    );
     superset.push(LaunchCardRow {
         id: crate::tui::app::LaunchRowId::McpManager,
         label: String::new(),
@@ -263,6 +301,7 @@ pub fn refresh_launch_row_hitboxes(app: &mut App, area: Rect) {
 #[must_use]
 pub fn launch_row_click_action(id: &crate::tui::app::LaunchRowId) -> LaunchAction {
     match id {
+        crate::tui::app::LaunchRowId::ConnectModel => LaunchAction::ConnectModel,
         crate::tui::app::LaunchRowId::NewSession => LaunchAction::NewSession,
         crate::tui::app::LaunchRowId::ReturnToSession => LaunchAction::ReturnToSession,
         crate::tui::app::LaunchRowId::Recent(session_id) => {
@@ -1050,13 +1089,13 @@ fn truncate_to_width(text: &str, width: usize) -> String {
     }
     let mut result = String::new();
     let mut used = 0;
-    for ch in text.chars() {
-        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + ch_width + 1 > width {
+    for grapheme in unicode_segmentation::UnicodeSegmentation::graphemes(text, true) {
+        let grapheme_width = codewhale_tui_kit::ui_text::grapheme_display_width(grapheme);
+        if used + grapheme_width + 1 > width {
             break;
         }
-        result.push(ch);
-        used += ch_width;
+        result.push_str(grapheme);
+        used += grapheme_width;
     }
     result.push('…');
     result
@@ -1102,7 +1141,6 @@ pub(crate) fn ambient_life_motion_enabled(app: &App) -> bool {
         && app.onboarding == OnboardingState::None
         && app.view_stack.is_empty()
         && app.viewport.transcript_scroll.is_at_tail()
-        && crate::tui::notifications::terminal_focused()
         && app.viewport.ocean_caps.is_none_or(|caps| {
             matches!(
                 caps.depth,
@@ -1497,7 +1535,7 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
     };
     // Nothing will answer a message until a model is connected; the card
     // says so instead of letting the first Enter fail silently (UX-3).
-    let no_model_connected = app.onboarding_needs_api_key;
+    let no_model_connected = app.onboarding_needs_api_key && !app.launch.return_to_session;
     let mcp_configured = app.mcp_configured_count > 0
         || app
             .mcp_snapshot
@@ -1540,7 +1578,7 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
         text_width.saturating_sub(mark.map_or(0, |size| text_display_width(size[0]) + 2));
     let spacious = fit.blanks == LAUNCH_SEPARATORS;
     let visible: Vec<LaunchRecentEntry> = entries.into_iter().take(fit.shown).collect();
-    let card_rows = home_card_rows(app, &visible, fit.see_all);
+    let card_rows = home_card_rows(app, &visible, fit.see_all, fit.setup);
 
     // The text column, in order. `None` is a blank row.
     let mut text: Vec<Option<Line<'static>>> = Vec::new();
@@ -1619,18 +1657,6 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
             text[row] = Some(Line::from(spans));
         }
     }
-    if fit.setup {
-        let line = format!(
-            "{}{}{}",
-            tr(locale, MessageId::LaunchNoModelConnected),
-            crate::tui::session_boot::ITEM_SEPARATOR,
-            tr(locale, MessageId::LaunchRunCommand).replace("{command}", "/provider"),
-        );
-        text.push(Some(Line::from(Span::styled(
-            semantic_truncate(&line, text_width),
-            Style::default().fg(theme.warning),
-        ))));
-    }
     for (line, muted) in whats_new_lines.iter().take(fit.whats_new) {
         let ink = if *muted {
             theme.text_muted
@@ -1699,7 +1725,7 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
                 Style::default().fg(theme.text_muted),
             ));
         }
-        if row.prominent {
+        if row.prominent && detail.is_empty() {
             spans.push(Span::styled(
                 " ".repeat(lane.saturating_sub(label_width)),
                 style,
@@ -1707,7 +1733,12 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
         }
         rows.push((row.id.clone(), text.len()));
         text.push(Some(Line::from(spans)));
-        if row.prominent && fit.heading {
+        if matches!(
+            row.id,
+            crate::tui::app::LaunchRowId::NewSession
+                | crate::tui::app::LaunchRowId::ReturnToSession
+        ) && fit.heading
+        {
             // An empty workspace needs only the invitation and composer.
             // Real history, including filtered sessions reachable via See all,
             // still gets a heading; zero counts are not content.
@@ -2206,6 +2237,7 @@ mod launch_card_tests {
     #[test]
     fn startup_keeps_session_and_connector_details_behind_their_controls() {
         let mut app = with_mcp(app_with_recent(&["Private draft title"], 1));
+        app.onboarding_needs_api_key = false;
         app.launch.recent_expanded = false;
         for (width, height) in [(40, 8), (80, 24), (140, 36)] {
             let area = Rect::new(0, 0, width, height);
@@ -2290,16 +2322,20 @@ mod launch_card_tests {
     fn a_keyless_launch_says_no_model_is_connected_and_how_to_fix_it() {
         let mut app = app_with_recent(&["Fix the parser"], 1);
         app.onboarding_needs_api_key = true;
+        refresh_launch_row_hitboxes(&mut app, Rect::new(0, 0, 100, 30));
+        let ids = row_ids(&app);
+        assert_eq!(ids.first(), Some(&LaunchRowId::ConnectModel), "{ids:?}");
         let lines = painted(&app, 100, 30).join("\n");
-        assert!(lines.contains("no model connected"), "{lines}");
-        assert!(lines.contains("/provider"), "{lines}");
-        // Even a pane too short for the recent list keeps the recovery line.
+        assert!(lines.contains("Connect a model"), "{lines}");
+        assert!(lines.contains("/connect"), "{lines}");
         let short = painted(&app, 100, 3).join("\n");
-        assert!(short.contains("no model connected"), "{short}");
+        assert!(short.contains("Connect a model"), "{short}");
 
         app.onboarding_needs_api_key = false;
+        refresh_launch_row_hitboxes(&mut app, Rect::new(0, 0, 100, 30));
+        assert!(!row_ids(&app).contains(&LaunchRowId::ConnectModel));
         let lines = painted(&app, 100, 30).join("\n");
-        assert!(!lines.contains("no model connected"), "{lines}");
+        assert!(!lines.contains("Connect a model"), "{lines}");
     }
 
     #[test]
@@ -2668,4 +2704,23 @@ pub fn launch_motion_active(app: &App, obscured: bool, ambient_settled: bool) ->
             started.elapsed().as_millis() < codewhale_tui_kit::mark::REVEAL_MS
         });
     revealing || dissolving || water_alive
+}
+
+#[cfg(test)]
+mod truncate_to_width_tests {
+    use super::truncate_to_width;
+
+    #[test]
+    fn truncate_to_width_keeps_graphemes_whole() {
+        assert_eq!(truncate_to_width("日本語のテキスト", 8), "日本語…");
+        assert_eq!(
+            truncate_to_width("e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}", 4),
+            "e\u{301}e\u{301}e\u{301}…"
+        );
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
+        assert_eq!(
+            truncate_to_width(&family.repeat(3), 4),
+            format!("{family}…")
+        );
+    }
 }

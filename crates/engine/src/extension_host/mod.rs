@@ -133,9 +133,15 @@ mod dsh_plugins;
 mod dsh_remote;
 pub(crate) use dsh_remote::end_remote_session;
 pub use dsh_remote::{RemoteClient, RemoteDenial, RemotePairing, RemoteSecret, RemoteState};
-mod dsh_settings;
+pub mod dsh_settings;
 pub(crate) mod dsh_terminal;
+pub mod dsh_webserver;
 mod dsh_workspace;
+pub use dsh_webserver::{
+    MAX_PLUGIN_ROUTE_REQUEST_BYTES, MAX_PLUGIN_ROUTE_RESPONSE_BYTES,
+    PLUGIN_ROUTE_DISPATCH_DEADLINE, PluginRouteError, PluginRouteRequest, PluginRouteResponse,
+    dispatch_plugin_route,
+};
 pub mod execution;
 pub use dsh_network::forget_plugin_credentials;
 pub use execution::StockOperation;
@@ -280,19 +286,15 @@ fn materialize_file(dir: &Path, file_name: &str, bytes: &[u8]) -> Result<PathBuf
     if !matches(&path) {
         std::fs::create_dir_all(dir)
             .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
-        let staging = dir.join(format!(".{file_name}.{}", uuid::Uuid::new_v4().simple()));
-        std::fs::write(&staging, bytes)
-            .map_err(|error| format!("cannot write {}: {error}", staging.display()))?;
+        if let Err(error) = codewhale_util::utils::write_atomic(&path, bytes)
+            && !matches(&path)
+        {
+            return Err(format!("cannot publish {}: {error}", path.display()));
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o400));
-        }
-        if let Err(error) = std::fs::rename(&staging, &path) {
-            let _ = std::fs::remove_file(&staging);
-            if !matches(&path) {
-                return Err(format!("cannot publish {}: {error}", path.display()));
-            }
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400));
         }
     }
     // Re-check what will actually be used.
@@ -1026,6 +1028,48 @@ impl ManagerShared {
                     })?;
                 let owner = registration.owner.clone();
                 found = Some(registration);
+                Ok(owner)
+            })
+            .await?;
+        Ok((host, found.expect("set when the owner was found")))
+    }
+
+    pub(crate) async fn live_host_for_plugin_authority(
+        &self,
+        authority: &PluginAuthority,
+    ) -> Result<(Arc<HostProcess>, OwnerRef), String> {
+        let cohort = {
+            let registry = self.registry.lock().expect("registry lock");
+            let entry = registry
+                .owners()
+                .find(|entry| {
+                    entry.state == OwnerState::Active && entry.authority.as_ref() == Some(authority)
+                })
+                .ok_or_else(|| {
+                    format!(
+                        "plugin `{}` is not active in the extension host",
+                        authority.plugin_id
+                    )
+                })?;
+            entry.cohort.clone()
+        };
+        let mut found = None;
+        let host = self
+            .live_host(&cohort, |registry| {
+                let entry = registry
+                    .owners()
+                    .find(|entry| {
+                        entry.state == OwnerState::Active
+                            && entry.authority.as_ref() == Some(authority)
+                    })
+                    .ok_or_else(|| {
+                        format!(
+                            "plugin `{}` is not active in the extension host",
+                            authority.plugin_id
+                        )
+                    })?;
+                let owner = entry.owner.clone();
+                found = Some(owner.clone());
                 Ok(owner)
             })
             .await?;
@@ -2640,6 +2684,14 @@ impl ExtensionHostManager {
     }
 
     async fn reconcile_with_policy(&self, policy: bool) -> Result<(), String> {
+        self.reconcile_with_policy_cancel(policy, None).await
+    }
+
+    async fn reconcile_with_policy_cancel(
+        &self,
+        policy: bool,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<(), String> {
         let shared = &self.shared;
         struct NotifyOnDrop<'a>(&'a tokio::sync::Notify);
         impl Drop for NotifyOnDrop<'_> {
@@ -2648,7 +2700,17 @@ impl ExtensionHostManager {
             }
         }
         let _settled_notify = NotifyOnDrop(&shared.reconcile_settled);
-        let _serial = shared.sync_lock.lock().await;
+        let _serial = match cancel {
+            Some(token) => tokio::select! {
+                biased;
+                () = token.cancelled() => return Ok(()),
+                guard = shared.sync_lock.lock() => guard,
+            },
+            None => shared.sync_lock.lock().await,
+        };
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            return Ok(());
+        }
         let (desired, errors) = loop {
             let snapshots: Vec<(u64, Arc<PluginRegistry>)> = shared
                 .attachments
@@ -2667,6 +2729,9 @@ impl ExtensionHostManager {
             })
             .await
             .map_err(|error| format!("plugin scan failed: {error}"))?;
+            if cancel.is_some_and(CancellationToken::is_cancelled) {
+                return Ok(());
+            }
             let published = scan.publish(&mut shared.attachments.lock().expect("attachments lock"));
             if let Some(published) = published {
                 break published;
@@ -3175,6 +3240,9 @@ impl ExtensionHostManager {
                 agent_cohorts.remove(&workspace);
             }
         }
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            return Ok(());
+        }
         let has_creator_owner = shared
             .registry
             .lock()
@@ -3187,7 +3255,7 @@ impl ExtensionHostManager {
             || shared.creator_users.load(Ordering::SeqCst) > 0
             || has_creator_owner
         {
-            self.reconcile_builtin(policy).await
+            self.reconcile_builtin(policy, cancel).await
         } else {
             Ok(())
         };
@@ -3274,7 +3342,7 @@ impl ExtensionHostManager {
         }
         // Replay the actual Native policy after a Builtin crash. MCP demand
         // must never switch optional third-party activation on.
-        self.reconcile_builtin(native_policy).await?;
+        self.reconcile_builtin(native_policy, None).await?;
         let host = self
             .shared
             .ready_host(&HostCohort::Builtin)
@@ -3292,7 +3360,11 @@ impl ExtensionHostManager {
         Ok((host, owner, generation))
     }
 
-    async fn reconcile_builtin(&self, policy: bool) -> Result<(), String> {
+    async fn reconcile_builtin(
+        &self,
+        policy: bool,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<(), String> {
         let shared = &self.shared;
         let revoked_creator = if shared.creator_users.load(Ordering::SeqCst) == 0 {
             let mut registry = shared.registry.lock().expect("registry lock");
@@ -3406,12 +3478,12 @@ impl ExtensionHostManager {
                 }
             }
         }
-        if activations.is_empty() {
+        if activations.is_empty() || cancel.is_some_and(CancellationToken::is_cancelled) {
             return Ok(());
         }
         let host = self.ensure_host(&HostCohort::Builtin, policy).await?;
         for activation in activations {
-            if host.has_exited() {
+            if host.has_exited() || cancel.is_some_and(CancellationToken::is_cancelled) {
                 break;
             }
             self.activate_owner(&host, activation).await;
@@ -3452,6 +3524,26 @@ impl ExtensionHostManager {
                 );
                 return;
             }
+        };
+        struct ActivatingGuard {
+            shared: Arc<ManagerShared>,
+            owner: OwnerRef,
+        }
+        impl Drop for ActivatingGuard {
+            fn drop(&mut self) {
+                let mut registry = self.shared.registry.lock().expect("registry lock");
+                let still_activating = registry.owner(&self.owner.plugin_id).is_some_and(|entry| {
+                    entry.owner == self.owner && entry.state == OwnerState::Activating
+                });
+                if still_activating {
+                    registry.revoke_owner(&self.owner.plugin_id);
+                    registry.forget_owner(&self.owner.plugin_id);
+                }
+            }
+        }
+        let _activating_guard = ActivatingGuard {
+            shared: Arc::clone(shared),
+            owner: owner.clone(),
         };
         // What the owner is given: its settings and its own directory. A
         // config that is refused, or a directory that cannot be made, fails the
@@ -3806,6 +3898,24 @@ impl ExtensionHostManager {
                 .expect("imported entries lock") = (next_gen, BTreeMap::new());
             next_gen
         };
+        struct StartingGuard {
+            runtime: Arc<TierRuntime>,
+            generation: u64,
+        }
+        impl Drop for StartingGuard {
+            fn drop(&mut self) {
+                let mut slot = self.runtime.host.lock().expect("host lock");
+                if self.runtime.host_generation.load(Ordering::SeqCst) == self.generation
+                    && matches!(&*slot, HostSlot::Starting)
+                {
+                    *slot = HostSlot::Idle;
+                }
+            }
+        }
+        let mut starting_guard = StartingGuard {
+            runtime: Arc::clone(&runtime),
+            generation,
+        };
         shared
             .registry
             .lock()
@@ -3894,6 +4004,7 @@ impl ExtensionHostManager {
                 runtime.host_generation.store(next_gen, Ordering::SeqCst);
                 next_gen
             };
+            starting_guard.generation = generation;
         };
         let mut slot = runtime.host.lock().expect("host lock");
         if runtime.host_generation.load(Ordering::SeqCst) != generation
@@ -4722,17 +4833,39 @@ impl HostAttachment {
         });
     }
 
-    pub async fn sync_creator_within(&self, limit: Duration) {
+    async fn sync_policy_within(&self, policy: bool, limit: Duration) -> bool {
         if tokio::runtime::Handle::try_current().is_err() {
-            return;
+            return false;
         }
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
         let manager = Arc::clone(&self.manager);
-        let task = tokio::spawn(async move {
-            if let Err(error) = manager.reconcile_with_policy(false).await {
+        let mut task = tokio::spawn(async move {
+            if let Err(error) = manager
+                .reconcile_with_policy_cancel(policy, Some(&task_cancel))
+                .await
+            {
                 manager.shared.diagnostic(error);
             }
         });
-        let _ = tokio::time::timeout(limit, task).await;
+        tokio::select! {
+            result = &mut task => result.is_ok(),
+            () = tokio::time::sleep(limit) => {
+                // Signal cooperative cancellation so reconcile stops at its next safe point
+                // without aborting an in-flight host handshake that may legitimately take
+                // longer than the first-sync wait (up to HANDSHAKE_DEADLINE).
+                cancel.cancel();
+                self.manager.shared.diagnostic(format!(
+                    "extension host sync timed out after {}ms and signalled cancellation",
+                    limit.as_millis()
+                ));
+                false
+            }
+        }
+    }
+
+    pub async fn sync_creator_within(&self, limit: Duration) -> bool {
+        self.sync_policy_within(false, limit).await
     }
 
     pub fn install_creator_tools(
@@ -4836,18 +4969,9 @@ impl HostAttachment {
             })
     }
 
-    pub async fn sync_within(&self, limit: Duration) {
-        if tokio::runtime::Handle::try_current().is_err() {
-            return;
-        }
-        let manager = Arc::clone(&self.manager);
-        let policy = activation::extension_host_policy_enabled();
-        let task = tokio::spawn(async move {
-            if let Err(error) = manager.reconcile_with_policy(policy).await {
-                manager.shared.diagnostic(error);
-            }
-        });
-        let _ = tokio::time::timeout(limit, task).await;
+    pub async fn sync_within(&self, limit: Duration) -> bool {
+        self.sync_policy_within(activation::extension_host_policy_enabled(), limit)
+            .await
     }
 
     /// Add this engine's live extension tools to `tool_registry`.

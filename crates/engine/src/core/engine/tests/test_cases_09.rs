@@ -233,6 +233,77 @@ fn workspace_write_carve_out_covers_accept_edits_only() {
     ));
 }
 
+#[tokio::test]
+async fn ask_posture_asks_before_read_only_shell_commands() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    use crate::tools::spec::ToolSpec;
+
+    let input = r#"{"command":"ls /walk-does-not-exist"}"#;
+    assert_eq!(
+        crate::tools::shell::BashTool::new("bash")
+            .approval_requirement_for(&serde_json::from_str(input).expect("input")),
+        ApprovalRequirement::Auto
+    );
+
+    for (approval_mode, expect_card) in [
+        (ApprovalMode::Suggest, true),
+        (ApprovalMode::AcceptEdits, false),
+    ] {
+        let workspace = tempdir().expect("tempdir");
+        let mock = std::sync::Arc::new(MockLlmClient::new(vec![
+            canned::tool_call_turn("call-ls", "bash", input),
+            canned::simple_text_turn("done"),
+        ]));
+        let client: crate::core::model_client::SharedModelClient = mock.clone();
+        let config = Config::default();
+        let (engine, handle) = Engine::new_with_model_client(
+            deterministic_engine_config(workspace.path()),
+            &config,
+            client,
+        );
+        let task = tokio::spawn(engine.run());
+        let mut op = external_user_message_op("List it.", AppMode::Agent, &config);
+        if let Op::SendMessage(spec) = &mut op {
+            spec.approval_mode = approval_mode;
+        }
+        handle.send(op).await.expect("send turn");
+
+        let mut saw_card = false;
+        let mut completion = None;
+        let mut rx = handle.rx_event.write().await;
+        loop {
+            let event = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+                .await
+                .expect("timed out waiting for the turn")
+                .expect("engine event stream closed");
+            match event {
+                Event::ApprovalRequired { id, tool_name, .. } => {
+                    assert!(completion.is_none(), "{approval_mode:?}: card after the run");
+                    assert!(matches!(tool_name.as_str(), "bash" | "Bash"), "{tool_name}");
+                    saw_card = true;
+                    handle.deny_tool_call(id).await.expect("deny");
+                }
+                Event::ToolCallComplete {
+                    model_call: Some(model_call),
+                    result,
+                    ..
+                } if model_call.provider_id == "call-ls" => completion = Some(result),
+                Event::TurnComplete { .. } => break,
+                _ => {}
+            }
+        }
+        drop(rx);
+        handle.send(Op::Shutdown).await.expect("shutdown engine");
+        task.await.expect("engine task");
+
+        assert_eq!(saw_card, expect_card, "{approval_mode:?}");
+        let completion = completion.expect("the call reports a completion");
+        if expect_card {
+            assert!(completion.is_err(), "a denied command never runs: {completion:?}");
+        }
+    }
+}
+
 #[test]
 fn sandbox_escalation_requires_a_pair_and_a_strictly_wider_mode() {
     use codewhale_sandbox::SandboxPolicy;

@@ -34,16 +34,40 @@ pub enum NpmDepsNetworkError {
 impl fmt::Display for NpmDepsNetworkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NeedsApproval(host) => write!(
-                f,
-                "Network approval required for {host}; use /network allow {host}, then retry"
-            ),
+            Self::NeedsApproval(host) => f.write_str(&network_approval_message(
+                host,
+                Some("to fetch this package's declared npm dependencies"),
+            )),
             Self::Denied(host) => write!(f, "Network access denied for {host}"),
         }
     }
 }
 
 impl std::error::Error for NpmDepsNetworkError {}
+
+pub(crate) fn network_approval_message(host: &str, purpose: Option<&str>) -> String {
+    let purpose = purpose
+        .map(|purpose| format!(" {purpose}"))
+        .unwrap_or_default();
+    format!(
+        "Network approval required for {host}{purpose}; run `/network allow {host}` in the terminal UI, or add \"{host}\" to `allow` under [network] in config.toml, then retry"
+    )
+}
+
+#[derive(Debug)]
+pub(crate) struct NpmStage {
+    pub(crate) dir: tempfile::TempDir,
+    pub(crate) fetched: Vec<String>,
+}
+
+impl NpmStage {
+    pub(crate) fn path(&self) -> &Path {
+        self.dir.path()
+    }
+}
+
+const IMPORT_SPECIFIER_PATTERN: &str =
+    r#"(?:from\s*|import\s*\(\s*|require(?:\.resolve)?\s*\(\s*|import\s*)["']([^"']+)["']"#;
 
 fn ensure_registry_allowed(network: &NetworkPolicy) -> Result<()> {
     match network.decide(NPM_REGISTRY_HOST) {
@@ -59,7 +83,7 @@ const MAX_UNPACKED_PACKAGES: usize = 256;
 const MAX_UNPACKED_FILES: usize = 14_000;
 const MAX_UNPACKED_BYTES: u64 = 220 * 1024 * 1024;
 const MAX_SCAN_DEPTH: usize = 32;
-const MAX_SCAN_FILE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_SCAN_FILE_BYTES: usize = 8 * 1024 * 1024;
 
 type CachedTarballs = HashMap<(String, String), Arc<Vec<u8>>>;
 
@@ -168,6 +192,12 @@ fn visit_composition_entries(rows: &[Value], referenced: &mut BTreeSet<String>) 
                 .and_then(Value::str)
                 .is_some_and(|n| matches!(n, "cordis:group" | "@deepseek-ai/cordis-plugin-group"));
         if is_group {
+            if let Some(name) = row.get("name").and_then(Value::str)
+                && !matches!(name, "cordis:group" | "@deepseek-ai/cordis-plugin-group")
+                && let Some(pkg) = bare_package_name(name)
+            {
+                referenced.insert(pkg);
+            }
             if let Some(Value::Seq(children)) = row.get("config") {
                 visit_composition_entries(children, referenced);
             }
@@ -484,7 +514,7 @@ async fn fetch_verified_tarball(
     Ok(arc)
 }
 
-fn read_capped_scan_text(path: &Path, max_bytes: usize) -> Result<Option<String>> {
+fn read_capped_scan_text(path: &Path, max_bytes: usize) -> Result<String> {
     let file = codewhale_util::bundle_file::open_bundle_file(path)
         .with_context(|| format!("failed to open DSH file `{}`", path.display()))?;
     let mut buf = Vec::new();
@@ -496,7 +526,7 @@ fn read_capped_scan_text(path: &Path, max_bytes: usize) -> Result<Option<String>
             path.display()
         );
     }
-    Ok(String::from_utf8(buf).ok())
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 fn has_clean_bundled_package_json(root: &Path, dep_name: &str) -> Result<bool> {
@@ -634,11 +664,10 @@ fn scan_dir(cur: &Path, depth: usize, state: &mut ScanState<'_>) -> Result<()> {
             .extension()
             .map(|e| e.to_string_lossy().to_ascii_lowercase());
         if state.has_roster && matches!(ext.as_deref(), Some("yml" | "yaml")) {
-            if let Some(text) = read_capped_scan_text(&path, MAX_SCAN_FILE_BYTES)? {
-                for dep in state.declared.keys() {
-                    if text.contains(dep.as_str()) {
-                        state.referenced.insert(dep.clone());
-                    }
+            let text = read_capped_scan_text(&path, MAX_SCAN_FILE_BYTES)?;
+            for dep in state.declared.keys() {
+                if text.contains(dep.as_str()) {
+                    state.referenced.insert(dep.clone());
                 }
             }
             continue;
@@ -663,8 +692,8 @@ fn scan_dir(cur: &Path, depth: usize, state: &mut ScanState<'_>) -> Result<()> {
                     )
                 })
             })
-            && let Some(text) = read_capped_scan_text(&path, MAX_SCAN_FILE_BYTES)?
         {
+            let text = read_capped_scan_text(&path, MAX_SCAN_FILE_BYTES)?;
             for cap in state.import_re.captures_iter(&text) {
                 if let Some(spec) = cap.get(1).map(|m| m.as_str())
                     && let Some(pkg) = bare_package_name(spec)
@@ -1022,9 +1051,7 @@ pub(crate) fn collect_unresolved_seeds(
     }
     let mut referenced = BTreeSet::new();
     visit_composition_entries(entries, &mut referenced);
-    let import_re = Regex::new(
-        r#"(?:from\s+|import\s*\(\s*|require(?:\.resolve)?\s*\(\s*|import\s+)["']([^"']+)["']"#,
-    )?;
+    let import_re = Regex::new(IMPORT_SPECIFIER_PATTERN)?;
     let has_roster = presets::has_roster(entries);
     let mut state = ScanState {
         base: package_root,
@@ -1053,7 +1080,7 @@ pub(crate) fn maybe_stage_with_dependencies(
     manifest: &Value,
     entries: &[Value],
     network: &NetworkPolicy,
-) -> Result<Option<tempfile::TempDir>> {
+) -> Result<Option<NpmStage>> {
     let (declared, seeds) = collect_unresolved_seeds(package_root, manifest, entries)?;
     let materialize_only = seeds.is_empty() && node_modules_has_symlinks(package_root)?;
     if seeds.is_empty() && !materialize_only {
@@ -1072,12 +1099,15 @@ pub(crate) fn maybe_stage_with_dependencies(
             &mut file_count,
             &mut total_bytes,
         )?;
-        return Ok(Some(stage));
+        return Ok(Some(NpmStage {
+            dir: stage,
+            fetched: Vec::new(),
+        }));
     }
     ensure_registry_allowed(network)?;
     let root = package_root.to_path_buf();
     let network = network.clone();
-    std::thread::spawn(move || -> Result<Option<tempfile::TempDir>> {
+    std::thread::spawn(move || -> Result<Option<NpmStage>> {
         let stage = tempfile::Builder::new()
             .prefix("codewhale-dsh-npm-")
             .tempdir()?;
@@ -1100,6 +1130,7 @@ pub(crate) fn maybe_stage_with_dependencies(
 
         let mut hoisted: HashMap<String, Version> = HashMap::new();
         let mut unpacked_at: HashSet<(PathBuf, String)> = HashSet::new();
+        let mut fetched = Vec::new();
         let mut queue: VecDeque<(PathBuf, String, String)> = seeds
             .into_iter()
             .map(|(_, name, range)| (staged_root.clone(), name, range))
@@ -1137,6 +1168,7 @@ pub(crate) fn maybe_stage_with_dependencies(
             if !unpacked_at.insert((target_dir.clone(), resolved_ver_str.clone())) {
                 continue;
             }
+            fetched.push(format!("{name}@{resolved_ver_str}"));
             package_count += 1;
             if package_count > MAX_UNPACKED_PACKAGES {
                 bail!("resolved npm dependencies exceed the {MAX_UNPACKED_PACKAGES}-package limit");
@@ -1156,7 +1188,12 @@ pub(crate) fn maybe_stage_with_dependencies(
             }
         }
 
-        Ok(Some(stage))
+        fetched.sort();
+        fetched.dedup();
+        Ok(Some(NpmStage {
+            dir: stage,
+            fetched,
+        }))
     })
     .join()
     .map_err(|_| anyhow::anyhow!("npm dependency resolver thread panicked"))?
@@ -1271,10 +1308,7 @@ mod tests {
         assert!(!declared.contains_key("cosmokit"));
 
         let mut referenced = BTreeSet::new();
-        let re = Regex::new(
-            r#"(?:from\s+|import\s*\(\s*|require(?:\.resolve)?\s*\(\s*|import\s+)["']([^"']+)["']"#,
-        )
-        .unwrap();
+        let re = Regex::new(IMPORT_SPECIFIER_PATTERN).unwrap();
         let text = fs::read_to_string(dir.path().join("lib/index.js")).unwrap();
         for cap in re.captures_iter(&text) {
             if let Some(pkg) = bare_package_name(&cap[1])
@@ -1284,6 +1318,69 @@ mod tests {
             }
         }
         assert_eq!(referenced, BTreeSet::from(["zod".to_string()]));
+    }
+
+    #[test]
+    fn minified_imports_become_seeds_and_stop_at_the_npm_approval_message() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("lib")).unwrap();
+        fs::write(
+            dir.path().join("lib/index.js"),
+            r#"import{z}from"zod";import"side-effect-dep";export function apply(){return z}"#,
+        )
+        .unwrap();
+        let manifest = Value::Map(vec![(
+            "dependencies".to_string(),
+            Value::Map(vec![
+                ("zod".to_string(), Value::Str("^4.0.0".to_string())),
+                (
+                    "side-effect-dep".to_string(),
+                    Value::Str("^1.0.0".to_string()),
+                ),
+            ]),
+        )]);
+        let (_, seeds) = collect_unresolved_seeds(dir.path(), &manifest, &[]).unwrap();
+        let names: BTreeSet<_> = seeds.iter().map(|(_, name, _)| name.as_str()).collect();
+        assert_eq!(names, BTreeSet::from(["side-effect-dep", "zod"]));
+        let Err(err) =
+            maybe_stage_with_dependencies(dir.path(), &manifest, &[], &NetworkPolicy::default())
+        else {
+            panic!("minified seeds must stop at the npm network approval");
+        };
+        assert_eq!(
+            err.downcast_ref::<NpmDepsNetworkError>(),
+            Some(&NpmDepsNetworkError::NeedsApproval("registry.npmjs.org"))
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("to fetch this package's declared npm dependencies"),
+            "{message}"
+        );
+        assert!(
+            message
+                .contains(r#"add "registry.npmjs.org" to `allow` under [network] in config.toml"#),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn non_utf8_source_file_still_records_declared_dependency() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("lib")).unwrap();
+        let mut bytes = b"// invalid utf-8 byte: ".to_vec();
+        bytes.extend_from_slice(&[0xff, 0xfe]);
+        bytes.extend_from_slice(b"\nimport \"declared-dep\";\n");
+        fs::write(dir.path().join("lib/index.js"), bytes).unwrap();
+        let manifest = Value::Map(vec![(
+            "dependencies".to_string(),
+            Value::Map(vec![(
+                "declared-dep".to_string(),
+                Value::Str("^1.0.0".to_string()),
+            )]),
+        )]);
+        let (_, seeds) = collect_unresolved_seeds(dir.path(), &manifest, &[]).unwrap();
+        let names: BTreeSet<_> = seeds.iter().map(|(_, name, _)| name.as_str()).collect();
+        assert_eq!(names, BTreeSet::from(["declared-dep"]));
     }
 
     #[test]
@@ -1369,6 +1466,7 @@ mod tests {
         let staged = maybe_stage_with_dependencies(root, &manifest, &[], &deny_policy)
             .unwrap()
             .expect("pnpm symlinks should trigger symlink-free materialization");
+        assert!(staged.fetched.is_empty());
         let private_bar = staged.path().join("node_modules/foo/node_modules/bar");
         let meta = fs::symlink_metadata(&private_bar).unwrap();
         assert!(!meta.file_type().is_symlink() && meta.is_dir());

@@ -382,7 +382,7 @@ pub enum PluginInstallError {
     #[error("archive entry name is longer than {limit} bytes")]
     EntryNameTooLong { limit: usize },
     #[error(
-        "archive must contain exactly one plugin bundle root (a directory holding plugin.json, kimi.plugin.json, or plugin.toml); found {0} (install a single plugin bundle, not a mono-repo)"
+        "archive must contain exactly one plugin bundle root (a directory holding plugin.json, kimi.plugin.json, plugin.toml, or a DeepSeek Harness package.json); found {0} (install a single plugin bundle, not a mono-repo)"
     )]
     PluginTomlRoots(usize),
     #[error("symlinks and hard links are not allowed in plugin bundles")]
@@ -469,23 +469,32 @@ async fn install_inner(
 ) -> Result<PluginInstallOutcome> {
     match &source {
         PluginInstallSource::LocalPath(path) => {
-            let staged = stage_local_copy(path, user_plugins_dir, max_size)?;
-            verify_expected_content_hash(&staged, expected_content_hash)?;
-            if let Some(conflict) = name_conflict(&staged.name) {
-                let _ = fs::remove_dir_all(&staged.staged_path);
-                return Err(PluginNameConflict(conflict).into());
-            }
-            let canonical = path
-                .canonicalize()
-                .with_context(|| format!("failed to resolve {}", path.display()))?;
-            finalize_install(
-                staged,
-                &plugin_spec_string(&source, Some(&canonical)),
+            let path = path.clone();
+            let dir = user_plugins_dir.to_path_buf();
+            let expected = expected_content_hash.map(str::to_string);
+            let (staged, canonical) = off_runtime(move || {
+                let staged = stage_local_copy(&path, &dir, max_size)?;
+                verify_expected_content_hash(&staged, expected.as_deref())?;
+                match path.canonicalize() {
+                    Ok(canonical) => Ok((staged, canonical)),
+                    Err(error) => {
+                        let _ = fs::remove_dir_all(&staged.staged_path);
+                        Err(error).with_context(|| format!("failed to resolve {}", path.display()))
+                    }
+                }
+            })
+            .await?;
+            publish_staged(
+                StagedOutcome::Ready(staged),
+                name_conflict,
+                plugin_spec_string(&source, Some(&canonical)),
                 None,
-                "",
+                String::new(),
                 user_plugins_dir,
                 update,
             )
+            .await
+            .map(|outcome| outcome.expect("fresh installs are never unchanged"))
         }
         PluginInstallSource::Dsh(package) => {
             let converted = match convert_dsh_off_runtime(package.clone(), network.clone()).await {
@@ -511,7 +520,10 @@ async fn install_inner(
                 update,
                 name_conflict,
                 expected_content_hash,
+                None,
             )
+            .await
+            .map(|outcome| outcome.expect("fresh installs are never unchanged"))
         }
         PluginInstallSource::Remote(remote) => {
             let (bytes, url) = match fetch_tarball(remote, network, max_size).await? {
@@ -525,7 +537,7 @@ async fn install_inner(
             };
             install_remote_bytes(
                 remote,
-                &bytes,
+                bytes,
                 &url,
                 network,
                 user_plugins_dir,
@@ -533,7 +545,10 @@ async fn install_inner(
                 update,
                 name_conflict,
                 expected_content_hash,
+                None,
             )
+            .await
+            .map(|outcome| outcome.expect("fresh installs are never unchanged"))
         }
     }
 }
@@ -569,36 +584,143 @@ async fn convert_dsh_off_runtime(package: PathBuf, network: NetworkPolicy) -> Re
     .context("DSH conversion task failed")?
 }
 
+struct DshUnchangedCheck {
+    expected_source_checksum: String,
+    target: PathBuf,
+    marker_body: String,
+}
+
 /// Stage, verify and place a converted DSH bundle exactly like a local one.
 /// The marker records the package and the converted bundle's content hash,
 /// so update re-converts and can tell an unchanged package from a changed one.
-fn install_converted_dsh(
+#[allow(clippy::too_many_arguments)]
+async fn install_converted_dsh(
     converted: ConvertedDsh,
     user_plugins_dir: &Path,
     max_size: u64,
     update: bool,
     name_conflict: &(dyn Fn(&str) -> Option<String> + Send + Sync),
     expected_content_hash: Option<&str>,
-) -> Result<PluginInstallOutcome> {
+    unchanged_check: Option<DshUnchangedCheck>,
+) -> Result<Option<PluginInstallOutcome>> {
     let canonical = converted.canonical.clone();
-    let staged = stage_local_copy(&converted.bundle, user_plugins_dir, max_size)?;
-    verify_expected_content_hash(&staged, expected_content_hash)?;
-    if let Some(conflict) = name_conflict(&staged.name) {
-        let _ = fs::remove_dir_all(&staged.staged_path);
-        return Err(PluginNameConflict(conflict).into());
-    }
-    let checksum = staged.content_hash.clone();
-    finalize_install(
+    let dir = user_plugins_dir.to_path_buf();
+    let expected = expected_content_hash.map(str::to_string);
+    let staged = off_runtime(move || {
+        let staged = stage_local_copy(&converted.bundle, &dir, max_size)?;
+        verify_expected_content_hash(&staged, expected.as_deref())?;
+        let unchanged_from = unchanged_check.and_then(|check| {
+            (staged.content_hash == check.expected_source_checksum)
+                .then_some((check.target, check.marker_body))
+        });
+        ready_or_unchanged(staged, unchanged_from)
+    })
+    .await?;
+    let checksum = match &staged {
+        StagedOutcome::Ready(staged) => staged.content_hash.clone(),
+        _ => String::new(),
+    };
+    publish_staged(
         staged,
-        &plugin_spec_string(
+        name_conflict,
+        plugin_spec_string(
             &PluginInstallSource::Dsh(canonical.clone()),
             Some(&canonical),
         ),
         None,
-        &checksum,
+        checksum,
         user_plugins_dir,
         update,
     )
+    .await
+}
+
+enum StagedOutcome {
+    Ready(stage::StagedPlugin),
+    Blocked(PluginInstallOutcome),
+    Unchanged,
+}
+
+async fn off_runtime<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    #[cfg(any(test, feature = "test-support"))]
+    let env_scope = codewhale_runtime::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _env_scope = codewhale_runtime::test_support::join_env_scope(env_scope);
+        work()
+    })
+    .await
+    .context("plugin install task failed")?
+}
+
+fn network_outcome(err: anyhow::Error) -> Result<PluginInstallOutcome> {
+    match err.downcast_ref::<NpmDepsNetworkError>() {
+        Some(NpmDepsNetworkError::NeedsApproval(host)) => {
+            Ok(PluginInstallOutcome::NeedsApproval((*host).to_string()))
+        }
+        Some(NpmDepsNetworkError::Denied(host)) => {
+            Ok(PluginInstallOutcome::NetworkDenied((*host).to_string()))
+        }
+        None => Err(err),
+    }
+}
+
+fn installed_matches_staged(staged_path: &Path, target: &Path, marker_body: &str) -> Result<bool> {
+    fs::write(staged_path.join(INSTALLED_FROM_MARKER), marker_body)?;
+    let (_, expected_hash) = stage::validate_staged(staged_path)?;
+    let (_, installed_hash) = stage::validate_staged(target).context(
+        "installed plugin failed validation; unchanged source was not accepted and the installed copy was preserved",
+    )?;
+    fs::remove_file(staged_path.join(INSTALLED_FROM_MARKER))?;
+    Ok(expected_hash == installed_hash)
+}
+
+fn ready_or_unchanged(
+    staged: stage::StagedPlugin,
+    unchanged_from: Option<(PathBuf, String)>,
+) -> Result<StagedOutcome> {
+    let Some((target, marker_body)) = unchanged_from else {
+        return Ok(StagedOutcome::Ready(staged));
+    };
+    match installed_matches_staged(&staged.staged_path, &target, &marker_body) {
+        Ok(true) => {
+            fs::remove_dir_all(&staged.staged_path)
+                .context("failed to remove unchanged plugin staging copy")?;
+            Ok(StagedOutcome::Unchanged)
+        }
+        Ok(false) => Ok(StagedOutcome::Ready(staged)),
+        Err(err) => {
+            let _ = fs::remove_dir_all(&staged.staged_path);
+            Err(err)
+        }
+    }
+}
+
+async fn publish_staged(
+    staged: StagedOutcome,
+    name_conflict: &(dyn Fn(&str) -> Option<String> + Send + Sync),
+    spec: String,
+    url: Option<String>,
+    checksum: String,
+    user_plugins_dir: &Path,
+    update: bool,
+) -> Result<Option<PluginInstallOutcome>> {
+    let staged = match staged {
+        StagedOutcome::Ready(staged) => staged,
+        StagedOutcome::Blocked(outcome) => return Ok(Some(outcome)),
+        StagedOutcome::Unchanged => return Ok(None),
+    };
+    if let Some(conflict) = name_conflict(&staged.name) {
+        let _ = tokio::fs::remove_dir_all(&staged.staged_path).await;
+        return Err(PluginNameConflict(conflict).into());
+    }
+    let dir = user_plugins_dir.to_path_buf();
+    off_runtime(move || {
+        finalize_install(staged, &spec, url.as_deref(), &checksum, &dir, update).map(Some)
+    })
+    .await
 }
 
 /// Review a DSH package without installing it: the conversion receipt and the
@@ -792,7 +914,7 @@ pub async fn prepare_remote_install(
     }
 }
 
-pub fn install_prepared_remote(
+pub async fn install_prepared_remote(
     prepared: &PreparedRemote,
     user_plugins_dir: &Path,
     max_size: u64,
@@ -802,7 +924,7 @@ pub fn install_prepared_remote(
 ) -> Result<PluginInstallOutcome> {
     install_remote_bytes(
         &prepared.remote,
-        &prepared.bytes,
+        prepared.bytes.clone(),
         &prepared.resolved_url,
         network,
         user_plugins_dir,
@@ -810,16 +932,19 @@ pub fn install_prepared_remote(
         false,
         name_conflict,
         Some(expected_content_hash),
+        None,
     )
+    .await
+    .map(|outcome| outcome.expect("fresh installs are never unchanged"))
 }
 
 /// Stage and finalize an already-downloaded remote tarball. Kept separate
 /// from [`install`] so [`update`] can compare the checksum of the bytes it
 /// already fetched instead of downloading twice.
 #[allow(clippy::too_many_arguments)]
-fn install_remote_bytes(
+async fn install_remote_bytes(
     remote: &InstallSource,
-    bytes: &[u8],
+    bytes: Vec<u8>,
     url: &str,
     network: &NetworkPolicy,
     user_plugins_dir: &Path,
@@ -827,8 +952,9 @@ fn install_remote_bytes(
     update: bool,
     name_conflict: &(dyn Fn(&str) -> Option<String> + Send + Sync),
     expected_content_hash: Option<&str>,
-) -> Result<PluginInstallOutcome> {
-    let checksum = sha256_hex(bytes);
+    unchanged_from: Option<(PathBuf, String)>,
+) -> Result<Option<PluginInstallOutcome>> {
+    let checksum = sha256_hex(&bytes);
     let (bundle_path, pinned_sha256) = remote_fragment(remote)?;
     if let Some(pinned) = pinned_sha256
         && pinned != checksum
@@ -840,41 +966,34 @@ fn install_remote_bytes(
         }
         .into());
     }
-    let staged = match stage_tarball_with_network(
-        bytes,
-        user_plugins_dir,
-        max_size,
-        bundle_path.as_deref(),
-        Some(network),
-    ) {
-        Ok(staged) => staged,
-        Err(err) => {
-            if let Some(net_err) = err.downcast_ref::<NpmDepsNetworkError>() {
-                return Ok(match net_err {
-                    NpmDepsNetworkError::NeedsApproval(host) => {
-                        PluginInstallOutcome::NeedsApproval((*host).to_string())
-                    }
-                    NpmDepsNetworkError::Denied(host) => {
-                        PluginInstallOutcome::NetworkDenied((*host).to_string())
-                    }
-                });
-            }
-            return Err(err);
-        }
-    };
-    verify_expected_content_hash(&staged, expected_content_hash)?;
-    if let Some(conflict) = name_conflict(&staged.name) {
-        let _ = fs::remove_dir_all(&staged.staged_path);
-        return Err(PluginNameConflict(conflict).into());
-    }
-    finalize_install(
+    let dir = user_plugins_dir.to_path_buf();
+    let network = network.clone();
+    let expected = expected_content_hash.map(str::to_string);
+    let staged = off_runtime(move || {
+        let staged = match stage_tarball_with_network(
+            &bytes,
+            &dir,
+            max_size,
+            bundle_path.as_deref(),
+            Some(&network),
+        ) {
+            Ok(staged) => staged,
+            Err(err) => return network_outcome(err).map(StagedOutcome::Blocked),
+        };
+        verify_expected_content_hash(&staged, expected.as_deref())?;
+        ready_or_unchanged(staged, unchanged_from)
+    })
+    .await?;
+    publish_staged(
         staged,
-        &source_spec_string(remote),
-        Some(url),
-        &checksum,
+        name_conflict,
+        source_spec_string(remote),
+        Some(url.to_string()),
+        checksum,
         user_plugins_dir,
         update,
     )
+    .await
 }
 
 /// Refresh a previously installed plugin from its recorded source and publish
@@ -933,13 +1052,7 @@ pub async fn update(
                 // Compare the actual installed tree using the existing complete
                 // bundle hash, including executable intent and provenance. A historical
                 // source digest alone cannot detect an altered installed payload.
-                fs::write(staged_path.join(INSTALLED_FROM_MARKER), marker_body)?;
-                let (_, expected_hash) = stage::validate_staged(&staged_path)?;
-                let (_, installed_hash) = stage::validate_staged(&target).context(
-                    "installed plugin failed validation; unchanged source was not accepted and the installed copy was preserved",
-                )?;
-                fs::remove_file(staged_path.join(INSTALLED_FROM_MARKER))?;
-                if expected_hash == installed_hash {
+                if installed_matches_staged(&staged_path, &target, &marker_body)? {
                     fs::remove_dir_all(&staged_path)
                         .context("failed to remove unchanged plugin staging copy")?;
                     return Ok(PluginUpdateResult::NoChange);
@@ -981,19 +1094,12 @@ pub async fn update(
                 return Err(err);
             }
         };
-        let content_hash = {
-            let manifest = crate::agent_plugin::resolve_manifest_path(&converted.bundle)
-                .context("converted DSH bundle has no manifest")?;
-            PluginManifest::validate_from_path(&manifest)
-                .map_err(|error| {
-                    anyhow::anyhow!("converted DSH bundle failed validation: {error}")
-                })?
-                .content_hash
-        };
-        if content_hash == marker.source_checksum() {
-            return Ok(PluginUpdateResult::NoChange);
-        }
-        let outcome = install_converted_dsh(
+        let unchanged_check = Some(DshUnchangedCheck {
+            expected_source_checksum: marker.source_checksum().to_string(),
+            target: target.clone(),
+            marker_body: marker_body.clone(),
+        });
+        let Some(outcome) = install_converted_dsh(
             converted,
             user_plugins_dir,
             max_size,
@@ -1004,7 +1110,12 @@ pub async fn update(
                 })
             },
             None,
-        )?;
+            unchanged_check,
+        )
+        .await?
+        else {
+            return Ok(PluginUpdateResult::NoChange);
+        };
         return match outcome {
             PluginInstallOutcome::Installed(installed) => {
                 Ok(PluginUpdateResult::Updated(installed))
@@ -1028,13 +1139,12 @@ pub async fn update(
         }
         FetchOutcome::Denied(host) => return Ok(PluginUpdateResult::NetworkDenied(host)),
     };
-    if sha256_hex(&bytes) == marker.source_checksum() {
-        return Ok(PluginUpdateResult::NoChange);
-    }
+    let unchanged_from =
+        (sha256_hex(&bytes) == marker.source_checksum()).then(|| (target.clone(), marker_body));
 
-    let outcome = install_remote_bytes(
+    let Some(outcome) = install_remote_bytes(
         &remote,
-        &bytes,
+        bytes,
         &url,
         network,
         user_plugins_dir,
@@ -1048,7 +1158,12 @@ pub async fn update(
             })
         },
         None,
-    )?;
+        unchanged_from,
+    )
+    .await?
+    else {
+        return Ok(PluginUpdateResult::NoChange);
+    };
     match outcome {
         PluginInstallOutcome::Installed(installed) => Ok(PluginUpdateResult::Updated(installed)),
         PluginInstallOutcome::NeedsApproval(host) => Ok(PluginUpdateResult::NeedsApproval(host)),

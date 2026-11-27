@@ -1979,7 +1979,7 @@ fn the_notice_summarizes_what_the_schema_collects_and_states_every_red_line() {
         "random ID stored on this machine",
         "every 90 days",
         "on by default",
-        "PostHog",
+        "Codewhale",
     ] {
         assert!(
             flat.contains(&claim.split_whitespace().collect::<String>()),

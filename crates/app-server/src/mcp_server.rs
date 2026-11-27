@@ -23,10 +23,24 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+use codewhale_config::AppMode;
+use codewhale_engine::core::authority::{
+    SandboxNetworkAccess, sandbox_policy_for_turn, shell_policy_for_mode,
+};
+use codewhale_engine::tools::shell::new_shared_shell_manager;
 use codewhale_engine::tools::spec::{ToolError, ToolResult};
 use codewhale_engine::tools::{ToolContext, ToolRegistryBuilder};
+use codewhale_execpolicy::ApprovalMode;
+use codewhale_sandbox::BwrapMountExtensions;
+use codewhale_sandbox::backend::{SandboxBackend, create_backend};
+use codewhale_sandbox::read_guard::{ReadDenylist, set_active as set_active_read_denylist};
 use codewhale_skill_install::skill_parse::SkillInvocation;
 use codewhale_skills::SkillSource;
+use codewhale_tools::names::{
+    LEGACY_TERMINAL_CANCEL_NAME, LEGACY_TERMINAL_RESET_NAME, LEGACY_TERMINAL_RUN_NAME,
+    LEGACY_TERMINAL_SEND_NAME, LEGACY_TERMINAL_WAIT_NAME, TERMINAL_CANCEL_NAME,
+    TERMINAL_RESET_NAME, TERMINAL_RUN_NAME, TERMINAL_SEND_NAME, TERMINAL_WAIT_NAME,
+};
 
 const SUPPORTED_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
     ProtocolVersion::V_2024_11_05,
@@ -63,9 +77,38 @@ struct McpServerSettings {
 impl McpServerSettings {
     fn load() -> Result<Self> {
         let path = default_config_path();
-        if let Some(path) = path.filter(|p| p.exists()) {
-            let contents = std::fs::read_to_string(&path)
-                .with_context(|| format!("Failed to read MCP server config: {}", path.display()))?;
+        Self::load_from_path(path.as_deref())
+    }
+
+    fn load_from_path(path: Option<&std::path::Path>) -> Result<Self> {
+        let contents = match path {
+            Some(path) => match std::fs::File::open(path) {
+                Ok(file) => {
+                    let cap = codewhale_engine::mcp::MAX_MCP_CONFIG_BYTES as usize;
+                    let (contents, len) =
+                        codewhale_engine::prompts::read_prompt_text_bounded(file, cap)
+                            .with_context(|| {
+                                format!("Failed to read MCP server config: {}", path.display())
+                            })?;
+                    if len.max(contents.len()) > cap {
+                        anyhow::bail!(
+                            "MCP server config {} exceeds the {} MiB limit",
+                            path.display(),
+                            cap / (1024 * 1024)
+                        );
+                    }
+                    Some(contents)
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("Failed to read MCP server config: {}", path.display())
+                    });
+                }
+            },
+            None => None,
+        };
+        if let (Some(path), Some(contents)) = (path, contents) {
             Self::from_toml(&contents)
                 .with_context(|| format!("Failed to parse MCP server config: {}", path.display()))
         } else {
@@ -82,7 +125,7 @@ impl McpServerSettings {
             .partition(|name| {
                 build_exposed_tools(std::slice::from_ref(name))
                     .iter()
-                    .any(|tool| tool.internal == "exec_shell")
+                    .any(|tool| is_shell_tool_name(&tool.internal))
             });
         self.expose_tools = kept;
         refused
@@ -100,6 +143,72 @@ impl McpServerSettings {
     }
 }
 
+fn is_shell_tool_name(internal: &str) -> bool {
+    matches!(
+        internal,
+        "exec_shell"
+            | "bash"
+            | "Bash"
+            | TERMINAL_RUN_NAME
+            | TERMINAL_SEND_NAME
+            | TERMINAL_WAIT_NAME
+            | TERMINAL_CANCEL_NAME
+            | TERMINAL_RESET_NAME
+            | LEGACY_TERMINAL_RUN_NAME
+            | LEGACY_TERMINAL_SEND_NAME
+            | LEGACY_TERMINAL_WAIT_NAME
+            | LEGACY_TERMINAL_CANCEL_NAME
+            | LEGACY_TERMINAL_RESET_NAME
+    )
+}
+
+#[derive(Clone)]
+struct McpServerSandboxConfig {
+    sandbox_mode: Option<String>,
+    sandbox_network_access: Option<bool>,
+    prefer_bwrap: bool,
+    tool_launcher: Option<Vec<String>>,
+    bwrap_extensions: BwrapMountExtensions,
+    read_denylist: ReadDenylist,
+    sandbox_backend: Option<Arc<dyn SandboxBackend>>,
+}
+
+impl Default for McpServerSandboxConfig {
+    fn default() -> Self {
+        let config = codewhale_runtime::config::Config::default();
+        Self {
+            sandbox_mode: config.sandbox_mode.clone(),
+            sandbox_network_access: config.sandbox_network_access,
+            prefer_bwrap: config.prefers_bwrap(),
+            tool_launcher: config.tool_launcher.clone(),
+            bwrap_extensions: BwrapMountExtensions {
+                read_only_roots: config.bwrap_ro_roots.clone(),
+                device_roots: config.bwrap_dev_roots.clone(),
+            },
+            read_denylist: ReadDenylist::from_config(&config),
+            sandbox_backend: None,
+        }
+    }
+}
+
+impl McpServerSandboxConfig {
+    fn from_config(config: &codewhale_runtime::config::Config) -> Result<Self> {
+        let sandbox_backend = create_backend(config)?.map(Arc::from);
+        Ok(Self {
+            sandbox_mode: config.sandbox_mode.clone(),
+            sandbox_network_access: config.sandbox_network_access,
+            prefer_bwrap: config.prefers_bwrap(),
+            tool_launcher: config.tool_launcher.clone(),
+            bwrap_extensions: BwrapMountExtensions {
+                read_only_roots: config.bwrap_ro_roots.clone(),
+                device_roots: config.bwrap_dev_roots.clone(),
+            },
+            read_denylist: ReadDenylist::from_config(config),
+            sandbox_backend,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ExposedTool {
     public: String,
@@ -108,16 +217,16 @@ struct ExposedTool {
 
 pub async fn run_mcp_server(
     workspace: PathBuf,
-    skills_dir: PathBuf,
-    skills_config: std::sync::Arc<codewhale_runtime::config::SkillsConfig>,
-    tool_launcher_configured: bool,
+    config: &codewhale_runtime::config::Config,
 ) -> Result<()> {
     // Settings load is a synchronous config read; keep it off the async
     // worker per the blocking-call convention.
     let mut settings = tokio::task::spawn_blocking(McpServerSettings::load)
         .await
         .context("MCP server settings task failed")??;
-    if tool_launcher_configured {
+    let sandbox = McpServerSandboxConfig::from_config(config)?;
+    set_active_read_denylist(sandbox.read_denylist.clone());
+    if sandbox.tool_launcher.is_some() {
         for name in settings.refuse_shell_tools() {
             eprintln!(
                 "codewhale mcp server: not exposing '{name}': the managed configuration sets \
@@ -125,7 +234,9 @@ pub async fn run_mcp_server(
             );
         }
     }
-    let server = McpServer::new(workspace, settings, skills_dir, skills_config)?;
+    let skills_dir = config.skills_dir();
+    let skills_config = Arc::new(config.skills_config());
+    let server = McpServer::new(workspace, settings, skills_dir, skills_config, sandbox)?;
     // stdout carries the protocol; the notice goes to stderr so an operator
     // whose config lists write tools sees why they are missing.
     for name in server.withheld_tools() {
@@ -162,8 +273,12 @@ impl McpServer {
         settings: McpServerSettings,
         skills_dir: PathBuf,
         skills_config: std::sync::Arc<codewhale_runtime::config::SkillsConfig>,
+        sandbox: McpServerSandboxConfig,
     ) -> Result<Self> {
-        let exposed_tools = build_exposed_tools(&settings.expose_tools);
+        let mut exposed_tools = build_exposed_tools(&settings.expose_tools);
+        if sandbox.tool_launcher.is_some() {
+            exposed_tools.retain(|tool| !is_shell_tool_name(&tool.internal));
+        }
         let internal_names: HashSet<&str> = exposed_tools
             .iter()
             .map(|tool| tool.internal.as_str())
@@ -174,13 +289,47 @@ impl McpServer {
         if internal_names.contains("apply_patch") {
             builder = builder.with_patch_tools();
         }
-        if internal_names.contains("exec_shell") {
-            builder = builder.with_shell_tools();
+        if sandbox.tool_launcher.is_none()
+            && internal_names.iter().any(|name| is_shell_tool_name(name))
+        {
+            builder = builder.with_foreground_shell_tools();
         }
-        let registry = builder.build(
-            ToolContext::new(workspace.clone())
-                .with_skills_config(skills_dir.clone(), skills_config.clone()),
+        let shell_manager = new_shared_shell_manager(workspace.clone());
+        match shell_manager.lock() {
+            Ok(mut manager) => {
+                manager.set_prefer_bwrap(sandbox.prefer_bwrap);
+                manager.set_tool_launcher(sandbox.tool_launcher.clone());
+                manager.set_bwrap_extensions(sandbox.bwrap_extensions.clone());
+                manager.set_denied_read_subpaths(sandbox.read_denylist.subtree_paths());
+            }
+            Err(poisoned) => {
+                let mut manager = poisoned.into_inner();
+                manager.set_prefer_bwrap(sandbox.prefer_bwrap);
+                manager.set_tool_launcher(sandbox.tool_launcher.clone());
+                manager.set_bwrap_extensions(sandbox.bwrap_extensions.clone());
+                manager.set_denied_read_subpaths(sandbox.read_denylist.subtree_paths());
+            }
+        }
+        let sandbox_policy = sandbox_policy_for_turn(
+            AppMode::Agent,
+            ApprovalMode::Suggest,
+            sandbox.sandbox_mode.as_deref(),
+            &workspace,
+            SandboxNetworkAccess::from_config(sandbox.sandbox_network_access),
         );
+        let shell_policy = shell_policy_for_mode(
+            AppMode::Agent,
+            sandbox.tool_launcher.is_none() && !settings.require_approval,
+        );
+        let mut context = ToolContext::new(workspace.clone())
+            .with_skills_config(skills_dir.clone(), skills_config.clone())
+            .with_shell_manager(shell_manager)
+            .with_shell_policy(shell_policy)
+            .with_elevated_sandbox_policy(sandbox_policy);
+        if let Some(backend) = sandbox.sandbox_backend {
+            context = context.with_sandbox_backend(backend);
+        }
+        let registry = builder.build(context);
         let mut tools = Vec::new();
         let mut seen = HashSet::new();
         for entry in &exposed_tools {
@@ -584,6 +733,14 @@ mod tests {
     }
 
     fn test_server(workspace: PathBuf, settings: McpServerSettings) -> McpServer {
+        test_server_with_sandbox(workspace, settings, McpServerSandboxConfig::default())
+    }
+
+    fn test_server_with_sandbox(
+        workspace: PathBuf,
+        settings: McpServerSettings,
+        sandbox: McpServerSandboxConfig,
+    ) -> McpServer {
         let skills_dir = workspace.join(".fixture-skills");
         McpServer::new(
             workspace,
@@ -593,6 +750,7 @@ mod tests {
                 scan_codewhale_only: Some(true),
                 ..Default::default()
             }),
+            sandbox,
         )
         .expect("build server")
     }
@@ -844,6 +1002,7 @@ mod tests {
                 scan_codewhale_only: Some(true),
                 ..Default::default()
             }),
+            McpServerSandboxConfig::default(),
         )
         .unwrap();
         let mut pipe = Pipe::new(server);
@@ -930,16 +1089,176 @@ mod tests {
     #[test]
     fn a_tool_launcher_refuses_shell_tools_even_when_the_operator_allows_them() {
         let mut settings = McpServerSettings::from_toml(
-            "[server]\nexpose_tools = [\"file_read\", \"shell\", \"exec_shell\", \"Bash\"]\nrequire_approval = false\n",
+            "[server]\nexpose_tools = [\"file_read\", \"shell\", \"exec_shell\", \"bash\", \"Bash\", \"terminal_run\"]\nrequire_approval = false\n",
         )
         .expect("parse config");
-        assert_eq!(settings.refuse_shell_tools(), vec!["shell", "exec_shell"]);
+        assert_eq!(
+            settings.refuse_shell_tools(),
+            vec!["shell", "exec_shell", "bash", "Bash", "terminal_run"]
+        );
         let server = test_server(PathBuf::from("."), settings);
         let names: Vec<&str> = server.tools.iter().map(|tool| tool.name.as_ref()).collect();
         assert_eq!(names, vec!["file_read"]);
-        for internal in ["exec_shell", "Bash", "bash"] {
+        for internal in ["exec_shell", "Bash", "bash", TERMINAL_RUN_NAME] {
             assert!(server.registry.get(internal).is_none(), "{internal}");
         }
+    }
+
+    #[test]
+    fn tool_launcher_blocks_shell_tools_even_in_direct_constructor() {
+        let mut config = codewhale_runtime::config::Config::default();
+        config.tool_launcher = Some(vec!["/usr/bin/sudo".into(), "-n".into()]);
+        let sandbox = McpServerSandboxConfig::from_config(&config).expect("sandbox config");
+        let server = test_server_with_sandbox(
+            PathBuf::from("."),
+            McpServerSettings {
+                expose_tools: vec![
+                    "file_read".into(),
+                    "shell".into(),
+                    "bash".into(),
+                    "Bash".into(),
+                    "terminal_run".into(),
+                ],
+                require_approval: false,
+            },
+            sandbox,
+        );
+        let names: Vec<&str> = server.tools.iter().map(|tool| tool.name.as_ref()).collect();
+        assert_eq!(names, vec!["file_read"]);
+        assert_eq!(
+            server.registry.context().shell_policy,
+            codewhale_agent_contract::worker_profile::ShellPolicy::None
+        );
+        for internal in ["exec_shell", "Bash", "bash", TERMINAL_RUN_NAME] {
+            assert!(server.registry.get(internal).is_none(), "{internal}");
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_server_wires_sandbox_policy_and_external_backend_into_tool_context() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut config = codewhale_runtime::config::Config::default();
+        config.sandbox_mode = Some("read-only".into());
+        config.prefer_bwrap = Some(true);
+        config.sandbox_backend = Some("unsupported-test-backend".into());
+        let sandbox = McpServerSandboxConfig::from_config(&config).expect("sandbox config");
+        let server = test_server_with_sandbox(
+            workspace.path().to_path_buf(),
+            McpServerSettings {
+                expose_tools: vec!["file_read".into(), "bash".into()],
+                require_approval: false,
+            },
+            sandbox,
+        );
+        let ctx = server.registry.context();
+        assert_eq!(
+            ctx.elevated_sandbox_policy,
+            Some(codewhale_sandbox::SandboxPolicy::read_only())
+        );
+        let backend = ctx
+            .sandbox_backend
+            .as_ref()
+            .expect("external sandbox backend must be attached");
+        assert_eq!(
+            backend.kind(),
+            codewhale_sandbox::backend::SandboxKind::Unsupported
+        );
+        let mut pipe = Pipe::new(server);
+        complete_handshake(&mut pipe).await;
+        let response = pipe
+            .request(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "bash", "arguments": {"command": "echo bad > must-not-exist.txt"}}
+            }))
+            .await;
+        assert_eq!(response["result"]["isError"], json!(true), "{response}");
+        assert!(
+            response.to_string().contains("external sandbox backend")
+                || response.to_string().contains("Unsupported sandbox_backend"),
+            "{response}"
+        );
+        assert!(!workspace.path().join("must-not-exist.txt").exists());
+        pipe.finish().await.unwrap();
+    }
+
+    #[test]
+    fn configured_read_denylist_blocks_mcp_file_read_and_search() {
+        let workspace = tempfile::tempdir().unwrap();
+        let denied = workspace.path().join("secret.txt");
+        let allowed = workspace.path().join("public.txt");
+        std::fs::write(&denied, "TOP_SECRET_CANARY_VALUE").unwrap();
+        std::fs::write(&allowed, "PUBLIC_ALLOWED_VALUE").unwrap();
+        let mut config = codewhale_runtime::config::Config::default();
+        config.sandbox_denied_read_paths = vec![denied.clone()];
+        let sandbox = McpServerSandboxConfig::from_config(&config).expect("sandbox config");
+        let denylist = sandbox.read_denylist.clone();
+        codewhale_sandbox::read_guard::with_test_active_denylist(denylist, || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let server = test_server_with_sandbox(
+                    workspace.path().to_path_buf(),
+                    McpServerSettings {
+                        expose_tools: default_expose_tools(),
+                        require_approval: true,
+                    },
+                    sandbox,
+                );
+                let mut pipe = Pipe::new(server);
+                complete_handshake(&mut pipe).await;
+                let denied_read = pipe
+                    .request(json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {"name": "file_read", "arguments": {"path": "secret.txt"}}
+                    }))
+                    .await;
+                assert_eq!(
+                    denied_read["result"]["isError"],
+                    json!(true),
+                    "{denied_read}"
+                );
+                assert!(
+                    !denied_read.to_string().contains("TOP_SECRET_CANARY_VALUE"),
+                    "{denied_read}"
+                );
+                let search = pipe
+                    .request(json!({
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {"name": "search", "arguments": {"pattern": "TOP_SECRET_CANARY_VALUE"}}
+                    }))
+                    .await;
+                assert!(
+                    !search.to_string().contains("TOP_SECRET_CANARY_VALUE"),
+                    "{search}"
+                );
+                let allowed_read = pipe
+                    .request(json!({
+                        "jsonrpc": "2.0",
+                        "id": 3,
+                        "method": "tools/call",
+                        "params": {"name": "file_read", "arguments": {"path": "public.txt"}}
+                    }))
+                    .await;
+                assert_eq!(
+                    allowed_read["result"]["isError"],
+                    json!(false),
+                    "{allowed_read}"
+                );
+                assert!(
+                    allowed_read.to_string().contains("PUBLIC_ALLOWED_VALUE"),
+                    "{allowed_read}"
+                );
+                pipe.finish().await.unwrap();
+            });
+        });
     }
 
     #[test]
@@ -1115,5 +1434,20 @@ mod tests {
             assert_eq!(missing["error"]["code"], -32602);
             pipe.finish().await.unwrap();
         }
+    }
+
+    #[test]
+    fn load_from_path_rejects_oversized_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.toml");
+        let defaults = McpServerSettings::load_from_path(Some(&missing)).expect("missing defaults");
+        assert!(defaults.require_approval);
+
+        let oversized = dir.path().join("mcp_server.toml");
+        let cap = codewhale_engine::mcp::MAX_MCP_CONFIG_BYTES as usize;
+        std::fs::write(&oversized, format!("# {}\n", "a".repeat(cap + 16))).unwrap();
+        let err = McpServerSettings::load_from_path(Some(&oversized))
+            .expect_err("oversized config must be rejected");
+        assert!(err.to_string().contains("exceeds the 1 MiB limit"), "{err}");
     }
 }

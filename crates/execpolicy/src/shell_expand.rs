@@ -56,6 +56,8 @@ const MAX_DEPTH: usize = 8;
 /// Upper bound on emitted command lines, so a pathological input cannot turn
 /// one policy check into unbounded work.
 const MAX_COMMANDS: usize = 256;
+const MAX_TMUX_WORK: usize = 4 * 1024 * 1024;
+const TMUX_PROMPT_INPUTS: usize = 9;
 
 /// Upper bound on the parser states explored while locating the real command
 /// word behind wrapper words. Running out marks the command unresolved.
@@ -1240,7 +1242,8 @@ const REBINDING_BUILTINS: &[&str] = &[
 /// Shells whose `-c` argument is a command line to be parsed, not an operand.
 const SHELL_NAMES: &[&str] = &[
     "sh", "bash", "zsh", "dash", "ksh", "ksh93", "mksh", "ash", "fish", "csh", "tcsh", "rbash",
-    "yash", "elvish", "nu", "xonsh", "oksh", "posh", "osh",
+    "yash", "elvish", "nu", "xonsh", "oksh", "posh", "osh", "oil", "ysh", "pdksh", "loksh", "rksh",
+    "ion", "ngs",
 ];
 
 /// The commands a shell line would run, plus what could not be resolved.
@@ -1307,6 +1310,7 @@ fn expand_for_platform(command: &str, windows: bool) -> Expansion {
         extra_deny_dropped: false,
         extra_deny_cap_dropped: false,
         deny_suffix_depths: HashMap::new(),
+        tmux_work_left: MAX_TMUX_WORK,
         literal_backslashes: windows,
         dynamic: false,
         nested: false,
@@ -1346,6 +1350,7 @@ struct Expander {
     extra_deny_dropped: bool,
     extra_deny_cap_dropped: bool,
     deny_suffix_depths: HashMap<u64, usize>,
+    tmux_work_left: usize,
     literal_backslashes: bool,
     dynamic: bool,
     nested: bool,
@@ -1375,12 +1380,20 @@ const KEYWORD_CONTINUES: &[&str] = &[
     "done", "fi", "esac", "!", "coproc", "time",
 ];
 
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
+enum WordQuote {
+    #[default]
+    Unquoted,
+    Quoted,
+    InlineScalar,
+}
+
 /// The word being read, with what the parser learned about it.
 #[derive(Default)]
 struct WordBuf {
     text: String,
     started: bool,
-    quoted: bool,
+    quoted: WordQuote,
     redirect_operand: bool,
     /// The word's final text depends on an expansion the parser does not run.
     dynamic: bool,
@@ -1414,7 +1427,7 @@ impl WordBuf {
                     .last()
                     .is_none_or(|last| KEYWORD_CONTINUES.contains(&last.as_str()));
                 let mut closed = false;
-                if command_position && !self.quoted {
+                if command_position && self.quoted == WordQuote::Unquoted {
                     match self.text.as_str() {
                         "{" | "while" | "until" | "for" | "if" | "case" | "select" => {
                             groups.push(Group {
@@ -1445,7 +1458,7 @@ impl WordBuf {
             }
             self.started = false;
         }
-        self.quoted = false;
+        self.quoted = WordQuote::Unquoted;
         self.dynamic = false;
         self.brace = false;
         self.bracket = false;
@@ -1460,7 +1473,7 @@ struct Line {
     words: Vec<String>,
     dynamic: Vec<bool>,
     odd: Vec<bool>,
-    quoted: Vec<bool>,
+    quoted: Vec<WordQuote>,
     heredoc: bool,
     stdin_piped: bool,
 }
@@ -1591,7 +1604,7 @@ impl Expander {
                             after_pipe = false;
                             word.text.push(chars[i + 1]);
                             word.started = true;
-                            word.quoted = true;
+                            word.quoted = WordQuote::Quoted;
                         }
                         i += 2;
                     } else {
@@ -1602,7 +1615,7 @@ impl Expander {
                 '\'' => {
                     after_pipe = false;
                     word.started = true;
-                    word.quoted = true;
+                    word.quoted = WordQuote::Quoted;
                     i += 1;
                     while i < n && chars[i] != '\'' {
                         word.text.push(chars[i]);
@@ -1614,8 +1627,18 @@ impl Expander {
                 // Double quotes suppress word splitting but NOT substitution.
                 '"' => {
                     after_pipe = false;
+                    let mut inline_scalar = word.quoted == WordQuote::Unquoted
+                        && !word.dynamic
+                        && word
+                            .text
+                            .strip_prefix("--")
+                            .and_then(|prefix| prefix.strip_suffix('='))
+                            .is_some_and(|name| {
+                                !name.is_empty()
+                                    && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+                            });
                     word.started = true;
-                    word.quoted = true;
+                    word.quoted = WordQuote::Quoted;
                     i += 1;
                     while i < n && chars[i] != '"' {
                         match chars[i] {
@@ -1628,6 +1651,7 @@ impl Expander {
                                 i += 2;
                             }
                             '`' => {
+                                inline_scalar = false;
                                 word.dynamic = true;
                                 let (inner, next, certain) = read_backtick(&chars, i);
                                 uncertain |= !certain;
@@ -1635,6 +1659,7 @@ impl Expander {
                                 i = next;
                             }
                             '$' if i + 1 < n && matches!(chars[i + 1], '(' | '{') => {
+                                inline_scalar = false;
                                 word.dynamic = true;
                                 let (inner, next, certain) = read_substitution(&chars, i + 1);
                                 uncertain |= !certain;
@@ -1643,6 +1668,8 @@ impl Expander {
                             }
                             ch => {
                                 if ch == '$' && starts_parameter(chars.get(i + 1)) {
+                                    inline_scalar &=
+                                        chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '_';
                                     word.dynamic = true;
                                 }
                                 word.text.push(ch);
@@ -1651,12 +1678,24 @@ impl Expander {
                         }
                     }
                     uncertain |= i >= n;
+                    if inline_scalar
+                        && word.dynamic
+                        && i < n
+                        && chars.get(i + 1).is_none_or(|ch| {
+                            matches!(
+                                ch,
+                                ' ' | '\t' | '\r' | '\n' | ';' | '|' | '&' | '(' | ')' | '<' | '>'
+                            )
+                        })
+                    {
+                        word.quoted = WordQuote::InlineScalar;
+                    }
                     i = (i + 1).min(n);
                 }
                 '$' if i + 1 < n && chars[i + 1] == '\'' => {
                     after_pipe = false;
                     word.started = true;
-                    word.quoted = true;
+                    word.quoted = WordQuote::Quoted;
                     word.dynamic = true;
                     i += 2;
                     while i < n && chars[i] != '\'' {
@@ -1882,16 +1921,30 @@ impl Expander {
                             {
                                 let shell_stdin = redirects_stdin
                                     && commands[cmd_start..].iter().any(|line| {
-                                        command_heads(&line.words).heads.iter().any(|&head| {
-                                            let name = command_name(&line.words[head]);
-                                            SHELL_NAMES.contains(&name.as_str())
-                                                || matches!(
-                                                    name.as_str(),
-                                                    "source" | "." | "at" | "batch"
-                                                )
-                                                || (name == "ssh"
-                                                    && ssh_reads_stdin(&line.words, head))
-                                        })
+                                        command_heads(&line.words, &line.dynamic).heads.iter().any(
+                                            |&head| {
+                                                let name = command_name(&line.words[head]);
+                                                SHELL_NAMES.contains(&name.as_str())
+                                                    || matches!(
+                                                        name.as_str(),
+                                                        "source"
+                                                            | "."
+                                                            | "at"
+                                                            | "batch"
+                                                            | "pwsh"
+                                                            | "powershell"
+                                                            | "dbclient"
+                                                            | "mosh"
+                                                    )
+                                                    || (name == "ssh"
+                                                        && ssh_reads_stdin(
+                                                            &line.words,
+                                                            &line.dynamic,
+                                                            &line.quoted,
+                                                            head,
+                                                        ))
+                                            },
+                                        )
                                     });
                                 let mut body = String::new();
                                 // A body that runs to the end of the input may be
@@ -2016,11 +2069,11 @@ impl Expander {
         }
         self.emit(tokens);
 
-        let heads = command_heads(tokens);
+        let heads = command_heads(tokens, &line.dynamic);
         self.dynamic |= heads.truncated;
-        for payload in &heads.split_payloads {
+        for (payload, payload_dynamic) in &heads.split_payloads {
             // `env -S 'cmd args'` splits its value into a command line.
-            self.expand(payload, depth + 1);
+            self.code_payload(payload, *payload_dynamic, depth);
         }
         let mut dynamic = line.dynamic.clone();
         mark_replacement_operands(tokens, &heads.heads, &mut dynamic);
@@ -2106,8 +2159,18 @@ impl Expander {
                 }
                 // These hand the value of `-c` / `--command` to a shell.
                 "su" | "runuser" | "flock" | "script" => {
+                    let flag_end = if name == "su" {
+                        tokens.len()
+                    } else {
+                        heads
+                            .heads
+                            .iter()
+                            .copied()
+                            .find(|&inner| inner > head)
+                            .unwrap_or(tokens.len())
+                    };
                     for (payload, payload_dynamic) in
-                        command_option_payloads(tokens, head, &dynamic)
+                        command_option_payloads(tokens, head, &dynamic, flag_end)
                     {
                         self.code_payload(&payload, payload_dynamic, depth);
                     }
@@ -2144,6 +2207,17 @@ impl Expander {
                     }
                 }
                 "parallel" => {
+                    for (payload, payload_dynamic) in option_payloads(
+                        tokens,
+                        head,
+                        &dynamic,
+                        None,
+                        &["compress-program", "decompress-program"],
+                        true,
+                        tokens.len(),
+                    ) {
+                        self.code_payload(&payload, payload_dynamic, depth);
+                    }
                     let inner: Vec<usize> = heads
                         .heads
                         .iter()
@@ -2171,12 +2245,19 @@ impl Expander {
                         matches!(tokens[at].to_ascii_lowercase().as_str(), "/c" | "/k" | "/r")
                     }) {
                         let payload = tokens[at + 1..].join(" ");
-                        let payload_dynamic = dynamic[at + 1..].iter().any(|dynamic| *dynamic)
+                        let payload_dynamic = dynamic[head + 1..].iter().any(|dynamic| *dynamic)
                             || payload.contains(['%', '!', '^']);
                         self.code_payload(&payload, payload_dynamic, depth);
+                    } else if dynamic[head + 1..].iter().any(|dynamic| *dynamic) {
+                        self.dynamic = true;
                     }
                 }
-                "powershell" | "pwsh" => self.record_powershell(tokens, head, &dynamic, depth),
+                "powershell" | "pwsh" => {
+                    if line.stdin_piped {
+                        self.dynamic = true;
+                    }
+                    self.record_powershell(line, head, &dynamic, depth);
+                }
                 "awk" | "gawk" | "mawk" | "nawk" | "goawk" => {
                     self.record_awk_program(tokens, head, &dynamic, depth);
                 }
@@ -2210,13 +2291,22 @@ impl Expander {
             }
         }
         for at in 0..tokens.len() {
-            if tokens[at] == "--" && !line.quoted[at] && at + 1 < tokens.len() {
-                self.record_extra_deny(&slice_line(line, at + 1), depth + 1);
+            if tokens[at] == "--" && line.quoted[at] == WordQuote::Unquoted && at + 1 < tokens.len()
+            {
+                let inert = heads
+                    .heads
+                    .iter()
+                    .rev()
+                    .find(|&&head| head < at)
+                    .is_some_and(|&head| {
+                        INERT_DASH_DASH_HEADS.contains(&command_name(&tokens[head]).as_str())
+                    });
+                self.record_extra_deny(&slice_line(line, at + 1), inert, depth + 1);
             }
         }
     }
 
-    fn record_extra_deny(&mut self, sub: &Line, depth: usize) {
+    fn record_extra_deny(&mut self, sub: &Line, inert: bool, depth: usize) {
         if depth > MAX_DEPTH {
             self.extra_deny_dropped = true;
             return;
@@ -2250,6 +2340,7 @@ impl Expander {
             extra_deny_dropped: false,
             extra_deny_cap_dropped: false,
             deny_suffix_depths: std::mem::take(&mut self.deny_suffix_depths),
+            tmux_work_left: self.tmux_work_left,
             literal_backslashes: self.literal_backslashes,
             dynamic: false,
             nested: false,
@@ -2261,9 +2352,11 @@ impl Expander {
             groups: Vec::new(),
         };
         child.record(sub, depth);
+        self.tmux_work_left = child.tmux_work_left;
         self.deny_suffix_depths = std::mem::take(&mut child.deny_suffix_depths);
         let child_dropped = child.extra_deny_dropped;
         let child_cap_dropped = child.extra_deny_cap_dropped;
+        self.dynamic |= child_dropped | (!inert && child.dynamic);
         for cmd in child.extra_deny {
             self.emit_extra_deny(cmd);
         }
@@ -2284,35 +2377,106 @@ impl Expander {
     ) {
         let tokens = &line.words;
         let mut truncated = false;
+        if name == "bwrap" {
+            if tokens[head + 1..]
+                .iter()
+                .any(|token| token == "--args" || token.starts_with("--args="))
+            {
+                self.dynamic = true;
+            }
+        } else if matches!(name, "docker" | "podman")
+            && tokens.iter().any(|token| token == "buildx")
+            && tokens
+                .iter()
+                .any(|token| token == "--call" || token.starts_with("--call="))
+        {
+            self.dynamic = true;
+        }
         match name {
             "nix" => {
-                for verb_idx in
-                    launcher_verb_targets(tokens, head + 1, &NIX_GLOBAL_SPEC, &mut truncated)
-                {
+                for verb_idx in launcher_verb_targets(
+                    tokens,
+                    dynamic,
+                    &line.quoted,
+                    head + 1,
+                    &NIX_GLOBAL_SPEC,
+                    &mut truncated,
+                ) {
                     let Some(verb) = tokens.get(verb_idx).map(String::as_str) else {
                         continue;
                     };
-                    if matches!(verb, "develop" | "shell")
-                        && let Some(at) = (verb_idx + 1..tokens.len())
-                            .take_while(|&i| tokens[i] != "--")
-                            .find(|&i| matches!(tokens[i].as_str(), "-c" | "--command"))
-                        && at + 1 < tokens.len()
-                    {
-                        self.record(&slice_line(line, at + 1), depth + 1);
+                    if !matches!(verb, "develop" | "shell") {
+                        continue;
+                    }
+                    for at in verb_idx + 1..tokens.len() {
+                        if tokens[at] == "--" && !dynamic[at] {
+                            break;
+                        }
+                        let attached = if let Some(long) = tokens[at].strip_prefix("--") {
+                            match long.split_once('=') {
+                                Some(("command", value)) => Some(value),
+                                None if long == "command" => Some(""),
+                                _ => None,
+                            }
+                        } else if let Some(flags) = tokens[at].strip_prefix('-') {
+                            let mut found = None;
+                            for (off, ch) in flags.char_indices() {
+                                if ch == 'c' {
+                                    found = Some(&flags[off + 1..]);
+                                    break;
+                                }
+                                if matches!(ch, 'f' | 'I' | 'k' | 'u' | 'o' | 'j') {
+                                    break;
+                                }
+                            }
+                            found
+                        } else {
+                            None
+                        };
+                        let Some(attached) = attached else {
+                            if dynamic[at] {
+                                self.dynamic = true;
+                            }
+                            continue;
+                        };
+                        self.dynamic |= dynamic[at];
+                        if attached.is_empty() {
+                            if at + 1 < tokens.len() {
+                                self.code_payload(&tokens[at + 1], dynamic[at + 1], depth);
+                                self.record(&slice_line(line, at + 1), depth + 1);
+                            }
+                        } else {
+                            self.code_payload(attached, dynamic[at], depth);
+                            let combined = build_prefixed_line(attached, at, line, at + 1);
+                            self.record(&combined, depth + 1);
+                        }
+                        break;
                     }
                 }
             }
             "nix-shell" => {
-                for (payload, payload_dynamic) in
-                    option_payloads(tokens, head, dynamic, None, &["run", "command"], true)
-                {
+                for (payload, payload_dynamic) in option_payloads(
+                    tokens,
+                    head,
+                    dynamic,
+                    None,
+                    &["run", "command"],
+                    true,
+                    tokens.len(),
+                ) {
                     self.code_payload(&payload, payload_dynamic, depth);
                 }
             }
             "npx" => {
-                for (payload, payload_dynamic) in
-                    option_payloads(tokens, head, dynamic, Some('c'), &["call"], true)
-                {
+                for (payload, payload_dynamic) in option_payloads(
+                    tokens,
+                    head,
+                    dynamic,
+                    Some('c'),
+                    &["call"],
+                    true,
+                    tokens.len(),
+                ) {
                     self.code_payload(&payload, payload_dynamic, depth);
                 }
             }
@@ -2320,15 +2484,26 @@ impl Expander {
                 if let Some(sub) = tokens.get(head + 1)
                     && matches!(sub.as_str(), "exec" | "x")
                 {
-                    for (payload, payload_dynamic) in
-                        option_payloads(tokens, head + 1, dynamic, Some('c'), &["call"], true)
-                    {
+                    for (payload, payload_dynamic) in option_payloads(
+                        tokens,
+                        head + 1,
+                        dynamic,
+                        Some('c'),
+                        &["call"],
+                        true,
+                        tokens.len(),
+                    ) {
                         self.code_payload(&payload, payload_dynamic, depth);
                     }
                 } else {
-                    for verb_idx in
-                        launcher_verb_targets(tokens, head + 1, &EMPTY_WRAPPER_SPEC, &mut truncated)
-                    {
+                    for verb_idx in launcher_verb_targets(
+                        tokens,
+                        dynamic,
+                        &line.quoted,
+                        head + 1,
+                        &EMPTY_WRAPPER_SPEC,
+                        &mut truncated,
+                    ) {
                         if tokens
                             .get(verb_idx)
                             .is_some_and(|verb| matches!(verb.as_str(), "exec" | "x"))
@@ -2340,6 +2515,7 @@ impl Expander {
                                 Some('c'),
                                 &["call"],
                                 true,
+                                tokens.len(),
                             ) {
                                 self.code_payload(&payload, payload_dynamic, depth);
                             }
@@ -2347,11 +2523,36 @@ impl Expander {
                     }
                 }
             }
-            "ssh" => {
-                if ssh_skips_remote_command(&tokens[head + 1..]) {
+            "ssh" | "dbclient" | "mosh" => {
+                for (payload, payload_dynamic) in
+                    ssh_option_payloads(&tokens[head + 1..], &dynamic[head + 1..])
+                {
+                    self.code_payload(&payload, payload_dynamic, depth);
+                }
+                if name == "mosh" {
+                    for (payload, payload_dynamic) in option_payloads(
+                        tokens,
+                        head,
+                        dynamic,
+                        None,
+                        &["ssh", "server", "client"],
+                        true,
+                        tokens.len(),
+                    ) {
+                        self.code_payload(&payload, payload_dynamic, depth);
+                    }
+                }
+                if ssh_skips_remote_command(&tokens[head + 1..], &dynamic[head + 1..]) {
                     return;
                 }
-                let landings = resolve_wrapper_targets(tokens, head + 1, &SSH_SPEC, &mut truncated);
+                let landings = resolve_wrapper_targets(
+                    tokens,
+                    dynamic,
+                    &line.quoted,
+                    head + 1,
+                    &SSH_SPEC,
+                    &mut truncated,
+                );
                 let mut remote_command = false;
                 let prev_stdin = self.inherited_stdin;
                 self.inherited_stdin |= line.stdin_piped || line.heredoc;
@@ -2374,12 +2575,29 @@ impl Expander {
                 }
             }
             "screen" => {
-                if screen_attaches_only(&tokens[head + 1..]) {
+                for at in head + 1..tokens.len() {
+                    if tokens[at] != "-X" && tokens[at] != "-Q" {
+                        continue;
+                    }
+                    let rest = &tokens[at + 1..];
+                    if rest.is_empty() {
+                        self.dynamic |= dynamic[at];
+                        continue;
+                    }
+                    let rest_dynamic = dynamic[at + 1..].iter().any(|d| *d);
+                    self.record_screen_x(&rest.join(" "), rest_dynamic, depth);
+                }
+                if screen_attaches_only(&tokens[head + 1..], &dynamic[head + 1..]) {
                     return;
                 }
-                for landing in
-                    resolve_wrapper_targets(tokens, head + 1, &SCREEN_SPEC, &mut truncated)
-                {
+                for landing in resolve_wrapper_targets(
+                    tokens,
+                    dynamic,
+                    &line.quoted,
+                    head + 1,
+                    &SCREEN_SPEC,
+                    &mut truncated,
+                ) {
                     if landing < tokens.len() {
                         self.record(&slice_line(line, landing), depth + 1);
                     }
@@ -2388,13 +2606,120 @@ impl Expander {
             "start-stop-daemon" => {
                 self.record_start_stop_daemon(line, head, depth);
             }
+            "tmux" => {
+                self.record_tmux(line, head, dynamic, depth, &mut truncated);
+            }
+            "vagrant" => {
+                for verb_idx in launcher_verb_targets(
+                    tokens,
+                    dynamic,
+                    &line.quoted,
+                    head + 1,
+                    &VAGRANT_GLOBAL_SPEC,
+                    &mut truncated,
+                ) {
+                    let Some(verb) = tokens.get(verb_idx).map(String::as_str) else {
+                        continue;
+                    };
+                    if !matches!(verb, "ssh" | "winrm") {
+                        continue;
+                    }
+                    for (payload, payload_dynamic) in option_payloads(
+                        tokens,
+                        verb_idx,
+                        dynamic,
+                        Some('c'),
+                        &["command"],
+                        true,
+                        tokens.len(),
+                    ) {
+                        self.code_payload(&payload, payload_dynamic, depth);
+                    }
+                    if verb == "ssh"
+                        && let Some(dash_dash) = (verb_idx + 1..tokens.len()).find(|&i| {
+                            tokens[i] == "--"
+                                && line.quoted[i] == WordQuote::Unquoted
+                                && !dynamic[i]
+                        })
+                        && !ssh_skips_remote_command(
+                            &tokens[dash_dash + 1..],
+                            &dynamic[dash_dash + 1..],
+                        )
+                    {
+                        let extra_spec = Wrapper {
+                            operands: 0,
+                            ..SSH_SPEC
+                        };
+                        for landing in resolve_wrapper_targets(
+                            tokens,
+                            dynamic,
+                            &line.quoted,
+                            dash_dash + 1,
+                            &extra_spec,
+                            &mut truncated,
+                        ) {
+                            if landing < tokens.len() {
+                                let rest = &tokens[landing..];
+                                let rest_dynamic = dynamic[landing..].iter().any(|d| *d);
+                                self.code_payload(&rest.join(" "), rest_dynamic, depth);
+                                if rest.len() > 1 {
+                                    self.record(&slice_line(line, landing), depth + 1);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            "helm" => {
+                self.record_helm(line, head, depth, &mut truncated);
+            }
             _ => {
                 if name == "launchctl" {
-                    for verb_idx in
-                        launcher_verb_targets(tokens, head + 1, &EMPTY_WRAPPER_SPEC, &mut truncated)
-                    {
+                    for verb_idx in launcher_verb_targets(
+                        tokens,
+                        dynamic,
+                        &line.quoted,
+                        head + 1,
+                        &EMPTY_WRAPPER_SPEC,
+                        &mut truncated,
+                    ) {
                         if tokens.get(verb_idx).map(String::as_str) == Some("submit") {
                             self.record_exec_flag_command(line, verb_idx, &['p'], &[], depth);
+                        }
+                    }
+                } else if name == "op" {
+                    for verb_idx in launcher_verb_targets(
+                        tokens,
+                        dynamic,
+                        &line.quoted,
+                        head + 1,
+                        &OP_GLOBAL_SPEC,
+                        &mut truncated,
+                    ) {
+                        if tokens.get(verb_idx).map(String::as_str) == Some("plugin") {
+                            for sub_idx in launcher_verb_targets(
+                                tokens,
+                                dynamic,
+                                &line.quoted,
+                                verb_idx + 1,
+                                &OP_GLOBAL_SPEC,
+                                &mut truncated,
+                            ) {
+                                if tokens.get(sub_idx).map(String::as_str) == Some("run") {
+                                    for landing in resolve_wrapper_targets(
+                                        tokens,
+                                        dynamic,
+                                        &line.quoted,
+                                        sub_idx + 1,
+                                        &OP_RUN_SPEC,
+                                        &mut truncated,
+                                    ) {
+                                        if landing < tokens.len() {
+                                            self.record(&slice_line(line, landing), depth + 1);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -2402,25 +2727,94 @@ impl Expander {
                     if launcher.program != name {
                         continue;
                     }
-                    for verb_idx in
-                        launcher_verb_targets(tokens, head + 1, launcher.global, &mut truncated)
-                    {
-                        let Some(verb) = tokens.get(verb_idx).map(String::as_str) else {
+                    for verb_idx in launcher_verb_targets(
+                        tokens,
+                        dynamic,
+                        &line.quoted,
+                        head + 1,
+                        launcher.global,
+                        &mut truncated,
+                    ) {
+                        let mut verb_idx = verb_idx;
+                        let mut verb = tokens.get(verb_idx).map(String::as_str);
+                        if let Some(group) = verb
+                            && launcher.groups.contains(&group)
+                        {
+                            verb_idx += 1;
+                            let value_opts: &[&str] = match group {
+                                "compose" => &[
+                                    "f",
+                                    "file",
+                                    "p",
+                                    "project-name",
+                                    "env-file",
+                                    "project-directory",
+                                    "profile",
+                                    "parallel",
+                                    "ansi",
+                                    "log-level",
+                                    "config",
+                                    "H",
+                                    "host",
+                                    "context",
+                                    "tlscacert",
+                                    "tlscert",
+                                    "tlskey",
+                                    "progress",
+                                    "policy",
+                                    "build-arg",
+                                    "builder",
+                                ],
+                                _ => &[],
+                            };
+                            while let Some(word) = tokens.get(verb_idx) {
+                                if !word.starts_with('-') || word == "--" {
+                                    break;
+                                }
+                                let opt_name =
+                                    word.trim_start_matches('-').split('=').next().unwrap_or("");
+                                verb_idx += if !word.contains('=') && value_opts.contains(&opt_name)
+                                {
+                                    2
+                                } else {
+                                    1
+                                };
+                            }
+                            verb = tokens.get(verb_idx).map(String::as_str);
+                        }
+                        let Some(verb) = verb else {
                             continue;
                         };
                         if !launcher.verbs.contains(&verb) {
                             continue;
                         }
-                        let is_container_run = matches!(name, "docker" | "podman") && verb == "run";
+                        let is_container_run =
+                            matches!(name, "docker" | "podman") && matches!(verb, "run" | "create");
+                        if is_container_run {
+                            for at in verb_idx + 1..tokens.len() {
+                                if tokens[at] == "--" {
+                                    break;
+                                }
+                                if let Some(value) = tokens[at].strip_prefix("--health-cmd=") {
+                                    self.code_payload(value, dynamic[at], depth);
+                                } else if tokens[at] == "--health-cmd"
+                                    && let Some(value) = tokens.get(at + 1)
+                                {
+                                    self.code_payload(value, dynamic[at + 1], depth);
+                                }
+                            }
+                        }
                         let entrypoints_before = |end: usize| {
                             if !is_container_run {
                                 return Vec::new();
                             }
                             let end = end.min(tokens.len()).max(verb_idx + 1);
-                            let mut found =
-                                find_entrypoints(&tokens[verb_idx + 1..end], verb_idx + 1);
-                            found.retain(|(value, _)| !value.is_empty());
-                            found
+                            find_entrypoints(
+                                &tokens[verb_idx + 1..end],
+                                dynamic,
+                                &line.quoted,
+                                verb_idx + 1,
+                            )
                         };
                         if is_container_run {
                             let image_spec = Wrapper {
@@ -2429,6 +2823,8 @@ impl Expander {
                             };
                             for image in resolve_wrapper_targets(
                                 tokens,
+                                dynamic,
+                                &line.quoted,
                                 verb_idx + 1,
                                 &image_spec,
                                 &mut truncated,
@@ -2437,21 +2833,32 @@ impl Expander {
                                     continue;
                                 }
                                 for (ep_val, ep_idx) in entrypoints_before(image) {
-                                    let combined =
-                                        build_prefixed_line(&ep_val, ep_idx, line, image + 1);
-                                    self.record(&combined, depth + 1);
+                                    if ep_val.is_empty() {
+                                        self.dynamic |= dynamic[ep_idx];
+                                    } else {
+                                        let combined =
+                                            build_prefixed_line(&ep_val, ep_idx, line, image + 1);
+                                        self.record(&combined, depth + 1);
+                                    }
                                 }
                             }
                         }
                         for landing in resolve_wrapper_targets(
                             tokens,
+                            dynamic,
+                            &line.quoted,
                             verb_idx + 1,
                             launcher.subcmd,
                             &mut truncated,
                         ) {
                             for (ep_val, ep_idx) in entrypoints_before(landing) {
-                                let combined = build_prefixed_line(&ep_val, ep_idx, line, landing);
-                                self.record(&combined, depth + 1);
+                                if ep_val.is_empty() {
+                                    self.dynamic |= dynamic[ep_idx];
+                                } else {
+                                    let combined =
+                                        build_prefixed_line(&ep_val, ep_idx, line, landing);
+                                    self.record(&combined, depth + 1);
+                                }
                             }
                             if landing < tokens.len() {
                                 if launcher.shell_string {
@@ -2473,25 +2880,509 @@ impl Expander {
         self.dynamic |= truncated;
     }
 
+    fn mark_tmux_unresolved(&mut self) {
+        self.dynamic = true;
+        self.extra_deny_dropped |= self.deny_only;
+    }
+
+    fn reserve_tmux_work(&mut self, amount: usize) -> bool {
+        if charge_tmux_work(&mut self.tmux_work_left, amount) {
+            return true;
+        }
+        self.mark_tmux_unresolved();
+        false
+    }
+
+    fn reserve_tmux_words(&mut self, words: &[String]) -> bool {
+        self.reserve_tmux_work(words.len().saturating_add(1))
+            && self.reserve_tmux_work(words.iter().map(String::len).fold(0, usize::saturating_add))
+    }
+
+    fn record_tmux(
+        &mut self,
+        line: &Line,
+        head: usize,
+        dynamic: &[bool],
+        depth: usize,
+        truncated: &mut bool,
+    ) {
+        let tokens = &line.words;
+        if !self.reserve_tmux_words(&tokens[head..]) {
+            return;
+        }
+        for verb_idx in launcher_verb_targets(
+            tokens,
+            dynamic,
+            &line.quoted,
+            head + 1,
+            &TMUX_GLOBAL_SPEC,
+            truncated,
+        ) {
+            if verb_idx < tokens.len() {
+                self.record_tmux_command_list(
+                    line,
+                    verb_idx,
+                    tokens.len(),
+                    dynamic,
+                    depth,
+                    truncated,
+                );
+            }
+        }
+    }
+
+    fn record_tmux_command_list(
+        &mut self,
+        line: &Line,
+        start: usize,
+        end: usize,
+        dynamic: &[bool],
+        depth: usize,
+        truncated: &mut bool,
+    ) {
+        if depth > MAX_DEPTH || self.out.len() >= MAX_COMMANDS {
+            self.mark_tmux_unresolved();
+            return;
+        }
+        let tokens = &line.words;
+        if !self.reserve_tmux_words(&tokens[start..end]) {
+            return;
+        }
+        let mut seg_start = start;
+        while seg_start < end && self.tmux_work_left > 0 {
+            let mut seg_end = seg_start;
+            while seg_end < end && tokens[seg_end] != ";" {
+                seg_end += 1;
+            }
+            while seg_start < seg_end && tokens[seg_start].is_empty() {
+                seg_start += 1;
+            }
+            if seg_start < seg_end {
+                self.record_tmux_verb(line, seg_start, seg_end, dynamic, depth, truncated);
+            }
+            seg_start = seg_end + 1;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_tmux_shell_verb(
+        &mut self,
+        line: &Line,
+        verb_idx: usize,
+        end: usize,
+        spec: &Wrapper,
+        dynamic: &[bool],
+        depth: usize,
+        truncated: &mut bool,
+    ) {
+        let tokens = &line.words;
+        for landing in resolve_wrapper_targets(
+            &tokens[..end],
+            &dynamic[..end],
+            &line.quoted[..end],
+            verb_idx + 1,
+            spec,
+            truncated,
+        ) {
+            if landing < end {
+                let rest = &tokens[landing..end];
+                if !self.reserve_tmux_words(rest) {
+                    return;
+                }
+                let rest_dynamic = dynamic[landing..end].iter().any(|d| *d);
+                self.code_payload(&rest.join(" "), rest_dynamic, depth);
+                if rest.len() > 1 {
+                    self.record(&slice_line_range(line, landing, end), depth + 1);
+                }
+            }
+        }
+    }
+
+    fn record_tmux_verb(
+        &mut self,
+        line: &Line,
+        verb_idx: usize,
+        end: usize,
+        dynamic: &[bool],
+        depth: usize,
+        truncated: &mut bool,
+    ) {
+        let tokens = &line.words;
+        if !self.reserve_tmux_words(&tokens[verb_idx..end]) {
+            return;
+        }
+        if dynamic[verb_idx] || line.odd[verb_idx] {
+            self.dynamic = true;
+        }
+        match tokens[verb_idx].as_str() {
+            "new-session" | "new" | "new-window" | "neww" | "split-window" | "splitw"
+            | "respawn-pane" | "respawnp" | "respawn-window" | "respawnw" => {
+                self.record_tmux_shell_verb(
+                    line,
+                    verb_idx,
+                    end,
+                    &TMUX_SUB_SPEC,
+                    dynamic,
+                    depth,
+                    truncated,
+                );
+            }
+            "display-popup" | "popup" => {
+                self.record_tmux_shell_verb(
+                    line,
+                    verb_idx,
+                    end,
+                    &TMUX_DISPLAY_POPUP_SPEC,
+                    dynamic,
+                    depth,
+                    truncated,
+                );
+            }
+            "pipe-pane" | "pipep" => {
+                self.record_tmux_shell_verb(
+                    line,
+                    verb_idx,
+                    end,
+                    &TMUX_PIPE_PANE_SPEC,
+                    dynamic,
+                    depth,
+                    truncated,
+                );
+            }
+            "run-shell" | "run" => {
+                for landing in resolve_wrapper_targets(
+                    &tokens[..end],
+                    &dynamic[..end],
+                    &line.quoted[..end],
+                    verb_idx + 1,
+                    &TMUX_RUN_SHELL_SPEC,
+                    truncated,
+                ) {
+                    if landing < end {
+                        let rest = &tokens[landing..end];
+                        if !self.reserve_tmux_words(rest) {
+                            return;
+                        }
+                        let rest_dynamic = dynamic[landing..end].iter().any(|d| *d);
+                        self.expand_tmux_command_string(
+                            &rest.join(" "),
+                            rest_dynamic,
+                            true,
+                            depth,
+                            truncated,
+                        );
+                        if rest.len() > 1 {
+                            self.record(&slice_line_range(line, landing, end), depth + 1);
+                        }
+                    }
+                }
+            }
+            "send-keys" | "send" => {
+                for landing in resolve_wrapper_targets(
+                    &tokens[..end],
+                    &dynamic[..end],
+                    &line.quoted[..end],
+                    verb_idx + 1,
+                    &TMUX_SEND_KEYS_SPEC,
+                    truncated,
+                ) {
+                    if landing < end {
+                        let rest = &tokens[landing..end];
+                        if !self.reserve_tmux_words(rest) {
+                            return;
+                        }
+                        for (offset, operand) in rest.iter().enumerate() {
+                            self.code_payload(operand, dynamic[landing + offset], depth);
+                        }
+                        if rest.len() > 1 {
+                            self.record(&slice_line_range(line, landing, end), depth + 1);
+                        }
+                    }
+                }
+            }
+            "if-shell" | "if" => {
+                for landing in resolve_wrapper_targets(
+                    &tokens[..end],
+                    &dynamic[..end],
+                    &line.quoted[..end],
+                    verb_idx + 1,
+                    &TMUX_IF_SHELL_SPEC,
+                    truncated,
+                ) {
+                    if landing < end {
+                        if !self.reserve_tmux_words(&tokens[landing..end]) {
+                            return;
+                        }
+                        for at in landing..end {
+                            self.expand_tmux_command_string(
+                                &tokens[at],
+                                dynamic[at],
+                                true,
+                                depth,
+                                truncated,
+                            );
+                        }
+                    }
+                }
+            }
+            "confirm-before" | "confirm" => {
+                for landing in resolve_wrapper_targets(
+                    &tokens[..end],
+                    &dynamic[..end],
+                    &line.quoted[..end],
+                    verb_idx + 1,
+                    &TMUX_CONFIRM_BEFORE_SPEC,
+                    truncated,
+                ) {
+                    if landing < end {
+                        let rest = &tokens[landing..end];
+                        if !self.reserve_tmux_words(rest) {
+                            return;
+                        }
+                        let rest_dynamic = dynamic[landing..end].iter().any(|d| *d);
+                        self.expand_tmux_command_string(
+                            &rest.join(" "),
+                            rest_dynamic,
+                            true,
+                            depth,
+                            truncated,
+                        );
+                        if rest.len() > 1 {
+                            self.record_tmux_command_list(
+                                line,
+                                landing,
+                                end,
+                                dynamic,
+                                depth + 1,
+                                truncated,
+                            );
+                        }
+                    }
+                }
+            }
+            "command-prompt" => {
+                self.record_tmux_command_prompt(line, verb_idx, end, dynamic, depth, truncated);
+            }
+            "bind-key" | "bind" => {
+                for landing in resolve_wrapper_targets(
+                    &tokens[..end],
+                    &dynamic[..end],
+                    &line.quoted[..end],
+                    verb_idx + 1,
+                    &TMUX_BIND_KEY_SPEC,
+                    truncated,
+                ) {
+                    if landing < end {
+                        self.record_tmux_command_list(
+                            line,
+                            landing,
+                            end,
+                            dynamic,
+                            depth + 1,
+                            truncated,
+                        );
+                        if end - landing == 1 {
+                            self.expand_tmux_command_string(
+                                &tokens[landing],
+                                dynamic[landing],
+                                false,
+                                depth,
+                                truncated,
+                            );
+                        }
+                    }
+                }
+            }
+            "source-file" | "source"
+                if !tmux_source_file_parse_only(tokens, verb_idx + 1, end, dynamic) =>
+            {
+                self.dynamic = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn record_tmux_command_prompt(
+        &mut self,
+        line: &Line,
+        verb_idx: usize,
+        end: usize,
+        dynamic: &[bool],
+        depth: usize,
+        truncated: &mut bool,
+    ) {
+        let tokens = &line.words;
+        let mut inputs: Vec<(&str, bool)> = Vec::new();
+        let mut literal_inputs = false;
+        let mut at = verb_idx + 1;
+        while at < end {
+            let token = tokens[at].as_str();
+            if token == "--" || !token.starts_with('-') || token.len() == 1 {
+                break;
+            }
+            if token.starts_with("--") {
+                at += 1;
+                continue;
+            }
+            let flags = &token[1..];
+            let mut consumes_next = false;
+            for (offset, flag) in flags.char_indices() {
+                if flag == 'l' {
+                    literal_inputs = true;
+                    continue;
+                }
+                if flag == 'I' {
+                    let rest = &flags[offset + flag.len_utf8()..];
+                    if rest.is_empty() {
+                        if at + 1 < end {
+                            inputs.push((&tokens[at + 1], dynamic[at + 1]));
+                        }
+                        consumes_next = true;
+                    } else {
+                        inputs.push((rest, dynamic[at]));
+                    }
+                    break;
+                }
+                if TMUX_COMMAND_PROMPT_SPEC.short_values.contains(flag) {
+                    consumes_next = offset + flag.len_utf8() == flags.len();
+                    break;
+                }
+            }
+            at += if consumes_next { 2 } else { 1 };
+        }
+
+        let landings: Vec<usize> = resolve_wrapper_targets(
+            &tokens[..end],
+            &dynamic[..end],
+            &line.quoted[..end],
+            verb_idx + 1,
+            &TMUX_COMMAND_PROMPT_SPEC,
+            truncated,
+        )
+        .into_iter()
+        .filter(|&landing| landing < end)
+        .collect();
+
+        if landings.is_empty() {
+            for (input, input_dynamic) in &inputs {
+                self.expand_tmux_command_string(input, *input_dynamic, true, depth, truncated);
+                if self.tmux_work_left == 0 {
+                    return;
+                }
+                if !literal_inputs && input.contains(',') {
+                    for part in input.split(',') {
+                        if !part.is_empty() {
+                            self.expand_tmux_command_string(
+                                part,
+                                *input_dynamic,
+                                true,
+                                depth,
+                                truncated,
+                            );
+                            if self.tmux_work_left == 0 {
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            for landing in landings {
+                let template = &tokens[landing];
+                let template_dynamic = dynamic[landing];
+                self.expand_tmux_command_string(template, template_dynamic, true, depth, truncated);
+                if self.tmux_work_left == 0 {
+                    return;
+                }
+                if template.contains('%') {
+                    for (input, input_dynamic) in &inputs {
+                        if !self.reserve_tmux_work(input.len().saturating_add(1)) {
+                            return;
+                        }
+                        if *input_dynamic {
+                            self.dynamic = true;
+                        }
+                        let parts: Vec<&str> = if literal_inputs {
+                            vec![input]
+                        } else {
+                            input.split(',').take(TMUX_PROMPT_INPUTS).collect()
+                        };
+                        let Some(substituted) = substitute_tmux_prompt_template(
+                            template,
+                            &parts,
+                            &mut self.tmux_work_left,
+                        ) else {
+                            self.mark_tmux_unresolved();
+                            return;
+                        };
+                        self.expand_tmux_command_string(
+                            &substituted,
+                            template_dynamic || *input_dynamic,
+                            true,
+                            depth,
+                            truncated,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn expand_tmux_command_string(
+        &mut self,
+        payload: &str,
+        payload_dynamic: bool,
+        also_shell: bool,
+        depth: usize,
+        truncated: &mut bool,
+    ) {
+        if depth > MAX_DEPTH || self.out.len() >= MAX_COMMANDS {
+            self.mark_tmux_unresolved();
+            return;
+        }
+        if !self.reserve_tmux_work(payload.len().saturating_add(1)) {
+            return;
+        }
+        if also_shell {
+            self.code_payload(payload, payload_dynamic, depth);
+        } else {
+            self.dynamic |= payload_dynamic;
+            if !payload.trim().is_empty() {
+                self.nested = true;
+            }
+        }
+        let (lines, uncertain) = tokenize_tmux_commands(payload);
+        self.dynamic |= uncertain;
+        for sub_line in &lines {
+            self.record_tmux_command_list(
+                sub_line,
+                0,
+                sub_line.words.len(),
+                &sub_line.dynamic,
+                depth + 1,
+                truncated,
+            );
+        }
+    }
+
     fn record_start_stop_daemon(&mut self, line: &Line, head: usize, depth: usize) {
         let tokens = &line.words;
-        let stop = tokens[head + 1..]
-            .iter()
-            .take_while(|t| t.as_str() != "--")
-            .any(|t| {
-                matches!(t.as_str(), "--stop" | "--status" | "--help" | "--version")
-                    || (t.starts_with('-')
-                        && !t.starts_with("--")
-                        && t[1..].contains(['K', 'T', 'H', 'V']))
-            });
-        let explicit_start = tokens[head + 1..]
-            .iter()
-            .take_while(|t| t.as_str() != "--")
-            .any(|t| {
-                t == "--start"
-                    || (t.starts_with('-') && !t.starts_with("--") && t[1..].contains('S'))
-            });
-        if stop && !explicit_start {
+        let opt_end = (head + 1..tokens.len())
+            .find(|&i| {
+                tokens[i] == "--" && line.quoted[i] == WordQuote::Unquoted && !line.dynamic[i]
+            })
+            .unwrap_or(tokens.len());
+        let has_dynamic = line.dynamic[head + 1..opt_end].iter().any(|&d| d);
+        let stop = tokens[head + 1..opt_end].iter().any(|t| {
+            matches!(t.as_str(), "--stop" | "--status" | "--help" | "--version")
+                || (t.starts_with('-')
+                    && !t.starts_with("--")
+                    && t[1..].contains(['K', 'T', 'H', 'V']))
+        });
+        let explicit_start = tokens[head + 1..opt_end].iter().any(|t| {
+            t == "--start" || (t.starts_with('-') && !t.starts_with("--") && t[1..].contains('S'))
+        });
+        if stop && !explicit_start && !has_dynamic {
             return;
         }
         self.record_exec_flag_command(line, head, &['x', 'a'], &["exec", "startas"], depth);
@@ -2506,39 +3397,55 @@ impl Expander {
         depth: usize,
     ) {
         let tokens = &line.words;
-        let dash_dash = (head + 1..tokens.len()).find(|&i| tokens[i] == "--" && !line.quoted[i]);
+        let dash_dash = (head + 1..tokens.len()).find(|&i| {
+            tokens[i] == "--" && line.quoted[i] == WordQuote::Unquoted && !line.dynamic[i]
+        });
         let opt_end = dash_dash.unwrap_or(tokens.len());
         let args_start = dash_dash.map_or(tokens.len(), |i| i + 1);
         let mut found: Option<(String, usize)> = None;
         let mut i = head + 1;
         while i < opt_end {
             let token = tokens[i].as_str();
+            let mut matched = false;
             if let Some(long) = token.strip_prefix("--") {
                 let (name, inline) = match long.split_once('=') {
                     Some((k, v)) => (k, Some(v)),
                     None => (long, None),
                 };
                 if long_flags.contains(&name) {
+                    matched = true;
                     if let Some(val) = inline {
                         found = Some((val.to_string(), i));
+                        self.dynamic |= line.dynamic[i];
                     } else if i + 1 < opt_end {
                         found = Some((tokens[i + 1].clone(), i + 1));
+                        self.dynamic |= line.dynamic[i] || line.dynamic[i + 1];
                         i += 1;
+                    } else {
+                        self.dynamic |= line.dynamic[i];
                     }
                 }
             } else if let Some(flags) = token.strip_prefix('-') {
                 for (at, ch) in flags.char_indices() {
                     if short_flags.contains(&ch) {
+                        matched = true;
                         let rest = &flags[at + ch.len_utf8()..];
                         if !rest.is_empty() {
                             found = Some((rest.to_string(), i));
+                            self.dynamic |= line.dynamic[i];
                         } else if i + 1 < opt_end {
                             found = Some((tokens[i + 1].clone(), i + 1));
+                            self.dynamic |= line.dynamic[i] || line.dynamic[i + 1];
                             i += 1;
+                        } else {
+                            self.dynamic |= line.dynamic[i];
                         }
                         break;
                     }
                 }
+            }
+            if !matched && line.dynamic[i] {
+                self.dynamic = true;
             }
             i += 1;
         }
@@ -2547,6 +3454,106 @@ impl Expander {
         {
             let combined = build_prefixed_line(&prog, prog_idx, line, args_start);
             self.record(&combined, depth + 1);
+        }
+    }
+
+    fn record_helm(&mut self, line: &Line, head: usize, depth: usize, truncated: &mut bool) {
+        let tokens = &line.words;
+        let opt_end = (head + 1..tokens.len())
+            .find(|&i| {
+                tokens[i] == "--" && line.quoted[i] == WordQuote::Unquoted && !line.dynamic[i]
+            })
+            .unwrap_or(tokens.len());
+        let mut renderers: Vec<(String, usize)> = Vec::new();
+        let mut renderer_args: Vec<(String, usize)> = Vec::new();
+        for i in head + 1..opt_end {
+            let token = tokens[i].as_str();
+            if line.dynamic[i]
+                && line.quoted[i] != WordQuote::InlineScalar
+                && (token.is_empty() || token.starts_with('-'))
+            {
+                self.dynamic = true;
+            }
+            if let Some(val) = token.strip_prefix("--post-renderer=") {
+                renderers.push((val.to_string(), i));
+            } else if token == "--post-renderer"
+                && let Some(val) = tokens.get(i + 1).filter(|_| i + 1 < opt_end)
+            {
+                renderers.push((val.clone(), i + 1));
+            } else if let Some(val) = token.strip_prefix("--post-renderer-args=") {
+                renderer_args.push((val.to_string(), i));
+            } else if token == "--post-renderer-args"
+                && let Some(val) = tokens.get(i + 1).filter(|_| i + 1 < opt_end)
+            {
+                renderer_args.push((val.clone(), i + 1));
+            }
+        }
+        let is_odd = |s: &str| {
+            !s.chars()
+                .enumerate()
+                .all(|(idx, c)| is_plain_word_char(c, idx == 0))
+        };
+        let normalize_quote = |quote: WordQuote| match quote {
+            WordQuote::InlineScalar => WordQuote::Quoted,
+            quote => quote,
+        };
+        for (renderer, renderer_idx) in renderers {
+            if line.dynamic[renderer_idx] {
+                self.dynamic = true;
+            }
+            if renderer.is_empty() {
+                continue;
+            }
+            let mut words = Vec::with_capacity(1 + renderer_args.len());
+            let mut dynamic = Vec::with_capacity(1 + renderer_args.len());
+            let mut odd = Vec::with_capacity(1 + renderer_args.len());
+            let mut quoted = Vec::with_capacity(1 + renderer_args.len());
+            words.push(renderer.clone());
+            dynamic.push(line.dynamic[renderer_idx]);
+            odd.push(is_odd(&renderer));
+            quoted.push(normalize_quote(line.quoted[renderer_idx]));
+            for (arg, arg_idx) in &renderer_args {
+                words.push(arg.clone());
+                dynamic.push(line.dynamic[*arg_idx]);
+                odd.push(is_odd(arg));
+                quoted.push(normalize_quote(line.quoted[*arg_idx]));
+            }
+            self.record(
+                &Line {
+                    words,
+                    dynamic,
+                    odd,
+                    quoted,
+                    heredoc: false,
+                    stdin_piped: line.stdin_piped || line.heredoc,
+                },
+                depth + 1,
+            );
+        }
+        for verb_idx in launcher_verb_targets(
+            tokens,
+            &line.dynamic,
+            &line.quoted,
+            head + 1,
+            &HELM_GLOBAL_SPEC,
+            truncated,
+        ) {
+            if tokens.get(verb_idx).map(String::as_str) == Some("plugin") {
+                for sub_idx in launcher_verb_targets(
+                    tokens,
+                    &line.dynamic,
+                    &line.quoted,
+                    verb_idx + 1,
+                    &HELM_GLOBAL_SPEC,
+                    truncated,
+                ) {
+                    if tokens.get(sub_idx).is_some_and(|sub| {
+                        matches!(sub.as_str(), "install" | "update" | "uninstall" | "remove")
+                    }) {
+                        self.dynamic = true;
+                    }
+                }
+            }
         }
     }
 
@@ -2561,13 +3568,8 @@ impl Expander {
     /// a bare operand may start code too (Windows PowerShell's default).
     /// PowerShell syntax is only approximated by the POSIX parser, which is
     /// enough to find the command words a deny rule names.
-    fn record_powershell(
-        &mut self,
-        tokens: &[String],
-        head: usize,
-        dynamic: &[bool],
-        depth: usize,
-    ) {
+    fn record_powershell(&mut self, line: &Line, head: usize, dynamic: &[bool], depth: usize) {
+        let tokens = &line.words;
         let rest = |at: usize| {
             (
                 tokens[at..].join(" "),
@@ -2584,8 +3586,12 @@ impl Expander {
                 }
                 continue;
             };
+            if dynamic[at] {
+                self.dynamic = true;
+            }
             let option = option.to_ascii_lowercase();
             if option.is_empty() {
+                self.dynamic |= tokens[at] == "-";
                 continue;
             }
             if "command".starts_with(option.as_str()) {
@@ -2603,9 +3609,44 @@ impl Expander {
                 return;
             }
             if "file".starts_with(option.as_str()) {
-                // A script file is opaque, as it is for every other shell.
+                match tokens.get(at + 1).map(String::as_str) {
+                    Some(operand)
+                        if is_runtime_script_file(
+                            operand,
+                            dynamic.get(at + 1).copied().unwrap_or(false),
+                        ) =>
+                    {
+                        self.dynamic = true;
+                    }
+                    None if line.stdin_piped || line.heredoc => self.dynamic = true,
+                    _ => {}
+                }
                 return;
             }
+        }
+    }
+
+    fn record_screen_x(&mut self, joined: &str, dynamic: bool, depth: usize) {
+        if depth > MAX_DEPTH {
+            self.dynamic = true;
+            return;
+        }
+        let Some(words) = shlex::split(joined) else {
+            self.dynamic = true;
+            return;
+        };
+        let rest = |at: usize| words[at..].join(" ");
+        match words.first().map(String::as_str) {
+            Some("at") if words.len() > 2 => self.record_screen_x(&rest(2), dynamic, depth + 1),
+            Some("stuff") | Some("exec") | Some("shell") | Some("screen") if words.len() > 1 => {
+                self.code_payload(&rest(1), dynamic, depth);
+            }
+            Some("eval") | Some("command") if words.len() > 1 => {
+                self.record_screen_x(&rest(1), dynamic, depth + 1);
+            }
+            Some("source") | Some("process") => {}
+            Some(_) => self.code_payload(joined, dynamic, depth),
+            None => {}
         }
     }
 
@@ -2614,10 +3655,35 @@ impl Expander {
         let tokens = &line.words;
         let mut index = head + 1;
         while index < tokens.len() {
+            if line.dynamic[index] {
+                if index + 1 < tokens.len() {
+                    self.record(&slice_line(line, index + 1), depth + 1);
+                }
+                if tokens[index].is_empty() || tokens[index].starts_with('-') {
+                    self.dynamic = true;
+                }
+            }
             if matches!(
                 tokens[index].as_str(),
-                "-exec" | "-execdir" | "-ok" | "-okdir"
+                "-exec" | "-execdir" | "-ok" | "-okdir" | "-delete"
             ) {
+                // `-delete` is a standalone destructive action (equivalent to `-exec rm {} +`)
+                // with no command payload. Treat it as a nested destructive action by creating
+                // a synthetic `rm` payload.
+                if tokens[index] == "-delete" {
+                    self.nested = true;
+                    let payload = Line {
+                        words: vec!["rm".to_string()],
+                        dynamic: vec![false],
+                        odd: vec![false],
+                        quoted: vec![WordQuote::Unquoted],
+                        heredoc: false,
+                        stdin_piped: line.stdin_piped || line.heredoc,
+                    };
+                    self.record(&payload, depth + 1);
+                    index += 1;
+                    continue;
+                }
                 let start = index + 1;
                 let mut end = start;
                 while end < tokens.len() && !matches!(tokens[end].as_str(), ";" | "+") {
@@ -2678,14 +3744,14 @@ impl Expander {
                                 push_script(&mut scripts, &mut self.dynamic, v, d);
                             }
                         }
-                        "file" | "exec" => {
+                        "file" | "exec" | "include" | "load" => {
                             has_script_option = true;
                             options_done |= opt == "exec";
                             if let Some((v, d)) = take_opt_val(inline, tokens, dynamic, &mut i) {
                                 self.dynamic |= is_runtime_script_file(v, d);
                             }
                         }
-                        "field-separator" | "assign" | "include" | "load"
+                        "field-separator" | "assign"
                             if inline.is_none() && i + 1 < tokens.len() =>
                         {
                             i += 1;
@@ -2706,7 +3772,7 @@ impl Expander {
                                 }
                                 break;
                             }
-                            'f' | 'E' => {
+                            'f' | 'E' | 'i' | 'l' => {
                                 has_script_option = true;
                                 options_done |= ch == 'E';
                                 if let Some((v, d)) = take_opt_val(inline, tokens, dynamic, &mut i)
@@ -2721,8 +3787,11 @@ impl Expander {
                                     if let Some(src) = v.strip_prefix("source=") {
                                         has_script_option = true;
                                         push_script(&mut scripts, &mut self.dynamic, src, d);
-                                    } else if let Some(file) =
-                                        v.strip_prefix("file=").or_else(|| v.strip_prefix("exec="))
+                                    } else if let Some(file) = v
+                                        .strip_prefix("file=")
+                                        .or_else(|| v.strip_prefix("exec="))
+                                        .or_else(|| v.strip_prefix("include="))
+                                        .or_else(|| v.strip_prefix("load="))
                                     {
                                         has_script_option = true;
                                         options_done |= v.starts_with("exec=");
@@ -2731,7 +3800,7 @@ impl Expander {
                                 }
                                 break;
                             }
-                            'F' | 'v' | 'i' | 'l' => {
+                            'F' | 'v' => {
                                 if inline.is_none() && i + 1 < tokens.len() {
                                     i += 1;
                                 }
@@ -3700,6 +4769,7 @@ fn parse_sed_replacement(chars: &[char], start: usize, delim: char) -> (String, 
 
 struct VerbLauncher {
     program: &'static str,
+    groups: &'static [&'static str],
     verbs: &'static [&'static str],
     global: &'static Wrapper,
     subcmd: &'static Wrapper,
@@ -4104,7 +5174,7 @@ const DOCKER_EXEC_SPEC: Wrapper = Wrapper {
 const TMUX_GLOBAL_SPEC: Wrapper = Wrapper {
     name: "tmux",
     short_values: "cfLST",
-    short_switches: "28CDlNuvV",
+    short_switches: "28CDhlNuvV",
     long_values: &[],
     long_switches: &[],
     operands: 0,
@@ -4114,6 +5184,78 @@ const TMUX_SUB_SPEC: Wrapper = Wrapper {
     name: "tmux-sub",
     short_values: "ceFntxypP",
     short_switches: "AdDEPXhbkvI",
+    long_values: &[],
+    long_switches: &[],
+    operands: 0,
+};
+
+const TMUX_DISPLAY_POPUP_SPEC: Wrapper = Wrapper {
+    name: "tmux-display-popup",
+    short_values: "bcdehsStTwxy",
+    short_switches: "BCEkKN",
+    long_values: &[],
+    long_switches: &[],
+    operands: 0,
+};
+
+const TMUX_CONFIRM_BEFORE_SPEC: Wrapper = Wrapper {
+    name: "tmux-confirm-before",
+    short_values: "cpt",
+    short_switches: "by",
+    long_values: &[],
+    long_switches: &[],
+    operands: 0,
+};
+
+const TMUX_COMMAND_PROMPT_SPEC: Wrapper = Wrapper {
+    name: "tmux-command-prompt",
+    short_values: "IptT",
+    short_switches: "1bFiklN",
+    long_values: &[],
+    long_switches: &[],
+    operands: 0,
+};
+
+const TMUX_BIND_KEY_SPEC: Wrapper = Wrapper {
+    name: "tmux-bind-key",
+    short_values: "NT",
+    short_switches: "nr",
+    long_values: &[],
+    long_switches: &[],
+    operands: 1,
+};
+
+const TMUX_RUN_SHELL_SPEC: Wrapper = Wrapper {
+    name: "tmux-run-shell",
+    short_values: "cdt",
+    short_switches: "bCE",
+    long_values: &[],
+    long_switches: &[],
+    operands: 0,
+};
+
+const TMUX_IF_SHELL_SPEC: Wrapper = Wrapper {
+    name: "tmux-if-shell",
+    short_values: "t",
+    short_switches: "bF",
+    long_values: &[],
+    long_switches: &[],
+    operands: 0,
+};
+
+const TMUX_PIPE_PANE_SPEC: Wrapper = Wrapper {
+    name: "tmux-pipe-pane",
+    short_values: "t",
+    short_switches: "IOo",
+    long_values: &[],
+    long_switches: &[],
+    operands: 0,
+};
+
+const TMUX_SEND_KEYS_SPEC: Wrapper = Wrapper {
+    name: "tmux-send-keys",
+    short_values: "cNt",
+    short_switches: "FHKlMRX",
     long_values: &[],
     long_switches: &[],
     operands: 0,
@@ -4137,9 +5279,360 @@ const SCREEN_SPEC: Wrapper = Wrapper {
     operands: 0,
 };
 
+const OC_GLOBAL_SPEC: Wrapper = Wrapper {
+    name: "oc",
+    short_values: "nsv",
+    short_switches: "h",
+    long_values: &[
+        "as",
+        "as-group",
+        "as-uid",
+        "cache-dir",
+        "certificate-authority",
+        "client-certificate",
+        "client-key",
+        "cluster",
+        "config",
+        "context",
+        "kubeconfig",
+        "log-flush-frequency",
+        "loglevel",
+        "namespace",
+        "password",
+        "profile",
+        "profile-output",
+        "request-timeout",
+        "server",
+        "tls-server-name",
+        "token",
+        "user",
+        "username",
+        "v",
+        "vmodule",
+    ],
+    long_switches: &[
+        "disable-compression",
+        "help",
+        "insecure-skip-tls-verify",
+        "match-server-version",
+        "warnings-as-errors",
+    ],
+    operands: 0,
+};
+
+const OC_EXEC_SPEC: Wrapper = Wrapper {
+    name: "oc-exec",
+    short_values: "cfnosv",
+    short_switches: "itTqh",
+    long_values: &[
+        "as",
+        "as-group",
+        "as-uid",
+        "as-user",
+        "cache-dir",
+        "certificate-authority",
+        "client-certificate",
+        "client-key",
+        "cluster",
+        "config",
+        "container",
+        "context",
+        "env",
+        "filename",
+        "image",
+        "image-stream",
+        "kubeconfig",
+        "log-flush-frequency",
+        "loglevel",
+        "namespace",
+        "node-name",
+        "output",
+        "overrides",
+        "password",
+        "pod-running-timeout",
+        "profile",
+        "profile-output",
+        "request-timeout",
+        "server",
+        "shell",
+        "tls-server-name",
+        "to-namespace",
+        "token",
+        "user",
+        "username",
+        "v",
+        "vmodule",
+    ],
+    long_switches: &[
+        "as-root",
+        "command",
+        "disable-compression",
+        "help",
+        "insecure-skip-tls-verify",
+        "keep-annotations",
+        "keep-init-containers",
+        "keep-labels",
+        "keep-liveness",
+        "keep-readiness",
+        "match-server-version",
+        "no-tty",
+        "one-container",
+        "preserve-pod",
+        "quiet",
+        "rm",
+        "stdin",
+        "tty",
+        "warnings-as-errors",
+    ],
+    operands: 1,
+};
+
+const VAGRANT_GLOBAL_SPEC: Wrapper = Wrapper {
+    name: "vagrant",
+    short_values: "",
+    short_switches: "vh",
+    long_values: &[],
+    long_switches: &[
+        "version",
+        "help",
+        "color",
+        "no-color",
+        "machine-readable",
+        "debug",
+        "timestamp",
+        "debug-timestamp",
+        "no-tty",
+    ],
+    operands: 0,
+};
+
+const OP_GLOBAL_SPEC: Wrapper = Wrapper {
+    name: "op",
+    short_values: "f",
+    short_switches: "hv",
+    long_values: &["account", "config", "encoding", "format", "session"],
+    long_switches: &[
+        "cache",
+        "debug",
+        "help",
+        "iso-timestamps",
+        "no-color",
+        "omit-empty",
+        "raw",
+        "version",
+    ],
+    operands: 0,
+};
+
+const OP_RUN_SPEC: Wrapper = Wrapper {
+    name: "op-run",
+    short_values: "f",
+    short_switches: "hv",
+    long_values: &[
+        "env-file", "account", "config", "encoding", "format", "session",
+    ],
+    long_switches: &[
+        "no-masking",
+        "cache",
+        "debug",
+        "help",
+        "iso-timestamps",
+        "no-color",
+        "omit-empty",
+        "raw",
+        "version",
+    ],
+    operands: 0,
+};
+
+const OPAM_SPEC: Wrapper = Wrapper {
+    name: "opam",
+    short_values: "j",
+    short_switches: "hqvyw",
+    long_values: &[
+        "cli",
+        "color",
+        "confirm-level",
+        "debug-level",
+        "git-version",
+        "jobs",
+        "root",
+        "switch",
+    ],
+    long_switches: &[
+        "best-effort",
+        "check-path",
+        "debug",
+        "help",
+        "inplace-path",
+        "no",
+        "no-switch",
+        "quiet",
+        "revert-env",
+        "safe",
+        "set-root",
+        "set-switch",
+        "strict",
+        "update-env",
+        "verbose",
+        "version",
+        "working-dir",
+        "yes",
+    ],
+    operands: 0,
+};
+
+const HELM_GLOBAL_SPEC: Wrapper = Wrapper {
+    name: "helm",
+    short_values: "n",
+    short_switches: "h",
+    long_values: &[
+        "burst-limit",
+        "kube-apiserver",
+        "kube-as-group",
+        "kube-as-user",
+        "kube-ca-file",
+        "kube-context",
+        "kube-token",
+        "kubeconfig",
+        "namespace",
+        "qps",
+        "registry-config",
+        "repository-cache",
+        "repository-config",
+    ],
+    long_switches: &["debug", "help", "kube-insecure-skip-tls-verify"],
+    operands: 0,
+};
+
+const KUBECTL_GLOBAL_SPEC: Wrapper = Wrapper {
+    name: "kubectl",
+    short_values: "nsv",
+    short_switches: "h",
+    long_values: &[
+        "as",
+        "as-group",
+        "as-uid",
+        "certificate-authority",
+        "client-certificate",
+        "client-key",
+        "cluster",
+        "context",
+        "kubeconfig",
+        "namespace",
+        "password",
+        "profile",
+        "profile-output",
+        "request-timeout",
+        "server",
+        "token",
+        "username",
+        "vmodule",
+    ],
+    long_switches: &[
+        "help",
+        "insecure-skip-tls-verify",
+        "show-managed-fields",
+        "version",
+    ],
+    operands: 0,
+};
+
+const KUBECTL_EXEC_SPEC: Wrapper = Wrapper {
+    name: "kubectl-exec",
+    short_values: "cfF",
+    short_switches: "itqQ",
+    long_values: &[
+        "container",
+        "filename",
+        "pod-running-timeout",
+        "context",
+        "kubeconfig",
+        "namespace",
+        "server",
+        "as",
+        "token",
+        "request-timeout",
+    ],
+    long_switches: &["stdin", "tty", "quiet"],
+    operands: 1,
+};
+
+const KUBECTL_RUN_SPEC: Wrapper = Wrapper {
+    name: "kubectl-run",
+    short_values: "cfF",
+    short_switches: "itqQ",
+    long_values: &[
+        "container",
+        "filename",
+        "pod-running-timeout",
+        "context",
+        "kubeconfig",
+        "namespace",
+        "server",
+        "as",
+        "token",
+        "request-timeout",
+        "image",
+        "image-pull-policy",
+        "restart",
+        "env",
+        "port",
+        "labels",
+        "overrides",
+        "serviceaccount",
+        "annotations",
+        "target",
+        "profile",
+        "set-image",
+        "copy-to",
+        "grace-period",
+        "dry-run",
+        "output",
+        "sort-by",
+        "template",
+        "type",
+        "vmodule",
+        "field-manager",
+        "field-validation",
+        "cluster",
+        "password",
+        "username",
+        "tls-server-name",
+        "validate",
+        "wait",
+        "generator",
+        "kustomize",
+        "subresource",
+    ],
+    long_switches: &[
+        "stdin",
+        "tty",
+        "quiet",
+        "command",
+        "attach",
+        "cascade",
+        "force",
+        "leave-stdin-open",
+        "privileged",
+        "rm",
+        "expose",
+        "interactive",
+        "now",
+        "save-config",
+        "ignore-not-found",
+        "recursive",
+        "insecure-skip-tls-verify",
+        "disable-compression",
+        "windows-line-endings",
+    ],
+    operands: 1,
+};
+
 static VERB_LAUNCHERS: &[VerbLauncher] = &[
     VerbLauncher {
         program: "uv",
+        groups: &[],
         verbs: &["run"],
         global: &UV_GLOBAL_SPEC,
         subcmd: &UV_RUN_SPEC,
@@ -4147,6 +5640,7 @@ static VERB_LAUNCHERS: &[VerbLauncher] = &[
     },
     VerbLauncher {
         program: "poetry",
+        groups: &[],
         verbs: &["run"],
         global: &POETRY_SPEC,
         subcmd: &POETRY_SPEC,
@@ -4154,6 +5648,7 @@ static VERB_LAUNCHERS: &[VerbLauncher] = &[
     },
     VerbLauncher {
         program: "pipx",
+        groups: &[],
         verbs: &["run"],
         global: &PIPX_RUN_SPEC,
         subcmd: &PIPX_RUN_SPEC,
@@ -4161,6 +5656,7 @@ static VERB_LAUNCHERS: &[VerbLauncher] = &[
     },
     VerbLauncher {
         program: "bundle",
+        groups: &[],
         verbs: &["exec"],
         global: &BUNDLE_GLOBAL_SPEC,
         subcmd: &BUNDLE_EXEC_SPEC,
@@ -4168,6 +5664,7 @@ static VERB_LAUNCHERS: &[VerbLauncher] = &[
     },
     VerbLauncher {
         program: "bundler",
+        groups: &[],
         verbs: &["exec"],
         global: &BUNDLE_GLOBAL_SPEC,
         subcmd: &BUNDLE_EXEC_SPEC,
@@ -4175,6 +5672,7 @@ static VERB_LAUNCHERS: &[VerbLauncher] = &[
     },
     VerbLauncher {
         program: "perf",
+        groups: &[],
         verbs: &["stat", "record", "trace", "ftrace"],
         global: &PERF_GLOBAL_SPEC,
         subcmd: &PERF_SUB_SPEC,
@@ -4182,13 +5680,15 @@ static VERB_LAUNCHERS: &[VerbLauncher] = &[
     },
     VerbLauncher {
         program: "docker",
-        verbs: &["run"],
+        groups: &["container", "compose"],
+        verbs: &["run", "create"],
         global: &DOCKER_GLOBAL_SPEC,
         subcmd: &DOCKER_RUN_SPEC,
         shell_string: false,
     },
     VerbLauncher {
         program: "docker",
+        groups: &["container", "compose"],
         verbs: &["exec"],
         global: &DOCKER_GLOBAL_SPEC,
         subcmd: &DOCKER_EXEC_SPEC,
@@ -4196,54 +5696,355 @@ static VERB_LAUNCHERS: &[VerbLauncher] = &[
     },
     VerbLauncher {
         program: "podman",
-        verbs: &["run"],
+        groups: &["container"],
+        verbs: &["run", "create"],
         global: &DOCKER_GLOBAL_SPEC,
         subcmd: &DOCKER_RUN_SPEC,
         shell_string: false,
     },
     VerbLauncher {
         program: "podman",
+        groups: &["container"],
         verbs: &["exec"],
         global: &DOCKER_GLOBAL_SPEC,
         subcmd: &DOCKER_EXEC_SPEC,
         shell_string: false,
     },
     VerbLauncher {
+        program: "kubectl",
+        groups: &[],
+        verbs: &["exec"],
+        global: &KUBECTL_GLOBAL_SPEC,
+        subcmd: &KUBECTL_EXEC_SPEC,
+        shell_string: false,
+    },
+    VerbLauncher {
+        program: "kubectl",
+        groups: &[],
+        verbs: &["run", "debug"],
+        global: &KUBECTL_GLOBAL_SPEC,
+        subcmd: &KUBECTL_RUN_SPEC,
+        shell_string: false,
+    },
+    VerbLauncher {
         program: "launchctl",
+        groups: &[],
         verbs: &["asuser", "bsexec"],
         global: &EMPTY_WRAPPER_SPEC,
         subcmd: &ONE_OPERAND_SPEC,
         shell_string: false,
     },
     VerbLauncher {
-        program: "tmux",
-        verbs: &[
-            "new-session",
-            "new",
-            "new-window",
-            "neww",
-            "split-window",
-            "splitw",
-            "respawn-pane",
-            "respawnp",
-            "respawn-window",
-            "respawnw",
-        ],
-        global: &TMUX_GLOBAL_SPEC,
-        subcmd: &TMUX_SUB_SPEC,
-        shell_string: true,
+        program: "oc",
+        groups: &[],
+        verbs: &["rsh", "exec", "debug", "run"],
+        global: &OC_GLOBAL_SPEC,
+        subcmd: &OC_EXEC_SPEC,
+        shell_string: false,
+    },
+    VerbLauncher {
+        program: "op",
+        groups: &[],
+        verbs: &["run"],
+        global: &OP_GLOBAL_SPEC,
+        subcmd: &OP_RUN_SPEC,
+        shell_string: false,
+    },
+    VerbLauncher {
+        program: "opam",
+        groups: &[],
+        verbs: &["exec"],
+        global: &OPAM_SPEC,
+        subcmd: &OPAM_SPEC,
+        shell_string: false,
     },
 ];
 
+const INERT_DASH_DASH_HEADS: &[&str] = &[
+    "[",
+    "basename",
+    "base64",
+    "cat",
+    "chgrp",
+    "chmod",
+    "chown",
+    "comm",
+    "cp",
+    "cut",
+    "date",
+    "dd",
+    "df",
+    "diff",
+    "dirname",
+    "du",
+    "echo",
+    "egrep",
+    "fgrep",
+    "file",
+    "grep",
+    "groups",
+    "gunzip",
+    "gzip",
+    "head",
+    "hexdump",
+    "hostname",
+    "id",
+    "less",
+    "ln",
+    "ls",
+    "md5sum",
+    "mkdir",
+    "more",
+    "mv",
+    "od",
+    "printenv",
+    "printf",
+    "pwd",
+    "readlink",
+    "realpath",
+    "rgrep",
+    "rmdir",
+    "seq",
+    "sha1sum",
+    "sha224sum",
+    "sha256sum",
+    "sha384sum",
+    "sha512sum",
+    "sort",
+    "stat",
+    "strings",
+    "tail",
+    "tar",
+    "tee",
+    "test",
+    "touch",
+    "tr",
+    "uname",
+    "uniq",
+    "wc",
+    "whoami",
+    "xxd",
+    "yes",
+];
+
 fn slice_line(line: &Line, start: usize) -> Line {
+    slice_line_range(line, start, line.words.len())
+}
+
+fn slice_line_range(line: &Line, start: usize, end: usize) -> Line {
     Line {
-        words: line.words[start..].to_vec(),
-        dynamic: line.dynamic[start..].to_vec(),
-        odd: line.odd[start..].to_vec(),
-        quoted: line.quoted[start..].to_vec(),
+        words: line.words[start..end].to_vec(),
+        dynamic: line.dynamic[start..end].to_vec(),
+        odd: line.odd[start..end].to_vec(),
+        quoted: line.quoted[start..end].to_vec(),
         heredoc: false,
         stdin_piped: line.stdin_piped || line.heredoc,
     }
+}
+
+fn charge_tmux_work(work_left: &mut usize, amount: usize) -> bool {
+    if amount >= *work_left {
+        *work_left = 0;
+        return false;
+    }
+    *work_left -= amount;
+    true
+}
+
+fn substitute_tmux_prompt_template(
+    template: &str,
+    inputs: &[&str],
+    work_left: &mut usize,
+) -> Option<String> {
+    if !charge_tmux_work(work_left, template.len().saturating_add(1)) {
+        return None;
+    }
+    let mut out = template.to_string();
+    if let Some(first) = inputs.first()
+        && let Some(pos) = out.find("%%")
+    {
+        let len = if out[pos + 2..].starts_with('%') {
+            3
+        } else {
+            2
+        };
+        if !charge_tmux_work(
+            work_left,
+            input_replacement_len(out.len(), 1, len, first.len())?,
+        ) {
+            return None;
+        }
+        out.replace_range(pos..pos + len, first);
+    }
+    for (idx, input) in inputs.iter().take(TMUX_PROMPT_INPUTS).enumerate() {
+        if !charge_tmux_work(work_left, out.len().saturating_add(1)) {
+            return None;
+        }
+        let placeholder = format!("%{}", idx + 1);
+        let count = out.matches(&placeholder).count();
+        if count > 0 {
+            let len = input_replacement_len(out.len(), count, placeholder.len(), input.len())?;
+            if !charge_tmux_work(work_left, len) {
+                return None;
+            }
+            out = out.replace(&placeholder, input);
+        }
+    }
+    Some(out)
+}
+
+fn input_replacement_len(
+    source_bytes: usize,
+    count: usize,
+    placeholder_bytes: usize,
+    replacement_bytes: usize,
+) -> Option<usize> {
+    source_bytes
+        .checked_sub(count.checked_mul(placeholder_bytes)?)?
+        .checked_add(count.checked_mul(replacement_bytes)?)
+}
+
+fn tmux_source_file_parse_only(
+    tokens: &[String],
+    start: usize,
+    end: usize,
+    dynamic: &[bool],
+) -> bool {
+    let mut parse_only = false;
+    let mut at = start;
+    while at < end {
+        if dynamic[at] {
+            return false;
+        }
+        let token = tokens[at].as_str();
+        if token == "--" {
+            return parse_only && !dynamic[at + 1..end].iter().any(|&d| d);
+        }
+        if !token.starts_with('-') || token.len() == 1 {
+            return parse_only && !dynamic[at..end].iter().any(|&d| d);
+        }
+        if token.starts_with("--") {
+            return false;
+        }
+        let flags = &token[1..];
+        let mut consumes_next = false;
+        for (offset, flag) in flags.char_indices() {
+            match flag {
+                'n' => parse_only = true,
+                'F' => return false,
+                'q' | 'v' => {}
+                't' => {
+                    if offset + flag.len_utf8() == flags.len() {
+                        if at + 1 >= end || dynamic[at + 1] {
+                            return false;
+                        }
+                        consumes_next = true;
+                    }
+                    break;
+                }
+                _ => return false,
+            }
+        }
+        at += if consumes_next { 2 } else { 1 };
+    }
+    parse_only
+}
+
+fn tokenize_tmux_commands(input: &str) -> (Vec<Line>, bool) {
+    let chars: Vec<char> = input.chars().collect();
+    let n = chars.len();
+    let mut i = 0usize;
+    let mut commands: Vec<Line> = Vec::new();
+    let mut line = Line::default();
+    let mut word = WordBuf::default();
+    let mut uncertain = false;
+    let mut groups: Vec<Group> = Vec::new();
+    let mut last_closed_group: Option<usize> = None;
+
+    while i < n {
+        let c = chars[i];
+        match c {
+            '#' if !word.started && word.text.is_empty() => {
+                while i < n && chars[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '\\' => {
+                if i + 1 < n {
+                    if chars[i + 1] != '\n' {
+                        word.text.push(chars[i + 1]);
+                        word.started = true;
+                        word.quoted = WordQuote::Quoted;
+                    }
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            '\'' => {
+                word.started = true;
+                word.quoted = WordQuote::Quoted;
+                i += 1;
+                while i < n && chars[i] != '\'' {
+                    word.text.push(chars[i]);
+                    i += 1;
+                }
+                uncertain |= i >= n;
+                i = (i + 1).min(n);
+            }
+            '"' => {
+                word.started = true;
+                word.quoted = WordQuote::Quoted;
+                i += 1;
+                while i < n && chars[i] != '"' {
+                    if chars[i] == '\\' && i + 1 < n {
+                        word.text.push(chars[i + 1]);
+                        i += 2;
+                    } else {
+                        word.text.push(chars[i]);
+                        i += 1;
+                    }
+                }
+                uncertain |= i >= n;
+                i = (i + 1).min(n);
+            }
+            ' ' | '\t' => {
+                word.flush(
+                    &mut line,
+                    &mut groups,
+                    &mut last_closed_group,
+                    commands.len(),
+                );
+                i += 1;
+            }
+            ';' | '\n' | '\r' => {
+                word.flush(
+                    &mut line,
+                    &mut groups,
+                    &mut last_closed_group,
+                    commands.len(),
+                );
+                push_command(&mut commands, &mut line);
+                i += 1;
+            }
+            _ => {
+                if !is_plain_word_char(c, !word.started && word.text.is_empty()) {
+                    word.odd = true;
+                }
+                word.text.push(c);
+                word.started = true;
+                i += 1;
+            }
+        }
+    }
+    word.flush(
+        &mut line,
+        &mut groups,
+        &mut last_closed_group,
+        commands.len(),
+    );
+    push_command(&mut commands, &mut line);
+    (commands, uncertain)
 }
 
 fn build_prefixed_line(prefix: &str, prefix_idx: usize, line: &Line, rest_start: usize) -> Line {
@@ -4254,7 +6055,10 @@ fn build_prefixed_line(prefix: &str, prefix_idx: usize, line: &Line, rest_start:
     let mut words = vec![prefix.to_string()];
     let mut dynamic = vec![line.dynamic[prefix_idx]];
     let mut odd = vec![prefix_odd];
-    let mut quoted = vec![line.quoted[prefix_idx]];
+    let mut quoted = vec![match line.quoted[prefix_idx] {
+        WordQuote::InlineScalar => WordQuote::Quoted,
+        quote => quote,
+    }];
     if rest_start < line.words.len() {
         words.extend_from_slice(&line.words[rest_start..]);
         dynamic.extend_from_slice(&line.dynamic[rest_start..]);
@@ -4271,12 +6075,33 @@ fn build_prefixed_line(prefix: &str, prefix_idx: usize, line: &Line, rest_start:
     }
 }
 
-fn find_entrypoints(tokens: &[String], base: usize) -> Vec<(String, usize)> {
+fn docker_run_takes_value(token: &str) -> bool {
+    if let Some(long) = token.strip_prefix("--") {
+        match long.split_once('=') {
+            Some(_) => false,
+            None => DOCKER_RUN_SPEC.long_values.contains(&long),
+        }
+    } else {
+        token.len() > 1
+            && token.starts_with('-')
+            && token
+                .chars()
+                .next_back()
+                .is_some_and(|flag| DOCKER_RUN_SPEC.short_values.contains(flag))
+    }
+}
+
+fn find_entrypoints(
+    tokens: &[String],
+    dynamic: &[bool],
+    quoted: &[WordQuote],
+    base: usize,
+) -> Vec<(String, usize)> {
     let mut found = Vec::new();
     let mut i = 0usize;
     while i < tokens.len() {
         let token = tokens[i].as_str();
-        if token == "--" {
+        if token == "--" && !dynamic[base + i] {
             break;
         }
         if token == "--entrypoint"
@@ -4286,24 +6111,90 @@ fn find_entrypoints(tokens: &[String], base: usize) -> Vec<(String, usize)> {
         }
         if let Some(val) = token.strip_prefix("--entrypoint=") {
             found.push((val.to_string(), base + i));
+        } else if dynamic[base + i]
+            && token != "--entrypoint"
+            && !is_known_quoted_inline_value(token, quoted[base + i], &DOCKER_RUN_SPEC, false)
+        {
+            found.push((String::new(), base + i));
+        }
+        if !dynamic[base + i] && docker_run_takes_value(token) {
+            i += 1;
         }
         i += 1;
     }
     found
 }
 
-fn ssh_reads_stdin(tokens: &[String], head: usize) -> bool {
-    if ssh_skips_remote_command(&tokens[head + 1..]) {
+fn ssh_option_payloads(args: &[String], dynamic: &[bool]) -> Vec<(String, bool)> {
+    let mut payloads = Vec::new();
+    let mut local = Vec::new();
+    let mut permit_local = false;
+    let mut i = 0usize;
+    while i < args.len() {
+        let token = args[i].as_str();
+        let option = if token == "-o" {
+            i += 1;
+            args.get(i)
+                .map(|value| (value.as_str(), dynamic.get(i).copied().unwrap_or(false)))
+        } else {
+            token
+                .strip_prefix("-o")
+                .filter(|rest| !rest.is_empty())
+                .map(|rest| (rest, dynamic[i]))
+        };
+        if let Some((option, option_dynamic)) = option {
+            let option = option.trim_start_matches([' ', '\t']);
+            let (name, value) = match option.find(['=', ' ', '\t']) {
+                Some(at) => {
+                    let name = &option[..at];
+                    let mut value = option[at..].trim_start_matches([' ', '\t']);
+                    if let Some(rest) = value.strip_prefix('=') {
+                        value = rest.trim_start_matches([' ', '\t']);
+                    }
+                    (name, value)
+                }
+                None => (option, ""),
+            };
+            match name.to_ascii_lowercase().as_str() {
+                "proxycommand" => payloads.push((value.to_string(), option_dynamic)),
+                "localcommand" => local.push((value.to_string(), option_dynamic)),
+                "permitlocalcommand" => {
+                    permit_local |= option_dynamic
+                        || value
+                            .split([' ', '\t'])
+                            .next()
+                            .is_some_and(|yes| yes.eq_ignore_ascii_case("yes"));
+                }
+                _ if option_dynamic => {
+                    payloads.push((String::new(), true));
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    if permit_local {
+        payloads.extend(local);
+    }
+    payloads
+}
+
+fn ssh_reads_stdin(tokens: &[String], dynamic: &[bool], quoted: &[WordQuote], head: usize) -> bool {
+    if ssh_skips_remote_command(&tokens[head + 1..], &dynamic[head + 1..]) {
         return false;
     }
     let mut truncated = false;
-    let landings = resolve_wrapper_targets(tokens, head + 1, &SSH_SPEC, &mut truncated);
+    let landings =
+        resolve_wrapper_targets(tokens, dynamic, quoted, head + 1, &SSH_SPEC, &mut truncated);
     truncated || landings.is_empty() || landings.contains(&tokens.len())
 }
 
-fn ssh_skips_remote_command(args: &[String]) -> bool {
+fn ssh_skips_remote_command(args: &[String], dynamic: &[bool]) -> bool {
     let mut i = 0usize;
     while i < args.len() {
+        if dynamic[i] {
+            return false;
+        }
         let token = args[i].as_str();
         if token == "--" || !token.starts_with('-') || token.len() == 1 {
             return false;
@@ -4324,12 +6215,15 @@ fn ssh_skips_remote_command(args: &[String]) -> bool {
     false
 }
 
-fn screen_attaches_only(args: &[String]) -> bool {
+fn screen_attaches_only(args: &[String], dynamic: &[bool]) -> bool {
     let mut has_m = false;
     let mut attach = false;
     let mut i = 0usize;
     while i < args.len() {
         let token = args[i].as_str();
+        if dynamic[i] && (token.is_empty() || token.starts_with('-')) {
+            return false;
+        }
         if token == "--" || !token.starts_with('-') || token.len() == 1 {
             break;
         }
@@ -4352,7 +6246,7 @@ fn screen_attaches_only(args: &[String]) -> bool {
         for (at, flag) in flags.char_indices() {
             if flag == 'm' {
                 has_m = true;
-            } else if matches!(flag, 'r' | 'R' | 'X' | 'Q') {
+            } else if matches!(flag, 'r' | 'R') {
                 attach = true;
             }
             if SCREEN_SPEC.short_values.contains(flag) {
@@ -4372,6 +6266,7 @@ fn command_option_payloads(
     tokens: &[String],
     head: usize,
     dynamic: &[bool],
+    flag_end: usize,
 ) -> Vec<(String, bool)> {
     option_payloads(
         tokens,
@@ -4380,6 +6275,7 @@ fn command_option_payloads(
         Some('c'),
         &["command", "session-command"],
         false,
+        flag_end,
     )
 }
 
@@ -4390,23 +6286,26 @@ fn option_payloads(
     short_flag: Option<char>,
     long_names: &[&str],
     stop_at_double_dash: bool,
+    flag_end: usize,
 ) -> Vec<(String, bool)> {
     let mut payloads = Vec::new();
     for (at, token) in tokens.iter().enumerate().skip(head + 1) {
-        if stop_at_double_dash && token == "--" {
+        if stop_at_double_dash && token == "--" && !dynamic[at] {
             break;
         }
-        let next = || {
-            tokens
-                .get(at + 1)
-                .map(|value| (value.clone(), dynamic[at + 1]))
+        let next = || match tokens.get(at + 1) {
+            Some(value) => Some((value.clone(), dynamic[at] || dynamic[at + 1])),
+            None if dynamic[at] => Some((String::new(), true)),
+            None => None,
         };
+        let mut matched = false;
         if let Some(long) = token.strip_prefix("--") {
             let (name, inline) = match long.split_once('=') {
                 Some((name, value)) => (name, Some(value)),
                 None => (long, None),
             };
             if long_names.contains(&name) {
+                matched = true;
                 payloads.extend(match inline {
                     Some(value) => Some((value.to_string(), dynamic[at])),
                     None => next(),
@@ -4416,12 +6315,16 @@ fn option_payloads(
             && let Some(flags) = token.strip_prefix('-')
             && let Some(offset) = flags.find(short)
         {
+            matched = true;
             let value = &flags[offset + 1..];
             payloads.extend(if value.is_empty() {
                 next()
             } else {
                 Some((value.to_string(), dynamic[at]))
             });
+        }
+        if !matched && dynamic[at] && at < flag_end {
+            payloads.push((String::new(), true));
         }
     }
     payloads
@@ -4600,7 +6503,7 @@ fn redirection_len(chars: &[char]) -> usize {
 }
 
 fn consume_redirect_descriptor(word: &mut WordBuf) -> bool {
-    if !word.quoted && !word.dynamic && is_redirect_descriptor(&word.text) {
+    if word.quoted == WordQuote::Unquoted && !word.dynamic && is_redirect_descriptor(&word.text) {
         let is_stdin = word.text.bytes().all(|b| b == b'0');
         word.text.clear();
         word.started = false;
@@ -5110,17 +7013,18 @@ enum WrapperStep {
 
 fn step_wrapper_option(
     tokens: &[String],
+    dynamic: &[bool],
     index: usize,
     spec: &Wrapper,
     operands: u8,
     options_done: bool,
-    payloads: Option<&mut Vec<String>>,
+    payloads: Option<&mut Vec<(String, bool)>>,
 ) -> WrapperStep {
     let token = tokens[index].as_str();
-    if !options_done && token == "--" {
+    if !options_done && token == "--" && !dynamic[index] {
         return WrapperStep::Advance {
             steps: [Some(index + 1), None],
-            operands,
+            operands: if spec.name == "oc-exec" { 0 } else { operands },
             options_done: true,
         };
     }
@@ -5134,8 +7038,9 @@ fn step_wrapper_option(
             if spec.name == "ld.so" && matches!(name, "list" | "verify") {
                 return WrapperStep::Stop;
             }
-            if spec.name == "runcon"
-                && matches!(name, "compute" | "user" | "role" | "type" | "range")
+            if (spec.name == "runcon"
+                && matches!(name, "compute" | "user" | "role" | "type" | "range"))
+                || (spec.name == "oc-exec" && name == "filename")
             {
                 next_operands = 0;
             }
@@ -5144,8 +7049,14 @@ fn step_wrapper_option(
                 && name == "split-string"
             {
                 match inline {
-                    Some(value) => payloads.push(value.to_string()),
-                    None => payloads.extend(tokens.get(index + 1).cloned()),
+                    Some(value) => payloads.push((value.to_string(), dynamic[index])),
+                    None => match tokens.get(index + 1) {
+                        Some(value) => {
+                            payloads.push((value.clone(), dynamic[index] || dynamic[index + 1]));
+                        }
+                        None if dynamic[index] => payloads.push((String::new(), true)),
+                        None => {}
+                    },
                 }
             }
             let extra = long_option_extra_values(spec.name, name);
@@ -5168,7 +7079,9 @@ fn step_wrapper_option(
         if spec.name == "command" && flags.contains(['v', 'V']) {
             return WrapperStep::Stop;
         }
-        if spec.name == "runcon" && flags.contains(['c', 'u', 'r', 't', 'l']) {
+        if (spec.name == "runcon" && flags.contains(['c', 'u', 'r', 't', 'l']))
+            || (spec.name == "oc-exec" && flags.contains('f'))
+        {
             next_operands = 0;
         }
         if let Some(payloads) = payloads
@@ -5177,9 +7090,15 @@ fn step_wrapper_option(
         {
             let value = &flags[at + 1..];
             if value.is_empty() {
-                payloads.extend(tokens.get(index + 1).cloned());
+                match tokens.get(index + 1) {
+                    Some(next) => {
+                        payloads.push((next.clone(), dynamic[index] || dynamic[index + 1]));
+                    }
+                    None if dynamic[index] => payloads.push((String::new(), true)),
+                    None => {}
+                }
             } else {
-                payloads.push(value.to_string());
+                payloads.push((value.to_string(), dynamic[index]));
             }
         }
         let mut step = Some(1);
@@ -5215,18 +7134,38 @@ fn step_wrapper_option(
     WrapperStep::Landing
 }
 
+fn is_known_quoted_inline_value(
+    token: &str,
+    quoted: WordQuote,
+    spec: &Wrapper,
+    options_done: bool,
+) -> bool {
+    if options_done || quoted != WordQuote::InlineScalar {
+        return false;
+    }
+    let Some(long) = token.strip_prefix("--") else {
+        return false;
+    };
+    let Some((name, _)) = long.split_once('=') else {
+        return false;
+    };
+    name != "entrypoint" && spec.long_values.contains(&name)
+}
+
 fn launcher_verb_targets(
     tokens: &[String],
+    dynamic: &[bool],
+    quoted: &[WordQuote],
     start: usize,
     spec: &Wrapper,
     truncated: &mut bool,
 ) -> Vec<usize> {
-    let mut targets = resolve_wrapper_targets(tokens, start, spec, truncated);
+    let mut targets = resolve_wrapper_targets(tokens, dynamic, quoted, start, spec, truncated);
     let mut index = 0;
     while index < targets.len() {
         let at = targets[index];
         if tokens.get(at).is_some_and(String::is_empty) {
-            for next in resolve_wrapper_targets(tokens, at + 1, spec, truncated) {
+            for next in resolve_wrapper_targets(tokens, dynamic, quoted, at + 1, spec, truncated) {
                 if !targets.contains(&next) {
                     targets.push(next);
                 }
@@ -5240,6 +7179,8 @@ fn launcher_verb_targets(
 
 fn resolve_wrapper_targets(
     tokens: &[String],
+    dynamic: &[bool],
+    quoted: &[WordQuote],
     start: usize,
     spec: &Wrapper,
     truncated: &mut bool,
@@ -5261,7 +7202,17 @@ fn resolve_wrapper_targets(
             }
             continue;
         }
-        match step_wrapper_option(tokens, index, spec, operands, options_done, None) {
+        if dynamic[index]
+            && !is_known_quoted_inline_value(
+                tokens[index].as_str(),
+                quoted[index],
+                spec,
+                options_done,
+            )
+        {
+            *truncated = true;
+        }
+        match step_wrapper_option(tokens, dynamic, index, spec, operands, options_done, None) {
             WrapperStep::Advance {
                 steps,
                 operands,
@@ -5295,7 +7246,7 @@ struct Heads {
     /// Every index that may be a command word, ascending.
     heads: Vec<usize>,
     /// `env -S` values, which are command lines.
-    split_payloads: Vec<String>,
+    split_payloads: Vec<(String, bool)>,
     /// The walk ran out of states before every reading was explored.
     truncated: bool,
 }
@@ -5309,7 +7260,7 @@ struct Heads {
 /// take a value, a bare number after a wrapper) both readings are kept,
 /// because an extra candidate only makes deny matching stricter while a
 /// missing one is a bypass.
-fn command_heads(tokens: &[String]) -> Heads {
+fn command_heads(tokens: &[String], dynamic: &[bool]) -> Heads {
     #[derive(Clone, Copy, PartialEq, Eq, Hash)]
     enum State {
         /// At a command word position.
@@ -5364,6 +7315,7 @@ fn command_heads(tokens: &[String]) -> Heads {
                 let spec = &WRAPPERS[wrapper];
                 match step_wrapper_option(
                     tokens,
+                    dynamic,
                     index,
                     spec,
                     operands,
@@ -5375,6 +7327,9 @@ fn command_heads(tokens: &[String]) -> Heads {
                         operands,
                         options_done,
                     } => {
+                        if dynamic[index] {
+                            truncated = true;
+                        }
                         for next_idx in steps.into_iter().flatten() {
                             stack.push((
                                 next_idx,
@@ -5386,7 +7341,11 @@ fn command_heads(tokens: &[String]) -> Heads {
                             ));
                         }
                     }
-                    WrapperStep::Stop => {}
+                    WrapperStep::Stop => {
+                        if dynamic[index] {
+                            truncated = true;
+                        }
+                    }
                     WrapperStep::Landing => {
                         if is_scalar_operand(token) {
                             stack.push((
@@ -5474,6 +7433,9 @@ fn shell_input(shell: &str, tokens: &[String], dynamic: &[bool]) -> ShellInput {
     let mut index = 1usize;
     while index < tokens.len() {
         let token = tokens[index].as_str();
+        if !options_done && command.is_empty() && script.is_none() && dynamic[index] {
+            return ShellInput::Inline(String::new(), true);
+        }
         if !options_done && token == "--" {
             options_done = true;
         } else if !options_done && token == "-" {
@@ -5585,6 +7547,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn launcher_inline_option_requires_value_local_quote_evidence() {
+        let proven = expand_for_platform(r#"docker run --env="$SETTING" alpine ls"#, false);
+        assert!(!proven.dynamic);
+        assert!(proven.commands.iter().any(|command| command == "ls"));
+
+        let words = ["--env=VALUE", "alpine", "ls"].map(str::to_string);
+        let mut unresolved = false;
+        let targets = resolve_wrapper_targets(
+            &words,
+            &[true, false, false],
+            &[WordQuote::Quoted, WordQuote::Unquoted, WordQuote::Unquoted],
+            0,
+            &DOCKER_RUN_SPEC,
+            &mut unresolved,
+        );
+        assert_eq!(targets, [2]);
+        assert!(unresolved);
+    }
+
+    #[test]
+    fn tmux_prompt_template_respects_work_in_utf8_bytes() {
+        let mut work_left = 128;
+        assert_eq!(
+            substitute_tmux_prompt_template("%% / %2", &["é", "猫"], &mut work_left),
+            Some("é / 猫".to_string())
+        );
+
+        let mut work_left = 10;
+        assert_eq!(
+            substitute_tmux_prompt_template("%1", &["é猫"], &mut work_left),
+            None
+        );
+        assert_eq!(work_left, 0);
+    }
+
     fn expand(command: &str) -> Vec<String> {
         // Exercise the POSIX grammar consistently on every test host.
         expanded_commands_for_platform(command, false)
@@ -5607,6 +7605,12 @@ mod tests {
             "bundle --version",
             "perf --version",
             "tmux -V",
+            "oc --version",
+            "vagrant --version",
+            "op --version",
+            "opam --version",
+            "helm --version",
+            "helm plugin --help",
             "cd /tmp && node --version && npm --version && ls node_modules/@deepseek-ai/",
         ] {
             let expansion = expand_for_platform(command, false);
@@ -5615,6 +7619,35 @@ mod tests {
         assert!(contains("npm --silent exec --call 'rm -rf /'", "rm -rf /"));
         assert!(contains("nix --offline develop -c rm -rf /", "rm -rf /"));
         assert!(contains("docker -D run alpine rm -rf /", "rm -rf /"));
+        assert!(contains("oc rsh pod rm -rf /", "rm -rf /"));
+        assert!(contains("oc '' -n prod exec pod -- rm -rf /", "rm -rf /"));
+        assert!(contains(
+            "oc debug node/n -- chroot /host rm -rf /",
+            "rm -rf /"
+        ));
+        assert!(contains("vagrant '' ssh -c 'rm -rf /'", "rm -rf /"));
+        assert!(contains("vagrant ssh -- -t 'ls; rm -rf /'", "rm -rf /"));
+        assert!(contains("op run --env-file .env -- rm -rf /", "rm -rf /"));
+        assert!(contains(
+            "opam exec --switch default -- rm -rf /",
+            "rm -rf /"
+        ));
+        assert!(contains("helm template . --post-renderer rm", "rm"));
+        assert!(contains(
+            "helm template . --set --post-renderer --post-renderer rm",
+            "rm"
+        ));
+        assert!(contains(
+            "helm template . --post-renderer sh --post-renderer-args -c --post-renderer-args 'rm -rf /'",
+            "rm -rf /"
+        ));
+        assert!(expand_for_platform("helm template . --post-renderer \"$PR\"", false).dynamic);
+        assert!(expand_for_platform("helm plugin install ./evil", false).dynamic);
+        assert!(!expand_for_platform("helm plugin list", false).dynamic);
+        assert!(!expand_for_platform("oc get pods", false).dynamic);
+        assert!(!expand_for_platform("vagrant status", false).dynamic);
+        assert!(!expand_for_platform("op item list", false).dynamic);
+        assert!(!expand_for_platform("opam list", false).dynamic);
     }
 
     #[test]
@@ -5639,6 +7672,52 @@ mod tests {
         assert_eq!(expansion.deny_commands().count(), 257);
         let nested = "x".to_string() + &" -- a".repeat(40);
         assert!(expand_for_platform(&nested, false).dynamic);
+    }
+
+    #[test]
+    fn flag_word_substitution_marks_expansion_dynamic() {
+        for command in [
+            "nix develop -c$(echo rm) x",
+            "nix develop -c$(echo rm)",
+            "nix develop --command=$(echo rm) x",
+            "nix develop --command$(echo =rm) x",
+            "nix shell -c$(echo rm) x",
+            "nix shell --command=$(echo rm) x",
+            "su -c$(echo rm) x",
+            "npx -c$(echo rm) x",
+            "npx -c$(echo rm)",
+            "nix-shell --run$(echo =rm) x",
+            "start-stop-daemon -S -x$(echo /bin/rm) -- x",
+            "start-stop-daemon -S --exec=$(echo /bin/rm) -- x",
+            "launchctl submit -p$(echo /bin/rm) -- x",
+            "cmd /c$(echo rm) x",
+            "pwsh -c$(echo rm) x",
+            "find . -exec$(echo rm) x \\;",
+            "sh -c$(echo rm) x",
+            "nu --commands$(echo =rm) x",
+            "docker run --entrypoint=$(echo /bin/rm) alpine x",
+            "docker run --entrypoint$(echo =/bin/rm) alpine x",
+        ] {
+            assert!(
+                expand_for_platform(command, false).dynamic,
+                "{command:?} should be dynamic"
+            );
+        }
+        for command in [
+            "nix develop -c echo hi",
+            "nix develop --command echo hi",
+            "nix develop --command=echo hi",
+            "nix shell -c echo hi",
+            "su -c 'echo hi'",
+            "npx -c 'echo hi'",
+            "start-stop-daemon -S -x /bin/echo -- hi",
+            "docker run --entrypoint /bin/echo alpine hi",
+        ] {
+            assert!(
+                !expand_for_platform(command, false).dynamic,
+                "{command:?} should stay static"
+            );
+        }
     }
 
     #[test]
@@ -6128,6 +8207,58 @@ mod tests {
                 "{command}: {expansion:?}"
             );
         }
+    }
+
+    #[test]
+    fn tmux_execution_verbs_expand_payloads_and_keep_inert_verbs_clean() {
+        for command in [
+            "tmux display-popup 'rm x'",
+            "tmux popup -E -d /tmp -t s -w 80% -h 50% 'rm x'",
+            "tmux confirm-before 'rm x'",
+            "tmux confirm -b -c y -p 'ok?' -t s \"run-shell 'rm x'\"",
+            "tmux command-prompt -I 'rm x'",
+            "tmux command-prompt -I 'rm x' \"run-shell '%%'\"",
+            "tmux bind-key k run-shell 'rm x'",
+            "tmux bind -n -r -T root -N note F1 display-popup -E 'rm x'",
+            "tmux bind-key k \"run-shell 'rm x'\"",
+            "tmux '' display-popup 'rm x'",
+        ] {
+            assert!(
+                contains(command, "rm x"),
+                "{command}: {:?}",
+                expand(command)
+            );
+        }
+
+        for command in [
+            "tmux source-file f",
+            "tmux source ~/.tmux.conf",
+            "tmux source-file -n -F '#(rm x)'",
+            "tmux source-file -t -n f",
+            "tmux source-file -- -n",
+            "tmux bind-key k '$CMD'",
+        ] {
+            assert!(expand_for_platform(command, false).dynamic, "{command}");
+        }
+
+        for command in [
+            "tmux list-sessions",
+            "tmux ls",
+            "tmux display-message hi",
+            "tmux attach",
+            "tmux display-popup -C",
+            "tmux source-file -n ~/.tmux.conf",
+        ] {
+            let expansion = expand_for_platform(command, false);
+            assert!(
+                !expansion.dynamic && !expansion.nested,
+                "{command}: {expansion:?}"
+            );
+        }
+
+        let bind_ls = expand_for_platform("tmux bind-key k ls", false);
+        assert!(!bind_ls.dynamic);
+        assert!(!bind_ls.commands.iter().any(|cmd| cmd == "ls"));
     }
 
     #[test]

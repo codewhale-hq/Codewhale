@@ -18,9 +18,11 @@ pub(super) async fn handle_action(
     app: &mut App,
     config: &codewhale_runtime::config::Config,
     action: AutomationAction,
-    task_manager: &SharedTaskManager,
 ) {
     let locale = app.ui_locale;
+    // Read the slot once: a switch cannot land between these task calls and
+    // this read, because the action is dispatched from one command result.
+    let task_manager = app.task_manager();
     // Engaging the automation surface acknowledges the failures the activity
     // band is demanding attention for (spec §2.1).
     app.automation_panel.acknowledge_failures();
@@ -79,7 +81,9 @@ pub(super) async fn handle_action(
             }
             cell
         }
-        AutomationAction::Run(id) => run_now(locale, &automations, &id, task_manager).await,
+        AutomationAction::Run(id) => {
+            run_now(locale, &automations, &id, task_manager.as_ref()).await
+        }
     };
     present_receipt(app, cell);
 }
@@ -472,7 +476,7 @@ async fn run_now(
     locale: Locale,
     automations: &SharedAutomationManager,
     id: &str,
-    task_manager: &SharedTaskManager,
+    task_manager: Option<&SharedTaskManager>,
 ) -> HistoryCell {
     let name = automations
         .lock()
@@ -480,6 +484,16 @@ async fn run_now(
         .get_automation(id)
         .ok()
         .map(|record| display_text(&record.name));
+    // No manager means this host is between managers (a failed adoption, or
+    // shutdown). A run cannot start, and saying so is better than panicking.
+    let Some(task_manager) = task_manager else {
+        return system(action_failed(
+            locale,
+            MessageId::AutomationActionRun,
+            id,
+            &tr(locale, MessageId::AutomationManagerUnavailable),
+        ));
+    };
     match run_now_shared(automations, id, task_manager).await {
         Ok(run) => {
             // The run record can come back already settled: a refused

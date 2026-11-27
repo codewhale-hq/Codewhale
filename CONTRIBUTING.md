@@ -64,6 +64,10 @@ These are always open, and a pull request needs no issue first:
   correct a price, a context size or a provider quirk.
   [Providers](docs/PROVIDERS.md) lists what ships, and
   `python3 scripts/check-provider-registry.py` checks your change.
+  Bundled descriptor rows are reserved for established operators with reliable
+  APIs, public documentation, and clear community demand; any other
+  OpenAI-compatible or Anthropic-compatible endpoint works immediately via
+  `[providers.<name>]` in `config.toml` without a bundled row.
 - **Documentation.** You can fix a typo, an unclear step, a missing example or
   an instruction that no longer matches the product.
 - **Bug fixes.** If there is no issue yet, describe the bug in the pull request

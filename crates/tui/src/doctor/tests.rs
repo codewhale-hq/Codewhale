@@ -530,3 +530,88 @@ fn latest_session_route_ignores_boot_owners_and_oversized_files() {
         "{line}"
     );
 }
+
+#[test]
+fn doctor_detail_is_short_unless_a_flag_needs_the_sections() {
+    assert_eq!(
+        DoctorDetail::from_flags(false, false, false),
+        DoctorDetail::Short
+    );
+    assert_eq!(
+        DoctorDetail::from_flags(true, false, false),
+        DoctorDetail::Full
+    );
+    assert_eq!(
+        DoctorDetail::from_flags(false, false, true),
+        DoctorDetail::Full
+    );
+    assert_eq!(
+        DoctorDetail::from_flags(false, true, false),
+        DoctorDetail::All
+    );
+    assert_eq!(
+        DoctorDetail::from_flags(true, true, true),
+        DoctorDetail::All
+    );
+}
+
+#[test]
+fn short_report_splits_the_verdict_from_its_next_step() {
+    let lines = short_report_lines(
+        "Not ready: the deepseek route has no verified key → save one with /provider in Codewhale.",
+        &[
+            DoctorShortCheck::Works("Codewhale 0.10.5 is installed".to_string()),
+            DoctorShortCheck::NeedsAttention("Model deepseek / deepseek-v4-flash".to_string()),
+            DoctorShortCheck::Note("No settings file yet".to_string()),
+        ],
+    );
+    assert_eq!(
+        lines,
+        vec![
+            "Not ready: the deepseek route has no verified key.".to_string(),
+            String::new(),
+            "Works:".to_string(),
+            "  ✓ Codewhale 0.10.5 is installed".to_string(),
+            "  · No settings file yet".to_string(),
+            "Needs attention:".to_string(),
+            "  ! Model deepseek / deepseek-v4-flash".to_string(),
+            "Next step:".to_string(),
+            "  Save one with /provider in Codewhale.".to_string(),
+            String::new(),
+            SHORT_REPORT_FOOTER.to_string(),
+        ]
+    );
+}
+
+#[test]
+fn short_report_for_a_ready_setup_says_nothing_needs_attention() {
+    let lines = short_report_lines(
+        "Ready: setup is complete.",
+        &[DoctorShortCheck::Works("Model deepseek".to_string())],
+    );
+    assert_eq!(lines[0], "Ready: setup is complete.");
+    let attention = lines
+        .iter()
+        .position(|line| line == "Needs attention:")
+        .expect("attention heading");
+    assert_eq!(lines[attention + 1], "  nothing");
+    assert_eq!(lines[attention + 3], format!("  {SHORT_REPORT_READY_STEP}"));
+    assert!(
+        lines.len() <= 14,
+        "short report grew to {} lines",
+        lines.len()
+    );
+}
+
+#[test]
+fn short_report_does_not_point_at_a_section_it_does_not_print() {
+    let lines = short_report_lines(
+        "Not ready: the live deepseek API check failed → see API Connectivity below; `codewhale auth set --provider deepseek` replaces a rejected key.",
+        &[],
+    );
+    assert!(lines.iter().all(|line| !line.contains("below")));
+    assert!(lines.contains(
+        &"  `codewhale auth set --provider deepseek` replaces a rejected key.".to_string()
+    ));
+    assert!(lines.contains(&"  nothing was confirmed".to_string()));
+}

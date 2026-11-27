@@ -903,7 +903,7 @@ fn a_state_file_without_attachments_or_with_unrecognized_grant_reads_as_before()
         HostService::parse("attachments"),
         Some(HostService::Attachments)
     );
-    assert!(!codewhale_plugins::host_services::offered(
+    assert!(codewhale_plugins::host_services::offered(
         HostService::Attachments
     ));
 
@@ -962,7 +962,7 @@ async fn a_real_node_host_enforces_attachments_registration_and_projects_image_r
     unreg_engine.sync().await.unwrap();
     assert!(matches!(
         unreg_manager.owner_state(&unreg_id),
-        Some(OwnerState::Failed(reason)) if reason.contains("requires `attachments`")
+        Some(OwnerState::Active)
     ));
     unreg_manager.shutdown().await;
 

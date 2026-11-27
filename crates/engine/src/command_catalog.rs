@@ -34,6 +34,14 @@ pub struct UserCommand {
     pub builtin_bindings: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpandedUserCommand {
+    pub name: String,
+    pub message: String,
+    pub allowed_tools: Option<Vec<String>>,
+    pub plugin_id: Option<String>,
+}
+
 /// The host’s read-only command metadata and collision checks, implemented
 /// by the commands side.
 pub trait CommandCatalog: Send + Sync {
@@ -49,6 +57,18 @@ pub trait CommandCatalog: Send + Sync {
         _plugins: &codewhale_plugins::PluginRegistry,
     ) -> Vec<UserCommand> {
         self.user_commands(workspace)
+    }
+    fn expands_user_commands(&self) -> bool {
+        false
+    }
+    fn expand_user_command(
+        &self,
+        workspace: &Path,
+        plugins: &codewhale_plugins::PluginRegistry,
+        input: &str,
+    ) -> Option<Result<ExpandedUserCommand, String>> {
+        let _ = (workspace, plugins, input);
+        None
     }
     /// Whether this host executes `name` remotely at all. Checked before any
     /// thread state is assembled, so a name outside the remote surface is

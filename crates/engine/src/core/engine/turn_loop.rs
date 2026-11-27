@@ -51,6 +51,7 @@ struct TurnLoopProgress {
     empty_stop_retries: u32,
     reasoning_only_nudge: Option<String>,
     stream_retry_budget: StreamRetryBudget,
+    stream_open_timeout_retry_budget: StreamRetryBudget,
     image_omission_notified: bool,
     child_request_retries: crate::tools::subagent::engine::ChildRequestRetries,
 }
@@ -544,6 +545,21 @@ pub(super) fn workspace_write_carve_out_applies(
         return false;
     };
     crate::core::authority::paths_within_workspace_write_carve_out(workspace, &paths)
+}
+
+#[must_use]
+fn ask_posture_requires_command_card(
+    mode: AppMode,
+    approval_mode: ApprovalMode,
+    auto_approve: bool,
+    tool_name: &str,
+    approval: ApprovalRequirement,
+) -> bool {
+    approval == ApprovalRequirement::Auto
+        && !auto_approve
+        && matches!(mode, AppMode::Agent)
+        && approval_mode == ApprovalMode::Suggest
+        && super::tool_catalog::is_shell_tool_name(tool_name)
 }
 
 pub(super) fn registered_tool_forces_prompt(
@@ -1079,12 +1095,12 @@ impl Engine {
         policy: &ToolSurfacePolicy,
         catalog: &mut Vec<Tool>,
         active: &mut std::collections::HashSet<String>,
-    ) {
+    ) -> bool {
         if !self.config.features.enabled(Feature::Mcp) {
-            return;
+            return false;
         }
         let Some(pool) = self.mcp_pool.as_ref() else {
-            return;
+            return false;
         };
         let (universe, mut refreshed) = {
             let pool = pool.lock().await;
@@ -1094,13 +1110,14 @@ impl Engine {
         // A config/authority change during handshake can remove a server;
         // `replace_runtime_mcp_tools` owns every MCP name already in the
         // catalog, so its previous names leave this turn's catalog too.
-        refreshed.retain(|tool| {
-            policy.passes_allow_list(&tool.name)
-                && !policy.denies_tool(&tool.name)
-                && (self.child_host.is_none() || policy.registry.contains(&tool.name))
-        });
+        if let Some(child) = &self.child_host {
+            refreshed = child
+                .authority
+                .connected_mcp_tools_for_model(&policy.registry, refreshed);
+        }
+        refreshed.retain(|tool| policy.allows_tool(&tool.name));
         let always_load = self.effective_tools_always_load();
-        if replace_runtime_mcp_tools(
+        let changed = replace_runtime_mcp_tools(
             catalog,
             active,
             &universe,
@@ -1109,9 +1126,11 @@ impl Engine {
             &always_load,
             self.turn_tool_surface_budget
                 .unwrap_or(crate::model_profile::ToolSurfaceBudget::Standard),
-        ) {
+        );
+        if changed {
             self.session.pending_prefix_change_reason = Some("mcp-session-boot".to_string());
         }
+        changed
     }
 
     /// A gated MCP-focused search is explicit discovery of already configured
@@ -1984,13 +2003,16 @@ impl Engine {
         // status receipt with its exact text (C02-04, "model-visible means
         // logged"): the runtime event log can reconstruct the request.
         let reasoning_only_nudge: Option<String> = None;
-        // Outer stream-open retry budget: only a typed transient connection
-        // failure proven to precede dispatch can spend it. An opened stream
+        // Outer stream-open retry budgets: a typed transient connection
+        // failure proven to precede dispatch spends the first, a typed
+        // response-header timeout spends the second. An opened stream
         // never reissues its request automatically.
-        // `StreamRetryBudget` enforces that bound in mechanism —
+        // `StreamRetryBudget` enforces each bound in mechanism —
         // `authorize()` is the only way to spend a resume.
         let stream_retry_budget =
             StreamRetryBudget::with_limit(self.config.stream_retry_limits.max_resumes);
+        let stream_open_timeout_retry_budget =
+            StreamRetryBudget::with_limit(self.config.stream_retry_limits.open_retries);
         // The user hears about images the route cannot see once per turn,
         // not once per step and not for images replayed from history.
         let image_omission_notified = false;
@@ -2014,6 +2036,7 @@ impl Engine {
             empty_stop_retries,
             reasoning_only_nudge,
             stream_retry_budget,
+            stream_open_timeout_retry_budget,
             image_omission_notified,
             child_request_retries: Default::default(),
         };
@@ -2526,6 +2549,18 @@ impl Engine {
                         "tool_name": tool_name.clone(),
                     }))
                     .await;
+                }
+
+                if !approval_required
+                    && ask_posture_requires_command_card(
+                        mode,
+                        batch_approval_mode,
+                        prepared.auto_approve,
+                        &tool_name,
+                        prepared.call.approval,
+                    )
+                {
+                    approval_required = true;
                 }
 
                 let approval = match prepared.call.approval {
@@ -5719,25 +5754,14 @@ impl Engine {
                         .and_then(|metadata| metadata.get("mcp_catalog_changed"))
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false);
-                    if mcp_catalog_changed && let Some(pool) = self.mcp_pool.as_ref().cloned() {
-                        let (universe, refreshed) = {
-                            let pool = pool.lock().await;
-                            let refreshed = pool.to_api_tools();
-                            (pool.model_tool_names(&refreshed), refreshed)
-                        };
-                        let surface_budget = self
-                            .turn_tool_surface_budget
-                            .unwrap_or(crate::model_profile::ToolSurfaceBudget::Standard);
-                        let always_load = self.effective_tools_always_load();
-                        tool_surface_changed |= replace_runtime_mcp_tools(
-                            tool_catalog,
-                            active_tool_names,
-                            &universe,
-                            refreshed,
-                            self.current_mode,
-                            &always_load,
-                            surface_budget,
-                        );
+                    if mcp_catalog_changed {
+                        tool_surface_changed |= self
+                            .refresh_current_mcp_catalog(
+                                tool_policy,
+                                tool_catalog,
+                                active_tool_names,
+                            )
+                            .await;
                     }
                     // Any of the legitimate mid-turn tool-surface changes above
                     // re-pin the header under a declared `change:tool_surface`
@@ -5971,6 +5995,17 @@ impl Engine {
         usage: Option<&Usage>,
         outcome: &str,
     ) -> Result<Option<crate::cost_status::RuntimeUsageRecord>, String> {
+        self.settle_provider_request_receipt_with_cause(pending, usage, outcome, None)
+            .await
+    }
+
+    pub(super) async fn settle_provider_request_receipt_with_cause(
+        &self,
+        pending: &mut Option<PendingProviderRequestReceipt>,
+        usage: Option<&Usage>,
+        outcome: &str,
+        cause: Option<&crate::llm_error_envelope::ProviderFailureCause>,
+    ) -> Result<Option<crate::cost_status::RuntimeUsageRecord>, String> {
         let Some(pending) = pending.take() else {
             return Ok(None);
         };
@@ -6014,7 +6049,7 @@ impl Engine {
                 _ => crate::llm_client::ProviderUsageCoverage::Missing,
             }
         };
-        let accounting_error: Option<String> = None;
+        let mut accounting_error: Option<String> = None;
         let accounting_record = if pending.primary && !pending.accounting_owned_elsewhere {
             let reason = if matches!(outcome, "completed" | "review_response") {
                 crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
@@ -6028,43 +6063,56 @@ impl Engine {
                 reason,
                 &wire,
             );
-            crate::cost_status::record_runtime_usage_async(
+            match crate::cost_status::try_record_runtime_usage_async(
                 pending.accounting_scope,
                 pending.accounting_origin.as_ref(),
                 &record,
             )
-            .await;
-            Some(record)
+            .await
+            {
+                Ok(()) => Some(record),
+                Err(error) => {
+                    accounting_error = Some(error.to_string());
+                    None
+                }
+            }
         } else {
             None
         };
-        let _ = self.send_event(Event::ProviderRequestReceipt {
-            receipt: json!({
-                "source_accounting": pending.primary,
-                "accounting_error": accounting_error,
-                "session_id": self.session.id,
-                "turn_id": pending.turn_id,
-                "request_index": pending.request_index,
-                "request_id": pending.request_id,
-                "source_id": source_id,
-                "route": pending.route.sanitized_for_persistence(),
-                "primary": pending.primary,
-                "transmission": transmission,
-                "coverage": coverage,
-                "physical_requests": wire.transmissions,
-                "physical_requests_dropped": wire.transmissions_dropped,
-                "prefix_check": pending.prefix_check,
-                "reused_preparation": pending.reused_preparation,
-                "wire_observations": wire.observations,
-                "wire_observations_dropped": wire.dropped,
-                "usage": usage,
-                "usage_reported": usage.is_some(),
-                "outcome": outcome,
-                "transport_retries": pending.transport_retries.load(std::sync::atomic::Ordering::Relaxed),
-                "elapsed_ms": u64::try_from(pending.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
-                "cache_attribution": "Local prefix changes and wire schema measurements are context for reported usage, not proof that eviction caused a miss or that unreported retries were free.",
-            }),
-        }).await;
+        let mut receipt = json!({
+            "source_accounting": pending.primary,
+            "accounting_error": accounting_error.as_deref(),
+            "session_id": self.session.id,
+            "turn_id": pending.turn_id,
+            "request_index": pending.request_index,
+            "request_id": pending.request_id,
+            "source_id": source_id,
+            "route": pending.route.sanitized_for_persistence(),
+            "primary": pending.primary,
+            "transmission": transmission,
+            "coverage": coverage,
+            "physical_requests": wire.transmissions,
+            "physical_requests_dropped": wire.transmissions_dropped,
+            "prefix_check": pending.prefix_check,
+            "reused_preparation": pending.reused_preparation,
+            "wire_observations": wire.observations,
+            "wire_observations_dropped": wire.dropped,
+            "usage": usage,
+            "usage_reported": usage.is_some(),
+            "outcome": outcome,
+            "transport_retries": pending.transport_retries.load(std::sync::atomic::Ordering::Relaxed),
+            "elapsed_ms": u64::try_from(pending.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "cache_attribution": "Local prefix changes and wire schema measurements are context for reported usage, not proof that eviction caused a miss or that unreported retries were free.",
+        });
+        if let Some(cause) = cause {
+            receipt["cause"] = json!(cause);
+        }
+        let _ = self
+            .send_event(Event::ProviderRequestReceipt { receipt })
+            .await;
+        if let Some(error) = accounting_error {
+            return Err(error);
+        }
         Ok(accounting_record)
     }
 
@@ -6077,6 +6125,7 @@ impl Engine {
     ) -> StreamOutcome {
         let mut stream = stream;
         let mut stream_error: Option<String> = None;
+        let mut stream_cause: Option<crate::llm_error_envelope::ProviderFailureCause> = None;
         let mut steer_preempted = false;
         let stream_cancel = self.cancel_token.clone();
 
@@ -6148,7 +6197,10 @@ impl Engine {
         loop {
             let poll_outcome = tokio::select! {
                 biased;
-                _ = stream_cancel.cancelled() => None,
+                _ = stream_cancel.cancelled() => {
+                    drop(stream);
+                    break;
+                }
                 pending = self.wait_turn_steer() => {
                     pending_steers.push(pending);
                     steer_preempted = true;
@@ -6196,6 +6248,12 @@ impl Engine {
                             // over a frozen block.
                             stream_errors = stream_errors.saturating_add(1);
                             stream_error.get_or_insert(envelope.message.clone());
+                            stream_cause.get_or_insert_with(|| {
+                                crate::llm_error_envelope::ProviderFailureCause::from_envelope(
+                                    &envelope,
+                                    Some("idle_timeout"),
+                                )
+                            });
                             let _ = self.send_stream_event(Event::error(envelope)).await;
                             None
                         }
@@ -6218,6 +6276,12 @@ impl Engine {
                 .into_envelope();
                 codewhale_runtime::logging::warn(&envelope.message);
                 stream_error.get_or_insert(envelope.message.clone());
+                stream_cause.get_or_insert_with(|| {
+                    crate::llm_error_envelope::ProviderFailureCause::from_envelope(
+                        &envelope,
+                        Some("duration_limit"),
+                    )
+                });
                 let _ = self.send_stream_event(Event::error(envelope)).await;
                 break;
             }
@@ -6246,6 +6310,12 @@ impl Engine {
                     let message = self.decorate_auth_error_message(e.to_string());
                     let user_message =
                         stream_read_error_user_message(&message, any_content_received);
+                    stream_cause.get_or_insert_with(|| {
+                        crate::llm_error_envelope::ProviderFailureCause::from_llm_error(
+                            &e,
+                            Some("stream"),
+                        )
+                    });
                     let envelope =
                         crate::llm_error_envelope::envelope_for_llm_error(e, user_message.clone());
                     stream_error.get_or_insert(user_message);
@@ -6270,6 +6340,12 @@ impl Engine {
                 .into_envelope();
                 codewhale_runtime::logging::warn(&envelope.message);
                 stream_error.get_or_insert(envelope.message.clone());
+                stream_cause.get_or_insert_with(|| {
+                    crate::llm_error_envelope::ProviderFailureCause::from_envelope(
+                        &envelope,
+                        Some("overflow"),
+                    )
+                });
                 let _ = self.send_stream_event(Event::error(envelope)).await;
                 break;
             }
@@ -6285,6 +6361,12 @@ impl Engine {
             {
                 let envelope = super::streaming::tool_call_limit_error();
                 stream_error.get_or_insert(envelope.message.clone());
+                stream_cause.get_or_insert_with(|| {
+                    crate::llm_error_envelope::ProviderFailureCause::from_envelope(
+                        &envelope,
+                        Some("tool_call_limit"),
+                    )
+                });
                 let _ = self.send_stream_event(Event::error(envelope)).await;
                 break;
             }
@@ -6607,8 +6689,11 @@ impl Engine {
                             // usually disabled.
                             if codewhale_runtime::logging::is_verbose() {
                                 codewhale_runtime::logging::info(format!(
-                                    "Tool '{}' input delta: {} (buffer now: {})",
-                                    tool_state.name, partial_json, tool_state.input_buffer
+                                    "Tool '{}' (id='{}') input delta: {} bytes (buffer now: {} bytes)",
+                                    tool_state.name,
+                                    tool_state.id,
+                                    partial_json.len(),
+                                    tool_state.input_buffer.len()
                                 ));
                             }
                             // The buffer is the only mid-stream state: nothing
@@ -6742,10 +6827,14 @@ impl Engine {
                     if let Some(tool_idx) = current_tool_indices.remove(&index)
                         && let Some(tool_state) = tool_uses.get_mut(tool_idx)
                     {
-                        codewhale_runtime::logging::info(format!(
-                            "Tool '{}' block stop. Buffer: '{}'",
-                            tool_state.name, tool_state.input_buffer
-                        ));
+                        if codewhale_runtime::logging::is_verbose() {
+                            codewhale_runtime::logging::info(format!(
+                                "Tool '{}' (id='{}') block stop ({} bytes)",
+                                tool_state.name,
+                                tool_state.id,
+                                tool_state.input_buffer.len()
+                            ));
+                        }
                         self.finalize_streamed_tool_input(tool_state).await;
                     }
                 }
@@ -6803,6 +6892,12 @@ impl Engine {
                     ));
                     stream_errors = stream_errors.saturating_add(1);
                     let envelope = ErrorEnvelope::classify(message.to_string(), false);
+                    stream_cause.get_or_insert_with(|| {
+                        crate::llm_error_envelope::ProviderFailureCause::from_envelope(
+                            &envelope,
+                            Some("stream"),
+                        )
+                    });
                     let _ = self.send_stream_event(Event::error(envelope)).await;
                     stream_error.get_or_insert(message.to_string());
                     break;
@@ -6816,7 +6911,7 @@ impl Engine {
         // goes through the same finalization gate a normal ContentBlockStop
         // applies, and is later announced with the same finalized input — which is
         // also why no mid-stream parse is needed (#6213 T4).
-        if !steer_preempted {
+        if !steer_preempted && !self.cancel_token.is_cancelled() {
             for tool_idx in std::mem::take(&mut current_tool_indices).into_values() {
                 let Some(tool_state) = tool_uses.get_mut(tool_idx) else {
                     continue;
@@ -6836,10 +6931,11 @@ impl Engine {
             "completion_unknown"
         };
         let accounting = match self
-            .settle_provider_request_receipt(
+            .settle_provider_request_receipt_with_cause(
                 &mut request_receipt,
                 attempt_usage_reported.then_some(&usage),
                 receipt_outcome,
+                stream_cause.as_ref(),
             )
             .await
         {
@@ -6913,8 +7009,8 @@ impl Engine {
     async fn finalize_streamed_tool_input(&self, tool_state: &mut ToolUseState) {
         if tool_state.input_buffer.trim().is_empty() {
             codewhale_runtime::logging::warn(format!(
-                "Tool '{}' input buffer is empty, using initial input: {:?}",
-                tool_state.name, tool_state.input
+                "Tool '{}' (id='{}') input buffer is empty, using initial input",
+                tool_state.name, tool_state.id
             ));
             return;
         }
@@ -6922,15 +7018,21 @@ impl Engine {
             .filter(|parsed| !parsed.structure_synthesized);
         if let Some(parsed) = final_parse {
             tool_state.input = parsed.value;
-            codewhale_runtime::logging::info(format!(
-                "Tool '{}' final input: {:?}",
-                tool_state.name, tool_state.input
-            ));
+            if codewhale_runtime::logging::is_verbose() {
+                codewhale_runtime::logging::info(format!(
+                    "Tool '{}' (id='{}') finalized input ({} bytes)",
+                    tool_state.name,
+                    tool_state.id,
+                    tool_state.input_buffer.len()
+                ));
+            }
             return;
         }
         codewhale_runtime::logging::warn(format!(
-            "Tool '{}' failed to parse final input buffer: '{}'",
-            tool_state.name, tool_state.input_buffer
+            "Tool '{}' (id='{}') failed to parse final input buffer ({} bytes)",
+            tool_state.name,
+            tool_state.id,
+            tool_state.input_buffer.len()
         ));
         let error = malformed_tool_arguments_error(&tool_state.input_buffer);
         tool_state.input_parse_error = Some(error);
@@ -7244,6 +7346,11 @@ fn awaiting_model_bound(config: &EngineConfig) -> Duration {
         config.stream_chunk_timeout,
     )
     .saturating_add(super::turn_heartbeat::STALL_BOUND_GRACE)
+}
+
+fn first_stream_event_timeout(config: &EngineConfig) -> Duration {
+    crate::client::stream_first_byte_timeout(config.stream_chunk_timeout)
+        .min(stream_chunk_timeout_budget(config).1)
 }
 
 /// Whether a per-tool pre-execution snapshot should be taken before running
@@ -8059,10 +8166,27 @@ fn stream_event_content_bytes(event: &StreamEvent) -> usize {
             Delta::SignatureDelta { signature } => signature.len(),
             Delta::ThoughtSignatureDelta { thought_signature } => thought_signature.len(),
             Delta::RefusalDelta { refusal } => refusal.len(),
-            Delta::ReasoningStateDelta { .. }
-            | Delta::CitationsDelta { .. }
-            | Delta::WebSearchCallDelta { .. }
-            | Delta::ServerToolCallsDelta { .. } => 0,
+            Delta::WebSearchCallDelta {
+                status,
+                kind,
+                action,
+                sources,
+                page,
+                signature,
+                error,
+            } => {
+                status.as_ref().map_or(0, String::len)
+                    + kind.as_ref().map_or(0, String::len)
+                    + action.as_ref().map_or(0, |v| v.to_string().len())
+                    + sources.as_ref().map_or(0, |v| v.to_string().len())
+                    + page.as_ref().map_or(0, |v| v.to_string().len())
+                    + signature.as_ref().map_or(0, String::len)
+                    + error.as_ref().map_or(0, |v| v.to_string().len())
+            }
+            Delta::ServerToolCallsDelta { steps } => {
+                steps.iter().map(|s| s.to_string().len()).sum()
+            }
+            Delta::ReasoningStateDelta { .. } | Delta::CitationsDelta { .. } => 0,
         },
         _ => 0,
     }
@@ -8224,6 +8348,53 @@ mod tests {
             Some("first_signature")
         );
         assert!(outcome.tool_uses[1].thought_signature.is_none());
+    }
+
+    #[tokio::test]
+    async fn process_stream_drops_stalled_stream_promptly_on_cancel() {
+        use crate::llm_client::mock::canned;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct DropFlag(Arc<AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let tmp = tempdir().unwrap();
+        let (mut engine, _model, _rx) = stream_backpressure_fixture(tmp.path(), 16);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let drop_flag = DropFlag(Arc::clone(&dropped));
+        let stalled = async_stream::stream! {
+            let _guard = drop_flag;
+            yield Ok(canned::text_delta(0, "partial before stall"));
+            std::future::pending::<()>().await;
+        };
+        let cancel = engine.cancel_token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            cancel.cancel();
+        });
+        let started = Instant::now();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(2),
+            engine.process_stream(
+                Box::pin(stalled),
+                &stream_backpressure_request(),
+                Instant::now(),
+                None,
+            ),
+        )
+        .await
+        .expect("cancelled stalled stream must settle promptly");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "cancel took {:?}",
+            started.elapsed()
+        );
+        assert!(dropped.load(Ordering::SeqCst), "stalled stream was dropped");
+        assert_eq!(outcome.current_text_visible, "partial before stall");
     }
 
     #[tokio::test]
@@ -9067,6 +9238,265 @@ mod tests {
             }),
             3
         );
+    }
+
+    #[test]
+    fn server_tool_deltas_count_payload_bytes_for_stream_cap() {
+        let big_sources =
+            serde_json::json!([{"url": "https://example.com", "body": "x".repeat(4096)}]);
+        let web_bytes = stream_event_content_bytes(&StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: codewhale_models::Delta::WebSearchCallDelta {
+                status: Some("completed".to_string()),
+                kind: None,
+                action: None,
+                sources: Some(big_sources),
+                page: None,
+                signature: None,
+                error: None,
+            },
+        });
+        assert!(web_bytes > 4096, "web search delta bytes={web_bytes}");
+
+        let steps = vec![serde_json::json!({"tool": "search", "output": "y".repeat(2048)})];
+        let step_bytes = stream_event_content_bytes(&StreamEvent::ContentBlockDelta {
+            index: 1,
+            delta: codewhale_models::Delta::ServerToolCallsDelta { steps },
+        });
+        assert!(step_bytes > 2048, "server tool delta bytes={step_bytes}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn server_tool_deltas_trip_stream_content_cap_overflow() {
+        use crate::llm_client::mock::canned;
+
+        let tmp = tempdir().unwrap();
+        let _home = crate::test_support::SealedHome::at(tmp.path());
+        let (mut engine, _model, mut rx) = stream_backpressure_fixture(tmp.path(), 16);
+        engine.config.stream_max_content_bytes = 64;
+        let request = stream_backpressure_request();
+
+        let web_stream: Vec<anyhow::Result<StreamEvent>> = vec![
+            Ok(StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStart::WebSearchCall {
+                    id: "ws-1".into(),
+                    status: "searching".into(),
+                    kind: None,
+                    action: None,
+                },
+            }),
+            Ok(StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: Delta::WebSearchCallDelta {
+                    status: Some("completed".into()),
+                    kind: None,
+                    action: None,
+                    sources: Some(json!([{ "body": "x".repeat(256) }])),
+                    page: None,
+                    signature: None,
+                    error: None,
+                },
+            }),
+            Ok(canned::message_stop()),
+        ];
+        let web_outcome = engine
+            .process_stream(
+                Box::pin(futures_util::stream::iter(web_stream)),
+                &request,
+                Instant::now(),
+                None,
+            )
+            .await;
+        assert!(
+            web_outcome
+                .stream_error
+                .as_deref()
+                .is_some_and(|message| message.contains("maximum content size")),
+            "expected stream overflow error, got {:?}",
+            web_outcome.stream_error
+        );
+        assert!(
+            std::iter::from_fn(|| rx.try_recv().ok()).any(|event| matches!(
+                event,
+                Event::Error { envelope, .. } if envelope.code == "stream_overflow"
+            )),
+            "expected stream_overflow event for WebSearchCallDelta"
+        );
+        assert!(matches!(
+            web_outcome.server_blocks.as_slice(),
+            [ContentBlock::WebSearchCall { sources: None, .. }]
+        ));
+
+        let (mut engine, _model, mut rx) = stream_backpressure_fixture(tmp.path(), 16);
+        engine.config.stream_max_content_bytes = 64;
+        let tool_stream: Vec<anyhow::Result<StreamEvent>> = vec![
+            Ok(StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStart::ServerToolCalls { steps: Vec::new() },
+            }),
+            Ok(StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: Delta::ServerToolCallsDelta {
+                    steps: vec![json!({ "output": "y".repeat(256) })],
+                },
+            }),
+            Ok(canned::message_stop()),
+        ];
+        let tool_outcome = engine
+            .process_stream(
+                Box::pin(futures_util::stream::iter(tool_stream)),
+                &request,
+                Instant::now(),
+                None,
+            )
+            .await;
+        assert!(
+            tool_outcome
+                .stream_error
+                .as_deref()
+                .is_some_and(|message| message.contains("maximum content size")),
+            "expected stream overflow error, got {:?}",
+            tool_outcome.stream_error
+        );
+        assert!(
+            std::iter::from_fn(|| rx.try_recv().ok()).any(|event| matches!(
+                event,
+                Event::Error { envelope, .. } if envelope.code == "stream_overflow"
+            )),
+            "expected stream_overflow event for ServerToolCallsDelta"
+        );
+        assert!(matches!(
+            tool_outcome.server_blocks.as_slice(),
+            [ContentBlock::ServerToolCalls { steps }] if steps.is_empty()
+        ));
+    }
+
+    #[tokio::test]
+    async fn provider_request_receipt_records_accounting_error_when_owner_work_fails() {
+        let tmp = tempdir().unwrap();
+        let _home = crate::test_support::SealedHome::at(tmp.path());
+        let (engine, model, mut rx) = stream_backpressure_fixture(tmp.path(), 16);
+        let retry_observation = engine.request_retry_observation();
+        let route = crate::core::model_client::ModelClient::effective_route_envelope(
+            model.as_ref(),
+            "test-model",
+            chrono::Utc::now(),
+        );
+        let accounting_source = crate::cost_status::NativeUsageSource::capture_with_origin(
+            retry_observation.request_id.clone(),
+            crate::cost_status::UsageSpendOwner::Primary,
+            None,
+        );
+        let mut pending = Some(PendingProviderRequestReceipt {
+            request_id: retry_observation.request_id.clone(),
+            accounting_source,
+            accounting_scope: crate::cost_status::scope_token(),
+            accounting_origin: None,
+            route,
+            primary: true,
+            accounting_owned_elsewhere: false,
+            invoked: true,
+            turn_id: "turn-accounting-err".to_string(),
+            request_index: 1,
+            prefix_check: json!({ "outcome": "stable" }),
+            reused_preparation: false,
+            wire: retry_observation.wire_observations.clone(),
+            transport_retries: retry_observation.retries.clone(),
+            started_at: Instant::now(),
+        });
+        let usage = Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            ..Usage::default()
+        };
+
+        let result = crate::cost_status::with_test_runtime_usage_error(
+            "blocking work is queued behind busy runtime owner",
+            engine.settle_provider_request_receipt(&mut pending, Some(&usage), "completed"),
+        )
+        .await;
+
+        let err = result.expect_err("failed usage settlement must return Err");
+        assert!(
+            err.contains("blocking work is queued"),
+            "unexpected settlement error: {err}"
+        );
+        let event = rx
+            .try_recv()
+            .expect("ProviderRequestReceipt must still be emitted");
+        let Event::ProviderRequestReceipt { receipt } = event else {
+            panic!("expected ProviderRequestReceipt, got {event:?}");
+        };
+        assert_eq!(receipt["accounting_error"].as_str(), Some(err.as_str()));
+        assert!(
+            receipt.get("cause").is_none(),
+            "completed receipt must omit cause: {receipt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_request_receipt_includes_structured_cause_on_failure() {
+        let tmp = tempdir().unwrap();
+        let _home = crate::test_support::SealedHome::at(tmp.path());
+        let (engine, model, mut rx) = stream_backpressure_fixture(tmp.path(), 16);
+        let retry_observation = engine.request_retry_observation();
+        let route = crate::core::model_client::ModelClient::effective_route_envelope(
+            model.as_ref(),
+            "test-model",
+            chrono::Utc::now(),
+        );
+        let accounting_source = crate::cost_status::NativeUsageSource::capture_with_origin(
+            retry_observation.request_id.clone(),
+            crate::cost_status::UsageSpendOwner::Primary,
+            None,
+        );
+        let mut pending = Some(PendingProviderRequestReceipt {
+            request_id: retry_observation.request_id.clone(),
+            accounting_source,
+            accounting_scope: crate::cost_status::scope_token(),
+            accounting_origin: None,
+            route,
+            primary: false,
+            accounting_owned_elsewhere: true,
+            invoked: true,
+            turn_id: "turn-open-failed".to_string(),
+            request_index: 1,
+            prefix_check: json!({ "outcome": "stable" }),
+            reused_preparation: false,
+            wire: retry_observation.wire_observations.clone(),
+            transport_retries: retry_observation.retries.clone(),
+            started_at: Instant::now(),
+        });
+        let err: anyhow::Error = crate::llm_client::LlmError::HeaderTimeout {
+            waited: std::time::Duration::from_secs(30),
+            http1: false,
+            retried: 0,
+        }
+        .into();
+        let cause =
+            crate::llm_error_envelope::ProviderFailureCause::from_llm_error(&err, Some("open"));
+        let _ = engine
+            .settle_provider_request_receipt_with_cause(
+                &mut pending,
+                None,
+                "open_failed",
+                Some(&cause),
+            )
+            .await;
+
+        let event = rx
+            .try_recv()
+            .expect("ProviderRequestReceipt must be emitted");
+        let Event::ProviderRequestReceipt { receipt } = event else {
+            panic!("expected ProviderRequestReceipt, got {event:?}");
+        };
+        assert_eq!(receipt["outcome"], "open_failed");
+        assert_eq!(receipt["cause"]["code"], "llm_network_error");
+        assert_eq!(receipt["cause"]["category"], "network");
+        assert_eq!(receipt["cause"]["transmission"], "outcome_unknown");
+        assert_eq!(receipt["cause"]["timeout_ms"], 30_000);
+        assert_eq!(receipt["cause"]["phase"], "header_timeout");
     }
 
     /// Regression test for the OpenAI streaming batch tool_calls bug.

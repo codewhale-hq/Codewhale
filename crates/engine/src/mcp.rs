@@ -1878,6 +1878,7 @@ pub struct McpConnection {
     /// Key this host shares with the built-in Computer Use plugin over the
     /// connection itself, to attest a person's card decision on a call.
     decision_key: Option<[u8; 32]>,
+    call_lane: Option<Arc<McpCallLane>>,
 }
 
 struct PendingAuthorityWatch {
@@ -2258,6 +2259,7 @@ impl McpConnection {
             catalog_fresh_until: None,
             catalog_stale: false,
             decision_key: None,
+            call_lane: None,
         };
 
         let setup_result: Result<()> = tokio::select! {
@@ -2457,6 +2459,7 @@ impl McpConnection {
 
     /// Discover and admit one complete tools/resources/prompts generation.
     async fn discover_all(&mut self) -> Result<()> {
+        settle_call_lane(self.call_lane.clone()).await;
         self.ensure_not_disconnected()?;
         let capabilities = self.server_capabilities;
         let server = self.name.clone();
@@ -2947,6 +2950,7 @@ impl McpConnection {
         timeout_secs: u64,
         decision: Option<&crate::core::engine::HumanDecision>,
     ) -> Result<serde_json::Value> {
+        settle_call_lane(self.call_lane.clone()).await;
         let cancellation = self
             .config
             .reviewed_plugin_source()
@@ -3173,7 +3177,94 @@ impl McpConnection {
 
     /// Get connection state
     pub fn state(&self) -> ConnectionState {
+        if self
+            .call_lane
+            .as_ref()
+            .is_some_and(|lane| lane.broken.load(Ordering::SeqCst))
+        {
+            return ConnectionState::Disconnected;
+        }
         self.state
+    }
+
+    fn call_lane(&mut self) -> Arc<McpCallLane> {
+        if let Some(lane) = &self.call_lane {
+            return Arc::clone(lane);
+        }
+        let transport = std::mem::replace(&mut self.transport, Box::new(DetachedTransport));
+        let lane = Arc::new(McpCallLane {
+            modern: transport.is_modern(),
+            transport: Arc::new(tokio::sync::Mutex::new(transport)),
+            turn: Arc::new(tokio::sync::Mutex::new(())),
+            interrupt: self.cancel_token.child_token(),
+            broken: std::sync::atomic::AtomicBool::new(false),
+            list_changed: std::sync::atomic::AtomicBool::new(false),
+        });
+        self.transport = Box::new(LaneTransport(Arc::clone(&lane)));
+        self.call_lane = Some(Arc::clone(&lane));
+        lane
+    }
+
+    fn holds_call_lane(&self, lane: &Arc<McpCallLane>) -> bool {
+        self.call_lane
+            .as_ref()
+            .is_some_and(|held| Arc::ptr_eq(held, lane))
+    }
+
+    fn call_lane_busy(&self) -> bool {
+        self.call_lane
+            .as_ref()
+            .is_some_and(|lane| lane.transport.try_lock().is_err())
+    }
+
+    async fn lease_for_call(
+        &mut self,
+        turn: Option<McpCallTurn>,
+    ) -> std::result::Result<LeasedConnection, Arc<McpCallLane>> {
+        let lane = self.call_lane();
+        let held = turn
+            .filter(|turn| Arc::ptr_eq(&turn.lane, &lane))
+            .map(|turn| turn.guard);
+        let turn = match held {
+            Some(turn) => turn,
+            None => match Arc::clone(&lane.turn).try_lock_owned() {
+                Ok(turn) => turn,
+                Err(_) => return Err(lane),
+            },
+        };
+        let transport = Arc::clone(&lane.transport).lock_owned().await;
+        let connection = McpConnection {
+            auth_context: Arc::clone(&self.auth_context),
+            name: self.name.clone(),
+            transport: Box::new(LeasedTransport {
+                transport,
+                _turn: turn,
+            }),
+            tools: Vec::new(),
+            resources: Vec::new(),
+            resource_templates: Vec::new(),
+            prompts: Vec::new(),
+            skills: Vec::new(),
+            skills_extension: self.skills_extension,
+            request_id: AtomicU64::new(self.request_id.fetch_add(1, Ordering::SeqCst)),
+            state: self.state,
+            config: self.config.clone(),
+            runtime_registration: self.runtime_registration.clone(),
+            server_capabilities: self.server_capabilities,
+            instructions: None,
+            discovery_timeout: self.discovery_timeout,
+            read_timeout_secs: self.read_timeout_secs,
+            cancel_token: lane.interrupt.child_token(),
+            authority_revocation_reason: Arc::clone(&self.authority_revocation_reason),
+            authority_watch: None,
+            catalog_generation: self.catalog_generation,
+            catalog_revision: self.catalog_revision,
+            catalog_fresh_until: None,
+            catalog_stale: false,
+            decision_key: self.decision_key,
+            call_lane: None,
+        };
+        Ok(LeasedConnection { connection, lane })
     }
 
     fn next_id(&self) -> String {
@@ -3441,6 +3532,341 @@ impl Drop for McpConnection {
         self.cancel_token.cancel();
         if let Some(watch) = self.authority_watch.take() {
             watch.abort();
+        }
+    }
+}
+
+struct McpCallLane {
+    transport: Arc<tokio::sync::Mutex<Box<dyn McpTransport>>>,
+    turn: Arc<tokio::sync::Mutex<()>>,
+    interrupt: tokio_util::sync::CancellationToken,
+    broken: std::sync::atomic::AtomicBool,
+    list_changed: std::sync::atomic::AtomicBool,
+    modern: bool,
+}
+
+impl McpCallLane {
+    fn ensure_usable(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.broken.load(Ordering::SeqCst),
+            "MCP connection is disconnected"
+        );
+        Ok(())
+    }
+}
+
+async fn settle_call_lane(lane: Option<Arc<McpCallLane>>) {
+    if let Some(lane) = lane {
+        drop(lane.transport.lock().await);
+    }
+}
+
+struct DetachedTransport;
+
+#[async_trait::async_trait]
+impl McpTransport for DetachedTransport {
+    async fn send(&mut self, _msg: Vec<u8>) -> Result<()> {
+        anyhow::bail!("MCP transport is detached")
+    }
+
+    async fn recv(&mut self) -> Result<Vec<u8>> {
+        anyhow::bail!("MCP transport is detached")
+    }
+}
+
+struct LaneTransport(Arc<McpCallLane>);
+
+#[async_trait::async_trait]
+impl McpTransport for LaneTransport {
+    async fn send(&mut self, msg: Vec<u8>) -> Result<()> {
+        let mut transport = self.0.transport.lock().await;
+        self.0.ensure_usable()?;
+        transport.send(msg).await
+    }
+
+    async fn send_decided(
+        &mut self,
+        msg: Vec<u8>,
+        decision: Option<&crate::core::engine::HumanDecision>,
+        timeout: Duration,
+    ) -> Result<()> {
+        let mut transport = self.0.transport.lock().await;
+        self.0.ensure_usable()?;
+        transport.send_decided(msg, decision, timeout).await
+    }
+
+    async fn recv(&mut self) -> Result<Vec<u8>> {
+        let mut transport = self.0.transport.lock().await;
+        self.0.ensure_usable()?;
+        transport.recv().await
+    }
+
+    async fn send_reply(&mut self, msg: Vec<u8>) -> Result<()> {
+        let mut transport = self.0.transport.lock().await;
+        self.0.ensure_usable()?;
+        transport.send_reply(msg).await
+    }
+
+    fn set_protocol_version(&mut self, version: &str) {
+        if let Ok(mut transport) = self.0.transport.try_lock() {
+            transport.set_protocol_version(version);
+        }
+    }
+
+    fn is_modern(&self) -> bool {
+        self.0.modern
+    }
+
+    async fn last_stderr_line(&self) -> Option<String> {
+        let transport = self.0.transport.try_lock().ok()?;
+        transport.last_stderr_line().await
+    }
+
+    fn probe_dead(&self) -> bool {
+        self.0.broken.load(Ordering::SeqCst)
+            || self
+                .0
+                .transport
+                .try_lock()
+                .is_ok_and(|transport| transport.probe_dead())
+    }
+
+    fn take_list_changed(&self) -> bool {
+        let flagged = self.0.list_changed.swap(false, Ordering::SeqCst);
+        let live = self
+            .0
+            .transport
+            .try_lock()
+            .is_ok_and(|transport| transport.take_list_changed());
+        flagged || live
+    }
+
+    async fn shutdown(&mut self) {
+        self.0.interrupt.cancel();
+        self.0.transport.lock().await.shutdown().await;
+    }
+}
+
+struct LeasedTransport {
+    transport: tokio::sync::OwnedMutexGuard<Box<dyn McpTransport>>,
+    _turn: tokio::sync::OwnedMutexGuard<()>,
+}
+
+#[async_trait::async_trait]
+impl McpTransport for LeasedTransport {
+    async fn send(&mut self, msg: Vec<u8>) -> Result<()> {
+        self.transport.send(msg).await
+    }
+
+    async fn send_decided(
+        &mut self,
+        msg: Vec<u8>,
+        decision: Option<&crate::core::engine::HumanDecision>,
+        timeout: Duration,
+    ) -> Result<()> {
+        self.transport.send_decided(msg, decision, timeout).await
+    }
+
+    async fn recv(&mut self) -> Result<Vec<u8>> {
+        self.transport.recv().await
+    }
+
+    async fn send_reply(&mut self, msg: Vec<u8>) -> Result<()> {
+        self.transport.send_reply(msg).await
+    }
+
+    fn set_protocol_version(&mut self, version: &str) {
+        self.transport.set_protocol_version(version);
+    }
+
+    fn is_modern(&self) -> bool {
+        self.transport.is_modern()
+    }
+
+    async fn last_stderr_line(&self) -> Option<String> {
+        self.transport.last_stderr_line().await
+    }
+
+    fn probe_dead(&self) -> bool {
+        self.transport.probe_dead()
+    }
+
+    fn take_list_changed(&self) -> bool {
+        self.transport.take_list_changed()
+    }
+
+    async fn shutdown(&mut self) {
+        self.transport.shutdown().await;
+    }
+}
+
+struct LeasedConnection {
+    connection: McpConnection,
+    lane: Arc<McpCallLane>,
+}
+
+impl Drop for LeasedConnection {
+    fn drop(&mut self) {
+        if self.connection.state != ConnectionState::Ready {
+            self.lane.broken.store(true, Ordering::SeqCst);
+        }
+        if self.connection.catalog_stale {
+            self.lane.list_changed.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+struct McpCallTurn {
+    lane: Arc<McpCallLane>,
+    guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+struct McpCallQueue {
+    lane: Arc<McpCallLane>,
+    retry: Option<Box<McpToolRoute>>,
+}
+
+impl McpCallQueue {
+    async fn wait(self) -> (McpCallTurn, Option<Box<McpToolRoute>>) {
+        let guard = Arc::clone(&self.lane.turn).lock_owned().await;
+        (
+            McpCallTurn {
+                lane: self.lane,
+                guard,
+            },
+            self.retry,
+        )
+    }
+}
+
+struct McpLeasedCall {
+    leased: LeasedConnection,
+    route: McpToolRoute,
+    arguments: serde_json::Value,
+    timeout: u64,
+    final_attempt: bool,
+}
+
+struct McpToolCallOutcome {
+    result: Result<serde_json::Value>,
+    lane: Arc<McpCallLane>,
+    route: McpToolRoute,
+    final_attempt: bool,
+}
+
+enum McpToolCallStep {
+    Done(serde_json::Value),
+    Call(Box<McpLeasedCall>),
+    Wait(McpCallQueue),
+}
+
+fn mcp_call_error_retires_connection(error: &anyhow::Error) -> bool {
+    (is_mcp_session_rejected_error(error) || is_mcp_connection_lost_error(error))
+        && !oauth::error_looks_auth_required(error)
+}
+
+impl McpLeasedCall {
+    async fn run(
+        self,
+        decision: Option<&crate::core::engine::HumanDecision>,
+    ) -> McpToolCallOutcome {
+        let Self {
+            mut leased,
+            route,
+            arguments,
+            timeout,
+            final_attempt,
+        } = self;
+        let result = leased
+            .connection
+            .call_tool_decided(&route.tool.name, arguments, timeout, decision)
+            .await;
+        if !final_attempt
+            && let Err(error) = &result
+            && mcp_call_error_retires_connection(error)
+        {
+            leased.lane.broken.store(true, Ordering::SeqCst);
+        }
+        let lane = Arc::clone(&leased.lane);
+        drop(leased);
+        McpToolCallOutcome {
+            result,
+            lane,
+            route,
+            final_attempt,
+        }
+    }
+}
+
+pub async fn call_tool_unlocked<A>(
+    pool: &tokio::sync::Mutex<McpPool>,
+    name: &str,
+    input: serde_json::Value,
+    rules: &[String],
+    decision: Option<&crate::core::engine::HumanDecision>,
+    mut admit: A,
+) -> Result<serde_json::Value>
+where
+    A: FnMut(&mut McpPool) -> Result<()> + Send,
+{
+    let mut turn: Option<McpCallTurn> = None;
+    let mut retry: Option<Box<McpToolRoute>> = None;
+    let mut next: Option<McpToolCallStep> = None;
+    loop {
+        let step = match next.take() {
+            Some(step) => step,
+            None => {
+                let mut guard = pool.lock().await;
+                admit(&mut guard)?;
+                let step = guard
+                    .begin_tool_call(name, &input, rules, decision, turn.take(), retry.take())
+                    .await?;
+                drop(guard);
+                step
+            }
+        };
+        let call = match step {
+            McpToolCallStep::Done(result) => return Ok(result),
+            McpToolCallStep::Wait(queue) => {
+                let (held, route) = queue.wait().await;
+                turn = Some(held);
+                retry = route;
+                continue;
+            }
+            McpToolCallStep::Call(call) => call,
+        };
+        let outcome = call.run(decision).await;
+        if outcome.result.is_ok() {
+            return outcome.result;
+        }
+        let mut guard = pool.lock().await;
+        next = Some(guard.finish_tool_call(outcome, &input, decision).await?);
+    }
+}
+
+pub(crate) async fn call_delegated_read_unlocked<A>(
+    pool: &tokio::sync::Mutex<McpPool>,
+    expected: &DelegatedMcpRead,
+    name: &str,
+    input: serde_json::Value,
+    rules: &[String],
+    mut admit: A,
+) -> Result<serde_json::Value>
+where
+    A: FnMut(&mut McpPool) -> Result<()> + Send,
+{
+    let mut turn: Option<McpCallTurn> = None;
+    loop {
+        let mut guard = pool.lock().await;
+        admit(&mut guard)?;
+        let step = guard
+            .begin_delegated_read(expected, name, &input, rules, turn.take())
+            .await?;
+        drop(guard);
+        match step {
+            McpToolCallStep::Done(result) => return Ok(result),
+            McpToolCallStep::Call(call) => return call.run(None).await.result,
+            McpToolCallStep::Wait(queue) => turn = Some(queue.wait().await.0),
         }
     }
 }
@@ -4218,6 +4644,10 @@ impl McpPool {
     }
 
     pub async fn reload_if_config_changed(&mut self) -> Result<bool> {
+        self.refresh_config_if_changed()
+    }
+
+    pub(crate) fn refresh_config_if_changed(&mut self) -> Result<bool> {
         self.reload_from_config_sources(ConfigRefresh::IfChanged)
     }
 
@@ -4980,7 +5410,9 @@ impl McpPool {
         let stale: Vec<String> = self
             .connections
             .iter_mut()
-            .filter(|(_, connection)| connection.is_transport_ready())
+            .filter(|(_, connection)| {
+                connection.is_transport_ready() && !connection.call_lane_busy()
+            })
             .filter_map(|(name, connection)| {
                 connection
                     .catalog_needs_revalidation()
@@ -6063,6 +6495,7 @@ impl McpPool {
             catalog_fresh_until: None,
             catalog_stale: false,
             decision_key: None,
+            call_lane: None,
         };
         self.connections.insert(server.to_string(), conn);
     }
@@ -6450,6 +6883,7 @@ impl McpPool {
         }))
     }
 
+    #[cfg(test)]
     pub(crate) async fn call_delegated_read(
         &mut self,
         expected: &DelegatedMcpRead,
@@ -6457,8 +6891,55 @@ impl McpPool {
         input: serde_json::Value,
         rules: &[String],
     ) -> Result<serde_json::Value> {
-        Self::authorize_call(&self.disallowed_tools, name, &input)?;
-        Self::authorize_call(rules, name, &input)?;
+        self.admit_delegated_read(expected, name, &input, rules)?;
+        let conn = self
+            .connections
+            .get_mut(&expected.route.server_name)
+            .context("delegated connector is unavailable")?;
+        let timeout = conn
+            .config()
+            .effective_execute_timeout(&self.config.timeouts);
+        conn.call_tool_decided(&expected.route.tool.name, input, timeout, None)
+            .await
+    }
+
+    async fn begin_delegated_read(
+        &mut self,
+        expected: &DelegatedMcpRead,
+        name: &str,
+        input: &serde_json::Value,
+        rules: &[String],
+        turn: Option<McpCallTurn>,
+    ) -> Result<McpToolCallStep> {
+        self.admit_delegated_read(expected, name, input, rules)?;
+        let conn = self
+            .connections
+            .get_mut(&expected.route.server_name)
+            .context("delegated connector is unavailable")?;
+        let timeout = conn
+            .config()
+            .effective_execute_timeout(&self.config.timeouts);
+        match conn.lease_for_call(turn).await {
+            Ok(leased) => Ok(McpToolCallStep::Call(Box::new(McpLeasedCall {
+                leased,
+                route: expected.route.clone(),
+                arguments: input.clone(),
+                timeout,
+                final_attempt: true,
+            }))),
+            Err(lane) => Ok(McpToolCallStep::Wait(McpCallQueue { lane, retry: None })),
+        }
+    }
+
+    fn admit_delegated_read(
+        &mut self,
+        expected: &DelegatedMcpRead,
+        name: &str,
+        input: &serde_json::Value,
+        rules: &[String],
+    ) -> Result<()> {
+        Self::authorize_call(&self.disallowed_tools, name, input)?;
+        Self::authorize_call(rules, name, input)?;
         self.reload_from_config_sources(ConfigRefresh::VerifyContents)?;
         let current = self
             .delegated_read(name)
@@ -6474,18 +6955,10 @@ impl McpPool {
             "delegated connector binding changed"
         );
         anyhow::ensure!(
-            expected.permits_arguments(&input),
+            expected.permits_arguments(input),
             "delegated connector disclosure denied"
         );
-        let conn = self
-            .connections
-            .get_mut(&expected.route.server_name)
-            .context("delegated connector is unavailable")?;
-        let timeout = conn
-            .config()
-            .effective_execute_timeout(&self.config.timeouts);
-        conn.call_tool_decided(&expected.route.tool.name, input, timeout, None)
-            .await
+        Ok(())
     }
 
     pub(crate) fn always_allow_binding(&self, name: &str) -> Option<u64> {
@@ -6995,18 +7468,7 @@ impl McpPool {
             return self.run_authenticate_tool(&server_name).await;
         }
 
-        let route = match self.resolve_advertised_tool(prefixed_name).await {
-            Ok(route) => route,
-            Err(error) => {
-                // A real tool name reached a server whose login has lapsed
-                // (stale catalog, or a mid-session 401). Name the one call
-                // that recovers it instead of leaving a dead error.
-                if let Some(server) = self.needs_auth_server_for_tool_name(prefixed_name) {
-                    return Err(error.context(self.auth_required_hint(&server)));
-                }
-                return Err(error);
-            }
-        };
+        let route = self.resolve_tool_call(prefixed_name).await?;
         let server_name = route.server_name.clone();
         let tool_name = route.tool.name.clone();
         // Copy the global timeouts to avoid borrow conflict
@@ -7093,6 +7555,176 @@ impl McpPool {
         // class as a failed connect: land it in the same typed state so the
         // next catalog offers the login tool instead of a dead error.
         result.map_err(|err| self.note_live_call_failure(&server_name, err))
+    }
+
+    async fn resolve_tool_call(&mut self, prefixed_name: &str) -> Result<McpToolRoute> {
+        match self.resolve_advertised_tool(prefixed_name).await {
+            Ok(route) => Ok(route),
+            Err(error) => {
+                // A real tool name reached a server whose login has lapsed
+                // (stale catalog, or a mid-session 401). Name the one call
+                // that recovers it instead of leaving a dead error.
+                if let Some(server) = self.needs_auth_server_for_tool_name(prefixed_name) {
+                    return Err(error.context(self.auth_required_hint(&server)));
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn is_pool_served_tool(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "list_mcp_resources"
+                | "list_mcp_resource_templates"
+                | "mcp_read_resource"
+                | "read_mcp_resource"
+                | "mcp_get_prompt"
+        ) || self.authenticate_tool_target(name).is_some()
+    }
+
+    async fn begin_tool_call(
+        &mut self,
+        name: &str,
+        input: &serde_json::Value,
+        rules: &[String],
+        decision: Option<&crate::core::engine::HumanDecision>,
+        turn: Option<McpCallTurn>,
+        retry: Option<Box<McpToolRoute>>,
+    ) -> Result<McpToolCallStep> {
+        if let Some(route) = retry {
+            return self.lease_route(*route, input, decision, turn, true).await;
+        }
+        Self::authorize_call(&self.disallowed_tools, name, input)?;
+        Self::authorize_call(rules, name, input)?;
+        if self.is_pool_served_tool(name) {
+            return self
+                .call_tool_with_disallowed(name, input.clone(), rules, decision)
+                .await
+                .map(McpToolCallStep::Done);
+        }
+        if decision.is_some_and(|decision| !decision.authorizes(name, input)) {
+            anyhow::bail!("Human approval does not authorize this exact MCP call");
+        }
+        let route = self.resolve_tool_call(name).await?;
+        self.lease_route(route, input, decision, turn, false).await
+    }
+
+    async fn lease_route(
+        &mut self,
+        route: McpToolRoute,
+        input: &serde_json::Value,
+        decision: Option<&crate::core::engine::HumanDecision>,
+        turn: Option<McpCallTurn>,
+        final_attempt: bool,
+    ) -> Result<McpToolCallStep> {
+        let global_timeouts = self.config.timeouts;
+        let attempt = match self.get_or_connect(&route.server_name).await {
+            Err(error) => Err(error),
+            Ok(conn) => {
+                let bound = if final_attempt {
+                    decision.is_none() && route.permits(conn, global_timeouts)
+                } else {
+                    conn.catalog_revision == route.catalog_revision
+                        && route.permits(conn, global_timeouts)
+                };
+                if bound {
+                    let timeout = conn.config().effective_execute_timeout(&global_timeouts);
+                    Ok((timeout, conn.lease_for_call(turn).await))
+                } else if final_attempt {
+                    Err(anyhow::anyhow!(
+                        "MCP operation binding changed on reconnect; prepare a new call"
+                    ))
+                } else {
+                    Err(anyhow::anyhow!(
+                        "MCP operation binding changed after tool resolution; retry the call"
+                    ))
+                }
+            }
+        };
+        match attempt {
+            Ok((timeout, Ok(leased))) => Ok(McpToolCallStep::Call(Box::new(McpLeasedCall {
+                leased,
+                route,
+                arguments: input.clone(),
+                timeout,
+                final_attempt,
+            }))),
+            Ok((_, Err(lane))) => Ok(McpToolCallStep::Wait(McpCallQueue {
+                lane,
+                retry: final_attempt.then(|| Box::new(route)),
+            })),
+            Err(error) if final_attempt => {
+                Err(self.note_live_call_failure(&route.server_name, error))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn finish_tool_call(
+        &mut self,
+        outcome: McpToolCallOutcome,
+        input: &serde_json::Value,
+        decision: Option<&crate::core::engine::HumanDecision>,
+    ) -> Result<McpToolCallStep> {
+        let McpToolCallOutcome {
+            result,
+            lane,
+            route,
+            final_attempt,
+        } = outcome;
+        let err = match result {
+            Ok(result) => return Ok(McpToolCallStep::Done(result)),
+            Err(err) => err,
+        };
+        let server_name = route.server_name.clone();
+        let tool_name = route.tool.name.clone();
+        if final_attempt {
+            return Err(self.note_live_call_failure(&server_name, err));
+        }
+        if is_mcp_session_rejected_error(&err) && !oauth::error_looks_auth_required(&err) {
+            tracing::debug!(
+                target: "mcp",
+                server = server_name,
+                tool = tool_name,
+                error = %err,
+                "retrying MCP tool call after stale session"
+            );
+            if self
+                .connections
+                .get(&server_name)
+                .is_some_and(|connection| connection.holds_call_lane(&lane))
+            {
+                self.drop_connection(&server_name, "stale session retry");
+            }
+            let reconnect = self.get_or_connect(&server_name).await.map(|_| ());
+            if let Err(reconnect_err) = reconnect {
+                let error = anyhow::anyhow!("{err:#}; reconnect failed: {reconnect_err:#}");
+                return Err(self.note_live_call_failure(&server_name, error));
+            }
+            return self.lease_route(route, input, decision, None, true).await;
+        }
+        if is_mcp_connection_lost_error(&err) && !oauth::error_looks_auth_required(&err) {
+            tracing::debug!(
+                target: "mcp",
+                server = server_name,
+                tool = tool_name,
+                error = %err,
+                "MCP connection lost during tool call; not retrying"
+            );
+            if let Some(connection) = self.connections.get_mut(&server_name)
+                && connection.holds_call_lane(&lane)
+            {
+                connection.transport.shutdown().await;
+                connection.close();
+            }
+            let err = err.context(format!(
+                "MCP server '{server_name}' connection closed during tool call \
+                 '{tool_name}'; outcome unknown, not retried"
+            ));
+            return Err(self.note_live_call_failure(&server_name, err));
+        }
+        Err(self.note_live_call_failure(&server_name, err))
     }
 
     /// Get list of configured server names (static + dynamic)
@@ -7284,6 +7916,9 @@ impl McpPool {
         config: McpServerConfig,
         runtime_added: bool,
     ) -> Result<(), String> {
+        if name.trim().is_empty() {
+            return Err("MCP server name must not be empty".to_string());
+        }
         self.require_server(&name)
             .map_err(|error| error.to_string())?;
         if self.config.servers.contains_key(&name) {
@@ -7744,7 +8379,7 @@ pub fn load_config(path: &Path) -> Result<McpConfig> {
 }
 
 /// Maximum bytes read from an MCP config file. Configs are kilobytes.
-const MAX_MCP_CONFIG_BYTES: u64 = 1024 * 1024;
+pub const MAX_MCP_CONFIG_BYTES: u64 = 1024 * 1024;
 
 fn read_mcp_config_file(path: &Path) -> Result<Option<String>> {
     read_bounded_mcp_config_file(path, MAX_MCP_CONFIG_BYTES)
@@ -7752,7 +8387,7 @@ fn read_mcp_config_file(path: &Path) -> Result<Option<String>> {
 
 /// [`read_mcp_config_file`] with a caller-chosen size bound, for foreign files
 /// such as `~/.claude.json` that carry far more than an MCP server map.
-fn read_bounded_mcp_config_file(path: &Path, max_bytes: u64) -> Result<Option<String>> {
+pub fn read_bounded_mcp_config_file(path: &Path, max_bytes: u64) -> Result<Option<String>> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -7764,6 +8399,13 @@ fn read_bounded_mcp_config_file(path: &Path, max_bytes: u64) -> Result<Option<St
     let file_type = metadata.file_type();
     if file_type.is_symlink() || !file_type.is_file() {
         anyhow::bail!("MCP config path must be a regular file: {}", path.display());
+    }
+    if metadata.len() > max_bytes {
+        anyhow::bail!(
+            "MCP config {} exceeds the {} MiB limit",
+            path.display(),
+            max_bytes / (1024 * 1024)
+        );
     }
 
     let file = open_mcp_config_file(path)
@@ -8730,7 +9372,11 @@ pub fn mutate_config<T>(
         }
         write_atomic(path, rendered.as_bytes())
             .with_context(|| format!("Failed to write MCP config {}", path.display()))?;
-        project_authority::carry_approval_across_product_edit(path, original.as_deref(), &rendered);
+        project_authority::carry_approval_across_product_edit(
+            path,
+            original.as_deref(),
+            &rendered,
+        )?;
         Ok((result, config_revision(Some(&rendered))))
     })
 }

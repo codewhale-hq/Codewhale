@@ -34,8 +34,16 @@ pub const PAUSED: &str = "⏸";
 pub const STOPPED: &str = "■";
 /// A state nobody reported. Never shown as a failure.
 pub const UNKNOWN: &str = "?";
+/// Blocked state waiting on a hard precondition or external gate.
+pub const BLOCKED: &str = "⊘";
+/// Resting state between active runs.
+pub const RESTING: &str = "◡";
+/// Asleep or suspended state.
+pub const ASLEEP: &str = "☾";
 /// The one ellipsis.
 pub const ELLIPSIS: &str = "…";
+/// Typographic minus sign for signed numbers and diffs.
+pub const MINUS: &str = "\u{2212}";
 /// Fleet role marks share the same charter while retaining distinct shapes.
 pub const ROLE_MANAGER: &str = "◆";
 pub const ROLE_BUILDER: &str = "■";
@@ -65,7 +73,7 @@ pub fn pick(symbol: &'static str, ascii: bool) -> &'static str {
 #[must_use]
 pub fn ascii_fallback(symbol: &str) -> Option<&'static str> {
     match symbol {
-        "─" | "━" | "═" | "╌" | "╍" | "┄" | "┅" | "┈" | "┉" | "—" | "–" => {
+        "─" | "━" | "═" | "╌" | "╍" | "┄" | "┅" | "┈" | "┉" | "—" | "–" | "\u{2212}" => {
             Some("-")
         }
         "│" | "┃" | "║" | "╎" | "╏" | "▏" | "▎" | "▍" | "▌" | "▐" | "▕" => {
@@ -103,7 +111,10 @@ pub fn ascii_fallback(symbol: &str) -> Option<&'static str> {
         "●" | "∘" | "•" | "·" => Some("."),
         "○" | "☐" | "◌" | "˚" | "°" | "◦" => Some("o"),
         "✓" | "✔" | "☑" => Some("Y"),
-        "✕" | "×" | "⊘" | "✗" | "✘" | "☒" => Some("X"),
+        "✕" | "×" | "✗" | "✘" | "☒" => Some("X"),
+        "⊘" => Some("!"),
+        "◡" => Some("~"),
+        "☾" => Some("z"),
         "⏸" => Some("="),
         // Schedule/timer (the activity band's automation slot) — cron's `@`.
         "⏱" => Some("@"),
@@ -170,7 +181,11 @@ mod tests {
             ("🐳", "w"),
             ("🐋", "w"),
             (STOPPED, "#"),
+            (BLOCKED, "!"),
+            (RESTING, "~"),
+            (ASLEEP, "z"),
             (ELLIPSIS, "."),
+            (MINUS, "-"),
         ] {
             assert_eq!(ascii_fallback(rich), Some(safe));
         }
@@ -198,7 +213,11 @@ mod tests {
             PAUSED,
             STOPPED,
             UNKNOWN,
+            BLOCKED,
+            RESTING,
+            ASLEEP,
             ELLIPSIS,
+            MINUS,
             ROLE_MANAGER,
             ROLE_BUILDER,
             ROLE_REVIEWER,

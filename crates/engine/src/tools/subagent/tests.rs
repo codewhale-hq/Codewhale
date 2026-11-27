@@ -8437,6 +8437,7 @@ fn every_named_role_has_one_complete_capability_based_surface() {
         "request_user_input",
         "retrieve_tool_result",
         "review",
+        "rlm",
         "session_get",
         "session_search",
         "show_data",
@@ -8483,6 +8484,7 @@ fn every_named_role_has_one_complete_capability_based_surface() {
         "retrieve_tool_result",
         "revert_turn",
         "review",
+        "rlm",
         "send_later",
         "session_get",
         "session_search",
@@ -13839,9 +13841,69 @@ fn child_launch_error_names_provider_model_and_route_source() {
 }
 
 #[test]
-fn subagent_runtime_default_depth_does_not_restrict_delegation() {
-    // Sanity-check the constant — bumping it without a test means stale docs.
-    assert_eq!(DEFAULT_MAX_SPAWN_DEPTH, u32::MAX);
+fn subagent_runtime_default_depth_is_bounded() {
+    assert_eq!(DEFAULT_MAX_SPAWN_DEPTH, 3);
+}
+
+#[test]
+fn subagent_completion_emits_distinct_events_for_interrupted_and_cancelled() {
+    let mut interrupted = make_snapshot(SubAgentStatus::Interrupted("API timeout".to_string()));
+    interrupted.checkpoint = Some(build_subagent_checkpoint(
+        &interrupted.agent_id,
+        "API timeout",
+        &[Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hi".to_string(),
+                cache_control: None,
+            }],
+        }],
+        2,
+        true,
+    ));
+    let interrupted_completion = subagent_completion_from_result(&interrupted);
+    assert!(!interrupted_completion.is_high_priority_failure());
+    let interrupted_json = interrupted_completion
+        .payload
+        .lines()
+        .last()
+        .unwrap()
+        .trim_start_matches("<codewhale:subagent.done>")
+        .trim_end_matches("</codewhale:subagent.done>");
+    let parsed: serde_json::Value = serde_json::from_str(interrupted_json).unwrap();
+    assert_eq!(parsed["event"], "subagent.interrupted");
+    assert_eq!(parsed["status"], "interrupted");
+    assert_eq!(parsed["continuable"], true);
+    assert_eq!(
+        parsed["transcript_handle"],
+        format!("agent:{}/full_transcript", interrupted.agent_id)
+    );
+
+    let cancelled = make_snapshot(SubAgentStatus::Cancelled);
+    let cancelled_completion = subagent_completion_from_result(&cancelled);
+    assert!(!cancelled_completion.is_high_priority_failure());
+    let cancelled_json = cancelled_completion
+        .payload
+        .lines()
+        .last()
+        .unwrap()
+        .trim_start_matches("<codewhale:subagent.done>")
+        .trim_end_matches("</codewhale:subagent.done>");
+    let parsed: serde_json::Value = serde_json::from_str(cancelled_json).unwrap();
+    assert_eq!(parsed["event"], "subagent.cancelled");
+    assert_eq!(parsed["status"], "cancelled");
+}
+
+#[test]
+fn terminal_mailbox_message_preserves_budget_exhausted_variant() {
+    let mut snap = make_snapshot(SubAgentStatus::BudgetExhausted);
+    snap.result = Some("step budget exhausted".to_string());
+    let msg = terminal_mailbox_message(&snap, None);
+    assert!(matches!(
+        msg,
+        MailboxMessage::BudgetExhausted { ref agent_id, ref summary }
+            if agent_id == &snap.agent_id && summary.contains("step budget exhausted")
+    ));
 }
 
 #[test]
@@ -22631,14 +22693,14 @@ fn the_unified_rlm_action_cannot_bypass_a_denied_alias() {
         );
     }
 
-    // Visibility: new model turns use the single session-persistent kernel,
-    // so the compatibility action family is never advertised to a child.
-    assert!(
-        registry
-            .tools_for_model(&FleetRole::Builder)
-            .iter()
-            .all(|tool| tool.name != "rlm"),
-        "the compatibility RLM family must stay hidden from new child turns"
+    let rlm_tool = registry
+        .tools_for_model(&FleetRole::Builder)
+        .into_iter()
+        .find(|tool| tool.name == "rlm")
+        .expect("canonical rlm tool stays visible with bounded actions");
+    assert_eq!(
+        rlm_tool.input_schema["properties"]["action"]["enum"],
+        json!(["session_objects", "configure", "close"]),
     );
 }
 
@@ -23604,8 +23666,8 @@ const READ_ONLY_CHILD_ENVELOPE_BYTE_CEILING: usize = 89_112;
 /// fetch / merge_tree verify tools (b89349286f) and this slice's grant
 /// text both in the shared catalog.
 // Re-measured when `load_skill` joined the eager catalog: +244B for its
-// name, description and schema, against the `## Skills` index the prefix
-// already carries and a `change:tool_surface` re-pin per skill use avoided.
+// name, description and schema, against a `change:tool_surface` re-pin per
+// skill use avoided.
 // Re-measured 2026-09-22 at 88,715B on Linux (88,702B on macOS), +73B: the
 // base prompt's progress-narration rule (E4, 5cf9db3d6) and the workflow
 // Fleet origin list (26cfaf8de), net of the read/bash wording trims
@@ -23638,8 +23700,9 @@ const READ_ONLY_CHILD_ENVELOPE_BYTE_CEILING: usize = 89_112;
 // schema edits, plus 112B for the display-only bash description. The
 // context_archive_search and context_archive_get specs (#7173) add 751B. The
 // 0.10.3 tool-text batch adds the rest; the ceiling now matches the measured
-// 94,121B on this machine.
-const PARENT_SURFACE_BYTE_CEILING: usize = 95_779;
+// 94,121B on this machine. The finance description's `quote_age_seconds`
+// sentence adds 45B.
+const PARENT_SURFACE_BYTE_CEILING: usize = 98_094;
 
 #[tokio::test]
 async fn read_only_child_envelope_stays_within_measured_ceiling() {

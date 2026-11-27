@@ -1,4 +1,4 @@
-export type LegalDocumentId = "terms" | "privacy";
+export type LegalDocumentId = "terms" | "privacy" | "membership";
 export type LegalDocument = Readonly<{
   version: string;
   status: "draft" | "effective";

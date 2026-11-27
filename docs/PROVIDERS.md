@@ -14,17 +14,13 @@ base URLs), derives context windows, output limits, capabilities, and prices
 from the resolved route, and verifies signed `registry.json` updates is owned in
 one place: [Models and providers](MODELS_AND_PROVIDERS.md).
 
-The `/provider` and `/model` pickers recommend OrcaRouter as a partner option.
-Click the recommendation or press F7 to view the Codewhale × OrcaRouter offer:
-a **30% top-up match for DeepSeek V4.1 Flash**. The pager includes the
-[redemption link](https://www.orcarouter.ai/redeem/1a6250545fdc4e0aaccb0a4470159e67)
-and can copy its text. This link is part of a referral campaign; Codewhale may
-earn a referral reward on top-ups made through it.
-Current eligibility and terms are owned by the linked offer page. Viewing it
-preserves the current provider, model and credentials; redemption happens on
-OrcaRouter's site.
-The recommendation is not shown when the interface is in Simplified Chinese or
-the computer is set to a mainland China time zone or locale.
+Until the campaign ended at 2026-11-21 12:29:57 UTC, the `/provider` and
+`/model` pickers recommended OrcaRouter as a partner option, and clicking it or
+pressing F7 opened the Codewhale × OrcaRouter referral offer, a 30% top-up
+match for DeepSeek V4.1 Flash. From 0.10.4 the recommendation and F7 are gone
+after that time, judged by the computer's clock. It was never shown when the
+interface is in Simplified Chinese or the computer is set to a mainland China
+time zone or locale.
 
 DeepSeek remains the default provider, but every entry in `ProviderKind::ALL`
 is a first-class selectable provider route. `ALL` is the catalog/picker
@@ -71,6 +67,15 @@ against the vendor's own docs before trusting any value here:
 | Runcrate | `https://api.runcrate.ai/v1` | `deepseek-ai/DeepSeek-V4.1-Flash`, `zai-org/GLM-5.3`, `openai/gpt-oss-120b` | `RUNCRATE_API_KEY` |
 | Opper | `https://api.opper.ai/v3/compat` | `claude-sonnet-4-6`, `gpt-5.4-mini` (pool names); `anthropic/claude-sonnet-4-6` | `OPPER_API_KEY` |
 | Tencent TokenHub | `https://tokenhub-intl.tencentcloudmaas.com/v1` | `hy4` | `TENCENT_API_KEY` |
+| LLMTR | `https://llmtr.com/v1` | `minimax/minimax-m3.1-flash`; namespaced `vendor/model` ids, from the live catalog | `LLMTR_API_KEY` |
+| WorldRouter | `https://inference-api.worldrouter.ai/v1` | `claude-sonnet-5-5`, `deepseek-v4-flash`, `gemini-4-neon` | `WORLDROUTER_API_KEY` |
+| TrustedRouter | `https://api.trustedrouter.com/v1` | `deepseek/deepseek-v4-flash`, `anthropic/claude-sonnet-4.5`; `trustedrouter/auto` (router) | `TRUSTEDROUTER_API_KEY` |
+
+**Bundled provider criteria:** Built-in rows in `provider_descriptors.json` are
+reserved for established operators with reliable APIs, public documentation,
+and clear community demand. Any OpenAI-compatible or Anthropic-compatible
+endpoint works immediately without a bundled row via `[providers.<name>]` in
+`config.toml` or `/provider` → Custom.
 
 Tinker's OpenAI-compatible API and serverless inference are beta. Select
 Tinker in `/provider` or configure the named route below. Its documented
@@ -160,6 +165,24 @@ providers' rates with no markup. The authority is
 `GET https://api.opper.ai/v3/compat/models` with your key.
 Docs: <https://docs.opper.ai/build/gateway/drop-in-sdks>.
 
+LLMTR publishes model IDs at <https://llmtr.com/v1/models>. Pick a model that lists `/v1/chat/completions` under `supported_endpoints`. Create a key at <https://llmtr.com/dashboard/keys> and set `LLMTR_API_KEY` for requests. For data residency, check the hosting location stated for that model in the [provider’s data handling guidance](https://llmtr.com/docs/security/).
+
+WorldRouter is an OpenAI-compatible gateway with Claude, GPT, Gemini, DeepSeek,
+Kimi and GLM models behind one key. Model ids are unprefixed, such as
+`claude-sonnet-5-5` or `deepseek-v4-flash`, and the catalog with prices is at
+<https://www.worldrouter.ai/models>. The authority is
+`GET https://inference-api.worldrouter.ai/v1/models` with your key.
+Docs: <https://www.worldrouter.ai/docs/quickstart>.
+
+TrustedRouter is an OpenAI-compatible gateway with one key for models from
+several labs. Model ids are vendor-prefixed, such as `deepseek/deepseek-v4-flash`
+(the default) or `anthropic/claude-sonnet-4.5`; `trustedrouter/auto` routes each
+request across models. The authority is the public
+`GET https://api.trustedrouter.com/v1/models`. Inference requires
+`TRUSTEDROUTER_API_KEY`; a successful public listing does not verify the key.
+Create the key at [trustedrouter.com](https://trustedrouter.com/console/api-keys).
+Docs: <https://trustedrouter.com/docs>.
+
 Tencent TokenHub is available as `/provider tencent` (aliases `tokenhub`,
 `tencent-tokenhub`, and `hunyuan`) on the existing Chat Completions transport.
 Its stable HY4 model is `hy4`; OpenRouter uses the distinct `tencent/hy4` wire
@@ -201,11 +224,11 @@ Sources to keep in sync (full architecture and rules in
 - `crates/config/src/provider_kind.rs` and `crates/runtime/src/config.rs` -
   provider identity serde, captured configured provider identities, environment
   precedence, and Rust route/auth behavior.
-- `crates/config/assets/catalog_corrections.json` and
-  `crates/config/assets/models_dev.bundled.json` - field holds and reviewed
-  intrinsic model facts (`thought_signatures_required`, `thinking_can_disable`,
-  transports, reference prices, and source receipts) rendered into the offline
-  seed by `scripts/catalog_models_dev.py`.
+- `crates/config/assets/catalog_corrections.json` - field holds and the only
+  table of reviewed intrinsic model facts (`thought_signatures_required`,
+  `thinking_can_disable`, transports, reference prices, and source receipts);
+  `crates/config/assets/models_dev.bundled.json` is the offline seed rendered
+  by `scripts/catalog_models_dev.py` without them.
 - `crates/engine/src/provider_lake.rs`, `route_budget.rs`, and `pricing.rs` -
   derive context windows, output limits, capabilities, and prices from the
   resolved route and catalog offerings.
@@ -651,7 +674,7 @@ a custom provider entry for that plan until a follow-up adds it.
 
 Private gateways with broken or intercepted certificates should use
 `SSL_CERT_FILE` with a trusted CA bundle. The legacy
-`insecure_skip_tls_verify = true` key is still parsed so `codewhale doctor` can
+`insecure_skip_tls_verify = true` key is still parsed so `codewhale doctor --full` can
 report stale configs, but provider clients reject it instead of skipping TLS
 certificate verification.
 
@@ -1600,7 +1623,7 @@ on live traffic):
 
 - **A cold model looks broken.** The first call to a model the provider has not
   loaded can take 90 to 150 seconds, then drop to a second or less once warm.
-  Raise `[stream].open_timeout_secs` (default 180 seconds, at most 600) before reading a timeout as "model unavailable".
+  Raise `[stream].open_timeout_secs` (default 180 seconds, at most 600) before reading a timeout as "model unavailable". A request that gets no response headers in that time is sent again once (`[stream].open_retries`).
 - **Listed is not callable.** A catalog entry can be visible and still fail
   every call. The same error text on every attempt (for example a "resources
   busy" 502) is not transient: a genuinely busy upstream returns successes in

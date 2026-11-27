@@ -609,6 +609,11 @@ fn build_entries(
     }
 
     for binding in KEYBINDINGS {
+        if matches!(binding.description_id, MessageId::OrcaRouterOfferAction)
+            && !crate::tui::orca_offer::available(locale)
+        {
+            continue;
+        }
         // macOS renders Alt chords with the Option glyph (`⌥V`), never
         // `Alt`/`Cmd` (TUI-DOG-002 acceptance).
         let chord = match (multiline_mode, binding.description_id) {
@@ -1172,7 +1177,6 @@ impl ModalView for HelpView {
             &[
                 ActionHint::new("", self.tr(MessageId::HelpFooterMove)),
                 ActionHint::new("", self.tr(MessageId::HelpFooterJump)),
-                ActionHint::new("←/→", ""),
                 ActionHint::new("", self.tr(MessageId::HelpFooterClose)),
             ],
         );
@@ -1369,8 +1373,10 @@ mod tests {
     #[test]
     fn empty_filter_lists_all_entries() {
         let view = HelpView::new();
-        // Total = registered slash commands + catalogued keybindings.
-        let expected = commands::command_infos().len() + KEYBINDINGS.len();
+        // Total = registered slash commands + catalogued keybindings, less
+        // the partner-offer key once its campaign has ended.
+        let ended_offer = usize::from(!crate::tui::orca_offer::available(Locale::En));
+        let expected = commands::command_infos().len() + KEYBINDINGS.len() - ended_offer;
         assert_eq!(view.filtered.len(), expected);
         assert_eq!(view.entries.len(), expected);
     }

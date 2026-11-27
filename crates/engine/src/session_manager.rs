@@ -23,7 +23,7 @@ use codewhale_models::turn_classify::same_recorded_turn;
 use codewhale_models::{ContentBlock, Message, SystemPrompt};
 use codewhale_runtime::artifacts::ArtifactRecord;
 use codewhale_runtime::session_tree::{SessionEntry, SessionImportContainer, SessionJournal};
-use codewhale_util::utils::write_atomic;
+use codewhale_util::utils::{sync_directory, write_atomic};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
@@ -1918,6 +1918,8 @@ pub struct SavedTurnOutcome {
     pub error: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<crate::llm_error_envelope::ProviderFailureCause>,
     pub ended_at: DateTime<Utc>,
     /// Transcript messages that existed when the turn ended. Resume places
     /// the notice after that many messages (clamped to the transcript).
@@ -1928,10 +1930,19 @@ impl SavedTurnOutcome {
     /// Build the persisted record for a failed turn. Redacts before bounding
     /// so a cut can never leave half a secret behind.
     pub fn failed(error: &str, after_message_count: usize) -> Self {
-        Self::failed_with_code(error, None, after_message_count)
+        Self::failed_with_cause(error, None, None, after_message_count)
     }
 
     pub fn failed_with_code(error: &str, code: Option<&str>, after_message_count: usize) -> Self {
+        Self::failed_with_cause(error, code, None, after_message_count)
+    }
+
+    pub fn failed_with_cause(
+        error: &str,
+        code: Option<&str>,
+        cause: Option<crate::llm_error_envelope::ProviderFailureCause>,
+        after_message_count: usize,
+    ) -> Self {
         let redacted = codewhale_sanitize::redact::redact_secrets(error.trim());
         let error = if redacted.chars().count() > MAX_SAVED_TURN_OUTCOME_ERROR_CHARS {
             let mut cut: String = redacted
@@ -1951,6 +1962,7 @@ impl SavedTurnOutcome {
             status: crate::core::events::TurnOutcomeStatus::Failed,
             error,
             code,
+            cause,
             ended_at: Utc::now(),
             after_message_count,
         }
@@ -3019,13 +3031,48 @@ impl SessionManager {
     }
 
     fn write_late_usage_ledger(path: &Path, ledger: &LateUsageLedger) -> io::Result<()> {
-        let bytes = serde_json::to_vec(ledger)
+        let mut bytes = serde_json::to_vec(ledger)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_LATE_USAGE_LEDGER_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "late usage ledger exceeds its size bound",
-            ));
+        let limit = usize::try_from(MAX_LATE_USAGE_LEDGER_BYTES).unwrap_or(usize::MAX);
+        if bytes.len() > limit {
+            let mut remaining_bytes = bytes.len();
+            let mut pruned = 0;
+            for record in ledger
+                .records
+                .iter()
+                .filter(|record| record.diagnostic_only)
+            {
+                let record_len = serde_json::to_vec(record)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+                    .len();
+                pruned += 1;
+                let comma = usize::from(pruned < ledger.records.len());
+                remaining_bytes -= record_len + comma;
+                if remaining_bytes <= limit {
+                    break;
+                }
+            }
+            if remaining_bytes > limit {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "late usage ledger exceeds its size bound",
+                ));
+            }
+            let mut compacted = ledger.clone();
+            let mut remaining = pruned;
+            compacted.records.retain(|record| {
+                if record.diagnostic_only && remaining > 0 {
+                    remaining -= 1;
+                    return false;
+                }
+                true
+            });
+            bytes = serde_json::to_vec(&compacted)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            tracing::warn!(
+                pruned,
+                "compacted late usage diagnostic receipts to fit the ledger bound"
+            );
         }
         let parent = path.parent().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "usage ledger has no parent")
@@ -3697,7 +3744,10 @@ impl SessionManager {
         let path = self.validated_session_goal_path(session_id)?;
         let Some(goal) = goal else {
             if self.checked_existing_session_goals_dir()?.is_some() && path.exists() {
-                fs::remove_file(path)?;
+                fs::remove_file(&path)?;
+                if let Some(parent) = path.parent() {
+                    sync_directory(parent);
+                }
             }
             return Ok(());
         };
@@ -4728,7 +4778,10 @@ impl SessionManager {
             Err(error) => return Err(error),
         }
         match fs::remove_file(journal_archive_path(&self.sessions_dir, id)?) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                sync_directory(&dir);
+                Ok(())
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error),
         }
@@ -6115,7 +6168,10 @@ impl SessionManager {
             Err(error) => return Err(error),
         }
         match fs::remove_file(dir.join(name)) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                sync_directory(&dir);
+                Ok(())
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error),
         }
@@ -6198,7 +6254,9 @@ impl SessionManager {
                 Err(error) => return Err(error),
             }
             // The pre-import copy is an older ordinary snapshot, not recovery.
-            return self.remove_import_archive_copy(&path);
+            let result = self.remove_import_archive_copy(&path);
+            sync_directory(&self.sessions_dir);
+            return result;
         }
         // The store this document is bound to is named by its binding, not by
         // its id: a host store usually sits under another conversation's
@@ -6221,13 +6279,25 @@ impl SessionManager {
             Err(error) => return Err(error),
         }
         match fs::remove_file(&late_path) {
-            Ok(()) => {}
+            Ok(()) => {
+                if let Some(parent) = late_path.parent()
+                    && parent != self.sessions_dir.as_path()
+                {
+                    sync_directory(parent);
+                }
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
         if let Some(checkpoint) = checkpoint {
-            match fs::remove_file(checkpoint) {
-                Ok(()) => {}
+            match fs::remove_file(&checkpoint) {
+                Ok(()) => {
+                    if let Some(parent) = checkpoint.parent()
+                        && parent != self.sessions_dir.as_path()
+                    {
+                        sync_directory(parent);
+                    }
+                }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error),
             }
@@ -6236,12 +6306,14 @@ impl SessionManager {
         self.remove_journal_archive(id)?;
         self.clear_session_boot_owner(id);
         let session_dir = self.sessions_dir.join(id.trim());
+        let mut removed_in_session_dir = false;
         if session_dir.exists() {
             if codewhale_util::path_identity::metadata_is_link_or_reparse(&fs::symlink_metadata(
                 &session_dir,
             )?) {
                 // Preserve remove_dir_all's existing no-follow behavior.
-                fs::remove_dir_all(session_dir)?;
+                fs::remove_dir_all(&session_dir)?;
+                sync_directory(&self.sessions_dir);
                 return Ok(());
             }
             // Other conversations and automations can share this host's Runtime
@@ -6258,12 +6330,16 @@ impl SessionManager {
                 } else {
                     fs::remove_file(entry.path())?;
                 }
+                removed_in_session_dir = true;
             }
         }
         self.retire_released_stores(id, bound_store);
         if session_dir.is_dir() && fs::read_dir(&session_dir)?.next().is_none() {
-            fs::remove_dir(session_dir)?;
+            fs::remove_dir(&session_dir)?;
+        } else if removed_in_session_dir && session_dir.is_dir() {
+            sync_directory(&session_dir);
         }
+        sync_directory(&self.sessions_dir);
         Ok(())
     }
 

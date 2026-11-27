@@ -15,7 +15,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Clear, Paragraph, Widget},
 };
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use crate::tui::ocean;
 use crate::tui::views::{ContextMenuAction, ModalKind, ModalView, ViewAction, ViewEvent};
@@ -668,41 +668,19 @@ fn default_glyph_for(action: &ContextMenuAction) -> String {
 }
 
 fn trim_to_width(text: &str, max_width: usize) -> String {
-    if UnicodeWidthStr::width(text) <= max_width {
-        return text.to_string();
-    }
-    if max_width <= 3 {
-        let mut out = String::new();
-        let mut width = 0usize;
-        for ch in text.chars() {
-            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-            if width + ch_width > max_width {
-                break;
-            }
-            out.push(ch);
-            width += ch_width;
-        }
-        return out;
-    }
-
-    let limit = max_width.saturating_sub(3);
-    let mut out = String::new();
-    let mut width = 0usize;
-    for ch in text.chars() {
-        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if width + ch_width > limit {
-            break;
-        }
-        out.push(ch);
-        width += ch_width;
-    }
-    out.push_str("...");
-    out
+    codewhale_tui_kit::ui_text::truncate_line_to_width(text, max_width)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trim_to_width_keeps_grapheme_clusters_whole() {
+        let trimmed = trim_to_width("cafe\u{301} au lait", 7);
+        assert!(trimmed.starts_with("cafe\u{301}"), "{trimmed:?}");
+        assert!(UnicodeWidthStr::width(trimmed.as_str()) <= 7);
+    }
 
     #[test]
     fn primary_entry_is_selected_by_default() {

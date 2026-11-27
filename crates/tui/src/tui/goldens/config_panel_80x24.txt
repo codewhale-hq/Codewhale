@@ -1,24 +1,24 @@
                                                                                 
- ╭ Settings ────────────────────────────────────────────── Appearance · 18/72 ╮ 
- │  Appearance   Models & providers   Work   Tools & MCP   Trust   Motion   › │ 
- │  Search: type to filter  (18/72)                                           │ 
+ ╭ Settings ────────────────────────────────────────────── Appearance · 20/68 ╮ 
+ │  Appearance   Models & providers   Work   Tools & MCP   Trust   Advanced   │ 
+ │  Search: type to filter  (20/68)                                           │ 
  │ ────────────────────────────────────────────────────────────────────────── │ 
  │   Display                                                                █ │ 
- │ ▸ Theme                              terminal                ‹ ›  SAVED  █ │ 
- │   Language                           auto                    ‹ ›  SAVED  █ │ 
- │   Background                         (default)               ✎    SAVED  █ │ 
- │   Pet mode                           ○ Off                        SAVED  █ │ 
- │   Quiet transcript                   ● On                         SAVED  █ │ 
- │   Model reasoning in chat            ● On                         SAVED  █ │ 
- │   Thinking Default Expanded          ○ Off                        SAVED  █ │ 
- │   Thinking Preview Lines             2                       ✎    SAVED  │ │ 
- │   Thinking background highlight      ● On                         SAVED  │ │ 
- │   Help Expand Groups                 ○ Off                        SAVED  │ │ 
- │   Contextual tips                    ● On                         SAVED  │ │ 
+ │ ▸ Theme                              terminal               ‹ ›  changed █ │ 
+ │   Language                           auto                   ‹ ›          █ │ 
+ │   Background                         (default)              ✎            █ │ 
+ │   Whale view                         ○ Off                               █ │ 
+ │   Quiet transcript                   ● On                                █ │ 
+ │   Model reasoning in chat            ● On                                █ │ 
+ │   Expand reasoning by default        ○ Off                               │ │ 
+ │   Reasoning preview lines            2                      ✎            │ │ 
+ │   Thinking background highlight      ● On                                │ │ 
+ │   Expand command groups in help      ○ Off                               │ │ 
+ │   Contextual tips                    ● On                                │ │ 
  │ system | terminal | shoreline | shoreline-light | underwater |…            │ 
- │ Enter or click again: Enter opens choices · Theme: current terminal ·      │ 
- │ saved terminal · applies on save                                           │ 
- │ Preview:  ● accept edits                                                   │ 
- │ ↑↓ move · Enter Enter edits · Tab switch · Esc close                       │ 
+ │ Enter or click again: opens choices · Theme: current terminal · saved      │ 
+ │ terminal · applies on save                                                 │ 
+ │ Preview:  ● Accept Edits                                                   │ 
+ │ ↑↓ move · Enter edits · Tab switch · Esc close                             │ 
  ╰────────────────────────────────────────────────────────────────────────────╯ 
                                                                                 

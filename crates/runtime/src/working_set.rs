@@ -79,7 +79,6 @@ impl Workspace {
     /// the secondary resolution pass. Convenience entry point intended for
     /// callers that don't already have a CWD on hand; the App routes through
     /// [`Workspace::with_cwd`] with its own captured launch directory.
-    #[allow(dead_code)] // Keeps the surface stable for #97 (Ctrl+P picker).
     pub fn new(root: PathBuf) -> Self {
         Self::with_cwd(root, std::env::current_dir().ok())
     }
@@ -1197,8 +1196,13 @@ impl WorkingSet {
                 ));
                 continue;
             }
-            let body = match std::fs::read_to_string(&abs) {
-                Ok(text) => text,
+            let read_cap = self.config.max_resident_file_bytes.min(
+                self.config
+                    .max_total_resident_bytes
+                    .saturating_sub(total_bytes),
+            ) as u64;
+            let (body, file_len) = match read_resident_prefix(&abs, read_cap) {
+                Ok(read) => read,
                 Err(_) => {
                     if !header_pushed {
                         lines.push("### Active file contents (cache-resident)".to_string());
@@ -1231,7 +1235,7 @@ impl WorkingSet {
             if truncated {
                 lines.push(format!(
                     "<!-- ...{} more bytes truncated for prompt budget -->",
-                    body.len().saturating_sub(shown.len())
+                    file_len.saturating_sub(shown.len() as u64)
                 ));
             }
             lines.push("```".to_string());
@@ -1673,6 +1677,25 @@ fn list_top_level_dirs(workspace: &Path, limit: usize) -> (Vec<String>, usize) {
 
 const IGNORED_ROOT_DIRS: &[&str] = &["target", "node_modules", "dist", "build", ".git"];
 
+fn read_resident_prefix(path: &Path, cap: u64) -> std::io::Result<(String, u64)> {
+    use std::io::Read as _;
+    let file = std::fs::File::open(path)?;
+    let file_len = file.metadata()?.len();
+    let mut bytes = Vec::new();
+    file.take(cap.saturating_add(4)).read_to_end(&mut bytes)?;
+    let file_len = file_len.max(bytes.len() as u64);
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok((text, file_len)),
+        Err(error) if error.utf8_error().error_len().is_none() => {
+            let valid = error.utf8_error().valid_up_to();
+            let mut bytes = error.into_bytes();
+            bytes.truncate(valid);
+            Ok((String::from_utf8(bytes).expect("valid prefix"), file_len))
+        }
+        Err(error) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1966,9 +1989,23 @@ mod tests {
         ws.observe_user_message("src/big.rs", tmp.path());
         let block = ws.summary_block(tmp.path(), &|_| true).expect("block");
 
-        assert!(block.contains("truncated for prompt budget"));
+        assert!(block.contains("<!-- ...9900 more bytes truncated for prompt budget -->"));
         // The full 10k body must not be inlined.
         assert!(!block.contains(&big));
+    }
+
+    #[test]
+    fn read_resident_prefix_does_not_read_past_cap() {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("tail-invalid.txt");
+        let mut bytes = vec![b'a'; 128];
+        bytes.extend_from_slice(&[0xff, 0xfe, 0xfd, 0xfc]);
+        fs::write(&path, &bytes).expect("write");
+
+        let (prefix, file_len) = read_resident_prefix(&path, 64).expect("bounded prefix read");
+        assert_eq!(file_len, bytes.len() as u64);
+        assert!(prefix.len() <= 68);
+        assert!(prefix.starts_with(&"a".repeat(64)));
     }
 
     #[test]

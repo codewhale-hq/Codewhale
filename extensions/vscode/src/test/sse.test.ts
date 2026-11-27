@@ -75,4 +75,10 @@ describe("SseParser", () => {
     assert.equal(eventsOf(['data: {"event":"no-seq"}\n\n']).length, 0);
     assert.equal(eventsOf(['data: {"seq":1}\n\n']).length, 0);
   });
+  it("refuses an unterminated frame that outgrows the limit", () => {
+    const parser = new SseParser(64);
+    assert.deepEqual(parser.push("data: " + "x".repeat(32)), []);
+    assert.throws(() => parser.push("x".repeat(64)), /size limit/);
+    assert.equal(parser.push('data: {"seq":1,"event":"item.delta"}\n\n').length, 1);
+  });
 });

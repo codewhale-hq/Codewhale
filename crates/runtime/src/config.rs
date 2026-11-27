@@ -499,6 +499,7 @@ where
 #[serde(deny_unknown_fields)]
 pub struct StreamConfig {
     pub open_timeout_secs: Option<u64>,
+    pub open_retries: Option<u32>,
     pub chunk_timeout_secs: Option<u64>,
     pub force_http1: Option<bool>,
     pub max_resumes: Option<u32>,
@@ -1222,7 +1223,7 @@ pub struct SubagentsConfig {
     /// spawn. `0` blocks the model-facing `agent` tool at this runtime depth;
     /// use `[subagents] enabled = false` for the clearer durable off switch.
     /// `1` allows one level, `2` two, and so on. When unset, defaults to
-    /// [`codewhale_protocol::fleet::DEFAULT_SPAWN_DEPTH`], with no product depth cap.
+    /// [`codewhale_protocol::fleet::DEFAULT_SPAWN_DEPTH`].
     /// Fleet workers are governed separately by `[fleet.exec] max_spawn_depth`;
     /// both use the same default.
     #[serde(default)]
@@ -1417,6 +1418,11 @@ pub struct AutoRouterConfig {
     /// the configured OpenRouter base URL.
     #[serde(default)]
     pub base_url: Option<String>,
+    /// Decision routers only: `true` appends the shadow Decision Gate's three
+    /// questions to the router's own request (#6603). The recommendation is
+    /// logged, never acted on. Replaces the removed `SUPERFAST_*` variables.
+    #[serde(default)]
+    pub shadow_gate: Option<bool>,
 }
 
 /// `[auto.router] kind` (#6525).
@@ -1570,10 +1576,10 @@ impl CloudFactsConfig {
 #[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalDefaultSelection {
-    /// Highlight the deny option, so a reflexive Enter refuses the call.
-    #[default]
+    /// Highlight the deny option, so Enter refuses the call.
     Deny,
-    /// Highlight "allow once", restoring the pre-v0.9.6 Enter-to-approve flow.
+    /// Highlight "allow once", so Enter allows the one action shown.
+    #[default]
     AllowOnce,
 }
 
@@ -1583,7 +1589,7 @@ pub enum ApprovalDefaultSelection {
 #[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
 pub struct ApprovalConfig {
     /// Option highlighted when an approval card first appears (#5293).
-    /// Default: `deny`.
+    /// Default: `allow_once`.
     #[serde(default)]
     pub default_selection: ApprovalDefaultSelection,
     /// Seconds an interactive approval card may wait before it resolves
@@ -1674,6 +1680,23 @@ pub trait ModelHttpPolicy: std::fmt::Debug + Send + Sync {
         builder: reqwest::ClientBuilder,
         base_url: &str,
     ) -> Result<reqwest::ClientBuilder>;
+}
+
+fn default_catalog_auto_refresh() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogConfig {
+    #[serde(default = "default_catalog_auto_refresh", alias = "autoRefresh")]
+    pub auto_refresh: bool,
+}
+
+impl Default for CatalogConfig {
+    fn default() -> Self {
+        Self { auto_refresh: true }
+    }
 }
 
 /// Resolved CLI configuration, including defaults and environment overrides.
@@ -1840,6 +1863,8 @@ pub struct Config {
     /// reading "unset" while batches ship (#5441).
     #[serde(default)]
     pub telemetry: Option<bool>,
+    #[serde(default)]
+    pub catalog: Option<CatalogConfig>,
     #[serde(default, alias = "fallbackProviders")]
     pub fallback_providers: Vec<codewhale_config::ProviderKind>,
     pub yolo: Option<bool>,
@@ -2114,6 +2139,9 @@ pub struct Config {
     /// defaults, including when it equals the previously saved model.
     #[serde(skip)]
     pub environment_model_applied: bool,
+
+    #[serde(skip)]
+    pub project_model: Option<String>,
 
     #[serde(skip)]
     pub route_provenance: RouteProvenance,
@@ -2427,8 +2455,9 @@ pub struct RuntimeApiConfig {
     pub cors_origins: Option<Vec<String>>,
 }
 
-/// `[skills]` table — discovery, ambient index and installer configuration.
+/// `[skills]` table — discovery, catalog preview and installer configuration.
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct SkillsConfig {
     #[serde(default)]
     pub bundled: BundledSkillsConfig,
@@ -2467,6 +2496,7 @@ pub enum BundledSkillsInstall {
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq, Hash, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BundledSkillsConfig {
     pub install: Option<BundledSkillsInstall>,
     pub selected: Option<Vec<String>>,
@@ -3061,6 +3091,10 @@ pub fn approval_policy_baseline_from_permission_posture(
 // === Config Loading ===
 
 impl Config {
+    #[must_use]
+    pub fn catalog_auto_refresh_enabled(&self) -> bool {
+        self.catalog.as_ref().is_none_or(|c| c.auto_refresh)
+    }
     /// Whether Linux shell commands prefer bubblewrap confinement.
     ///
     /// On by default: an unset `prefer_bwrap` means sandboxed commands use
@@ -3575,6 +3609,19 @@ impl Config {
             .filter(|value| value.is_finite())
             .unwrap_or(DEFAULT_AUTO_ROUTER_MIN_CONFIDENCE)
             .clamp(0.0, 1.0)
+    }
+
+    /// Whether the shadow Decision Gate rides the decision router's request:
+    /// `[auto.router] shadow_gate = true` on a `kind = "decision"` router.
+    #[must_use]
+    pub fn auto_router_shadow_gate(&self) -> bool {
+        self.auto
+            .as_ref()
+            .and_then(|a| a.router.as_ref())
+            .is_some_and(|r| {
+                r.shadow_gate == Some(true)
+                    && AutoRouterKind::parse(r.kind.as_deref()) == Some(AutoRouterKind::Decision)
+            })
     }
 
     #[must_use]
@@ -6823,6 +6870,14 @@ impl Config {
             .clamp(1, MAX_SUBAGENTS)
     }
 
+    pub fn set_max_subagents_override(&mut self, value: usize) {
+        let clamped = value.clamp(1, MAX_SUBAGENTS);
+        self.max_subagents = Some(clamped);
+        if let Some(subagents) = self.subagents.as_mut() {
+            subagents.max_concurrent = None;
+        }
+    }
+
     /// Return the provider-specific maximum number of concurrent sub-agents.
     /// `[subagents.providers.<provider>] max_concurrent` inherits from the
     /// global `[subagents]` value when unset.
@@ -7150,6 +7205,7 @@ impl Config {
             stream
                 .and_then(|cfg| cfg.max_stream_errors)
                 .or_else(|| tui.and_then(|cfg| cfg.stream_max_errors)),
+            stream.and_then(|cfg| cfg.open_retries),
         )
     }
 
@@ -7234,6 +7290,7 @@ impl Config {
         let limits = self.stream_retry_limits();
         StreamConfig {
             open_timeout_secs: Some(self.stream_open_timeout().as_secs()),
+            open_retries: Some(limits.open_retries),
             chunk_timeout_secs: Some(self.stream_chunk_timeout_secs()),
             force_http1: Some(self.force_http1()),
             max_resumes: Some(limits.max_resumes),
@@ -7672,15 +7729,7 @@ pub fn workspace_trust_config_candidate_paths() -> Vec<PathBuf> {
 }
 
 pub fn needs_trust(workspace: &Path) -> bool {
-    if is_workspace_trusted(workspace) {
-        return false;
-    }
-
-    let markers = [
-        workspace.join(".deepseek").join("trusted"),
-        workspace.join(".deepseek").join("trust.json"),
-    ];
-    !markers.iter().any(|path| path.exists())
+    !is_workspace_trusted(workspace)
 }
 
 #[must_use]
@@ -7997,575 +8046,631 @@ fn apply_env_overrides(config: &mut Config, policy: ConfigEnvironmentPolicy) {
     }
 }
 
+fn parse_env_bool(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPolicy) {
     if let Ok(value) = codewhale_env_var("CODEWHALE_PROVIDER", "DEEPSEEK_PROVIDER") {
         config.provider = Some(value);
         config.route_provenance.provider_from_env = true;
         config.route_provenance.provider_from_saved_selection = false;
         config.route_provenance.provider_from_profile = false;
+    } else if policy.permits_secret_bearing_values()
+        && config.provider.is_none()
+        && config.default_text_model.is_none()
+        && config.legacy_model.is_none()
+        && config.legacy_root_custom_generation.is_none()
+        && config.legacy_root.notes.is_empty()
+        && !matches!(config.base_url_env_receipt, BaseUrlEnvReceipt::Route(..))
+        && env_base_url_override().is_none()
+        && config.providers.is_none()
+    {
+        const AMBIENT_PRIORITY: [(&str, ProviderKind); 5] = [
+            ("ANTHROPIC_API_KEY", ProviderKind::Anthropic),
+            ("OPENAI_API_KEY", ProviderKind::Openai),
+            ("GEMINI_API_KEY", ProviderKind::Google),
+            ("DEEPSEEK_API_KEY", ProviderKind::Deepseek),
+            ("OPENROUTER_API_KEY", ProviderKind::Openrouter),
+        ];
+        if let Some(kind) = AMBIENT_PRIORITY
+            .iter()
+            .find_map(|(env_var, kind)| first_nonempty_env(&[env_var]).map(|_| *kind))
+        {
+            config.provider = Some(kind.as_str().to_string());
+            config.route_provenance.provider_from_env = true;
+            config.route_provenance.provider_from_saved_selection = false;
+            config.route_provenance.provider_from_profile = false;
+        }
     }
-    let Ok(identity) = config.active_provider_identity() else {
-        return;
+    let resolved_identity = match config.active_provider_identity() {
+        Ok(identity) => {
+            let active_provider = identity.provider;
+            let active_base_url_from_env = env_base_url_override().is_some()
+                || provider_env_base_url_override(active_provider).is_some()
+                || (config.selects_legacy_ollama_cloud_route()
+                    && first_nonempty_env(&["OLLAMA_BASE_URL"]).is_some());
+            let changes_root_authority = active_base_url_from_env
+                || (policy.permits_secret_bearing_values()
+                    && std::env::var("CODEWHALE_HTTP_HEADERS")
+                        .or_else(|_| std::env::var("DEEPSEEK_HTTP_HEADERS"))
+                        .is_ok());
+            if identity.legacy_root_custom_generation.is_some() && changes_root_authority {
+                match config.resolve_exact_provider_identity(identity.key.as_str()) {
+                    Ok(exact) => {
+                        config.legacy_root_custom_generation = None;
+                        Some((exact, active_provider, active_base_url_from_env))
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            "ignoring provider-scoped environment overrides because active provider could not be resolved: {error}"
+                        );
+                        None
+                    }
+                }
+            } else {
+                Some((identity, active_provider, active_base_url_from_env))
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                "ignoring provider-scoped environment overrides because active provider is unknown: {error}"
+            );
+            None
+        }
     };
-    let active_provider = identity.provider;
-    let active_base_url_from_env = env_base_url_override().is_some()
-        || provider_env_base_url_override(active_provider).is_some()
-        || (config.selects_legacy_ollama_cloud_route()
-            && first_nonempty_env(&["OLLAMA_BASE_URL"]).is_some());
-    let changes_root_authority = active_base_url_from_env
-        || (policy.permits_secret_bearing_values()
-            && std::env::var("CODEWHALE_HTTP_HEADERS")
-                .or_else(|_| std::env::var("DEEPSEEK_HTTP_HEADERS"))
-                .is_ok());
-    let identity = if identity.legacy_root_custom_generation.is_some() && changes_root_authority {
-        let Ok(exact) = config.resolve_exact_provider_identity(identity.key.as_str()) else {
-            return;
-        };
-        config.legacy_root_custom_generation = None;
-        exact
-    } else {
-        identity
-    };
-    if let Ok(value) = codewhale_env_var("CODEWHALE_BASE_URL", "DEEPSEEK_BASE_URL")
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::NvidiaNim)
-        && let Ok(value) = std::env::var("NVIDIA_NIM_BASE_URL")
-            .or_else(|_| std::env::var("NIM_BASE_URL"))
-            .or_else(|_| std::env::var("NVIDIA_BASE_URL"))
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    // OpenAI-compatible and non-DeepSeek hosted providers are scoped only on
-    // their own provider entry.
-    if matches!(active_provider, ProviderKind::Openai)
-        && let Ok(value) = std::env::var("OPENAI_BASE_URL")
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::Atlascloud)
-        && let Ok(value) = std::env::var("ATLASCLOUD_BASE_URL")
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::Openrouter)
-        && let Ok(value) = std::env::var("OPENROUTER_BASE_URL")
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::XiaomiMimo)
-        && let Ok(value) =
-            std::env::var("XIAOMI_MIMO_BASE_URL").or_else(|_| std::env::var("MIMO_BASE_URL"))
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::XiaomiMimo)
-        && let Ok(value) = std::env::var("XIAOMI_MIMO_MODE").or_else(|_| std::env::var("MIMO_MODE"))
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.mode = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::WanjieArk)
-        && let Ok(value) = std::env::var("WANJIE_ARK_BASE_URL")
-            .or_else(|_| std::env::var("WANJIE_BASE_URL"))
-            .or_else(|_| std::env::var("WANJIE_MAAS_BASE_URL"))
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::Volcengine)
-        && let Ok(value) = std::env::var("VOLCENGINE_BASE_URL")
-            .or_else(|_| std::env::var("VOLCENGINE_ARK_BASE_URL"))
-            .or_else(|_| std::env::var("ARK_BASE_URL"))
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::Novita)
-        && let Ok(value) = std::env::var("NOVITA_BASE_URL")
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::Fireworks)
-        && let Ok(value) = std::env::var("FIREWORKS_BASE_URL")
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(
-        active_provider,
-        ProviderKind::Siliconflow | ProviderKind::SiliconflowCN
-    ) && let Ok(value) = std::env::var("SILICONFLOW_BASE_URL")
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::Arcee)
-        && let Ok(value) = std::env::var("ARCEE_BASE_URL")
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::Huggingface)
-        && let Ok(value) =
-            std::env::var("HUGGINGFACE_BASE_URL").or_else(|_| std::env::var("HF_BASE_URL"))
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::Modelscope)
-        && let Ok(value) = std::env::var("MODELSCOPE_BASE_URL")
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::Moonshot)
-        && let Ok(value) =
-            std::env::var("MOONSHOT_BASE_URL").or_else(|_| std::env::var("KIMI_BASE_URL"))
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::Sglang)
-        && let Ok(value) = std::env::var("SGLANG_BASE_URL")
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::Vllm)
-        && let Ok(value) = std::env::var("VLLM_BASE_URL")
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::Meta)
-        && let Ok(value) = std::env::var("META_MODEL_API_BASE_URL")
-            .or_else(|_| std::env::var("MODEL_API_BASE_URL"))
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::Xai)
-        && let Ok(value) = std::env::var("XAI_BASE_URL")
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::Mistral)
-        && let Ok(value) = std::env::var("MISTRAL_BASE_URL")
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::Telecomjs)
-        && let Ok(value) = std::env::var("TELECOMJS_BASE_URL")
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::Edenai)
-        && let Ok(value) = std::env::var("EDENAI_BASE_URL")
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::Zenmux)
-        && let Ok(value) = std::env::var("ZENMUX_BASE_URL")
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::Csdn)
-        && let Ok(value) = std::env::var("CSDN_BASE_URL")
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    // Concentrate has no inline block here on purpose: CONCENTRATE_BASE_URL
-    // is already served by `provider_env_base_url_override`, which the route
-    // resolver consults — a second inline assignment was a duplicate.
-    if matches!(
-        active_provider,
-        ProviderKind::ModelstudioTokenPlan | ProviderKind::ModelstudioTokenPlanAnthropic
-    ) && let Ok(value) = std::env::var("MODELSTUDIO_TOKEN_PLAN_BASE_URL")
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(
-        active_provider,
-        ProviderKind::ModelstudioCodingPlan | ProviderKind::ModelstudioCodingPlanAnthropic
-    ) && let Ok(value) = std::env::var("MODELSTUDIO_CODING_PLAN_BASE_URL")
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if policy.permits_secret_bearing_values()
-        && let Ok(value) = std::env::var("CODEWHALE_HTTP_HEADERS")
-            .or_else(|_| std::env::var("DEEPSEEK_HTTP_HEADERS"))
-        && let Ok(headers) = parse_http_headers(&value)
-        && !headers.is_empty()
-    {
-        let mut root_headers = config.http_headers.clone().unwrap_or_default();
-        root_headers.extend(headers.clone());
-        config.http_headers = Some(root_headers);
-
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            let mut provider_headers = entry.http_headers.clone().unwrap_or_default();
-            provider_headers.extend(headers);
-            entry.http_headers = Some(provider_headers);
+    let mut base_url_env_receipt = BaseUrlEnvReceipt::NoOwner;
+    if let Some((identity, active_provider, active_base_url_from_env)) = resolved_identity {
+        if active_base_url_from_env {
+            base_url_env_receipt =
+                BaseUrlEnvReceipt::Route(active_provider, identity.key.to_string());
         }
-    }
-    if config.provider.as_deref().and_then(ProviderKind::parse) == Some(ProviderKind::Ollama)
-        && let Ok(value) = std::env::var("OLLAMA_BASE_URL")
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::OllamaCloud)
-        && config.provider.as_deref().and_then(ProviderKind::parse)
-            == Some(ProviderKind::OllamaCloud)
-        && let Ok(value) = std::env::var("OLLAMA_CLOUD_BASE_URL")
-        && !value.trim().is_empty()
-        && let Ok(entry) = config.provider_config_for_mut(&identity)
-    {
-        entry.base_url = Some(value);
-    }
-    if matches!(active_provider, ProviderKind::Sglang)
-        && let Ok(value) = std::env::var("SGLANG_MODEL")
-    {
-        config.default_text_model = Some(value.clone());
-        config
-            .set_provider_model_override(&identity, Some(value))
-            .unwrap();
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::Vllm)
-        && let Ok(value) = std::env::var("VLLM_MODEL")
-    {
-        config.default_text_model = Some(value.clone());
-        config
-            .set_provider_model_override(&identity, Some(value))
-            .unwrap();
-        config.environment_model_applied = true;
-    }
-    if matches!(
-        active_provider,
-        ProviderKind::Ollama | ProviderKind::OllamaCloud
-    ) && let Ok(value) = std::env::var("OLLAMA_MODEL")
-    {
-        config.default_text_model = Some(value.clone());
-        config
-            .set_provider_model_override(&identity, Some(value))
-            .unwrap();
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::OllamaCloud)
-        && let Ok(value) = std::env::var("OLLAMA_CLOUD_MODEL")
-    {
-        config.default_text_model = Some(value.clone());
-        config
-            .set_provider_model_override(&identity, Some(value))
-            .unwrap();
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::Openai)
-        && let Ok(value) = std::env::var("OPENAI_MODEL")
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
+        if let Ok(value) = codewhale_env_var("CODEWHALE_BASE_URL", "DEEPSEEK_BASE_URL")
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
         }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::XiaomiMimo)
-        && let Ok(value) =
-            std::env::var("XIAOMI_MIMO_MODEL").or_else(|_| std::env::var("MIMO_MODEL"))
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
+        if matches!(active_provider, ProviderKind::NvidiaNim)
+            && let Ok(value) = std::env::var("NVIDIA_NIM_BASE_URL")
+                .or_else(|_| std::env::var("NIM_BASE_URL"))
+                .or_else(|_| std::env::var("NVIDIA_BASE_URL"))
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
         }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::Atlascloud)
-        && let Ok(value) = std::env::var("ATLASCLOUD_MODEL")
-    {
-        config.default_text_model = Some(value.clone());
-        config
-            .set_provider_model_override(&identity, Some(value))
-            .unwrap();
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::WanjieArk)
-        && let Ok(value) = std::env::var("WANJIE_ARK_MODEL")
-            .or_else(|_| std::env::var("WANJIE_MODEL"))
-            .or_else(|_| std::env::var("WANJIE_MAAS_MODEL"))
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
+        // OpenAI-compatible and non-DeepSeek hosted providers are scoped only on
+        // their own provider entry.
+        if matches!(active_provider, ProviderKind::Openai)
+            && let Ok(value) = std::env::var("OPENAI_BASE_URL")
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
         }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::Openrouter)
-        && let Ok(value) = std::env::var("OPENROUTER_MODEL")
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
+        if matches!(active_provider, ProviderKind::Atlascloud)
+            && let Ok(value) = std::env::var("ATLASCLOUD_BASE_URL")
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
         }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::Volcengine)
-        && let Ok(value) =
-            std::env::var("VOLCENGINE_MODEL").or_else(|_| std::env::var("VOLCENGINE_ARK_MODEL"))
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
+        if matches!(active_provider, ProviderKind::Openrouter)
+            && let Ok(value) = std::env::var("OPENROUTER_BASE_URL")
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
         }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::Novita)
-        && let Ok(value) = std::env::var("NOVITA_MODEL")
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
+        if matches!(active_provider, ProviderKind::XiaomiMimo)
+            && let Ok(value) =
+                std::env::var("XIAOMI_MIMO_BASE_URL").or_else(|_| std::env::var("MIMO_BASE_URL"))
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
         }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::Fireworks)
-        && let Ok(value) = std::env::var("FIREWORKS_MODEL")
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
+        if matches!(active_provider, ProviderKind::XiaomiMimo)
+            && let Ok(value) =
+                std::env::var("XIAOMI_MIMO_MODE").or_else(|_| std::env::var("MIMO_MODE"))
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.mode = Some(value);
         }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::Moonshot)
-        && let Ok(value) = std::env::var("MOONSHOT_MODEL")
-            .or_else(|_| std::env::var("KIMI_MODEL_NAME"))
-            .or_else(|_| std::env::var("KIMI_MODEL"))
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
+        if matches!(active_provider, ProviderKind::WanjieArk)
+            && let Ok(value) = std::env::var("WANJIE_ARK_BASE_URL")
+                .or_else(|_| std::env::var("WANJIE_BASE_URL"))
+                .or_else(|_| std::env::var("WANJIE_MAAS_BASE_URL"))
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
         }
-        config.environment_model_applied = true;
-    }
-    if matches!(
-        active_provider,
-        ProviderKind::Siliconflow | ProviderKind::SiliconflowCN
-    ) && let Ok(value) = std::env::var("SILICONFLOW_MODEL")
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
+        if matches!(active_provider, ProviderKind::Volcengine)
+            && let Ok(value) = std::env::var("VOLCENGINE_BASE_URL")
+                .or_else(|_| std::env::var("VOLCENGINE_ARK_BASE_URL"))
+                .or_else(|_| std::env::var("ARK_BASE_URL"))
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
         }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::Arcee)
-        && let Ok(value) = std::env::var("ARCEE_MODEL")
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
+        if matches!(active_provider, ProviderKind::Novita)
+            && let Ok(value) = std::env::var("NOVITA_BASE_URL")
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
         }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::Huggingface)
-        && let Ok(value) = std::env::var("HUGGINGFACE_MODEL").or_else(|_| std::env::var("HF_MODEL"))
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
+        if matches!(active_provider, ProviderKind::Fireworks)
+            && let Ok(value) = std::env::var("FIREWORKS_BASE_URL")
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
         }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::Modelscope)
-        && let Ok(value) = std::env::var("MODELSCOPE_MODEL")
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
-        }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::Meta)
-        && let Ok(value) =
-            std::env::var("META_MODEL_API_MODEL").or_else(|_| std::env::var("MODEL_API_MODEL"))
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
-        }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::Xai)
-        && let Ok(value) = std::env::var("XAI_MODEL")
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
-        }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::Mistral)
-        && let Ok(value) = std::env::var("MISTRAL_MODEL")
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
-        }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::OpencodeGo)
-        && let Ok(value) = std::env::var("OPENCODE_GO_MODEL")
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
-        }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::Telecomjs)
-        && let Ok(value) = std::env::var("TELECOMJS_MODEL")
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
-        }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::Concentrate)
-        && let Ok(value) = std::env::var("CONCENTRATE_MODEL")
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
-        }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::Edenai)
-        && let Ok(value) = std::env::var("EDENAI_MODEL")
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
-        }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::Zenmux)
-        && let Ok(value) = std::env::var("ZENMUX_MODEL")
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
-        }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::Csdn)
-        && let Ok(value) = std::env::var("CSDN_MODEL")
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
-        }
-        config.environment_model_applied = true;
-    }
-    if matches!(
-        active_provider,
-        ProviderKind::ModelstudioTokenPlan | ProviderKind::ModelstudioTokenPlanAnthropic
-    ) && let Ok(value) = std::env::var("MODELSTUDIO_TOKEN_PLAN_MODEL")
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
-        }
-        config.environment_model_applied = true;
-    }
-    if matches!(
-        active_provider,
-        ProviderKind::ModelstudioCodingPlan | ProviderKind::ModelstudioCodingPlanAnthropic
-    ) && let Ok(value) = std::env::var("MODELSTUDIO_CODING_PLAN_MODEL")
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
-        }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::OpencodeZen)
-        && let Ok(value) = std::env::var("OPENCODE_ZEN_MODEL")
-        && !value.trim().is_empty()
-    {
-        if let Ok(entry) = config.provider_config_for_mut(&identity) {
-            entry.model = Some(value);
-        }
-        config.environment_model_applied = true;
-    }
-    if matches!(active_provider, ProviderKind::NvidiaNim)
-        && let Ok(value) = std::env::var("NVIDIA_NIM_MODEL")
-    {
-        config.default_text_model = Some(value.clone());
-        config
-            .set_provider_model_override(&identity, Some(value))
-            .unwrap();
-        config.environment_model_applied = true;
-    }
-    if let Some(value) = codewhale_env_var("CODEWHALE_MODEL", "DEEPSEEK_MODEL")
-        .ok()
-        .or_else(|| {
-            std::env::var("DEEPSEEK_DEFAULT_TEXT_MODEL")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        })
-    {
         if matches!(
             active_provider,
-            ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
-        ) {
-            config.default_text_model = Some(value.clone());
+            ProviderKind::Siliconflow | ProviderKind::SiliconflowCN
+        ) && let Ok(value) = std::env::var("SILICONFLOW_BASE_URL")
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
         }
-        config
-            .set_provider_model_override(&identity, Some(value))
-            .unwrap();
-        config.environment_model_applied = true;
+        if matches!(active_provider, ProviderKind::Arcee)
+            && let Ok(value) = std::env::var("ARCEE_BASE_URL")
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
+        }
+        if matches!(active_provider, ProviderKind::Huggingface)
+            && let Ok(value) =
+                std::env::var("HUGGINGFACE_BASE_URL").or_else(|_| std::env::var("HF_BASE_URL"))
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
+        }
+        if matches!(active_provider, ProviderKind::Modelscope)
+            && let Ok(value) = std::env::var("MODELSCOPE_BASE_URL")
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
+        }
+        if matches!(active_provider, ProviderKind::Moonshot)
+            && let Ok(value) =
+                std::env::var("MOONSHOT_BASE_URL").or_else(|_| std::env::var("KIMI_BASE_URL"))
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
+        }
+        if matches!(active_provider, ProviderKind::Sglang)
+            && let Ok(value) = std::env::var("SGLANG_BASE_URL")
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
+        }
+        if matches!(active_provider, ProviderKind::Vllm)
+            && let Ok(value) = std::env::var("VLLM_BASE_URL")
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
+        }
+        if matches!(active_provider, ProviderKind::Meta)
+            && let Ok(value) = std::env::var("META_MODEL_API_BASE_URL")
+                .or_else(|_| std::env::var("MODEL_API_BASE_URL"))
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
+        }
+        if matches!(active_provider, ProviderKind::Xai)
+            && let Ok(value) = std::env::var("XAI_BASE_URL")
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
+        }
+        if matches!(active_provider, ProviderKind::Mistral)
+            && let Ok(value) = std::env::var("MISTRAL_BASE_URL")
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
+        }
+        if matches!(active_provider, ProviderKind::Telecomjs)
+            && let Ok(value) = std::env::var("TELECOMJS_BASE_URL")
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
+        }
+        if matches!(active_provider, ProviderKind::Edenai)
+            && let Ok(value) = std::env::var("EDENAI_BASE_URL")
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
+        }
+        if matches!(active_provider, ProviderKind::Zenmux)
+            && let Ok(value) = std::env::var("ZENMUX_BASE_URL")
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
+        }
+        if matches!(active_provider, ProviderKind::Csdn)
+            && let Ok(value) = std::env::var("CSDN_BASE_URL")
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
+        }
+        // Concentrate has no inline block here on purpose: CONCENTRATE_BASE_URL
+        // is already served by `provider_env_base_url_override`, which the route
+        // resolver consults — a second inline assignment was a duplicate.
+        if matches!(
+            active_provider,
+            ProviderKind::ModelstudioTokenPlan | ProviderKind::ModelstudioTokenPlanAnthropic
+        ) && let Ok(value) = std::env::var("MODELSTUDIO_TOKEN_PLAN_BASE_URL")
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
+        }
+        if matches!(
+            active_provider,
+            ProviderKind::ModelstudioCodingPlan | ProviderKind::ModelstudioCodingPlanAnthropic
+        ) && let Ok(value) = std::env::var("MODELSTUDIO_CODING_PLAN_BASE_URL")
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
+        }
+        if policy.permits_secret_bearing_values()
+            && let Ok(value) = std::env::var("CODEWHALE_HTTP_HEADERS")
+                .or_else(|_| std::env::var("DEEPSEEK_HTTP_HEADERS"))
+            && let Ok(headers) = parse_http_headers(&value)
+            && !headers.is_empty()
+        {
+            let mut root_headers = config.http_headers.clone().unwrap_or_default();
+            root_headers.extend(headers.clone());
+            config.http_headers = Some(root_headers);
+
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                let mut provider_headers = entry.http_headers.clone().unwrap_or_default();
+                provider_headers.extend(headers);
+                entry.http_headers = Some(provider_headers);
+            }
+        }
+        if config.provider.as_deref().and_then(ProviderKind::parse) == Some(ProviderKind::Ollama)
+            && let Ok(value) = std::env::var("OLLAMA_BASE_URL")
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
+        }
+        if matches!(active_provider, ProviderKind::OllamaCloud)
+            && config.provider.as_deref().and_then(ProviderKind::parse)
+                == Some(ProviderKind::OllamaCloud)
+            && let Ok(value) = std::env::var("OLLAMA_CLOUD_BASE_URL")
+            && !value.trim().is_empty()
+            && let Ok(entry) = config.provider_config_for_mut(&identity)
+        {
+            entry.base_url = Some(value);
+        }
+        if matches!(active_provider, ProviderKind::Sglang)
+            && let Ok(value) = std::env::var("SGLANG_MODEL")
+        {
+            config.default_text_model = Some(value.clone());
+            config
+                .set_provider_model_override(&identity, Some(value))
+                .unwrap();
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::Vllm)
+            && let Ok(value) = std::env::var("VLLM_MODEL")
+        {
+            config.default_text_model = Some(value.clone());
+            config
+                .set_provider_model_override(&identity, Some(value))
+                .unwrap();
+            config.environment_model_applied = true;
+        }
+        if matches!(
+            active_provider,
+            ProviderKind::Ollama | ProviderKind::OllamaCloud
+        ) && let Ok(value) = std::env::var("OLLAMA_MODEL")
+        {
+            config.default_text_model = Some(value.clone());
+            config
+                .set_provider_model_override(&identity, Some(value))
+                .unwrap();
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::OllamaCloud)
+            && let Ok(value) = std::env::var("OLLAMA_CLOUD_MODEL")
+        {
+            config.default_text_model = Some(value.clone());
+            config
+                .set_provider_model_override(&identity, Some(value))
+                .unwrap();
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::Openai)
+            && let Ok(value) = std::env::var("OPENAI_MODEL")
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::XiaomiMimo)
+            && let Ok(value) =
+                std::env::var("XIAOMI_MIMO_MODEL").or_else(|_| std::env::var("MIMO_MODEL"))
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::Atlascloud)
+            && let Ok(value) = std::env::var("ATLASCLOUD_MODEL")
+        {
+            config.default_text_model = Some(value.clone());
+            config
+                .set_provider_model_override(&identity, Some(value))
+                .unwrap();
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::WanjieArk)
+            && let Ok(value) = std::env::var("WANJIE_ARK_MODEL")
+                .or_else(|_| std::env::var("WANJIE_MODEL"))
+                .or_else(|_| std::env::var("WANJIE_MAAS_MODEL"))
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::Openrouter)
+            && let Ok(value) = std::env::var("OPENROUTER_MODEL")
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::Volcengine)
+            && let Ok(value) =
+                std::env::var("VOLCENGINE_MODEL").or_else(|_| std::env::var("VOLCENGINE_ARK_MODEL"))
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::Novita)
+            && let Ok(value) = std::env::var("NOVITA_MODEL")
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::Fireworks)
+            && let Ok(value) = std::env::var("FIREWORKS_MODEL")
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::Moonshot)
+            && let Ok(value) = std::env::var("MOONSHOT_MODEL")
+                .or_else(|_| std::env::var("KIMI_MODEL_NAME"))
+                .or_else(|_| std::env::var("KIMI_MODEL"))
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(
+            active_provider,
+            ProviderKind::Siliconflow | ProviderKind::SiliconflowCN
+        ) && let Ok(value) = std::env::var("SILICONFLOW_MODEL")
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::Arcee)
+            && let Ok(value) = std::env::var("ARCEE_MODEL")
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::Huggingface)
+            && let Ok(value) =
+                std::env::var("HUGGINGFACE_MODEL").or_else(|_| std::env::var("HF_MODEL"))
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::Modelscope)
+            && let Ok(value) = std::env::var("MODELSCOPE_MODEL")
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::Meta)
+            && let Ok(value) =
+                std::env::var("META_MODEL_API_MODEL").or_else(|_| std::env::var("MODEL_API_MODEL"))
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::Xai)
+            && let Ok(value) = std::env::var("XAI_MODEL")
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::Mistral)
+            && let Ok(value) = std::env::var("MISTRAL_MODEL")
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::OpencodeGo)
+            && let Ok(value) = std::env::var("OPENCODE_GO_MODEL")
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::Telecomjs)
+            && let Ok(value) = std::env::var("TELECOMJS_MODEL")
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::Concentrate)
+            && let Ok(value) = std::env::var("CONCENTRATE_MODEL")
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::Edenai)
+            && let Ok(value) = std::env::var("EDENAI_MODEL")
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::Zenmux)
+            && let Ok(value) = std::env::var("ZENMUX_MODEL")
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::Csdn)
+            && let Ok(value) = std::env::var("CSDN_MODEL")
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(
+            active_provider,
+            ProviderKind::ModelstudioTokenPlan | ProviderKind::ModelstudioTokenPlanAnthropic
+        ) && let Ok(value) = std::env::var("MODELSTUDIO_TOKEN_PLAN_MODEL")
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(
+            active_provider,
+            ProviderKind::ModelstudioCodingPlan | ProviderKind::ModelstudioCodingPlanAnthropic
+        ) && let Ok(value) = std::env::var("MODELSTUDIO_CODING_PLAN_MODEL")
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::OpencodeZen)
+            && let Ok(value) = std::env::var("OPENCODE_ZEN_MODEL")
+            && !value.trim().is_empty()
+        {
+            if let Ok(entry) = config.provider_config_for_mut(&identity) {
+                entry.model = Some(value);
+            }
+            config.environment_model_applied = true;
+        }
+        if matches!(active_provider, ProviderKind::NvidiaNim)
+            && let Ok(value) = std::env::var("NVIDIA_NIM_MODEL")
+        {
+            config.default_text_model = Some(value.clone());
+            config
+                .set_provider_model_override(&identity, Some(value))
+                .unwrap();
+            config.environment_model_applied = true;
+        }
+        if let Some(value) = codewhale_env_var("CODEWHALE_MODEL", "DEEPSEEK_MODEL")
+            .ok()
+            .or_else(|| {
+                std::env::var("DEEPSEEK_DEFAULT_TEXT_MODEL")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+            })
+        {
+            if matches!(
+                active_provider,
+                ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
+            ) {
+                config.default_text_model = Some(value.clone());
+            }
+            config
+                .set_provider_model_override(&identity, Some(value))
+                .unwrap();
+            config.environment_model_applied = true;
+        }
     }
     if let Ok(value) =
         std::env::var("CODEWHALE_SKILLS_DIR").or_else(|_| std::env::var("DEEPSEEK_SKILLS_DIR"))
@@ -8602,7 +8707,7 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
     if let Ok(value) =
         std::env::var("CODEWHALE_ALLOW_SHELL").or_else(|_| std::env::var("DEEPSEEK_ALLOW_SHELL"))
     {
-        config.allow_shell = Some(value == "1" || value.eq_ignore_ascii_case("true"));
+        config.allow_shell = Some(parse_env_bool(&value));
     }
     if let Ok(value) = std::env::var("CODEWHALE_APPROVAL_POLICY")
         .or_else(|_| std::env::var("DEEPSEEK_APPROVAL_POLICY"))
@@ -8617,7 +8722,7 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
     if let Ok(value) = std::env::var("CODEWHALE_SANDBOX_NETWORK_ACCESS")
         .or_else(|_| std::env::var("DEEPSEEK_SANDBOX_NETWORK_ACCESS"))
     {
-        config.sandbox_network_access = Some(value == "1" || value.eq_ignore_ascii_case("true"));
+        config.sandbox_network_access = Some(parse_env_bool(&value));
     }
     if let Ok(value) = std::env::var("CODEWHALE_PROJECT_INSTRUCTION_IMPORTS") {
         config.project_instruction_imports = value
@@ -8631,7 +8736,7 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
     // (removable in 0.10 per issue #5443); `CODEWHALE_YOLO` wins when both
     // are set.
     if let Ok(value) = std::env::var("CODEWHALE_YOLO").or_else(|_| std::env::var("DEEPSEEK_YOLO")) {
-        config.yolo = Some(value == "1" || value.eq_ignore_ascii_case("true"));
+        config.yolo = Some(parse_env_bool(&value));
     }
     if let Ok(value) =
         std::env::var("CODEWHALE_VERBOSITY").or_else(|_| std::env::var("DEEPSEEK_VERBOSITY"))
@@ -8655,7 +8760,7 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
                 "DEEPSEEK_PREFER_BWRAP is deprecated; use CODEWHALE_PREFER_BWRAP (the legacy alias is removed in 0.10.0)"
             );
         }
-        config.prefer_bwrap = Some(value == "1" || value.eq_ignore_ascii_case("true"));
+        config.prefer_bwrap = Some(parse_env_bool(&value));
     }
     if let Ok(value) =
         std::env::var("CODEWHALE_SANDBOX_URL").or_else(|_| std::env::var("DEEPSEEK_SANDBOX_URL"))
@@ -8697,19 +8802,15 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
     }
     if let Ok(value) = std::env::var("CODEWHALE_MAX_SUBAGENTS")
         .or_else(|_| std::env::var("DEEPSEEK_MAX_SUBAGENTS"))
-        && let Ok(parsed) = value.parse::<usize>()
+        && let Ok(parsed) = value.trim().parse::<usize>()
     {
-        config.max_subagents = Some(parsed.clamp(1, MAX_SUBAGENTS));
+        config.set_max_subagents_override(parsed);
     }
     // Always leave a receipt: "the environment layer ran and nobody owns the
     // base URL" is a different, stronger statement than "no receipt", and only
     // the explicit form stops a pinned cross-provider child from treating the
     // ambient generic host as a global fallback.
-    config.base_url_env_receipt = if active_base_url_from_env {
-        BaseUrlEnvReceipt::Route(active_provider, identity.key.to_string())
-    } else {
-        BaseUrlEnvReceipt::NoOwner
-    };
+    config.base_url_env_receipt = base_url_env_receipt;
 }
 
 fn normalize_model_config(config: &mut Config) {
@@ -9275,17 +9376,8 @@ pub fn is_kimi_code_membership_model(model: &str) -> bool {
 /// advice is conditional prose: producing an error must not inspect PATH or
 /// another application's credential file on the runtime thread.
 fn deepseek_missing_key_message() -> &'static str {
-    concat!(
-        "DeepSeek API key not found.\n",
-        "Save a key for every folder:\n",
-        "  codewhale auth set --provider deepseek\n",
-        "Get a key: https://platform.deepseek.com/api_keys\n",
-        "Or export DEEPSEEK_API_KEY=<your-key> (this shell only).\n",
-        "In zsh, ~/.zshrc is read only by interactive shells.\n",
-        "Or set api_key in ~/.codewhale/config.toml.\n",
-        "If you already use DeepSeek Harness, grant read-only access:\n",
-        "  codewhale auth external-consent --provider deepseek --mode read-only"
-    )
+    "DeepSeek API key not found. Run `codewhale auth set --provider deepseek` or `codewhale login`.\n\
+     Or export DEEPSEEK_API_KEY=<your-key> (or grant DeepSeek Harness access with `codewhale auth external-consent --provider deepseek --mode read-only`)."
 }
 
 /// The Moonshot direct-platform roster, as one fact. Mirror of
@@ -9731,6 +9823,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         },
         provider: override_cfg.provider.or(base.provider),
         telemetry: override_cfg.telemetry.or(base.telemetry),
+        catalog: override_cfg.catalog.or(base.catalog),
         http_headers: override_cfg.http_headers.or(base.http_headers),
         default_text_model: override_cfg
             .default_text_model
@@ -9748,6 +9841,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
             .or(base.route_preferences_version),
         environment_model_applied: override_cfg.environment_model_applied
             || base.environment_model_applied,
+        project_model: override_cfg.project_model.or(base.project_model),
         route_provenance: base.route_provenance,
         auth_mode: override_cfg.auth_mode.or(base.auth_mode),
         reasoning_effort: override_cfg.reasoning_effort.or(base.reasoning_effort),
@@ -9840,6 +9934,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         stream: match (base.stream, override_cfg.stream) {
             (Some(base), Some(over)) => Some(StreamConfig {
                 open_timeout_secs: over.open_timeout_secs.or(base.open_timeout_secs),
+                open_retries: over.open_retries.or(base.open_retries),
                 chunk_timeout_secs: over.chunk_timeout_secs.or(base.chunk_timeout_secs),
                 force_http1: over.force_http1.or(base.force_http1),
                 max_resumes: over.max_resumes.or(base.max_resumes),
@@ -9898,7 +9993,16 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         compaction: override_cfg.compaction.or(base.compaction),
         fleet: override_cfg.fleet.or(base.fleet),
         workflow: override_cfg.workflow.or(base.workflow),
-        subagents: override_cfg.subagents.or(base.subagents),
+        subagents: match (override_cfg.subagents, base.subagents) {
+            (Some(over), _) => Some(over),
+            (None, Some(mut base_subagents)) => {
+                if override_cfg.max_subagents.is_some() {
+                    base_subagents.max_concurrent = None;
+                }
+                Some(base_subagents)
+            }
+            (None, None) => None,
+        },
         strict_tool_mode: override_cfg.strict_tool_mode.or(base.strict_tool_mode),
         runtime_api: override_cfg.runtime_api.or(base.runtime_api),
         workshop: override_cfg.workshop.or(base.workshop),

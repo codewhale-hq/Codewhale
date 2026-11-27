@@ -4429,7 +4429,7 @@ sleep 30
         let fake = fake_codewhale(
             &tmp,
             r#"#!/bin/sh
-sleep 0.2
+sleep 0.8
 printf '{"type":"done"}\n'
 exit 0
 "#,
@@ -4473,7 +4473,7 @@ exit 0
         let fake = fake_codewhale(
             &tmp,
             r#"#!/bin/sh
-sleep 0.2
+sleep 0.8
 printf '{"type":"done"}\n'
 exit 0
 "#,

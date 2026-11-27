@@ -22,9 +22,7 @@ fn plugin_create_uses_engine_mode_availability_and_lists_help_in_real_terminal()
         "[notifications]\nmethod = \"off\"\ncompletion_sound = \"off\"\n\n[extension_host]\nruntime = \"node\"\nnode = \"/nonexistent/codewhale-no-node\"\n",
     )
     .unwrap();
-    let trust = workspace.workspace().join(".deepseek");
-    std::fs::create_dir_all(&trust).unwrap();
-    std::fs::write(trust.join("trusted"), "").unwrap();
+    workspace.trust_workspace().unwrap();
     let mut tui = Harness::builder(Harness::codewhale_binary())
         .cwd(workspace.workspace())
         .clear_env()

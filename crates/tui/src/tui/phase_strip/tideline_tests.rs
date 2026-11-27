@@ -172,14 +172,13 @@ fn posture_bar_pins_notice_or_remote_control_right() {
     assert!(narrow.contains(" ask"), "{narrow}");
 }
 
-/// Shed ladder, most expendable first: the turn clock, the session clock,
-/// the permission key (a binding reminder, and the widest optional item),
-/// the hint, the counts. The permission chip
-/// never sheds (#5796); the clock is what a glance wants and the hint and
-/// counts are what a keystroke wants, so on a row too narrow for both the
-/// clock goes (#5914).
+/// Shed ladder, most expendable first: the session clock, the permission
+/// key (a binding reminder, and the widest optional item), the hint, the
+/// counts, the turn clock. The permission chip never sheds (#5796), and the
+/// turn clock is the last live fact to go: a row that drops it for a static
+/// hint leaves a working session looking dead (CW-8264).
 #[test]
-fn posture_bar_sheds_the_clocks_then_the_hint_and_counts() {
+fn posture_bar_sheds_static_hints_before_the_turn_clock() {
     let fixture = working();
     let narrowest_showing = |needle: &str| -> u16 {
         (8..=160u16)
@@ -193,10 +192,10 @@ fn posture_bar_sheds_the_clocks_then_the_hint_and_counts() {
     let counts = narrowest_showing("2 agents");
     let permission_key = narrowest_showing("Shift+Tab to change");
     assert!(
-        turn_clock > session_clock
-            && session_clock > permission_key
+        session_clock > permission_key
             && permission_key > hint
-            && hint > counts,
+            && hint > counts
+            && counts > turn_clock,
         "turn_clock@{turn_clock} session_clock@{session_clock} hint@{hint} counts@{counts} permission_key@{permission_key}"
     );
     for w in 8..=160u16 {
@@ -344,7 +343,7 @@ fn cycle_keys_show_at_zero_and_one_use_and_go_bare_at_two() {
     let facts = tideline_footer_from_app(&mut app, 120);
     assert_eq!(
         facts.permission_chip.0,
-        "plan · files: read-only (unenforced)"
+        "Plan · files: read-only (unenforced)"
     );
 }
 
@@ -665,43 +664,16 @@ fn a_session_that_has_not_worked_states_no_clock() {
     );
 }
 
-/// #6084: when the session half will not paint, the shed ladder must not
-/// drop the turn clock at the turn-only rung — that would leave no clock
-/// at all. Find a width where both-clocks already sheds the turn half while
-/// keeping the session half; with only the turn clock, that width must keep
-/// it (shed at the session-clock rung instead).
-#[test]
-fn absent_session_clock_keeps_turn_past_the_turn_only_rung() {
-    let mut first_turn = working();
-    first_turn.session_clock = None;
-    let both = working();
-    let width = (8..=160u16)
-        .find(|&w| {
-            let text = draw(w, 3, &both.widget(&UI_THEME));
-            text.contains("worked 41m 12s") && !text.contains("working 1m 15s")
-        })
-        .expect("both-clocks fixture must shed turn before session at some width");
-    let text = draw(width, 3, &first_turn.widget(&UI_THEME));
-    assert!(
-        text.contains("working 1m 15s"),
-        "{width}: with no session half, the turn clock must survive the turn-only shed rung (#6084): {text}"
-    );
-}
-
-/// Narrow terminals shed both clock halves before the hint and the counts,
-/// the turn half before the session half, and neither reading is ever
+/// Narrow terminals shed the session clock, then the hint, then the counts,
+/// and the turn clock only after all of them; neither reading is ever
 /// painted half-truncated.
 #[test]
-fn narrow_widths_shed_the_clocks_before_the_hint_and_counts() {
+fn narrow_widths_keep_the_turn_clock_past_the_hint_and_counts() {
     let fixture = working();
     for w in 8..=160u16 {
         let text = draw(w, 3, &fixture.widget(&UI_THEME));
         let turn = text.contains("working 1m 15s");
         let session = text.contains("worked 41m 12s");
-        assert!(
-            !turn || session,
-            "{w} kept the turn clock and dropped the session clock: {text}"
-        );
         assert!(
             !session || text.contains("Esc to interrupt"),
             "{w} kept the session clock and dropped the hint: {text}"
@@ -709,6 +681,10 @@ fn narrow_widths_shed_the_clocks_before_the_hint_and_counts() {
         assert!(
             !text.contains("Esc to interrupt") || text.contains("2 agents"),
             "{w} kept the hint and dropped the counts: {text}"
+        );
+        assert!(
+            !text.contains("2 agents") || turn,
+            "{w} kept the counts and dropped the turn clock: {text}"
         );
         // Whole readings or none: a clipped duration is a lie.
         assert!(
@@ -719,6 +695,45 @@ fn narrow_widths_shed_the_clocks_before_the_hint_and_counts() {
             !text.contains("worked 41m") || session,
             "{w} painted a half-truncated session clock: {text}"
         );
+    }
+}
+
+#[test]
+fn a_working_turn_keeps_its_clock_on_narrow_rows() {
+    use crate::tui::app::{StatusToast, StatusToastLevel};
+    let footer = |width: u16, notice: bool| {
+        let mut app = session_app();
+        app.ui_locale = codewhale_localization::Locale::En;
+        app.approval_mode = codewhale_execpolicy::ApprovalMode::Bypass;
+        app.is_loading = true;
+        app.turn_started_at = Some(Instant::now() - Duration::from_secs(3));
+        if notice {
+            app.push_status_toast_record(
+                StatusToast::new(
+                    "MCP · failed: launch-proof · /mcp",
+                    StatusToastLevel::Warning,
+                    Some(12_000),
+                )
+                .with_fallbacks(vec!["MCP · 1 failed · /mcp".to_string()]),
+            );
+        }
+        let facts = tideline_footer_from_app(&mut app, width);
+        draw(width, 3, &facts.widget(&app.ui_theme, false))
+    };
+    for (width, notice, kept) in [
+        (
+            80u16,
+            true,
+            vec!["working 3s", "Esc to interrupt", "MCP · 1 failed · /mcp"],
+        ),
+        (60, true, vec!["working 3s", "MCP · 1 failed · /mcp"]),
+        (60, false, vec!["working 3s", "Esc to interrupt"]),
+        (40, true, vec!["working 3s"]),
+    ] {
+        let text = footer(width, notice);
+        for needle in kept {
+            assert!(text.contains(needle), "{width}: lost {needle}: {text}");
+        }
     }
 }
 

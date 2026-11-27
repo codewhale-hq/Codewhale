@@ -86,8 +86,8 @@ pub use tool_run::detect_tool_runs;
 pub use tool_run::{ToolRun, detect_tool_runs_from_slices, tool_run_summary};
 pub(crate) use turn_fold::superseded_todo_write_indices;
 pub use turn_fold::{
-    TurnFold, TurnFoldProjection, detect_turn_folds, turn_fold_changes, turn_fold_diff,
-    turn_fold_headline,
+    TurnFold, TurnFoldProjection, detect_turn_folds, turn_fold_changes, turn_fold_changes_in,
+    turn_fold_diff, turn_fold_headline,
 };
 
 #[cfg(test)]
@@ -934,9 +934,32 @@ pub fn history_cells_from_message_with_results(
                 }
             }
             ContentBlock::ToolUse { name, input, .. } if name == "update_plan" => {
+                let status = if messages.is_empty() {
+                    ToolStatus::Success
+                } else {
+                    let key = block
+                        .tool_call_key()
+                        .filter(|key| !key.as_str().trim().is_empty());
+                    match key.and_then(|key| {
+                        messages
+                            .iter()
+                            .flat_map(|message| &message.content)
+                            .find_map(|candidate| match candidate {
+                                ContentBlock::ToolResult { is_error, .. }
+                                    if candidate.tool_call_key() == Some(key) =>
+                                {
+                                    Some(is_error.unwrap_or(false))
+                                }
+                                _ => None,
+                            })
+                    }) {
+                        Some(false) => ToolStatus::Success,
+                        Some(true) | None => ToolStatus::Failed,
+                    }
+                };
                 cells.push(HistoryCell::Tool(ToolCell::PlanUpdate(PlanUpdateCell {
                     snapshot: PlanSnapshot::from_tool_input(input),
-                    status: ToolStatus::Success,
+                    status,
                 })));
             }
             ContentBlock::ToolUse { name, input, .. } if name == "show_data" => {
@@ -1779,16 +1802,9 @@ impl ExploringCell {
                     width,
                 ));
             } else if !header_shows_label {
-                let prefix = match entry.status {
-                    ToolStatus::Running => "live",
-                    ToolStatus::Success => "done",
-                    ToolStatus::Hydrated => "loaded",
-                    ToolStatus::Stopped => "stopped",
-                    ToolStatus::Warning => "issue",
-                    ToolStatus::Failed => "failed",
-                };
+                let prefix = tool_status_label(entry.status, locale);
                 lines.extend(render_compact_kv(
-                    prefix,
+                    &prefix,
                     &entry.label,
                     tool_value_style(),
                     width,
@@ -3144,27 +3160,8 @@ fn details_affordance_line(text: &str, style: Style) -> Line<'static> {
     ])
 }
 
-/// Truncate to `max_len` display cells, cutting only at grapheme-cluster
-/// boundaries. Counting chars let CJK text overflow a width budget and could
-/// split a ZWJ or combining sequence (U04-m5); ASCII output is unchanged.
 fn truncate_text(text: &str, max_len: usize) -> String {
-    use unicode_segmentation::UnicodeSegmentation;
-    if codewhale_tui_kit::ui_text::text_display_width(text) <= max_len {
-        return text.to_string();
-    }
-    let budget = max_len.saturating_sub(3);
-    let mut out = String::new();
-    let mut used = 0usize;
-    for grapheme in text.graphemes(true) {
-        let width = codewhale_tui_kit::ui_text::text_display_width(grapheme);
-        if used + width > budget {
-            break;
-        }
-        used += width;
-        out.push_str(grapheme);
-    }
-    out.push_str("...");
-    out
+    codewhale_tui_kit::ui_text::truncate_line_to_width(text, max_len)
 }
 
 /// Label glyph for an error cell. `Critical`/`Error` get the loudest marker;
@@ -4072,3 +4069,19 @@ pub(crate) fn apply_hot_tail_to_line(line: &mut Line<'static>, low_motion: bool)
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod truncate_text_tests {
+    use super::truncate_text;
+
+    #[test]
+    fn truncate_text_keeps_cjk_and_zwj_whole() {
+        let cjk = truncate_text("日本語のテキストです", 9);
+        assert_eq!(cjk, "日本語...");
+        let family = "a👨‍👩‍👧‍👦👨‍👩‍👧‍👦👨‍👩‍👧‍👦";
+        let out = truncate_text(family, 6);
+        let body = out.strip_suffix("...").expect("ellipsis");
+        assert_eq!(body.chars().filter(|c| *c == '\u{200d}').count(), 3);
+        assert!(family.starts_with(body));
+    }
+}

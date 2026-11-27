@@ -1765,7 +1765,7 @@ fn headless_update_reports_current_or_new_version_and_network_approval() {
     .to_string();
     assert!(
         err.contains(
-            "Network approval required for example.com; use /network allow example.com, then retry"
+            "Network approval required for example.com; run `/network allow example.com` in the terminal UI, or add \"example.com\" to `allow` under [network] in config.toml, then retry"
         ),
         "{err}"
     );
@@ -2244,7 +2244,7 @@ fn plugin_create_says_why_when_creator_is_unavailable_and_changes_nothing() {
         let expected = crate::tui::conversation_mode::unavailable_message(
             app.ui_locale,
             "Creator mode",
-            &crate::tui::conversation_mode::display_reason(app.ui_locale, forced_reason),
+            &crate::tui::conversation_mode::display_reason(app.ui_locale, Some(forced_reason)),
         );
 
         let result = crate::commands::execute_with_config(
@@ -2755,8 +2755,7 @@ fn plugin_list_and_show_name_the_approver_and_who_turned_it_on() {
         "{show_before}"
     );
     assert!(
-        show_before
-            .contains("attachments (Images in the conversation): this version does not offer it"),
+        show_before.contains("attachments (Images in the conversation): can use"),
         "{show_before}"
     );
 
@@ -2832,8 +2831,9 @@ fn plugin_list_and_show_name_the_approver_and_who_turned_it_on() {
         "{show_withheld}"
     );
     assert!(
-        show_withheld
-            .contains("attachments (Images in the conversation): this version does not offer it"),
+        show_withheld.contains(
+            "attachments (Images in the conversation): off for now: `peer-plain` is turned on and its review does not include it"
+        ),
         "{show_withheld}"
     );
 

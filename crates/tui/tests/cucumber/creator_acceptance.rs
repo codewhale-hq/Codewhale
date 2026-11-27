@@ -328,10 +328,7 @@ fn prepare_pty_workspace(node: &Path) -> (super::qa_harness::harness::SealedWork
         "[notifications]\nmethod = \"off\"\ncompletion_sound = \"off\"\n\n[features]\nextension_host = true\nplugin_creator = true\n\n[extension_host]\nruntime = \"node\"\nnode = {node_toml}\n"
     );
     std::fs::write(codewhale_dir.join("config.toml"), config_toml).expect("write config.toml");
-
-    let trust = workspace.workspace().join(".deepseek");
-    std::fs::create_dir_all(&trust).expect("mkdir .deepseek");
-    std::fs::write(trust.join("trusted"), "").expect("write trusted");
+    workspace.trust_workspace().expect("trust workspace");
 
     let mut dirs = Vec::new();
     if let Some(parent) = node.parent() {

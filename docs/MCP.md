@@ -106,7 +106,7 @@ yet, that’s fine.” Failing or incomplete configured servers surface as
 Enumeration never executes MCP/plugin commands beyond the static probe.
 Summaries redact commands, args, env, headers, and tokens.
 
-`codewhale doctor` reports MCP/skills/tools/plugins health with the same
+`codewhale doctor --full` reports MCP/skills/tools/plugins health with the same
 optional-surface intent (paths, counts, static checks) so wizard and doctor
 stay consistent.
 
@@ -528,7 +528,7 @@ switch, loads none of its servers until you review and approve again.
 `/mcp revoke` removes the approval. `/mcp disable`, `/mcp enable` and
 `/mcp remove` on a project server edit the file and keep its approval. Review
 any scripts a server command runs as well: the approval covers the file, not
-the files it points to. `codewhale doctor` and `/mcp validate` report a project
+the files it points to. `codewhale doctor --full` and `/mcp validate` report a project
 file that is waiting for approval. Project entries override same-named global
 servers; project-local files cannot grant trust or approval themselves or
 redirect the global `mcp_config_path`. Global and approved-project entries take
@@ -896,7 +896,7 @@ Avoid committing literal `Authorization` headers. Prefer `env_headers`,
 
 ## Troubleshooting
 
-- Run `codewhale doctor` to confirm the MCP config path it resolved and whether it exists.
+- Run `codewhale doctor --full` to confirm the MCP config path it resolved and whether it exists.
 - In the TUI, run `/mcp validate` to see each server's state from the last
   recorded MCP snapshot, plus any config load error and configured servers that
   have not connected.

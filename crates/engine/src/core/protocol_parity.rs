@@ -14,10 +14,7 @@
 //! here.
 //!
 //! The foreground pet observer consumes the event projection, retaining only
-//! lifecycle metadata. Other projections remain compile-time parity guards;
-//! dead-code is allowed here rather than hiding those guards behind a test cfg
-//! (which would let `cargo build` pass with an unmapped variant).
-#![allow(dead_code)]
+//! lifecycle metadata. Other projections remain compile-time parity guards.
 
 use std::collections::BTreeMap;
 
@@ -1699,6 +1696,7 @@ mod tests {
                     recoverable: true,
                     code: "E429".into(),
                     message: "slow down".into(),
+                    request_transmission: None,
                 },
                 recoverable: true,
             },

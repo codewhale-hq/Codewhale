@@ -20,10 +20,10 @@ use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
 use axum::Json;
-use axum::body::Body;
-use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::body::{Body, to_bytes};
+use axum::extract::{ConnectInfo, Path, Query, RawQuery, State};
 use axum::http::uri::Authority;
-use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, header};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -57,11 +57,16 @@ const PLUGIN_UI_SEATS: [&str; 6] = [
     "command.row",
 ];
 const DSH_BOOTSTRAP_ENTRY: &str = "__codewhale_dsh_bootstrap.js";
-const DSH_FRAME_MODULES: [&str; 4] = [
+const DSH_FRAME_MODULES: [&str; 9] = [
     "react",
     "react-dom",
     "react-dom/client",
     "react/jsx-runtime",
+    "@deepseek-ai/dsh-client-store",
+    "@deepseek-ai/dsh-client-ui-primitives",
+    "@deepseek-ai/dsh-settings",
+    "@deepseek-ai/dsh-tools",
+    "@deepseek-ai/dsh-credentials",
 ];
 const DSH_ROUTE_METHODS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
@@ -70,7 +75,7 @@ enum DshSeat {
     Unsupported(&'static str),
 }
 
-const DSH_SEAT_TABLE: [(&str, DshSeat); 33] = [
+const DSH_SEAT_TABLE: [(&str, DshSeat); 41] = [
     ("plugins.bundle.config", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("plugins.row.config", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("plugins.tab", DshSeat::Seat(PLUGIN_UI_SLOT)),
@@ -79,9 +84,11 @@ const DSH_SEAT_TABLE: [(&str, DshSeat); 33] = [
     ("plugins.detail.actions", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("plugins.detail.badge", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("settings.section", DshSeat::Seat(PLUGIN_UI_SLOT)),
+    ("settings.section.icon", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("settings.plugin.item", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("settings.general.item", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("settings.plugins.tab", DshSeat::Seat(PLUGIN_UI_SLOT)),
+    ("web-ui.plugin.item", DshSeat::Seat(PLUGIN_UI_SLOT)),
     (
         "conversation.chat.node",
         DshSeat::Seat("conversation.chat.node"),
@@ -92,6 +99,10 @@ const DSH_SEAT_TABLE: [(&str, DshSeat); 33] = [
     ),
     (
         "conversation.chat.assistant-actions",
+        DshSeat::Seat("conversation.chat.node"),
+    ),
+    (
+        "conversation.chat.commandview",
         DshSeat::Seat("conversation.chat.node"),
     ),
     (
@@ -124,9 +135,16 @@ const DSH_SEAT_TABLE: [(&str, DshSeat); 33] = [
         DshSeat::Seat("conversation.composer.dock"),
     ),
     ("sidebar.right.pane.tab", DshSeat::Seat("workpane.panel")),
+    (
+        "sidebar.right.pane.tab.title",
+        DshSeat::Seat("workpane.panel"),
+    ),
+    ("shell.overlay", DshSeat::Seat("workpane.panel")),
+    ("main", DshSeat::Seat("workpane.panel")),
     ("main.conversation", DshSeat::Seat("workpane.panel")),
     ("main.page-menu", DshSeat::Seat("workpane.panel")),
     ("sidebar.panellist", DshSeat::Seat("sidebar.section")),
+    ("sidebar.channels", DshSeat::Seat("sidebar.section")),
     ("sidebar.workspaces", DshSeat::Seat("sidebar.section")),
     ("sidebar.footer.action", DshSeat::Seat("sidebar.section")),
     (
@@ -139,11 +157,15 @@ const DSH_SEAT_TABLE: [(&str, DshSeat); 33] = [
     ),
     (
         "conversation.session.header.actions",
-        DshSeat::Unsupported("no ADE seat yet"),
+        DshSeat::Seat("command.row"),
+    ),
+    (
+        "conversation.session.header.lineage",
+        DshSeat::Seat("command.row"),
     ),
     (
         "conversation.session.header.utilities",
-        DshSeat::Unsupported("no ADE seat yet"),
+        DshSeat::Seat("command.row"),
     ),
     ("contextMenu.icon", DshSeat::Unsupported("no ADE seat yet")),
 ];
@@ -679,6 +701,8 @@ fn ui_content_type(path: &FsPath) -> &'static str {
         Some("png") => "image/png",
         Some("jpg" | "jpeg") => "image/jpeg",
         Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        Some("ico") => "image/x-icon",
         Some("woff") => "font/woff",
         Some("woff2") => "font/woff2",
         Some("ttf") => "font/ttf",
@@ -687,13 +711,21 @@ fn ui_content_type(path: &FsPath) -> &'static str {
 }
 
 fn is_dsh_static_ui_asset(path: &FsPath) -> bool {
-    matches!(
-        path.extension()
-            .and_then(std::ffi::OsStr::to_str)
-            .map(str::to_ascii_lowercase)
-            .as_deref(),
-        Some("css" | "svg" | "png" | "jpg" | "jpeg" | "webp" | "woff" | "woff2" | "ttf")
-    )
+    let ext = path
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_ascii_lowercase);
+    match ext.as_deref() {
+        Some(
+            "css" | "svg" | "png" | "jpg" | "jpeg" | "webp" | "gif" | "ico" | "woff" | "woff2"
+            | "ttf",
+        ) => true,
+        Some("json") => !matches!(
+            path.file_name().and_then(std::ffi::OsStr::to_str),
+            Some("package.json" | "CONVERSION.json")
+        ),
+        _ => false,
+    }
 }
 
 fn ui_asset_response(bytes: Vec<u8>, content_type: &'static str) -> Response {
@@ -705,10 +737,19 @@ fn ui_asset_response(bytes: Vec<u8>, content_type: &'static str) -> Response {
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
     if content_type == "image/svg+xml" {
         headers.insert(
             header::CONTENT_SECURITY_POLICY,
             HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'; sandbox"),
+        );
+    } else {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'none'; sandbox"),
         );
     }
     response
@@ -1903,6 +1944,9 @@ pub(super) async fn get_plugin_ui(
     }))
 }
 
+const MAX_PLUGIN_ROUTE_RESPONSE_HEADERS: usize = 64;
+const MAX_PLUGIN_ROUTE_HEADER_VALUE_BYTES: usize = 8 * 1024;
+
 fn grant_for_request(
     state: &RuntimeApiState,
     selector: &str,
@@ -1928,12 +1972,63 @@ fn grant_for_request(
     Ok((grant, revision))
 }
 
+fn allowlisted_plugin_route_request_headers(headers: &HeaderMap) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (name, value) in headers {
+        let lower = name.as_str().to_ascii_lowercase();
+        let allowed = matches!(
+            lower.as_str(),
+            "content-type" | "accept" | "accept-language"
+        ) || (lower.starts_with("x-")
+            && !lower.starts_with("x-codewhale-")
+            && !lower.starts_with("x-deepseek-")
+            && !lower.starts_with("x-forwarded-")
+            && !lower.starts_with("x-auth-")
+            && lower != "x-real-ip"
+            && lower != "x-api-key");
+        if !allowed {
+            continue;
+        }
+        if let Ok(text) = value.to_str() {
+            out.push((lower, text.to_string()));
+        }
+    }
+    out
+}
+
+fn is_stripped_plugin_route_response_header(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "set-cookie"
+            | "authorization"
+            | "cookie"
+            | "www-authenticate"
+            | "proxy-authenticate"
+            | "content-security-policy"
+            | "content-security-policy-report-only"
+            | "referrer-policy"
+            | "location"
+            | "content-length"
+            | "transfer-encoding"
+            | "connection"
+            | "keep-alive"
+            | "upgrade"
+            | "strict-transport-security"
+            | "x-frame-options"
+            | "cache-control"
+            | "x-content-type-options"
+    ) || lower.starts_with("access-control-")
+}
+
 pub(super) async fn plugin_route_bridge(
     State(state): State<RuntimeApiState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path((selector, path)): Path<(String, String)>,
+    RawQuery(raw_query): RawQuery,
     method: axum::http::Method,
     headers: HeaderMap,
+    body: Body,
 ) -> Result<Response, ApiError> {
     if !peer.ip().is_loopback() {
         return Err(ApiError::forbidden(
@@ -1941,6 +2036,7 @@ pub(super) async fn plugin_route_bridge(
         ));
     }
     let (grant, revision) = grant_for_request(&state, &selector, &headers)?;
+    let authority = grant.authority.clone();
     let state_for_route = state.clone();
     let policy = codewhale_plugins::activation::extension_host_policy_enabled();
     tokio::task::spawn_blocking(move || {
@@ -1961,7 +2057,7 @@ pub(super) async fn plugin_route_bridge(
     })
     .await
     .map_err(|_| ApiError::internal("plugin route check failed"))??;
-    ui_relative_path(&path).map_err(|reason| {
+    let relative = ui_relative_path(&path).map_err(|reason| {
         ApiError::bad_request(format!("plugin route path '{path}' is invalid: {reason}"))
     })?;
     if !DSH_ROUTE_METHODS.contains(&method.as_str()) {
@@ -1971,10 +2067,89 @@ pub(super) async fn plugin_route_bridge(
             code: None,
         });
     }
-    Err(ApiError::not_implemented(
-        "this Engine has no plugin web server to forward the route to yet",
-    )
-    .with_code("plugin_route_not_served"))
+    let max_req = codewhale_engine::extension_host::MAX_PLUGIN_ROUTE_REQUEST_BYTES;
+    let body_bytes = to_bytes(body, max_req).await.map_err(|_| {
+        ApiError::payload_too_large("plugin route request body exceeds the 4 MiB limit")
+    })?;
+    let request = codewhale_engine::extension_host::PluginRouteRequest {
+        method: method.as_str().to_string(),
+        path: format!("/{}", ui_relative_display(&relative)),
+        query: raw_query.filter(|q| !q.is_empty()),
+        headers: allowlisted_plugin_route_request_headers(&headers),
+        body: body_bytes.to_vec(),
+    };
+    let result = codewhale_engine::extension_host::dispatch_plugin_route(&authority, request)
+        .await
+        .map_err(|error| match error {
+            codewhale_engine::extension_host::PluginRouteError::NotFound => {
+                ApiError::not_found("plugin did not register a handler for this route")
+                    .with_code("plugin_route_not_found")
+            }
+            codewhale_engine::extension_host::PluginRouteError::HostUnavailable(reason) => {
+                ApiError {
+                    status: StatusCode::SERVICE_UNAVAILABLE,
+                    message: format!("plugin extension host is unavailable: {reason}"),
+                    code: Some("plugin_host_unavailable"),
+                }
+            }
+            codewhale_engine::extension_host::PluginRouteError::RequestTooLarge => {
+                ApiError::payload_too_large("plugin route request body exceeds the 4 MiB limit")
+            }
+            codewhale_engine::extension_host::PluginRouteError::ResponseTooLarge => ApiError {
+                status: StatusCode::BAD_GATEWAY,
+                message: "plugin route response body exceeds the 8 MiB limit".into(),
+                code: Some("plugin_route_response_too_large"),
+            },
+            codewhale_engine::extension_host::PluginRouteError::Timeout => ApiError {
+                status: StatusCode::GATEWAY_TIMEOUT,
+                message: "plugin route timed out".into(),
+                code: Some("plugin_route_timeout"),
+            },
+            codewhale_engine::extension_host::PluginRouteError::ExecutionFailed(reason) => {
+                ApiError {
+                    status: StatusCode::BAD_GATEWAY,
+                    message: format!("plugin route failed: {reason}"),
+                    code: Some("plugin_route_failed"),
+                }
+            }
+        })?;
+    let status = StatusCode::from_u16(result.status).unwrap_or(StatusCode::BAD_GATEWAY);
+    let mut response = Response::new(Body::from(result.body));
+    *response.status_mut() = status;
+    let out_headers = response.headers_mut();
+    let mut forwarded_count = 0usize;
+    for (name, value) in result.headers {
+        if forwarded_count >= MAX_PLUGIN_ROUTE_RESPONSE_HEADERS {
+            break;
+        }
+        if value.len() > MAX_PLUGIN_ROUTE_HEADER_VALUE_BYTES
+            || is_stripped_plugin_route_response_header(&name)
+        {
+            continue;
+        }
+        let Ok(header_name) = HeaderName::from_bytes(name.as_bytes()) else {
+            continue;
+        };
+        let Ok(header_value) = HeaderValue::from_str(&value) else {
+            continue;
+        };
+        out_headers.append(header_name, header_value);
+        forwarded_count += 1;
+    }
+    out_headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    out_headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    out_headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; sandbox"),
+    );
+    out_headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    Ok(response)
 }
 
 pub(super) async fn get_plugin_ui_asset(
@@ -2052,7 +2227,8 @@ pub(super) async fn install_plugin_api(
         codewhale_plugins::install::PluginInstallSource::parse(&req.source).map_err(|error| {
             ApiError::bad_request(format!(
                 "invalid plugin install source '{}': {error:#}; expected a local \
-                 path, github:owner/repo, or an HTTPS tarball URL",
+                 path, github:owner/repo, npm:<pkg>, git:<url>, dsh:<pkg-or-path>, \
+                 or an HTTPS tarball URL",
                 req.source
             ))
         })?;
@@ -2205,20 +2381,34 @@ pub(super) async fn revoke_plugin_api(
 // Handlers — marketplaces
 // ---------------------------------------------------------------------------
 
+async fn with_marketplace_store<T: Send + 'static>(
+    state: &RuntimeApiState,
+    work: impl FnOnce(RuntimeApiState, MarketplaceStore) -> Result<T, ApiError> + Send + 'static,
+) -> Result<T, ApiError> {
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || {
+        let store = open_marketplace_store(&state)?;
+        work(state, store)
+    })
+    .await
+    .map_err(|_| ApiError::internal("marketplace store task failed"))?
+}
+
 /// `GET /v1/apps/marketplaces`
 pub(super) async fn list_marketplaces(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<MarketplacesResponse>, ApiError> {
-    let store = open_marketplace_store(&state)?;
-    let marketplace_state = load_marketplace_state(&store)?;
-    let registry = registry_for_state(&state);
-    Ok(Json(MarketplacesResponse {
-        marketplaces: marketplace_state
+    let marketplaces = with_marketplace_store(&state, |state, store| {
+        let marketplace_state = load_marketplace_state(&store)?;
+        let registry = registry_for_state(&state);
+        Ok(marketplace_state
             .catalogs()
             .iter()
             .map(|(name, entry)| marketplace_catalog_entry(name, entry, &registry))
-            .collect(),
-    }))
+            .collect())
+    })
+    .await?;
+    Ok(Json(MarketplacesResponse { marketplaces }))
 }
 
 /// `GET /v1/apps/marketplaces/{name}`
@@ -2226,16 +2416,19 @@ pub(super) async fn get_marketplace(
     State(state): State<RuntimeApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<MarketplaceCatalogEntry>, ApiError> {
-    let store = open_marketplace_store(&state)?;
-    let marketplace_state = load_marketplace_state(&store)?;
-    let entry = marketplace_state
-        .get(&name)
-        .ok_or_else(|| ApiError::not_found(format!("marketplace '{name}' not found")))?;
-    Ok(Json(marketplace_catalog_entry(
-        &name,
-        entry,
-        &registry_for_state(&state),
-    )))
+    let entry = with_marketplace_store(&state, move |state, store| {
+        let marketplace_state = load_marketplace_state(&store)?;
+        let entry = marketplace_state
+            .get(&name)
+            .ok_or_else(|| ApiError::not_found(format!("marketplace '{name}' not found")))?;
+        Ok(marketplace_catalog_entry(
+            &name,
+            entry,
+            &registry_for_state(&state),
+        ))
+    })
+    .await?;
+    Ok(Json(entry))
 }
 
 /// `POST /v1/apps/marketplaces`
@@ -2243,21 +2436,23 @@ pub(super) async fn add_marketplace(
     State(state): State<RuntimeApiState>,
     Json(req): Json<AddMarketplaceRequest>,
 ) -> Result<(StatusCode, Json<MarketplaceActionResponse>), ApiError> {
-    let store = open_marketplace_store(&state)?;
-    let loaded = load_catalog_document(&req.name, &state.workspace, &req.path)
-        .map_err(ApiError::bad_request)?;
-    store
-        .add(&loaded.entry.catalog.id.clone(), loaded.entry)
-        .map_err(ApiError::conflict)?;
-    Ok((
-        StatusCode::CREATED,
-        Json(MarketplaceActionResponse {
+    let response = with_marketplace_store(&state, move |state, store| {
+        let loaded = load_catalog_document(&req.name, &state.workspace, &req.path)
+            .map_err(ApiError::bad_request)?;
+        let candidate_count = loaded.candidate_count;
+        let warning_count = loaded.warning_count;
+        store
+            .add(&loaded.entry.catalog.id.clone(), loaded.entry)
+            .map_err(ApiError::conflict)?;
+        Ok(MarketplaceActionResponse {
             name: req.name,
             action: "added",
-            candidate_count: Some(loaded.candidate_count),
-            warning_count: Some(loaded.warning_count),
-        }),
-    ))
+            candidate_count: Some(candidate_count),
+            warning_count: Some(warning_count),
+        })
+    })
+    .await?;
+    Ok((StatusCode::CREATED, Json(response)))
 }
 
 /// `DELETE /v1/apps/marketplaces/{name}`
@@ -2265,10 +2460,13 @@ pub(super) async fn remove_marketplace(
     State(state): State<RuntimeApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<MarketplaceActionResponse>, ApiError> {
-    let store = open_marketplace_store(&state)?;
-    let removed = store
-        .remove(&name)
-        .map_err(|error| ApiError::internal(format!("remove marketplace: {error}")))?;
+    let target = name.clone();
+    let removed = with_marketplace_store(&state, move |_, store| {
+        store
+            .remove(&target)
+            .map_err(|error| ApiError::internal(format!("remove marketplace: {error}")))
+    })
+    .await?;
     if !removed {
         return Err(ApiError::not_found(format!(
             "marketplace '{name}' not found"
@@ -2292,48 +2490,53 @@ pub(super) async fn install_marketplace_candidate_api(
     Path(name): Path<String>,
     Json(req): Json<InstallMarketplaceCandidateRequest>,
 ) -> Result<(StatusCode, Json<PluginMutationResponse>), ApiError> {
-    let store = open_marketplace_store(&state)?;
-    let marketplace_state = load_marketplace_state(&store)?;
-    let entry = marketplace_state
-        .get(&name)
-        .ok_or_else(|| ApiError::not_found(format!("marketplace '{name}' not found")))?;
-    let candidate = entry
-        .catalog
-        .candidate_by_name(&req.candidate)
-        .ok_or_else(|| {
-            ApiError::not_found(format!(
-                "candidate '{}' not found in marketplace '{name}'",
+    let spec = with_marketplace_store(&state, move |state, store| {
+        let marketplace_state = load_marketplace_state(&store)?;
+        let entry = marketplace_state
+            .get(&name)
+            .ok_or_else(|| ApiError::not_found(format!("marketplace '{name}' not found")))?;
+        let candidate = entry
+            .catalog
+            .candidate_by_name(&req.candidate)
+            .ok_or_else(|| {
+                ApiError::not_found(format!(
+                    "candidate '{}' not found in marketplace '{name}'",
+                    req.candidate
+                ))
+            })?;
+        let registry = registry_for_state(&state);
+        match resolve_candidate_install(entry, candidate, &registry) {
+            CatalogInstallResolution::Supported { spec, .. } => Ok(spec),
+            CatalogInstallResolution::AlreadyPresent { reason, .. } => {
+                Err(ApiError::conflict(reason))
+            }
+            CatalogInstallResolution::Unsupported { reason } => Err(ApiError::conflict(format!(
+                "candidate '{}' cannot be installed by Codewhale: {reason}",
                 req.candidate
-            ))
-        })?;
-    let registry = registry_for_state(&state);
-    match resolve_candidate_install(entry, candidate, &registry) {
-        CatalogInstallResolution::Supported { spec, .. } => {
-            let response = run_plugin_mutation(
-                &state,
-                PluginMutationRequest::Install {
-                    source: codewhale_plugins::install::PluginInstallSource::parse(&spec).map_err(
-                        |error| {
-                            ApiError::internal(format!(
-                                "resolved install spec '{spec}' no longer parses: {error:#}"
-                            ))
-                        },
-                    )?,
-                },
-            )
-            .await?;
-            Ok((StatusCode::CREATED, Json(response)))
+            ))),
+            CatalogInstallResolution::HasErrors { diagnostics } => {
+                Err(ApiError::conflict(format!(
+                    "candidate '{}' has parse errors and cannot be installed: {diagnostics}",
+                    req.candidate
+                )))
+            }
         }
-        CatalogInstallResolution::AlreadyPresent { reason, .. } => Err(ApiError::conflict(reason)),
-        CatalogInstallResolution::Unsupported { reason } => Err(ApiError::conflict(format!(
-            "candidate '{}' cannot be installed by Codewhale: {reason}",
-            req.candidate
-        ))),
-        CatalogInstallResolution::HasErrors { diagnostics } => Err(ApiError::conflict(format!(
-            "candidate '{}' has parse errors and cannot be installed: {diagnostics}",
-            req.candidate
-        ))),
-    }
+    })
+    .await?;
+    let response = run_plugin_mutation(
+        &state,
+        PluginMutationRequest::Install {
+            source: codewhale_plugins::install::PluginInstallSource::parse(&spec).map_err(
+                |error| {
+                    ApiError::internal(format!(
+                        "resolved install spec '{spec}' no longer parses: {error:#}"
+                    ))
+                },
+            )?,
+        },
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(response)))
 }
 
 // ---------------------------------------------------------------------------
@@ -2695,9 +2898,143 @@ pub(super) async fn put_catalog_settings(
     Ok(Json(CatalogRowEnvelope { row }))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PluginSettingsPutRequest {
+    value: serde_json::Map<String, Value>,
+    #[serde(default)]
+    expected_revision: Option<String>,
+}
+
+async fn admit_plugin_settings(
+    state: &RuntimeApiState,
+    selector: &str,
+) -> Result<(String, PathBuf), ApiError> {
+    let state_for_check = state.clone();
+    let selector = selector.to_string();
+    let policy = codewhale_plugins::activation::extension_host_policy_enabled();
+    let plugin_name = tokio::task::spawn_blocking(move || {
+        let _scope = codewhale_plugins::activation::PolicyScope::propagate(policy);
+        let registry = registry_for_state(&state_for_check);
+        let plugin = registry
+            .get(&selector)
+            .cloned()
+            .ok_or_else(|| ApiError::not_found(format!("plugin '{selector}' not found")))?;
+        if !plugin.active() {
+            return Err(ApiError::forbidden(
+                "plugin must be trusted and enabled to access settings",
+            )
+            .with_code("plugin_settings_not_admitted"));
+        }
+        let service = codewhale_plugins::host_services::HostService::Settings;
+        let entry = offered(service)
+            .then(|| {
+                summary_host_services(&plugin, Some(&registry))
+                    .into_iter()
+                    .find(|entry| entry.service == service.name())
+            })
+            .flatten();
+        match entry {
+            Some(entry) if entry.state == HostServiceWireState::CanUse => {
+                if !entry.withheld_by.is_empty() {
+                    return Err(ApiError::forbidden(
+                        "settings host service is withheld while another active plugin lacks that grant",
+                    )
+                    .with_code("plugin_settings_withheld"));
+                }
+            }
+            _ => {
+                return Err(ApiError::forbidden(
+                    "plugin has not been granted the settings host service",
+                )
+                .with_code("plugin_settings_not_granted"));
+            }
+        }
+        Ok(plugin.name().to_string())
+    })
+    .await
+    .map_err(|_| ApiError::internal("plugin settings check failed"))??;
+
+    let config_path = state
+        .config_path
+        .clone()
+        .or_else(|| state.config.read().loaded_config_path.clone())
+        .or_else(|| {
+            codewhale_runtime::config::resolve_load_config_path(None)
+                .ok()
+                .flatten()
+        })
+        .or_else(|| {
+            codewhale_config::codewhale_home()
+                .ok()
+                .map(|home| home.join("config.toml"))
+        })
+        .ok_or_else(|| ApiError::internal("cannot resolve config.toml path for plugin settings"))?;
+    Ok((plugin_name, config_path))
+}
+
+/// `GET /v1/apps/plugins/{selector}/settings`
+pub(super) async fn get_plugin_settings(
+    State(state): State<RuntimeApiState>,
+    Path(selector): Path<String>,
+) -> Result<Json<codewhale_engine::extension_host::dsh_settings::PluginSettingsSnapshot>, ApiError>
+{
+    let (plugin_name, config_path) = admit_plugin_settings(&state, &selector).await?;
+    let snapshot = codewhale_engine::extension_host::dsh_settings::read_plugin_config_settings(
+        config_path,
+        plugin_name,
+    )
+    .await
+    .map_err(|error| match error {
+        codewhale_engine::extension_host::dsh_settings::PluginSettingsError::Invalid(message) => {
+            ApiError::bad_request(message).with_code("plugin_settings_invalid")
+        }
+        codewhale_engine::extension_host::dsh_settings::PluginSettingsError::Store => {
+            ApiError::internal("the plugin settings could not be read")
+        }
+    })?;
+    Ok(Json(snapshot))
+}
+
+/// `PUT /v1/apps/plugins/{selector}/settings`
+pub(super) async fn put_plugin_settings(
+    State(state): State<RuntimeApiState>,
+    Path(selector): Path<String>,
+    Json(req): Json<PluginSettingsPutRequest>,
+) -> Result<
+    Json<codewhale_engine::extension_host::dsh_settings::PluginSettingsWriteOutcome>,
+    ApiError,
+> {
+    let (plugin_name, config_path) = admit_plugin_settings(&state, &selector).await?;
+    let outcome = codewhale_engine::extension_host::dsh_settings::write_plugin_config_settings(
+        config_path,
+        plugin_name,
+        req.value,
+        req.expected_revision,
+    )
+    .await
+    .map_err(|error| match error {
+        codewhale_engine::extension_host::dsh_settings::PluginSettingsError::Invalid(message) => {
+            ApiError::bad_request(message).with_code("plugin_settings_invalid")
+        }
+        codewhale_engine::extension_host::dsh_settings::PluginSettingsError::Store => {
+            ApiError::internal("the plugin settings could not be saved")
+        }
+    })?;
+    if outcome.written {
+        reload_after_catalog_write(state).await?;
+    }
+    Ok(Json(outcome))
+}
+
 #[cfg(test)]
 mod review_tests {
-    use super::{dsh_bootstrap, dsh_client_closure, mcp_server_review};
+    use super::{
+        DshSeat, PLUGIN_UI_SLOT, allowlisted_plugin_route_request_headers, declared_dsh_keys,
+        dsh_bootstrap, dsh_client_closure, dsh_closure_unsupported,
+        is_stripped_plugin_route_response_header, mcp_server_review,
+    };
+    use axum::http::{HeaderMap, HeaderName, HeaderValue, header};
 
     #[test]
     fn dsh_bootstrap_root_entry_closure_resolves_relative_requires_in_node() {
@@ -2857,5 +3194,113 @@ exports.apply = function () {
         assert_eq!(review.url, None);
         assert_eq!(review.command, stdio.command);
         assert_eq!(review.args, stdio.args);
+    }
+
+    #[test]
+    fn dsh_closure_admits_client_store_and_ui_primitives_but_not_unknown_hosts() {
+        let conversion = |hosts: &[&str]| {
+            serde_json::json!({"client_closures": [{
+                "root": "", "entry": "client.js", "files": {"client.js": "hash"},
+                "host_provided": hosts,
+                "imports": {"client.js": {}}
+            }]})
+        };
+        let verified = vec![(
+            "client.js".to_string(),
+            b"exports.apply = function () { return [require('@deepseek-ai/dsh-client-store'), require('@deepseek-ai/dsh-client-ui-primitives')]; };".to_vec(),
+        )];
+        let admitted = dsh_client_closure(&conversion(&[
+            "react",
+            "@deepseek-ai/dsh-client-store",
+            "@deepseek-ai/dsh-client-ui-primitives",
+            "@deepseek-ai/dsh-settings",
+            "@deepseek-ai/dsh-tools",
+            "@deepseek-ai/dsh-credentials",
+        ]))
+        .unwrap();
+        assert_eq!(dsh_closure_unsupported(&admitted, &verified), None);
+        let refused = dsh_client_closure(&conversion(&["@deepseek-ai/dsh-client-api"])).unwrap();
+        assert!(
+            dsh_closure_unsupported(&refused, &verified)
+                .is_some_and(|reason| reason.contains("@deepseek-ai/dsh-client-api"))
+        );
+
+        let seat_script = vec![(
+            "client.js".to_string(),
+            br#"exports.slots = ["shell.overlay", "main", "sidebar.channels", "conversation.session.header.actions", "conversation.session.header.lineage", "conversation.session.header.utilities", "settings.section.icon", "web-ui.plugin.item", "conversation.chat.commandview", "sidebar.right.pane.tab.title"];"#.to_vec(),
+        )];
+        let declared = declared_dsh_keys(&seat_script);
+        for (slot, expected_seat) in [
+            ("shell.overlay", "workpane.panel"),
+            ("main", "workpane.panel"),
+            ("sidebar.right.pane.tab.title", "workpane.panel"),
+            ("sidebar.channels", "sidebar.section"),
+            ("conversation.session.header.actions", "command.row"),
+            ("conversation.session.header.lineage", "command.row"),
+            ("conversation.session.header.utilities", "command.row"),
+            ("settings.section.icon", PLUGIN_UI_SLOT),
+            ("web-ui.plugin.item", PLUGIN_UI_SLOT),
+            ("conversation.chat.commandview", "conversation.chat.node"),
+        ] {
+            assert!(
+                declared.iter().any(|(key, seat)| *key == slot
+                    && matches!(seat, DshSeat::Seat(s) if *s == expected_seat)),
+                "expected '{slot}' to map to '{expected_seat}'"
+            );
+        }
+    }
+
+    #[test]
+    fn plugin_route_header_allowlist_and_stripping() {
+        for stripped in [
+            "set-cookie",
+            "Set-Cookie",
+            "authorization",
+            "cookie",
+            "www-authenticate",
+            "proxy-authenticate",
+            "content-security-policy",
+            "content-security-policy-report-only",
+            "referrer-policy",
+            "location",
+            "access-control-allow-origin",
+            "access-control-allow-credentials",
+            "x-frame-options",
+            "strict-transport-security",
+        ] {
+            assert!(
+                is_stripped_plugin_route_response_header(stripped),
+                "expected response header '{stripped}' to be stripped"
+            );
+        }
+        assert!(!is_stripped_plugin_route_response_header("content-type"));
+        assert!(!is_stripped_plugin_route_response_header("x-plugin-echo"));
+
+        let mut req_headers = HeaderMap::new();
+        req_headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        req_headers.insert(header::ACCEPT, HeaderValue::from_static("application/json"));
+        req_headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer secret"),
+        );
+        req_headers.insert(header::COOKIE, HeaderValue::from_static("sid=secret"));
+        req_headers.insert(
+            HeaderName::from_static("x-codewhale-runtime-token"),
+            HeaderValue::from_static("secret"),
+        );
+        req_headers.insert(
+            HeaderName::from_static("x-plugin-trace"),
+            HeaderValue::from_static("ok"),
+        );
+        let forwarded = allowlisted_plugin_route_request_headers(&req_headers);
+        assert!(forwarded.contains(&("content-type".into(), "application/json".into())));
+        assert!(forwarded.contains(&("accept".into(), "application/json".into())));
+        assert!(forwarded.contains(&("x-plugin-trace".into(), "ok".into())));
+        assert!(!forwarded.iter().any(|(k, _)| {
+            k == "authorization" || k == "cookie" || k == "x-codewhale-runtime-token"
+        }));
     }
 }

@@ -1,1 +1,54 @@
-null
+{
+  "tag": "v0.10.4",
+  "version": "0.10.4",
+  "publishedAt": "2026-11-25T15:12:01Z",
+  "url": "https://downloads.codewhale.net/desktop/latest-mac.yml",
+  "readAt": "2026-11-25T15:14:00Z",
+  "assets": [
+    {
+      "name": "Codewhale-0.10.4-arm64.dmg",
+      "platform": "macos",
+      "size": 263541229,
+      "sha256": "93aee0ddc27bdf33479ab6c026899a9b9d2e787fb7b96631a92b2fd0daafef91",
+      "signed": true,
+      "notarized": true,
+      "url": "https://downloads.codewhale.net/desktop/Codewhale-0.10.4-arm64.dmg"
+    },
+    {
+      "name": "Codewhale-0.10.4-x64.dmg",
+      "platform": "macos",
+      "size": 276667963,
+      "sha256": "3ff2d138118f34edf1f72e9f265e8d8fe232184370c2c8b7b4e800ef18dec5f6",
+      "signed": true,
+      "notarized": true,
+      "url": "https://downloads.codewhale.net/desktop/Codewhale-0.10.4-x64.dmg"
+    },
+    {
+      "name": "codewhale-desktop_0.10.4_amd64.deb",
+      "platform": "linux",
+      "kind": "deb",
+      "arch": "x64",
+      "size": 155293392,
+      "sha256": "36625c6e96f5ec06a7bc0a1cc96f4e3c48a4e25fd5934dab1051d0927e3a7734",
+      "url": "https://downloads.codewhale.net/desktop/apt/pool/main/c/codewhale-desktop/codewhale-desktop_0.10.4_amd64.deb",
+      "apt": {
+        "repository": "https://downloads.codewhale.net/desktop/apt",
+        "keyUrl": "https://downloads.codewhale.net/desktop/apt/codewhale-archive-keyring.asc",
+        "suite": "stable",
+        "component": "main",
+        "architecture": "amd64",
+        "package": "codewhale-desktop",
+        "keyFingerprint": "FE6EED0815F6796F0617D07A8D1B59648C382CE9"
+      }
+    },
+    {
+      "name": "Codewhale-0.10.4-x86_64.AppImage",
+      "platform": "linux",
+      "kind": "appimage",
+      "arch": "x64",
+      "size": 181892911,
+      "sha256": "6e2169ffbe14971fa27ae74fd1ad5f09d813ec08608554d5588e104c2d267f0e",
+      "url": "https://downloads.codewhale.net/desktop/Codewhale-0.10.4-x86_64.AppImage"
+    }
+  ]
+}

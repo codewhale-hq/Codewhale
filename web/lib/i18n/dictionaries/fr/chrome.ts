@@ -85,4 +85,10 @@ export const chrome: ChromeDict = {
   downloadSize: "Taille {size}",
   downloadChecksum: "Somme de contrôle SHA-256",
   downloadSigned: "Signé et notarisé",
+  downloadLinux: "Linux",
+  downloadAptTitle: "Installer avec apt",
+  downloadAptTrust: "Le dépôt apt est signé avec la clé de Codewhale, et les mises à jour s'installent via apt.",
+  downloadAppImage: "Télécharger l'AppImage",
+  downloadAppImageTrust: "Vérifiez l'AppImage avec la somme de contrôle SHA-256 affichée. Il ne se met pas encore à jour tout seul.",
+  downloadAptFingerprint: "L'empreinte de la clé de signature doit être {fingerprint}. Comparez-la avec la clé que vous avez téléchargée.",
 };

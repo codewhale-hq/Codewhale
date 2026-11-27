@@ -787,6 +787,18 @@ const ASCII_BORDER: ratatui::symbols::border::Set<'static> = ratatui::symbols::b
 };
 
 pub const NATIVE_COMPOSER_PANEL_MIN_WIDTH: u16 = 12;
+
+/// Format a pasted-text attachment chip (`Pasted text · N lines` / `1 line`),
+/// projecting the middot separator to `.` when `ascii` is true.
+#[must_use]
+pub fn native_composer_paste_chip(lines: usize, ascii: bool) -> String {
+    let sep = if ascii { "." } else { "·" };
+    if lines == 1 {
+        format!("Pasted text {sep} 1 line")
+    } else {
+        format!("Pasted text {sep} {lines} lines")
+    }
+}
 fn composer_wrapped_rows(lines: &[Line<'static>], width: u16) -> u16 {
     if width == 0 {
         return 0;

@@ -7,5 +7,5 @@
 {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ISO 8601"}}
 {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" it is."}}
 {"type":"content_block_stop","index":1}
-{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":30,"output_tokens":12,"prompt_cache_hit_tokens":10,"prompt_cache_miss_tokens":20,"reasoning_tokens":5}}
+{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":30,"output_tokens":12,"prompt_cache_hit_tokens":10,"prompt_cache_miss_tokens":20,"reasoning_tokens":5,"input_audio_tokens":3,"output_audio_tokens":2}}
 {"type":"message_stop"}

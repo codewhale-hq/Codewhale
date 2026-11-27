@@ -88,8 +88,9 @@ impl DockTabRow<'_> {
     #[must_use]
     pub fn plan(&self, area: Rect) -> DockTabPlan {
         let width = usize::from(area.width);
+        let safe_close = crate::text::display_safe(self.close.as_ref()).into_owned();
         let close_width =
-            unicode_width::UnicodeWidthStr::width(self.close.as_ref()).min(width) as u16;
+            unicode_width::UnicodeWidthStr::width(safe_close.as_str()).min(width) as u16;
         let y = if self.bottom {
             area.y
                 .saturating_add(1)
@@ -106,7 +107,7 @@ impl DockTabRow<'_> {
         let mut plan = DockTabPlan {
             tabs: Vec::new(),
             close_area,
-            close: self.close.to_string(),
+            close: safe_close,
             close_style: if self.hovered == Some(DockTabTarget::Close) {
                 self.styles.close_hovered
             } else {
@@ -163,9 +164,6 @@ impl DockTabRow<'_> {
             )
             .unwrap_or(u16::MAX)
             .min(area.width);
-            if x.saturating_add(tab_width) > close_area.x {
-                break;
-            }
             let style = if tab.panel == self.active || self.pressed == Some(tab.panel) {
                 self.styles.active
             } else if self.hovered == Some(DockTabTarget::Panel(tab.panel)) {
@@ -173,6 +171,33 @@ impl DockTabRow<'_> {
             } else {
                 self.styles.idle
             };
+            if x.saturating_add(tab_width) > close_area.x {
+                if plan.tabs.is_empty() && tab.panel == self.active {
+                    let avail = close_area.x.saturating_sub(x);
+                    if avail > 0 {
+                        let rendered = if avail >= 3 {
+                            format!(
+                                " {} ",
+                                crate::text::truncate(
+                                    label.as_str(),
+                                    usize::from(avail - 2),
+                                    false
+                                )
+                            )
+                        } else {
+                            crate::text::truncate(label.as_str(), usize::from(avail), false)
+                                .into_owned()
+                        };
+                        plan.tabs.push(DockTabEntry {
+                            tab,
+                            area: Rect::new(x, y, avail, 1),
+                            label: rendered,
+                            style,
+                        });
+                    }
+                }
+                break;
+            }
             plan.tabs.push(DockTabEntry {
                 tab,
                 area: Rect::new(x, y, tab_width, 1),

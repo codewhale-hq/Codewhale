@@ -401,12 +401,19 @@ Supported keys in the project overlay (top-level fields only):
 
 | Key | Effect |
 |---|---|
-| `model` | override `default_text_model` |
+| `model` | override `default_text_model`; `codewhale model resolve` reports it as `project config model` |
 | `reasoning_effort` | force `"high"` / `"max"` for a complex repo |
 | `approval_policy` | only values that tighten the user's current permission posture |
 | `sandbox_mode` | only values that tighten the user's current sandbox posture |
 | `max_subagents` | clamp sub-agent concurrency for a constrained repo (clamped to 1..=128) |
 | `allow_shell` | `false` can disable shell access; `true` is ignored |
+
+In `/model`, Enter switches the model and thinking level for this session
+only. Shift+D also saves them as the startup default in
+`~/.codewhale/config.toml` and `settings.toml`. Shift+D on the model this
+project pins saves nothing, so one repo's choice never becomes the default in
+every other workspace; saving a different model notes that the project still
+pins its own model here.
 
 The overlay is intentionally narrow — it covers the fields a repo
 maintainer is most likely to want to standardize across contributors.
@@ -763,7 +770,7 @@ does not accidentally rewrite `/models` or `/beta/completions`.
 
 For private gateways with broken or intercepted certificates, use
 `SSL_CERT_FILE` with a trusted CA bundle. The legacy provider-table key
-`insecure_skip_tls_verify = true` is still parsed so `codewhale doctor` can
+`insecure_skip_tls_verify = true` is still parsed so `codewhale doctor --full` can
 report stale configs, but provider clients reject it instead of disabling TLS
 certificate verification.
 
@@ -908,38 +915,38 @@ min_confidence = 0.5          # default 0.5, clamped to 0..1
 
 #### Shadow Decision Gate (experimental, off by default)
 
-The Superfast Decision Gate asks a decision model three typed questions about
-the latest user message — does it need a tool, can it be answered from the
-conversation, and what is its intent — and logs a conservative recommendation.
-It is shadow-only: it never changes routing, never skips or delays the model
-call, and fails open on any error, timeout or malformed answer. It uses the same
-System One client as the decision router above; there is no separate HTTP
-client. It is configured from the environment and reads it when a turn starts:
+The Superfast Decision Gate asks the decision model three more typed questions
+about the turn — does it need a tool, can it be answered from the conversation,
+and what is its intent — and logs a conservative recommendation. It is an option
+of the decision router above, not a second call:
 
-```sh
-SUPERFAST_ENABLED=1              # off unless set
-SUPERFAST_PROVIDER=typesafe      # or openrouter; required when enabled
-SUPERFAST_BASE_URL=http://localhost:8000/v1  # optional TypeSafe-route base, e.g. self-hosted
-SUPERFAST_MODEL=jev-latest       # default jev-latest / ~typesafe/jev-latest
-SUPERFAST_TIMEOUT_MS=150         # 1..=10000, default 150
+```toml
+[auto.router]
+kind = "decision"
+provider = "openrouter"
+model = "typesafe/jev-1.13"
+shadow_gate = true            # default off; decision routers only
 ```
 
-- Enabling the gate never picks an endpoint by itself: without
-  `SUPERFAST_PROVIDER` nothing is sent and a warning is logged.
-- The key comes from the same place the decision router reads it. The TypeSafe
-  route always authenticates, so a self-hosted server that ignores auth still
-  needs a placeholder `TYPESAFE_API_KEY`.
-- Only the latest user message is sent, truncated to 4,000 characters and
-  redacted of configured secrets. The log (target `superfast`) carries the
-  route, failure class and latency, never prompt text.
-- The gate retains the originating turn's accounting owner and cancellation.
-  Its tokens settle through the shared ledger; missing usage or a cancelled/timed
-  out request after dispatch creates an explicit coverage gap. Unknown TypeSafe
-  pricing is recorded as unpriced rather than free.
-- Provider-reported cost survives rejected answers and late responses in bounded
-  receipts on the originating turn or session. These are diagnostic evidence;
-  unknown pricing never becomes an authoritative dollar total. Incomplete token
-  counters record a coverage gap while preserving the reported raw evidence.
+- The gate's questions ride the router's own request, so it uses the router's
+  route, key, model, `base_url` and `timeout_secs`, runs only when the router
+  runs (Auto model mode with a runnable strong/fast pair), and adds no second
+  request.
+- It is shadow-only: the recommendation never changes routing. It is logged
+  under the `superfast` target with the route, failure class and latency, never
+  prompt text, and kept as one shadow decision receipt on the originating turn
+  or session. Tokens settle once, through the router's usage record.
+- It fails open with the router: a timeout, error or rejected answer is the
+  gate's failure class too. The shared client validates every offered question,
+  so a decision server that cannot answer the gate's questions fails the
+  router's answer as well and the turn takes the local fallback.
+- `shadow_gate = true` on a `kind = "chat"` router leaves the router
+  unconfigured and shown as failing.
+- The `SUPERFAST_ENABLED`, `SUPERFAST_PROVIDER`, `SUPERFAST_BASE_URL`,
+  `SUPERFAST_MODEL` and `SUPERFAST_TIMEOUT_MS` environment variables are no
+  longer read. Setting any of them logs one warning naming this key; move the
+  route, model and base URL into `[auto.router]`. The separate 150 ms deadline
+  is gone: the gate waits exactly as long as the router does.
 
 The wire contracts are documented in [TypeSafe's OpenAPI schema](https://api.typesafe.ai/openapi.json)
 and [OpenRouter's Decisions examples](https://openrouter.ai/blog/insights/what-is-jev/).
@@ -1451,7 +1458,7 @@ Loading never rewrites the file. The next save Codewhale makes (for example
 keeps comments, writes a one-time credential-free copy of the old file to
 `config.toml.pre-migrate.bak`, and prints one line saying what moved. A
 disagreeing pair is never resolved in the file on its own; both values stay
-until you choose, and `codewhale config doctor` / `codewhale doctor` report
+until you choose, and `codewhale config doctor` / `codewhale doctor --full` report
 it (sources only, never values). `codewhale config get|set|unset base_url`
 (and `api_key`) address the active provider's table.
 
@@ -1596,8 +1603,8 @@ the `CODEWHALE_*` value wins.
 - `CODEWHALE_MEMORY` (`1|on|true|yes|y|enabled` turns user memory on)
 - `CODEWHALE_MEMORY_PATH`
 - `CODEWHALE_TELEMETRY` / `DEEPSEEK_TELEMETRY` (legacy alias) — anonymous usage
-  counting is on by default in the current 0.9.12 source, with a disclosure
-  naming Codewhale and PostHog and an easy durable opt-out. Prior explicit
+  counting is on by default in the current source, with a disclosure
+  naming Codewhale as the sole first-party collector and an easy durable opt-out. Prior explicit
   declines remain off. Accepts `0|1|true|false|yes|no|on|off|enabled|
   disabled`. An explicit "off" is a **floor**: it beats `--telemetry true` and
   `telemetry = true` in config, and a value this list cannot read also resolves
@@ -1971,9 +1978,8 @@ using the same shape as the `[hooks]` table (top-level fields plus
 configuration, so Codewhale only loads them after the workspace has
 been trusted in user-owned config through the trust prompt or a
 `[projects."<workspace>"] trust_level = "trusted"` entry. Session
-`/trust on` mode does not enable repo-supplied hooks by itself, and
-repo-local legacy markers such as `.deepseek/trusted` do not enable
-project hooks. Once trusted, project hooks are appended after global
+`/trust on` mode does not enable repo-supplied hooks by itself.
+Once trusted, project hooks are appended after global
 hooks from `config.toml`, so they run last and, for `updatedInput`,
 win ties. A malformed trusted project file logs a warning and startup
 falls back to global hooks only.
@@ -2163,8 +2169,9 @@ compaction runs before the active model limit and carries the compacted summary
 forward into the next request. The trigger defaults to
 `auto_compact_threshold_percent = 80`. Users who prefer manual continuity can
 persist `auto_compact = false`; manual `/compact` / Ctrl+L remains available.
-You can inspect or update these from the TUI with `/settings` and `/config`
-(interactive editor).
+Bare `/settings` opens the typed settings editor, where rows can be changed and
+saved; `/settings text` prints the resolved values instead. `/config <key>
+<value>` changes one key, and `--save` persists it.
 
 Common settings keys:
 
@@ -2220,6 +2227,15 @@ Common settings keys:
   ceilings for the top strip's height and the side workbar's width. Both are
   normally persisted by dragging the divider rather than edited by hand; the
   strip still auto-fits its content below the ceiling.
+- `composer_density` (`compact`, `comfortable`, or `spacious`; default
+  `comfortable`): vertical padding inside the composer.
+- `composer_border` (`true`/`false`; default `true`): draws the composer's
+  border.
+- `thinking_highlight` (`true`/`false`; default `true`): fills the background
+  behind model reasoning while `calm_mode` is off; calm mode, on by default,
+  never fills it. The dashed reasoning rule stays when it is off.
+- `transcript_spacing` (`compact` or `spacious`; default `spacious`): blank
+  lines between transcript entries.
 - `focus_texture` (`off`, `scrim`, or `grain`; default `off`): focus-context
   texture for modal views. `scrim` dims the already-rendered background
   outside the focused modal toward the theme surface; `grain` sprinkles
@@ -2377,7 +2393,8 @@ If you are upgrading from older releases:
 - Old: visible `Normal` mode or `default_mode = "normal"`
   New: use `Agent` / `default_mode = "agent"`; legacy `normal` still maps to `agent`
 - Old: discover `/set` in slash UX/help
-  New: use `/config` for editing and `/settings` for read-only inspection
+  New: use `/settings` for the typed editor, `/settings text` for a read-only
+  listing, and `/config <key> <value>` for one key
 
 ## Key Reference
 
@@ -2418,8 +2435,8 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   `eval`) default to `concise` unless config/env/CLI overrides it.
   Override per process with `CODEWHALE_VERBOSITY` or the legacy
   `DEEPSEEK_VERBOSITY` alias.
-- `telemetry` (bool, optional): anonymous usage counting, **`true` by default
-  in the current 0.9.12 source**. Notice version `5` names Codewhale and PostHog
+- `telemetry` (bool, optional): anonymous usage counting, **`true` by default**.
+  Notice version `6` names Codewhale as the sole first-party collector
   and describes the opt-out policy; no acceptance is invented for a default
   user. Existing explicit declines remain off. An explicit `false` here is the
   durable *opt-out*: it deletes the random install id, truncates buffered and
@@ -2456,17 +2473,23 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   to expose shell. Plan mode always hides shell; Full Access enables shell and
   auto-approval.
 - `approval_policy` (string, optional): `on-request`, `untrusted`, `accept-edits`, or `never`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases. A project file may set only a value that tightens the user's posture; the order from loosest is `auto`, `accept-edits`, `on-request`, `never`.
-- `[approval] default_selection` (string, optional): which option an approval
-  card highlights when it first appears — `deny` (default) or `allow_once`.
-  `deny` means a reflexive Enter on a card you have not read refuses the call.
-  The highlighted row is tagged `(Enter)`; press `y` to allow once.
-  Set `allow_once` to restore the pre-v0.9.6 Enter-to-approve muscle memory
-  (#5293). It moves the highlight only: which calls are prompted for is still
-  `approval_policy` plus the rules in `permissions.toml`.
+- `[approval] default_selection` (string, optional): which control the
+  terminal approval bar highlights when it first appears — `allow_once`
+  (default) or `deny`. Enter commits the highlighted control, which is tagged
+  `[Enter]`, so by default Enter allows the one action shown, once; `n` denies
+  and `Esc` refuses the action and stops the turn. An Enter that would allow
+  is ignored, with a notice saying so, for the first three quarters of a
+  second after the bar becomes the prompt in front and straight after another
+  Enter or typed characters, so an Enter in flight, held or pasted does not
+  approve. The letter keys (`y`, `a`, `1`) are not delayed. Set `deny` to make Enter refuse the call instead
+  (the earlier default, #5293); `y` still allows once. It moves the
+  highlight only: which calls are prompted for is still `approval_policy`
+  plus the rules in `permissions.toml`. The sandbox elevation prompt is not
+  affected and still starts on the option that skips the call.
 
   ```toml
   [approval]
-  default_selection = "allow_once"
+  default_selection = "deny"
   ```
 - `[approval] timeout_seconds` (integer, optional): bound how long an
   approval may wait — the TUI card and the Runtime API approvals the desktop
@@ -2870,7 +2893,7 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   between portable `SKILL.md` bundles and Claude Code plugin runtimes.
 - `[skills.bundled].install` (`"auto"` default, `"all"`, `"none"`): controls bundle writes independently of discovery. `auto` keeps deletion-as-opt-out and disables installation when `skills_dir` is set. `all` repairs enabled missing skills into `$CODEWHALE_HOME/skills` (normally `~/.codewhale/skills`) even with a discovery override. `none` writes nothing and leaves the marker untouched. Modified and managed bodies are preserved in every mode.
 - `[skills.bundled].selected` / `disabled` / `explicit_only` (arrays of names, default `[]`): selection limits installation and discovery; empty selects the whole bundle. Disabled wins and reveals lower-root copies. Explicit-only retains user invocation while removing the shipped copy from the model index and model loading. Aliases share canonical policy. These settings affect recognized global bundle copies only and never delete files. Profile fields merge separately; `[]` clears an inherited list. `doctor` warns about unknown/ignored entries and `/skills inspect` reports per-path reasons. See [bundled skills](SKILLS.md#bundled-skills).
-- `[skills].listing_max_description_chars` (integer, default `120`, range `1..=40000`): description cap for the `/context` and `doctor --context-json` catalog preview and the description warning in `/skills inspect`.
+- `[skills].listing_max_description_chars` (integer, default `120`, range `1..=40000`): description cap for the `/context` and `doctor --context-json` catalog preview, the description warning in `/skills inspect`, and the descriptions in the `load_skill` list. Unknown `[skills]` keys are rejected.
 - `[skills].listing_budget_fraction` (finite number, default `0.002`, greater than `0` and at most `1`): share of the route window for the catalog preview, estimated at four characters per token and clamped to `2400..=40000` characters. Explicit profile fields override inherited values independently. Parent and child sessions use on-demand discovery through [`load_skill`](SKILLS.md#config-knobs).
 - `[skills].scan_codewhale_only` (bool, default `false`): when `true`, session
   skill discovery ignores cross-tool roots such as `.claude/skills`,
@@ -2992,7 +3015,12 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   disable redirects and reqwest protocol retries. Explicit plan-window
   exhaustion is a terminal quota error. Server failures, uncertain timeouts
   and interrupted streams preserve unknown coverage and stop without
-  automatically reissuing inference. Read-only catalog GETs retain bounded
+  automatically reissuing inference. The one exception is a response-header
+  timeout: a streaming request that received no response headers within
+  `stream.open_timeout_secs` is sent again by the turn, `stream.open_retries`
+  times (default once), with a `Retry attempt: stream-open-timeout` line in
+  the transcript. The provider may have processed and billed the first
+  request, so its usage stays recorded as unknown. Read-only catalog GETs retain bounded
   retries at their actual method owner. The `[stream]` keys below bound safe
   pre-dispatch recovery and stream consumption; legacy `tui.stream_max_*`
   keys remain configuration fallbacks.
@@ -3046,10 +3074,10 @@ reasoning contract, and all four membership ids omit generic sampling fields.
 - `tui.osc8_links` (bool, optional, default on for macOS/Linux, off for Windows): emit OSC 8 escape sequences around URLs in transcript output so supporting terminals (iTerm2, Terminal.app 13+, Ghostty, Kitty, WezTerm, Alacritty, recent gnome-terminal/konsole) can open them with the terminal's link gesture—usually Cmd-click on macOS and Ctrl-click on Linux/Windows. Terminals without OSC 8 support render the plain label and ignore the escape. The escapes are emitted out-of-band (not inside buffer cells), so column corruption is not a concern; set `false` only for terminals that misrender the OSC 8 terminator itself. Windows legacy consoles default off; opt in with `true`.
 - `tui.max_model_steps` (int, optional, default uncapped): optional model-step ceiling for one ordinary turn. Omission or `0` leaves model steps uncapped; explicit positive values are preserved (`4294967295` is the compatibility value for no limit). Headless `exec` and Fleet workers also have no implicit model-step ceiling; `exec --max-turns N` and positive worker budgets still apply. At exhaustion the turn ends `Failed` with `Maximum model steps reached before completion (limit: N)` after one bounded final-report response when needed. Cumulative wall-clock and per-stream limits remain independent. Active interactive goal turns use `goal.max_steps` instead (also uncapped by default); see the Goal loop section below.
 - `tui.turn_wall_clock_secs` (int, optional, default: no limit): cumulative per-turn wall-clock budget in seconds, measured across every model step of one turn (not per request). Time blocked on a human approval is excluded. Omitted or `0` means no limit; positive values are preserved without an added runtime ceiling. When exhausted the turn stops before authorizing another billable request with a message naming the limit and the key to raise.
-- `tui.stream_max_resumes` (int, optional, default `3`): turn-level recovery after a proven transient connection failure before request dispatch. `0` disables this additional recovery; values clamp to `0..=10`. Missing response headers, empty or partial streams, sleep and network drops never authorize inference replay.
+- `tui.stream_max_resumes` (int, optional, default `3`): turn-level recovery after a proven transient connection failure before request dispatch. `0` disables this additional recovery; values clamp to `0..=10`. Empty or partial streams, sleep and network drops never authorize inference replay; a response-header timeout has its own retry count, `stream.open_retries`.
 - `tui.stream_max_transparent_retries` (int, optional, default `2`): retained for configuration compatibility, clamped to `0..=10`. Interrupted streams no longer trigger transparent inference reissues, including before visible content.
 - `tui.stream_max_errors` (int, optional, default `5`): retained for configuration compatibility; `0` selects the default and positive values clamp to `1..=50`. Core ends an uncertain stream on its first read error or error frame regardless of this value.
-- `tui.stream_open_timeout_secs` (int, optional, default `180`): wait for a streaming request's response headers (connection setup included). A header stall ends with an unknown outcome and does not replay over HTTP/1.1. Omitted or `0` falls back to `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`, then the default; values clamp to `5..=600`.
+- `tui.stream_open_timeout_secs` (int, optional, default `180`): wait for a streaming request's response headers (connection setup included). A header stall is sent again `stream.open_retries` times (default once, never switching to HTTP/1.1) and then ends with an unknown outcome. Omitted or `0` falls back to `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`, then the default; values clamp to `5..=600`.
 - `tui.connect_timeout_secs` (int, optional, default `30`): TCP/TLS connect timeout for the model HTTP client. Omitted or `0` uses the default; values clamp to `1..=300`.
 - `tui.force_http1` (bool, optional, default `false`): pin the model HTTP client to HTTP/1.1, for provider edges or proxies that mishandle long-lived HTTP/2 streams. `CODEWHALE_FORCE_HTTP1=1` does the same; either one pins.
 - `tui.stream_max_content_mb` (int, optional, default `10`) and `tui.stream_max_duration_secs` (int, optional, default `1800`): per-step caps on one stream's accumulated content and wall-clock duration. `0` selects the default; values clamp to `1..=512` MB and `10..=86400` seconds.
@@ -3064,12 +3092,18 @@ reasoning contract, and all four membership ids omit generic sampling fields.
 from the runtime resolver, including environment fallbacks and clamps; this does
 not persist defaults. Set or unset individual fields with, for example,
 `codewhale config set stream.open_timeout_secs 120` and
-`codewhale config unset stream.open_timeout_secs`. Per-run
-`--set stream.open_timeout_secs=120` uses the same validation.
+`codewhale config unset stream.open_timeout_secs`. Read-only `codewhale config`
+inspection commands (`config get`, `config dump`, `config list`) also accept
+`--set stream.open_timeout_secs=120` using the same validation; runtime
+commands (`codewhale`, `exec`, `doctor`) only accept runtime `--set` keys
+(`provider`, `model`, `default_text_model`, `verbosity`, `approval_policy`,
+`sandbox_mode`, `telemetry`), so single-run stream overrides on a turn use
+`CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`, `--profile`, or `codewhale config set`.
 
 | `[stream]` key | Default | Accepted behavior | Legacy `[tui]` fallback |
 | --- | --- | --- | --- |
 | `open_timeout_secs` | 180 | Positive values clamp to 5–600; 0 or omission falls through to the environment/default | `stream_open_timeout_secs` |
+| `open_retries` | 1 | Times one request is sent again after it received no response headers within `open_timeout_secs`; 0 disables, maximum 3 | none |
 | `chunk_timeout_secs` | 900 | 0 selects default; positive values clamp to 1–3600 | `stream_chunk_timeout_secs` |
 | `max_resumes` | 3 | Proven transient pre-dispatch recovery only; 0 disables, maximum 10 | `stream_max_resumes` |
 | `max_transparent_retries` | 2 | Compatibility value; interrupted streams never reissue inference | `stream_max_transparent_retries` |
@@ -3937,8 +3971,16 @@ To bootstrap missing MCP/skills paths, run `codewhale setup --all`. You can
 also run `codewhale setup --skills --local` to create the owned project
 `.codewhale/skills` directory. Project skills load after workspace trust.
 
-Both plain `codewhale doctor` and `codewhale doctor --json` are structural and
-offline by default. They do not check the release service, hosted provider
+Plain `codewhale doctor` prints a short verdict: whether Codewhale is ready,
+what works, what needs attention and the next step. `codewhale doctor --full`
+prints every check (versions, installations, paths, sessions, setup state, API
+keys, MCP servers, skills, tools, plugins, storage, tool dependencies and
+platform); `--all` adds every resolved path and secret-backend detail. The
+`--check-updates`, `--probe-mcp`, `--probe-search` and `--fix` flags print the
+full report, because their results live in its sections.
+
+Plain `codewhale doctor`, `codewhale doctor --full` and
+`codewhale doctor --json` are structural and offline by default. They do not check the release service, hosted provider
 APIs, local provider endpoints, or MCP processes, and they do not load a
 workspace credential `.env`. Use `--check-updates`,
 `--probe-api`, `--probe-local`, or `--probe-mcp` to opt into the corresponding
@@ -4117,7 +4159,7 @@ completion evidence artifacts, and tool-call *inputs* (for example a
 `scrub-secrets` do not check those either.
 
 Sessions saved by builds before this change may still hold credentials in
-their tool output; nothing rewrites them automatically. `codewhale doctor`
+their tool output; nothing rewrites them automatically. `codewhale doctor --full`
 reports them under **Stored Sessions** (it checks the newest 50 files), and
 this command finds and masks them across every saved session:
 

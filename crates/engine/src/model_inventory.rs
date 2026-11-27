@@ -396,6 +396,9 @@ pub enum AutoRouterSetupIssue {
     /// the provider's model namespace is known; pass-through providers such
     /// as OpenRouter or a custom endpoint are validated upstream).
     InvalidModel,
+    /// `shadow_gate = true` on a router that is not `kind = "decision"`: a
+    /// chat router has no decision request for the gate's questions to ride.
+    ShadowGateNeedsDecision,
 }
 
 impl AutoRouterSetupIssue {
@@ -412,6 +415,7 @@ impl AutoRouterSetupIssue {
                 "[auto.router] thinking must be auto, off, minimal, low, medium, high, xhigh, ultra, or max"
             }
             Self::InvalidModel => "[auto.router] model is not served by the router provider",
+            Self::ShadowGateNeedsDecision => "[auto.router] shadow_gate needs kind = \"decision\"",
         }
     }
 }
@@ -703,8 +707,8 @@ impl ModelInventory {
         // legacy Auto is now local/free (heuristic-only).
         let router_table = config.auto.as_ref().and_then(|auto| auto.router.as_ref());
         // Any populated key declares a router: a table holding only
-        // `timeout_secs` or `base_url` is a malformed router to diagnose, not
-        // an absent one to skip silently.
+        // `timeout_secs`, `base_url` or `shadow_gate` is a malformed router to
+        // diagnose, not an absent one to skip silently.
         let router_declared = router_table.is_some_and(|router| {
             router.provider.is_some()
                 || router.model.is_some()
@@ -713,6 +717,7 @@ impl ModelInventory {
                 || router.timeout_secs.is_some()
                 || router.min_confidence.is_some()
                 || router.base_url.is_some()
+                || router.shadow_gate.is_some()
         });
         let router_kind = AutoRouterKind::parse(router_table.and_then(|r| r.kind.as_deref()));
         let router_model_setting = router_table
@@ -792,6 +797,14 @@ impl ModelInventory {
                     None => None,
                 }
             }
+        };
+        let explicit_router = if router_kind == Some(AutoRouterKind::Chat)
+            && router_table.is_some_and(|router| router.shadow_gate == Some(true))
+        {
+            router_setup_issue = Some(AutoRouterSetupIssue::ShadowGateNeedsDecision);
+            None
+        } else {
+            explicit_router
         };
         let router_configured = explicit_router.is_some();
         let (router_provider, router_identity, router_model, router_thinking) = explicit_router

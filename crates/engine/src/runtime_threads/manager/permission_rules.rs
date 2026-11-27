@@ -245,10 +245,19 @@ impl RuntimeThreadManager {
         let (thread_id, request) = match lookup {
             Ok(found) => found,
             Err((rules, publication)) => {
-                let delivered = self
+                let delivered = match self
                     .await_delivered_approval(approval_id, decision, publication, None)
                     .await
-                    .unwrap_or(false);
+                {
+                    Ok(delivered) => delivered,
+                    Err(error) => {
+                        tracing::warn!(
+                            approval_id,
+                            "standing rule re-delivery was not confirmed: {error:#}"
+                        );
+                        false
+                    }
+                };
                 return Ok(Some((delivered, rules)));
             }
         };

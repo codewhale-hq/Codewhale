@@ -828,9 +828,10 @@ impl TasksTool {
         if let Some(path) = log_path {
             metadata["artifact_path"] = json!(path);
         }
-        Ok(ToolResult::json(&content)
-            .map_err(|e| ToolError::execution_failed(e.to_string()))?
-            .with_metadata(metadata))
+        let mut result =
+            ToolResult::json(&content).map_err(|e| ToolError::execution_failed(e.to_string()))?;
+        result.success = status == "passed";
+        Ok(result.with_metadata(metadata))
     }
 
     async fn execute_pr_attempt_record(
@@ -2169,6 +2170,7 @@ mod tests {
             )
             .await
             .expect("gate runs");
+        assert!(!result.success, "a timed-out gate must not report success");
         let metadata = result.metadata.expect("metadata");
         assert_eq!(metadata["timed_out"], true, "{metadata}");
         // What the gate wrote before the timeout is kept.
@@ -2188,6 +2190,52 @@ mod tests {
             ),
             "the timed-out gate's process is still running"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn gate_run_reports_success_only_when_gate_passes() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let context = ToolContext::new(workspace.path())
+            .with_shell_policy(codewhale_agent_contract::worker_profile::ShellPolicy::Full);
+
+        let failed = TasksTool::new("tasks")
+            .execute(
+                json!({
+                    "action": "gate_run",
+                    "gate": "test",
+                    "command": "echo failing-gate >&2; exit 1"
+                }),
+                &context,
+            )
+            .await
+            .expect("failed gate returns ToolResult");
+        assert!(
+            !failed.success,
+            "a non-zero gate exit must return ToolResult.success == false"
+        );
+        let failed_body: Value = serde_json::from_str(&failed.content).expect("json body");
+        assert_eq!(failed_body["gate"]["status"], "failed");
+        assert_eq!(failed_body["gate"]["exit_code"], 1);
+
+        let passed = TasksTool::new("tasks")
+            .execute(
+                json!({
+                    "action": "gate_run",
+                    "gate": "test",
+                    "command": "echo ok"
+                }),
+                &context,
+            )
+            .await
+            .expect("passing gate returns ToolResult");
+        assert!(
+            passed.success,
+            "a zero-exit gate must return ToolResult.success == true"
+        );
+        let passed_body: Value = serde_json::from_str(&passed.content).expect("json body");
+        assert_eq!(passed_body["gate"]["status"], "passed");
+        assert_eq!(passed_body["gate"]["exit_code"], 0);
     }
 
     #[test]

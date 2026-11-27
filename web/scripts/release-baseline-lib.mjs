@@ -40,7 +40,7 @@ export function deriveReleaseBaseline(release) {
   if (!release || !tagResolves(release.tag)) return null;
   const registry = showAtTag(release.tag, "docs/features.toml");
   const descriptors = parseProviderDescriptors(showAtTag(release.tag, "crates/config/assets/provider_descriptors.json"));
-  const models = parseModelCatalog(showAtTag(release.tag, "crates/config/assets/models_dev.bundled.json"));
+  const models = parseModelCatalog(showAtTag(release.tag, "crates/config/assets/catalog_corrections.json"));
   if (!registry || !descriptors || !models) return null;
   const features = parseFeatureRows(registry).map((row) => ({
     id: row.id,
@@ -67,6 +67,24 @@ export function readCommittedBaseline() {
 
 export function serializeBaseline(baseline) {
   return `${JSON.stringify(baseline, null, 2)}\n`;
+}
+
+export function checkReleaseBaseline(committedBaseline, release, derivedBaseline, { allowShallow = false } = {}) {
+  const problems = [];
+  if (!committedBaseline || !release || committedBaseline.tag !== release.tag) {
+    problems.push(`data/release-baseline.json is for ${committedBaseline?.tag ?? "nothing"}, the published release is ${release?.tag ?? "unknown"}; run npm run prebuild in a checkout that has the tag`);
+    return problems;
+  }
+  if (!derivedBaseline) {
+    if (!allowShallow) {
+      problems.push(`tag ${committedBaseline.tag} is not in this checkout, so data/release-baseline.json could not be verified against the tagged source; fetch tags or pass --allow-shallow / CODEWHALE_ALLOW_SHALLOW_CHECKOUT=1`);
+    }
+    return problems;
+  }
+  if (serializeBaseline(derivedBaseline) !== serializeBaseline(committedBaseline)) {
+    problems.push("data/release-baseline.json differs from the tagged source; run npm run prebuild");
+  }
+  return problems;
 }
 
 export function refreshReleaseBaseline(release) {

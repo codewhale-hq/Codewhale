@@ -48,7 +48,6 @@ pub const CACHE_FILE: &str = "cloud-facts.json";
 const CACHE_SCHEMA_VERSION: u32 = 2;
 const MAX_SOURCE_BYTES: usize = 4096;
 const MAX_CACHE_BYTES: usize = MAX_BODY_BYTES * 6 + 32 * 1024;
-static REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const BACKOFF_BASE_SECS: u64 = 10 * 60;
 
 /// Env: `1`/`0` overrides `[cloud_facts].enabled`.
@@ -369,6 +368,47 @@ fn read_bounded_regular(path: &Path, limit: usize) -> Result<Vec<u8>, RefreshErr
         return Err(RefreshError::TooLarge(bytes.len()));
     }
     Ok(bytes)
+}
+
+async fn off_runtime<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, RefreshError> + Send + 'static,
+) -> Result<T, RefreshError> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|e| RefreshError::Io(e.to_string()))?
+}
+
+async fn publish_off_runtime(
+    publish: impl FnOnce() -> bool + Send + 'static,
+) -> Result<(), RefreshError> {
+    if off_runtime(move || Ok(publish())).await? {
+        Ok(())
+    } else {
+        Err(RefreshError::Superseded)
+    }
+}
+
+async fn fetch_envelope<F, Fut>(
+    local_path: Option<PathBuf>,
+    limit: usize,
+    suppress_network: bool,
+    url: impl FnOnce() -> Result<String, RefreshError>,
+    etag: Option<String>,
+    transport: F,
+) -> Result<Fetched, RefreshError>
+where
+    F: FnOnce(String, Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<Fetched, RefreshError>>,
+{
+    if let Some(local) = local_path {
+        return off_runtime(move || read_bounded_regular(&local, limit))
+            .await
+            .map(|bytes| Fetched::Body { bytes, etag: None });
+    }
+    if suppress_network {
+        return Err(RefreshError::Suppressed);
+    }
+    transport(url()?, etag).await
 }
 
 fn load_cache(path: &Path) -> Option<PersistedCache> {
@@ -726,18 +766,18 @@ where
     Fut: std::future::Future<Output = Result<Fetched, RefreshError>>,
 {
     let ticket = admitted.map(Ok).unwrap_or_else(|| ticket(settings, keys))?;
-    let _refresh = REFRESH_LOCK.lock().await;
-    // A queued old request must fail without even reading a file.
     let _ = self::ticket(settings, keys)?;
     if !overlay::is_current(&ticket) {
         return Err(RefreshError::Superseded);
     }
-    let mut cache = cache_for(settings, keys)?;
+    let before_generation = overlay::snapshot().generation;
+    let mut cache = {
+        let (settings, keys) = (settings.clone(), keys.to_vec());
+        off_runtime(move || cache_for(&settings, &keys)).await?
+    };
     let path = settings.cache_file();
     let now = now_unix();
-    let fetched = if let Some(local) = &settings.local_path {
-        read_bounded_regular(local, MAX_BODY_BYTES).map(|bytes| Fetched::Body { bytes, etag: None })
-    } else {
+    if settings.local_path.is_none() {
         if suppress_network {
             return Err(RefreshError::Suppressed);
         }
@@ -770,12 +810,16 @@ where
                 });
             }
         }
-        transport(
-            cache.url.clone(),
-            cache.etag.clone().filter(|_| !cache.envelope.is_empty()),
-        )
-        .await
-    };
+    }
+    let fetched = fetch_envelope(
+        settings.local_path.clone(),
+        MAX_BODY_BYTES,
+        suppress_network,
+        || Ok(cache.url.clone()),
+        cache.etag.clone().filter(|_| !cache.envelope.is_empty()),
+        transport,
+    )
+    .await;
     let mut not_modified = false;
     let (bytes, etag) = match fetched {
         Ok(Fetched::NotModified) => {
@@ -783,27 +827,30 @@ where
             (cache.envelope.as_bytes().to_vec(), cache.etag.clone())
         }
         Ok(Fetched::NotFound) => {
+            if overlay::snapshot().generation != before_generation {
+                return Err(RefreshError::Superseded);
+            }
             cache.envelope.clear();
             cache.etag = None;
             cache.failures = 0;
             cache.backoff_until = None;
             cache.fetched_at = now;
-            if !overlay::publish_with(
-                &ticket,
-                None,
-                state_status(CloudFactsState::BundledOnly, None, &cache.url),
-                || {
+            let status = state_status(CloudFactsState::BundledOnly, None, &cache.url);
+            publish_off_runtime(move || {
+                overlay::publish_with(&ticket, None, status, || {
                     if let Some(path) = &path {
                         save_cache(path, &cache);
                     }
-                },
-            ) {
-                return Err(RefreshError::Superseded);
-            }
+                })
+            })
+            .await?;
             return Ok(RefreshOutcome::NoFacts);
         }
         Ok(Fetched::Body { bytes, etag }) => (bytes, etag),
         Err(err) => {
+            if overlay::snapshot().generation != before_generation {
+                return Err(err);
+            }
             cache.failures = cache.failures.saturating_add(1);
             cache.backoff_until = Some(
                 now.saturating_add(
@@ -833,26 +880,23 @@ where
                 .as_ref()
                 .filter(|facts| !facts.stale)
                 .map(|facts| facts.facts_version);
-            if !overlay::publish_with(
-                &ticket,
-                kept,
-                state_status(
-                    CloudFactsState::Failed {
-                        last_error: err.to_string(),
-                        at: now,
-                        keeping,
-                    },
-                    cache.etag.clone(),
-                    &cache.url,
-                ),
-                || {
+            let status = state_status(
+                CloudFactsState::Failed {
+                    last_error: err.to_string(),
+                    at: now,
+                    keeping,
+                },
+                cache.etag.clone(),
+                &cache.url,
+            );
+            publish_off_runtime(move || {
+                overlay::publish_with(&ticket, kept, status, || {
                     if let Some(path) = &path {
                         save_cache(path, &cache);
                     }
-                },
-            ) {
-                return Err(RefreshError::Superseded);
-            }
+                })
+            })
+            .await?;
             return Err(err);
         }
     };
@@ -866,7 +910,8 @@ where
         now_unix(),
     ) {
         Ok(verified) => {
-            cache.fetched_at = now_unix();
+            let verified_now = now_unix();
+            cache.fetched_at = verified_now;
             cache.etag = etag;
             cache.failures = 0;
             cache.backoff_until = None;
@@ -883,14 +928,17 @@ where
             } else {
                 FactsOrigin::Network
             };
-            let version = publish_verified(
-                &ticket,
-                &verified,
-                origin,
-                &cache,
-                path.as_deref(),
-                now_unix(),
-            )?;
+            let version = off_runtime(move || {
+                publish_verified(
+                    &ticket,
+                    &verified,
+                    origin,
+                    &cache,
+                    path.as_deref(),
+                    verified_now,
+                )
+            })
+            .await?;
             Ok(if not_modified {
                 RefreshOutcome::NotModified {
                     facts_version: Some(version),
@@ -902,10 +950,18 @@ where
             })
         }
         Err(reason) => {
+            if matches!(reason, FactsRejection::Rollback { .. })
+                && overlay::snapshot().generation != before_generation
+            {
+                return Err(RefreshError::Superseded);
+            }
             // Drop the now-untrusted body, retain rollback floor, and do not
             // let the next response reuse its ETag.
             cache.envelope.clear();
             cache.etag = None;
+            cache.highest_seen_version = cache
+                .highest_seen_version
+                .max(overlay::highest_seen(&settings.channel));
             let status = match &reason {
                 FactsRejection::NotApplicable { applies_to } => CloudFactsState::NotApplicable {
                     applies_to: applies_to.clone(),
@@ -915,18 +971,15 @@ where
                     at: now_unix(),
                 },
             };
-            if !overlay::publish_with(
-                &ticket,
-                None,
-                state_status(status, None, &cache.url),
-                || {
+            let status = state_status(status, None, &cache.url);
+            publish_off_runtime(move || {
+                overlay::publish_with(&ticket, None, status, || {
                     if let Some(path) = &path {
                         save_cache(path, &cache);
                     }
-                },
-            ) {
-                return Err(RefreshError::Superseded);
-            }
+                })
+            })
+            .await?;
             Err(RefreshError::Rejected(reason))
         }
     }

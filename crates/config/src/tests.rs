@@ -4786,6 +4786,89 @@ fn unknown_provider_error_lists_huggingface() {
 }
 
 #[test]
+fn resolver_reads_the_route_bound_api_key_env() {
+    let _lock = env_lock();
+    let _env = EnvGuard::without_deepseek_runtime_overrides();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    fs::write(
+        &path,
+        r#"provider = "openrouter"
+
+[providers.openrouter]
+api_key_env = "CODEWHALE_TEST_BOUND_OPENROUTER_KEY"
+"#,
+    )
+    .expect("fixture");
+    let saved = env::var_os("CODEWHALE_TEST_BOUND_OPENROUTER_KEY");
+    unsafe { env::set_var("CODEWHALE_TEST_BOUND_OPENROUTER_KEY", "bound-key") };
+    let store = ConfigStore::load(Some(path)).expect("config should load");
+    let secrets = Secrets::new(Arc::new(RecordingSecretsStore::with_entries(&[(
+        "openrouter",
+        "stored-key",
+    )])));
+    let resolved = store
+        .config
+        .resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+    unsafe { env::remove_var("CODEWHALE_TEST_BOUND_OPENROUTER_KEY") };
+    let unset = store
+        .config
+        .resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+    if let Some(value) = saved {
+        unsafe { env::set_var("CODEWHALE_TEST_BOUND_OPENROUTER_KEY", value) };
+    }
+    assert_eq!(
+        store.config.providers.openrouter.api_key_env.as_deref(),
+        Some("CODEWHALE_TEST_BOUND_OPENROUTER_KEY")
+    );
+    assert!(store.config.providers.openrouter.extras.is_empty());
+    assert_eq!(resolved.api_key.as_deref(), Some("bound-key"));
+    assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Env));
+    assert_eq!(unset.api_key.as_deref(), Some("stored-key"));
+    assert_eq!(unset.api_key_source, Some(RuntimeApiKeySource::Keyring));
+}
+
+#[test]
+fn route_bound_api_key_env_does_not_follow_an_env_selected_custom_host() {
+    let _lock = env_lock();
+    let _env = EnvGuard::without_deepseek_runtime_overrides();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    fs::write(
+        &path,
+        r#"provider = "openrouter"
+
+[providers.openrouter]
+api_key_env = "CODEWHALE_TEST_BOUND_OPENROUTER_HOST_KEY"
+"#,
+    )
+    .expect("fixture");
+    let saved = env::var_os("CODEWHALE_TEST_BOUND_OPENROUTER_HOST_KEY");
+    unsafe {
+        env::set_var("CODEWHALE_TEST_BOUND_OPENROUTER_HOST_KEY", "bound-key");
+        env::set_var("OPENROUTER_BASE_URL", "https://collector.example/v1");
+    }
+    let store = ConfigStore::load(Some(path)).expect("config should load");
+    let resolved = store.config.resolve_runtime_options_with_secrets(
+        &CliRuntimeOverrides::default(),
+        &Secrets::new(Arc::new(RecordingSecretsStore::with_entries(&[(
+            "openrouter",
+            "stored-key",
+        )]))),
+    );
+    unsafe {
+        env::remove_var("CODEWHALE_TEST_BOUND_OPENROUTER_HOST_KEY");
+        env::remove_var("OPENROUTER_BASE_URL");
+    }
+    if let Some(value) = saved {
+        unsafe { env::set_var("CODEWHALE_TEST_BOUND_OPENROUTER_HOST_KEY", value) };
+    }
+    assert_eq!(resolved.base_url, "https://collector.example/v1");
+    assert_eq!(resolved.api_key, None);
+    assert_eq!(resolved.api_key_source, None);
+}
+
+#[test]
 fn config_store_preserves_named_custom_provider_identity_across_typed_dispatch_reads() {
     let _lock = env_lock();
     let _env = EnvGuard::without_deepseek_runtime_overrides();
@@ -8542,13 +8625,11 @@ default_token_budget = 50000
 
 #[test]
 fn fleet_exec_config_default_matches_subagent_depth() {
-    // Fleet workers and standalone sub-agents share one recursion axis:
-    // the fleet default equals DEFAULT_SPAWN_DEPTH without a nesting cap.
     assert_eq!(
         FleetExecConfig::default().max_spawn_depth,
         codewhale_protocol::fleet::DEFAULT_SPAWN_DEPTH
     );
-    assert_eq!(FleetExecConfig::default().max_spawn_depth, u32::MAX);
+    assert_eq!(FleetExecConfig::default().max_spawn_depth, 3);
 }
 
 #[test]
@@ -10398,6 +10479,34 @@ api_key = "sk-table"
         // endpoint sits in a table nothing merges into the user's routing.
         assert_eq!(project_config.approval_policy.as_deref(), Some("never"));
     }
+
+    #[test]
+    fn approval_policy_accepts_ask_and_auto_review_in_config_and_project_tightening() {
+        assert!(crate::check_config_toml_choice("approval_policy", "ask").is_ok());
+        assert!(crate::check_config_toml_choice("approval_policy", "auto-review").is_ok());
+        assert!(crate::check_config_toml_choice("approval_policy", "full-access").is_err());
+
+        assert!(crate::project_approval_policy_is_allowed(
+            Some("auto-review"),
+            "ask"
+        ));
+        assert!(crate::project_approval_policy_is_allowed(
+            Some("auto"),
+            "auto-review"
+        ));
+        assert!(crate::project_approval_policy_is_allowed(
+            Some("accept-edits"),
+            "ask"
+        ));
+        assert!(!crate::project_approval_policy_is_allowed(
+            Some("ask"),
+            "auto-review"
+        ));
+        assert!(!crate::project_approval_policy_is_allowed(
+            Some("never"),
+            "ask"
+        ));
+    }
 }
 
 #[test]
@@ -10955,6 +11064,7 @@ fn stream_settings_are_typed_nested_and_fail_without_mutation() {
     for (key, value) in [
         ("stream.max_resumes", "-1"),
         ("stream.max_resumes", "4294967296"),
+        ("stream.open_retries", "4294967296"),
         ("stream.force_http1", "flase"),
         ("stream.tcp_keepalive_secs", "1.5"),
         ("stream.open_timout_secs", "45"),

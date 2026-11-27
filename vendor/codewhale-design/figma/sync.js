@@ -1,6 +1,6 @@
-// Generated from Codewhale design 5.4.0; sha256 deef1a3948e0c8b58851ae1b9920ce3afcdd8ada90ca0b3aa7fcaeedf25a25a8. Do not edit.
+// Generated from Codewhale design 5.5.0; sha256 b154b28c796626428f20b38db59ee6449aa876831ae04d4ddceb3cb1fce8185c. Do not edit.
 const PAYLOAD = {
- "version": "5.4.0",
+ "version": "5.5.0",
  "textStyles": [
   {
    "name": "CW 5/Caption",
@@ -98,11 +98,11 @@ const PAYLOAD = {
      "web": "var(--outside)",
      "values": {
       "Dark": {
-       "hex": "0d121b",
+       "hex": "0f131c",
        "alpha": 1
       },
       "Light": {
-       "hex": "f9fafc",
+       "hex": "fcfdfe",
        "alpha": 1
       }
      }
@@ -117,11 +117,11 @@ const PAYLOAD = {
      "web": "var(--surface)",
      "values": {
       "Dark": {
-       "hex": "030508",
+       "hex": "05070b",
        "alpha": 1
       },
       "Light": {
-       "hex": "f1f5f9",
+       "hex": "f4f7fc",
        "alpha": 1
       }
      }
@@ -136,11 +136,11 @@ const PAYLOAD = {
      "web": "var(--panel)",
      "values": {
       "Dark": {
-       "hex": "04070c",
+       "hex": "080b11",
        "alpha": 1
       },
       "Light": {
-       "hex": "fbfcfd",
+       "hex": "fefeff",
        "alpha": 1
       }
      }
@@ -156,11 +156,11 @@ const PAYLOAD = {
      "web": "var(--text)",
      "values": {
       "Dark": {
-       "hex": "e8edf2",
+       "hex": "edf1f7",
        "alpha": 1
       },
       "Light": {
-       "hex": "1b2a35",
+       "hex": "162230",
        "alpha": 1
       }
      }
@@ -176,11 +176,11 @@ const PAYLOAD = {
      "web": "var(--muted)",
      "values": {
       "Dark": {
-       "hex": "aebcc9",
+       "hex": "b2bfcd",
        "alpha": 1
       },
       "Light": {
-       "hex": "47515a",
+       "hex": "45515f",
        "alpha": 1
       }
      }
@@ -196,11 +196,11 @@ const PAYLOAD = {
      "web": "var(--subagent)",
      "values": {
       "Dark": {
-       "hex": "b8c7d6",
+       "hex": "bccad9",
        "alpha": 1
       },
       "Light": {
-       "hex": "3b4a56",
+       "hex": "374553",
        "alpha": 1
       }
      }
@@ -216,11 +216,11 @@ const PAYLOAD = {
      "web": "var(--disabled)",
      "values": {
       "Dark": {
-       "hex": "7f8c9a",
+       "hex": "828f9e",
        "alpha": 1
       },
       "Light": {
-       "hex": "6f7780",
+       "hex": "68727f",
        "alpha": 1
       }
      }
@@ -236,11 +236,11 @@ const PAYLOAD = {
      "web": "var(--line)",
      "values": {
       "Dark": {
-       "hex": "2a3648",
+       "hex": "263040",
        "alpha": 1
       },
       "Light": {
-       "hex": "d5dce3",
+       "hex": "d5dde8",
        "alpha": 1
       }
      }
@@ -257,11 +257,11 @@ const PAYLOAD = {
      "web": "var(--accent)",
      "values": {
       "Dark": {
-       "hex": "8fbdff",
+       "hex": "94beff",
        "alpha": 1
       },
       "Light": {
-       "hex": "2056c2",
+       "hex": "1552c6",
        "alpha": 1
       }
      }
@@ -276,11 +276,11 @@ const PAYLOAD = {
      "web": "var(--button)",
      "values": {
       "Dark": {
-       "hex": "0b48bb",
+       "hex": "0b4cc4",
        "alpha": 1
       },
       "Light": {
-       "hex": "0b48bb",
+       "hex": "0b4cc4",
        "alpha": 1
       }
      }
@@ -316,11 +316,11 @@ const PAYLOAD = {
      "web": "var(--attention)",
      "values": {
       "Dark": {
-       "hex": "eab982",
+       "hex": "f0be82",
        "alpha": 1
       },
       "Light": {
-       "hex": "7d4e08",
+       "hex": "7b4b06",
        "alpha": 1
       }
      }
@@ -335,11 +335,11 @@ const PAYLOAD = {
      "web": "var(--hover)",
      "values": {
       "Dark": {
-       "hex": "253244",
+       "hex": "202938",
        "alpha": 1
       },
       "Light": {
-       "hex": "dde6f0",
+       "hex": "e2eaf4",
        "alpha": 1
       }
      }
@@ -354,11 +354,11 @@ const PAYLOAD = {
      "web": "var(--selected)",
      "values": {
       "Dark": {
-       "hex": "182232",
+       "hex": "18202e",
        "alpha": 1
       },
       "Light": {
-       "hex": "d2dde9",
+       "hex": "d6e1f0",
        "alpha": 1
       }
      }
@@ -374,11 +374,11 @@ const PAYLOAD = {
      "web": "var(--live)",
      "values": {
       "Dark": {
-       "hex": "86d3be",
+       "hex": "7fdfc8",
        "alpha": 1
       },
       "Light": {
-       "hex": "1b695a",
+       "hex": "146857",
        "alpha": 1
       }
      }
@@ -394,11 +394,11 @@ const PAYLOAD = {
      "web": "var(--live-peak)",
      "values": {
       "Dark": {
-       "hex": "dff7f0",
+       "hex": "e3fcf4",
        "alpha": 1
       },
       "Light": {
-       "hex": "0d4035",
+       "hex": "0b3f33",
        "alpha": 1
       }
      }
@@ -414,11 +414,11 @@ const PAYLOAD = {
      "web": "var(--danger)",
      "values": {
       "Dark": {
-       "hex": "eea59d",
+       "hex": "f4a8a0",
        "alpha": 1
       },
       "Light": {
-       "hex": "a32934",
+       "hex": "a42531",
        "alpha": 1
       }
      }
@@ -432,11 +432,11 @@ const PAYLOAD = {
      "web": "var(--border-strong)",
      "values": {
       "Dark": {
-       "hex": "8a98a6",
+       "hex": "8a97a8",
        "alpha": 1
       },
       "Light": {
-       "hex": "6e7883",
+       "hex": "687381",
        "alpha": 1
       }
      }
@@ -451,11 +451,11 @@ const PAYLOAD = {
      "web": "var(--ocean-depth)",
      "values": {
       "Dark": {
-       "hex": "0d1624",
+       "hex": "0b111c",
        "alpha": 1
       },
       "Light": {
-       "hex": "f6f9fc",
+       "hex": "f7f9fc",
        "alpha": 1
       }
      }
@@ -470,11 +470,11 @@ const PAYLOAD = {
      "web": "var(--diff-add)",
      "values": {
       "Dark": {
-       "hex": "22392f",
+       "hex": "1d352a",
        "alpha": 1
       },
       "Light": {
-       "hex": "d2eadd",
+       "hex": "d2ebdd",
        "alpha": 1
       }
      }
@@ -489,7 +489,7 @@ const PAYLOAD = {
      "web": "var(--diff-remove)",
      "values": {
       "Dark": {
-       "hex": "45302f",
+       "hex": "422b2c",
        "alpha": 1
       },
       "Light": {
@@ -509,7 +509,7 @@ const PAYLOAD = {
      "values": {
       "Dark": {
        "hex": "ffffff",
-       "alpha": 0.035
+       "alpha": 0.04
       },
       "Light": {
        "hex": "ffffff",
@@ -527,10 +527,10 @@ const PAYLOAD = {
      "values": {
       "Dark": {
        "hex": "ffffff",
-       "alpha": 0.08
+       "alpha": 0.095
       },
       "Light": {
-       "hex": "1f3340",
+       "hex": "182838",
        "alpha": 0.1
       }
      }
@@ -545,12 +545,12 @@ const PAYLOAD = {
      "web": "var(--sheet-fill)",
      "values": {
       "Dark": {
-       "hex": "05080d",
-       "alpha": 0.74
+       "hex": "090c13",
+       "alpha": 0.8
       },
       "Light": {
-       "hex": "fcfdfe",
-       "alpha": 0.88
+       "hex": "ffffff",
+       "alpha": 0.92
       }
      }
     },
@@ -564,11 +564,11 @@ const PAYLOAD = {
      "values": {
       "Dark": {
        "hex": "ffffff",
-       "alpha": 0.05
+       "alpha": 0.075
       },
       "Light": {
-       "hex": "1f3340",
-       "alpha": 0.1
+       "hex": "182838",
+       "alpha": 0.09
       }
      }
     },
@@ -583,7 +583,7 @@ const PAYLOAD = {
      "values": {
       "Dark": {
        "hex": "ffffff",
-       "alpha": 0.04
+       "alpha": 0.045
       },
       "Light": {
        "hex": "1b2a35",
@@ -601,7 +601,7 @@ const PAYLOAD = {
      "values": {
       "Dark": {
        "hex": "ffffff",
-       "alpha": 0.09
+       "alpha": 0.1
       },
       "Light": {
        "hex": "1f3340",
@@ -619,8 +619,8 @@ const PAYLOAD = {
      "web": "var(--subagent-tag-fill)",
      "values": {
       "Dark": {
-       "hex": "8fbdff",
-       "alpha": 0.08
+       "hex": "94beff",
+       "alpha": 0.09
       },
       "Light": {
        "hex": "1b2a35",
@@ -637,8 +637,8 @@ const PAYLOAD = {
      "web": "var(--subagent-tag-border)",
      "values": {
       "Dark": {
-       "hex": "8fbdff",
-       "alpha": 0.2
+       "hex": "94beff",
+       "alpha": 0.24
       },
       "Light": {
        "hex": "1f3340",
@@ -656,8 +656,8 @@ const PAYLOAD = {
      "web": "var(--workbar-fill)",
      "values": {
       "Dark": {
-       "hex": "0b121d",
-       "alpha": 0.68
+       "hex": "0e131d",
+       "alpha": 0.74
       },
       "Light": {
        "hex": "eef3f8",
@@ -675,7 +675,7 @@ const PAYLOAD = {
      "values": {
       "Dark": {
        "hex": "ffffff",
-       "alpha": 0.08
+       "alpha": 0.09
       },
       "Light": {
        "hex": "1f3340",
@@ -694,7 +694,7 @@ const PAYLOAD = {
      "values": {
       "Dark": {
        "hex": "ffffff",
-       "alpha": 0.12
+       "alpha": 0.13
       },
       "Light": {
        "hex": "1b2a35",
@@ -712,12 +712,12 @@ const PAYLOAD = {
      "web": "var(--glass-clear-fill)",
      "values": {
       "Dark": {
-       "hex": "141c28",
-       "alpha": 0.4
+       "hex": "141a25",
+       "alpha": 0.42
       },
       "Light": {
        "hex": "ffffff",
-       "alpha": 0.4
+       "alpha": 0.48
       }
      }
     },
@@ -731,12 +731,12 @@ const PAYLOAD = {
      "web": "var(--glass-frosted-fill)",
      "values": {
       "Dark": {
-       "hex": "141c28",
-       "alpha": 0.58
+       "hex": "141a25",
+       "alpha": 0.64
       },
       "Light": {
        "hex": "ffffff",
-       "alpha": 0.55
+       "alpha": 0.72
       }
      }
     },
@@ -750,7 +750,7 @@ const PAYLOAD = {
      "web": "var(--glass-solid-fill)",
      "values": {
       "Dark": {
-       "hex": "141c28",
+       "hex": "141a25",
        "alpha": 1
       },
       "Light": {
@@ -769,11 +769,11 @@ const PAYLOAD = {
      "values": {
       "Dark": {
        "hex": "ffffff",
-       "alpha": 0.09
+       "alpha": 0.1
       },
       "Light": {
-       "hex": "1f3340",
-       "alpha": 0.12
+       "hex": "182838",
+       "alpha": 0.11
       }
      }
     },
@@ -787,11 +787,11 @@ const PAYLOAD = {
      "values": {
       "Dark": {
        "hex": "ffffff",
-       "alpha": 0.14
+       "alpha": 0.16
       },
       "Light": {
        "hex": "ffffff",
-       "alpha": 0.75
+       "alpha": 0.88
       }
      }
     },
@@ -805,11 +805,11 @@ const PAYLOAD = {
      "web": "var(--ombre-rise)",
      "values": {
       "Dark": {
-       "hex": "1775c9",
+       "hex": "176fd0",
        "alpha": 1
       },
       "Light": {
-       "hex": "1775c9",
+       "hex": "176fd0",
        "alpha": 1
       }
      }
@@ -824,11 +824,11 @@ const PAYLOAD = {
      "web": "var(--ombre-deep)",
      "values": {
       "Dark": {
-       "hex": "0b48bb",
+       "hex": "0b4cc4",
        "alpha": 1
       },
       "Light": {
-       "hex": "0b48bb",
+       "hex": "0b4cc4",
        "alpha": 1
       }
      }
@@ -842,11 +842,11 @@ const PAYLOAD = {
      "web": "var(--water) \u00b7 top stop",
      "values": {
       "Dark": {
-       "hex": "0b1e3a",
+       "hex": "0d1422",
        "alpha": 1
       },
       "Light": {
-       "hex": "bfe1f2",
+       "hex": "e2ebf7",
        "alpha": 1
       }
      }
@@ -860,11 +860,11 @@ const PAYLOAD = {
      "web": "var(--water) \u00b7 upper stop",
      "values": {
       "Dark": {
-       "hex": "071326",
+       "hex": "090e19",
        "alpha": 1
       },
       "Light": {
-       "hex": "dceef3",
+       "hex": "e9f0f9",
        "alpha": 1
       }
      }
@@ -878,11 +878,11 @@ const PAYLOAD = {
      "web": "var(--water) \u00b7 lower stop",
      "values": {
       "Dark": {
-       "hex": "04090f",
+       "hex": "060910",
        "alpha": 1
       },
       "Light": {
-       "hex": "e7f0f6",
+       "hex": "eff4fb",
        "alpha": 1
       }
      }
@@ -896,11 +896,11 @@ const PAYLOAD = {
      "web": "var(--water) \u00b7 bottom stop",
      "values": {
       "Dark": {
-       "hex": "030508",
+       "hex": "05070b",
        "alpha": 1
       },
       "Light": {
-       "hex": "f1f5f9",
+       "hex": "f4f7fc",
        "alpha": 1
       }
      }
@@ -914,12 +914,12 @@ const PAYLOAD = {
      "web": "var(--surface-light) \u00b7 peak stop",
      "values": {
       "Dark": {
-       "hex": "2896e6",
-       "alpha": 0.32
+       "hex": "3b82f6",
+       "alpha": 0.18
       },
       "Light": {
        "hex": "ffffff",
-       "alpha": 0.85
+       "alpha": 0.9
       }
      }
     },
@@ -933,11 +933,11 @@ const PAYLOAD = {
      "values": {
       "Dark": {
        "hex": "0b48bb",
-       "alpha": 0.1
+       "alpha": 0.06
       },
       "Light": {
        "hex": "ffffff",
-       "alpha": 0.25
+       "alpha": 0.32
       }
      }
     },
@@ -1005,11 +1005,11 @@ const PAYLOAD = {
      "web": "var(--tint-accent-fill)",
      "values": {
       "Dark": {
-       "hex": "8fbdff",
+       "hex": "94beff",
        "alpha": 0.12
       },
       "Light": {
-       "hex": "2056c2",
+       "hex": "1552c6",
        "alpha": 0.12
       }
      }
@@ -1023,11 +1023,11 @@ const PAYLOAD = {
      "web": "var(--tint-accent-border)",
      "values": {
       "Dark": {
-       "hex": "8fbdff",
+       "hex": "94beff",
        "alpha": 0.35
       },
       "Light": {
-       "hex": "2056c2",
+       "hex": "1552c6",
        "alpha": 0.35
       }
      }
@@ -1042,11 +1042,11 @@ const PAYLOAD = {
      "web": "var(--tint-live-fill)",
      "values": {
       "Dark": {
-       "hex": "86d3be",
+       "hex": "7fdfc8",
        "alpha": 0.1
       },
       "Light": {
-       "hex": "1b695a",
+       "hex": "146857",
        "alpha": 0.1
       }
      }
@@ -1060,11 +1060,11 @@ const PAYLOAD = {
      "web": "var(--tint-live-border)",
      "values": {
       "Dark": {
-       "hex": "86d3be",
+       "hex": "7fdfc8",
        "alpha": 0.42
       },
       "Light": {
-       "hex": "1b695a",
+       "hex": "146857",
        "alpha": 0.42
       }
      }
@@ -1079,11 +1079,11 @@ const PAYLOAD = {
      "web": "var(--tint-attention-fill)",
      "values": {
       "Dark": {
-       "hex": "eab982",
+       "hex": "f0be82",
        "alpha": 0.1
       },
       "Light": {
-       "hex": "7d4e08",
+       "hex": "7b4b06",
        "alpha": 0.1
       }
      }
@@ -1097,11 +1097,11 @@ const PAYLOAD = {
      "web": "var(--tint-attention-border)",
      "values": {
       "Dark": {
-       "hex": "eab982",
+       "hex": "f0be82",
        "alpha": 0.42
       },
       "Light": {
-       "hex": "7d4e08",
+       "hex": "7b4b06",
        "alpha": 0.42
       }
      }
@@ -1116,11 +1116,11 @@ const PAYLOAD = {
      "web": "var(--tint-danger-fill)",
      "values": {
       "Dark": {
-       "hex": "eea59d",
+       "hex": "f4a8a0",
        "alpha": 0.1
       },
       "Light": {
-       "hex": "a32934",
+       "hex": "a42531",
        "alpha": 0.1
       }
      }
@@ -1134,11 +1134,11 @@ const PAYLOAD = {
      "web": "var(--tint-danger-border)",
      "values": {
       "Dark": {
-       "hex": "eea59d",
+       "hex": "f4a8a0",
        "alpha": 0.45
       },
       "Light": {
-       "hex": "a32934",
+       "hex": "a42531",
        "alpha": 0.45
       }
      }
@@ -1153,11 +1153,11 @@ const PAYLOAD = {
      "web": "var(--tint-count-fill)",
      "values": {
       "Dark": {
-       "hex": "e8edf2",
+       "hex": "edf1f7",
        "alpha": 0.08
       },
       "Light": {
-       "hex": "1b2a35",
+       "hex": "162230",
        "alpha": 0.08
       }
      }
@@ -1172,11 +1172,11 @@ const PAYLOAD = {
      "web": "var(--tint-scrim)",
      "values": {
       "Dark": {
-       "hex": "030508",
+       "hex": "05070b",
        "alpha": 0.45
       },
       "Light": {
-       "hex": "f1f5f9",
+       "hex": "f4f7fc",
        "alpha": 0.45
       }
      }

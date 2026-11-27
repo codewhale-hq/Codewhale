@@ -388,8 +388,102 @@ impl<'a> AttentionQueue<'a> {
         order
     }
 
+    /// Return the next original item index in priority order after `current`,
+    /// wrapping to the highest-priority item. Returns `None` when empty.
+    #[must_use]
+    pub fn next_index(&self, current: Option<usize>) -> Option<usize> {
+        let order = self.order();
+        if order.is_empty() {
+            return None;
+        }
+        match current.and_then(|idx| order.iter().position(|&item| item == idx)) {
+            Some(pos) => Some(order[(pos + 1) % order.len()]),
+            None => Some(order[0]),
+        }
+    }
+
     fn words(&self) -> &AttentionWords {
         self.words.unwrap_or(&ENGLISH)
+    }
+}
+
+/// A compact pill indicating how many items need the user's attention:
+/// `◆ Needs attention (N)` (or `* Needs attention (N)` in ASCII).
+///
+/// Renders nothing when `count == 0`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NeedsAttentionPill<'a> {
+    /// Number of pending attention items.
+    pub count: usize,
+    /// Localized label beside the attention mark.
+    pub label: Cow<'a, str>,
+}
+
+impl<'a> NeedsAttentionPill<'a> {
+    /// Create a pill with the default `"Needs attention"` label.
+    #[must_use]
+    pub fn new(count: usize) -> Self {
+        Self {
+            count,
+            label: Cow::Borrowed("Needs attention"),
+        }
+    }
+
+    /// Override the label shown beside the attention mark.
+    #[must_use]
+    pub fn label(mut self, label: impl Into<Cow<'a, str>>) -> Self {
+        self.label = label.into();
+        self
+    }
+
+    /// Styled spans for the pill (`◆ Needs attention (N)`), or empty when `count == 0`.
+    #[must_use]
+    pub fn spans(&self, theme: &Theme) -> Vec<Span<'static>> {
+        if self.count == 0 {
+            return Vec::new();
+        }
+        let mark = glyphs::pick(State::NeedsYou.glyph(), theme.ascii());
+        let label = safe(&self.label);
+        vec![
+            Span::styled(
+                format!("{mark} "),
+                theme.fg(Role::Attention).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{label} ({})", self.count),
+                theme.fg(Role::Attention),
+            ),
+        ]
+    }
+}
+
+impl Paint for NeedsAttentionPill<'_> {
+    fn paint(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
+        let area = area.intersection(buf.area);
+        if area.is_empty() || self.count == 0 {
+            return;
+        }
+        let mark = glyphs::pick(State::NeedsYou.glyph(), theme.ascii());
+        let mark_w = text::width(mark);
+        let width = usize::from(area.width);
+        let mark_style = theme.fg(Role::Attention).add_modifier(Modifier::BOLD);
+        let text_style = theme.fg(Role::Attention);
+        let line = if width <= mark_w + 1 {
+            Line::from(Span::styled(mark.to_owned(), mark_style))
+        } else {
+            let full = format!("{} ({})", safe(&self.label), self.count);
+            let fit = text::truncate_words(&full, width.saturating_sub(mark_w + 1), theme.ascii())
+                .into_owned();
+            Line::from(vec![
+                Span::styled(format!("{mark} "), mark_style),
+                Span::styled(fit, text_style),
+            ])
+        };
+        row(Rect { height: 1, ..area }, buf, &line);
+    }
+
+    fn height(&self, _width: u16, _theme: &Theme) -> u16 {
+        u16::from(self.count > 0)
     }
 }
 
@@ -481,6 +575,7 @@ impl Paint for AttentionQueue<'_> {
         }
         if clipped && complete < self.items.len() {
             let hidden = self.items.len().saturating_sub(complete);
+            let footer = format!("{hidden} {}", safe(&words.hidden));
             row(
                 Rect {
                     y: body.bottom().saturating_sub(1),
@@ -489,7 +584,8 @@ impl Paint for AttentionQueue<'_> {
                 },
                 buf,
                 &Line::from(Span::styled(
-                    format!("{hidden} {}", safe(&words.hidden)),
+                    text::truncate_words(&footer, usize::from(body.width), theme.ascii())
+                        .into_owned(),
                     theme.fg(Role::Muted),
                 )),
             );

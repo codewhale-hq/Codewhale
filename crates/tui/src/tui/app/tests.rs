@@ -1,6 +1,6 @@
 use super::*;
 use crate::test_support::{EnvVarGuard, lock_test_env};
-use crate::tui::clipboard::{ClipboardHandler, PastedImage};
+use crate::tui::clipboard::{ClipboardContent, ClipboardHandler, PastedImage};
 use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus};
 use crate::tui::motion::MotionMode;
 use codewhale_config::ProviderKind;
@@ -2958,10 +2958,10 @@ fn first_run_user_without_a_key_starts_at_composer() {
 }
 
 #[test]
-fn first_run_user_with_a_key_starts_at_composer() {
+fn first_run_user_with_a_key_gets_workspace_trust_when_needed() {
     assert_eq!(
         initial_onboarding_state(false, false, false, false, true),
-        OnboardingState::None
+        OnboardingState::TrustDirectory
     );
     assert_eq!(
         initial_onboarding_state(false, false, false, false, false),
@@ -2970,11 +2970,11 @@ fn first_run_user_with_a_key_starts_at_composer() {
 }
 
 #[test]
-fn onboarding_workspace_trust_gate_only_fires_for_onboarded_user() {
+fn onboarding_workspace_trust_gate_fires_when_key_present_and_trust_needed() {
     assert!(onboarding_is_workspace_trust_gate(false, true, false, true));
     assert!(!onboarding_is_workspace_trust_gate(true, true, false, true));
     assert!(!onboarding_is_workspace_trust_gate(false, true, true, true));
-    assert!(!onboarding_is_workspace_trust_gate(
+    assert!(onboarding_is_workspace_trust_gate(
         false, false, false, true
     ));
 }
@@ -3951,13 +3951,12 @@ fn test_mode_scenario() {
     // from test_mode_switch_toasts_do_not_disrupt_non_mode_toasts
     {
         let mut app = App::new(test_options(false), &Config::default());
-        app.yolo_compat_notified = true;
         app.status_message = Some("Task queued".to_string());
         app.sync_status_message_to_toasts();
 
-        app.set_mode(AppMode::Agent);
+        app.set_mode(AppMode::Plan);
         app.sync_status_message_to_toasts();
-        app.set_mode_yolo_compat();
+        app.set_mode(AppMode::Agent);
         app.sync_status_message_to_toasts();
 
         assert_eq!(app.status_toasts.len(), 1);
@@ -3985,6 +3984,17 @@ fn test_queue_message() {
     app.queue_message(QueuedMessage::new("test message".to_string(), None));
     assert_eq!(app.queued_message_count(), 1);
     assert!(app.queued_messages.front().is_some());
+}
+
+#[test]
+fn queue_message_at_cap_returns_message_to_composer() {
+    let mut app = App::new(test_options(false), &Config::default());
+    for index in 0..MAX_QUEUED_MESSAGES {
+        app.queue_message(QueuedMessage::new(format!("m{index}"), None));
+    }
+    app.queue_message(QueuedMessage::new("overflow".to_string(), None));
+    assert_eq!(app.queued_message_count(), MAX_QUEUED_MESSAGES);
+    assert_eq!(app.input, "overflow");
 }
 
 #[test]
@@ -4020,43 +4030,14 @@ fn test_remove_scenario() {
 #[test]
 fn test_set_mode_updates_state() {
     let mut app = App::new(test_options(false), &Config::default());
-    app.yolo_compat_notified = true;
     app.set_mode(AppMode::Plan);
-    // The deprecated YOLO alias lands in Act (M6 back-compat shim).
-    app.set_mode_yolo_compat();
+    assert_eq!(app.mode, AppMode::Plan);
+    app.set_mode(AppMode::Agent);
     assert_eq!(app.mode, AppMode::Agent);
-    assert!(app.yolo);
-    // YOLO compat shim should enable trust, shell, and bypass approvals.
-    assert!(app.trust_mode);
-    assert!(app.allow_shell);
-    assert_eq!(app.approval_mode, ApprovalMode::Bypass);
 }
 
 #[test]
 fn set_mode_scenario() {
-    // Scenario consolidation of: set_mode_yolo_restores_previous_policies_on_exit, set_mode_plan_restores_previous_approval_on_agent_exit, set_mode_plan_to_yolo_keeps_yolo_permissions_and_restores_agent_baseline
-    // from set_mode_yolo_restores_previous_policies_on_exit
-    {
-        let mut options = test_options(false);
-        options.allow_shell = false;
-        options.start_in_agent_mode = true; // avoid coupling to settings.default_mode
-        let mut app = App::new(options, &Config::default());
-        app.allow_shell = false;
-        app.trust_mode = false;
-        app.approval_mode = ApprovalMode::Never;
-        app.yolo_compat_notified = true;
-
-        app.set_mode_yolo_compat();
-        assert!(app.allow_shell);
-        assert!(app.trust_mode);
-        assert_eq!(app.approval_mode, ApprovalMode::Bypass);
-
-        app.set_mode(AppMode::Agent);
-        assert!(!app.allow_shell);
-        assert!(!app.trust_mode);
-        assert_eq!(app.approval_mode, ApprovalMode::Never);
-    }
-    // from set_mode_plan_restores_previous_approval_on_agent_exit
     {
         let config = {
             let __cw_config_init_15_0 = Some("never".to_string());
@@ -4065,7 +4046,7 @@ fn set_mode_scenario() {
             __cw_config_init_15_value
         };
         let mut options = test_options(false);
-        options.start_in_agent_mode = true; // avoid coupling to settings.default_mode
+        options.start_in_agent_mode = true;
         let mut app = App::new(options, &config);
         assert_eq!(app.mode, AppMode::Agent);
         assert_eq!(app.approval_mode, ApprovalMode::Never);
@@ -4075,32 +4056,6 @@ fn set_mode_scenario() {
 
         app.set_mode(AppMode::Agent);
         assert_eq!(app.mode, AppMode::Agent);
-        assert_eq!(app.approval_mode, ApprovalMode::Never);
-    }
-    // from set_mode_plan_to_yolo_keeps_yolo_permissions_and_restores_agent_baseline
-    {
-        let mut options = test_options(false);
-        options.allow_shell = false;
-        options.start_in_agent_mode = true; // avoid coupling to settings.default_mode
-        let mut app = App::new(options, &Config::default());
-        app.allow_shell = false;
-        app.trust_mode = false;
-        app.approval_mode = ApprovalMode::Never;
-        app.yolo_compat_notified = true;
-
-        app.set_mode(AppMode::Plan);
-        app.approval_mode = ApprovalMode::Suggest;
-
-        app.set_mode_yolo_compat();
-        assert_eq!(app.mode, AppMode::Agent);
-        assert!(app.allow_shell);
-        assert!(app.trust_mode);
-        assert_eq!(app.approval_mode, ApprovalMode::Bypass);
-
-        app.set_mode(AppMode::Agent);
-        assert_eq!(app.mode, AppMode::Agent);
-        assert!(!app.allow_shell);
-        assert!(!app.trust_mode);
         assert_eq!(app.approval_mode, ApprovalMode::Never);
     }
 }
@@ -4183,11 +4138,11 @@ fn every_dial_step_writes_one_permissions_receipt() {
     assert_eq!(
         receipts,
         [
-            "Permissions changed to plan",
-            "Permissions changed to auto",
+            "Permissions changed to Plan",
+            "Permissions changed to Auto-Review",
             "Permissions changed to Full Access",
-            "Permissions changed to ask",
-            "Permissions changed to accept edits",
+            "Permissions changed to Ask",
+            "Permissions changed to Accept Edits",
         ]
     );
 }
@@ -4725,7 +4680,6 @@ fn sandbox_requirements_prevent_full_access_overrides() {
         assert!(!app.yolo);
         assert!(app.approval_policy_requirements_managed());
         assert!(!app.select_approval_posture(ApprovalMode::AcceptEdits));
-        assert_eq!(app.select_yolo_compat(), SettingSelection::Refused);
         assert!(matches!(
             codewhale_engine::core::authority::sandbox_policy_for_turn(
                 app.mode,
@@ -4759,95 +4713,13 @@ fn yolo_entry_points_honor_a_locked_approval_policy() {
     let mut options = test_options(false);
     options.yolo = true;
     options.allow_shell = false;
-    let mut app = App::new(options, &config);
+    let app = App::new(options, &config);
 
     assert!(app.approval_policy_locked());
     assert_eq!(app.approval_mode, ApprovalMode::Suggest);
     assert!(!app.allow_shell);
     assert!(!app.trust_mode);
     assert!(!app.yolo);
-
-    assert_eq!(app.select_yolo_compat(), SettingSelection::Refused);
-    assert_eq!(app.approval_mode, ApprovalMode::Suggest);
-    assert!(!app.allow_shell);
-    assert!(!app.yolo);
-    assert!(
-        app.status_toasts
-            .iter()
-            .any(|toast| toast.text.contains("controlled"))
-    );
-
-    assert!(!app.set_mode_yolo_compat());
-    assert_eq!(app.approval_mode, ApprovalMode::Suggest);
-    assert!(!app.allow_shell);
-    assert!(!app.yolo);
-}
-
-#[test]
-fn set_mode_agent_to_yolo_to_agent_restores_baseline_without_yolo_leak() {
-    // Round-trip Agent -> YOLO -> Agent must not leave YOLO's elevated authority
-    // (shell/trust/Auto) bleeding into the restored Agent surface (#3386).
-    let mut options = test_options(false);
-    options.allow_shell = false;
-    options.start_in_agent_mode = true;
-    let mut app = App::new(options, &Config::default());
-    // User's chosen Agent surface: shell on, trust off, Suggest approvals.
-    app.allow_shell = true;
-    app.trust_mode = false;
-    app.approval_mode = ApprovalMode::Suggest;
-    app.yolo_compat_notified = true;
-
-    app.set_mode_yolo_compat();
-    assert_eq!(app.mode, AppMode::Agent);
-    assert!(app.allow_shell);
-    assert!(app.trust_mode);
-    assert_eq!(app.approval_mode, ApprovalMode::Bypass);
-    assert!(app.yolo);
-
-    app.set_mode(AppMode::Agent);
-    assert_eq!(app.mode, AppMode::Agent);
-    assert!(app.allow_shell, "shell baseline preserved");
-    assert!(
-        !app.trust_mode,
-        "YOLO trust authority must not leak into Agent"
-    );
-    assert_eq!(
-        app.approval_mode,
-        ApprovalMode::Suggest,
-        "YOLO Auto approvals must not leak into Agent"
-    );
-    assert!(!app.yolo);
-}
-
-#[test]
-fn set_mode_plan_to_yolo_to_agent_does_not_bleed_yolo_into_agent() {
-    // Plan -> YOLO -> Agent: the Agent baseline captured before leaving Agent is
-    // what we land on, untouched by the transient Plan or YOLO policies (#3386).
-    let mut options = test_options(false);
-    options.allow_shell = false;
-    options.start_in_agent_mode = true;
-    let mut app = App::new(options, &Config::default());
-    app.allow_shell = false;
-    app.trust_mode = false;
-    app.approval_mode = ApprovalMode::Never;
-    app.yolo_compat_notified = true;
-
-    app.set_mode(AppMode::Plan);
-    // Plan is read-only regardless of the baseline.
-    assert!(!app.allow_shell);
-    assert!(!app.trust_mode);
-    assert_eq!(app.approval_mode, ApprovalMode::Suggest);
-
-    app.set_mode_yolo_compat();
-    assert!(app.allow_shell);
-    assert!(app.trust_mode);
-    assert_eq!(app.approval_mode, ApprovalMode::Bypass);
-
-    app.set_mode(AppMode::Agent);
-    assert_eq!(app.mode, AppMode::Agent);
-    assert!(!app.allow_shell);
-    assert!(!app.trust_mode);
-    assert_eq!(app.approval_mode, ApprovalMode::Never);
 }
 
 #[test]
@@ -5685,19 +5557,59 @@ fn enter_with_paste_burst_detection_disabled_submits_normally() {
     assert_eq!(result.as_deref(), Some("ship it"));
 }
 
+fn clipboard_paste(app: &mut App, content: ClipboardContent) -> bool {
+    app.clipboard = ClipboardHandler::with_content_for_test(content);
+    crate::tui::paste::handle_paste(app, crate::tui::paste::PasteSource::Shortcut)
+}
+
 #[test]
 fn clipboard_text_paste_matches_bracketed_paste_state() {
     let text = "alpha\r\nbeta";
     let mut bracketed = App::new(test_options(false), &Config::default());
     let mut clipboard = App::new(test_options(false), &Config::default());
 
-    bracketed.insert_paste_text(text);
-    clipboard.apply_clipboard_content(ClipboardContent::Text(text.to_string()));
+    crate::tui::paste::handle_paste(
+        &mut bracketed,
+        crate::tui::paste::PasteSource::Terminal(text),
+    );
+    assert!(clipboard_paste(
+        &mut clipboard,
+        ClipboardContent::Text(text.to_string())
+    ));
 
     assert_eq!(clipboard.input, bracketed.input);
     assert_eq!(clipboard.cursor_position, bracketed.cursor_position);
     assert_eq!(clipboard.slash_menu_hidden, bracketed.slash_menu_hidden);
     assert_eq!(clipboard.mention_menu_hidden, bracketed.mention_menu_hidden);
+}
+
+#[test]
+fn release_only_paste_edge_leaves_text_to_the_terminal_and_still_attaches_an_image() {
+    use crate::tui::paste::{PasteSource, handle_paste};
+
+    let mut app = App::new(test_options(false), &Config::default());
+    app.clipboard = ClipboardHandler::with_content_for_test(ClipboardContent::Text(
+        "already pasted".to_string(),
+    ));
+    handle_paste(&mut app, PasteSource::Terminal("already pasted"));
+    handle_paste(&mut app, PasteSource::ReleaseOnly);
+    assert_eq!(app.input, "already pasted");
+
+    let mut app = App::new(test_options(false), &Config::default());
+    app.clipboard = ClipboardHandler::with_content_for_test(ClipboardContent::Image(
+        crate::tui::clipboard::PastedImage {
+            path: std::path::PathBuf::from("/tmp/pasted.png"),
+            width: 8,
+            height: 4,
+            byte_len: 2048,
+        },
+    ));
+
+    handle_paste(&mut app, PasteSource::ReleaseOnly);
+    assert!(app.input.contains("pasted.png"), "{}", app.input);
+    // The other edge of the same chord does not attach it twice.
+    handle_paste(&mut app, PasteSource::Shortcut);
+    assert_eq!(app.input.matches("pasted.png").count(), 1, "{}", app.input);
 }
 
 #[test]
@@ -5707,7 +5619,7 @@ fn ssh_direct_clipboard_paste_points_to_terminal_owned_bracketed_paste() {
     app.cursor_position = app.input.chars().count();
     app.clipboard = ClipboardHandler::for_test(true, true);
 
-    assert!(!app.paste_from_clipboard());
+    crate::tui::paste::handle_paste(&mut app, crate::tui::paste::PasteSource::Shortcut);
     assert_eq!(app.input, "keep this draft");
     let hint = app
         .status_message
@@ -5725,12 +5637,15 @@ fn clipboard_image_paste_keeps_adjacent_text_and_concise_status() {
     app.input = "before after".to_string();
     app.cursor_position = "before".chars().count();
 
-    app.apply_clipboard_content(ClipboardContent::Image(PastedImage {
-        path: PathBuf::from("/tmp/pasted.png"),
-        width: 8,
-        height: 4,
-        byte_len: 2048,
-    }));
+    assert!(clipboard_paste(
+        &mut app,
+        ClipboardContent::Image(PastedImage {
+            path: PathBuf::from("/tmp/pasted.png"),
+            width: 8,
+            height: 4,
+            byte_len: 2048,
+        })
+    ));
 
     assert!(
         app.input
@@ -7204,9 +7119,7 @@ fn explicit_mode_selection_and_hotbar_share_the_persistence_owner() {
     assert_eq!(app.select_mode(AppMode::Plan), SettingSelection::Changed);
     assert_eq!(Settings::load().expect("reload").default_mode, "plan");
 
-    // The legacy YOLO entry point installs Act, so that is what must persist —
-    // "yolo" is a permission alias, never a startup mode.
-    assert_eq!(app.select_yolo_compat(), SettingSelection::Changed);
+    assert_eq!(app.select_mode(AppMode::Agent), SettingSelection::Changed);
     assert_eq!(Settings::load().expect("reload").default_mode, "agent");
 }
 
@@ -8189,9 +8102,8 @@ fn launch_onboarding_scenario() {
         assert_eq!(keyless, OnboardingState::None);
         assert!(recovery);
 
-        // A first run with a key starts at the composer.
         let (trust, _) = launch_onboarding_decision(false, false, false, false, true, false);
-        assert_eq!(trust, OnboardingState::None);
+        assert_eq!(trust, OnboardingState::TrustDirectory);
 
         let (ready, _) = launch_onboarding_decision(false, false, false, false, false, false);
         assert_eq!(ready, OnboardingState::None);

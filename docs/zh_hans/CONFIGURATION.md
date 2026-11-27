@@ -446,6 +446,26 @@ min_confidence = 0.5          # 默认 0.5,限制在 0..1
 - 未知的 `kind`,或决策路由器的 `provider` 不是 `openrouter` / `typesafe`,会让路由器处于未配置状态并显示为 failing。
 - 决策路由器忽略 `thinking`。OpenRouter 的花费像其他路由用量一样记录；TypeSafe 直连的花费只显示在回执上。
 
+#### 影子决策门(实验性，默认关闭)
+
+Superfast 决策门向决策模型多提三个有类型的问题——这一回合是否需要工具、能否从对话中直接回答、意图是什么——并记录一条保守的建议。它是上述决策路由器的一个选项，不是第二次调用：
+
+```toml
+[auto.router]
+kind = "decision"
+provider = "openrouter"
+model = "typesafe/jev-1.13"
+shadow_gate = true            # 默认关闭；仅用于决策路由器
+```
+
+- 决策门的问题随路由器自己的请求一起发出，因此使用路由器的路由、key、模型、`base_url` 和 `timeout_secs`,只在路由器运行时运行(Auto 模型模式且有可运行的 strong/fast 档位对),不产生第二个请求。
+- 它只是影子模式：建议不会改变路由。日志目标为 `superfast`,只包含路由、失败类别和延迟，不包含提示文本；同时在发起的回合或会话上保留一条影子决策回执。token 只通过路由器的用量记录结算一次。
+- 它与路由器一起失败放行：超时、错误或被拒绝的回答同样是决策门的失败类别。共享客户端会校验每一个提出的问题，所以无法回答决策门问题的决策服务器也会让路由器的回答失败，回合走本地回退。
+- 在 `kind = "chat"` 的路由器上设置 `shadow_gate = true` 会让路由器处于未配置状态并显示为 failing。
+- 环境变量 `SUPERFAST_ENABLED`、`SUPERFAST_PROVIDER`、`SUPERFAST_BASE_URL`、`SUPERFAST_MODEL` 和 `SUPERFAST_TIMEOUT_MS` 不再被读取。设置其中任何一个都会记录一条指向此键的警告；请把路由、模型和 base URL 写入 `[auto.router]`。单独的 150 ms 截止时间已取消：决策门等待的时间与路由器完全相同。
+
+决策门的概念和参考实现来自 Andrea Bruno,以 CC BY 4.0 发布：[harness-superfast](https://github.com/Andrea-Bruno/harness-superfast)。
+
 有两个 `[auto]` 键会影响路由（`crates/tui/src/config.rs` 中的 `AutoConfig`）：
 
 ```toml
@@ -847,7 +867,7 @@ codewhale config migrate --prefer table       # resolve a conflict: keep the tab
 - `CODEWHALE_NOTES_PATH`
 - `CODEWHALE_MEMORY`(`1|on|true|yes|y|enabled` 开启用户记忆)
 - `CODEWHALE_MEMORY_PATH`
-- `CODEWHALE_TELEMETRY` / `DEEPSEEK_TELEMETRY`(旧别名)——匿名使用计数在当前 0.9.12 源码中默认开启，并附有点名 Codewhale 和 PostHog 的告知，以及简便且持久的退出方式。此前已明确拒绝的选择继续保持关闭。接受 `0|1|true|false|yes|no|on|off|enabled|disabled`。显式 "off" 是**底线**：它胜过 `--telemetry true` 和配置里的 `telemetry = true`，而此列表无法读取的值也解析为 off，因为杀开关(kill switch)里的拼写错误绝不能解析为 "on"。见 [`TELEMETRY.md`](TELEMETRY.md)。
+- `CODEWHALE_TELEMETRY` / `DEEPSEEK_TELEMETRY`(旧别名)——匿名使用计数在当前源码中默认开启，并附有说明 Codewhale 为唯一第一方收集方的告知，以及简便且持久的退出方式。此前已明确拒绝的选择继续保持关闭。接受 `0|1|true|false|yes|no|on|off|enabled|disabled`。显式 "off" 是**底线**：它胜过 `--telemetry true` 和配置里的 `telemetry = true`，而此列表无法读取的值也解析为 off，因为杀开关(kill switch)里的拼写错误绝不能解析为 "on"。见 [`TELEMETRY.md`](TELEMETRY.md)。
 - `CODEWHALE_TELEMETRY_ENDPOINT` / `DEEPSEEK_TELEMETRY_ENDPOINT`(旧别名)——`https://`,或仅对 loopback 的普通 `http://`。覆盖配置文件。未设置时选择随附默认 `https://telemetry.codewhale.net/v1/telemetry`;设置为**空字符串**会把批次路由到本地 dry-run 文件，不联系任何人。无论哪种方式，它只决定会话发送到哪里——不能覆盖选择退出。
 - `CODEWHALE_ALLOW_SHELL`(`1`/`true` 启用)
 - `CODEWHALE_APPROVAL_POLICY`(`on-request|untrusted|never`)
@@ -1000,7 +1020,7 @@ condition = { type = "tool_name", name = "exec_shell" }
 
 ### 项目本地 hooks
 
-仓库可以在 `<workspace>/.codewhale/hooks.toml` 中携带策略，使用与 `[hooks]` 表相同的形态(顶层字段加 `[[hooks]]` 条目)。项目 hooks 是可执行的 shell 配置，所以 Codewhale 只会在工作区通过信任提示或 `[projects."<workspace>"] trust_level = "trusted"` 条目在用户自有配置中被信任之后才加载它们。会话 `/trust on` 模式本身不启用仓库提供的 hooks，仓库本地旧标记(如 `.deepseek/trusted`)也不启用项目 hooks。一旦受信任，项目 hooks 会追加到 `config.toml` 的全局 hooks 之后，所以它们最后运行，并且对于 `updatedInput`，在平局时胜出。格式错误的受信任项目文件记录警告，启动回退到仅全局 hooks。
+仓库可以在 `<workspace>/.codewhale/hooks.toml` 中携带策略，使用与 `[hooks]` 表相同的形态(顶层字段加 `[[hooks]]` 条目)。项目 hooks 是可执行的 shell 配置，所以 Codewhale 只会在工作区通过信任提示或 `[projects."<workspace>"] trust_level = "trusted"` 条目在用户自有配置中被信任之后才加载它们。会话 `/trust on` 模式本身不启用仓库提供的 hooks。一旦受信任，项目 hooks 会追加到 `config.toml` 的全局 hooks 之后，所以它们最后运行，并且对于 `updatedInput`，在平局时胜出。格式错误的受信任项目文件记录警告，启动回退到仅全局 hooks。
 
 ```toml
 # .codewhale/hooks.toml
@@ -1255,7 +1275,7 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 
 - `verbosity`(字符串，可选)：`normal` 或 `concise`。`normal` 保持默认的对话式提示。`concise` 追加一块提示纪律，用于直接、少废话的输出；CLI 非交互命令(`exec` 和 `eval`)默认 `concise`，除非 config/环境/CLI 覆盖它。用 `CODEWHALE_VERBOSITY` 或旧别名 `DEEPSEEK_VERBOSITY` 按进程覆盖。
 
-- `telemetry`（bool，可选）：匿名使用计数，**在当前 0.9.12 源码中默认 `true`**。第 `5` 版告知列明 Codewhale 和 PostHog，并说明退出策略；不会替默认用户虚构一次同意。此前已明确退出的选择继续保持关闭。这里的显式 `false` 是持久的*退出*：它会删除随机的安装 id、清空缓冲的和 dry-run 的事件，并留下一个只要该设置为 false 就会被重新声明的 tombstone。它是底线：`--telemetry true` 和 `CODEWHALE_TELEMETRY=1` 都会输给它。用 `/settings` 或 `codewhale config set telemetry true`，可以经由现有的隐私转换流程为新会话显式重新开启计数。`CODEWHALE_TELEMETRY`（旧别名 `DEEPSEEK_TELEMETRY`）和 `--telemetry false` 提供作用于单次运行的关闭开关，停止采集和发送，但不擦除所有者的状态。仓库本地的 `.codewhale/config.toml` 不能设置这个偏好。`codewhale config telemetry` 显示告知，`codewhale config get telemetry` 报告偏好和隐私状态。完整 schema 和退出行为：[`TELEMETRY.md`](TELEMETRY.md)。
+- `telemetry`（bool，可选）：匿名使用计数，**默认 `true`**。第 `6` 版告知说明 Codewhale 为唯一第一方收集方，并说明退出策略；不会替默认用户虚构一次同意。此前已明确退出的选择继续保持关闭。这里的显式 `false` 是持久的*退出*：它会删除随机的安装 id、清空缓冲的和 dry-run 的事件，并留下一个只要该设置为 false 就会被重新声明的 tombstone。它是底线：`--telemetry true` 和 `CODEWHALE_TELEMETRY=1` 都会输给它。用 `/settings` 或 `codewhale config set telemetry true`，可以经由现有的隐私转换流程为新会话显式重新开启计数。`CODEWHALE_TELEMETRY`（旧别名 `DEEPSEEK_TELEMETRY`）和 `--telemetry false` 提供作用于单次运行的关闭开关，停止采集和发送，但不擦除所有者的状态。仓库本地的 `.codewhale/config.toml` 不能设置这个偏好。`codewhale config telemetry` 显示告知，`codewhale config get telemetry` 报告偏好和隐私状态。完整 schema 和退出行为：[`TELEMETRY.md`](TELEMETRY.md)。
 
 - `telemetry_endpoint`(字符串，可选)：批次 POST 到哪。保持未设置会选择随附默认 **`https://telemetry.codewhale.net/v1/telemetry`**——[`TELEMETRY.md`](TELEMETRY.md) 中描述的第一方接入服务，其源码在 `telemetry-ingest/`。这个键只决定*被允许的会话*发送到哪里；它不能覆盖选择退出。把它设为**空字符串**是保持启用且不联系任何人的方式：每个批次随后写入 `$CODEWHALE_HOME/telemetry/dryrun.jsonl`，完全不构造 HTTP 客户端，所以你可以读到原本会发送的确切内容。任何其他值直接替换默认值。要求 `https://`;普通 `http://` 只对 loopback 主机接受，并且没有环境变量可以覆盖该拒绝。被拒绝的端点会让遥测在本次运行关闭，而不是回退到明文或默认值。用 `CODEWHALE_TELEMETRY_ENDPOINT`(旧别名 `DEEPSEEK_TELEMETRY_ENDPOINT`)按进程覆盖，其中空值意味着同样的"不联系任何人"。仓库本地的 `.codewhale/config.toml` 不能设置它。
 
@@ -1263,11 +1283,11 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 
 - `approval_policy`(字符串，可选)：`on-request`、`untrusted` 或 `never`。`/config` 中的运行时 `approval_mode` 编辑也接受 `on-request` 和 `untrusted` 别名。
 
-- `[approval] default_selection`(字符串，可选)：审批卡片首次出现时高亮哪个选项——`deny`(默认)或 `allow_once`。`deny` 意味着在没读过的卡片上反射性按 Enter 会拒绝调用。高亮的那一行会标注 `(Enter)`；按 `y` 可仅允许本次。设置 `allow_once` 恢复 v0.9.6 之前的 Enter 即批准肌肉记忆(#5293)。它只移动高亮：哪些调用会被提示仍由 `approval_policy` 加 `permissions.toml` 中的规则决定。
+- `[approval] default_selection`(字符串，可选)：终端审批栏首次出现时高亮哪个控件——`allow_once`(默认)或 `deny`。Enter 提交高亮的控件(标注为 `[Enter]`)，所以默认情况下 Enter 会允许所显示的这一个操作，仅此一次；`n` 拒绝，`Esc` 拒绝该操作并停止本轮。审批栏刚出现的四分之三秒内，以及紧跟在另一次 Enter 或输入字符之后，会允许操作的 Enter 将被忽略并给出提示，所以仍在途中的、按住不放的或粘贴进来的 Enter 不会批准；字母键(`y`、`a`、`1`)不受此延迟限制。设置 `deny` 可让 Enter 改为拒绝调用(此前的默认值，#5293)；`y` 仍可仅允许本次。它只移动高亮：哪些调用会被提示仍由 `approval_policy` 加 `permissions.toml` 中的规则决定。沙箱提权提示不受影响，仍从跳过该调用的选项开始。
 
   ```toml
   [approval]
-  default_selection = "allow_once"
+  default_selection = "deny"
   ```
 
 - `[approval] timeout_seconds`（整数，可选）：限定一次审批最多可以等待多久——TUI 卡片，以及桌面应用和 web 使用的 Runtime API 审批同样适用。窗口过期后，该调用会被拒绝（fail closed），并记录为超时，而不是记录为操作者的拒绝。省略或为 `0` 表示无限期等待，这在各处都是默认值：除非你设置它，否则任何审批都不会被替你拒绝。超过 24h 的值会带警告被钳制（#6101）。
@@ -1381,7 +1401,7 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 
 - `[skills.bundled].install`（默认 `"auto"`，另可设 `"all"` 或 `"none"`）：独立控制捆绑安装。`auto` 保留删除即退出规则，设置 `skills_dir` 时停止安装；`all` 补装已启用的缺失技能，只写入 `$CODEWHALE_HOME/skills`（通常为 `~/.codewhale/skills`），不受发现目录覆盖影响；`none` 不写文件或版本标记。修改版和托管正文始终保留。
 - `[skills.bundled].selected` / `disabled` / `explicit_only`（名称数组，默认 `[]`）：空选择列表启用整个安装包，非空列表限制安装和发现。禁用优先，并允许低优先级目录的同名副本生效。显式调用保留用户调用，移除模型索引及模型加载权限。别名沿用规范名称策略；仅影响全局自有目录中可识别的发行副本，不删除文件。配置档逐字段合并，显式空列表清空继承值。`doctor` 报告未知及忽略条目，`/skills inspect` 显示路径和原因。详见 [SKILLS.md](SKILLS.md#捆绑技能)。
-- `[skills].listing_max_description_chars`（整数，默认 `120`，范围 `1..=40000`）：用于 `/context` 和 `doctor --context-json` 的技能目录预览，以及 `/skills inspect` 的描述长度提示。
+- `[skills].listing_max_description_chars`（整数，默认 `120`，范围 `1..=40000`）：用于 `/context` 和 `doctor --context-json` 的技能目录预览，`/skills inspect` 的描述长度提示，以及 `load_skill` 列表中的描述长度。`[skills]` 中的未知键会被拒绝。
 - `[skills].listing_budget_fraction`（有限数值，默认 `0.002`，大于 `0` 且不大于 `1`）：技能目录预览占路由上下文窗口的比例，按每 token 四个字符估算，并限制在 `2400..=40000` 字符。配置档中的字段分别覆盖继承值。父代理和子代理均通过 [`load_skill`](SKILLS.md#配置项) 按需发现技能。
 - `[skills].scan_codewhale_only`(bool，默认 `false`)：为 `true` 时，会话技能发现忽略跨工具根，如 `.claude/skills`、`.opencode/skills`、`.cursor/skills` 和 `~/.agents/skills`。Codewhale 仍扫描 `<workspace>/.codewhale/skills`、`~/.codewhale/skills` 和任何显式 `skills_dir` 覆盖。技能管理器仍可独立于这个运行时旋钮切换本地兼容审计扫描——见 [SKILLS.md](SKILLS.md)。
 
@@ -1422,7 +1442,7 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 
   HTTP 429 使用独立的 `[retry.rate_limit]` 策略：`max_attempts = 20`（含首次尝试）、`recovery_budget_secs = 600`、`initial_delay_secs = 5`、`max_delay_secs = 60`。上述旧退避参数和 `jitter` / `respect_retry_after` 开关不覆盖限流策略；429 始终遵守服务器最小等待时间并使用 equal jitter。`max_retries = 0` 不关闭 429 恢复；只关闭 429 自动重试请设 `retry.rate_limit.max_attempts = 1`，关闭本 HTTP 重试循环请设 `retry.enabled = false`；流打开操作内部仍可能执行已有的安全发出前 HTTP/1.1 回退。实际提供方暂停和自动等待仍最多一小时。参数校验范围及边界见 [HTTP rate-limit retries](../rate-limit-retries.md)。
 
-  `[retry]` 安排客户端内部的 HTTP 请求重试。每次实际发出的流式请求都有独立的 `stream.open_timeout_secs` 响应头等待时间；提供方退避和 `Retry-After` 等待发生在请求之间。推理自动重试只允许普通限流，或有类型证据证明请求尚未发出时的瞬时连接故障。只有后一种故障可以切换一次 HTTP/1.1；响应头停滞不能触发重发。两种推理客户端都禁止自动重定向和 reqwest 协议重试。明确的套餐周期用量耗尽会作为配额错误终止。服务器错误、结果不明的超时或流中断会保留未知用量并停止，不会自动重新发起推理。只读模型目录 GET 在实际方法入口保留有界重试。下面的 `[stream]` 键限制安全的发出前恢复和流读取；旧的 `tui.stream_max_*` 键仍作为配置回退。
+  `[retry]` 安排客户端内部的 HTTP 请求重试。每次实际发出的流式请求都有独立的 `stream.open_timeout_secs` 响应头等待时间；提供方退避和 `Retry-After` 等待发生在请求之间。推理自动重试只允许普通限流，或有类型证据证明请求尚未发出时的瞬时连接故障。只有后一种故障可以切换一次 HTTP/1.1；响应头停滞不能切换 HTTP/1.1。两种推理客户端都禁止自动重定向和 reqwest 协议重试。明确的套餐周期用量耗尽会作为配额错误终止。服务器错误、结果不明的超时或流中断会保留未知用量并停止，不会自动重新发起推理。唯一的例外是响应头超时：流式请求在 `stream.open_timeout_secs` 内没有收到响应头时，回合会重新发送该请求 `stream.open_retries` 次（默认一次），并在对话记录中显示一行 `Retry attempt: stream-open-timeout`。提供方可能已经处理并计费了第一次请求，因此它的用量保持未知。只读模型目录 GET 在实际方法入口保留有界重试。下面的 `[stream]` 键限制安全的发出前恢复和流读取；旧的 `tui.stream_max_*` 键仍作为配置回退。
 
 - `[notifications]`：通知的投递、注意力、类别和声音共用同一套策略。`quiet = true`、`method = "off"`、`condition = "never"` 以及被禁用的类别，会同时抑制横幅和 Codewhale 所选的声音。
 - `notifications.method`：`auto`（默认）、`osc9`、`kitty`、`ghostty`、`bel`、`off`。
@@ -1452,13 +1472,13 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 
 - `tui.turn_wall_clock_secs`（int，可选，默认不设限）：每个回合累计的墙钟预算，单位为秒，跨一个回合的每个模型步骤度量（不是按请求）。等待人工审批所阻塞的时间不计入。省略或为 `0` 表示不设限；正值会原样保留，不再附加运行时上限。耗尽时，回合会在授权下一次计费请求之前停止，并给出一条指明该限制及要调高的键的信息。
 
-- `tui.stream_max_resumes`（int，可选，默认 `3`）：仅用于有证据证明请求尚未发出时的瞬时连接故障恢复。`0` 禁用回合级恢复；值钳制到 `0..=10`。没有响应头、空流、部分输出、休眠或断网都不能授权推理重发。
+- `tui.stream_max_resumes`（int，可选，默认 `3`）：仅用于有证据证明请求尚未发出时的瞬时连接故障恢复。`0` 禁用回合级恢复；值钳制到 `0..=10`。空流、部分输出、休眠或断网都不能授权推理重发；响应头超时有单独的重试次数 `stream.open_retries`。
 
 - `tui.stream_max_transparent_retries`（int，可选，默认 `2`）：为配置兼容保留，值钳制到 `0..=10`。流中断不再触发透明推理重发，即使尚无可见输出。
 
 - `tui.stream_max_errors`（int，可选，默认 `5`）：为配置兼容保留；`0` 使用默认值，正值钳制到 `1..=50`。无论该值是多少，Core 都会在第一个结果不明的读取错误或错误帧处结束流。
 
-- `tui.stream_open_timeout_secs`（int，可选，默认 `180`）：等待流式请求响应头的时间（含连接建立）。响应头停滞会以结果未知结束，不会改用 HTTP/1.1 重发。省略或为 `0` 时回退到 `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`，再回退到默认值；值钳制到 `5..=600`。
+- `tui.stream_open_timeout_secs`（int，可选，默认 `180`）：等待流式请求响应头的时间（含连接建立）。响应头停滞时会重新发送 `stream.open_retries` 次（默认一次，不会改用 HTTP/1.1），之后以结果未知结束。省略或为 `0` 时回退到 `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`，再回退到默认值；值钳制到 `5..=600`。
 
 - `tui.connect_timeout_secs`（int，可选，默认 `30`）：模型 HTTP 客户端的 TCP/TLS 连接超时。省略或为 `0` 使用默认值；值钳制到 `1..=300`。
 
@@ -1478,12 +1498,18 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 `codewhale config dump` 和 `codewhale config get stream` 显示运行时解析后的有效值，
 包括环境变量回退及范围限制；查看不会把默认值写入文件。例如：
 `codewhale config set stream.open_timeout_secs 120`、
-`codewhale config unset stream.open_timeout_secs`。单次运行的
-`--set stream.open_timeout_secs=120` 使用同一验证器。
+`codewhale config unset stream.open_timeout_secs`。只读的 `codewhale config`
+查看命令（`config get`、`config dump`、`config list`）也接受
+`--set stream.open_timeout_secs=120` 并使用同一验证器；运行时命令（`codewhale`、
+`exec`、`doctor`）只接受运行时 `--set` 键（`provider`、`model`、
+`default_text_model`、`verbosity`、`approval_policy`、`sandbox_mode`、
+`telemetry`），因此单次运行的流超时覆盖请使用
+`CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`、`--profile` 或 `codewhale config set`。
 
 | `[stream]` 键 | 默认值 | 有效行为 | 旧 `[tui]` 回退键 |
 | --- | --- | --- | --- |
 | `open_timeout_secs` | 180 | 正数限制到 5–600；0 或省略时回退到环境变量/默认值 | `stream_open_timeout_secs` |
+| `open_retries` | 1 | 请求在 `open_timeout_secs` 内没有收到响应头时重新发送的次数；0 禁用，最大 3 | 无 |
 | `chunk_timeout_secs` | 900 | 0 使用默认值；正数限制到 1–3600 | `stream_chunk_timeout_secs` |
 | `max_resumes` | 3 | 仅恢复有证据的发出前瞬时连接故障；0 禁用，最大 10 | `stream_max_resumes` |
 | `max_transparent_retries` | 2 | 兼容值；流中断永不自动重发推理 | `stream_max_transparent_retries` |

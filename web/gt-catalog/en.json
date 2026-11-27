@@ -2,7 +2,7 @@
   "project": {
     "oneEngineBehindEverySurface": "One engine behind every surface",
     "theTerminalCodewhaleExecTheLocalBrowser": "The terminal, codewhale exec, the local browser view and editors share one Rust engine. A fix there reaches all of them.",
-    "theLargestCratesStillNeedToBe": "The largest crates still need to be split, and the desktop app has no public download yet.",
+    "theLargestCratesStillNeedToBe": "The largest crates still need to be split.",
     "everyModelIsAPeer": "Every model is a peer",
     "useABuiltInProviderAnyOpenAI": "Use a built-in provider, any OpenAI-compatible endpoint or a local model. No provider is ranked above another.",
     "providerBehaviorStillNeedsToMoveInto": "Provider behavior still needs to move into profiles, and many providers and models that people use have not been tested by anyone yet.",
@@ -28,9 +28,7 @@
     "inProgress": "In progress",
     "planned": "Planned",
     "later": "Later",
-    "thisReleaseFixesProblemsReportedAgainst0": "This release fixes problems reported against 0.10.2 and adds DeepSeek Harness plugin compatibility, other agents inside Codewhale and a larger Runtime API.",
-    "thisReleaseImprovesReliabilityThroughProcessCleanup": "This release improves reliability through process cleanup, resource limits and dead-code removal.",
-    "thisReleaseImprovesUsabilityWithRunningCommand": "This release improves usability with running-command detail, usage diagnostics and file previews.",
+    "thisReleaseSimplifiesTheWholeProduct": "This release simplifies the whole product: each change removes a path that does the same job as another.",
     "thisReleaseReworksTheArchitectureWithSmaller": "This release reworks the architecture with smaller crates, provider profiles and one command contract.",
     "thisReleaseBringsTheDesktopAppTo": "This release brings the desktop app to every platform and adds pluggable memory and approved skill learning.",
     "roadmap": "Roadmap",
@@ -310,7 +308,13 @@
     "downloadVersion": "Version {version}",
     "downloadSize": "Size {size}",
     "downloadChecksum": "SHA-256 checksum",
-    "downloadSigned": "Signed and notarized"
+    "downloadSigned": "Signed and notarized",
+    "downloadLinux": "Linux",
+    "downloadAptTitle": "Install with apt",
+    "downloadAptTrust": "The apt repository is signed with Codewhale's key, and apt installs updates.",
+    "downloadAppImage": "Download the AppImage",
+    "downloadAppImageTrust": "Check the AppImage against the SHA-256 checksum shown. It does not update itself yet.",
+    "downloadAptFingerprint": "The signing key should have the fingerprint {fingerprint}. Compare it with the key you downloaded."
   },
   "home": {
     "metaTitle": "Codewhale · The model can be anyone's. The agent should be yours.",
@@ -346,8 +350,8 @@
     "agentRoleImplement": "Makes one specific change with the smallest edit.",
     "agentRoleReviewer": "Reads a change and grades what it finds by severity, without changing files.",
     "agentsLink": "Read how sub-agents work",
-    "directionShotAlt": "The Codewhale desktop app. On the left is the session list; in the middle it edited tally/core.py and asks “Run a command?” for python3 -m pytest -q, with Allow once, Allow for this session and Don't allow.",
-    "directionShotCaption": "The desktop app in development runs on the same engine. Here, running qwen3:4b locally through Ollama, it applied the edit in Accept Edits and asks before running the test command.",
+    "directionShotAlt": "The Codewhale desktop app. On the left is the session list; in the middle a task to fix a failing test waits for permission to run python3 -m pytest, with Allow and Deny.",
+    "directionShotCaption": "The desktop app runs on the same engine. Here, running DeepSeek V4.1 Flash in Accept Edits, it asks before running the test command.",
     "directionShotLink": "See the desktop app",
     "sectionDirectionHeading": "Here is where your agent is going.",
     "sectionDirectionBody": "Codewhale is becoming one environment across your terminal, a desktop app, the browser and cloud computers, all run by one engine, so your work can move between them and stay yours. Each part below says where it stands today.",
@@ -689,8 +693,8 @@
                 "The download was corrupted or altered, and nothing was installed. Try again; if it repeats, do not use a mirror."
               ],
               [
-                "`The package-managed executable was not changed.`",
-                "You installed with npm, Cargo, or Homebrew. Update with that tool, for example `npm install -g codewhale`."
+                "`Not updated: use the command above.`",
+                "You installed with npm, Cargo, or Homebrew. Run the command printed above that line, for example `npm install -g codewhale`. `codewhale uninstall` ends the same way with `Not removed: use the command above.` Versions before 0.10.5 print `The package-managed executable was not changed.` instead."
               ]
             ]
           }
@@ -1384,7 +1388,7 @@
             "p": "Workflow plan cards have different options, including editing or canceling the plan. Follow the labels on that card rather than the ordinary tool shortcuts above."
           },
           {
-            "p": "A new approval card highlights Deny by default, so Enter refuses the call unless you changed that setting. Approval prompts wait indefinitely by default; set a timeout in your user configuration to deny unanswered prompts after 300 seconds:"
+            "p": "A new approval card highlights Allow by default, so Enter allows the one action shown, once. Set `default_selection = \"deny\"` to make Enter refuse the call instead. Approval prompts wait indefinitely by default; set a timeout in your user configuration to deny unanswered prompts after 300 seconds:"
           },
           {
             "code": "[approval]\ndefault_selection = \"deny\"\ntimeout_seconds = 300",
@@ -2121,7 +2125,7 @@
         "title": "Codewhale accounts",
         "blocks": [
           {
-            "p": "A provider key and a Codewhale account are different things. Local use never needs an account; anyone can sign in, and cloud computers are invite-only. Provider keys stay on your machine with `codewhale auth set`."
+            "p": "A provider key and a Codewhale account are different things. Local use never needs an account. Codewhale accounts are not open yet, and cloud computers are invite-only. Provider keys stay on your machine with `codewhale auth set`."
           },
           {
             "rows": [
@@ -2229,7 +2233,7 @@
         "title": "Know what usage counting sends",
         "blocks": [
           {
-            "p": "Codewhale counts anonymous usage by default and says so the first time you launch it, naming Codewhale and PostHog. Here is exactly what it covers:"
+            "p": "Codewhale counts anonymous usage by default and says so the first time you launch it, naming Codewhale as the sole first-party collector. Here is exactly what it covers:"
           },
           {
             "rows": [
@@ -2239,15 +2243,15 @@
               ],
               [
                 "Sent while on",
-                "Version and platform classes, session length and outcome, feature and error counts as fixed categories, and a random install id that changes every 90 days."
+                "Version and platform classes, session length and outcome, built-in provider IDs, bundled public-catalog model IDs (custom/private/local models map to \"other\"), aggregate token totals, built-in tool call and error counts, feature and error counts as fixed categories, and a random install id that changes every 90 days."
               ],
               [
                 "Where it goes",
                 "`https://telemetry.codewhale.net/v1/telemetry`, a first-party service whose source is in the repository. It stores no IP address, country, or location, keeps no request logs, and holds raw data for three months; only aggregate daily totals with no install id are kept longer."
               ],
               [
-                "PostHog",
-                "Forwarding to PostHog happens only if the service operator configures it separately; it carries the same fields and nothing more."
+                "First-party only",
+                "Counts are stored only in Codewhale's Cloudflare Analytics Engine ingest; no third-party analytics processor is used."
               ]
             ]
           }

@@ -7,12 +7,217 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- **Shell groups preserve command-owned input:** policy evaluation keeps each command's explicit stdin source when a redirection supplies default input to its enclosing group. (CW-8303)
-## [0.10.3] - 2026-11-18
+### Added
+
+- **`codewhale doctor` prints a short verdict; `--full` prints everything:** plain `codewhale doctor` now lists what works, what needs attention and the next step. `codewhale doctor --full` prints every check, as plain `doctor` did before; `--json`, `--installs --brief` and the probe flags are unchanged.
+- **Saved sessions in the browser client:** a Resume button with a one-line read-only notice, "Show earlier messages" and plain tool rows. A session peek still returns 12 entries by default and up to 100 when `&entries=N` asks for them.
+- **`[auto.router] shadow_gate = true`** (decision routers only) runs the shadow Decision Gate on the router's own request, with the router's timeout. Saving a preset from `/router` keeps the setting. Concept and reference implementation by Andrea Bruno (@Andrea-Bruno), CC BY 4.0. (#6603)
+- **Interrupting a turn leaves a record:** the transcript gets a "Turn interrupted after N of work." line, and the footer's worked time no longer drops when a turn is cancelled.
+
+### Changed
+
+- **The website offers the Linux desktop app:** `codewhale.net/app` now has Desktop 0.10.4 for Linux x64: an apt repository signed with Codewhale's key (install lines and key fingerprint on the page; updates arrive through `apt`), and an AppImage download with its SHA-256 checksum. The AppImage does not update itself yet.
+- **Enter now allows on the terminal approval bar:** a new approval bar highlights Allow, so Enter allows the one action shown, once; `n` denies and Esc denies and stops the turn. The bar shows its keys and tags the highlighted control `[Enter]`, and at 80 columns it shortens its controls so the command stays readable. An Enter that would allow is ignored, with a notice saying so, for the first 750 ms after the bar comes to the front (again each time it comes back after another prompt covered it) and right after another Enter or typed characters, so a held, in-flight or pasted Enter does not approve; the letter keys are not delayed. Set `[approval] default_selection = "deny"` to make Enter refuse instead; external-agent approval cards follow the same setting. Sandbox elevation, sandbox-escape and Full Access prompts keep starting on the option that skips the call. (#5293)
+- **Account sign-in is closed until accounts open:** first run goes straight to connecting a model on this computer. `codewhale login`, `/login` and `/connect account` without a saved session say accounts are not open yet and point to `/provider`, in your UI language, without opening a browser; `/login` is no longer listed in the command menu. A profile that is already signed in, and a machine key in `CODEWHALE_API_KEY`, keep every `codewhale account` command, `/connect account` and `/logout`.
+- **`codewhale auth get`, `auth list`, `auth status` and `auth print-api-key` report the key a run would send:** they use the runtime's resolver, so `[providers.<name>] api_key_env` ranks as the runtime ranks it, and a key that would not be sent to the current base URL (for example one chosen by an environment variable or `--base-url`) is shown as "not sent on this route" instead of as active. `auth status` labels the saved-key column `secret store` and names the backend. (#6559, #7486)
+- **`/update` and `/init` run in the background:** they return at once, show a working notice while they run, refuse a second run, and stop with `/update cancel`, `/init cancel`, Esc or Ctrl+C. Their result appears in the transcript when they finish, and `/init` then sends its prompt as before. (#7468)
+- **`/pet` became `/whale`:** `/whale` toggles the whale view, and `/whale still`, `/whale name <text>` and `/whale color <#rrggbb|default>` set it for this terminal. `/pet` still works as an unlisted alias. Sound, replay export and the browser appearance studio are removed (see Removed).
+- **`codewhale update` and `codewhale uninstall` on a package-managed copy** print the one working command and end with "Not updated: use the command above." or "Not removed: use the command above." and exit 1. `codewhale uninstall --purge-data` still previews the data removal, and plain `uninstall` still says user data was not touched.
+- **`codewhale web` start-up:** the one-time sign-in link is printed first, on its own line, and the misleading "enabled at http://..." line is gone. When `CODEWHALE_WEB_DIST` is set, start-up names the directory being served, including when `codewhale web` attaches to a Codewhale that is already running. (#7237)
+- **The shadow Decision Gate is an option of the decision router:** it runs only when the router runs and uses the router's timeout. (#6603)
+- **MCP tool calls no longer hold the shared pool lock during the server round-trip:** calls to one server take turns, a finished call returns without waiting for other servers, and replacing or shutting down a connection cancels its in-flight call visibly. (Refs #7461)
+- **`codewhale review --pr` and `codewhale pr` run their `gh` calls off the async runtime workers.** (#7474)
+- **Resume picker preview shows what you said and what the agent answered;** tool calls show only the tool name.
+- **Install page and docs:** the installer runs `codewhale doctor --installs --brief`; the install page adds Linux steps, bash and zsh PATH lines and an npm allowScripts note; bug reports and support docs ask for `codewhale doctor --full`; `docs/WEB.md` documents `CODEWHALE_WEB_DIST`.
+- **Releases are signed, and Codewhale checks the signature before installing one:** this build carries the release public key, so `codewhale update` and automatic updates refuse a release whose signature is missing or does not verify. Updating to this version from an older one still asks once; the release after it installs without asking. See "Release signing" in `docs/INSTALL.md`.
+- **Runtime API rejects `dynamic_tools` that reuse a built-in tool name:** a thread or turn request whose dynamic tools take the name of a built-in tool (including the sub-agent, workflow and coordination tools), or repeat a name across namespaces, now fails with an error naming the tool instead of the tool being dropped silently. (#6559)
+- **Provider receipts list at most 8 omitted tool names:** a per-request receipt now carries a short sample of the tool names left out of the request plus an `omitted_tool_count`, not every name.
+- **The finance tool reports how old a quote is:** results include `quote_age_seconds` next to `market_time`, price changes Codewhale computes itself are rounded to six decimals (six significant digits below 1) while a change the provider sent is passed through, and a change value that is not a finite number is left out. (#6557)
+- **`load_skill` list honours `listing_max_description_chars`:** the list keeps a skill's trigger clause when it shortens a description, and the companion file list keeps shallow files when it is cut off and says how many files it left out. (#7432)
+
+### Fixed
+
+- **Contained processes are killed when Codewhale exits on a signal:** process groups started for `sandbox run`, verifier gates, hooks, MCP servers and other contained helpers are now killed on SIGINT, SIGTERM or SIGHUP, a crashed MCP server's leftover processes are killed as soon as its exit is seen, and a timed-out or stopped verifier gate kills its whole process tree on Windows. (#6558)
+- **A failed or timed-out Python REPL round no longer leaves child processes behind:** the round, and REPL shutdown, now kill every process the interpreter started, not only the interpreter. (#6559)
+- **A lane start that fails after creating its worktree no longer orphans it:** the failed lane records the worktree and branch, and the worktree TTL applies. (#6558)
+- **Workflow `expand` nodes are checked before they run:** an unknown `source`, a duplicate generated id, or a generated node that refers to an unknown or unfinished node is now rejected. (#6559)
+- **`/undo` works on a turn made by `codewhale exec --auto`:** exec turns now record restore points, so they can be undone after you resume the session in the terminal. (#6970)
+- **`/undo` right after interrupting a turn no longer refuses:** it waits for the interrupted turn's closing restore points to be written. (#6970)
+- **`tool_search` results no longer evict each other:** tools found by a search are protected from eviction for the current and next turn, so alternating searches keep their tools. (#6969)
+- **Anthropic requests no longer send `tool_choice` without tools:** when every tool is left out of a request, the tool choice is left out too.
+- **Stale approval receipts say what happened:** a stale or foreign approval is recorded as resolved only when the engine accepted the denial, and as a failed resolution otherwise. (#7464)
+- **A failed reset or recovery snapshot is shown:** the transcript gets an error cell and a sticky toast instead of a passing status line. (#7464)
+- **`/load` and `/resume <file>` refuse session files over 256 MiB** before reading them. (#7464)
+- **`/skills` changes refuse to run when the config cannot be loaded:** install, update, remove, trust, sync and registry commands no longer fall back to the default network policy, size cap and registry URL. (#7464)
+- **More of the terminal follows your UI language:** Fleet setup role and model rows, Fleet rename, copy and select notices, the Fleet list summary, the worktree manager and the command palette are now translated. (#7469)
+- **A failed Fleet list scan says so** instead of showing "No saved teams yet". (#7469)
+- **Middle-click paste goes through the shared paste path:** a PRIMARY selection pasted with the middle button now follows the same rules as any other paste.
+- **The model picker keeps model IDs that differ only in case.**
+- **`codewhale web` refuses an unusable `CODEWHALE_WEB_DIST`:** a set value that is not a directory, is a symlink or has no `index.html` stops start-up with the reason. When `codewhale web` attaches to a Codewhale that is already running and serves a different client, it stops and says so instead of opening the other one. (#7237)
+- **With `CODEWHALE_WEB_DIST`, hashed `/static/` build assets carry `Access-Control-Allow-Origin: *`** so the sandboxed plugin host frame can load them, and `/plugin-host.html` is sandboxed by its own Content-Security-Policy (`sandbox allow-scripts`). (#7235, #7236, #7237)
+- **A project config with an invalid `approval_policy`, `sandbox_mode` or `allow_shell` stops the launch** instead of the value being skipped; `--no-project-config` ignores the file.
+- **Windows: `codewhale sandbox run` starts the command suspended inside its Job Object,** so it cannot escape containment before it is assigned. (#6558)
+- **Windows: `codewhale exec` no longer leaves a thread holding stdin** when no piped input arrives within the grace period. (#7474)
+- **`shadow_gate = true` on a chat router,** or an `[auto.router]` table holding only `shadow_gate`, is shown as a failing router instead of being ignored. (#6603)
+- **Browser client:** the saved-session view hides internal turn metadata; the approval card leads with the request and shows Allow and Deny first; "No matching threads" and "Choose a thread" no longer appear over real content.
+- **The installer's `.codewhale-install.sha256` receipt** is no longer reported as an unknown recently changed file.
+- **A plain `codewhale doctor` after `doctor --fix`** notes the recovery folder instead of listing it as needing attention.
+- **Removed the unlabelled left and right arrow hint from the Help footer.**
+- **`codewhale update` and the install inventory agree on Cargo installs:** both use one rule to decide whether a file in `~/.cargo/bin` is Cargo's, and the update-check cache is written with fsync and a unique temporary file.
+
+- **Cheaper workflow progress, visible disk-sync failures, review diffs that stop when cancelled:** workflow progress and event lines no longer force a full disk flush each; the next run snapshot flushes them, a newly created journal still syncs its directory, and a recovery snapshot written after a crash-torn last line is no longer lost. Directory syncs after a new journal, approval log or state file now log a warning on real failures (for example EIO, ENOSPC, or a directory that cannot be opened) and stay silent only when the filesystem cannot sync directories. A cancelled or dropped review now stops its local `git` diff instead of letting it run to completion. Thanks [@NieZhuZhu](https://github.com/NieZhuZhu) for the durability and directory-sync groundwork in #7561. (Refs #7461, #6561)
+- **Ask asks before every command, read-only ones included:** in Ask, a shell command the Engine classes as read-only (such as `ls` or `git status -s`) ran without a card, while its description promises it asks before every edit and command. It now opens the card like any other command, and a code-mode program with no session permission gate refuses shell calls in Ask because it cannot ask. Sub-agents still run their bounded read-only commands without a card, so read-only scouts keep working when no one can answer. Accept Edits, Auto-Review, Full Access and Plan are unchanged.
+- **A slow Codewhale account service no longer holds up the start of a turn or Stop:** a signed-in turn waited up to 10 seconds for the account profile read before it started, and Stop did nothing until that read ended. Each turn still reads the account profile, but waits at most one second for it and never past Stop; a slower read (5 second limit) finishes in the background and the next turn uses it. Until then the turn uses the last profile loaded for that account, or the local constitution with a one-time notice that account preferences are still loading. A signed-out local constitution is read fresh every turn. Why the account service is slow for the Engine in production is still being investigated.
+
+- **Plugin, project and global commands such as `/ship` now run in the Desktop:** a turn sent over the Runtime API as `/name args` is expanded with the same command registry and template the terminal uses, so the model gets the command's instructions instead of the bare text. The command's tool list can only narrow the turn's tools, a plugin command whose plugin is no longer trusted is refused, a retry with the same `operation_key` still replays the turn it already started, the turn's response names the command that ran, and the command catalog marks these commands `runtime_expands` so clients stop showing them as terminal only.
+
+### Removed
+
+- **The shared pet companion (`codewhale pet serve`)** and, in the terminal, sound, replay export, the browser appearance studio, source selection, the pixel, particle, cove, braille and whale-girl views, view cycling and avatar packs; `/pet inspect|status|appearance|style|source|export|sound|avatar|action|view` and the F6 and F8 keys. F5 still opens replies and agents. Files left in `~/.codewhale/pet-shared` are neither read nor deleted. Plugins can still register avatar packs; the terminal no longer draws them.
+- **The `SUPERFAST_ENABLED`, `SUPERFAST_PROVIDER`, `SUPERFAST_BASE_URL`, `SUPERFAST_MODEL` and `SUPERFAST_TIMEOUT_MS` variables** and the gate's separate 150 ms call. Setting any of them logs one warning naming `[auto.router] shadow_gate`. (#6603)
+
+## [0.10.5] - 2026-11-24
+
+Codewhale v0.10.5 simplifies the terminal and runtime, expands DeepSeek Harness 0.2.2 host compatibility (with 13/33 pinned packages passing the full local Engine lifecycle and 15/36 cold-activating in the extension host), serves the shared `codewhale-app` web build from `codewhale web`, adds external ACP agent selection in `/model`, unifies the `codewhale-design` 5.5.0 Obsidian/Porcelain Whale Dark/Light palette and Title Case permission dial across all 15 TUI locales, aligns telemetry disclosures to first-party-only collection, and lands community security and reliability fixes.
+
+### Added
+
+- **Serve the shared web app build from `codewhale web`:** `codewhale web` now serves a built `codewhale-app/apps/web/dist` directory when `CODEWHALE_WEB_DIST` points to a valid directory containing `index.html`, including `/plugin-host.html` (served with its own CSP: `sandbox allow-scripts`, `connect-src 'none'`, `frame-ancestors 'self'`), immutable `/static/*` hashed assets, bounded SPA route fallback, path-traversal/symlink refusal, and preserved auth-bootstrap cookie sessions; uses the embedded web client when unset and refuses to start when the directory is invalid. (#7237)
+- **DSH P1/P2 host shims, client frame allowlist, and seat table lockstep:** added `@deepseek-ai/dsh-agent` and `@deepseek-ai/dsh-app-boot` module singletons plus read-only/owner-scoped `sessionPersistence`, `storageDomain`, `invariants`, and `permissionPresets` services in the extension host (keeping all mutating/escalation paths fail-closed); admitted `@deepseek-ai/dsh-settings`, `@deepseek-ai/dsh-tools`, and `@deepseek-ai/dsh-credentials` in `DSH_FRAME_MODULES`, synced `DSH_SEAT_TABLE` (41 entries) with desktop DSH slot aliases, and listed `npm:`/`git:`/`dsh:` sources in the plugin install error hint (§280).
+- **Expanded DeepSeek Harness 0.2.2 host compatibility:** switched on the brokered `attachments` service, added pure-API exports (`ReasoningEffortId`, `KNOWN_SESSION_EVENT_TYPES`, `deriveEventMessage`, and streaming/message helpers) and plugin-scoped module shims (`@deepseek-ai/dsh-credentials`, `@deepseek-ai/dsh-settings` with read-only host `locale`, `@deepseek-ai/dsh-home-paths` and `@deepseek-ai/dsh-atomic-write` confined to the plugin `dataDir`, `@deepseek-ai/dsh-skill`, and `@deepseek-ai/dsh-typert-protocol`), and added `ctx.tools.guard` (deny-only), `subagents.getProvider('fork')`, command `invocation.agent.session`, `agentPresets`, `agentDefaultModel`, `sessionProjections`, `workspaceRegistry`, `typertGateway`, policy-guarded `web`, and read-only `tools/result` projection.
+- **Engine-brokered plugin web server and DSH client asset/route runtime:** added the sandboxed `plugin_route/dispatch` extension-host RPC, owner-isolated `webServer` / `connection` / `sessionTitle` / `profileContext` adapters (`DSH_WEBSERVER_ADAPTERS`), bounded Runtime API route forwarding (`/v1/apps/plugins/{selector}/route/{*path}` and `/routes/{*path}` returning `404 plugin_route_not_found` or `503 plugin_host_unavailable` instead of `501`), strict `If-Match` revision binding, sanitized/bounded response headers with sandbox CSP, `?cw_rev=` revision fallback, and expanded reviewed DSH static UI assets (`gif`, `ico`, non-manifest `json`).
+- **Persisted per-plugin settings API for DSH plugins:** added `GET` and `PUT /v1/apps/plugins/{selector}/settings` backed by the same `[plugins.<name>.config]` store, 64 KiB/key/depth bounds, and optimistic `expected_revision` checks used by server-side `dsh_settings`, gated to trusted, enabled plugins granted the `settings` host service.
+- **Choose an external ACP agent in the terminal:** `/model` now lists installed external ACP agents (`antigravity`, `opencode`, `copilot`, `dsh`, and others) alongside Codewhale models, showing why non-runnable agents are blocked and what to run, and `codewhale --agent <id>` / `codewhale exec --agent <id>` starts an interactive or headless session through the Engine ACP executor. (CW-8361)
+- **Verified candidate evaluator for experimental search workflows:** `workflows/operate_best_of_n.workflow.js` now supports an optional host-owned `args.evaluator` (`task.verifyCandidate`) that freezes a clean Git baseline, seals candidate diffs, and replays public and held-out gates inside Linux bubblewrap with `proposal_only` receipts. Thanks [@axobase001](https://github.com/axobase001). (#7294)
+- **Bundled TrustedRouter provider and inclusion bar:** added `TrustedRouter` (`trustedrouter`, `TRUSTEDROUTER_API_KEY`) as a bundled OpenAI-compatible provider descriptor and documented the bundled-provider inclusion bar (established operators with reliable APIs and clear community demand; custom OpenAI/Anthropic-compatible endpoints work via `[providers.<name>]`). Thanks [@jperla](https://github.com/jperla). (#7350)
+- **Simplified Chinese Auto-Review documentation:** added `docs/zh_hans/AUTO_REVIEW.md` covering Auto-Review posture, approval flow, and configuration. Thanks [@Goldloli](https://github.com/Goldloli). (#7521)
+- **Runtime API token is cleared from the server environment after startup:** `codewhale serve` reads its runtime token once at startup and removes it from the process environment so child processes do not inherit it.
+- **Sub-agents inherit `[tools]` configuration and `[tools.overrides]`:** child agents now apply the parent configuration's tool overrides and plugin tool directory instead of falling back to defaults.
+
+### Changed
+
+- **Streamlined CLI & TUI first-run onboarding, provider setup, and Settings overlay:**
+  - Auto-detect ambient cloud API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`) when no explicit provider or base URL is configured, promote `Connect a model` into a selectable top Launch Card row when no model is connected, enforce consistent workspace trust on fresh starts, skip the redundant `Ready` screen when a draft is waiting, tighten missing-key CLI errors, document `-p/--prompt` vs `exec`, and surface `login` and `models` in `codewhale --help`.
+  - Upgraded the TUI Provider Picker (`/connect` / `/provider`) with Desktop-parity `Suggested` providers + collapsible `Show all N providers`, immediate type-to-filter in onboarding mode without single-letter shortcut hijacking, a 2-step Key → Model BYOK flow with honest secret-store persistence copy, humanized capability badges, a calmer 6-action `ModelPicker` footer, and runnable-first `RouterSetup` ordering.
+  - Upgraded the TUI Settings overlay (`/config`) with Desktop Wave 10 search parity (per-tab match counts, dimmed zero-match tabs, inline `Esc clear` cue, `Tab`/`Shift+Tab` jump across matching tabs, and structured empty-search reset), `Space` boolean quick-toggle, `Ctrl+R` reset-to-default (respecting managed policy locks), prose-first detail pane without `available: not observed` noise, modified/session/locked-only row badges (removing `SAVED` spam), hidden single-group rail & empty tabs, gated footer previews, folded `Motion` rows into `Appearance`, hid legacy notification sound rows from the UI, replaced `docs/TELEMETRY.md` with `codewhale config telemetry`, fixed duplicate `Enter` action verbs across all 15 shipped locales, and added plain-English labels for all 9 previously blank-label settings.
+  - Synced vendored `codewhale-ratatui` to `1ee06f76` (Design `5.5.0` Obsidian/Porcelain Whale palettes, charter `MINUS`, full `State` set + `StatusMark::detail`, 6 v5.5.0 ADE icons, `Depth::Tonal` / `Panel::tonal()`, Wave 9 `Toast` presets, `Notice`/`Skeleton`/`Count`/`ChecksMark` primitives, docked `CodeBlock` headers, `ToolCard` diff/path formatting, `TurnSummary`, `ArtifactChipRow`, `ApprovalCard` diff preview, `NeedsAttentionPill`, `TaskProgressHeader`, `DiffReviewHeader`, `SettingsRail`, `PickerTabs::counts`, and `SessionGroupHeader`).
+- **Unified `codewhale-design` 5.5.0 Obsidian/Porcelain tokens and Whale Dark/Light palette:** synced vendored `codewhale-design` 5.5.0 and `codewhale-ratatui` (`f268539`/`fdf993c`), retired the upstreamed `posture.rs`, `native_composer.rs`, `motion.rs`, `native_chrome.rs`, and `workbar` adaptations from `UPSTREAM.json`, and unified Whale Dark/Light inks across TUI surfaces.
+- **Aligned TUI permission dial, 15-locale status labels, and truthful diff folds:** standardized Title Case posture labels (`Accept Edits`, `Ask`, `Plan`, `Full Access`) and status strings across all 15 TUI locales, and wired ASCII-safe `turn_fold` summaries for truthful diff folding.
+- **Full Access is selected through `Shift+Tab` instead of the legacy yolo-compat funnel:** removed `Alt+Y`, `Alt+Shift+Y`, and the `/mode yolo|bypass|4` permission shortcut; `/mode yolo` now points to `Shift+Tab` (or `/auto`), and `/zidong` is now an alias for `/auto` (Auto-Review). Launch flags (`--yolo`, `--full-access`, `CODEWHALE_YOLO`, `default_mode = "yolo"`) keep their startup behavior.
+- **Updated `0.10.5` DSH compatibility documentation:** refreshed `docs/DSH_COMPATIBILITY.md` and `docs/DSH_PLUGIN_COMPAT.md` with verified `0.10.5` pinned 33-row Engine lifecycle receipts (13 full local lifecycle, 3 pinned blocked, 17 npm-approval gated, 0 scan-limit failures), 15/36 direct extension-host cold-activate results, and `codewhale web` loopback dist verification (§280).
+- **Cross-process item index cache and owner-only indexing:** cached the item index across processes and skipped non-owner records during indexing. Thanks [@gaord](https://github.com/gaord). (#7446, #7522)
+- **One paste path in the terminal and off-thread clipboard reads:** simplified Ctrl+V handling to a single press/release edge rule and moved clipboard file reads off the UI thread. (#7516)
+- **`/model` splits use-now from saving the default:** pressing `Enter` switches the current session's model immediately while `Shift+D` saves it as the default route. (#7517)
+- **Standalone `/pet` dot whale:** every terminal draws the dot whale directly from its own session activity without depending on the companion source session. (#7514)
+- **Removed confirmed dead-code candidates:** deleted unused TUI, Fleet, and skills items identified in the dead-code sweep. Thanks [@luochen211](https://github.com/luochen211). (#7491, Refs #7270)
+- **Single owned `TaskManager` slot:** routed TUI `TaskManager` consumers through `App`'s single slot ahead of session-switch store adoption. Thanks [@Serendo](https://github.com/Serendo). (#7507)
+- **Website and docs refresh:** updated real desktop screenshots, contributor wall, and `/settings` + slash-command documentation. (#7511)
+- **Test-only Fleet methods gated behind `#[cfg(test)]`:** gated the five remaining test-only `pub` methods in `crates/engine/src/fleet/` (`FleetLedger::{claim_next,record_alert,mark_task_terminal_status_if_unchanged}`, `FleetScheduler::cancel_run`, `FleetExecutor::all_terminal`) under `#[cfg(test)]` so production builds expose no unused Fleet helpers. Thanks [@luochen211](https://github.com/luochen211). (Refs #7270)
+- **The website offers the macOS desktop app:** `codewhale.net/app` now has signed, notarized Desktop 0.10.4 downloads for Apple silicon and Intel Macs, each with its size and SHA-256 checksum, and `/download` goes to that page.
+
+### Fixed
+
+- **Session switch adopts a populated Runtime store:** switching to a conversation whose Runtime store already holds a thread record no longer refuses the switch; the check tests the store being left, not the target, and the host keeps its own store until the switch explicitly releases it. Thanks [@Serendo](https://github.com/Serendo). (#6225, #6418, #7451)
+- **Treat `find -delete` as a destructive action in execution policy:** `execpolicy` now classifies `find ... -delete` as destructive so Auto-Review and Ask postures gate it consistently, alongside Windows CI linker/test ceiling tuning (#7512). Thanks [@WTFitsmemyself](https://github.com/WTFitsmemyself). (#7496)
+- **Telemetry disclosure accuracy, first-party-only PostHog removal, `TOOL_NAMES` parity, `models.dev` gating, and Runtime API toggle:** removed the optional PostHog forwarding sink, tests, docs, legal copy, and locale mentions so usage counts are 100% first-party (`telemetry.codewhale.net` -> Cloudflare Analytics Engine); aligned telemetry descriptions across `README.md` (+ 18 translations), `config.example.toml`, `docs/TELEMETRY.md`, `docs/zh_hans/TELEMETRY.md`, website trust docs, and `/settings` hints with Schema v4 (built-in providers, bundled public-catalog model IDs with custom/local models mapped to `other`, aggregate token totals, and built-in tool counts); synced the 7 missing built-in tools (`context_archive_*`, `terminal_*`) into `telemetry-ingest/src/schema.ts` and `docs/TELEMETRY.md`; disclosed and gated the 24h `models.dev` background catalog refresh behind `[catalog] auto_refresh` plus automatic CI/`DO_NOT_TRACK` suppression; widened `DO_NOT_TRACK` parsing to the Console Do Not Track spec; and made `telemetry` editable through `POST /v1/config`.
+- **Engine, app-server, extension host, fleet, subagent, RLM, config, hooks, MCP, TUI, and VS Code/bridge hardening:** addressed public audit findings across engine core, runtime threads, subagents, app-server lease rollback, extension host, fleet work graph, RLM batch guards, config, skills/plugins/secrets, MCP setup/registry, TUI sessions/pickers/clipboard, bridges, and component hardening. Thanks [@NieZhuZhu](https://github.com/NieZhuZhu) (#7481, #7483, #7484, #7489, #7492, #7493, #7495, #7501, #7532, #7533, #7534, #7535). (#7498, #7499, #7503, #7515)
+- **Security hardening across read-only shell git, automations, remote runtime probes, hooks, grant persistence, and URL/log redaction:** hardened read-only and auto-approved git commands against repository config helper hooks; rejected elevated automation permissions and unattended full-access dispatch; removed bearer tokens from systemd unit command lines and generated runbooks; enforced HTTPS without redirect following on non-loopback webhooks; failed closed on grant persistence errors and surfaced posture-save failures; scrubbed malformed URLs, git remotes, and tool-call logs; and blocked loopback, link-local, metadata, and IPv6-embedded private addresses in remote runtime probes.
+- **ACP Ask-posture enforcement and discovery hardening:** enforced host-side Ask approval gating for external ACP agents and hardened external-agent discovery. (#7504)
+- **Responses cache-miss usage fidelity and conformance fixtures:** kept missing `input_tokens` cache-miss counts unknown (`None`) instead of fabricating zero and added Responses stream usage normalization fixtures. Thanks [@SamhandsomeLee](https://github.com/SamhandsomeLee). (#7527, #7528)
+- **Windows desktop-shell exclusion (`ShellExperienceHost.exe`):** matched `ShellExperienceHost.exe` case-insensitively in the Windows desktop-shell filter. Thanks [@deosiree](https://github.com/deosiree). (#7513, Refs #7474)
+- **Background shell ambient scene and idle CPU:** fixed ambient scene polling when background shells are active. (#7518, Refs #6728)
+- **DSH importer scan cap and named group closures:** raised the npm dependency scanner's per-file limit to 8 MiB (matching `PLUGIN_UI_MAX_BYTES`) so bundled client JS assets in packages like `dsh-pet`, `dsh-univer-office`, and `dsh-genui` pass import review, and included named `group: true` modules such as `dsh-mnemon/bundle` in the reviewed module closure. (CW-8289)
+- **`/effort` and the reasoning-effort picker now accept `low` and `medium` on Ollama Cloud:** removed the picker's duplicate catalog effort parser in favor of `ReasoningEffort::catalog_effort_values_for_offering` and `from_catalog_token`, and aligned Ollama Cloud's picker ladder (`auto`, `off`, `low`, `medium`, `high`, `max`) with the engine. (CW-8360)
+- **`/rlm` now reaches the discoverable `rlm` tool:** `/rlm` no longer tells the model to emit ```` ```repl ```` fences or forbid `rlm` actions, and the canonical `rlm` tool (`open`, `eval`, `configure`, `close`, `session_objects`) is discoverable via `tool_search` while legacy `rlm_*` aliases stay hidden. (CW-8360)
+- **Removed duplicate TUI `login` and `logout` subcommands reachable through `codewhale run`:** `codewhale run logout` no longer clears saved provider API keys and `codewhale run login` is removed; use `codewhale login`, `codewhale logout`, and `codewhale auth ...` instead. (CW-8360)
+- **`codewhale model resolve` agrees with turns:** removed the reviewed-selection admission gate (`admit_reviewed_selection`) so `codewhale model resolve` no longer refuses model IDs that `/model` lists and turns accept; live-catalog refusals (`fetched_at > 0`) and Ollama's placeholder default refusal stay in place. (CW-8360)
+- **User config is now the single source of workspace trust:** removed repository self-trust markers (`.deepseek/trusted` and `.deepseek/trust.json`) from trust checks and project context loading so a repository cannot hide the trust prompt or make `doctor`/`setup` report it as trusted while hooks, MCP, and skills remain off. Workspaces that relied only on those markers will prompt for trust once. (CW-8360)
+- **No false session-save error banner while a prompt is waiting for dispatch admission:** background pending-work checkpoints, late usage snapshots, and mid-dispatch sync checkpoints now wait for native dispatch admission before persisting instead of surfacing a red `Session ... could not be saved (session publication is waiting for native dispatch admission)` error.
+- **Structured failure `cause` on provider request receipts and saved turn outcomes:** failed provider request receipts (`open_failed`, `incomplete`, `review_failed`) and persisted `turn_outcomes` now carry a backwards-compatible structured `cause` object (`code`, `category`, `transmission`, optional `http_status`, `timeout_ms`, and `phase`) alongside the typed error `code` already rendered on TUI error cards. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Closes #7328)
+- **Faster stop settlement and damaged thread record recovery:** cancelling a stalled provider stream now drops the stream immediately and skips post-stream tool finalization, and follow-up turns sent while a stop is settling wait briefly for turn completion instead of failing as busy; damaged `threads/thr_*.json` records are now rebuilt from their intact `events/thr_*.jsonl` log (with strict thread-id and schema-version checks) and repaired atomically on disk instead of disappearing from the session list. (CW-8391)
+- **MCP server and external sandbox backend hardening:** `codewhale serve --mcp` now applies the configured sandbox mode, bubblewrap settings, read deny-list, and external sandbox backend to its tool context and refuses all shell and terminal tool aliases when `tool_launcher` is set; failed external sandbox backend initialization in the engine now fails closed instead of falling back to local execution.
+- **Composer vim mode no longer swallows typing after pressing `v`:** removed the unfinished `VimMode::Visual` state that absorbed all keys until `Esc` with no on-screen indicator or operators.
+- **Lone non-ASCII keys now reach normal key routing on untrusted terminals:** single IME/non-ASCII commits in paste-burst detection keep their Enter-suppression window while falling through to the main key match (vim Normal mode, Esc-Esc backtrack reset, and ordinary insertion) instead of bypassing it.
+- **Launch-card resume always opens confirmation from mouse and keyboard:** unified mouse and keyboard launch-action dispatchers into one `apply_launch_action` path and removed the unreachable direct-resume mouse arm.
+- **Environment overrides and `approval_policy` consistency:** `CODEWHALE_ALLOW_SHELL` (along with `CODEWHALE_YOLO`, `CODEWHALE_SANDBOX_NETWORK_ACCESS`, and `CODEWHALE_PREFER_BWRAP`) now accepts `yes` and `on` in addition to `1` and `true`; an unknown `CODEWHALE_PROVIDER` now warns and skips only provider-scoped overrides instead of dropping every subsequent environment override; `CODEWHALE_MAX_SUBAGENTS` and project/overlay `max_subagents` now take precedence over a file's `[subagents] max_concurrent`; and `approval_policy` now accepts `ask` and `auto-review` in `codewhale config set`, `config.toml` validation, and project-config tightening.
+- **Skills discovery, triggers, and config validation:** `load_skill` companion file lists now include files inside subdirectories (bounded depth/count, skipping hidden files and symlinks), `split_trigger` recognizes localized trigger clauses (such as Russian `Триггеры:` and Chinese `触发条件：`), the names-only skill index tier preserves skill paths whenever budget allows, and unknown keys under `[skills]` are rejected during config parsing instead of silently ignored. (#7432)
+- **Sub-agent terminal status, budget recovery, mailbox fidelity, and default spawn depth:** interrupted and cancelled sub-agents now emit distinct `subagent.interrupted` and `subagent.cancelled` sentinel events instead of plain `subagent.done`; `repair_stopped_tool_calls` now runs in production budget-stop finalization before checkpointing and transcript persistence so unanswered final tool calls record explicit budget-stop tool results; `MailboxMessage::BudgetExhausted` preserves budget-exhausted status across the mailbox and TUI projections instead of collapsing to `Failed`; and `DEFAULT_SPAWN_DEPTH` is now bounded to `3` instead of `u32::MAX` (still configurable via `[subagents] max_depth`). Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Closes #7434)
+- **Avoid holding the MCP pool lock across desktop-browser admission checks:** `McpToolAdapter::execute_rich` now runs `admit_desktop_browser_call` before acquiring the shared MCP pool mutex. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Refs #7461)
+- **Stale pet telemetry and corrupt history lines no longer drop state:** `PetLiveTape` now ignores non-zero out-of-order telemetry sequence regressions without lowering its high-water mark (preserving sequence `0` as an in-place producer restart baseline), and composer history loading skips invalid UTF-8 lines instead of discarding all remaining history entries. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Refs #6557, #6559)
+- **MCP stdio shutdown kills the process group before reaping a timed-out leader:** when a stdio MCP server ignores `SIGTERM` past the shutdown grace period, `process_broker` now signals its `ProcessTree` before reaping the leader child so descendants are terminated while the process group ID is still pinned. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Refs #6558)
+- **Settings schema `allow_shell` matches interactive threads and reports `persisted`:** `/v1/settings/schema` now resolves `allow_shell` using the interactive default (`interactive_allow_shell()` gated by shell-access policy, matching new interactive threads) instead of the headless `false` default, and populates `persisted` for config.toml-owned `RUNTIME_CONFIG_KEYS` rows so Desktop Settings › Trust can distinguish an unset default from an explicit `allow_shell = false`. (CW-8386)
+- **`/config` Pet mode row shows the value you just set:** toggling Pet mode now updates the row at once, and one `Ctrl+R` resets it; the view waits for the queued startup-default save before reading saved settings.
+- **`Space` on a non-boolean `/config` row no longer starts a blank search:** a Settings search can no longer begin with, or consist only of, whitespace.
+- **`/connect` filter no longer matches hidden fields:** typing `open` lists OpenAI, OpenRouter and other providers named that way, not every provider whose base URL or protocol contains the text. A model name still finds the provider that serves it when you type its beginning.
+- **A background job finishing no longer leaves a failed record on the session:** when a background shell job or sub-agent woke an idle session, that turn's usage was filed as a separate "Turn was not accepted" record, so the session showed a red stopped-early line and a Failed state after it was reopened. The usage now stays on the wake turn.
+
+### Security
+
+- Hardened shell execution-policy deny matching across seven bypass classes: `ssh -o ProxyCommand`/`LocalCommand` (including under `-N`), `screen -X`/`-Q` (including with `-r`/`-R`/`-d`), `kubectl exec`/`run`/`debug`, `docker`/`podman` `container`/`compose` groups (`run`/`exec`/`create`, `buildx bake --call`, `--health-cmd`), `parallel --compress-program`/`--decompress-program` and `bwrap --args`, shell `-c` aliases (`oil`, `ysh`, `pdksh`, `loksh`, `rksh`, `ion`, `ngs`) plus `gawk -i`/`-l` and `pwsh -`/piped stdin, and quoted dynamic words in `find`/`docker`/non-inert `--` tails plus separated `nix -c` shell-string payloads. (#7397)
+
+### Contributors
+
+Thanks to [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX), [@axobase001](https://github.com/axobase001), [@deosiree](https://github.com/deosiree), [@gaord](https://github.com/gaord), [@Goldloli](https://github.com/Goldloli), [@jperla](https://github.com/jperla), [@luochen211](https://github.com/luochen211), [@NieZhuZhu](https://github.com/NieZhuZhu), [@SamhandsomeLee](https://github.com/SamhandsomeLee), [@Serendo](https://github.com/Serendo), and [@WTFitsmemyself](https://github.com/WTFitsmemyself) for their contributions to this release.
+
+## [0.10.4] - 2026-11-23
+
+Codewhale v0.10.4 is a hotfix release. Ctrl+V no longer pastes text twice in Windows Terminal, which also doubled API keys pasted into `/provider`; the fix was checked on a real Windows Terminal. `codewhale update` no longer refuses a release binary because an unrelated `cargo install` left a Cargo record beside it. The refusal happens inside the installed 0.10.3, so an install it affects cannot update itself to 0.10.4: rerun the installer once (`curl -fsSL https://codewhale.net/install.sh | sh` on macOS and Linux, or `install.bat` from the 0.10.4 Windows archive), and later updates work. `/provider` now works for projects on a second Windows drive such as D:, Computer Use installs from the Marketplace, and every terminal draws the dot whale in `/pet`. `url` is updated to 2.5.9 for RUSTSEC-2026-0592. DeepSeek Harness compatibility is limited: of 32 published packages tried unmodified, 2 activate in the terminal; [DSH compatibility](docs/DSH_COMPATIBILITY.md) lists each one.
+
+### Added
+
+- Added WorldRouter, an OpenAI-compatible gateway, as a bundled provider (`WORLDROUTER_API_KEY`, base URL `https://inference-api.worldrouter.ai/v1`). Thanks [@Opgeek-1](https://github.com/Opgeek-1). (#7488)
+
+### Changed
+
+- **Minified imports count at DSH import review:** imports written without spaces (`import{x}from"zod"`, `import"pkg"`) are now found when the importer looks for npm dependencies to fetch. A minified package that imported offline before may now ask for npm network approval; without it the plugin would have failed when it loaded. (CW-8369)
+
+### Fixed
+
+- **Computer Use installs from the Marketplace:** in 0.10.3, adding Computer Use from `/plugins` fetched the pinned 0.16.3 archive, passed its checksum, and then stopped with "archive must contain exactly one plugin bundle root … found 2", because the DeepSeek Harness `package.json` that Computer Use ships in `integrations/dsh/` was counted as a second plugin. A Harness `package.json` inside a plugin's folder is now part of that plugin: Computer Use installs as one plugin, disabled and untrusted, with the same skills, commands and MCP server in its review as a directory install of that release, and the nested Harness bundle is neither converted nor enabled. Two plugins side by side in one archive are still refused, and the message now says a Harness `package.json` counts as a plugin.
+- **Ctrl+V pasted text twice on Windows Terminal:** the terminal pastes text itself and also forwards the key release, which read the clipboard a second time. A release with no key press now only attaches a clipboard image, which is the case the terminal cannot deliver, and a held Ctrl+V no longer pastes again on release. Thanks [@diegovskytl](https://github.com/diegovskytl) for the report. (Refs #7485)
+- **`/provider` failed for projects on a second drive on Windows:** on a drive such as D: or E:, where Windows gives your account Modify but not Full control by default, Codewhale could not make the project's `.codewhale\state` folder private, so `/provider` and starting a session showed "The Engine session acknowledgement does not match this UI". Codewhale created that folder and you own it, so it now applies the owner-only permissions without asking Windows for the right to change the folder's owner. A folder owned by another account is still refused, now with a message that names it and says how to fix it.
+- **`codewhale update` refused a release binary in `~/.local/bin`:** any `.crates.toml` beside the `bin` directory, left by an unrelated `cargo install --root`, made the updater treat the binary as Cargo-managed. It now checks that Cargo's record lists this executable, as `codewhale doctor` already did.
+- **The installers accept a directory with an unrelated Cargo record beside it:** `install.sh` from the website and the release archives refused any directory with a `.crates.toml` or `.crates2.json` beside it, so rerunning the installer failed for exactly the installs the `codewhale update` refusal affected. They now refuse only when that record lists `codewhale` or `codew`, or cannot be read, and the message says to use `cargo install` or `cargo uninstall` or a fresh directory.
+- **Every terminal draws the dot whale in `/pet`:** terminals whose session is not the shared pet companion's source no longer show the old whale with `whale needs /pet source · showing cove`. Each draws the dot whale and its activity forms (editing, reading, waiting, done and so on) from its own session. The source still decides what the companion records and plays sound for. (CW-8359)
+- **Resumed reasoning opens a card below tools:** when a gateway continues sending `thinking_delta` chunks after a tool card has already appeared beneath the active thinking card, Codewhale finalizes that earlier card (preserving any unrevealed thinking text and clearing stalled translation placeholders) and opens a fresh thinking card below the tool instead of growing the card above it. Thanks [@SparkofSpike](https://github.com/SparkofSpike). (#7455, Refs #7454)
+- **A model request that gets no response is retried once:** when a provider sends no response headers within `stream.open_timeout_secs` (180 seconds by default), Codewhale sends the request again instead of ending the turn, and the transcript says so (`Retry attempt: stream-open-timeout 1/1; provider sent no response headers in 180s; sending the request again`). If the retry also times out, the turn fails with the same error, which now says a retry was already attempted, as soon as the retry times out rather than up to 30 seconds later while a background connection check waits on the provider's model list. `stream.open_retries` sets the count (default `1`, `0` turns it off, at most `3`). The provider may have processed and billed the first request, so its usage stays recorded as unknown. Agents a session starts follow the configured `[stream]` retry counts too. In the turn log, `bound_secs` for "waiting for the model's first response" is now the timeout that request is under, and the watchdog ceiling is logged separately as `stall_after_secs`. (CW-8323)
+- **Reasoning stays in the thinking card:** when a gateway opens a text block in the middle of a thinking stream and keeps sending thinking deltas, the reasoning no longer spills into the assistant's answer. Each streamed delta now goes to the cell its own kind owns. Thanks [@SparkofSpike](https://github.com/SparkofSpike). (#7452)
+- **A refused Telegram reply no longer stalls the bridge:** when Telegram permanently refuses a reply (the user blocked the bot, a group removed it or took away its right to post, or the chat no longer exists), the Telegram bridge logs it once and moves on to the next message. It used to retry the same update thousands of times a second while every later message, including the owner's, waited behind it. Temporary failures (rate limits, Telegram server or network errors, the Runtime being down) still deliver the same update again, now after Telegram's `retry_after` or 3 seconds instead of immediately. Thanks [@thejesh23](https://github.com/thejesh23). (#7479)
+- **Long WeCom replies keep their code blocks:** when a reply is split to fit WeCom's byte limit, which happens to almost every long Chinese reply, each part now ends at a line break and closes and reopens any code block it cuts, so the rest of the message no longer renders as code. Bridges that split only by characters (Telegram, Feishu, Weixin, DingTalk) send the same messages as before. Thanks [@thejesh23](https://github.com/thejesh23). (#7480)
+- **Clearer import errors, notification sounds that recover, sturdier telemetry files:** `/import-claude` now says where a Claude settings file stops being valid JSON (line and column) instead of only "invalid JSON". A notification sound player that hangs is stopped after 15 seconds, so later notifications play again. The local telemetry buffer is written to disk before it replaces the old file, so a crash or power loss cannot leave it empty or half-written, and an oversized telemetry ID or state file is ignored instead of read whole. The telemetry service now rate-limits each endpoint as a whole, so changing install IDs cannot get around the limit. Thanks [@NieZhuZhu](https://github.com/NieZhuZhu). (#7482, Refs #7476)
+- **Narrow terminals keep the working clock:** at 80 and 60 columns the status row under the composer keeps `working 3s` / `using tool 12s` while a turn runs. The `Shift+Tab to change` hint, then `Esc to interrupt`, stand down first, and a connector notice shortens (`MCP · 1 failed · /mcp`) instead of taking the clock's place. (CW-8264)
+- **The Underwater ocean moves while the model works, not while you type:** sea life keeps swimming through a running turn even when the terminal window is not focused, and about six seconds after the session goes idle it holds still, so typing a draft no longer nudges it along and an idle session stops redrawing for it. Reduce motion and Hold still keep the ocean still as before. (CW-8264)
+- The Resume confirmation no longer draws its border over the composer on a 60x20 terminal, and the Plugins panel footer always keeps `Esc close`, dropping the per-row hints first at 80 columns.
+- **The website no longer calls shipped 0.10.3 features unreleased:** Automatic updates, Installation cleanup, Receipt-owned uninstall and the other features 0.10.3 shipped now show `v0.10.3` (or the release that first shipped them) instead of "In source, not yet released", and the install guide shows `codewhale uninstall` for 0.10.3. Suggested tasks (Desktop only) and the merch interest list stay marked unreleased. The release checklist now has a step to stamp the feature registry, and `prepare-release.sh` lists rows still unstamped.
+- **One more DeepSeek Harness plugin activates, and failed ones say what they are missing:** a plugin that reads `settings.describe()` while it loads, outside a tool call, now gets the refusal at once and can fall back, instead of an unhandled rejection that unloaded it. `@michengai/dsh-code-review` 1.0.9 now activates in the extension host with its `dsh_code_review` tool and its `/review-status` and `/review-cancel` commands; its `/review` command is listed as `/plugin-dsh-code-review-review` because Codewhale has a built-in `/review`, and its text is Chinese because Codewhale exposes no host language setting. Against a scripted local model its tool ran end to end in a terminal turn and returned its report; review quality with a real model has not been tested. Plugins that still cannot activate now name the real cause: the services a waiting plugin lacks (only those, with a reason for `webServer`, `connection` and `agentPresets`), the import error behind a composition row that failed, and the services a composition row requires. (CW-8369)
+- **npm approval for imported DSH plugins says how to give it:** the message now names the command for the terminal UI and the `[network]` `allow` entry in `config.toml` for the command line, the import review lists every npm package it fetched (`name@version`, sha512-verified, install scripts not run), and `CONVERSION.md` no longer says no network request ran when one did. (CW-8369)
+- **The 0.10.3 notes overstated DeepSeek Harness compatibility:** of 32 published DSH packages tried unmodified, 2 activate in the terminal with the default network policy and the rest fail at activation or stop at import review. [DSH compatibility](docs/DSH_COMPATIBILITY.md) lists each package, what it is missing and where it belongs. (CW-8369)
+- **Ctrl+V on Windows no longer attaches an image behind onboarding, the redaction gate or a focused panel:** the release-only Ctrl+V that Windows Terminal, conhost and the VS Code terminal forward now attaches a clipboard image only when the composer owns the keyboard. Before, a screenshot on the clipboard could be attached to a composer hidden behind the welcome, language or trust screens, the redaction gate or a focused work panel, and sent with the first prompt.
+- **Typing `∫` or `√` no longer switches voice on:** these characters were taken as a voice hotkey, so the character never appeared, voice turned on and the status line said `Recording` while nothing was recorded. They now type as text. `Alt+V` (and `⌥V` on macOS) keeps opening tool details, which already took that chord; start voice input with `/voice` or the hotbar voice button.
+- **The OrcaRouter top-up offer ends with its campaign:** the `/provider` and `/model` pickers no longer recommend the Codewhale × OrcaRouter offer, and F7 no longer opens it, after the campaign ended at 2026-11-21 12:29:57 UTC, the same moment the website stopped showing it. The README promo is removed and the providers guide says the offer has ended.
+- **The README describes the permission dial that shipped in 0.10.3:** it said `Tab` switched between Plan, Work and Operate and that Ask, the default, applied edits without asking, with the dial described as "coming in 0.10.3". It now describes the `Shift+Tab` dial, Accept Edits as the default, Ask asking before every edit and command, and links the current modes guide; the Simplified Chinese README matches.
+- **The roadmap lists only unreleased milestones:** the website's `/contribute` milestones and `docs/ROADMAP.md` no longer show released versions (0.10.3 was still marked in progress) and show 0.10.5, the release that simplifies the whole product, as the one in progress. The release checklist now has a step to drop the shipped release from both lists before tagging.
+
+### Security
+
+- Updated `url` to 2.5.9 for RUSTSEC-2026-0592: a deeply nested `blob:` URL could overflow the stack in `Url::origin()` and end the process. Codewhale computes origins for redirect targets, OAuth endpoints and MCP servers.
+
+### Contributors
+
+- **[@thejesh23](https://github.com/thejesh23)** — first contribution: stopped one permanently refused Telegram reply from wedging the bridge's poll loop, with a mock Bot API repro that counted 27,520 redeliveries in 15 seconds ([#7479](https://github.com/codewhale-hq/Codewhale/pull/7479)), and kept code fences balanced when the bridges split a long reply by UTF-8 bytes for WeCom ([#7480](https://github.com/codewhale-hq/Codewhale/pull/7480)).
+- **[@NieZhuZhu](https://github.com/NieZhuZhu)** — fixed eight audit findings: JSON error detail in `/import-claude`, a timeout on hung notification sound players, durable and size-bounded telemetry files, server-keyed telemetry ingest rate limiting, and release-doc gates that fail closed without the published tag ([#7482](https://github.com/codewhale-hq/Codewhale/pull/7482), [issue 7476](https://github.com/codewhale-hq/Codewhale/issues/7476)).
+- **[Sh1Zuku / @SparkofSpike](https://github.com/SparkofSpike)** — kept streamed reasoning in the thinking card when a gateway opens a text block mid-stream ([#7452](https://github.com/codewhale-hq/Codewhale/pull/7452)) and opened a fresh thinking card below tools when reasoning resumes ([#7455](https://github.com/codewhale-hq/Codewhale/pull/7455)).
+- **[@Opgeek-1](https://github.com/Opgeek-1)** — first contribution: added WorldRouter as a bundled OpenAI-compatible provider descriptor with its docs, pricing coverage and model-resolution rows ([#7488](https://github.com/codewhale-hq/Codewhale/pull/7488)).
+- **[@diegovskytl](https://github.com/diegovskytl)** — reported Ctrl+V pasting text twice in Windows Terminal ([#7485](https://github.com/codewhale-hq/Codewhale/issues/7485)).
+
+## [0.10.3] - 2026-11-21
 
 Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features] plugin_creator`) and unmodified DeepSeek Harness (`@deepseek-ai/dsh-*`) plugin compatibility, an upgraded Auto-Review guardian with workspace boundaries, soft rules, sub-agent return review, and one-use retry approvals, and a single `Shift+Tab` permission dial defaulting to Accept Edits (`Ask → Accept Edits → Plan → Auto-Review → Full Access`). It moves the ACP server and external-agent sessions (including Qwen Code and GitHub Copilot CLI) onto the official Agent Client Protocol SDK, publishes native signed HarmonyOS ARM64 release assets, adds a verified signed model-and-provider registry channel alongside unified model-ID resolution and managed `/v1/models` pricing, updates design tokens to `5.4.0` with a docked single-line approval strip, folded turn activity, live working-row light sweeps and 13 hex-lattice dot-whale forms, adds `claude-org` billing auth, `show_data` transcript charts, `codewhale sessions migrate`, DeepSeek Chatbot web search and speech tools, receipted self-updates and `codewhale uninstall`, and lands reliability, CJK/Unicode, Windows, and sandbox security fixes.
 
 ### Added
+
+- Added LLMTR as an OpenAI-compatible provider with live model discovery.
+- External-agent sessions can discover 25 installed agent CLIs. Set `CODEWHALE_CUSTOM_ACP_AGENTS` to include your own ACP-compatible command in the same picker. (CW-7942)
 
 - **Read-only deferred tools:** Auto-Review recognizes local inspection tools and task or automation reads without prompting for routine lookups. Thanks [@NieZhuZhu](https://github.com/NieZhuZhu). (#7431)
 - **A quieter terminal launch:** a compact Desktop-inspired whale shares the composer accent. Recent sessions open on demand, and MCP sign-in details stay in the connection manager. (CW-8318)
@@ -20,7 +225,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 - **Exact route inventory:** model lists separate metadata, observed roster evidence and readiness; optional session selections reject changed account or endpoint bindings, and the terminal shows the catalog status from that same route inventory, including on bundled fallback rows. A new Runtime thread can commit an exact selection before it becomes visible. Empty discovery no longer masquerades as a failed refresh. (CW-8311)
 
 - **DSH reviewed client module map:** CommonJS client activation uses the installer’s admitted import edges for relative modules, JSON, cycles and contained package exports. Undeclared requests fail closed, and prior compatibility receipts require review again. Installed Engine/App qualification remains pending (CW-8288, CW-8014, CW-8019).
-- An explicitly scoped child can request a read from an operator-declared static HTTP connector with a matching account binding, schema and approved arguments.
+- An explicitly scoped child can request a read from an operator-declared static HTTP connector with a matching account binding, schema and approved arguments. Connector refreshes preserve the child’s authorized tool catalog.
 - **SearchApi web search provider:** `web_search` now supports SearchApi (`[search] provider = "searchapi"`, `SEARCHAPI_API_KEY` or `[search] api_key`) for Google organic results with `hl`, `gl`, and `time_period` filtering. Thanks [@gabsferreira](https://github.com/gabsferreira) (#7410).
 - **Crisper 980-dot whale and activity forms in `/pet`:** the terminal pet's 980 dots now compile from perimeter-anchored hexagonal-lattice silhouettes with rorqual throat illumination at rest and cleaner edges across all thirteen running, waiting and done forms, while keeping zero motion under Hold still and Reduce motion. (CW-6453)
 - **Terminal and website design tokens updated to 5.4.0:** vendored `codewhale-design` `5.4.0` and `codewhale-ratatui` `5.4.0` roles (`Subagent` and `LivePeak`), exported the updated `5.4.0` CSS custom properties to the website (`web/app/tokens.css`), fixed `adapt_fg_for_depth` ANSI-16 appearance awareness (bright 9–14 on dark, dark 1–6 on light) so warnings and status lines stay legible on light 16-color terminals, and preserved green/red hues (`22`/`52` dark, `158`/`224` light) on 256-color diff line backgrounds. (CW-8264)
@@ -279,7 +484,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 - **MCP catalogs stay fresh:** a server's tools, resources, prompts and skills are rediscovered on their own connection when an advertised `ttlMs` expires or the server sends a list-changed notice. A tool resolved against the old catalog is refused with "retry the call", a removed tool cannot run, and a failed refresh reconnects instead of serving stale entries. Catalogs are never shared across servers, credentials or reconnects.
 - **MCP Skills extension:** servers that advertise the published Skills extension have their skills listed in `list_mcp_resources`. Listing never activates a skill, and reading a skill file is refused unless its size and sha256 digest match the listing. MCP skills do not yet join `/skills`.
 - **Updates install themselves:** release-binary installs check for a new release every 6 hours (was 1), download and checksum-verify it in the background, and apply it the next time `codewhale` starts, never during a session. One line says `Updated to v… · What's new: … · Undo: codewhale update --rollback`. Until releases are signed, the download waits for your OK (one `[y/N]` question at the next start, or `/update install`); a release with a valid Ed25519 manifest signature applies on its own. `codewhale update --rollback` puts back the version the last update replaced and keeps the rolled-back version from returning automatically. Turn it down with `codewhale config set update.mode notify` (or `off`, or `CODEWHALE_UPDATE_MODE`); an organization's root-owned `policy.toml` overrides both. Offline and rate-limited checks retry about an hour later instead of on every launch. Package-manager and desktop-app copies only get their manager's command. Builds with the release key refuse a missing or invalid signature, and re-check the staged binary against the signed manifest at start. The checksum manifest now always comes from GitHub Releases; on Linux x64 the CNB mirror can still serve the binary, but only bytes that GitHub's manifest lists.
-- **One view of every Codewhale on the machine:** `codewhale doctor` has an Installations section and `codewhale doctor --installs` (`--json`, `--brief`) lists every `codewhale`, `codew`, `codewhale-tui`, `deepseek` and `deepseek-tui` with its owner: install receipt, package manager (with its exact removal command), the desktop app, a backup, or not ours. Nothing found is ever run. `codewhale doctor --fix` adds one plan to tidy them: old backups move to `~/.codewhale/recovery/<stamp>/` (kept 30 days, then deleted by a later `--fix`), an unreceipted `codew` is brought in line with `codewhale`, and the directory gets an install receipt; each move prints its undo and `codewhale doctor --restore <stamp>` reverses the lot. Package-managed, desktop-app, symlinked and foreign files are never touched, and neither is user data. `codewhale uninstall` now lists other copies with the same classification.
+- **One view of every Codewhale on the machine:** `codewhale doctor` has an Installations section and `codewhale doctor --installs` (`--json`, `--brief`) lists every `codewhale`, `codew`, `codewhale-tui`, `deepseek` and `deepseek-tui` with its owner: install receipt, package manager (with its exact removal command), the desktop app, a backup, or not ours. Nothing found is ever run. `codewhale doctor --fix` adds one plan to tidy them: old backups move to `~/.codewhale/recovery/<stamp>/` (kept 30 days, then deleted by a later `--fix`), an unreceipted `codew` is brought in line with `codewhale`, and the directory gets an install receipt; each move prints its undo and `codewhale doctor --restore <stamp>` reverses the lot. Package-managed, desktop-app, symlinked and foreign files are never touched, and neither is user data. `codewhale uninstall` now lists other copies with the same classification. Restoring an older command set now keeps its ownership receipt consistent and preserves the displaced receipt for undo. A partial restore retains ownership of unchanged commands.
 - **Uninstall guidance on every install route:** `codewhale uninstall` previews receipt-owned release files and `--yes` removes only checked files, with the running command last. Both Unix installers and the Windows archive installer record command ownership; self-update renews existing receipts on both. On Windows the running `codewhale.exe` is renamed, then a hidden PowerShell process deletes it after the command exits. Package-managed copies are left alone, and the command prints their exact removal command: npm with its prefix, Cargo with its root, the Homebrew formula, `scoop uninstall codewhale`, `winget uninstall --id HunterBown.CodeWhale`, or the Windows setup's `Uninstall.exe`. Every other `codewhale`/`codew` still on PATH is listed. User data is kept unless you add `--purge-data`. With `--yes` it runs only after a receipted installation was removed in that same run, and then deletes only `~/.codewhale` (or a `CODEWHALE_HOME` named `.codewhale`) and `~/.deepseek/snapshots`, refusing symlinks, home ancestors and directories owned by another user. A copy from an older `curl | sh` installer that wrote no receipt is adopted on `--yes` when it sits in a known older curl-installer directory: the commands byte-identical to the running program get a receipt and are removed, anything else is preserved, and a symlink or hard link among them stops adoption before any receipt is written. (Refs #7091)
 - **GitHub Action reviews:** analysis can export a structured Engine review for a separate trusted publisher job. The publisher checks the current PR revision and line anchors, deduplicates its findings, and keeps uncertain or preexisting claims out of inline comments.
 - **DingTalk bridge:** an optional internal-app Stream adapter reuses the same Engine, shared admission and approval helpers. Tenant/staff allowlists, durable acceptance before acknowledgement and retained uncertain deliveries protect recovery. Managed account linking is separate from this advanced self-hosted bridge.
@@ -346,7 +551,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
   picking a terminal view brings the whale back. Reduced motion keeps the still
   whale. Not yet published to codewhale.net.
 
-- **Website and docs:** installation now leads to a version check and a verifiable first task, article search finds text and commands with section links, and GitHub star links show the fetched count. The hero reuses the generated drone whale, and control/tool references distinguish the unpublished source candidate from v0.10.2; the homepage leads with the live project and a new headline, a public roadmap and contributing guide put issues first for features, the shared project sections are translated into all 18 site locales, task guides no longer carry the retired mode instructions, and the missing-reply guide diagnoses a failing provider call without assuming the key is missing. These website changes still await deployment.
+- **Website and docs:** installation now leads to a version check and a verifiable first task, article search finds text and commands with section links, and GitHub star links show the fetched count. The hero reuses the generated drone whale, and control/tool references identify v0.10.2 as the latest published release; the homepage leads with the live project and a new headline, a public roadmap and contributing guide put issues first for features, the shared project sections are translated into all 18 site locales, task guides no longer carry the retired mode instructions, and the missing-reply guide diagnoses a failing provider call without assuming the key is missing. These website changes still await deployment.
 
 - **Chinese docs:** a short setup page for people new to Codewhale ([zh_hans/PROVIDER_QUICKSTART.md](docs/zh_hans/PROVIDER_QUICKSTART.md)) walks through choosing a provider, setting an API key on macOS, Linux or Windows, picking a model and reading `codewhale doctor --probe-api` when the first call fails; the Receipts, Claude plugin compatibility and GitHub review bot pages are now translated into Simplified Chinese and linked from the Chinese index ([#7266](https://github.com/codewhale-hq/Codewhale/pull/7266), [#7264](https://github.com/codewhale-hq/Codewhale/pull/7264), [#7263](https://github.com/codewhale-hq/Codewhale/pull/7263), [#7265](https://github.com/codewhale-hq/Codewhale/pull/7265)). Thanks [@luochen211](https://github.com/luochen211).
 
@@ -621,7 +826,14 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Fixed
 
+- Stopping an external agent while it waits for approval now records the turn as interrupted even when the agent replies that it finished. (CW-7965)
+- Provider errors in the terminal history now show whether a request was never sent, was rejected, or ended with an unknown outcome. The same detail is available after reopening the session.
+
+- Large session usage ledgers keep settled and unresolved usage and discard only the oldest routing diagnostics needed to stay within the storage limit. Thanks [@donglovejava](https://github.com/donglovejava) ([#7449](https://github.com/codewhale-hq/CodeWhale/pull/7449)).
+
 - **Shell policy:** statically available AWK and sed programs are scanned for shell commands. AWK analysis that exceeds its scan budget is treated as unresolved. (CW-8300)
+- **Bounded terminal-multiplexer policy parsing:** tmux arguments and prompt templates are checked within a finite allowance. Expansion that runs out of allowance is reported as unresolved. (CW-8302)
+- **Shell groups preserve command-owned input:** policy evaluation keeps each command's explicit stdin source when a redirection supplies default input to its enclosing group. (CW-8303)
 - **Sub-agent budget-stop receipts show clipped output:** the receipt gives the character count and points to the retained child transcript. It also keeps the workspace preservation receipt visible when the partial output is long. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX) for [issue 7434](https://github.com/codewhale-hq/Codewhale/issues/7434). (CW-8317)
 - **TUI command input:** while the terminal’s raw-paste fallback detects a possible paste, Enter inserts a newline before slash completion can change the draft. This also applies to fast typing that matches the paste cadence. After the brief paste window passes, Enter can submit the command. (CW-8301)
 - **Permission controls during an approval:** Shift+Tab and Full Access in the approval’s additional choices open permission settings while leaving the current approval pending. (CW-8320)
@@ -659,6 +871,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 - **DSH plugin clients at the package root can use relative requires:** a `client.js` entry at the package root could not `require("./helper")` — the served module loader resolved it against a bogus directory and threw "the plugin client requires a file outside its reviewed closure". Root-level entries now resolve `./x` against the package root. (CW-8288)
 - **Slow-injected pastes keep their line breaks on Windows Terminal:** pasting a multi-line draft on Windows Terminal (which delivers console input records at its own pace) could drop newlines and concatenate the paste into one line — or worse, submit the half-written draft mid-paste when input processing lagged behind the key queue. The composer Enter gate and the paste-burst tick now judge the paste stream on each key event's own arrival timestamp instead of a fresh `Instant::now()`, so a stream delayed in the queue is never read as stale, and on Windows the detector also treats ≥3 plain characters arriving within a 60 ms stream window as a live paste — a deliberate Enter inside a fast typing burst there can still be absorbed as a newline (press Enter again to send); elsewhere the bound stays at the 8 ms burst interval, so a deliberate Enter after typing or an IME sequence still submits normally.
 - Sub-agents can use the MCP tools their parent session has connected. A sub-agent started while the parent or a sibling was mid-way through an MCP call used to get none of them; a call to an MCP tool a sub-agent cannot reach now names the server and why.
+- **Shell policy:** option and subcommand names that depend on shell expansion are treated as unresolved. A known option with a directly double-quoted scalar variable as its value remains supported. (CW-8297)
 - **Command policy no longer stalls on repeated `--`:** each `--` made the deny check re-expand every later suffix again, so `npm` followed by 24 `--` took about 14 seconds and 50 never finished. A suffix already checked at the same or a shallower depth is now skipped; a suffix list that grows past the deny cap is reported as unresolved so the command falls back to the reviewer instead of passing silently.
 - **`grep_files` stays compact on huge single-line files:** a match inside a very long line (JSONL fixtures, minified JavaScript, lockfiles) now returns an 800-byte window around the match, and context lines their first 800 bytes, each marked with how many bytes were left out, instead of the whole line; results stay valid JSON well under the spillover threshold. When a large tool result is one or a few long lines, its recovery footer now suggests `retrieve_tool_result` `mode="summary"`, `mode="json"` with a `jsonpath`, or `mode="query"` instead of a `lines="120-160"` range that does not exist.
 - **`read` on a directory says so:** reading a directory now fails with "path is a directory; use file_search or list_dir to see its files" instead of "must be one regular, non-hard-linked file".
@@ -1289,6 +1502,9 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Maintenance
 
+- Native release bundles, the Windows installer, npm packages and published crates include the Codewhale license and both third-party notice documents.
+- The Simplified Chinese telemetry guide now explains which files each process keeps, how much disk space they use and when old files are removed. (CW-7987)
+
 - **Windows release harness:** the terminal-clipboard check strips Windows PowerShell's UTF-8 BOM before parsing cleanup receipts and still runs the bounded private-path cleanup fallback after its controller has exited; the vendored terminal kit lock follows Protocol 0.10.3.
 - **Windows release import floor:** the 10 ARM64 import pairs that the native export probe resolved on Windows 11 ARM64 are qualified, and 12 x64 pairs are recorded as documented API contracts until a native x64 export probe exists. The Windows 10 build 14393 floor, the guard and the x86 profile are unchanged; the next frozen candidate's import job is the real check.
 - MCP regression fixtures retain private extension-host roots and wait for their own workers to finish, preventing parallel checks from borrowing a deleted fixture home. Production connection and credential policy is unchanged.
@@ -1325,9 +1541,12 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Contributors
 
+- **[@knowhycodata](https://github.com/knowhycodata)** — added the LLMTR gateway descriptor and provider documentation ([#7450](https://github.com/codewhale-hq/Codewhale/pull/7450)).
+
 - **[@swf1996120](https://github.com/swf1996120)** — reported that the PR review prompt discouraged checking callers with the available source tools ([issue 7435](https://github.com/codewhale-hq/Codewhale/issues/7435)).
+- **[@NieZhuZhu](https://github.com/NieZhuZhu)** — hardened shell-command policy expansion: classified local read-only deferred tools as safe for Auto-Review ([#7431](https://github.com/codewhale-hq/CodeWhale/pull/7431)), scanned bounded AWK and sed programs for embedded shell commands ([#7430](https://github.com/codewhale-hq/CodeWhale/pull/7430)), kept each command's stdin source under group redirection and `numactl --strict` ([#7429](https://github.com/codewhale-hq/CodeWhale/pull/7429)), failed closed on dynamically resolved flag and verb names ([#7427](https://github.com/codewhale-hq/CodeWhale/pull/7427)), modeled additional tmux execution verbs within a shared work budget ([#7428](https://github.com/codewhale-hq/CodeWhale/pull/7428)), modeled the `oc`, `vagrant`, `op`, `opam` and `helm` launchers ([#7425](https://github.com/codewhale-hq/CodeWhale/pull/7425)), and propagated the dynamic flag-word bit through `nix` and launcher flags ([#7424](https://github.com/codewhale-hq/CodeWhale/pull/7424)).
 - **[@BX166](https://github.com/BX166)** — clarified the AICraft provider setup for mainland China and international users ([#7421](https://github.com/codewhale-hq/CodeWhale/pull/7421)).
-- **[@donglovejava](https://github.com/donglovejava)** — covered large raw and bracketed terminal paste and fixed fallback tool-call IDs in streaming chat completions ([#7422](https://github.com/codewhale-hq/CodeWhale/pull/7422), [#7423](https://github.com/codewhale-hq/CodeWhale/pull/7423)).
+- **[@donglovejava](https://github.com/donglovejava)** — covered large raw and bracketed terminal paste, individual chunk flushes, and the Enter-key append path, fixed fallback tool-call IDs in streaming chat completions, and preserved usage records when compacting diagnostic receipts ([#7422](https://github.com/codewhale-hq/CodeWhale/pull/7422), [#7423](https://github.com/codewhale-hq/CodeWhale/pull/7423), [#7444](https://github.com/codewhale-hq/CodeWhale/pull/7444), [#7449](https://github.com/codewhale-hq/CodeWhale/pull/7449)).
 - **[@gabsferreira](https://github.com/gabsferreira)** added the SearchApi web search provider ([#7410](https://github.com/codewhale-hq/Codewhale/pull/7410)).
 - **[@cmdcorp6534](https://github.com/cmdcorp6534)** — reported the Chinese input-method candidate window appearing away from the field being typed into ([#2323](https://github.com/codewhale-hq/Codewhale/issues/2323)).
 - **[@Asteria1028](https://github.com/Asteria1028)** — reported pasted clipboard images piling up with no way to remove them ([#7221](https://github.com/codewhale-hq/Codewhale/issues/7221)).
@@ -1359,8 +1578,9 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 - **[@SamhandsomeLee](https://github.com/SamhandsomeLee)** — drove Responses request, URL and stream behavior from one checked dialect profile table ([#7261](https://github.com/codewhale-hq/Codewhale/pull/7261)).
 - **[@Gyuke](https://github.com/Gyuke)** — kept the exact named custom route in the web client's new-thread provider picker so models load and threads start on the route chosen ([#7352](https://github.com/codewhale-hq/Codewhale/pull/7352)).
 - **[@vshulcz](https://github.com/vshulcz)** — documented a hybrid Claude bundle that installs declaratively with `/plugin install` and keeps its lifecycle hooks in `config.toml` ([#7346](https://github.com/codewhale-hq/Codewhale/pull/7346)).
-- **[@deosiree](https://github.com/deosiree)** — bounded the terminal's wait for the session snapshot at turn end so a newly started turn no longer freezes the UI ([#7360](https://github.com/codewhale-hq/Codewhale/pull/7360)).
+- **[@deosiree](https://github.com/deosiree)** — bounded the terminal's wait for the session snapshot at turn end so a newly started turn no longer freezes the UI, and exposed request transmission in terminal provider errors ([#7360](https://github.com/codewhale-hq/Codewhale/pull/7360), [#7448](https://github.com/codewhale-hq/CodeWhale/pull/7448)).
 - **[@ruanchaves](https://github.com/ruanchaves)** — kept MCP tools whose optional parameters carry a Pydantic `default: null` in Moonshot (Kimi) requests instead of dropping them ([#7364](https://github.com/codewhale-hq/Codewhale/pull/7364)).
+- **[@b84330808](https://github.com/b84330808)** — reported that secret redaction runs on every model request and is slow on ordinary text, with a benchmark that led to the faster redaction pre-scan ([#7347](https://github.com/codewhale-hq/Codewhale/issues/7347)).
 
 ## [0.10.2] - 2026-10-22
 
@@ -8963,604 +9183,6 @@ could end productive work without a final assistant response.
   background incremental MCP Registry refresh.
 - [SKY ZHAO](https://github.com/skyzhao1223) (`@skyzhao1223`) contributed
   prompt-based `model = "auto"` routing in PR #5257.
-
-## [0.9.4] - 2026-08-07
-Codewhale v0.9.4 ships the release-train harness work: the familiar Fleet
-roster/setup face with a clear operator-leader and user/folder scope, a
-work strip that keeps actionable agents instead of a permanent archive,
-waiting policy that forbids polling without freezing independent work,
-calmer tool output and session recovery, account/Workflow-search/
-automation/handoff surfaces, a shorter translation-ready website, and
-release-blocker fixes across permissions, DeepSeek Responses, SQLite,
-File edits, terminal width, and Windows installation.
-
-### Added
-
-- Memory maintenance: `remember` gains `revise` and `retire` beside the
-  default `append`. Both name the exact note they target and both require
-  the evidence for the change. Append-only memory decays — a correction
-  sits behind the note it contradicts and both keep reaching the model —
-  so the model can now keep its own durable notes true instead of only
-  adding to them.
-- An audit trail for durable state the model writes about you. Every
-  in-place memory edit is journalled to `memory/JOURNAL.md`, and every
-  continual-harness `refine` / `remove` to a `JOURNAL.md` beside its state,
-  each with before, after, and evidence. Harness removal previously left no
-  record at all even though the entry leaves state entirely, so the journal
-  is now the only place its content survives.
-- A first-run tip that says so: the first time Codewhale saves something
-  durable it points at `/memory`, translated into all fifteen complete
-  locale packs. This state shaped later sessions and nothing ever mentioned
-  it existed.
-
-- Sub-agent checkpoint resume: `agents/followup` resumes an
-  `interrupted_continuable` child from its checkpoint into a fresh agent loop —
-  new agent id, original prompt plus the prior conversation tail — when a
-  runtime is attached, and otherwise keeps queue-only semantics with the
-  `continuation_handle` returned; a second followup on the same interrupted id
-  returns the existing resumed target instead of spawning a duplicate (PR #5242).
-- MCP Registry discovery with Registry-first tool selection: `registry_sync`
-  surfaces the eligible local stdio catalog as a complete model-side candidate
-  set, connect-failure messages classify early-exit and usage-help output and
-  point recovery at the next Registry candidate, and a bundled `mcp-discovery`
-  skill documents the flow (PR #5238).
-- Progressive fresh-context disclosure: fresh sessions ship a minimal
-  constitutional kernel — ground truth, user intent and scope, truthful
-  completion, guarantees in mechanism, and precedence — with procedural
-  playbooks disclosed on demand, an opt-in project context pack
-  (`project_context_pack_enabled`) counted in context reports, and `load_skill`
-  catalogue discovery via `name="list"`; the measured fresh-context budget
-  drops by roughly 40% (PR #5077).
-- Named Fleet store v2: one self-contained TOML Fleet per configuration
-  (`schema = "fleet"`), with scope-explicit selection (user-global default vs
-  folder override), migration receipts from legacy role profiles, and atomic
-  saves that refuse to clobber a different Fleet on the same slug.
-- Scout replaces the user-facing "faster" control: catalog-verified fast
-  siblings only, never a guessed model name; pinned Scout survives operator
-  changes.
-- Truthful model-picker rows: vision/tools/limits chips only when the catalog
-  knows, with provider → family → exact model grouping.
-
-- **Opt-in product telemetry, off by default.** A first-run notice asks once, on
-  a terminal, with declining pre-selected — Enter declines. Nothing is collected
-  unless both `telemetry = true` and a recorded "Enable" answer are present, so
-  a `telemetry = true` written before this release stays inert: the key has been
-  settable and inert for a long time, and setting it was never consent.
-
-  An enabled session sends its batches to the first-party ingest endpoint,
-  `https://telemetry.codewhale.net/v1/telemetry`, which is the shipped default
-  for `telemetry_endpoint`. That is a Cloudflare Worker whose complete source is
-  in this repository under `telemetry-ingest/`; it writes to Workers Analytics
-  Engine, whose row is exactly `_sample_interval`, `blob1`–`blob20`, `dataset`,
-  `double1`–`double20`, `index1`, and `timestamp` — **there is no IP, country,
-  or geo column**, so storing one is structurally impossible rather than merely
-  disabled. The handler reads two request headers, never touches the request's
-  geo properties, logs nothing, and validates against a closed field set that
-  rejects an entire batch carrying any unpublished key. Cloudflare's retention
-  for that data is a fixed three months. Setting `telemetry_endpoint = ""`
-  instead writes each batch to `$CODEWHALE_HOME/telemetry/dryrun.jsonl` and
-  constructs no HTTP client at all, so you can read exactly what would have been
-  sent.
-
-  Turning it off is an answer, not a flag: it deletes the random install id,
-  truncates every buffered event, and leaves a permanent tombstone that a
-  session already running re-checks before it appends and before it sends. A
-  failed wipe fails closed. `CODEWHALE_TELEMETRY=0` is a hard floor that beats
-  `--telemetry true` and the config key, and a value the parser cannot read
-  also resolves to off. Fleet workers are hard-off. A repo-local
-  `.codewhale/config.toml` can set neither key.
-
-  Never collected: prompts, completions, tool arguments, diffs, file contents,
-  filenames, paths, git remotes, repo or branch names, memory entries, chat
-  history, credentials (not even a boolean asserting one exists), model ids,
-  custom provider table names, MCP server names, error or panic message bodies,
-  per-event timestamps, keystrokes, clipboard, screenshots, or location. The
-  full schema is [`docs/TELEMETRY.md`](docs/TELEMETRY.md), and a test parses the
-  field names out of that file and asserts set equality with the structs the
-  serializer uses.
-
-  This supersedes the roadmap's previous "no Codewhale product telemetry" entry,
-  which moves from "Ruled out" to an opt-in framing. What stays ruled out:
-  always-on or silent telemetry, per-keystroke or per-tool-call phone-home, and
-  any third-party ad or analytics SDK in the runtime binary.
-- Registered `GLM-5.3` (direct Z.ai) and `z-ai/glm-5.3` (OpenRouter) as
-  selectable GLM routes, with their aliases (`glm-5.3`, `glm-5-3`,
-  `zai-glm-5.3`, `zai-glm-5-3`). Z.ai had **not released GLM-5.3 as of
-  2026-08-03** — the ids are registered so they resolve to the Z.ai/OpenRouter
-  routes instead of being rewritten to another vendor's model, and they will
-  fail upstream until Z.ai ships the model. Metadata (context, output,
-  reasoning controls) is inherited wholesale from `GLM-5.2` pending official
-  Z.ai release metadata; pricing is intentionally absent, and `GLM-5.2` remains
-  the default Z.ai model. No third-party gateway roster gained the model:
-  OpenCode Zen, OpenCode Go, Alibaba Model Studio, and TelecomJS publish no
-  glm-5.3 entry, so Codewhale advertises none.
-
-- Managed Codewhale account commands (`account login`, `status`, `logout`, and
-  `keys`) with browser device flow, profile- and origin-scoped secure sessions,
-  refresh/revocation, redacted BYOK-vault management, and a token-free Runtime
-  account receipt. Provider authentication remains separate, and `cloud`
-  remains a compatibility alias.
-- `/automation` operator controls to list, inspect, pause, resume, delete, and
-  run durable automations. Creation remains on the approval-gated
-  model-visible `automation` tool.
-- A provider-neutral `WorkflowSearchSpec` authoring and freeze boundary, plus
-  structured 2–16-candidate experimental search in the best-of-N Workflow
-  starter. It freezes baseline, route, evidence, evaluator, gate, score, budget,
-  and review policy before admission; it validates gate/scoring commands but
-  does not execute or certify them itself.
-- The bundled generation-9 `handoff` skill for compact, decision-ready
-  continuation across sessions.
-- Expanded terminal LaTeX rendering for aligned and matrix environments,
-  cases, arrays, text/font/accent commands, brackets, symbols, and
-  command-aware scripts (PR #4981).
-- Exact 40-character build provenance and secure account-session capability
-  receipts on `/v1/runtime/info`; unknown source provenance continues to fail
-  closed.
-- Acceptance-level Gherkin coverage locking the existing user-command
-  precedence, alias shadowing, fallback, and invalid-command error contract
-  (PR #4992).
-- Agent Plugins v1.0.0: consume, publish, and slugify packaged sub-agent
-  briefs, with an install/update/uninstall on-ramp in the TUI (PR #5182). A
-  plugin bundles a prompt, posture, and routing as one shareable artifact;
-  on-disk migration of the older `plugin.toml` scaffold is deliberately out
-  of scope for this train.
-- `send_later`: a model-callable one-shot delayed continuation tool, so the
-  model can schedule a single future nudge without an operator-approved
-  durable automation (PR #5138).
-- `/advisor`: an opt-in background advisor watcher for live turns (PR #5139).
-- Notification quiet mode with per-category switches and action-first copy
-  (PR #5066).
-- Automation scheduling forms — one-shot `ONCE`, five-field cron, and honest
-  watcher modes — created through the approval-gated `automation` tool
-  (PR #5183).
-- Sub-agent `resume_from` continuation chains (PR #5142), child-result
-  diff-tainting when a claimed diff is not visible to git, per-turn usage
-  receipts on the exec stream-json stream, and spawn receipts that report
-  the model each sub-agent actually ran on.
-- Transport resilience: sub-agent exec transport retries with a 600 s
-  default (PR #5210), SSE header stalls retryable instead of fatal, and
-  headless turn resume after mid-stream network drops with an `EX_TEMPFAIL`
-  exit.
-- Session durability and control: a deterministic compaction continuation
-  contract (PR #5064), persisting interrupted output (PR #5206), stop-word
-  cancellation (PR #5207), token-counter refresh (PR #5204), deny-by-default
-  approval cards (PR #5090), and the Operate completion gate (PR #5067).
-- zh-Hant promoted to a full shipped locale with complete `en.json` parity
-  (PR #5143).
-- A persistent update-available chip in the header, with the startup update
-  check throttled and naming the right command.
-- RLM static intent extraction for code blocks (`rlm_block_intent.rs`)
-  landed as groundwork for a future code-mode approval flow; it is not yet
-  wired into the turn pipeline and ships dormant by design.
-
-### Changed
-
-- `/fleet` is the familiar roster/setup face again. The operator row is the
-  Fleet leader (session model); the header names the selected saved Fleet and
-  whether it is user-global or folder-scoped. Named-Fleet switching lives under
-  `/fleet fleets` (Enter selects in the row's own scope). Session route changes
-  stay temporary until `/fleet save`, `/fleet save-as`, or `/model save-default`.
-- Waiting-for-subagents directions forbid peek/status polling and sleep-as-wait,
-  but allow independent work that does not depend on a child's result — the
-  parent no longer freezes mid-turn with useful non-conflicting work available.
-- `workflow run` no longer requires `--fleet`; a saved Fleet is an optional pin
-  layer over roles + the session route.
-- Homepage and getting-started copy is shorter and scannable across locales,
-  with dictionary key and `{brand}` token parity preserved.
-
-- Tool results now render as ordinary bounded previews with real expansion;
-  storage, retention-ledger, and internal evidence language no longer leak into
-  normal transcripts.
-- Prose wrapping, goal state, modal questions, composer-tail behavior, and
-  ambient motion now follow one deterministic interface contract across narrow
-  terminals and fast streams.
-- Scout and reviewer Fleet roles gain network access and the bounded
-  verification surface for real reconnaissance while retaining the no-write,
-  no-raw-shell security floor.
-- Workflow runs may describe up to 1,000 tasks while admitting at most 16 live
-  tasks at once through the host concurrency gate. Tournament ordering now
-  supports explicit score-first selection while retaining its cost-first
-  default.
-- Runtime permission compatibility inputs resolve to one live
-  `permission_posture`. Auto-Review can proceed without approval or structured
-  question modals, unresolved holds fail closed, and a call planned under stale
-  authority is retried after a posture change (PR #5025).
-- Duplicate and drifting per-turn metadata has been removed in favor of
-  runtime-owned authority, and large inline account and skill tests now live in
-  owned test seams.
-- Pinned Ratatui to 0.30.0 and ratatui-core to 0.1.0. ratatui-core 0.1.1+
-  makes `Terminal::clear()` issue a blocking cursor-position report that
-  raced the TUI input loop and could kill first launch; both pins are
-  load-bearing, because 0.30.0 declares `ratatui-core ^0.1` and would
-  otherwise resolve forward on its own (PR #5192 by @bistack; upstream
-  ratatui/ratatui#2640).
-- Updated globset to 0.4.19, clap-complete to 4.6.8,
-  futures-util to 0.3.33, libc to 0.2.189, actions/stale to 11.0.0, and
-  docker/login-action to 4.5.2. The locked graph also includes the
-  event-listener 5.4.2 fix for RUSTSEC-2026-0221.
-- The progress surface now speaks plainly everywhere: the last user-visible
-  "Work update is pending" notices say "To-do list", the tool constructor and
-  the docs name `todo_write` as the single canonical progress tool, and
-  `work_update`, `TodoWrite`, and `todo` stay registered as hidden
-  compatibility aliases so saved transcripts keep replaying.
-- Sub-agent and `agents/wait` waits stay short by default and by cap:
-  blocking waits default to 30 s and refuse to block past 120 s, because a
-  blocked wait deafens the session to typed input and settled children
-  already report back as `<codewhale:subagent.done>` sentinels.
-- `Bash` `action=wait` honors `timeout_secs` (seconds) and bare `timeout`
-  (milliseconds) alongside canonical `timeout_ms`, and `block` as an alias
-  for `wait`, so a habit formed on other wait tools gets the duration it
-  asked for instead of silently falling back to the 30 s default; the result
-  metadata reports the real `wait_timeout_ms` applied.
-
-### Fixed
-
-- The memory journal is no longer indexed as memory. It is Markdown in the
-  memory tree, so the source walk collected it and every retired note
-  re-entered the searchable set under its `before:` line — putting the
-  exact facts a revision had just removed back into the prompt.
-- `memory_path` pointed at an already-native store no longer derives a
-  second store nested inside it, which silently wrote somewhere other than
-  the file the user named.
-- `muse` and `muse-spark` resolved to `muse-spark-1.1` in the agent
-  registry while config had defaulted to `muse-spark-1.2`, so the CLI and
-  app-server routed those aliases somewhere the configured default never
-  pointed. The registry now carries 1.2 and the contributor variant.
-
-- An explicit `type=builder` (or its `implementer` alias) plus
-  `write_authority=read_only` now fails closed at spawn instead of launching a
-  labeled write role that silently had only read-only tools and then self-BLOCKED
-  after burning a turn (#5123). The check is deliberately narrow, because two
-  neighbouring combinations are legitimate and stay legal:
-  - `type=worker` + `read_only` — worker is the unnamed default (it renders as
-    `general`) and takes its capability from authority, not from its name, so a
-    read-only worker is an ordinary general-purpose child. Worker, scout,
-    reviewer, and verifier remain the four canonical read-only Fleet roles.
-  - any `role` + `read_only` — `role` is an identity for roster resolution, not
-    a capability claim, so an acceptance Workflow can still resolve
-    `implementer` to its saved profile while scoping that child to verification.
-
-  Callers that spelled a read-only narrowing as `type: "implementer"` should
-  move it to `role: "implementer"`.
-- User-global credentials survive an explicit workspace `CODEWHALE_CONFIG_PATH`
-  that selects a route with no local key — readiness probes the user-global
-  provider table before concluding a key is missing.
-- Sub-agent token figures on the work bar accumulate input+output (the same
-  total the worker budget uses) instead of completion tokens alone; elapsed
-  time still freezes when the child settles.
-- Live work-bar rows for sub-agents show how many to-dos they still have
-  left (`N left`) when the child's own list has unsettled items — never a
-  fabricated zero when no list exists.
-
-- Surfaces no longer claim an OS sandbox on platforms that cannot enforce one.
-  The policy resolver takes no platform input, so on default Linux (bubblewrap
-  is opt-in) and on all Windows the header chip read `files: workspace` and
-  `/status` read `sandbox workspace-write` while nothing was restricted. Both
-  now resolve the real backend and say `(unenforced)`.
-- `tool_category` hook conditions matched only retired tool names, so a
-  `category = "shell"` **deny** hook — the security control `docs/HOOKS.md`
-  documents — silently never fired. Categories now use the registered names,
-  and multi-action tools classify by action.
-- A `Retry-After` header of `-5`, `nan`, or `1e300` crashed the request task
-  (`Duration::from_secs_f64` panics on a negative). Parsing is now guarded and
-  bounded to one hour.
-- Bearer tokens no longer leak into operator-visible receipts. `Authorization:
-  Bearer <jwt>` split into two tokens and the JWT matched no redaction rule;
-  prefix matching was also case-sensitive, so `SK-live-…` survived.
-- `prune_older_than` destroyed the NEWEST rollback snapshots and kept the old
-  ones — on every boot, for any workspace with snapshots spanning the retention
-  window. Both prune paths now share one orphan-chain rebuild and preserve each
-  survivor's real timestamp.
-- An absolute or relative command path no longer defeats every execpolicy deny
-  rule (`/bin/rm -rf /` did not match a `rm -rf /` rule), and a typed `Allow`
-  rule no longer auto-approves a chained suffix such as `git log ; curl … | sh`.
-- Wrong types on `File` read range params and `Bash` stdin/cwd/task_id are now
-  errors instead of silent defaults — a `start_line:"1200"` string used to
-  return the head of the file, and a non-string `stdin` ran the command with no
-  stdin and reported success.
-- Multibyte tool ids no longer panic the context inspector, wide (CJK) text no
-  longer overflows the decision card, and a hostname like `127.evil.example.com`
-  is no longer treated as loopback.
-- Refusals name calls the model can actually make (`rlm action='open'` rather
-  than a retired `rlm_open`; `Bash` rather than `exec_shell`).
-
-- Sub-agent dispatch no longer aborts the process. The Tokio runtime was built
-  by `#[tokio::main]`, leaving every worker thread on the 2 MiB default while
-  only the owner thread received the explicit 16 MiB stack — and the engine runs
-  on a worker. A debug-build `agent` dispatch exceeded that stack and raised
-  SIGABRT, which is not a panic and so could not be caught; the process died
-  mid-spawn with no child request ever issued. Release builds were unaffected.
-- Fleet profiles that pin a provider no longer leak a bare model id onto the
-  session route. `model_overrides` exported each role's model while dropping its
-  provider, so a scout pinned to another provider's model was dispatched against
-  the active client and denied at the wire — visible as an instant auth failure
-  on the first sub-agent of a fan-out.
-- The rail's Pinned panel no longer spends four rows saying "No active work".
-  An empty panel now collapses like the Tasks panel always has, and the settings
-  migration no longer folds the default `sidebar_focus = "auto"` into a pinned
-  always-on strip, which had silently handed that panel to every user who had a
-  settings file at all. (An *empty* panel collapses; a panel holding settled
-  to-dos or finished workers is not empty — see the standing-register entry
-  below.)
-- The work bar keeps settled to-dos and an honest Subagents header, while
-  completed/cancelled workers collapse out of the Top strip so fan-outs do not
-  permanently eat the transcript. Failed or interrupted workers stay visible
-  (they still need attention). Settled agents remain reachable through the
-  Agents panel and catalog. To-do rows say their state in words (pending /
-  in progress / completed / cancelled), and sub-agent rows carry type,
-  objective, elapsed, and input+output tokens. Every work row is a door in
-  every rail panel and placement: click and Enter open the row's world
-  (work inspector / agent details — finished agents included) instead of
-  doing nothing. A click after the detail pager closed itself reopens the
-  detail rather than being swallowed by a stale toggle.
-- The rail strip yields its rows to the transcript when the terminal cannot
-  seat both, so the idle ocean survives at 24 rows instead of being evicted.
-- `code_execution` and `js_execution` no longer describe themselves to the model
-  as sandboxed. Both are ordinary local subprocesses with no seccomp, jail, or
-  container (PR #5221 by @h3c-hexin and @asto18089).
-- Model Studio reasoning controls now fail closed on the host rather than on the
-  provider enum, so a custom `base_url` no longer receives Alibaba-specific
-  `enable_thinking` fields, and `qwen3.8-max` is no longer sent a thinking
-  switch it does not accept (PR #5233 by @Inference1, closing #5203).
-- `config.example.toml` no longer claims Shift+Tab cycles the reasoning tier.
-  Shift+Tab cycles the permission posture; Ctrl+T cycles reasoning
-  (found by @vFONGv, PR #5229).
-
-- Alibaba Model Studio reasoning controls are now route- and model-scoped
-  instead of provider-wide (#5203, harvested from #5233 by
-  [@Inference1](https://github.com/Inference1)). Codewhale sends
-  `enable_thinking` / `preserve_thinking` / `reasoning_effort` only when the
-  configured `base_url` is a verified Alibaba Chat Completions host, so
-  pointing a `modelstudio-*` provider ID at a custom gateway no longer injects
-  DashScope's dialect into it. `qwen3.8-max` and `qwen3.8-max-preview` are
-  thinking-only and no longer receive an `enable_thinking: false` they cannot
-  honor; `preserve_thinking` is sent for the models documented to accept it, so
-  their reasoning trace survives into the next turn; and `deepseek-v4*` /
-  `glm-5.x` map the reasoning tier onto the documented `high` / `max` ladder.
-
-- xAI device login now recovers from a config that points at a missing
-  Codewhale-owned credential generation instead of failing every attempt
-  with a generic activation error, and finalize failures report the full
-  error chain (#5032).
-- API keys saved to the secret store no longer read as unconfigured for
-  providers that are not currently active; a configured Kimi/Moonshot key
-  survives provider switches and restarts without re-entry (#5033).
-- Switching to the Codex provider with no saved model now lands on the live
-  roster's flagship model instead of a stale static default (#5034).
-- Worktree-isolated Fleet builders no longer contend on the per-workspace
-  delegated-coordination lock, and a failed lock acquisition is retried on
-  use instead of being memoized for the life of the process (#5036).
-- Fleet dispatch now rebinds the child client when the resolved profile
-  model requires a different wire protocol (DeepSeek flash on Responses),
-  instead of failing deterministically on the worker's first request
-  (#5042).
-- DeepSeek Responses now sends `reasoning.effort: "none"` for the Off tier,
-  shows a truthful notice instead of silently discarding server-side
-  `web_search_call` items, and parses cache-hit, cache-miss, cache-write, and
-  pricing telemetry while retaining the OpenAI-style nested fallback.
-- File edits now explain no-op and missing-search failures, reject newly
-  unbalanced C/C++ preprocessor replacements, handle the reported
-  CRLF/non-ASCII cases, and safely relocate stale unified-diff hunks only when
-  whole-file context is unique (PRs #5008 and #5030).
-- Circled digits, enclosed alphanumerics, and keycap graphemes use consistent
-  two-column measurement in Codewhale, Ratatui, and CJK terminals, preventing
-  missing-character and phantom-space corruption (PR #5001).
-- SQLite connections install their busy timeout before locking setup and avoid
-  rewriting persistent WAL mode on every open, removing the concurrent-open
-  release-gate failure.
-- The Windows installer preserves long current-user `PATH` values, their
-  registry type, and unrelated entries across install and uninstall (PR #5006).
-- Provider configuration no longer contains user-reachable panic paths when
-  metadata or prior credential state is missing.
-- Resuming a session restores composer text only from a same-session persisted
-  draft; submitted prompts and internal background-runtime envelopes remain in
-  history instead of appearing in the composer (PR #5029).
-- Shared CI now handles bot-authored issue-link checks, provisions cargo-deny's
-  toolchain, and fetches the locked test graph before offline runtime-budget
-  validation.
-- Re-quote each linker argument in the Windows OpenHarmony clang launcher so a
-  spaced SDK path (e.g. the default `D:\DevEco Studio\...` install) keeps its
-  `--sysroot` intact through the final Rust link, and extend the no-SDK release
-  guard to keep the re-quoting contract (PR #5095).
-
-- The shell tool reports the real elapsed wait time in its result content
-  instead of echoing the requested timeout (PR #5240).
-- Transcript wheel scrolling under iTerm2: xterm alternate-scroll (DECSET
-  1007) now stays off while mouse capture is active, so wheel events arrive as
-  mouse events instead of being converted into arrow keys (#5223, PR #5234).
-- A stalled model stream no longer ends the turn as `Completed` over a
-  frozen reasoning block: a mid-stream chunk-timeout now counts toward the
-  stream-error budget, so a stall with nothing streamed retries the request
-  transparently, and a stall that exhausts the retry budget fails the turn
-  with the real reason instead of reporting success.
-- A finished background shell task now wakes the engine even when no goal is
-  active: the idle loop starts an ordinary runtime turn so the completion
-  reaches the model immediately instead of sitting unclaimed until the user
-  types (a dead provider route claims the completion once and reports where
-  the output lives instead of re-arming the same error every tick).
-- Sub-agent final reports that exceed the summary budget are now spilled to
-  a session artifact, and the truncation footer names the
-  `retrieve_tool_result` ref for the elided middle instead of telling the
-  model the bytes are unrecoverable; write failures degrade to the honest
-  no-ref footer.
-- An interactive mid-stream network drop after partial output no longer fails
-  the turn: the partial reply is preserved as a committed assistant message,
-  a runtime continuation message is appended, and the request is re-issued
-  bounded by the stream-retry budget.
-- Large pasted input is no longer sent to the model twice as inline text and
-  as a backup `.md` paste file; the submitted message now carries only the
-  `@`-mention so the model reads the file once.
-- A builder sub-agent can run ordinary shell writes again. Write claims
-  outlive the agents that register them, so a workspace accumulated one per
-  builder that ever ran — six completed agents left four standing claims in
-  testing — and the shared-checkout gate counted those long-finished children
-  as live contenders. Every later builder was refused `Bash` writes with
-  "cannot prove a bounded file target" and pushed toward worktree isolation,
-  which puts the work in a checkout the operator never looks at. The gate now
-  asks the question it meant to ask: is another *running* child writing in this
-  shared checkout. Concurrent writers are still gated; a lone builder writes in
-  the workspace you are actually watching.
-- Ctrl-C during the first moments of startup no longer kills Codewhale
-  outright. The terminating-signal handlers were registered inside the task
-  that waits on them, and a spawned task does not run until the scheduler
-  first polls it, so a SIGINT arriving in that window hit the default
-  disposition — the process died with no exit code, no terminal restore, and
-  no session record. The handlers are now installed synchronously, before
-  the telemetry notice and before arming, so the window is closed.
-- The documented tool list on the docs site named `update_plan` and
-  `work_update` as coordination tools. Neither is callable by the model —
-  `update_plan` replays older Plan artifacts and `work_update` is a hidden
-  compatibility alias — so the page listed two tools a reader cannot use and
-  omitted `todo_write`, the one they can.
-
-### Security
-
-- Bumped `nanoid` past GHSA-2v37-7h3g-55p8 (a custom generator given size
-  zero could loop indefinitely), restoring a zero-advisory `npm audit` for
-  the website.
-
-- Google Gemini is its own backend (`/provider google`) on the official
-  OpenAI-compatible route with thought-signature capture/replay and
-  fail-closed replay for thinking models. Antigravity (`agy` 1.1.13) joins
-  as a separate credential-plane provider: consent-gated read-only import
-  of the official CLI's login with `ANTIGRAVITY_API_KEY`/`AGY_ADC_AUTH`
-  precedence; requests fail closed until the cloud-code wire protocol is
-  implemented.
-
-### Removed
-
-- The default model-facing SlopLedger implementation, its storage-oriented
-  transcript language, and the `/debt`, `/cleanup`, `/slop`, and `/canzha`
-  command surface.
-
-### Contributors
-
-- [Sh1Zuku](https://github.com/SparkofSpike) (`@SparkofSpike`) contributed
-  LaTeX rendering in PR #4981, completed circled-digit/keycap width handling in
-  PR #5001, and delivered actionable File-edit recovery in PR #5008; for this
-  train he resumed interrupted sub-agents from checkpoints in PR #5242,
-  surfaced real shell wait elapsed time in PR #5240, and kept alternate-scroll
-  off while mouse capture is active in PR #5234.
-- [XhesicaFrost](https://github.com/XhesicaFrost) (`@XhesicaFrost`) fixed long
-  Windows user-PATH preservation in PR #5006.
-- [Paulo Aboim Pinto](https://github.com/aboimpinto) (`@aboimpinto`) added the
-  user-command dispatch acceptance contract in PR #4992.
-- [DracheTek](https://github.com/DracheTek) (`@DracheTek`) provided the
-  multilingual, CRLF-heavy File-edit failure report in issue #5003.
-- [An Ziwu](https://github.com/MuRongMoQing) (`@MuRongMoQing`) reported the
-  Windows PATH-overwrite defect in issue #4685.
-- [shenjackyuanjie](https://github.com/shenjackyuanjie) (`@shenjackyuanjie`)
-  fixed the Windows OpenHarmony linker re-quoting for spaced SDK paths in
-  PR #5095.
-- [bistack](https://github.com/bistack) (`@bistack`) contributed MCP Registry
-  discovery with Registry-first tool selection in PR #5238.
-- [vFONGv](https://github.com/vFONGv) (`@vFONGv`) wrote the zh-CN Windows
-  beginner guide with screenshots in PR #5229, harvested after its base branch
-  was accidentally deleted during maintainer cleanup.
-- [mky](https://github.com/mky) (`@mky`) fixed the FreeBSD build (PR #5254, `rquickjs` `bindgen` on FreeBSD).
-- [cacdcaecawae](https://github.com/cacdcaecawae) (`@cacdcaecawae`) contributed embedder-owned sub-agent state roots (PR #5252).
-
-## [0.9.3] - 2026-07-31
-
-This is the Codewhale v0.9.3 source candidate. It is not a published release
-until the matching tag, packages, checksums, and release assets exist.
-
-DeepSeek V4 Flash is now a first-class Codewhale route, and the agent-facing
-tool surface has been reduced to the canonical action tools that current
-models actually need. This release also hardens credential, authorization,
-durability, compaction, and macOS File Provider boundaries while deleting
-stale runtime and dependency surface.
-
-### Added
-
-- Native `deepseek-v4-flash` support over DeepSeek's Responses API, including
-  stateless reasoning-item replay, semantic SSE terminal events, structured
-  function calls and outputs, `apply_patch`, and model-aware wire-format
-  selection. Exact current Flash IDs use Responses; future direct
-  `deepseek-vN-*` model IDs inherit that route conservatively, while custom
-  DeepSeek-compatible endpoints retain Chat Completions unless configured
-  otherwise.
-- A pipe-only `codewhale auth print-api-key` handoff for explicitly selected
-  providers. It shares Codewhale's home-scoped credential authority, refuses
-  terminal output, and prevents sentinel placeholders from becoming live
-  credentials.
-- Per-turn `max_tool_calls` enforcement at the engine admission gate, plus a
-  named-file write scope with a separate read seam. The runtime now rejects
-  over-budget calls before execution and keeps the operator's write boundary
-  explicit (#4415).
-- Runtime-contract, source-structure, and persistence-backlog ratchets that
-  name drift instead of allowing large ownership surfaces to grow silently
-  (#3921, #4785).
-
-### Changed
-
-- Model-visible built-ins now use the canonical `Bash`, `File`, and `Run`
-  action schemas. `apply_patch` remains available as the one direct custom
-  edit tool supported by DeepSeek Responses. The bundled stop-ship workflow,
-  Fleet fixtures, shell shortcut, and engine tests use the same canonical
-  vocabulary.
-- Canonical `File { action: "write" }` requests now pass through the same
-  semantic repo-law checks as the former write path. Approval, Full Access,
-  and workflow execution cannot bypass the repository safety floor by choosing
-  the canonical schema.
-- Codewhale home resolution is shared across the CLI, TUI, state, and secret
-  stores. `doctor` is offline by default, distinguishes credential source from
-  availability, and reports one consistent path snapshot.
-- Durable runtime event writes are serialized across simultaneous processes,
-  blocking history waits move off async workers, and provider quota exhaustion
-  remains typed and retryable through compaction (#4522).
-- Skill discovery caches the merged catalog behind watched-mtime validation;
-  large skill, engine, subagent, UI, and ambient-ocean test blocks now live in
-  owned test seams.
-- Reasoning summaries stay in the user's language, complete jellyfish
-  silhouettes relocate around transcript text, and cached ocean frames include
-  their palette identity (#4807).
-- The authorization-order contract now documents and tests how modes, hooks,
-  permission rules, safety floors, repo law, approvals, and sandboxing compose
-  (PR #4980).
-
-### Fixed
-
-- macOS sandbox extensions cover CloudStorage/File Provider workspaces without
-  broadening unrelated paths; thanks @Watcher24 for the #4085 report and
-  reproduction.
-- Foreground shell state detaches before steering, so an interrupted command
-  cannot keep owning the composer (PR #4979).
-- MCP application-level failures and malformed error envelopes fail closed
-  instead of looking like successful tool output.
-- Optional PDF failures are truthful and PDF classification no longer misses
-  supported inputs.
-- Bracketed-paste contents are redacted from traces, and credential diagnostics
-  never treat placeholder sentinels as usable keys.
-
-- Google Gemini is its own backend (`/provider google`) on the official
-  OpenAI-compatible route with thought-signature capture/replay and
-  fail-closed replay for thinking models. Antigravity (`agy` 1.1.13) joins
-  as a separate credential-plane provider: consent-gated read-only import
-  of the official CLI's login with `ANTIGRAVITY_API_KEY`/`AGY_ADC_AUTH`
-  precedence; requests fail closed until the cloud-code wire protocol is
-  implemented.
-
-### Removed
-
-- The legacy callable aliases `exec_shell`, `run_shell_command`, `read_file`,
-  `write_file`, `list_dir`, `grep_files`, `file_search`, and the duplicate
-  Work/RLM registrations. Historical transcript and policy semantics remain
-  readable, but new model turns receive only the canonical action surface.
-- The bundled PDF parser dependency chain, replacing it with the smaller
-  optional extraction boundary tracked by #4382.
-
-### Contributors
-
-- [Turisla](https://github.com/greyfreedom) (`@greyfreedom`) documented and
-  locked the authorization-order contract in PR #4980.
-- [Nightt](https://github.com/nightt5879) (`@nightt5879`) fixed foreground
-  shell detachment before steering in PR #4979.
-- [Watcher24](https://github.com/Watcher24) (`@Watcher24`) provided the macOS
-  File Provider report and reproduction for #4085.
-- [Fred Leitz](https://github.com/fleitz) (`@fleitz`) retains required
-  source-candidate credit for the canonical `Bash` workspace fix from PR #4673
-  and issue #4674.
 
 ---
 

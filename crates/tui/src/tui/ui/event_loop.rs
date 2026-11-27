@@ -285,6 +285,7 @@ pub(super) fn apply_engine_session_projection(
         return true;
     }
     if (app.is_loading || app.is_compacting || app.is_purging)
+        && !app.dispatch_in_flight
         && let Ok(manager) = SessionManager::default_location()
     {
         if let Ok(session) = build_session_snapshot(app, &manager) {
@@ -657,11 +658,58 @@ pub(super) fn handle_transcript_space(app: &mut App) -> bool {
     true
 }
 
+async fn apply_launch_action(
+    terminal: &mut AppTerminal,
+    app: &mut App,
+    engine_handle: &mut EngineHandle,
+    config: &mut Config,
+    action: crate::tui::underwater::LaunchAction,
+) -> Result<bool> {
+    match action {
+        crate::tui::underwater::LaunchAction::None => {}
+        crate::tui::underwater::LaunchAction::ConnectModel => {
+            app.launch.dissolve_card(app.ambient_clock_ms);
+            app.view_stack
+                .push(crate::tui::account_login::ConnectionSetupView::new(
+                    app.ui_locale,
+                ));
+        }
+        crate::tui::underwater::LaunchAction::ReturnToSession => app.launch.dismiss(),
+        crate::tui::underwater::LaunchAction::NewSession => {
+            let result = begin_launch_session(app, None);
+            if apply_command_result(terminal, app, engine_handle, config, result).await? {
+                return Ok(true);
+            }
+        }
+        crate::tui::underwater::LaunchAction::ResumeSession(session_id) => {
+            crate::tui::underwater::open_launch_resume_confirm(app, &session_id);
+        }
+        crate::tui::underwater::LaunchAction::ShowRecent => {
+            app.launch.expand_recent();
+        }
+        crate::tui::underwater::LaunchAction::BrowseSessions => {
+            app.launch.dissolve_card(app.ambient_clock_ms);
+            app.view_stack.push(
+                SessionPickerView::new(&app.workspace, app.ui_locale)
+                    .with_current_session(app.current_session_id.as_deref()),
+            );
+        }
+        crate::tui::underwater::LaunchAction::McpManager => {
+            app.launch.dissolve_card(app.ambient_clock_ms);
+            open_mcp_extensions(app);
+        }
+        crate::tui::underwater::LaunchAction::Help => {
+            toggle_help_view(app);
+        }
+    }
+    app.needs_redraw = true;
+    Ok(false)
+}
+
 pub(super) fn queue_auto_review_retry_from_r(app: &mut App) -> bool {
     if !app.view_stack.is_empty()
         || app.is_history_search_active()
         || app.vim_is_normal_mode()
-        || app.vim_is_visual_mode()
         || !app.input.is_empty()
         || app.mode != AppMode::Agent
         || app.approval_mode != ApprovalMode::Auto
@@ -731,7 +779,6 @@ pub(super) fn flush_paste_burst_before_composer(app: &mut App, now: Instant) -> 
         {
             true
         }
-        codewhale_tui_kit::paste_burst::FlushResult::Typed(_) if app.vim_is_visual_mode() => true,
         codewhale_tui_kit::paste_burst::FlushResult::Typed(ch) => {
             let mention_menu_limit = app.mention_menu_limit;
             if app.vim_is_normal_mode()
@@ -985,6 +1032,7 @@ pub async fn run_tui(
     pending_telemetry_notice: Option<codewhale_engine::telemetry_notice::PendingTelemetryNotice>,
     launch_conversation_mode: Option<String>,
     permission_mode: Option<codewhale_engine::runtime_options::PermissionMode>,
+    launch_external_agent: Option<Box<crate::tui::external_agent::ExternalAgentSession>>,
 ) -> Result<()> {
     // Install notification, sound, category, and attention policy before any
     // producer (including the model-facing notify tool) can emit an event.
@@ -1162,6 +1210,16 @@ pub async fn run_tui(
     let config = &mut config;
     let mut app = App::new_with_plugin_registry(options.clone(), config, plugin_registry);
     app.install_conversation_mode(launch_conversation_mode, None);
+    if let Some(session) = launch_external_agent {
+        let notice = app
+            .tr(MessageId::ExternalAgentSessionStarted)
+            .replace("{agent}", &session.agent_name);
+        app.external_agent = Some(*session);
+        app.add_message(HistoryCell::System {
+            content: notice.clone(),
+        });
+        app.status_message = Some(notice);
+    }
     app.apply_cli_permission_mode(permission_mode);
     let _cursor_accent_guard = codewhale_tui_kit::cursor_accent::CursorAccentGuard::install(
         app.low_motion || !app.fancy_animations,
@@ -1226,7 +1284,10 @@ pub async fn run_tui(
                 Ok(goal) => {
                     let saved_id = saved.metadata.id.clone();
                     match apply_loaded_session_with_goal(&mut app, config, saved, goal.as_ref()) {
-                        Ok(()) => {
+                        // A store cannot be adopted here: this runs before
+                        // `TaskManager::start`, so the binding the launch path
+                        // uses is read from the same metadata below (#6207).
+                        Ok(_) => {
                             lease.commit();
                             app.status_message = Some(format!(
                                 "Resumed session: {}",
@@ -1382,7 +1443,7 @@ pub async fn run_tui(
         media_originals_dir: codewhale_runtime::media_originals::default_store_dir(),
     };
     codewhale_runtime::startup_trace::mark("task_manager_ready");
-    refresh_active_task_panel(&mut app, &task_manager).await;
+    refresh_active_task_panel(&mut app).await;
     refresh_automation_panel_blocking(&mut app).await;
 
     // A `[redaction] model_bound = "disabled"` request lowers the model-bound
@@ -1481,7 +1542,7 @@ pub async fn run_tui(
     if let Some(millis) = codewhale_runtime::startup_trace::cold_start_ms() {
         codewhale_telemetry::set_cold_start_ms(millis);
     }
-    let result = run_event_loop(
+    let result = Box::pin(run_event_loop(
         &mut terminal,
         &mut app,
         config,
@@ -1491,12 +1552,35 @@ pub async fn run_tui(
         translation_client,
         pending_telemetry_notice,
         dispatch_completion_rx,
-    )
+    ))
     .await;
     automation_cancel.cancel();
     automation_scheduler.abort();
-    if let Err(error) = task_manager.shutdown_and_wait().await {
+    // Settle the store this host actually owns at exit. A session switch may
+    // have adopted another store, and shutting down the launch-time handle
+    // would leave the adopted one undrained — its queued work never settled
+    // and its process-owner lock released only by the process ending.
+    if let Some(current_tasks) = app
+        .runtime_services
+        .task_manager
+        .clone()
+        .or_else(|| Some(task_manager.clone()))
+        && let Err(error) = current_tasks.shutdown_and_wait().await
+    {
         tracing::error!(%error, "Task manager shutdown remains incomplete");
+    }
+    if let Some(session) = app.external_agent.take() {
+        match tokio::time::timeout(Duration::from_secs(5), session.runtime.shutdown_and_wait())
+            .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "External agent shutdown remains incomplete");
+            }
+            Err(_) => {
+                tracing::warn!("External agent shutdown timed out");
+            }
+        }
     }
 
     // Join the startup-default writer before anything else tears down.
@@ -1742,7 +1826,6 @@ async fn dispatch_launch_composer_submit(
     terminal: &mut AppTerminal,
     app: &mut App,
     engine_handle: &mut EngineHandle,
-    task_manager: &SharedTaskManager,
     config: &mut Config,
     chord: ComposerSubmitChord,
     protect_paste: bool,
@@ -1754,7 +1837,6 @@ async fn dispatch_launch_composer_submit(
             terminal,
             app,
             engine_handle,
-            task_manager,
             config,
             chord,
             protect_paste,
@@ -1767,7 +1849,7 @@ async fn dispatch_launch_composer_submit(
     }
     let action = app.decide_composer_submit(chord);
     let result = begin_launch_session(app, None);
-    if apply_command_result(terminal, app, engine_handle, task_manager, config, result).await? {
+    if apply_command_result(terminal, app, engine_handle, config, result).await? {
         return Ok(true);
     }
     // The input below is dispatched in this same keypress. Let the engine
@@ -1796,8 +1878,7 @@ async fn dispatch_launch_composer_submit(
     }
     if looks_like_slash_command_input(&input) {
         // Commands own their output; only model-bound prompts become user turns.
-        if execute_command_input(terminal, app, engine_handle, task_manager, config, &input).await?
-        {
+        if execute_command_input(terminal, app, engine_handle, config, &input).await? {
             return Ok(true);
         }
     } else {
@@ -1859,9 +1940,10 @@ pub(super) fn present_turn_failure(
     // Persist the failure with the session (redacted), so resume, export,
     // and the Runtime API can say why the turn stopped after the TUI closes.
     if failed && let Some(shown) = shown {
-        let outcome = codewhale_engine::session_manager::SavedTurnOutcome::failed_with_code(
+        let outcome = codewhale_engine::session_manager::SavedTurnOutcome::failed_with_cause(
             &shown,
             error_code.as_deref(),
+            app.turn_error_cause.take(),
             app.api_messages.len(),
         );
         codewhale_engine::session_manager::push_turn_outcome(
@@ -1883,7 +1965,6 @@ async fn dispatch_session_composer_submit(
     terminal: &mut AppTerminal,
     app: &mut App,
     engine_handle: &mut EngineHandle,
-    task_manager: &SharedTaskManager,
     config: &mut Config,
     chord: ComposerSubmitChord,
     protect_paste: bool,
@@ -1904,7 +1985,6 @@ async fn dispatch_session_composer_submit(
         terminal,
         app,
         engine_handle,
-        task_manager,
         config,
         action,
         protect_paste,
@@ -1926,7 +2006,6 @@ async fn submit_decided_composer_input(
     terminal: &mut AppTerminal,
     app: &mut App,
     engine_handle: &mut EngineHandle,
-    task_manager: &SharedTaskManager,
     config: &mut Config,
     action: ComposerSubmitAction,
     protect_paste: bool,
@@ -1938,15 +2017,7 @@ async fn submit_decided_composer_input(
             && app.composer_enter_would_submit(protect_paste, now)
         {
             let input = app.input.clone();
-            return execute_command_input(
-                terminal,
-                app,
-                engine_handle,
-                task_manager,
-                config,
-                &input,
-            )
-            .await;
+            return execute_command_input(terminal, app, engine_handle, config, &input).await;
         }
         app.status_message = Some(
             "A new session is awaiting Engine confirmation; the draft is preserved.".to_string(),
@@ -1963,7 +2034,12 @@ async fn submit_decided_composer_input(
     let selecting_inline_skill = slash_menu_open
         && partial_inline_skill_mention_at_cursor(&app.input, app.cursor_position).is_some();
     let typed_before_selection = app.input.trim().to_string();
-    if slash_menu_open && apply_slash_menu_selection(app, &slash_menu_entries, false) {
+    let typed_exact_command =
+        !selecting_inline_skill && names_a_builtin_command(&typed_before_selection);
+    if slash_menu_open
+        && !typed_exact_command
+        && apply_slash_menu_selection(app, &slash_menu_entries, false)
+    {
         app.close_slash_menu();
         let resolved = app
             .input
@@ -2003,8 +2079,7 @@ async fn submit_decided_composer_input(
     if looks_like_slash_command_input(&input) {
         // Opening a view is not a conversation turn. SendMessage actions
         // record their real prompt through dispatch_composer_message instead.
-        if execute_command_input(terminal, app, engine_handle, task_manager, config, &input).await?
-        {
+        if execute_command_input(terminal, app, engine_handle, config, &input).await? {
             return Ok(true);
         }
     } else {
@@ -2012,7 +2087,6 @@ async fn submit_decided_composer_input(
             terminal,
             app,
             engine_handle,
-            task_manager,
             config,
             input,
             action,
@@ -2026,7 +2100,6 @@ async fn dispatch_submitted_composer_message(
     terminal: &mut AppTerminal,
     app: &mut App,
     engine_handle: &mut EngineHandle,
-    task_manager: &SharedTaskManager,
     config: &mut Config,
     input: String,
     action: ComposerSubmitAction,
@@ -2036,8 +2109,7 @@ async fn dispatch_submitted_composer_message(
     // replacement. Sync the engine session so it also drops the old
     // exchange.
     if let Some(result) = edit_replacement_result(app, &input) {
-        return apply_command_result(terminal, app, engine_handle, task_manager, config, result)
-            .await;
+        return apply_command_result(terminal, app, engine_handle, config, result).await;
     }
     let (queued, recovery) = message_from_submitted_input(app, input);
     dispatch_composer_message(app, config, engine_handle, queued, recovery, action).await?;
@@ -2100,6 +2172,29 @@ pub(crate) fn git_panel_visible(app: &App) -> bool {
             != crate::tui::work_surface::WorkSurfacePlacement::Off
 }
 
+fn names_a_builtin_command(input: &str) -> bool {
+    input
+        .strip_prefix('/')
+        .and_then(|rest| rest.split_whitespace().next())
+        .is_some_and(|name| {
+            codewhale_engine::command_catalog::CommandCatalog::answers_to(
+                &crate::commands::CommandTable,
+                &name.to_ascii_lowercase(),
+            )
+        })
+}
+
+#[cfg(test)]
+mod typed_command_tests {
+    #[test]
+    fn an_exactly_typed_alias_is_not_replaced_by_the_menu_highlight() {
+        assert!(super::names_a_builtin_command("/pet"));
+        assert!(super::names_a_builtin_command("/whale"));
+        assert!(!super::names_a_builtin_command("/pe"));
+        assert!(!super::names_a_builtin_command("pet"));
+    }
+}
+
 pub(crate) async fn run_event_loop(
     terminal: &mut AppTerminal,
     app: &mut App,
@@ -2123,6 +2218,7 @@ pub(crate) async fn run_event_loop(
     // Set when the telemetry disclosure cell is queued; cleared (and the
     // disclosure recorded) by the first draw that paints it.
     let mut telemetry_notice_awaiting_render = false;
+    let mut background_commands_shown: Vec<&'static str> = Vec::new();
     let mut active_translation_client = fallback_translation_client.clone();
     let mut active_translation_route: Option<codewhale_engine::core::events::TurnRoute> = None;
     let mut translation_sequence = 0_u64;
@@ -2404,13 +2500,21 @@ pub(crate) async fn run_event_loop(
             }
         }
 
+        crate::tui::paste::poll_pending_paste(app);
+
         // Drain dispatch completions from spawned send tasks (#4605). The
         // closure receives `&mut App` and applies success state or rollback.
         while let Ok(apply) = dispatch_completion_rx.try_recv() {
             let _ = apply(app, &engine_handle, &*config);
             // Drain this completion immediately: a later completion cannot replace an edit.
             super::feedback_host::dispatch_ready(app, config, &engine_handle).await?;
+            for result in crate::commands::background_host::take_ready() {
+                if apply_command_result(terminal, app, &mut engine_handle, config, result).await? {
+                    return Ok(());
+                }
+            }
         }
+        sync_background_command_notices(app, &mut background_commands_shown);
 
         if app.onboarding == OnboardingState::Provider && app.view_stack.top_kind().is_none() {
             let recover_configured_route = app.onboarding_recovers_configured_route();
@@ -2611,7 +2715,10 @@ pub(crate) async fn run_event_loop(
         }
 
         if last_task_refresh.elapsed() >= Duration::from_millis(2500) {
-            match refresh_active_task_panel(app, &task_manager).await {
+            // Reads through the App's slot: a session switch can replace the
+            // manager, and a launch-time handle would then describe a store
+            // this host no longer holds.
+            match refresh_active_task_panel(app).await {
                 LiveRefresh::Changed => app.needs_redraw = true,
                 LiveRefresh::ElapsedOnly => idle_clock.note_elapsed_only_change(),
                 LiveRefresh::Unchanged => {}
@@ -2725,18 +2832,20 @@ pub(crate) async fn run_event_loop(
         // potentially long engine batch so composer/modal input stays live.
         collect_pending_terminal_events(&terminal_input, &mut pending_terminal_events)?;
         if let Some(change) = app.poll_external_catalog_changes(mcp_engine_busy(app)) {
-            apply_external_catalog_change(
-                terminal,
-                app,
-                &mut engine_handle,
-                &task_manager,
-                config,
-                change,
-            )
-            .await?;
+            apply_external_catalog_change(terminal, app, &mut engine_handle, config, change)
+                .await?;
         }
 
         if drain_remote_control_events(app, config, &engine_handle).await? {
+            app.needs_redraw = true;
+        }
+        if crate::tui::external_agent::poll_external_agent_discovery(app, config) {
+            app.needs_redraw = true;
+        }
+        if crate::tui::external_agent::drain_external_agent_events(
+            app,
+            config.approval_default_selection(),
+        ) {
             app.needs_redraw = true;
         }
 
@@ -2755,7 +2864,6 @@ pub(crate) async fn run_event_loop(
         let mut respawn_after_provider_rollback: Option<String> = None;
         let mut fallback_after_engine_error: Option<ProviderFallbackRollback> = None;
         {
-            let mut rx = engine_handle.rx_event.write().await;
             let mut progress_redraw_agents: HashSet<String> = HashSet::new();
             let drain_started = Instant::now();
             let mut events_drained = 0usize;
@@ -2765,7 +2873,8 @@ pub(crate) async fn run_event_loop(
                 {
                     break;
                 }
-                let event = match rx.try_recv() {
+                let next = engine_handle.rx_event.write().await.try_recv();
+                let event = match next {
                     Ok(event) => event,
                     Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
                     Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
@@ -2902,7 +3011,7 @@ pub(crate) async fn run_event_loop(
                     _ => true,
                 };
                 if pet_event_applies {
-                    crate::tui::pet_watch::observe(app, &event, Instant::now());
+                    crate::tui::pet_watch::observe(app, &event);
                 }
                 record_turn_activity(app, &event, Instant::now());
                 let turn_end_lifecycle = TurnEndLifecycleReceipt::capture(&event);
@@ -2940,6 +3049,10 @@ pub(crate) async fn run_event_loop(
                         if sanitized.is_empty() {
                             continue;
                         }
+                        // A gateway can open a text block inside a
+                        // thinking stream; a live reasoning tail must reach
+                        // its card before this block is relabeled text.
+                        streaming_thinking::resync_block_kind(app, false);
                         // First delta of a fresh stream has no streaming
                         // cell yet; flush active so the tool group settles
                         // before the assistant prose appears below it.
@@ -3084,12 +3197,19 @@ pub(crate) async fn run_event_loop(
                         if sanitized.is_empty() {
                             continue;
                         }
+                        // The kind comes from the start event alone, so a
+                        // gateway that opened a text block mid-reasoning
+                        // leaves block 0 marked text (#7123).
+                        streaming_thinking::resync_block_kind(app, true);
+                        // #7454: split before recording the delta. The split
+                        // writes the settled card's text from `reasoning_buffer`,
+                        // so a delta recorded first would be attributed to the
+                        // card above the tool and the new card would start empty.
+                        streaming_thinking::ensure_active_entry(app);
                         app.reasoning_buffer.push_str(&sanitized);
                         if app.reasoning_header.is_none() {
                             app.reasoning_header = extract_reasoning_header(&app.reasoning_buffer);
                         }
-
-                        streaming_thinking::ensure_active_entry(app);
                         app.streaming_state.push_content(0, &sanitized);
                         stream_display_clock.note_delta(Instant::now());
                         received_engine_event = redraw_requested_before_event;
@@ -3316,9 +3436,13 @@ pub(crate) async fn run_event_loop(
                                 error = %err,
                                 "Work Graph checkpoint did not complete; projections remain unpublished"
                             );
-                            app.status_message = Some(format!(
-                                "To-do list update pending: checkpoint or Work update did not complete ({err})"
-                            ));
+                            app.push_status_toast(
+                                format!(
+                                    "To-do list update pending: checkpoint or Work update did not complete ({err})"
+                                ),
+                                StatusToastLevel::Error,
+                                Some(12_000),
+                            );
                         }
 
                         // Immediately refresh the task panel sidebar when a
@@ -3345,7 +3469,7 @@ pub(crate) async fn run_event_loop(
                                 // any `tasks` completion refreshes the panel.
                                 | "tasks"
                         ) {
-                            refresh_active_task_panel(app, &task_manager).await;
+                            refresh_active_task_panel(app).await;
                             last_task_refresh = Instant::now();
                         }
                         if matches!(name.as_str(), "agent") {
@@ -3370,6 +3494,7 @@ pub(crate) async fn run_event_loop(
                         app.offline_mode = false;
                         app.turn_error_posted = false;
                         app.turn_error_notice = None;
+                        app.turn_error_cause = None;
                         app.lsp_repair = crate::tui::app::LspRepairState::default();
                         app.prompt_suggestion = None;
                         app.prompt_suggestion_gen
@@ -3574,6 +3699,18 @@ pub(crate) async fn run_event_loop(
                             app.turn_work_durations.insert(user_index, turn_elapsed);
                             app.turn_durations_revision =
                                 app.turn_durations_revision.wrapping_add(1);
+                        }
+                        if status == codewhale_engine::core::events::TurnOutcomeStatus::Interrupted
+                            && !newer_dispatch_owns_turn_state
+                        {
+                            let worked = if turn_elapsed.is_zero() {
+                                completed_user_index
+                                    .and_then(|index| app.turn_work_durations.get(&index).copied())
+                                    .unwrap_or_default()
+                            } else {
+                                turn_elapsed
+                            };
+                            push_turn_interrupted_record(app, worked);
                         }
                         app.turn_last_activity_at = None;
                         app.streaming_output_token_estimate = 0;
@@ -4985,9 +5122,10 @@ pub(crate) async fn run_event_loop(
                                 }),
                             );
                             app.add_message(HistoryCell::System {
-                                content: format!(
-                                    "Sandbox denied {tool_name}: {denial_reason} - auto-elevating to full access"
-                                ),
+                                content: app
+                                    .tr(MessageId::SandboxAutoElevating)
+                                    .replace("{tool_name}", tool_name.as_str())
+                                    .replace("{denial_reason}", denial_reason.as_str()),
                             });
                             // Auto-elevate to full access (no sandbox)
                             let policy = codewhale_sandbox::SandboxPolicy::DangerFullAccess;
@@ -5527,15 +5665,8 @@ pub(crate) async fn run_event_loop(
                 app.needs_redraw = true;
             }
             if !tick.events.is_empty()
-                && handle_view_events_boxed(
-                    terminal,
-                    app,
-                    config,
-                    &task_manager,
-                    &mut engine_handle,
-                    tick.events,
-                )
-                .await?
+                && handle_view_events_boxed(terminal, app, config, &mut engine_handle, tick.events)
+                    .await?
             {
                 return Ok(());
             }
@@ -5591,10 +5722,7 @@ pub(crate) async fn run_event_loop(
         // browsing. After a short grace the aquarium stops requesting frames
         // and the scene is genuinely still until real activity resumes
         // (owner pain, captains-log #16).
-        let durable_tasks_active = app
-            .task_panel
-            .iter()
-            .any(|task| matches!(task.status.as_str(), "queued" | "running" | "waiting"));
+        let durable_tasks_active = has_live_durable_tasks(app);
         let ambient_busy = shell_phase_working
             || app.turn_started_at.is_some()
             || has_running_agents
@@ -5641,12 +5769,8 @@ pub(crate) async fn run_event_loop(
         // Read once here so the animation tick and the frame limiter below
         // agree on the same tier for this frame.
         let cadence_tier = transcript_cadence_tier(app, has_running_agents);
-        let underwater_life_motion = !underwater_surface_obscured
-            && crate::tui::underwater::ambient_life_motion_enabled(app)
-            && app.viewport.last_transcript_area.is_some_and(|area| {
-                area.width >= crate::tui::ocean::AMBIENT_MIN_WIDTH
-                    && area.height >= crate::tui::ocean::AMBIENT_MIN_HEIGHT
-            });
+        let underwater_life_motion =
+            underwater_life_motion_requested(app, underwater_surface_obscured, ambient_settled);
         let underwater_life_only = underwater_life_motion
             && !(status_motion
                 || underwater_ambient_motion
@@ -5786,6 +5910,7 @@ pub(crate) async fn run_event_loop(
             // drained money+identity batch so an immediate reload agrees with
             // the live footer and worker record.
             if runtime_usage_arrived
+                && !app.dispatch_in_flight
                 && let Ok(manager) = SessionManager::default_location()
                 && let Ok(session) = build_session_snapshot(app, &manager)
             {
@@ -5930,6 +6055,9 @@ pub(crate) async fn run_event_loop(
         if let Some(until_flush) = app.paste_burst_next_flush_delay_if_enabled(now) {
             poll_timeout = poll_timeout.min(until_flush);
         }
+        if let Some(until_paste) = crate::tui::paste::pending_paste_poll_delay(app) {
+            poll_timeout = poll_timeout.min(until_paste);
+        }
         if let Some(until_draw) = draw_wait {
             poll_timeout = poll_timeout.min(until_draw);
         }
@@ -6054,13 +6182,16 @@ pub(crate) async fn run_event_loop(
                 }
             }
             if let Event::Paste(text) = &evt {
-                if crate::tui::work_surface::handle_terminal_paste(app, text) {
-                    continue;
-                }
-                if app.launch.return_to_session && app.view_stack.is_empty() {
+                if app.launch.return_to_session
+                    && app.view_stack.is_empty()
+                    && app.focus() != crate::tui::shell_key_routing::Focus::TerminalPanel
+                {
                     app.launch.dismiss();
                 }
-                handle_bracketed_paste(app, text);
+                crate::tui::paste::handle_paste(
+                    app,
+                    crate::tui::paste::PasteSource::Terminal(text),
+                );
                 continue;
             }
 
@@ -6147,85 +6278,25 @@ pub(crate) async fn run_event_loop(
                     &mut pending_terminal_events,
                 )?;
                 let events = handle_mouse_event(app, mouse, event_observed_at);
-                if handle_view_events_boxed(
-                    terminal,
-                    app,
-                    config,
-                    &task_manager,
-                    &mut engine_handle,
-                    events,
-                )
-                .await?
+                if handle_view_events_boxed(terminal, app, config, &mut engine_handle, events)
+                    .await?
                 {
                     return Ok(());
                 }
                 if app.pending_launch_action.is_none() {
                     restore_launch_card_after_view_close(app);
                 }
-                if let Some(action) = app.pending_launch_action.take() {
-                    match action {
-                        crate::tui::underwater::LaunchAction::None => {}
-                        crate::tui::underwater::LaunchAction::ReturnToSession => {
-                            app.launch.dismiss()
-                        }
-                        crate::tui::underwater::LaunchAction::NewSession => {
-                            let result = begin_launch_session(app, None);
-                            if apply_command_result(
-                                terminal,
-                                app,
-                                &mut engine_handle,
-                                &task_manager,
-                                config,
-                                result,
-                            )
-                            .await?
-                            {
-                                return Ok(());
-                            }
-                        }
-                        crate::tui::underwater::LaunchAction::ResumeSession(session_id) => {
-                            let result = resume_launch_session(app, &session_id);
-                            if apply_command_result(
-                                terminal,
-                                app,
-                                &mut engine_handle,
-                                &task_manager,
-                                config,
-                                result,
-                            )
-                            .await?
-                            {
-                                return Ok(());
-                            }
-                        }
-                        crate::tui::underwater::LaunchAction::ShowRecent => {
-                            app.launch.expand_recent();
-                        }
-                        crate::tui::underwater::LaunchAction::BrowseSessions => {
-                            // A launched command dissolves the card; Esc
-                            // out of the picker brings it back.
-                            app.launch.dissolve_card(app.ambient_clock_ms);
-                            app.view_stack.push(
-                                SessionPickerView::new(&app.workspace, app.ui_locale)
-                                    .with_current_session(app.current_session_id.as_deref()),
-                            );
-                        }
-                        crate::tui::underwater::LaunchAction::McpManager => {
-                            app.launch.dissolve_card(app.ambient_clock_ms);
-                            open_mcp_extensions(app);
-                        }
-                        crate::tui::underwater::LaunchAction::Help => {
-                            toggle_help_view(app);
-                        }
-                    }
-                    app.needs_redraw = true;
+                if let Some(action) = app.pending_launch_action.take()
+                    && apply_launch_action(terminal, app, &mut engine_handle, config, action)
+                        .await?
+                {
+                    return Ok(());
                 }
                 if let Some(chord) = app.pending_composer_submit.take() {
                     if dispatch_session_composer_submit(
                         terminal,
                         app,
                         &mut engine_handle,
-                        &task_manager,
                         config,
                         chord,
                         true,
@@ -6247,7 +6318,6 @@ pub(crate) async fn run_event_loop(
                                 terminal,
                                 app,
                                 &mut engine_handle,
-                                &task_manager,
                                 config,
                                 commands::CommandResult::action(action),
                             )
@@ -6274,17 +6344,20 @@ pub(crate) async fn run_event_loop(
                 continue;
             };
 
-            if key.kind != KeyEventKind::Press {
-                // Windows Terminal consumes the key-down of any chord it handles
-                // itself (its own paste action, and any global hotkey) and
-                // forwards only the key-up. A Press-only gate therefore makes
-                // Ctrl+V unreachable in the one terminal where that chord is
-                // most used. Paste is a clipboard read, so acting on the release
-                // is safe; `paste_from_clipboard` de-duplicates the terminals
-                // that do send both edges.
-                let paste_release =
-                    key.kind == KeyEventKind::Release && key_shortcuts::is_paste_shortcut(&key);
-                if !paste_release {
+            // Windows Terminal consumes the key-down of any chord it handles
+            // itself (its own paste action, and any global hotkey) and
+            // forwards only the key-up. A release whose press was seen is the
+            // second edge of a paste already handled. A release with no press
+            // means the terminal took the chord and delivers any text itself,
+            // so that edge only picks up an image the terminal cannot send.
+            match key_shortcuts::paste_edge(&key, &mut app.paste_shortcut_press_seen) {
+                key_shortcuts::PasteEdge::Route => {}
+                key_shortcuts::PasteEdge::Ignore => continue,
+                key_shortcuts::PasteEdge::ImageOnly => {
+                    crate::tui::paste::handle_paste(
+                        app,
+                        crate::tui::paste::PasteSource::ReleaseOnly,
+                    );
                     continue;
                 }
             }
@@ -6462,7 +6535,6 @@ pub(crate) async fn run_event_loop(
                                 terminal,
                                 app,
                                 &mut engine_handle,
-                                &task_manager,
                                 config,
                                 &command,
                             )
@@ -6563,22 +6635,18 @@ pub(crate) async fn run_event_loop(
                 // onboarding back-transition the shell used to force.
                 OnboardingKeyRoute::ProviderPicker | OnboardingKeyRoute::AccountLogin => {
                     if key_shortcuts::is_paste_shortcut(&key)
-                        && paste_provider_picker_from_clipboard(app)
+                        && crate::tui::paste::handle_paste(
+                            app,
+                            crate::tui::paste::PasteSource::Shortcut,
+                        )
                     {
                         app.needs_redraw = true;
                         continue;
                     }
                     let events = app.view_stack.handle_key(key);
                     app.needs_redraw = true;
-                    if handle_view_events_boxed(
-                        terminal,
-                        app,
-                        config,
-                        &task_manager,
-                        &mut engine_handle,
-                        events,
-                    )
-                    .await?
+                    if handle_view_events_boxed(terminal, app, config, &mut engine_handle, events)
+                        .await?
                     {
                         return Ok(());
                     }
@@ -6711,7 +6779,6 @@ pub(crate) async fn run_event_loop(
                     terminal,
                     app,
                     config,
-                    &task_manager,
                     &mut engine_handle,
                     vec![ViewEvent::TopbarRoutePickerRequested],
                 )
@@ -6730,15 +6797,8 @@ pub(crate) async fn run_event_loop(
                 if !app.view_stack.is_empty() {
                     let events = app.view_stack.handle_key(key);
                     app.needs_redraw = true;
-                    if handle_view_events_boxed(
-                        terminal,
-                        app,
-                        config,
-                        &task_manager,
-                        &mut engine_handle,
-                        events,
-                    )
-                    .await?
+                    if handle_view_events_boxed(terminal, app, config, &mut engine_handle, events)
+                        .await?
                     {
                         return Ok(());
                     }
@@ -6833,7 +6893,6 @@ pub(crate) async fn run_event_loop(
                                 terminal,
                                 app,
                                 &mut engine_handle,
-                                &task_manager,
                                 config,
                                 chord,
                                 key.modifiers == KeyModifiers::NONE,
@@ -6879,52 +6938,11 @@ pub(crate) async fn run_event_loop(
                             launch_locale,
                         )
                     });
-                    match action {
-                        crate::tui::underwater::LaunchAction::None => {}
-                        crate::tui::underwater::LaunchAction::ReturnToSession => {
-                            app.launch.dismiss()
-                        }
-                        crate::tui::underwater::LaunchAction::NewSession => {
-                            let result = begin_launch_session(app, None);
-                            if apply_command_result(
-                                terminal,
-                                app,
-                                &mut engine_handle,
-                                &task_manager,
-                                config,
-                                result,
-                            )
-                            .await?
-                            {
-                                return Ok(());
-                            }
-                        }
-                        crate::tui::underwater::LaunchAction::ResumeSession(session_id) => {
-                            crate::tui::underwater::open_launch_resume_confirm(app, &session_id);
-                        }
-                        crate::tui::underwater::LaunchAction::ShowRecent => {
-                            app.launch.expand_recent();
-                        }
-                        crate::tui::underwater::LaunchAction::BrowseSessions => {
-                            // A launched command dissolves the card; Esc
-                            // out of the picker brings it back.
-                            app.launch.dissolve_card(app.ambient_clock_ms);
-                            app.view_stack.push(
-                                SessionPickerView::new(&app.workspace, app.ui_locale)
-                                    .with_current_session(app.current_session_id.as_deref()),
-                            );
-                        }
-                        crate::tui::underwater::LaunchAction::McpManager => {
-                            app.launch.dissolve_card(app.ambient_clock_ms);
-                            open_mcp_extensions(app);
-                        }
-                        crate::tui::underwater::LaunchAction::Help => {
-                            toggle_help_view(app);
-                        } // `handle_launch_key` never yields this; the mouse send
-                          // path above is the only producer. The arm keeps the
-                          // match exhaustive.
+                    if apply_launch_action(terminal, app, &mut engine_handle, config, action)
+                        .await?
+                    {
+                        return Ok(());
                     }
-                    app.needs_redraw = true;
                     continue;
                 }
             }
@@ -7020,7 +7038,10 @@ pub(crate) async fn run_event_loop(
 
             if !app.view_stack.is_empty() {
                 if key_shortcuts::is_paste_shortcut(&key)
-                    && paste_provider_picker_from_clipboard(app)
+                    && crate::tui::paste::handle_paste(
+                        app,
+                        crate::tui::paste::PasteSource::Shortcut,
+                    )
                 {
                     app.needs_redraw = true;
                     continue;
@@ -7033,15 +7054,8 @@ pub(crate) async fn run_event_loop(
                 };
                 clear_work_inspector_after_pager_close(app, closing_work_inspector);
                 app.needs_redraw = true;
-                if handle_view_events_boxed(
-                    terminal,
-                    app,
-                    config,
-                    &task_manager,
-                    &mut engine_handle,
-                    events,
-                )
-                .await?
+                if handle_view_events_boxed(terminal, app, config, &mut engine_handle, events)
+                    .await?
                 {
                     return Ok(());
                 }
@@ -7059,7 +7073,6 @@ pub(crate) async fn run_event_loop(
                                 terminal,
                                 app,
                                 &mut engine_handle,
-                                &task_manager,
                                 config,
                                 commands::CommandResult::action(action),
                             )
@@ -7174,10 +7187,6 @@ pub(crate) async fn run_event_loop(
                 app.backtrack.reset();
             }
 
-            // Global keybindings — voice first (⌥V) so it doesn't insert a char.
-            if handle_voice_key(app, &key) {
-                continue;
-            }
             if handle_reasoning_effort_key(app, &key) {
                 if let Err(err) = persist_pending_work_checkpoint(app).await {
                     app.status_message = Some(format!(
@@ -7441,7 +7450,9 @@ pub(crate) async fn run_event_loop(
                                 }
                             }
                             let was_waiting = app.goal_continuation_waiting;
-                            engine_handle.cancel();
+                            if !crate::tui::external_agent::interrupt_external_turn(app) {
+                                engine_handle.cancel();
+                            }
                             if was_waiting {
                                 app.goal_continuation_waiting = false;
                                 app.status_message =
@@ -7449,6 +7460,7 @@ pub(crate) async fn run_event_loop(
                                 app.disarm_quit();
                                 continue;
                             }
+                            bank_live_turn_time(app);
                             mark_active_turn_cancelled_locally(app);
                             current_streaming_text.clear();
                             stream_display_clock.reset();
@@ -7469,7 +7481,9 @@ pub(crate) async fn run_event_loop(
                             return Ok(());
                         }
                         CtrlCDisposition::ArmExit => {
-                            app.arm_quit();
+                            if !cancel_background_commands(app) {
+                                app.arm_quit();
+                            }
                         }
                     }
                 }
@@ -7490,7 +7504,7 @@ pub(crate) async fn run_event_loop(
                     crate::tui::agent_focus::exit_focus(app);
                     continue;
                 }
-                // Vim composer mode: Esc from Insert/Visual → Normal.
+                // Vim composer mode: Esc from Insert → Normal.
                 // This arm runs before the generic Esc handler so Insert mode
                 // Esc doesn't accidentally cancel an in-flight request.
                 KeyCode::Esc
@@ -7565,6 +7579,9 @@ pub(crate) async fn run_event_loop(
                             app.clear_composer_draft();
                         }
                         EscapeAction::Noop => {
+                            if cancel_background_commands(app) {
+                                continue;
+                            }
                             // Nothing else cares about this Esc — route it
                             // through the backtrack state machine. While
                             // streaming or with the live transcript already
@@ -7775,7 +7792,6 @@ pub(crate) async fn run_event_loop(
                             terminal,
                             app,
                             &mut engine_handle,
-                            &task_manager,
                             config,
                             action,
                             false,
@@ -7794,7 +7810,6 @@ pub(crate) async fn run_event_loop(
                                 terminal,
                                 app,
                                 &mut engine_handle,
-                                &task_manager,
                                 config,
                                 &input,
                             )
@@ -7806,7 +7821,6 @@ pub(crate) async fn run_event_loop(
                             terminal,
                             app,
                             &mut engine_handle,
-                            &task_manager,
                             config,
                             input,
                             action,
@@ -7829,7 +7843,6 @@ pub(crate) async fn run_event_loop(
                         terminal,
                         app,
                         &mut engine_handle,
-                        &task_manager,
                         config,
                         action,
                         is_plain_enter,
@@ -8092,7 +8105,6 @@ pub(crate) async fn run_event_loop(
                         terminal,
                         app,
                         &mut engine_handle,
-                        &task_manager,
                         config,
                         "/update install",
                     )
@@ -8168,14 +8180,10 @@ pub(crate) async fn run_event_loop(
                     crate::tui::mouse_ui::cut_selection(app);
                 }
                 _ if key_shortcuts::is_paste_shortcut(&key) => {
-                    app.paste_from_clipboard();
+                    crate::tui::paste::handle_paste(app, crate::tui::paste::PasteSource::Shortcut);
                 }
                 KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::ALT) => {
                     apply_mode_update(app, &engine_handle, AppMode::Agent).await;
-                    continue;
-                }
-                KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    apply_yolo_compat_update(app, &engine_handle, config).await;
                     continue;
                 }
                 KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -8184,10 +8192,6 @@ pub(crate) async fn run_event_loop(
                 }
                 KeyCode::Char('A') if key.modifiers.contains(KeyModifiers::ALT) => {
                     apply_mode_update(app, &engine_handle, AppMode::Agent).await;
-                    continue;
-                }
-                KeyCode::Char('Y') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    apply_yolo_compat_update(app, &engine_handle, config).await;
                     continue;
                 }
                 KeyCode::Char('P') if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -8206,13 +8210,6 @@ pub(crate) async fn run_event_loop(
                 {
                     vim_mode::handle_vim_normal_key(app, c);
                     continue;
-                }
-                // Vim composer: in Visual mode plain chars are ignored
-                // (no text insertion until `i` / `a` enters Insert).
-                KeyCode::Char(_)
-                    if app.vim_is_visual_mode() && is_plain_char && app.view_stack.is_empty() =>
-                {
-                    // absorb — Visual mode not yet fully implemented
                 }
                 KeyCode::Char(c) if is_plain_char => {
                     app.insert_char(c);
@@ -9354,6 +9351,122 @@ mod launch_session_sync_tests {
         assert!(caller_view(workspace.path(), Some("startup-session"), None).is_none());
 
         run.abort();
+    }
+}
+
+fn background_command_notice_id(command: &str) -> String {
+    format!("background-command:{command}")
+}
+
+pub(crate) fn sync_background_command_notices(app: &mut App, shown: &mut Vec<&'static str>) {
+    use crate::commands::background_host as background;
+    let running = background::running();
+    if running == *shown {
+        return;
+    }
+    for command in shown.iter().filter(|command| !running.contains(command)) {
+        app.retire_event_notices(&background_command_notice_id(command));
+    }
+    for command in running.iter().filter(|command| !shown.contains(command)) {
+        app.push_status_toast_record(crate::tui::app::StatusToast::standing(
+            background::line(app.ui_locale, MessageId::CmdBackgroundWorking, command),
+            StatusToastLevel::Info,
+            background_command_notice_id(command),
+        ));
+    }
+    *shown = running;
+    app.needs_redraw = true;
+}
+
+pub(crate) fn cancel_background_commands(app: &mut App) -> bool {
+    use crate::commands::background_host as background;
+    let cancelled = background::cancel_all();
+    if cancelled.is_empty() {
+        return false;
+    }
+    let lines: Vec<String> = cancelled
+        .iter()
+        .map(|command| background::line(app.ui_locale, MessageId::CmdBackgroundCancelled, command))
+        .collect();
+    app.status_message = Some(lines.join(" "));
+    app.needs_redraw = true;
+    true
+}
+
+pub(crate) fn bank_live_turn_time(app: &mut App) {
+    let Some(started) = app.turn_started_at.take() else {
+        return;
+    };
+    let elapsed = started.elapsed();
+    if elapsed.is_zero() {
+        return;
+    }
+    app.cumulative_turn_duration = app.cumulative_turn_duration.saturating_add(elapsed);
+    if let Some(user_index) = app.active_turn_user_index {
+        app.turn_work_durations.insert(user_index, elapsed);
+        app.turn_durations_revision = app.turn_durations_revision.wrapping_add(1);
+    }
+}
+
+fn push_turn_interrupted_record(app: &mut App, worked: Duration) {
+    let content = if worked.as_secs() == 0 {
+        app.tr(MessageId::TurnInterruptedRecord).into_owned()
+    } else {
+        app.tr(MessageId::TurnInterruptedRecordWithWork).replace(
+            "{duration}",
+            &codewhale_command_contract::elapsed::format_elapsed_secs(worked.as_secs()),
+        )
+    };
+    app.add_message(HistoryCell::System { content });
+    app.needs_redraw = true;
+}
+
+#[cfg(test)]
+mod turn_interrupt_record_tests {
+    use super::{bank_live_turn_time, push_turn_interrupted_record};
+    use crate::tui::history::HistoryCell;
+    use std::time::{Duration, Instant};
+
+    fn app() -> (tempfile::TempDir, crate::tui::app::App) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let app = crate::tui::test_support::test_app_with_options(
+            crate::tui::test_support::test_tui_options(temp.path()),
+        );
+        (temp, app)
+    }
+
+    #[test]
+    fn interrupt_record_is_a_durable_system_cell_with_work_time() {
+        let _home = crate::test_support::SealedHome::new();
+        let (_temp, mut app) = app();
+        let before = app.history.len();
+        push_turn_interrupted_record(&mut app, Duration::from_secs(75));
+        push_turn_interrupted_record(&mut app, Duration::ZERO);
+        assert_eq!(app.history.len(), before + 2);
+        let HistoryCell::System { content } = &app.history[before] else {
+            panic!("expected HistoryCell::System");
+        };
+        assert!(content.contains("1m 15s"), "{content}");
+        let HistoryCell::System { content } = &app.history[before + 1] else {
+            panic!("expected HistoryCell::System");
+        };
+        assert!(!content.contains("{duration}"), "{content}");
+    }
+
+    #[test]
+    fn banking_the_live_turn_keeps_the_worked_total_from_dropping() {
+        let _home = crate::test_support::SealedHome::new();
+        let (_temp, mut app) = app();
+        app.cumulative_turn_duration = Duration::from_secs(30);
+        app.turn_started_at = Instant::now().checked_sub(Duration::from_secs(10));
+        app.active_turn_user_index = Some(0);
+        bank_live_turn_time(&mut app);
+        assert!(app.turn_started_at.is_none());
+        assert!(app.cumulative_turn_duration >= Duration::from_secs(40));
+        assert!(app.turn_work_durations.contains_key(&0));
+        let banked = app.cumulative_turn_duration;
+        bank_live_turn_time(&mut app);
+        assert_eq!(app.cumulative_turn_duration, banked);
     }
 }
 

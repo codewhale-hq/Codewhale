@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use codewhale_release::InstallMethod;
 use serde::Serialize;
 
 /// Canonical user-scoped paths reported by both human and JSON doctor output.
@@ -615,22 +616,43 @@ pub(crate) async fn print_update_report(
     for line in update_mode_lines(update) {
         println!("  · {line}");
     }
+    let cached = (!probes.should_check_updates())
+        .then(codewhale_config::codewhale_home)
+        .and_then(Result::ok)
+        .and_then(|home| {
+            codewhale_release::UpdateCheckCache::load(&codewhale_release::check::cache_path_in(
+                &home,
+            ))
+        })
+        .and_then(|entry| entry.latest_tag);
     let report = if probes.should_check_updates() {
         doctor_update_report(
             current_version,
             codewhale_release::latest_release_tag_async(codewhale_release::ReleaseChannel::Stable)
                 .await,
         )
+    } else if let Some(tag) = cached.as_deref() {
+        doctor_update_report(current_version, Ok::<_, ()>(tag.to_string()))
     } else {
         DoctorUpdateReport::NotChecked
     };
-    let method = codewhale_release::current_install_method();
-    for (index, line) in doctor_update_report_lines(&report, method.update_command())
+    let update_command = std::env::current_exe().map_or_else(
+        |_| "codewhale update".to_string(),
+        |exe| {
+            codewhale_release::installs::manager_update_command(InstallMethod::detect(&exe), &exe)
+        },
+    );
+    for (index, line) in doctor_update_report_lines(&report, &update_command)
         .into_iter()
         .enumerate()
     {
         let indent = if index == 0 { "  ·" } else { "   " };
         println!("{indent} {line}");
+    }
+    if cached.is_some() {
+        println!(
+            "    (latest is from the last automatic check; `codewhale doctor --check-updates` asks again)"
+        );
     }
 }
 
@@ -719,23 +741,103 @@ fn ds4_probe_error(config: &codewhale_runtime::config::Config, error: &str) -> S
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DoctorDetail {
+    Short,
+    Full,
+    All,
+}
+
+impl DoctorDetail {
+    pub(crate) fn from_flags(full: bool, all: bool, needs_sections: bool) -> Self {
+        if all {
+            Self::All
+        } else if full || needs_sections {
+            Self::Full
+        } else {
+            Self::Short
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DoctorShortCheck {
+    Works(String),
+    Note(String),
+    NeedsAttention(String),
+}
+
+const SHORT_REPORT_READY_STEP: &str = "Run `codewhale` in the folder you want to work in.";
+const SHORT_REPORT_DETAIL_STEP: &str = "Run `codewhale doctor --full` to see every check.";
+pub(crate) const SHORT_REPORT_FOOTER: &str = "`codewhale doctor --full` prints every check.";
+
+pub(crate) fn short_report_lines(verdict: &str, checks: &[DoctorShortCheck]) -> Vec<String> {
+    let (head, step) = match verdict.split_once(" → ") {
+        Some((head, step)) => (head.trim(), Some(step.trim())),
+        None => (verdict.trim(), None),
+    };
+    let mut lines = vec![if head.ends_with(['.', '!', '?']) {
+        head.to_string()
+    } else {
+        format!("{head}.")
+    }];
+    lines.push(String::new());
+    lines.push("Works:".to_string());
+    let before = lines.len();
+    for check in checks {
+        match check {
+            DoctorShortCheck::Works(text) => lines.push(format!("  ✓ {text}")),
+            DoctorShortCheck::Note(text) => lines.push(format!("  · {text}")),
+            DoctorShortCheck::NeedsAttention(_) => {}
+        }
+    }
+    if lines.len() == before {
+        lines.push("  nothing was confirmed".to_string());
+    }
+    lines.push("Needs attention:".to_string());
+    let before = lines.len();
+    for check in checks {
+        if let DoctorShortCheck::NeedsAttention(text) = check {
+            lines.push(format!("  ! {text}"));
+        }
+    }
+    if lines.len() == before {
+        lines.push("  nothing".to_string());
+    }
+    lines.push("Next step:".to_string());
+    let step = match step {
+        Some(step) => {
+            let step = step
+                .replace("see API Connectivity below; ", "")
+                .replace("; see API Connectivity below", "");
+            let mut chars = step.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+                None => SHORT_REPORT_DETAIL_STEP.to_string(),
+            }
+        }
+        None if head.starts_with("Ready") => SHORT_REPORT_READY_STEP.to_string(),
+        None => SHORT_REPORT_DETAIL_STEP.to_string(),
+    };
+    lines.push(format!("  {step}"));
+    lines.push(String::new());
+    lines.push(SHORT_REPORT_FOOTER.to_string());
+    lines
+}
+
 #[cfg(test)]
 #[path = "doctor/tests.rs"]
 mod tests;
 
 pub(crate) fn update_mode_lines(update: &codewhale_runtime::config::UpdateConfig) -> Vec<String> {
     use codewhale_release::autoupdate;
-    let method = codewhale_release::current_install_method();
+    let exe = std::env::current_exe().unwrap_or_default();
+    let method = InstallMethod::detect(&exe);
     let resolved = autoupdate::resolve_mode(update.mode.as_deref(), update.check_for_updates);
-    let mut lines = vec![if method.supports_self_update() {
-        format!("automatic updates: {}", resolved.describe())
-    } else {
-        format!(
-            "automatic updates: not for this copy; {} updates it ({})",
-            method.label(),
-            method.update_command()
-        )
-    }];
+    let mut lines = vec![codewhale_release::installs::update_answer(method, &exe)];
+    if method.supports_self_update() {
+        lines.push(format!("automatic updates: {}", resolved.describe()));
+    }
     if let Ok(home) = codewhale_config::codewhale_home() {
         if let Some(staged) = autoupdate::load_staged(&home) {
             lines.push(format!(
@@ -754,14 +856,27 @@ pub(crate) fn update_mode_lines(update: &codewhale_runtime::config::UpdateConfig
             ));
         }
         if let Some(previous) = autoupdate::load_previous(&home) {
-            lines.push(format!(
-                "rollback: v{} is kept (`codewhale update --rollback`)",
-                previous.version
-            ));
+            lines.push(
+                match autoupdate::rollback_blocker(&previous.version, env!("CARGO_PKG_VERSION")) {
+                    None => format!(
+                        "rollback: v{} is kept (`codewhale update --rollback`)",
+                        previous.version
+                    ),
+                    Some(blocker) => {
+                        format!("rollback: v{} is kept, but {blocker}", previous.version)
+                    }
+                },
+            );
         }
-        if let Some(skip) = autoupdate::load_state(&home).skip_version {
+        let state = autoupdate::load_state(&home);
+        if let Some(skip) = state.skip_version {
             lines.push(format!(
                 "skipped: v{skip} was rolled back and is not reinstalled automatically"
+            ));
+        }
+        if let Some(reason) = state.last_failure {
+            lines.push(format!(
+                "last automatic update failed: {reason}. Run `codewhale update` to retry and see the full error."
             ));
         }
     }
@@ -769,9 +884,19 @@ pub(crate) fn update_mode_lines(update: &codewhale_runtime::config::UpdateConfig
 }
 
 pub(crate) fn installation_lines(brief: bool) -> Vec<String> {
+    let mut lines = install_summary_lines(brief);
+    lines.extend(recovery_lines());
+    lines
+}
+
+pub(crate) fn install_summary_lines(brief: bool) -> Vec<String> {
     let running = std::env::current_exe().ok();
     let inventory = codewhale_release::installs::inventory(running.as_deref());
-    let mut lines = inventory.summary_lines(brief, env!("CARGO_PKG_VERSION"));
+    inventory.summary_lines(brief, env!("CARGO_PKG_VERSION"))
+}
+
+pub(crate) fn recovery_lines() -> Vec<String> {
+    let mut lines = Vec::new();
     if let Ok(home) = codewhale_config::codewhale_home() {
         let now = codewhale_release::check::now_unix();
         for folder in codewhale_release::installs::recovery_folders(&home) {
@@ -791,10 +916,23 @@ pub(crate) fn installation_lines(brief: bool) -> Vec<String> {
     lines
 }
 
-pub(crate) fn run_installs_report(json: bool, brief: bool) -> Result<()> {
+/// `update` is set for the installers' brief report, so their closing lines
+/// come from the installed binary's own update state rather than a guess.
+pub(crate) fn run_installs_report(
+    json: bool,
+    brief: bool,
+    update: Option<&codewhale_runtime::config::UpdateConfig>,
+) -> Result<()> {
     if !json {
         for line in installation_lines(brief) {
             println!("{line}");
+        }
+        // The installers already print the update command with its full path.
+        if let Some(update) = update {
+            for line in update_mode_lines(update).into_iter().skip(1) {
+                println!("{line}");
+            }
+            println!("Change it with: codewhale config set update.mode auto|notify|off");
         }
         return Ok(());
     }

@@ -2,7 +2,7 @@
   "project": {
     "oneEngineBehindEverySurface": "一个引擎，支撑所有入口",
     "theTerminalCodewhaleExecTheLocalBrowser": "终端、codewhale exec、本地浏览器界面和编辑器共用同一个 Rust 引擎。在引擎里修好一处，所有入口都受益。",
-    "theLargestCratesStillNeedToBe": "最大的几个 crate 还需要拆分，桌面应用也还没有公开下载。",
+    "theLargestCratesStillNeedToBe": "最大的几个 crate 还需要拆分。",
     "everyModelIsAPeer": "所有模型一视同仁",
     "useABuiltInProviderAnyOpenAI": "使用内置提供商、任意 OpenAI 兼容端点或本地模型。没有哪个提供商排在别人前面。",
     "providerBehaviorStillNeedsToMoveInto": "提供商的行为还需要整理成配置档，而且很多大家在用的提供商和模型还没有人验证过。",
@@ -28,9 +28,7 @@
     "inProgress": "进行中",
     "planned": "已规划",
     "later": "更远",
-    "thisReleaseFixesProblemsReportedAgainst0": "这个版本修复针对 0.10.2 报告的问题，并加入 DeepSeek Harness 插件兼容、在 Codewhale 里运行其他 Agent 以及更完整的 Runtime API。",
-    "thisReleaseImprovesReliabilityThroughProcessCleanup": "这个版本通过进程清理、资源限制和移除死代码来提高可靠性。",
-    "thisReleaseImprovesUsabilityWithRunningCommand": "这个版本通过运行中命令的详情、用量诊断和文件预览来改善易用性。",
+    "thisReleaseSimplifiesTheWholeProduct": "这个版本简化整个产品：每项改动都会移除一条与其他路径做同样事情的路径。",
     "thisReleaseReworksTheArchitectureWithSmaller": "这个版本重整架构，包括更小的 crate、提供商配置档和统一的命令契约。",
     "thisReleaseBringsTheDesktopAppTo": "这个版本把桌面应用带到各个平台，并加入可插拔的记忆和经批准的技能学习。",
     "roadmap": "路线图",
@@ -310,7 +308,13 @@
     "downloadVersion": "版本 {version}",
     "downloadSize": "大小 {size}",
     "downloadChecksum": "SHA-256 校验和",
-    "downloadSigned": "已签名并经过公证"
+    "downloadSigned": "已签名并经过公证",
+    "downloadLinux": "Linux",
+    "downloadAptTitle": "使用 apt 安装",
+    "downloadAptTrust": "apt 软件源使用 Codewhale 的密钥签名，更新通过 apt 安装。",
+    "downloadAppImage": "下载 AppImage",
+    "downloadAppImageTrust": "请对照所示的 SHA-256 校验和验证 AppImage。它目前不会自行更新。",
+    "downloadAptFingerprint": "签名密钥的指纹应为 {fingerprint}。请与您下载的密钥核对。"
   },
   "home": {
     "metaTitle": "Codewhale · 模型可以是任何人的。智能体应当属于你。",
@@ -348,8 +352,8 @@
     "agentRoleImplement": "用最小的改动完成一项具体修改。",
     "agentRoleReviewer": "阅读一处修改，并按严重程度评定发现的问题，不修改文件。",
     "agentsLink": "了解子智能体如何工作",
-    "directionShotAlt": "Codewhale 桌面应用。左侧是会话列表；中间已经编辑了 tally/core.py，并针对 python3 -m pytest -q 询问“Run a command?”，提供 Allow once、Allow for this session 和 Don't allow 按钮。",
-    "directionShotCaption": "开发中的桌面应用运行在同一个引擎上。这里它通过 Ollama 在本地运行 qwen3:4b，在 Accept Edits 模式下应用了修改，并在运行测试命令前先询问你的意见。",
+    "directionShotAlt": "Codewhale 桌面应用。左侧是会话列表；中间一项修复失败测试的任务正在等待运行 python3 -m pytest 的许可，提供 Allow 和 Deny。",
+    "directionShotCaption": "桌面应用运行在同一个引擎上。这里它在 Accept Edits 模式下使用 DeepSeek V4.1 Flash，并在运行测试命令前先询问你的意见。",
     "directionShotLink": "查看桌面应用",
     "sectionDirectionHeading": "这是你的智能体将要去的地方。",
     "sectionDirectionBody": "Codewhale 正在成为横跨你的终端、桌面应用、浏览器和云端计算机的统一环境，全部由同一个引擎驱动，所以你的工作可以在它们之间转移，并始终属于你。下面每个部分都说明了它今天所处的状态。",
@@ -686,8 +690,8 @@
                 "下载的文件损坏或被篡改，因此没有安装任何东西。请重试；如果一再出现，不要使用镜像源。"
               ],
               [
-                "`The package-managed executable was not changed.`",
-                "你是通过 npm、Cargo 或 Homebrew 安装的，请用对应的工具更新，例如 `npm install -g codewhale`。"
+                "`Not updated: use the command above.`",
+                "你是通过 npm、Cargo 或 Homebrew 安装的。请运行这一行上方打印的命令，例如 `npm install -g codewhale`。`codewhale uninstall` 也以同样的方式结束：`Not removed: use the command above.`。0.10.5 之前的版本打印的是 `The package-managed executable was not changed.`。"
               ]
             ]
           }
@@ -1381,7 +1385,7 @@
             "p": "Workflow 计划卡片有不同的选项，包括编辑或取消计划。请按照该卡片上的标签操作，而非套用上面的普通工具快捷键。"
           },
           {
-            "p": "新审批卡片默认选中“拒绝”，所以除非你更改了设置，按 Enter 会拒绝调用。审批提示默认无限等待；可以在用户配置中设置超时，让未答复的提示在 300 秒后被拒绝："
+            "p": "新审批卡片默认选中“允许”，所以按 Enter 会允许所显示的这一个操作，仅此一次。设置 `default_selection = \"deny\"` 可让 Enter 改为拒绝调用。审批提示默认无限等待；可以在用户配置中设置超时，让未答复的提示在 300 秒后被拒绝："
           },
           {
             "code": "[approval]\ndefault_selection = \"deny\"\ntimeout_seconds = 300",
@@ -2118,7 +2122,7 @@
         "title": "Codewhale 账户",
         "blocks": [
           {
-            "p": "提供商密钥和 Codewhale 账户是两回事。本地使用从不需要账户；任何人都可以登录，云端计算机仅限受邀使用。提供商密钥通过 `codewhale auth set` 保存在你的机器上。"
+            "p": "提供商密钥和 Codewhale 账户是两回事。本地使用从不需要账户。Codewhale 账户尚未开放，云端计算机仅限受邀使用。提供商密钥通过 `codewhale auth set` 保存在你的机器上。"
           },
           {
             "rows": [
@@ -2226,7 +2230,7 @@
         "title": "了解用量统计会发送什么",
         "blocks": [
           {
-            "p": "Codewhale 默认开启匿名用量统计，并在你第一次启动时明确告知，写明处理方是 Codewhale 和 PostHog。它具体包含："
+            "p": "Codewhale 默认开启匿名用量统计，并在你第一次启动时明确告知，由 Codewhale 第一方独立处理。它具体包含："
           },
           {
             "rows": [
@@ -2236,15 +2240,15 @@
               ],
               [
                 "开启时发送",
-                "版本与平台类别、会话时长与结果、以固定类别统计的功能与错误计数，以及一个每 90 天更换一次的随机安装 id。"
+                "版本与平台类别、会话时长与结果、内置提供商 ID、内置公开目录中的模型 ID（自定义/私有/本地模型记为 \"other\"）、汇总 token 数量、内置工具调用与错误计数、以固定类别统计的功能与错误计数，以及一个每 90 天更换一次的随机安装 id。"
               ],
               [
                 "发往哪里",
                 "`https://telemetry.codewhale.net/v1/telemetry`，一个第一方服务，源码就在仓库中。它不存储 IP 地址、国家或位置，不保留请求日志，原始数据保存三个月；只有不含安装 id 的每日聚合总数会保留更久。"
               ],
               [
-                "PostHog",
-                "只有在服务运营方另行配置后，才会转发给 PostHog；转发的字段完全相同，不会多出任何内容。"
+                "仅第一方",
+                "计数仅保存在 Codewhale 自己的 Cloudflare Analytics Engine 采集服务中，不使用任何第三方分析处理方。"
               ]
             ]
           }

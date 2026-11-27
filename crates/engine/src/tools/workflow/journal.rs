@@ -302,10 +302,32 @@ impl WorkflowRunJournal {
         let mut line =
             serde_json::to_string(record).map_err(|err| std::io::Error::other(err.to_string()))?;
         line.push('\n');
-        let mut file = codewhale_util::fs_confined::open_append(&self.root, &self.ledger_path)?;
-        file.write_all(line.as_bytes())?;
-        file.flush()?;
-        Ok(())
+        let snapshot = matches!(record, WorkflowJournalRecord::Snapshot { .. });
+        if snapshot && self.ends_with_torn_line() {
+            line.insert(0, '\n');
+        }
+        if snapshot || !self.ledger_path.exists() {
+            return codewhale_util::fs_confined::append_durable(
+                &self.root,
+                &self.ledger_path,
+                line.as_bytes(),
+            );
+        }
+        codewhale_util::fs_confined::open_append(&self.root, &self.ledger_path)?
+            .write_all(line.as_bytes())
+    }
+
+    fn ends_with_torn_line(&self) -> bool {
+        use std::io::{Read, Seek, SeekFrom};
+        let Ok(mut file) =
+            codewhale_util::fs_confined::open_read_shared(&self.root, &self.ledger_path)
+        else {
+            return false;
+        };
+        let mut last = [0u8; 1];
+        file.seek(SeekFrom::End(-1)).is_ok()
+            && file.read_exact(&mut last).is_ok()
+            && last[0] != b'\n'
     }
 
     fn append_snapshot(&self, record: &WorkflowRunRecord) -> std::io::Result<()> {
@@ -651,6 +673,35 @@ mod tests {
             replayed.lifecycle_seq, 2,
             "reopening must replay the recovery snapshot without another transition"
         );
+    }
+
+    #[test]
+    fn recovery_snapshot_survives_a_torn_last_line() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = WorkflowWorkspaceState::open(tmp.path());
+        state.record_snapshot(&sample_record("workflow_torn", WorkflowRunStatus::Running));
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(state.journal_path())
+            .expect("open journal")
+            .write_all(br#"{"kind":"progress","run_id":"workflow_to"#)
+            .expect("write torn tail");
+
+        WorkflowWorkspaceState::open(tmp.path());
+        let reopened = WorkflowWorkspaceState::open_preserving_running(tmp.path());
+        let run = reopened
+            .runs
+            .lock()
+            .expect("runs lock")
+            .get("workflow_torn")
+            .cloned()
+            .expect("hydrated run");
+        assert_eq!(
+            run.status,
+            WorkflowRunStatus::Failed,
+            "the recovery snapshot must not be glued onto the torn line"
+        );
+        assert_eq!(run.lifecycle_seq, 2);
     }
 
     #[test]

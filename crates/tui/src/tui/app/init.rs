@@ -839,6 +839,8 @@ impl App {
             dispatch_cancel: None,
             last_enter_instant: None,
             last_clipboard_paste: None,
+            pending_paste: None,
+            paste_shortcut_press_seen: false,
             provider_wait_incident_logged: false,
             prompt_suggestion: None,
             notification_settings: config.notifications_config(),
@@ -846,6 +848,7 @@ impl App {
             offline_mode: false,
             turn_error_posted: false,
             turn_error_notice: None,
+            turn_error_cause: None,
             // Surface parse warnings so the user knows their config file is
             // broken instead of silently losing all settings.
             status_message: admission_error
@@ -942,6 +945,7 @@ impl App {
             ambient_clock_ms: 0,
             ambient_clock_sampled_at: None,
             ambient_idle_since: None,
+            ambient_life_held_ms: None,
             ocean_completion_started_at: None,
             ocean_turn_history_start: 0,
             ocean_receipt_settle_start: None,
@@ -979,6 +983,9 @@ impl App {
             sidebar_hover: SidebarHoverState::default(),
             sidebar_hover_tooltip: None,
             model_picker_memory: None,
+            external_agents: Vec::new(),
+            external_agents_rx: None,
+            external_agent: None,
             provider_picker_memory: None,
             last_mouse_pos: None,
             context_panel: settings.context_panel,
@@ -1062,7 +1069,6 @@ impl App {
                     config,
                 )
                 .suspended_allow_warnings,
-            shell_access_editable,
             clipboard: ClipboardHandler::new(),
             approval_session_approved: HashSet::new(),
             approval_session_denied: HashSet::new(),

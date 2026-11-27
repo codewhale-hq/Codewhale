@@ -1,133 +1,133 @@
 {
-  "$description": "Codewhale design 5.4.0. Generated from tokens.json; do not edit.",
+  "$description": "Codewhale design 5.5.0. Generated from tokens.json; do not edit.",
   "color": {
     "dark": {
       "$type": "color",
       "background": {
-        "$value": "#030508"
+        "$value": "#05070b"
       },
       "foreground": {
-        "$value": "#e8edf2"
+        "$value": "#edf1f7"
       },
       "surface": {
-        "$value": "#04070c"
+        "$value": "#080b11"
       },
       "muted_foreground": {
-        "$value": "#aebcc9"
+        "$value": "#b2bfcd"
       },
       "subagent": {
-        "$value": "#b8c7d6"
+        "$value": "#bccad9"
       },
       "disabled": {
-        "$value": "#7f8c9a"
+        "$value": "#828f9e"
       },
       "border": {
-        "$value": "#2a3648"
+        "$value": "#263040"
       },
       "sidebar": {
-        "$value": "#0d121b"
+        "$value": "#0f131c"
       },
       "primary": {
-        "$value": "#0b48bb"
+        "$value": "#0b4cc4"
       },
       "primary_foreground": {
         "$value": "#ffffff"
       },
       "accent": {
-        "$value": "#8fbdff"
+        "$value": "#94beff"
       },
       "hover": {
-        "$value": "#253244"
+        "$value": "#202938"
       },
       "selected": {
-        "$value": "#182232"
+        "$value": "#18202e"
       },
       "attention": {
-        "$value": "#eab982"
+        "$value": "#f0be82"
       },
       "live": {
-        "$value": "#86d3be"
+        "$value": "#7fdfc8"
       },
       "live_peak": {
-        "$value": "#dff7f0"
+        "$value": "#e3fcf4"
       },
       "danger": {
-        "$value": "#eea59d"
+        "$value": "#f4a8a0"
       },
       "border_strong": {
-        "$value": "#8a98a6"
+        "$value": "#8a97a8"
       },
       "ocean_depth": {
-        "$value": "#0d1624"
+        "$value": "#0b111c"
       },
       "diff_add": {
-        "$value": "#22392f"
+        "$value": "#1d352a"
       },
       "diff_remove": {
-        "$value": "#45302f"
+        "$value": "#422b2c"
       }
     },
     "light": {
       "$type": "color",
       "background": {
-        "$value": "#f1f5f9"
+        "$value": "#f4f7fc"
       },
       "foreground": {
-        "$value": "#1b2a35"
+        "$value": "#162230"
       },
       "surface": {
-        "$value": "#fbfcfd"
+        "$value": "#fefeff"
       },
       "muted_foreground": {
-        "$value": "#47515a"
+        "$value": "#45515f"
       },
       "subagent": {
-        "$value": "#3b4a56"
+        "$value": "#374553"
       },
       "disabled": {
-        "$value": "#6f7780"
+        "$value": "#68727f"
       },
       "border": {
-        "$value": "#d5dce3"
+        "$value": "#d5dde8"
       },
       "sidebar": {
-        "$value": "#f9fafc"
+        "$value": "#fcfdfe"
       },
       "primary": {
-        "$value": "#0b48bb"
+        "$value": "#0b4cc4"
       },
       "primary_foreground": {
         "$value": "#ffffff"
       },
       "accent": {
-        "$value": "#2056c2"
+        "$value": "#1552c6"
       },
       "hover": {
-        "$value": "#dde6f0"
+        "$value": "#e2eaf4"
       },
       "selected": {
-        "$value": "#d2dde9"
+        "$value": "#d6e1f0"
       },
       "attention": {
-        "$value": "#7d4e08"
+        "$value": "#7b4b06"
       },
       "live": {
-        "$value": "#1b695a"
+        "$value": "#146857"
       },
       "live_peak": {
-        "$value": "#0d4035"
+        "$value": "#0b3f33"
       },
       "danger": {
-        "$value": "#a32934"
+        "$value": "#a42531"
       },
       "border_strong": {
-        "$value": "#6e7883"
+        "$value": "#687381"
       },
       "ocean_depth": {
-        "$value": "#f6f9fc"
+        "$value": "#f7f9fc"
       },
       "diff_add": {
-        "$value": "#d2eadd"
+        "$value": "#d2ebdd"
       },
       "diff_remove": {
         "$value": "#f8e1dd"
@@ -137,10 +137,10 @@
   "ombre": {
     "$type": "color",
     "rise": {
-      "$value": "#1775c9"
+      "$value": "#176fd0"
     },
     "deep": {
-      "$value": "#0b48bb"
+      "$value": "#0b4cc4"
     }
   },
   "spacing": {
@@ -399,33 +399,33 @@
     "$type": "color",
     "dark": {
       "border": {
-        "$value": "#ffffff17"
+        "$value": "#ffffff1a"
       },
       "highlight": {
-        "$value": "#ffffff24"
+        "$value": "#ffffff29"
       },
       "clear": {
-        "$value": "#141c2866"
+        "$value": "#141a256b"
       },
       "frosted": {
-        "$value": "#141c2894"
+        "$value": "#141a25a3"
       },
       "solid": {
-        "$value": "#141c28"
+        "$value": "#141a25"
       }
     },
     "light": {
       "border": {
-        "$value": "#1f33401f"
+        "$value": "#1828381c"
       },
       "highlight": {
-        "$value": "#ffffffbf"
+        "$value": "#ffffffe0"
       },
       "clear": {
-        "$value": "#ffffff66"
+        "$value": "#ffffff7a"
       },
       "frosted": {
-        "$value": "#ffffff8c"
+        "$value": "#ffffffb8"
       },
       "solid": {
         "$value": "#ffffff"
@@ -436,18 +436,18 @@
     "$type": "color",
     "dark": {
       "fill": {
-        "$value": "#05080dbd"
+        "$value": "#090c13cc"
       },
       "border": {
-        "$value": "#ffffff0d"
+        "$value": "#ffffff13"
       }
     },
     "light": {
       "fill": {
-        "$value": "#fcfdfee0"
+        "$value": "#ffffffeb"
       },
       "border": {
-        "$value": "#1f33401a"
+        "$value": "#18283817"
       }
     }
   },
@@ -455,10 +455,10 @@
     "$type": "color",
     "dark": {
       "fill": {
-        "$value": "#ffffff09"
+        "$value": "#ffffff0a"
       },
       "border": {
-        "$value": "#ffffff14"
+        "$value": "#ffffff18"
       }
     },
     "light": {
@@ -466,7 +466,7 @@
         "$value": "#ffffff"
       },
       "border": {
-        "$value": "#1f33401a"
+        "$value": "#1828381a"
       }
     }
   },
@@ -474,10 +474,10 @@
     "$type": "color",
     "dark": {
       "fill": {
-        "$value": "#ffffff0a"
+        "$value": "#ffffff0b"
       },
       "border": {
-        "$value": "#ffffff17"
+        "$value": "#ffffff1a"
       }
     },
     "light": {
@@ -493,10 +493,10 @@
     "$type": "color",
     "dark": {
       "fill": {
-        "$value": "#8fbdff14"
+        "$value": "#94beff17"
       },
       "border": {
-        "$value": "#8fbdff33"
+        "$value": "#94beff3d"
       }
     },
     "light": {
@@ -512,13 +512,13 @@
     "$type": "color",
     "dark": {
       "fill": {
-        "$value": "#0b121dad"
+        "$value": "#0e131dbd"
       },
       "border": {
-        "$value": "#ffffff14"
+        "$value": "#ffffff17"
       },
       "track": {
-        "$value": "#ffffff1f"
+        "$value": "#ffffff21"
       }
     },
     "light": {

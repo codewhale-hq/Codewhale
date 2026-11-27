@@ -22,6 +22,9 @@ Codewhale instead, see [Codewhale as an ACP agent](RUNTIME_API.md#acp-stdio-adap
    Codex or Muse Code, also install the corresponding ACP adapter and put it
    on `PATH`. Codewhale does not download either executable.
 
+For Google personal accounts, use Antigravity CLI. The Gemini CLI entry can
+discover an existing installation with supported access. [Google account migration](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals)
+
 | Agent | Install the adapter |
 | --- | --- |
 | Claude Code | `npm i -g @agentclientprotocol/claude-agent-acp` |
@@ -30,7 +33,20 @@ Codewhale instead, see [Codewhale as an ACP agent](RUNTIME_API.md#acp-stdio-adap
 
 ## Start a session
 
-You can start the session directly through the Runtime API. In a Bash shell
+### From the terminal
+
+Open `/model` in the TUI to choose either a Codewhale model or an installed external ACP agent under **Other agents (ACP)**. Agents that are installed but not ready show why (for example, a missing adapter or older version) alongside their sign-in command.
+
+For scripts or direct launch, pass `--agent <id>`:
+
+```bash
+codewhale --agent opencode
+codewhale exec --agent opencode "Summarize this project without changing files."
+```
+
+### From the Runtime API
+
+You can also start the session directly through the Runtime API. In a Bash shell
 inside the project folder, start the local server. Keep the token private.
 
 ```bash
@@ -43,6 +59,13 @@ api() { curl -sS --fail-with-body -H "Authorization: Bearer $CODEWHALE_RUNTIME_T
 # Run after the server has started.
 api "$base/v1/agents/external"
 ```
+
+To list another installed ACP agent, export `CODEWHALE_CUSTOM_ACP_AGENTS`
+in the shell that starts Codewhale. Give it a JSON array of commands. Each
+entry needs a unique `id`, a display `name` and a `binary` on PATH or at an
+absolute path. Put command arguments in `args` as separate strings.
+For example, `[{"id":"local-agent","name":"Local agent","binary":"local-agent","args":["acp"]}]`
+adds a local command to discovery. Keep credentials in the agent's own login.
 
 Pick an `id` whose row says `"runnable": true`. This confirms discovery, not
 sign-in. The example below uses OpenCode and `jq` to build the JSON safely,

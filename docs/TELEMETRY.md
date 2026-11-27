@@ -3,8 +3,8 @@
 > 阅读简体中文版：[zh_hans/TELEMETRY.md](zh_hans/TELEMETRY.md)
 
 **Usage analytics are on by default in the current source.** The first
-interactive launch gives a localized, nonblocking disclosure naming **Codewhale
-and PostHog**, with a direct route to turn counting off. Notice version `6`
+interactive launch gives a localized, nonblocking disclosure naming **Codewhale**
+as the sole first-party collector, with a direct route to turn counting off. Notice version `6`
 describes this policy; displaying it is not recorded as human acceptance.
 Missing an older acceptance record does not turn a fresh installation off.
 Existing explicit opt-outs remain off across upgrades, and unreadable privacy
@@ -17,9 +17,7 @@ durable preference and privacy records for new sessions. The compatibility
 command `codewhale config telemetry --accept-notice 5` remains available, but
 is not required for a fresh installation. Collection never includes work content or credentials.
 
-The PostHog sink is optional and inert until the ingest operator explicitly
-configures a project token and approved regional host, and records staging
-proof that the actual egress path does not forward the original client IP.
+Counts are stored exclusively in Codewhale's first-party Cloudflare Analytics Engine ingest; no third-party analytics processor is used.
 Source readiness does not establish a deployment, an activated processor,
 an egress receipt, or a retention setting.
 
@@ -197,8 +195,8 @@ adds the `model_usage` and `tool_usage` events and the `ci` session source.
 Schema-3 batches with `notice_version = 5` are still accepted without them, which
 is what the web and desktop control-plane relay sends. The closed
 v2 contract still accepts only `consent_version = 4`, retaining its original
-explicit opt-in meaning. Fields cannot be mixed between versions. The unchanged
-v1 contract remains first-party only and **never sent to PostHog**; it refuses
+explicit opt-in meaning. Fields cannot be mixed between versions. All schemas
+are first-party only; the unchanged v1 contract refuses
 new fields, surfaces, and `product_usage` events.
 
  Every field is an integer, a boolean, or a **closed enum string**, except exactly four bounded strings: `app_version`, `git_sha`, `panic_site`, and `model_usage.model`, which is closed against the bundled model catalog. Each of the four has a written rule and a check on the drain path. **There is no free-form string type in this schema, and no open-keyed map.** That is the property that makes red line 3 enforceable rather than aspirational.
@@ -245,7 +243,7 @@ Every runtime surface uses the same `decide` and flush recheck: readable privacy
 state, resolvable home, valid endpoint, and no persistent opt-out or run kill
 switch. Missing preferences default on. The interactive TUI shows the disclosure;
 headless commands never synthesize consent. Existing runtime events and counters
-are unchanged; adding PostHog does not add a second runtime collector.
+are unchanged and go only to Codewhale's first-party ingest.
 
 ### An embedder declares the server it started
 
@@ -350,7 +348,7 @@ The workhorse. Everything a session accumulated ships here, once.
 
 **`cold_start_bucket`** — from `startup_trace::elapsed_ms()`, which reads `PROCESS_START` directly and is independent of the startup summary's buffer clear (`crates/runtime/src/startup_trace.rs:39-45`). Boundaries: `lt_250`, `250_1000`, `1000_3000`, `gte_3000`. Absent on non-TUI surfaces.
 
-**`providers`** — sorted, deduplicated array of `ProviderKind::as_str()` (`crates/config/src/provider_kind.rs:295`, a `&'static str` from a closed enum; `Custom` yields the literal `"custom"`). **The API takes `ProviderKind` by value, never `&str`.** Do not call `ProviderKind::parse` or `parse_config_identity` (`:300`, `:330`) — those are for config-table resolution. **Do not read** `provider_identity_for_persistence()` (`crates/tui/src/tui/app.rs:5049`), `provider_id_for_persistence()` (`:5058`), `ExecStreamMeta.provider_id` (`crates/app-server/src/exec_agent.rs`), or `PlannedTurnRoute.effective_provider_label` (`crates/engine/src/turn_route_plan.rs:189-193`) — all four return the customer's own `[providers.<name>]` table key when the route is Custom. This is the single most likely leak in the feature: it is one field away from the natural seam and `/status` already prints it (`crates/tui/src/commands/groups/config/status.rs:24-28`). **No model id is ever sent, for any provider** — `crates/runtime/src/safe_label.rs:11-15` documents that a model id can be a path, a URL, or a deployment id that is itself a credential.
+**`providers`** — sorted, deduplicated array of `ProviderKind::as_str()` (`crates/config/src/provider_kind.rs:295`, a `&'static str` from a closed enum; `Custom` yields the literal `"custom"`). **The API takes `ProviderKind` by value, never `&str`.** Do not call `ProviderKind::parse` or `parse_config_identity` (`:300`, `:330`) — those are for config-table resolution. **Do not read** `provider_identity_for_persistence()` (`crates/tui/src/tui/app.rs:5049`), `provider_id_for_persistence()` (`:5058`), `ExecStreamMeta.provider_id` (`crates/app-server/src/exec_agent.rs`), or `PlannedTurnRoute.effective_provider_label` (`crates/engine/src/turn_route_plan.rs:189-193`) — all four return the customer's own `[providers.<name>]` table key when the route is Custom. This is the single most likely leak in the feature: it is one field away from the natural seam and `/status` already prints it (`crates/tui/src/commands/groups/config/status.rs:24-28`). **Custom, private, and local model ids are never sent** — `crates/runtime/src/safe_label.rs:11-15` documents that a custom model id can be a path, a URL, or a deployment id that is itself a credential; only lowercased model ids matching the bundled public catalog are emitted in `model_usage` below (everything else maps to `"other"`).
 
 **`counters`** — closed field set. Every bump happens at the **call site**, never inside a conditionally-entered handler:
 
@@ -498,7 +496,8 @@ Codewhale decides which built-in tools to invest in, fix or retire.
 
 `tool` is a first-party tool name from this closed list, `mcp` for any MCP
 server tool, or `other` for any other tool (plugins and configured tools):
-`agent`, `apply_patch`, `authenticate`, `bash`, `code_execution`, `create_goal`,
+`agent`, `apply_patch`, `authenticate`, `bash`, `code_execution`,
+`context_archive_get`, `context_archive_search`, `create_goal`,
 `diagnostics`, `edit`, `edit_file`, `exec_shell`, `execute_tools`, `fetch_url`,
 `file_search`, `fim_edit`, `finance`, `get_goal`, `git_blame`, `git_commit_plan`,
 `git_diff`, `git_fetch`, `git_log`, `git_merge_tree`, `git_show`, `git_status`,
@@ -508,8 +507,10 @@ server tool, or `other` for any other tool (plugins and configured tools):
 `request_plugin_install`, `request_user_input`, `retrieve_tool_result`,
 `revert_turn`, `review`, `rlm`, `run_tests`, `run_verifiers`, `session_get`,
 `session_search`, `start_mcp_server`, `task_create`, `task_shell_wait`,
-`todo_write`, `tool_search`, `update_goal`, `update_plan`, `validate_data`,
-`verify`, `wait_for_dev_server`, `web_search`, `workflow`, `write`, `write_file`.
+`terminal_cancel`, `terminal_reset`, `terminal_run`, `terminal_send`,
+`terminal_wait`, `todo_write`, `tool_search`, `update_goal`, `update_plan`,
+`validate_data`, `verify`, `wait_for_dev_server`, `web_search`, `workflow`,
+`write`, `write_file`.
 `errors` counts calls that returned an error, never the error text or the
 arguments.
 
@@ -530,47 +531,13 @@ Batches are **IP-stripped at ingest**. No IP is stored, logged, or joined to `in
 - Rate limiting is keyed on `install_id` from the validated body, never on a network address. An IP-keyed limiter would mean this Worker handles IPs. It is the weaker limiter and it is the right trade.
 - `telemetry-ingest/test/no-ip.test.ts` reads the shipped source as text and fails the build if any address or geo name appears, if the set of headers read grows past two, if a `console.*` call is added, or if a `Response` is ever constructed with a body.
 
-**Retention: three months.** That is Cloudflare's fixed window for Analytics Engine and it is not configurable, so it is a ceiling rather than a policy — there is no setting that could make it longer. Separately from the ingest Worker, which stays write-only, the owner runs a private stats page behind Cloudflare Access that shows aggregate charts only (never install ids) read in place from Analytics Engine, and a daily rollup keeps per-day totals with no install ids in our own Cloudflare storage beyond three months while raw rows still age out at three months.
-
-**Optional PostHog processor.** After first-party storage, an explicitly
-configured ingest may forward validated schema-v3 / notice-v5 batches and
-legacy schema-v2 / consent-v4 batches to
-PostHog's [batch capture API](https://posthog.com/docs/api/capture). The only
-permitted origins are `https://us.i.posthog.com` and `https://eu.i.posthog.com`.
-Schema-v1 and schema-v4 batches cannot reach that path in this source. PostHog receives the same bounded
-envelope and event fields, the batch timestamp as its event timestamp, and
-`codewhale:<install_id>` as its anonymous `distinct_id`. Events are named
-`codewhale_install_or_upgrade`, `codewhale_session_start`,
-`codewhale_session_end`, `codewhale_panic`, `codewhale_product_usage`, or
-`codewhale_operations_summary`.
-`$process_person_profile = false`, `$geoip_disable = true`, and `$ip = null`
-are fixed transport controls. No request metadata, profile identification,
-SDK, autocapture, session replay, advertising, or work content is forwarded.
-A fresh server request has no user cookies or authorization headers, cannot
-follow redirects, and is limited to 1.5 seconds. There are no retries or logs;
-a failure does not change a successful first-party ingest response.
-
-The PostHog project's retention and privacy settings are separate deployment
-configuration and must be reviewed before activation. The Analytics Engine
-three-month limit does not establish a PostHog retention period.
-
-**The edge egress path also requires staging proof.** [Cloudflare documents](https://developers.cloudflare.com/fundamentals/reference/http-headers/#cf-connecting-ip-in-worker-subrequests)
-that Worker subrequests to non-Cloudflare zones can receive platform-added
-client-IP headers. Fresh JavaScript headers and local fetch tests cannot prove
-those headers are removed. `POSTHOG_IP_SAFE_EGRESS_VERIFIED="true"` is an explicit
-operator prerequisite alongside the host and token, and must remain unset
-until a receipt for the actual deployment and regional destination confirms
-no original client IP in any received header, including `CF-Connecting-IP`,
-`X-Forwarded-For`, and `X-Real-IP`. The flag does not strip platform headers.
-Requalify a changed egress path; if it cannot pass, keep the sink disabled or
-run only its delivery in a detached first-party context. No such live proof
-is established by this source change.
+**Retention: three months.** That is Cloudflare's fixed window for Analytics Engine and it is not configurable, so it is a ceiling rather than a policy — there is no setting that could make it longer. Separately from the ingest Worker, which stays write-only, the owner runs a private stats page behind Cloudflare Access that shows aggregate charts only (never install ids) read in place from Analytics Engine, and a daily rollup keeps per-day totals with no install ids in our own Cloudflare storage beyond three months while raw rows still age out at three months. No third-party analytics processor receives or stores these batches.
 
 **Every response is a bare status with an empty body** — `204` accepted, `400` schema violation, `404`/`405` wrong path or method, `413` oversized, `415` wrong content type, `429` rate-limited, `500` internal. The endpoint cannot echo back what it received or what it holds, and because the client drops the batch on anything that is not 2xx, a rejection is invisible to you by construction and a server error can never surface as a client-visible failure.
 
 `install_id` rotates client-side every 90 days (`rotated_at` in `install_id.json`), so no single identifier spans a long history. This costs longitudinal accuracy and the docs say so: **no count derived from `install_id` is a user count.** It is a lower bound on distinct machine-installs in a window, and it undercounts a returning user across a rotation.
 
-**Turning it off deletes what was kept locally, not what was already sent.** `codewhale config set telemetry false` erases the install id, every spool, and the dry-run records on your machine, and stops anything further. Rows already accepted by the endpoint are keyed only by a rotating random id that is now gone; first-party rows age out with the three-month window. If PostHog processing is activated, already-delivered processor records follow that project’s configured retention. The client has no remote deletion API and does not claim that local opt-out erases delivered records.
+**Turning it off deletes what was kept locally, not what was already sent.** `codewhale config set telemetry false` erases the install id, every spool, and the dry-run records on your machine, and stops anything further. Rows already accepted by the endpoint are keyed only by a rotating random id that is now gone; first-party rows age out with the three-month window. The client has no remote deletion API and does not claim that local opt-out erases delivered records.
 
 ### What the owner reads back — observed active installs
 
@@ -599,7 +566,7 @@ The website extension uses `FUNNEL_SCHEMA_VERSION = 5` and notice version `7`.
 The Rust runtime remains on `SCHEMA_VERSION = 4`, notice `6`; existing browser
 schema `3`, notice `5`, and legacy schemas `1` and `2` retain their original
 contracts. Displaying a newer notice never overrides an opt-out or establishes
-human acceptance. Schema 5 is first-party only and does not activate PostHog.
+human acceptance. Schema 5 is first-party only.
 
 The schema-5 envelope has the same twelve keys as the runtime envelope. Its
 surface is exactly `website`, `git_sha` is null, `os` and `arch` are `other`,

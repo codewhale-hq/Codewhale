@@ -5,8 +5,7 @@
 //! foreground and the lower as background. Every truecolor terminal can do
 //! that - Windows Terminal, iTerm2, Terminal.app, GNOME Terminal, Konsole,
 //! WezTerm - while kitty graphics and sixel cannot be assumed (and are not
-//! available at all in Windows Terminal). `pet_watch::graphics` owns the
-//! kitty path for the animation; this module is the portable one.
+//! available at all in Windows Terminal).
 //!
 //! Decoding is off-thread. A screenshot is megabytes of compressed data and
 //! tens of milliseconds of CPU; doing that inline would stall the frame that
