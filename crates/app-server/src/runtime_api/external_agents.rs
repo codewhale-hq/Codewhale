@@ -19,7 +19,7 @@ const SILENT_HANDSHAKE: &str = "It did not answer the Agent Client Protocol hand
 use codewhale_engine::fleet::agents::{
     AGENTS, AgentQuota, CustomExternalAgent, ExecutorUnavailable, ExternalAgent, QuotaGate,
     QuotaSource, QuotaUnknown, below_minimum, cli_version_with_env, custom_agents, foreign_command,
-    local_signin_quota, not_installed, resolve, resolve_custom_binary,
+    local_signin_quota, not_installed, preferred_cli, resolve, resolve_custom_binary,
 };
 use codewhale_runtime::process_tree::ProcessTree;
 use codewhale_runtime::settings::{AgentSettings, Settings};
@@ -260,8 +260,8 @@ async fn describe(agent: &'static ExternalAgent) -> Value {
     };
     let env = agent.process_env();
     let _permit = PROBES.acquire().await;
-    let (version, handshake, adapter_installed) = tokio::join!(
-        cli_version_with_env(&path, &env),
+    let ((selected, version), mut handshake, adapter_installed) = tokio::join!(
+        preferred_cli(agent, &path, &env),
         async {
             match agent.acp_args {
                 Some(args) => acp_initialize(&path, args, &env).await,
@@ -275,6 +275,11 @@ async fn describe(agent: &'static ExternalAgent) -> Value {
             }
         }
     );
+    if selected != path
+        && let Some(args) = agent.acp_args
+    {
+        handshake = acp_initialize(&selected, args, &env).await;
+    }
     let (initialized, refusal) = match handshake {
         Handshake::Answered(result) => (Some(result), None),
         Handshake::Refused(reason) => (None, Some(reason)),
