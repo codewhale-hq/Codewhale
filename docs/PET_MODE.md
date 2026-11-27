@@ -7,10 +7,10 @@ whale made of dots fills the main view and shows what the session is doing:
 idle, working, waiting for you, done, or failed. The message box stays at the
 bottom, so you can keep typing. Replies and agents are one key away.
 
-Each terminal draws its own whale from its own session. Nothing else runs: there
-is no background process, no port and no shared state. With several terminals
-open, you can look across them and see which one needs you, which is still
-working, and which has finished.
+Each terminal draws the activity from its own session. The terminals and the
+desktop app share the whale’s name and colour through your Engine settings.
+With several terminals open, you can see which session needs you, which is
+still working, and which has finished.
 
 ```text
 Codewhale   ● working
