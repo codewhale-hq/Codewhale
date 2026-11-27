@@ -14481,9 +14481,18 @@ struct GuiConfigResponse {
 #[derive(Debug, Deserialize)]
 struct SetConfigRequest {
     key: String,
-    value: String,
+    #[serde(default, deserialize_with = "present_config_value")]
+    value: Option<String>,
+    #[serde(default, deserialize_with = "present_config_value")]
+    if_unset: Option<String>,
     #[serde(default)]
     persist: bool,
+}
+
+fn present_config_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
 }
 
 /// Response for `POST /v1/config` (set a single config key).
@@ -14508,6 +14517,56 @@ fn persist_runtime_tui_setting(key: &str, value: &str) -> Result<(), ApiError> {
     // cannot save the stale snapshot above over a concurrent writer's field.
     codewhale_runtime::settings::Settings::transact(|settings| settings.set(key, value))
         .map_err(|e| ApiError::internal(format!("Failed to save settings: {e}")))
+}
+
+async fn adopt_whale_setting(
+    key: String,
+    candidate: String,
+) -> Result<Json<SetConfigResponse>, ApiError> {
+    use codewhale_config::whale_identity::{normalize_whale_color, normalize_whale_name};
+    use codewhale_runtime::settings::Settings;
+
+    let is_name = key == "whale_name";
+    let value = match key.as_str() {
+        "whale_name" => normalize_whale_name(&candidate),
+        "whale_color" => normalize_whale_color(&candidate),
+        _ => {
+            return Err(ApiError::bad_request(
+                "if_unset supports only whale identity",
+            ));
+        }
+    }
+    .map_err(ApiError::bad_request)?
+    .ok_or_else(|| ApiError::bad_request("if_unset requires a non-default value"))?;
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    let adopted = tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+        Settings::transact_opt(|settings| {
+            let field = if is_name {
+                &mut settings.whale_name
+            } else {
+                &mut settings.whale_color
+            };
+            if field.is_some() {
+                return Ok(None);
+            }
+            *field = Some(value.clone());
+            Ok(Some(value))
+        })
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("Settings task failed: {e}")))?
+    .map_err(|e| ApiError::internal(format!("Failed to save settings: {e}")))?;
+    let value = adopted.ok_or_else(|| ApiError::conflict(format!("{key} already set")))?;
+    Ok(Json(SetConfigResponse {
+        key,
+        value,
+        message: "Config persisted. Call /v1/config/reload to apply.".to_string(),
+        persisted: true,
+        requires_reload: true,
+    }))
 }
 
 /// Response for `POST /v1/config/reload`.
@@ -14626,11 +14685,19 @@ async fn set_config(
 ) -> Result<Json<SetConfigResponse>, ApiError> {
     use codewhale_runtime::config_persistence;
 
-    let _credential_change = state.provider_switches.lock().await;
-
     let key = req.key.to_lowercase();
-    let mut value = req.value;
     let persist = req.persist;
+    let mut value = match (req.value, req.if_unset) {
+        (Some(value), None) => value,
+        (None, Some(candidate)) if persist => return adopt_whale_setting(key, candidate).await,
+        (None, Some(_)) => return Err(ApiError::bad_request("if_unset requires persist: true")),
+        _ => {
+            return Err(ApiError::bad_request(
+                "Provide exactly one of value and if_unset",
+            ));
+        }
+    };
+    let _credential_change = state.provider_switches.lock().await;
 
     // Reuse the shared validator and locked leaf writer, including the active
     // profile's existing owner. Dry runs validate too; a typo must never look

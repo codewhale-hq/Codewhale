@@ -14355,6 +14355,40 @@ async fn settings_schema_write_fallthrough_persists_declared_settings_keys() -> 
     assert_eq!(row["value"], "compact");
     assert_eq!(row["persisted"], true);
 
+    let config_url = format!("http://{addr}/v1/config");
+    for body in [
+        json!({"key": "whale_name", "persist": true}),
+        json!({"key": "whale_name", "if_unset": "A", "value": "B", "persist": true}),
+        json!({"key": "whale_name", "if_unset": "A", "persist": false}),
+        json!({"key": "composer_density", "if_unset": "compact", "persist": true}),
+        json!({"key": "whale_color", "if_unset": "default", "persist": true}),
+    ] {
+        let response = client.post(&config_url).json(&body).send().await?;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
+    }
+
+    for (key, candidate, expected) in [
+        ("whale_name", " First   Mate ", "First Mate"),
+        ("whale_color", "PatCH", "patch"),
+    ] {
+        let receipt = client
+            .post(&config_url)
+            .json(&json!({"key": key, "if_unset": candidate, "persist": true}))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<serde_json::Value>()
+            .await?;
+        assert_eq!(receipt["key"], key);
+        assert_eq!(receipt["value"], expected);
+        assert_eq!(receipt["persisted"], true);
+        assert_eq!(receipt["requires_reload"], true);
+    }
+
+    let adopted = codewhale_runtime::settings::Settings::load_persisted()?;
+    assert_eq!(adopted.whale_name.as_deref(), Some("First Mate"));
+    assert_eq!(adopted.whale_color.as_deref(), Some("patch"));
+
     for (key, value) in [("whale_name", " Moby  Dick "), ("whale_color", "Harbor")] {
         let response = client
             .post(format!("http://{addr}/v1/config"))
@@ -14366,6 +14400,12 @@ async fn settings_schema_write_fallthrough_persists_declared_settings_keys() -> 
             .await?;
         assert_eq!(response["persisted"], true, "{key}");
     }
+    let conflict = client
+        .post(&config_url)
+        .json(&json!({"key": "whale_name", "if_unset": "Stale name", "persist": true}))
+        .send()
+        .await?;
+    assert_eq!(conflict.status(), StatusCode::CONFLICT);
     let rejected = client
         .post(format!("http://{addr}/v1/config"))
         .json(&json!({"key": "whale_color", "value": "blue", "persist": true}))
