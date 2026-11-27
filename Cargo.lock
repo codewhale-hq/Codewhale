@@ -63,12 +63,12 @@ dependencies = [
 
 [[package]]
 name = "ahash"
-version = "0.8.12"
+version = "0.8.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
+checksum = "0fca89247609239eeb6915e6991111866b92d7b31025e69302bbf430cc4d2c38"
 dependencies = [
  "cfg-if",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "serde",
  "version_check",
@@ -3055,9 +3055,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 6.0.0",
  "rand_core 0.10.1",
+ "wasm-bindgen",
 ]
 
 [[package]]
