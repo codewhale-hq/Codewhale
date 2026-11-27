@@ -41,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The terminal saved-team picker now shows its selection, team scopes, migration prompt, delete confirmation and keyboard hints in the chosen UI language. (#7469)
+
 - Reopening an older session preserves user messages that begin with a summary heading, including a paste identical to its saved summary. (#6557, #7562)
 - Non-streaming model responses report which incompatible tools the provider route omitted, with the same bounded names and total count as streaming requests. (#5633)
 - Workflow simulations reject a generated node that would reuse the ID of a later step, including a step in a nested group. (#6559)

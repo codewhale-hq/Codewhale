@@ -192,24 +192,36 @@ impl FleetListView {
 
     fn footer_hints(&self) -> Vec<ActionHint> {
         let mut hints = vec![
-            ActionHint::new("↑/↓", "move"),
-            ActionHint::new("Enter", "select"),
+            ActionHint::new("↑/↓", tr(self.locale, MessageId::PickerActionMove)),
+            ActionHint::new("Enter", tr(self.locale, MessageId::CtxInspActionSelect)),
         ];
         if !self.entries.is_empty() {
             // Explicit scope overrides; Enter selects in the row's own scope.
-            hints.push(ActionHint::new("u", "as user default"));
-            hints.push(ActionHint::new("w", "for this folder"));
-            hints.push(ActionHint::new("d", "delete"));
+            hints.push(ActionHint::new(
+                "u",
+                tr(self.locale, MessageId::FleetListActionUser),
+            ));
+            hints.push(ActionHint::new(
+                "w",
+                tr(self.locale, MessageId::FleetListActionFolder),
+            ));
+            hints.push(ActionHint::new(
+                "d",
+                tr(self.locale, MessageId::SessionsActionDelete),
+            ));
         }
         if self.banner_visible() {
-            hints.push(ActionHint::new("m", "migrate"));
+            hints.push(ActionHint::new(
+                "m",
+                tr(self.locale, MessageId::FleetListActionMigrate),
+            ));
         }
         // The hint has to name what `Esc` actually does: pop back to the
         // parked roster, or close the window at the root (#5954).
         hints.push(if self.back_to_fleet_roster {
             ActionHint::new("Esc", tr(self.locale, MessageId::SetupActionBack))
         } else {
-            ActionHint::new("Esc", "close")
+            ActionHint::new("Esc", tr(self.locale, MessageId::SessionsActionClose))
         });
         hints
     }
@@ -428,17 +440,22 @@ impl ModalView for FleetListView {
 
         // Header: name + selected summary.
         let selected_line = match &self.selected {
-            Some(sel) => format!("Selected: `{}` ({})", sel.name, sel.scope.label()),
-            None => "No team selected — built-in team".to_string(),
+            Some(sel) => tr(self.locale, MessageId::FleetListSelected)
+                .replace(
+                    "{scope}",
+                    &super::fleet_detail::long_scope_label(self.locale, sel.scope),
+                )
+                .replace("{name}", &sel.name),
+            None => tr(self.locale, MessageId::FleetListBuiltIn).into_owned(),
         };
         let mut header = vec![
             Line::from(vec![
                 Span::styled(
-                    "─ Saved Teams ",
+                    format!("─ {} ", tr(self.locale, MessageId::FleetListTitle)),
                     Style::default().fg(palette::WHALE_ACTION).bold(),
                 ),
                 Span::styled(
-                    "· pick which named team the session uses",
+                    format!("· {}", tr(self.locale, MessageId::FleetListSubtitle)),
                     Style::default().fg(palette::TEXT_MUTED),
                 ),
             ]),
@@ -451,9 +468,9 @@ impl ModalView for FleetListView {
         if self.banner_visible() {
             header.push(Line::from(vec![Span::styled(
                 format!(
-                    "  ⚠ {} legacy role profile(s) found — press m to migrate them into a \
-                         Fleet (nothing is changed until you do)",
-                    self.legacy_profile_count
+                    "  ⚠ {}",
+                    tr(self.locale, MessageId::FleetListMigration)
+                        .replace("{count}", &self.legacy_profile_count.to_string())
                 ),
                 Style::default().fg(palette::WHALE_HUMAN),
             )]));
@@ -487,12 +504,11 @@ impl FleetListView {
         if self.entries.is_empty() {
             Paragraph::new(Line::from(vec![
                 Span::styled(
-                    "  No saved teams yet.",
+                    format!("  {}", tr(self.locale, MessageId::FleetListEmpty)),
                     Style::default().fg(palette::TEXT_MUTED),
                 ),
                 Span::styled(
-                    "  Select a model with /model and /provider, then /fleet save or \
-                     /fleet save-as. Editing stays on /fleet setup.",
+                    format!("  {}", tr(self.locale, MessageId::FleetListEmptyHelp)),
                     Style::default().fg(palette::TEXT_DIM),
                 ),
             ]))
@@ -547,22 +563,28 @@ impl FleetListView {
             spans.push(Span::styled(format!("{name}{}", entry.name), base));
 
             let scope_badge = match entry.scope {
-                FleetScope::Personal => " [user]",
-                FleetScope::Workspace => " [folder]",
+                FleetScope::Personal => MessageId::FleetDestPersonalLabel,
+                FleetScope::Workspace => MessageId::FleetDestProjectLabel,
             };
             spans.push(Span::styled(
-                scope_badge,
+                format!(" [{}]", tr(self.locale, scope_badge)),
                 Style::default().fg(palette::TEXT_MUTED),
             ));
 
             if entry.legacy {
                 spans.push(Span::styled(
-                    "  legacy format — read-only",
+                    format!(
+                        "  {}",
+                        tr(self.locale, MessageId::AgentFocusPostureReadOnly)
+                    ),
                     Style::default().fg(palette::WHALE_HUMAN),
                 ));
             } else if let Some(err) = &entry.parse_error {
                 spans.push(Span::styled(
-                    format!("  unreadable: {err}"),
+                    format!(
+                        "  {}: {err}",
+                        tr(self.locale, MessageId::FleetListSummaryUnreadable)
+                    ),
                     Style::default().fg(palette::WHALE_HUMAN),
                 ));
             }
@@ -577,7 +599,15 @@ impl FleetListView {
             let start = lines.len();
             if self.pending_delete == Some(idx) {
                 lines.push(Line::from(vec![Span::styled(
-                    format!("  Delete `{}` ({})? y/n", entry.name, entry.scope.label()),
+                    format!(
+                        "  {}",
+                        tr(self.locale, MessageId::FleetListDeletePrompt)
+                            .replace(
+                                "{scope}",
+                                &super::fleet_detail::long_scope_label(self.locale, entry.scope)
+                            )
+                            .replace("{name}", &entry.name)
+                    ),
                     Style::default().fg(palette::WHALE_HUMAN),
                 )]));
             } else {
@@ -848,6 +878,72 @@ mod tests {
             }
         }
         let _ = &mut app;
+    }
+
+    #[test]
+    fn saved_team_list_renders_the_selected_ui_language() {
+        let _lock = crate::test_support::lock_test_env();
+        let home = tempfile::TempDir::new().unwrap();
+        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
+        let ws = tempfile::TempDir::new().unwrap();
+        let mut app = app_in(ws.path().to_path_buf());
+        let render = |view: &FleetListView| {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(150, 16)).unwrap();
+            terminal
+                .draw(|frame| view.render(frame.area(), frame.buffer_mut()))
+                .unwrap();
+            terminal.backend().to_string()
+        };
+        let config = Config::default();
+        for (locale, empty) in [
+            (Locale::En, "No saved teams yet."),
+            (Locale::ZhHans, "尚无已保存的团队。"),
+        ] {
+            app.ui_locale = locale;
+            assert!(render(&FleetListView::new(&app, &config)).contains(empty));
+        }
+        save_in(ws.path(), FleetScope::Workspace, "Alpha");
+        set_selected("Alpha", FleetScope::Workspace, ws.path()).unwrap();
+        for (locale, labels, prompt) in [
+            (
+                Locale::En,
+                [
+                    "Saved Teams",
+                    "Selected: `Alpha`",
+                    "[This project]",
+                    "as user default",
+                    "for this folder",
+                    "close",
+                ],
+                "Delete `Alpha`",
+            ),
+            (
+                Locale::ZhHans,
+                [
+                    "已保存的团队",
+                    "已选择：`Alpha`",
+                    "[此项目]",
+                    "设为用户默认",
+                    "用于此文件夹",
+                    "关闭",
+                ],
+                "删除 `Alpha`",
+            ),
+        ] {
+            app.ui_locale = locale;
+            let mut view = FleetListView::new(&app, &config);
+            let painted = render(&view);
+            for label in labels {
+                assert!(painted.contains(label), "missing {label} in {painted}");
+            }
+            view.handle_key(key(KeyCode::Char('d')));
+            let painted = render(&view);
+            assert!(
+                painted.contains(prompt) && painted.contains("y/n"),
+                "{painted}"
+            );
+        }
     }
 
     #[test]
