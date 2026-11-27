@@ -440,7 +440,7 @@ async fn stop_ends_a_slow_account_read_at_once_for_interactive_and_hosted_turns(
             Engine::new_with_model_client(engine_config, &config, mock.clone());
         assert_eq!(engine.host_managed_turns(), host_managed);
         let stopper = handle.clone();
-        let events = collect_events(handle);
+        let events = collect_timed_events(handle);
         let Op::SendMessage(spec) = external_user_message_op("Say hello", AppMode::Agent, &config)
         else {
             unreachable!()
@@ -455,16 +455,25 @@ async fn stop_ends_a_slow_account_read_at_once_for_interactive_and_hosted_turns(
                 while account_requests(&server).await == seen {
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 }
+                let stopped = std::time::Instant::now();
                 stopper.cancel();
-                std::time::Instant::now()
+                stopped
             }
         );
-        let after_stop = ended.saturating_duration_since(stopped);
+        let after_stop = ended.checked_duration_since(stopped).unwrap();
+        eprintln!("Stop to turn return (host_managed={host_managed}): {after_stop:?}");
         assert!(
-            after_stop < Duration::from_secs(3),
+            after_stop < Duration::from_secs(1),
             "Stop took {after_stop:?} while the account read was pending"
         );
         assert_eq!(mock.call_count(), 0);
+        let input_recorded = engine.session.messages.iter().any(|message| {
+            message.role == Role::User
+                && message.content.iter().any(
+                    |block| matches!(block, ContentBlock::Text { text, .. } if text == "Say hello"),
+                )
+        });
+        assert_eq!(input_recorded, host_managed);
         engine
             .send_event(Event::status(END_OF_EVENTS))
             .await
@@ -473,9 +482,19 @@ async fn stop_ends_a_slow_account_read_at_once_for_interactive_and_hosted_turns(
             .await
             .unwrap()
             .into_iter()
-            .filter_map(|event| match event {
+            .filter_map(|(received, event)| match event {
                 Event::TurnStarted { .. } => Some(None),
-                Event::TurnComplete { status, .. } => Some(Some(status)),
+                Event::TurnComplete {
+                    status,
+                    tool_catalog,
+                    ..
+                } => {
+                    let delivered = received.checked_duration_since(stopped).unwrap();
+                    eprintln!("Stop to TurnComplete delivery: {delivered:?}");
+                    assert!(delivered < Duration::from_secs(1), "{delivered:?}");
+                    assert!(tool_catalog.is_none());
+                    Some(Some(status))
+                }
                 _ => None,
             })
             .collect();

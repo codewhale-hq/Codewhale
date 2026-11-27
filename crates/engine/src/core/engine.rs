@@ -7986,13 +7986,7 @@ impl Engine {
         self.config.translation_enabled = translation_enabled;
         self.config.verbosity = verbosity;
 
-        let (
-            context_update,
-            surface,
-            mut mailbox_for_runtime,
-            tool_surface,
-            tool_catalog_for_event,
-        ) = if is_review {
+        let context_update = if is_review {
             self.session.add_message(Message {
                 role: Role::User,
                 content: vec![ContentBlock::Text {
@@ -8002,7 +7996,7 @@ impl Engine {
             });
             turn.unanswered_user_message = Some(self.mark_unanswered_user_message());
             self.emit_session_updated().await;
-            (Ok(None), None, None, None, None)
+            Ok(None)
         } else {
             // Capture only this engine's reviewed, live plugin contributions. A
             // failed/withdrawn capture records retirement. Full bounded snapshots
@@ -8151,6 +8145,11 @@ impl Engine {
             }
             self.emit_session_updated().await;
 
+            context_update
+        };
+
+        let prepare_tools = !is_review && !self.cancel_token.is_cancelled();
+        let (surface, mut mailbox_for_runtime, tool_surface, turn_catalog) = if prepare_tools {
             // Build tool registry and tool list for the current mode
             let turn_id_for_mailbox = turn.id.clone();
             let catalog_timing = codewhale_runtime::logging::PhaseTimer::start("turn_catalog");
@@ -8184,7 +8183,7 @@ impl Engine {
                 .await;
             drop(catalog_timing);
             self.turn_heartbeat.touch();
-            let tool_catalog_for_event = Some(surface.catalog.clone());
+            let turn_catalog = Some(surface.catalog.clone());
 
             // Resolve, once per turn, the out-of-request facts the read-only
             // request projection is allowed to report: flattened registry facts,
@@ -8202,12 +8201,13 @@ impl Engine {
             self.turn_heartbeat.touch();
 
             (
-                context_update,
                 Some(surface),
                 mailbox_for_runtime,
                 Some(tool_surface),
-                tool_catalog_for_event,
+                turn_catalog,
             )
+        } else {
+            (None, None, None, None)
         };
 
         let base_url_for_event = if self.model_client_injected {
@@ -8235,12 +8235,16 @@ impl Engine {
                 self.post_turn_budget_stop(&error).await;
                 return (TurnOutcomeStatus::Failed, Some(error));
             }
+            let Some(surface) = surface else {
+                let _ = self.send_event(Event::status("Request cancelled")).await;
+                return (TurnOutcomeStatus::Interrupted, None);
+            };
             // Keep the turn state machine out of the enclosing event-loop
             // futures. Their nested poll frames must fit ordinary thread
             // stacks while cloning route config or executing tools.
             Box::pin(self.run_turn(
                 &mut turn,
-                surface.expect("ordinary turn prepared its registry"),
+                surface,
                 foreground_children_for_turn,
                 tool_surface,
             ))
@@ -8374,7 +8378,7 @@ impl Engine {
             routed_usage_dropped_records: turn.routed_usage_dropped_records,
             status,
             error: error.clone(),
-            tool_catalog: tool_catalog_for_event,
+            tool_catalog: turn_catalog,
             base_url: base_url_for_event,
         });
         let turn_complete_event_sent = !completion_sender.is_closed();
