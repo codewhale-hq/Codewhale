@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Hello Extension authoring sample now shows its greeting command in the shared browser client’s plugin detail panel. (#7236)
 - **`codewhale doctor` prints a short verdict; `--full` prints everything:** plain `codewhale doctor` now lists what works, what needs attention and the next step. `codewhale doctor --full` prints every check, as plain `doctor` did before; `--json`, `--installs --brief` and the probe flags are unchanged.
 - **Saved sessions in the browser client:** a Resume button with a one-line read-only notice, "Show earlier messages" and plain tool rows. A session peek still returns 12 entries by default and up to 100 when `&entries=N` asks for them.
 - **`[auto.router] shadow_gate = true`** (decision routers only) runs the shadow Decision Gate on the router's own request, with the router's timeout. Saving a preset from `/router` keeps the setting. Concept and reference implementation by Andrea Bruno (@Andrea-Bruno), CC BY 4.0. (#6603)

@@ -9,7 +9,11 @@
 
 ## 从可运行示例开始
 
-[hello-extension](../examples/plugins/hello-extension/hello.mts) 演示工具和命令。
+[hello-extension](../examples/plugins/hello-extension/hello.mts) 演示工具、命令和插件详情面板。
+安装、审查并启用后，在共享浏览器客户端打开 **Customize → Plugins → Hello Extension**，
+即可看到可在终端试用的问候命令。[包清单](../examples/plugins/hello-extension/package.json)
+导出 [client.js](../examples/plugins/hello-extension/client.js)。它使用宿主提供的 React
+注册 `customize.plugins.detail`，无需额外授权。
 [mod-extension](../examples/plugins/mod-extension/README.md) 进一步演示 scoped hook、
 提示词片段、保存计数、结构化结果和清理。后者是普通 ESM，不需要编译器或安装依赖。
 

@@ -24,6 +24,10 @@ files or use the network.
 5. Ask Codewhale to use `hello_greet`. The tool follows the normal approval gate.
 6. Run `/hello-greet Codewhale`. The command runs when you type it, and shows
    its answer in the transcript with its origin, `extension:hello-extension`.
+7. In the shared browser client, open **Customize → Plugins → Hello Extension**.
+   The detail panel shows the greeting command. Its [package manifest](examples/plugins/hello-extension/package.json)
+   exports [client.js](examples/plugins/hello-extension/client.js), which registers
+   `customize.plugins.detail` using the host’s React and needs no additional grants.
 
 An authoring agent should stop after installation and validation and present
 the review to the person, unless it runs in Full Access and the plugin is one

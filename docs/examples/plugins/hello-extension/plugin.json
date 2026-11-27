@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/plugin.json",
   "name": "hello-extension",
-  "version": "0.1.0",
-  "description": "A small typed extension tool using the existing approval gate.",
+  "version": "0.2.0",
+  "description": "A greeting tool, a slash command and a plugin detail panel.",
   "license": "MIT",
   "extensions": {
     "net.codewhale": {
