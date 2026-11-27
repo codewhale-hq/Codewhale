@@ -6,7 +6,7 @@
       "osArchitecture": "x64",
       "qualification": {
         "result": "PASS",
-        "kind": "reporter exact-OS export resolution plus 19 documented Microsoft named API minima",
+        "kind": "reporter exact-OS export resolution plus 20 documented Microsoft named API minima",
         "evidence": {
           "issue": "https://github.com/codewhale-hq/Codewhale/issues/6953",
           "binary": "https://github.com/codewhale-hq/Codewhale/releases/download/v0.10.1/codewhale-windows-x64.exe",
@@ -16,7 +16,7 @@
           "previous_sha256": "f7b35a1e928f67884637f36b01fc72854f50690130f191bac3bcf62ece3c1d84"
         },
         "runtimeAcceptance": "Final 0.10.2 release bytes on 14393 not run",
-        "qualifiedPairs": 475,
+        "qualifiedPairs": 476,
         "namedApiContracts": [
           {
             "dll": "advapi32.dll",
@@ -131,6 +131,12 @@
             "symbol": "IsProcessorFeaturePresent",
             "minimumClient": "Windows 2000 Professional",
             "source": "https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-isprocessorfeaturepresent"
+          },
+          {
+            "dll": "kernel32.dll",
+            "symbol": "PeekNamedPipe",
+            "minimumClient": "Windows 2000 Professional",
+            "source": "https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-peeknamedpipe"
           }
         ],
         "namedApiContractEvidence": {
@@ -174,6 +180,16 @@
                 "kernel32.dll!IsProcessorFeaturePresent"
               ],
               "scope": "api-ms-win-crt-math-l1-1-0.dll!cosf from f32::cos() in TUI/ratatui 5.4.0 live motion and kernel32.dll!IsProcessorFeaturePresent from the windows-2025-vs2026 runner's MSVC 14.52 / Visual Studio 18.12 toolchain update (not a Codewhale call site); documentation-backed static contracts, same limits as above"
+            },
+            {
+              "candidateRun": "https://github.com/codewhale-hq/Codewhale/actions/runs/45843049590",
+              "source": "8838e415c0074e05931313e81e16de1c91210d99",
+              "binarySha256": "6e1ee958ad1ca7f9fe4d607ff201dc2f401d396f393c5b22869994615cae2090",
+              "importReceiptSha256": "5ca1eb5757ccf4e1b41db8493e09339db230eaf5b8782a2902146177935cd8f4",
+              "pairs": [
+                "kernel32.dll!PeekNamedPipe"
+              ],
+              "scope": "The Windows TUI reads piped stdin with PeekNamedPipe. Microsoft documents this Kernel32 export before the Windows 10 build 14393 floor."
             }
           ]
         }
@@ -533,6 +549,7 @@
           "OpenThread",
           "OutputDebugStringA",
           "OutputDebugStringW",
+          "PeekNamedPipe",
           "PostQueuedCompletionStatus",
           "Process32FirstW",
           "Process32NextW",
@@ -990,7 +1007,26 @@
               }
             }
           }
-        }
+        },
+        "additionalExportProbes": [
+          {
+            "pairs": [
+              "kernel32.dll!PeekNamedPipe"
+            ],
+            "time": "2026-11-27T13:44:14.6692724Z",
+            "osBuild": "26200.9974",
+            "processArchitecture": "ARM64",
+            "source": "8838e415c0074e05931313e81e16de1c91210d99",
+            "buildRun": "https://github.com/codewhale-hq/Codewhale/actions/runs/45843049590",
+            "probeRun": "https://github.com/codewhale-hq/Codewhale/actions/runs/46009560246",
+            "binarySha256": "8707e805f714d9a2f684a899ee38cbca7279d7c702a9d41fcf72b6c59fb8a137",
+            "importReceiptSha256": "6a678edcc271ceb97fc23438283fce7f9db74f81463c413dccfb5a0500421122",
+            "probeReceiptSha256": "ef1cddbd19ae952531b11a5c16a62cbedba591e114a383d51383348c1152a6dc",
+            "kernel32Sha256": "3b05fea371380c19022ca18c8ece9690057108954794038e9818f0dfeaf1cb46",
+            "resolved": 450,
+            "unresolved": 0
+          }
+        ]
       },
       "imports": {
         "advapi32.dll": [
@@ -1347,6 +1383,7 @@
           "OpenThread",
           "OutputDebugStringA",
           "OutputDebugStringW",
+          "PeekNamedPipe",
           "PostQueuedCompletionStatus",
           "Process32FirstW",
           "Process32NextW",
