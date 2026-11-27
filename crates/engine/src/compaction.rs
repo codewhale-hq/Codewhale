@@ -490,22 +490,14 @@ pub fn is_compaction_checkpoint_message(message: &Message) -> bool {
 
 /// Whether this history already carries a provenance-stamped checkpoint.
 ///
-/// A stamped carrier postdates stamping, so within that history only the
-/// stamped form is a checkpoint: a user turn whose text merely starts with a
-/// legacy summary header (a pasted transcript, for example) is content. A
-/// history without one (a legacy session, or any session not yet compacted)
-/// keeps the loose form, so a pasted legacy header still reads as a
-/// checkpoint at a session's first compaction. The signal is the history's content, not the session's age: it
-/// is one-way and destructible (`/edit` or a host rewind can truncate away
-/// the only stamped carrier), and typed input cannot forge the two-block
-/// form.
+/// Restore uses this to prefer the stamped form for topology placement and
+/// to resolve conflicts with the summary in the saved system prompt.
 #[must_use]
 pub fn history_is_post_provenance(messages: &[Message]) -> bool {
     messages.iter().any(is_wire_compaction_checkpoint_message)
 }
 
-/// Era-aware checkpoint recognition for the recompaction family: the loose
-/// legacy fallback applies only in a history with no stamped carrier.
+/// Checkpoint recognition for callers that supply the history's era.
 #[must_use]
 pub fn is_compaction_checkpoint_message_in_era(message: &Message, post_provenance: bool) -> bool {
     if post_provenance {
@@ -513,6 +505,19 @@ pub fn is_compaction_checkpoint_message_in_era(message: &Message, post_provenanc
     } else {
         is_compaction_checkpoint_message(message)
     }
+}
+
+fn is_checkpoint_for_compaction(message: &Message) -> bool {
+    is_wire_compaction_checkpoint_message(message)
+        || matches!(
+            message.content.as_slice(),
+            [
+                ContentBlock::Text { text, cache_control: None },
+                ContentBlock::Text { text: provenance, cache_control: None }
+            ] if message.role == Role::User
+                && provenance == COMPACTION_CHECKPOINT_PROVENANCE
+                && is_legacy_compaction_summary_text(text)
+        )
 }
 
 /// Keep the checkpoint at its original historical boundary on session load.
@@ -1577,22 +1582,26 @@ fn is_orphaned_result_block(block: &ContentBlock) -> bool {
     )
 }
 
-/// Test convenience: derive the era from the slice itself. Production
-/// callers pass [`retained_user_messages_in_era`] the era of the history the
-/// slice belongs to — retention runs on the pre-round prefix, whose carrier
-/// may sit inside the round.
 #[cfg(any(test, feature = "test-support"))]
 pub fn retained_user_messages(messages: &[Message], max_tokens: usize) -> Vec<Message> {
     retained_user_messages_in_era(history_is_post_provenance(messages), messages, max_tokens)
 }
 
-/// `post_provenance` must be derived from the history the slice belongs to,
-/// not from the slice itself: retention runs on the pre-round prefix, whose
-/// carrier may sit inside the round.
+/// Select retained user messages using the era of the full history.
 pub fn retained_user_messages_in_era(
     post_provenance: bool,
     messages: &[Message],
     max_tokens: usize,
+) -> Vec<Message> {
+    retain_user_messages(messages, max_tokens, |message| {
+        is_compaction_checkpoint_message_in_era(message, post_provenance)
+    })
+}
+
+fn retain_user_messages(
+    messages: &[Message],
+    max_tokens: usize,
+    is_checkpoint: impl Fn(&Message) -> bool,
 ) -> Vec<Message> {
     let mut selected: Vec<Message> = Vec::new();
     let mut remaining = max_tokens;
@@ -1602,15 +1611,13 @@ pub fn retained_user_messages_in_era(
         }
         if msg.role != Role::User
             || codewhale_models::turn_classify::is_runtime_owned_user_message(msg)
+            || is_checkpoint(msg)
             || (user_text_of(msg).is_none()
                 && !msg
                     .content
                     .iter()
                     .any(|block| matches!(block, ContentBlock::ImageUrl { .. })))
         {
-            continue;
-        }
-        if is_compaction_checkpoint_message_in_era(msg, post_provenance) {
             continue;
         }
         let tokens: usize = msg
@@ -1694,13 +1701,10 @@ async fn compact_messages_with_metadata(
     let config = &prepared.config;
     let recent_tokens = prepared.retained_recent_tokens(system_prompt);
     let summary_end = last_round::recent_tail_start(messages, recent_tokens);
-    let post_provenance = history_is_post_provenance(messages);
     let mut summary_messages = messages
         .iter()
         .enumerate()
-        .filter(|(idx, message)| {
-            *idx < summary_end || is_compaction_checkpoint_message_in_era(message, post_provenance)
-        })
+        .filter(|(idx, message)| *idx < summary_end || is_checkpoint_for_compaction(message))
         .map(|(_, message)| message.clone())
         .collect::<Vec<_>>();
     if summary_messages.is_empty() {
@@ -3306,6 +3310,7 @@ mod tests {
         request: std::sync::Mutex<Option<MessageRequest>>,
         provider: &'static str,
         model: &'static str,
+        summary: &'static str,
     }
 
     impl Default for FixedSummaryClient {
@@ -3314,6 +3319,7 @@ mod tests {
                 request: std::sync::Mutex::new(None),
                 provider: "test",
                 model: "test-model",
+                summary: FIXED_SUMMARY,
             }
         }
     }
@@ -3321,9 +3327,9 @@ mod tests {
     impl FixedSummaryClient {
         fn for_route(provider: &'static str, model: &'static str) -> Self {
             Self {
-                request: std::sync::Mutex::new(None),
                 provider,
                 model,
+                ..Self::default()
             }
         }
     }
@@ -3331,6 +3337,12 @@ mod tests {
     const FIXED_SUMMARY: &str = "1. Primary request and intent — migrate the session store. \
         2. Key technical concepts — sqlite. 7. Pending tasks — finish the fixed clock. \
         8. Current work — rerunning the session tests.";
+
+    const LEGACY_SUMMARY_PREAMBLE: &str = "Another language model started to solve this problem and produced \
+         a summary of its thinking process. You also have access to the state of the tools that were used \
+         by that language model. Use this to build on the work that has already been done and avoid \
+         duplicating work. Here is the summary produced by the other language model, use the information \
+         in this summary to assist with your own analysis:";
 
     /// A real PNG whose bytes are worth shrinking. Noise defeats compression,
     /// which is the point: the shrink ladder must actually re-encode.
@@ -3781,7 +3793,7 @@ mod tests {
                 r#type: "message".to_string(),
                 role: "assistant".to_string(),
                 content: vec![ContentBlock::Text {
-                    text: FIXED_SUMMARY.to_string(),
+                    text: self.summary.to_string(),
                     cache_control: None,
                 }],
                 model: self.model.to_string(),
@@ -3962,6 +3974,215 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn compaction_preserves_legacy_header_user_message_across_passes() {
+        let pasted = msg(
+            "user",
+            &format!("{LEGACY_SUMMARY_PREAMBLE}\n\nPlease keep my original words."),
+        );
+        let later = msg("user", "Check the remaining work.");
+        let call = tool_use("check", "File", json!({"path": "session.rs"}));
+        let result = tool_result("check", "Found the session store.");
+        let mut messages = vec![
+            pasted.clone(),
+            msg("assistant", "I can explain that text."),
+            later.clone(),
+            call.clone(),
+            result.clone(),
+        ];
+        let prepared = PreparedCompactionEnvelope::new(CompactionConfig {
+            token_threshold: 250,
+            retained_user_message_tokens: 256,
+            ..CompactionConfig::default()
+        });
+        let client = FixedSummaryClient::default();
+        let mut quality_retries = 0;
+        let mut usage = Usage::default();
+        for pass in 1..=2 {
+            assert!(
+                last_round::recent_tail_start(&messages, prepared.retained_recent_tokens(None)) > 0
+            );
+            let (retained, summary, _) = compact_messages_with_metadata(
+                &client,
+                &messages,
+                None,
+                &prepared,
+                &mut quality_retries,
+                &mut usage,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                retained
+                    .iter()
+                    .filter(|message| *message == &pasted)
+                    .count(),
+                1,
+                "pass {pass} must retain one verbatim copy of the pasted header"
+            );
+            assert_eq!(
+                retained
+                    .iter()
+                    .filter(|message| is_wire_compaction_checkpoint_message(message))
+                    .count(),
+                1,
+                "pass {pass} must install one stamped checkpoint"
+            );
+            assert_eq!(
+                retained.last(),
+                Some(&compaction_checkpoint_message(&summary.unwrap()))
+            );
+            assert!(
+                retained
+                    .windows(3)
+                    .any(|window| window == [&later, &call, &result].map(Clone::clone))
+            );
+            if let Some(previous) = messages
+                .last()
+                .filter(|message| is_wire_compaction_checkpoint_message(message))
+            {
+                let request = client.request.lock().unwrap();
+                assert!(request.as_ref().unwrap().messages.contains(previous));
+            }
+            messages = retained;
+        }
+    }
+
+    #[tokio::test]
+    async fn compaction_safe_legacy_paste_shrinks_twice_with_complete_tool_pairs() {
+        let first = msg("user", "Keep investigating.");
+        let pasted = msg(
+            "user",
+            &format!("{LEGACY_SUMMARY_PREAMBLE}\n\nPlease keep my original words."),
+        );
+        let large_call = |id| {
+            let mut call = tool_use(id, "File", json!({"path": id}));
+            call.content
+                .extend(msg("assistant", &"x".repeat(8_000)).content);
+            call
+        };
+        let mut mixed = tool_result("old", "Old evidence.");
+        mixed.content.extend(pasted.content.clone());
+        let older_exchange = [large_call("old"), mixed];
+        let mut messages = vec![first.clone()];
+        messages.extend(older_exchange.clone());
+        let prepared = PreparedCompactionEnvelope::new(CompactionConfig {
+            token_threshold: 1_024,
+            retained_user_message_tokens: 256,
+            ..CompactionConfig::default()
+        });
+
+        for (id, summary) in [
+            ("first", "First check complete."),
+            ("second", "Second check complete."),
+        ] {
+            let previous = messages
+                .last()
+                .filter(|message| is_checkpoint_for_compaction(message))
+                .cloned();
+            if previous.is_some() {
+                messages.extend([
+                    large_call("reclaim"),
+                    tool_result("reclaim", "More evidence."),
+                ]);
+            }
+            let call = tool_use(id, "File", json!({"path": id}));
+            let result = tool_result(id, &"y".repeat(800));
+            messages.extend([call.clone(), result.clone()]);
+            let before = estimate_request_input_tokens(&messages, None, None);
+            assert!(before >= prepared.config.token_threshold);
+            let client = FixedSummaryClient {
+                summary,
+                ..FixedSummaryClient::default()
+            };
+            let kept =
+                compact_messages_safe(&client, &messages, None, &prepared, &mut Usage::default())
+                    .await
+                    .unwrap();
+            assert_eq!(kept.coverage.path, CompactionPath::Summary);
+            let after = estimate_request_input_tokens(&kept.messages, None, None);
+            assert!(after < before, "{id}: {before} -> {after}");
+            let next = compaction_checkpoint_message(&SystemPrompt::Text(
+                build_compaction_summary_block_text(summary, ""),
+            ));
+            assert_eq!(
+                kept.messages,
+                [first.clone(), pasted.clone(), call, result, next]
+            );
+
+            let request = client.request.into_inner().unwrap().unwrap();
+            if let Some(previous) = previous {
+                assert!(request.messages.contains(&previous));
+                assert!(!kept.messages.contains(&previous));
+            } else {
+                assert!(
+                    request
+                        .messages
+                        .windows(2)
+                        .any(|pair| pair == older_exchange)
+                );
+            }
+            messages = kept.messages;
+        }
+    }
+
+    #[tokio::test]
+    async fn compaction_safe_legacy_tail_requires_a_saved_checkpoint_to_shrink() {
+        let legacy = format!("{LEGACY_SUMMARY_PREAMBLE}\n\n{}", "z".repeat(8_000));
+        let original = [
+            msg("user", "Please continue."),
+            msg("assistant", &"a".repeat(400)),
+            msg("user", &legacy),
+        ];
+        let messages = original.clone();
+        let prepared = PreparedCompactionEnvelope::new(CompactionConfig {
+            token_threshold: 1_024,
+            ..CompactionConfig::default()
+        });
+        let before = estimate_request_input_tokens(&messages, None, None);
+        assert!(before >= prepared.config.token_threshold);
+        let client = FixedSummaryClient::default();
+        let mut usage = Usage::default();
+        let error = compact_messages_safe(&client, &messages, None, &prepared, &mut usage)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Making room did not shrink the context; the original conversation was preserved."
+        );
+        assert_eq!(messages, original);
+
+        let saved = SystemPrompt::Text(format!(
+            "{COMPACTION_SUMMARY_BEGIN}\n{legacy}\n{COMPACTION_SUMMARY_END}"
+        ));
+        let summary = extract_compaction_summary(Some(&saved)).unwrap();
+        let checkpoint = compaction_checkpoint_message(&summary);
+        let restored = restore_compaction_checkpoint(original.to_vec(), Some(&summary));
+        assert_eq!(
+            restored,
+            [original[0].clone(), original[1].clone(), checkpoint.clone()]
+        );
+        let result = compact_messages_safe(&client, &restored, None, &prepared, &mut usage)
+            .await
+            .unwrap();
+        assert_eq!(result.coverage.path, CompactionPath::Summary);
+        assert!(
+            estimate_request_input_tokens(&result.messages, None, None)
+                < estimate_request_input_tokens(&restored, None, None)
+        );
+        let request = client.request.into_inner().unwrap().unwrap();
+        assert!(request.messages.contains(&checkpoint));
+        assert!(!result.messages.contains(&checkpoint));
+        assert_eq!(
+            result
+                .messages
+                .iter()
+                .filter(|message| is_checkpoint_for_compaction(message))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn uninterrupted_task_compacts_repeatedly_with_original_prefix_and_recent_tool_pairs() {
         let system = SystemPrompt::Text("stable project instructions and permissions".into());
         let mut prepared = PreparedCompactionEnvelope::new(CompactionConfig {
@@ -4022,14 +4243,10 @@ mod tests {
                 &original,
                 prepared.retained_recent_tokens(Some(&system)),
             );
-            let post_provenance = history_is_post_provenance(&original);
             let summary_history = original
                 .iter()
                 .enumerate()
-                .filter(|(idx, message)| {
-                    *idx < tail_start
-                        || is_compaction_checkpoint_message_in_era(message, post_provenance)
-                })
+                .filter(|(idx, message)| *idx < tail_start || is_checkpoint_for_compaction(message))
                 .map(|(_, message)| message.clone())
                 .collect::<Vec<_>>();
             assert_eq!(
@@ -4043,12 +4260,12 @@ mod tests {
                 result
                     .messages
                     .iter()
-                    .filter(|m| is_compaction_checkpoint_message(m))
+                    .filter(|m| is_checkpoint_for_compaction(m))
                     .count(),
                 1
             );
             for expected in &original[tail_start..] {
-                if is_compaction_checkpoint_message_in_era(expected, post_provenance) {
+                if is_checkpoint_for_compaction(expected) {
                     continue;
                 }
                 assert!(

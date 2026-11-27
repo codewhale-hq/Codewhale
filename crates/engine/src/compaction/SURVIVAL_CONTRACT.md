@@ -17,11 +17,11 @@ may summarize older turns; it must not drop the fields marked **survive**
 below. The B1 strategy (Rust `codewhale-tui` compaction path) enforces this
 over the live journal / API transcript.
 
-Failed compact must not replace live history. A second compact must replace
-the prior summary instead of stacking it, and must not grow the cacheable
-prefix by duplicating checkpoints. Internal protocol placeholders
-(`(no summary available)`, refusal-only text) are never durable transcript
-content.
+Failed compact must not replace live history. A successful summary pass
+replaces verified prior checkpoints with one new stamped checkpoint in
+history, outside the cacheable system and tool prefix. Internal protocol
+placeholders (`(no summary available)`, refusal-only text) are never durable
+transcript content.
 
 Live repository, tool, and GitHub state is distinguished from summarized
 facts: background-work handles and the exact branch/worktree identity
@@ -39,7 +39,7 @@ Journal kinds are the protocol `kind` strings (`header`, `user`,
 | `user` | `payload` text / `SessionEntryKind::User.text` / `Message` text blocks | last-round verbatim (bounded token budget for older user text) | older user turns | obsolete narration | secrets, raw dumps |
 | `assistant` | `payload` text / `SessionEntryKind::Assistant.text` / `Message` text + `tool_use` | protected last-round verbatim | older assistant text and reasoning | — | internal placeholders |
 | `tool_result` | `payload.tool_use_id`, `content`, `is_error`, `content_blocks` | last-round bounded (8KiB) | older results | nested images, oversized blocks | secrets, raw large outputs |
-| `compaction` | `payload.summary`, `tokens_before`, `tokens_after`, `model`, coverage receipt | latest checkpoint only | prior summaries replaced | stacked prior summaries | placeholder-only summaries |
+| `compaction` | `payload.summary`, `tokens_before`, `tokens_after`, `model`, coverage receipt | one stamped checkpoint after a summary pass | verified prior checkpoints supplied to the summarizer | superseded verified checkpoints | placeholder-only summaries |
 | `branch_summary` | `payload.branch_id`, `summary`, `parent_branch_id` | always (not rewritten by compact) | — | — | — |
 | `message` | flattened `Message.role` + `Message.content[]` | see content-block table | older turns | see prune rules | see never-durable |
 | `system` | `SessionEntryKind::System.content` | constitution / repo-law identity when present | duplicated policy | — | unsupported completion claims |
@@ -65,7 +65,7 @@ work.
 | --- | --- | --- |
 | `/anchor` pin | `.codewhale/anchors.md` (legacy `.deepseek/anchors.md`) | restated verbatim on the checkpoint user message |
 | compaction path + coverage | `CompactionCoverage` on the result / `/context` inspector | named as `summary` or `prune-only` plus last-round counts |
-| compaction receipt | checkpoint `user` message whose text contains the summary marker; TUI `HistoryCell::System` | latest receipt kept; failed compact does not write a replacement |
+| compaction receipt | stamped `user` checkpoint with a summary block and a separate provenance block, with a TUI receipt in `HistoryCell::System` | a successful summary pass writes one new stamped checkpoint. Failed compaction preserves live history. |
 | billed parent prompt tokens | `TurnContext.latest_parent_input_tokens` / session-carried copy | survive the turn boundary; cleared on history rewrite |
 | branch / worktree identity | live git / workspace | re-read from live state |
 | background-work / WorkRef handles | session + worker registry | survive or re-read from live state |
@@ -90,17 +90,27 @@ Rust now:
 - `validate_survival_contract` also refuses a missing checkpoint receipt,
   duplicated prior summaries, dropped `/anchor` text, or a placeholder-only
   checkpoint.
-- Checkpoint recognition in the recompaction family is era-scoped. A history
-  that already carries a provenance-stamped carrier (header block plus the
-  provenance block) recognizes only stamped carriers as checkpoints, so a
-  user turn that pastes a bare legacy summary header stays content: it
-  anchors the round, is retained verbatim, and does not count as a duplicated
-  summary. A history without a stamped carrier (a legacy session, or any
-  session not yet compacted) keeps the loose legacy matching, so a pasted
-  legacy header still reads as a checkpoint at a session's first compaction. The receipt count reads the
-  replacement in its own era, except that a post-provenance original raises
-  the bar to a stamped carrier: the engine stamps every replacement it
-  builds, and the stamp is the only form request rewriting relocates.
+- Production summary compaction uses the same checkpoint predicate for
+  summary selection, retention, and receipt validation. A history checkpoint
+  requires a `user` message with exactly two uncached text blocks. The first
+  carries a recognized summary header, and the second is the checkpoint
+  provenance marker. Restore can install an independently saved summary as a
+  stamped history checkpoint. Bare user text follows the ordinary recent-tail
+  and older-user retention budgets even when it starts with a complete legacy
+  summary header.
+
+  This includes normal v0.9.12 TUI saves that store the old summary solely in
+  one history text block. When compaction is enabled and the input estimate is
+  at or above the threshold, `compact_messages_safe` requires a summary pass
+  to reduce that estimate. Keeping a long old summary can cause that check to
+  reject the pass and preserve live history. A below-threshold manual pass can
+  keep the old text and append a stamped checkpoint, even if the input estimate
+  grows.
+
+  The published `retained_user_messages_in_era` API keeps its original
+  behavior. `false` includes legacy header matching, and `true` uses only
+  wire-format stamped checkpoints. Production calls the shared retention
+  implementation directly with its strict checkpoint predicate.
 - `compact_messages_safe` never mutates the caller's live history; the host
   commits only after `Ok`.
 
