@@ -2870,6 +2870,20 @@ impl ConfigView {
                 facts: ConfigRowFacts::saved_setting().effective(app.pet_watch.enabled.to_string()),
             },
             ConfigRow {
+                key: "whale_name".to_string(),
+                value: settings.whale_name.clone().unwrap_or_default(),
+                editable: true,
+                scope: ConfigScope::Saved,
+                facts: ConfigRowFacts::saved_setting(),
+            },
+            ConfigRow {
+                key: "whale_color".to_string(),
+                value: settings.whale_color.clone().unwrap_or_default(),
+                editable: true,
+                scope: ConfigScope::Saved,
+                facts: ConfigRowFacts::saved_setting(),
+            },
+            ConfigRow {
                 key: "calm_mode".to_string(),
                 value: settings.calm_mode.to_string(),
                 editable: true,
@@ -9950,7 +9964,9 @@ base_url = "https://api.xiaomimimo.com/v1"
             let samples: Vec<String> = match config_choice_values(def.key) {
                 Some(values) => values,
                 // Validated free text: a value the store's own parser accepts.
-                None if def.key == "background_color" => vec!["#1a1b26".to_string()],
+                None if matches!(def.key, "background_color" | "whale_color") => {
+                    vec!["#1a1b26".to_string()]
+                }
                 None if def.key == "default_model" => vec!["deepseek-v4-pro".to_string()],
                 None if def.is_int() => {
                     let default: i64 = def.default.parse().unwrap_or(0);

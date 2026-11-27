@@ -25,6 +25,7 @@ crates/tui/src/tui/pet_watch/pet-native.js text eol=lf
 # always join rows with LF (golden_harness.rs::render_golden_text), so a
 # CRLF checkout failed all eight Windows golden tests with a pure \r\n diff.
 crates/tui/src/tui/goldens/*.txt text eol=lf
+crates/tui/src/tui/goldens/config_panel_*.txt whitespace=-blank-at-eol
 vendor/codewhale-ratatui/tests/**/*.txt text eol=lf
 vendor/codewhale-ratatui/tests/**/*.json text eol=lf
 vendor/codewhale-ratatui/assets/**/*.json text eol=lf

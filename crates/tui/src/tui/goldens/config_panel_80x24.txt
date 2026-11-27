@@ -1,20 +1,20 @@
                                                                                 
- ╭ Settings ────────────────────────────────────────────── Appearance · 20/68 ╮ 
+ ╭ Settings ────────────────────────────────────────────── Appearance · 22/70 ╮ 
  │  Appearance   Models & providers   Work   Tools & MCP   Trust   Advanced   │ 
- │  Search: type to filter  (20/68)                                           │ 
+ │  Search: type to filter  (22/70)                                           │ 
  │ ────────────────────────────────────────────────────────────────────────── │ 
  │   Display                                                                █ │ 
  │ ▸ Theme                              terminal               ‹ ›  changed █ │ 
  │   Language                           auto                   ‹ ›          █ │ 
  │   Background                         (default)              ✎            █ │ 
  │   Whale view                         ○ Off                               █ │ 
- │   Quiet transcript                   ● On                                █ │ 
- │   Model reasoning in chat            ● On                                █ │ 
+ │   Whale name                                                ✎            █ │ 
+ │   Whale colour                                              ✎            │ │ 
+ │   Quiet transcript                   ● On                                │ │ 
+ │   Model reasoning in chat            ● On                                │ │ 
  │   Expand reasoning by default        ○ Off                               │ │ 
  │   Reasoning preview lines            2                      ✎            │ │ 
  │   Thinking background highlight      ● On                                │ │ 
- │   Expand command groups in help      ○ Off                               │ │ 
- │   Contextual tips                    ● On                                │ │ 
  │ system | terminal | shoreline | shoreline-light | underwater |…            │ 
  │ Enter or click again: opens choices · Theme: current terminal · saved      │ 
  │ terminal · applies on save                                                 │ 

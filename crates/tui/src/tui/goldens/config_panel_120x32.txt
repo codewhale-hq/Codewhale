@@ -1,30 +1,30 @@
                                                                                                                         
- ╭ Settings ────────────────────────────────────────────────────────────────────────────────────── Appearance · 20/68 ╮ 
+ ╭ Settings ────────────────────────────────────────────────────────────────────────────────────── Appearance · 22/70 ╮ 
  │  Appearance   Models & providers   Work   Tools & MCP   Trust   Advanced                                           │ 
- │  Search: type to filter  (20/68)                                                                                   │ 
+ │  Search: type to filter  (22/70)                                                                                   │ 
  │ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │ 
- │ ▸ Display         │  Display                                               │Theme                                  │ 
- │   Motion          │▸ Theme                              terminal      ‹ ›  │system | terminal | shoreline |        │ 
- │                   │  Language                           auto          ‹ ›  │shoreline-light | underwater |         │ 
- │                   │  Background                         (default)     ✎    │underwater-retro | dark | light |      │ 
- │                   │  Whale view                         ○ Off              │grayscale | catppuccin-mocha |         │ 
- │                   │  Quiet transcript                   ● On               │tokyo-night | dracula | gruvbox-dark | │ 
- │                   │  Model reasoning in chat            ● On               │claude | matrix | solarized-light |    │ 
- │                   │  Expand reasoning by default        ○ Off              │uwu                                    │ 
- │                   │  Reasoning preview lines            2             ✎    │                                       │ 
- │                   │  Thinking background highlight      ● On               │current   terminal                     │ 
- │                   │  Expand command groups in help      ○ Off              │default   underwater                   │ 
- │                   │  Contextual tips                    ● On               │source    settings.toml                │ 
- │                   │  Pin last prompt while scrolling    ● On               │apply     applies on save              │ 
- │                   │  Tool detail level                  ○ Off              │Ctrl+R reset to default                │ 
- │                   │  Inline file changes                Full diff     ‹ ›  │                                       │ 
- │                   │  Output pacing                      auto          ‹ ›  │Enter or click again: opens choices    │ 
- │                   │  Cost currency                      usd           ‹ ›  │                                       │ 
- │                   │  Transcript spacing                 spacious      ‹ ›  │                                       │ 
- │                   │  Tool cards                         compact       ‹ ›  │                                       │ 
- │                   │                                                        │                                       │ 
- │                   │  Motion                                                │                                       │ 
- │                   │  Reduce motion                      ○ Off              │                                       │ 
+ │ ▸ Display         │  Display                                              █│Theme                                  │ 
+ │   Motion          │▸ Theme                              terminal     ‹ ›  █│system | terminal | shoreline |        │ 
+ │                   │  Language                           auto         ‹ ›  █│shoreline-light | underwater |         │ 
+ │                   │  Background                         (default)    ✎    █│underwater-retro | dark | light |      │ 
+ │                   │  Whale view                         ○ Off             █│grayscale | catppuccin-mocha |         │ 
+ │                   │  Whale name                                      ✎    █│tokyo-night | dracula | gruvbox-dark | │ 
+ │                   │  Whale colour                                    ✎    █│claude | matrix | solarized-light |    │ 
+ │                   │  Quiet transcript                   ● On              █│uwu                                    │ 
+ │                   │  Model reasoning in chat            ● On              █│                                       │ 
+ │                   │  Expand reasoning by default        ○ Off             █│current   terminal                     │ 
+ │                   │  Reasoning preview lines            2            ✎    █│default   underwater                   │ 
+ │                   │  Thinking background highlight      ● On              █│source    settings.toml                │ 
+ │                   │  Expand command groups in help      ○ Off             █│apply     applies on save              │ 
+ │                   │  Contextual tips                    ● On              █│Ctrl+R reset to default                │ 
+ │                   │  Pin last prompt while scrolling    ● On              █│                                       │ 
+ │                   │  Tool detail level                  ○ Off             █│Enter or click again: opens choices    │ 
+ │                   │  Inline file changes                Full diff    ‹ ›  █│                                       │ 
+ │                   │  Output pacing                      auto         ‹ ›  █│                                       │ 
+ │                   │  Cost currency                      usd          ‹ ›  █│                                       │ 
+ │                   │  Transcript spacing                 spacious     ‹ ›  █│                                       │ 
+ │                   │  Tool cards                         compact      ‹ ›  █│                                       │ 
+ │                   │                                                       ││                                       │ 
  │ system | terminal | shoreline | shoreline-light | underwater | underwater-retro | dark | light | grayscale |…      │ 
  │ Preview:  ● Accept Edits                                                                                           │ 
  │ ↑↓ move · Enter edits · Tab switch · Esc close                                                                     │ 

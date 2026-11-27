@@ -1,12 +1,12 @@
-╭ Settings ──────── Appearance · 20/68 ╮
+╭ Settings ──────── Appearance · 22/70 ╮
 │‹ Appearance  1/6                    ›│
-│ Search: type to filter  (20/68)      │
+│ Search: type to filter  (22/70)      │
 │  Display                            █│
 │▸ Theme  terminal               ‹ ›  █│
 │  Language  auto                ‹ ›  ││
 │  Background  (default)         ✎    ││
 │  Whale view  ○ Off                  ││
-│  Quiet transcript  ● On             ││
+│  Whale name                    ✎    ││
 │Theme: terminal                       │
 │Tab ⇆ · ↑↓ · Enter ↵ · Esc ×          │
 ╰──────────────────────────────────────╯
