@@ -671,6 +671,45 @@ pub fn version_token(text: &str) -> Option<String> {
         })
 }
 
+pub async fn preferred_cli(
+    agent: &ExternalAgent,
+    first: &Path,
+    env: &BTreeMap<String, String>,
+) -> (PathBuf, Option<String>) {
+    preferred_cli_in(agent, first, env, search_dirs()).await
+}
+
+async fn preferred_cli_in(
+    agent: &ExternalAgent,
+    first: &Path,
+    env: &BTreeMap<String, String>,
+    dirs: Vec<PathBuf>,
+) -> (PathBuf, Option<String>) {
+    let version = cli_version_with_env(first, env).await;
+    if below_minimum(version.as_deref(), agent.min_version) {
+        let pathext = windows_pathext();
+        let mut seen = std::collections::HashSet::from([first.to_path_buf()]);
+        for path in dirs
+            .iter()
+            .flat_map(|dir| candidates(dir, agent.binary, pathext.as_deref()))
+        {
+            if !seen.insert(path.clone())
+                || (agent.adapter_cli_env.is_some() && is_batch_shim(&path))
+                || !is_executable(&path).await
+            {
+                continue;
+            }
+            if let Some(found) = cli_version_with_env(&path, env).await
+                && version_core(&found).is_some()
+                && !below_minimum(Some(&found), agent.min_version)
+            {
+                return (path, Some(found));
+            }
+        }
+    }
+    (first.to_owned(), version)
+}
+
 pub async fn cli_version(path: &Path) -> Option<String> {
     cli_version_with_env(path, &BTreeMap::new()).await
 }
@@ -769,12 +808,13 @@ pub async fn launch(id: &str) -> Result<ExternalAgentLaunch, ExecutorUnavailable
             env: BTreeMap::new(),
         });
     }
-    let cli = resolve(agent.binary)
+    let mut cli = resolve(agent.binary)
         .await
         .ok_or_else(|| not_installed(agent))?;
     let mut env = agent.process_env();
     if agent.min_version.is_some() {
-        let version = cli_version_with_env(&cli, &env).await;
+        let (selected, version) = preferred_cli(agent, &cli, &env).await;
+        cli = selected;
         if below_minimum(version.as_deref(), agent.min_version) {
             let update = agent
                 .upgrade
@@ -1058,6 +1098,32 @@ mod tests {
                 "{hostile}"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn preferred_cli_preserves_search_order_among_compatible_installations() {
+        let root = tempfile::tempdir().unwrap();
+        let dirs: Vec<_> = ["old", "unknown", "supported", "newer"]
+            .map(|name| root.path().join(name))
+            .into();
+        let mut paths = Vec::new();
+        for (dir, version) in dirs.iter().zip(["0.46.0", "unknown", "0.165.0", "0.172.0"]) {
+            std::fs::create_dir(dir).unwrap();
+            paths.push(script(dir, "codex", &format!("echo {version}")));
+        }
+        let agent = AGENTS.iter().find(|agent| agent.id == "codex").unwrap();
+        let env = agent.process_env();
+        for first in [0, 2] {
+            assert_eq!(
+                preferred_cli_in(agent, &paths[first], &env, dirs[first..].to_vec()).await,
+                (paths[2].clone(), Some("0.165.0".into()))
+            );
+        }
+        assert_eq!(
+            preferred_cli_in(agent, &paths[0], &env, dirs[..2].to_vec()).await,
+            (paths[0].clone(), Some("0.46.0".into()))
+        );
     }
 
     #[cfg(unix)]

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- External agent discovery and launches use the first compatible installed CLI when an older copy comes first on the executable search path.
+
 ### Added
 
 - The Hello Extension authoring sample now shows its greeting command in the shared browser client’s plugin detail panel. (#7236)
