@@ -235,9 +235,11 @@ fn is_inline_skill_mention_start(chars: &[char], idx: usize) -> bool {
     if idx == 0 {
         return false;
     }
-    chars
-        .get(idx.saturating_sub(1))
-        .is_some_and(|ch| ch.is_whitespace() || matches!(ch, '(' | '[' | '{' | '<' | '"' | '\''))
+    chars.get(idx.saturating_sub(1)).is_some_and(|ch| {
+        ch.is_whitespace()
+            || matches!(ch, '(' | '[' | '{' | '<' | '"' | '\'')
+            || codewhale_tui_kit::translation::is_cjk(*ch)
+    })
 }
 
 fn skill_mention_entries(
