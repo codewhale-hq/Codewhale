@@ -1030,50 +1030,65 @@ fn compaction_summary_request_extends_the_parent_turn_prompt_bytes() {
     ];
     let system = SystemPrompt::Text("pinned system prompt".to_string());
     let tools = vec![test_tool("read"), test_tool("bash")];
-    let effort = "high";
-    let parent = codewhale_core::request::prepare_primary_turn_request(
-        codewhale_core::request::PrimaryTurnRequest {
-            model: model.to_string(),
-            messages: history.clone(),
-            max_tokens: 64_000,
-            system: Some(system.clone()),
-            tools: Some(tools.clone()),
-            tool_choice: Some(json!({"type": "auto"})),
-            reasoning_effort: Some(effort.to_string()),
-        },
-    );
     let config = crate::compaction::CompactionConfig {
         model: model.to_string(),
         ..Default::default()
     };
-    let mut summary_history = history;
+    let mut summary_history = history.clone();
     summary_history.push(text(Role::User, "write the handoff summary"));
-    let summary = crate::compaction::compaction_summary_request(
-        summary_history,
-        &config,
-        Some(&system),
-        Some(&tools),
-        Some(effort),
-        8_192,
-    );
+    let parent_for = |effort: &str| {
+        codewhale_core::request::prepare_primary_turn_request(
+            codewhale_core::request::PrimaryTurnRequest {
+                model: model.to_string(),
+                messages: history.clone(),
+                max_tokens: 64_000,
+                system: Some(system.clone()),
+                tools: Some(tools.clone()),
+                tool_choice: Some(json!({"type": "auto"})),
+                reasoning_effort: Some(effort.to_string()),
+            },
+        )
+    };
+    let summary_for = |effort: &str, provider: ProviderKind| {
+        crate::compaction::compaction_summary_request(
+            summary_history.clone(),
+            &config,
+            Some(&system),
+            Some(&tools),
+            Some(effort),
+            8_192,
+            provider,
+        )
+    };
 
     // Chat Completions: system and history share one `messages` array.
     let client = deepseek_request_boundary_client(
         "https://api.deepseek.com/v1",
         "http://127.0.0.1:9".into(),
     );
-    let parent_body = client
-        .prepare_outbound_request(parent.clone(), true)
-        .expect("parent prepares")
-        .body;
-    let summary_body = client
-        .prepare_outbound_request(summary.clone(), false)
-        .expect("summary prepares")
-        .body;
-    assert_extends("chat", &parent_body["messages"], &summary_body["messages"]);
-    for key in ["model", "tools", "reasoning_effort", "thinking"] {
-        assert_eq!(parent_body.get(key), summary_body.get(key), "chat {key}");
+    for effort in ["high", "off"] {
+        let parent_body = client
+            .prepare_outbound_request(parent_for(effort), true)
+            .expect("parent prepares")
+            .body;
+        let summary_body = client
+            .prepare_outbound_request(summary_for(effort, ProviderKind::Deepseek), false)
+            .expect("summary prepares")
+            .body;
+        assert_extends("chat", &parent_body["messages"], &summary_body["messages"]);
+        for key in ["model", "tools", "tool_choice", "reasoning_effort", "thinking"] {
+            assert_eq!(
+                parent_body.get(key),
+                summary_body.get(key),
+                "chat {effort} {key}"
+            );
+        }
     }
+
+    let effort = "high";
+    let parent = parent_for(effort);
+    let summary = summary_for(effort, ProviderKind::OpenaiCodex);
+    assert_eq!(summary.tool_choice, Some(json!("none")));
 
     // Responses (the Codex route where the 0% hit was recorded).
     let parent_body =

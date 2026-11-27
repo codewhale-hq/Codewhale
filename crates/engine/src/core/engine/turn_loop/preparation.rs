@@ -687,6 +687,7 @@ impl Engine {
             .and_then(|limits| limits.context_tokens);
 
         turn.stop_diagnostics.last_prepared_output_limit_tokens = Some(request.max_tokens);
+        self.session.last_request_tools.clone_from(&request.tools);
 
         // Stream the response. Keep the request around (cloned into the
         // first call) so we can resend it on a transparent retry below
@@ -936,6 +937,7 @@ impl Engine {
             );
         turn.last_request_snapshot = Some(snapshot.clone());
         turn.stop_diagnostics.last_prepared_output_limit_tokens = Some(request.max_tokens);
+        self.session.last_request_tools.clone_from(&request.tools);
         let _ = self
             .send_event(Event::ToolRequestSnapshot { snapshot })
             .await;

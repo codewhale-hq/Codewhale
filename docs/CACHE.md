@@ -80,6 +80,17 @@ when no secret is configured (the common case), so it does not move the prefix.
 When a configured secret appears in a tool result, redacting it is a security
 requirement that correctly overrides cache stability for that one message.
 
+## Compaction summary requests
+
+A compaction summary request is the turn's request plus one trailing
+instruction: the same model, system prompt, tools and reasoning tier, then the
+selected older history in order. A manual `/compact` sends the tools the last
+turn sent; automatic and overflow-recovery passes send the tools the next
+request will carry. On DeepSeek the summary also sends the turn's own
+`tool_choice`, because a `none` the turn never sends moves the cached prefix
+(#7564); a reply that calls a tool is rejected as an unusable summary. Other
+routes send `tool_choice: "none"`.
+
 ## Per-request receipts
 
 `provider_request_receipt` in exec stream JSON and `turn.provider_request` in

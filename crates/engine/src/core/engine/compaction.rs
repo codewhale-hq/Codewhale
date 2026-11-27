@@ -534,7 +534,8 @@ impl Engine {
         let mut turn_status = TurnOutcomeStatus::Completed;
         let mut turn_error = None;
 
-        let prepared = self.prepare_compaction_envelope(self.config.compaction.clone());
+        let mut prepared = self.prepare_compaction_envelope(self.config.compaction.clone());
+        prepared.tools.clone_from(&self.session.last_request_tools);
         let threshold_tokens = prepared.config.token_threshold;
         let compaction_window_tokens = prepared.config.effective_context_window;
         let pass = |path: Option<crate::compaction::CompactionPath>, usage: Usage| CompactionPass {

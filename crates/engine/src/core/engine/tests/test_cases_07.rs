@@ -714,8 +714,8 @@ fn automatic_compaction_continues_one_task_and_preserves_failed_history() {
                             if fail_summary {
                                 assert_eq!(status, TurnOutcomeStatus::Failed, "{error:?}");
                                 assert!(error.as_deref().is_some_and(|message| {
-                                    message.contains("tool call instead of a summary")
-                                        && message.contains("original conversation was preserved")
+                                    message.contains("remained unusable after one conservative retry")
+                                        && message.contains("no replacement checkpoint was committed")
                                 }), "{error:?}");
                             } else {
                                 assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");

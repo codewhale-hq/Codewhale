@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`/compact` and automatic compaction reuse the turn's prompt cache on DeepSeek:** the manual summary request now carries the tools the last turn sent, and on DeepSeek every summary request sends the turn's own `tool_choice` instead of `none`, so the cached system prompt, tools and history are no longer billed again as cache misses. A summary reply that calls a tool is treated as unusable and retried once with the stricter prompt; if that also fails, the conversation is kept unchanged. Thanks [@LmeSzinc](https://github.com/LmeSzinc) for the audit-log numbers that pinned this down. (#7564)
 - **Contained processes are killed when Codewhale exits on a signal:** process groups started for `sandbox run`, verifier gates, hooks, MCP servers and other contained helpers are now killed on SIGINT, SIGTERM or SIGHUP, a crashed MCP server's leftover processes are killed as soon as its exit is seen, and a timed-out or stopped verifier gate kills its whole process tree on Windows. (#6558)
 - **A failed or timed-out Python REPL round no longer leaves child processes behind:** the round, and REPL shutdown, now kill every process the interpreter started, not only the interpreter. (#6559)
 - **A lane start that fails after creating its worktree no longer orphans it:** the failed lane records the worktree and branch, and the worktree TTL applies. (#6558)

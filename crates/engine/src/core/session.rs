@@ -445,6 +445,8 @@ pub struct Session {
     /// (#5577). Cleared when history is rewritten (compaction, restore).
     pub latest_parent_input_tokens: Option<u32>,
 
+    pub last_request_tools: Option<Vec<codewhale_models::Tool>>,
+
     pub agent_preset: Option<String>,
 }
 
@@ -521,6 +523,7 @@ impl Session {
             tool_activation_cache: ToolActivationCache::default(),
             messages_revision: 0,
             latest_parent_input_tokens: None,
+            last_request_tools: None,
             agent_preset: None,
         }
     }

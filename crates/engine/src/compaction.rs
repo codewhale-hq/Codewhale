@@ -101,8 +101,8 @@ pub struct PreparedCompactionEnvelope {
     pub input_token_ratio: (usize, usize),
     /// Durable handoff owner; set by the engine, never added to the stable prefix.
     pub session_id: Option<String>,
-    /// Exact tool prefix of the interrupted request. Tool execution remains
-    /// disabled on the summary call; retaining schemas preserves cache reuse.
+    /// Exact tool prefix of the interrupted request. A summary reply that
+    /// calls a tool is never executed; retaining schemas preserves cache reuse.
     pub tools: Option<Vec<Tool>>,
     /// Resolved reasoning tier the parent turn sends (#6540). Reasoning
     /// routes render the effort into the head of the prompt, so a summary
@@ -1877,12 +1877,13 @@ fn validate_compaction_summary(summary: &str) -> Result<String> {
 /// controls differ (output cap, streaming, tool choice), so the provider's
 /// prefix cache covers the history the turn already paid for (#6540).
 ///
-/// Known limit: `tool_choice: "none"` keeps the summary from executing tools.
-/// Anthropic Messages documents a `tool_choice` change as invalidating the
-/// cached *message* blocks (system and tools stay cached), so on those routes
-/// the history is still re-read uncached. The Responses builder forwards
-/// `none` (and sends `auto` for every other choice); its cache effect on
-/// Responses and Chat Completions routes has not been measured live.
+/// On DeepSeek the summary sends the turn's own `tool_choice` (`auto`): a
+/// `none` the turn never sends moved the cached prefix, and the reply is
+/// rejected as unusable if it calls a tool (#7564). Other routes send
+/// `tool_choice: "none"`. Anthropic Messages documents a `tool_choice` change
+/// as invalidating the cached *message* blocks (system and tools stay cached),
+/// so on those routes the history is still re-read uncached; the cache effect
+/// on Responses and other Chat Completions routes has not been measured live.
 pub fn compaction_summary_request(
     history: Vec<Message>,
     config: &CompactionConfig,
@@ -1890,6 +1891,7 @@ pub fn compaction_summary_request(
     tools: Option<&[Tool]>,
     reasoning_effort: Option<&str>,
     max_tokens: u32,
+    provider: codewhale_config::ProviderKind,
 ) -> MessageRequest {
     MessageRequest {
         model: config.model.clone(),
@@ -1897,10 +1899,14 @@ pub fn compaction_summary_request(
         max_tokens,
         system: system_prompt.cloned(),
         tools: tools.map(<[Tool]>::to_vec),
-        // Tool schemas stay for prefix parity; execution stays off.
         tool_choice: tools
             .filter(|tools| !tools.is_empty())
-            .map(|_| serde_json::json!("none")),
+            .map(|_| match provider {
+                codewhale_config::ProviderKind::Deepseek => {
+                    crate::core::engine::tool_catalog::default_tool_choice(false)
+                }
+                _ => serde_json::json!("none"),
+            }),
         metadata: None,
         thinking: None,
         reasoning_effort: reasoning_effort.map(str::to_string),
@@ -2021,6 +2027,7 @@ async fn create_summary(
             tools,
             reasoning_effort,
             max_tokens,
+            cost_route.provider,
         );
 
         let accounting_origin = notice_sink.and_then(|sink| match sink.accounting_origin() {
@@ -2184,27 +2191,27 @@ async fn create_summary(
                 codewhale_models::stop_reason_detail(response.stop_reason.as_deref())
             );
         }
-        if response
+        let summary = if response
             .content
             .iter()
             .any(|block| matches!(block, ContentBlock::ToolUse { .. }))
         {
-            anyhow::bail!(
+            Err(anyhow::anyhow!(
                 "Making room returned a tool call instead of a summary; the original conversation was preserved."
-            );
-        }
-
-        let summary = response
-            .content
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::Text { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let summary = validate_compaction_summary(&summary);
+            ))
+        } else {
+            validate_compaction_summary(
+                &response
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text, .. } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        };
         if let Err(error) = summary {
             if quality_retry_used {
                 return Err(error.context(
@@ -4543,6 +4550,71 @@ mod tests {
         };
         assert!(blocks[0].text.contains(FIXED_SUMMARY));
         assert!(!blocks[0].text.contains("(no summary available)"));
+    }
+
+    #[tokio::test]
+    async fn tool_call_only_summary_is_unusable_and_retried_once() {
+        let tool_call = || {
+            vec![ContentBlock::ToolUse {
+                execution_id: None,
+                id: "summary-read".to_string(),
+                name: "read_file".to_string(),
+                input: serde_json::json!({"path": "src/session_store.rs"}),
+                caller: None,
+                thought_signature: None,
+            }]
+        };
+        let config = CompactionConfig {
+            model: "test-model".to_string(),
+            cache_summary: false,
+            ..Default::default()
+        };
+        let original = vec![
+            msg("user", "Keep the session store migration transactional."),
+            msg(
+                "assistant",
+                "I am updating the session store and its fixtures.",
+            ),
+        ];
+
+        let client = ScriptedSummaryClient::new(vec![
+            tool_call(),
+            vec![ContentBlock::Text {
+                text: FIXED_SUMMARY.to_string(),
+                cache_control: None,
+            }],
+        ]);
+        let result = compact_messages_safe(
+            &client,
+            &original,
+            None,
+            &prepared(&config),
+            &mut Usage::default(),
+        )
+        .await
+        .expect("a tool-only reply is retried like any unusable summary");
+        assert_eq!(client.requests.lock().unwrap().len(), 2);
+        assert_eq!(result.retries_used, 1);
+        let Some(SystemPrompt::Blocks(blocks)) = result.summary_prompt else {
+            panic!("recovered summary must be committed");
+        };
+        assert!(blocks[0].text.contains(FIXED_SUMMARY));
+
+        let client = ScriptedSummaryClient::new(vec![tool_call(), tool_call()]);
+        let error = compact_messages_safe(
+            &client,
+            &original,
+            None,
+            &prepared(&config),
+            &mut Usage::default(),
+        )
+        .await
+        .expect_err("two tool-only replies leave history unchanged");
+        assert_eq!(client.requests.lock().unwrap().len(), 2);
+        assert!(
+            format!("{error:#}").contains("tool call instead of a summary"),
+            "{error:#}"
+        );
     }
 
     #[tokio::test]

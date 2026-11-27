@@ -756,3 +756,147 @@ fn a_request_that_cannot_fit_names_the_cause_and_one_next_step() {
         "headless has no command layer: {message}"
     );
 }
+
+#[tokio::test]
+async fn manual_compaction_reuses_the_last_turn_request_header() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+    let _env_lock = lock_test_env();
+    let _cost_scope = crate::cost_status::test_scope();
+    let workspace = tempdir().expect("isolated compaction workspace");
+    let _home = EnvVarGuard::set("CODEWHALE_HOME", workspace.path());
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(|request: &Request| {
+            let body: Value = serde_json::from_slice(&request.body).expect("request JSON");
+            if body["stream"] == json!(true) {
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(concat!(
+                        "data: {\"id\":\"turn\",\"choices\":[{\"index\":0,",
+                        "\"delta\":{\"content\":\"The store migration is transactional now.\"},",
+                        "\"finish_reason\":null}]}\n\n",
+                        "data: {\"id\":\"turn\",\"choices\":[{\"index\":0,",
+                        "\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                        "data: [DONE]\n\n",
+                    ))
+            } else {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "id": "summary",
+                    "object": "chat.completion",
+                    "model": codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL,
+                    "choices": [{
+                        "index": 0,
+                        "message": { "role": "assistant", "content": "Primary request: keep the session store migration transactional. Completed: the migration was made transactional. Next: run session_store::roundtrip and report the result." },
+                        "finish_reason": "stop",
+                    }],
+                    "usage": { "prompt_tokens": 41, "completion_tokens": 7, "total_tokens": 48 },
+                }))
+            }
+        })
+        .mount(&server)
+        .await;
+    let route_config = {
+        let provider = Some("deepseek".to_string());
+        let mut config: Config = Config::default();
+        config.provider = provider;
+        config
+    }
+    .with_legacy_root(
+        Some("fixture-key".to_string()),
+        Some(format!("{}/v1", server.uri())),
+    );
+    let (engine, handle) = Engine::new(
+        EngineConfig {
+            workspace: workspace.path().to_path_buf(),
+            snapshots_enabled: false,
+            subagents_enabled: false,
+            ..EngineConfig::default()
+        },
+        &route_config,
+    );
+    let run_task = tokio::spawn(engine.run());
+    let wait_for_terminal = |expect_compaction: bool| {
+        let handle = &handle;
+        async move {
+            let mut rx = handle.rx_event.write().await;
+            loop {
+                let event = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+                    .await
+                    .expect("engine terminal")
+                    .expect("engine event channel");
+                if let Event::TurnComplete {
+                    compaction_id,
+                    status,
+                    error,
+                    ..
+                } = event
+                {
+                    assert_eq!(compaction_id.is_some(), expect_compaction);
+                    assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+                    return;
+                }
+            }
+        }
+    };
+
+    handle
+        .send(external_user_message_op(
+            "Keep the session store migration transactional.",
+            AppMode::Agent,
+            &route_config,
+        ))
+        .await
+        .expect("send turn");
+    wait_for_terminal(false).await;
+    handle
+        .send(Op::CompactContext {
+            id: "compact-header-parity".to_string(),
+            route: resolved_route_for_test(
+                &route_config,
+                codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL,
+            ),
+            compaction: Box::new(CompactionConfig::default()),
+        })
+        .await
+        .expect("send manual compaction");
+    wait_for_terminal(true).await;
+    run_task.abort();
+
+    let bodies = server
+        .received_requests()
+        .await
+        .expect("recorded requests")
+        .iter()
+        .map(|request| serde_json::from_slice::<Value>(&request.body).expect("request JSON"))
+        .collect::<Vec<_>>();
+    let turn = bodies
+        .iter()
+        .find(|body| body["stream"] == json!(true))
+        .expect("turn request");
+    let summary = bodies.last().expect("summary request");
+    assert_ne!(summary["stream"], json!(true), "{bodies:#?}");
+    assert!(
+        turn["tools"]
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty()),
+        "the turn must carry tools for this check: {turn:#}"
+    );
+    for key in [
+        "model",
+        "tools",
+        "tool_choice",
+        "reasoning_effort",
+        "thinking",
+    ] {
+        assert_eq!(turn.get(key), summary.get(key), "summary {key}");
+    }
+    let turn_messages = serde_json::to_string(&turn["messages"]).expect("serialize turn");
+    let summary_messages = serde_json::to_string(&summary["messages"]).expect("serialize summary");
+    assert!(
+        summary_messages.starts_with(turn_messages.strip_suffix(']').expect("JSON array")),
+        "summary history diverges from the turn prefix:\nturn: {turn_messages}\nsummary: {summary_messages}"
+    );
+}
