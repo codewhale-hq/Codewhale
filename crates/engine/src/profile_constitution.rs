@@ -4,8 +4,10 @@
 //!
 //! Known limitations of the fence: it compares the local account store only,
 //! so account states the desktop keeps to itself are not seen; it sends the
-//! browser server no caller identity; and it cannot order browser
-//! registrations.
+//! browser server no caller identity; it cannot order browser registrations;
+//! and a turn awaits its capture, an off-runtime read of the local account
+//! store, with no deadline and no Stop, before the bounded account profile
+//! wait.
 use anyhow::{Context, Result, ensure};
 use codewhale_config::user_constitution::ProfileConstitutionSnapshot;
 use codewhale_secrets::account::{
@@ -226,10 +228,13 @@ async fn load_from(
         .map(|user| user.id.as_str())
         .filter(|id| !id.is_empty())
         .context("Sign in again to load your profile constitution")?;
-    let client = crate::platform_client_builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(ACCOUNT_LOAD_TIMEOUT)
-        .build()?;
+    let client = tokio::task::spawn_blocking(|| {
+        crate::platform_client_builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(ACCOUNT_LOAD_TIMEOUT)
+            .build()
+    })
+    .await??;
     let response = client
         .get(format!("{api_base}/api/me"))
         .bearer_auth(&auth.bundle.access_token)

@@ -109,18 +109,25 @@ const END_OF_EVENTS: &str = "profile constitution test: end of events";
 /// sentinel keeps the receiver drained during a turn without racing the turn.
 fn collect_timed_events(
     handle: EngineHandle,
-) -> tokio::task::JoinHandle<Vec<(std::time::Instant, Event)>> {
-    tokio::spawn(async move {
-        let mut events = Vec::new();
-        let mut receiver = handle.rx_event.write().await;
-        while let Some(event) = receiver.recv().await {
-            if matches!(&event, Event::Status { message } if message == END_OF_EVENTS) {
-                break;
+) -> tokio::sync::oneshot::Receiver<Vec<(std::time::Instant, Event)>> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let _ = sender.send(runtime.block_on(async move {
+            let mut events = Vec::new();
+            let mut receiver = handle.rx_event.write().await;
+            while let Some(event) = receiver.recv().await {
+                if matches!(&event, Event::Status { message } if message == END_OF_EVENTS) {
+                    break;
+                }
+                events.push((std::time::Instant::now(), event));
             }
-            events.push((std::time::Instant::now(), event));
-        }
-        events
-    })
+            events
+        }));
+    });
+    receiver
 }
 
 fn collect_events(handle: EngineHandle) -> tokio::task::JoinHandle<Vec<Event>> {
@@ -283,21 +290,27 @@ fn account_me(notes: &str) -> serde_json::Value {
         "preferences":{"constitution":ProfileConstitution { notes: notes.into(), ..Default::default() }}}})
 }
 
-async fn slow_account_service(delay: Duration) -> wiremock::MockServer {
+async fn slow_account_service(reads: &[(&str, Duration)]) -> wiremock::MockServer {
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
     };
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/api/me"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(account_me("Account profile preference."))
-                .set_delay(delay),
-        )
-        .mount(&server)
-        .await;
+    for (index, (note, delay)) in reads.iter().enumerate() {
+        let read = Mock::given(method("GET"))
+            .and(path("/api/me"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(account_me(note))
+                    .set_delay(*delay),
+            );
+        let read = if index + 1 < reads.len() {
+            read.up_to_n_times(1)
+        } else {
+            read
+        };
+        read.mount(&server).await;
+    }
     server
 }
 
@@ -332,7 +345,10 @@ async fn slow_account_service_does_not_delay_the_turn_and_its_read_is_used_next_
     let _home = crate::test_support::SealedHome::new();
     save_local_constitution();
     let read = Duration::from_secs(3);
-    let server = slow_account_service(read).await;
+    let first_read = "Account profile preference.";
+    let fresh_read = "Account profile preference, read during the second turn.";
+    let server =
+        slow_account_service(&[(first_read, read), (fresh_read, Duration::from_secs(4))]).await;
     let _account = crate::profile_constitution::serve_account_for_test(
         crate::profile_constitution::fixture_account_store(&server.uri()),
         server.uri(),
@@ -352,7 +368,7 @@ async fn slow_account_service_does_not_delay_the_turn_and_its_read_is_used_next_
     let events = collect_timed_events(handle);
     let (first_started, first) = prompt_turn(&mut engine, &config, &mock).await;
     assert!(first.contains("Local fallback preference."));
-    assert!(!first.contains("Account profile preference."));
+    assert!(!first.contains("Account profile preference"));
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while engine.account_constitution.read_in_flight() {
         assert!(
@@ -363,8 +379,12 @@ async fn slow_account_service_does_not_delay_the_turn_and_its_read_is_used_next_
     }
     let (_, second) = prompt_turn(&mut engine, &config, &mock).await;
     assert!(
-        second.contains("Account profile preference."),
+        second.contains(first_read),
         "the finished read reaches the next turn"
+    );
+    assert!(
+        !second.contains(fresh_read),
+        "the second turn waited for its own account read"
     );
     assert!(account_requests(&server).await >= 2);
     let loading = codewhale_localization::tr(
@@ -414,7 +434,8 @@ async fn slow_account_service_does_not_delay_the_turn_and_its_read_is_used_next_
 async fn stop_ends_a_slow_account_read_at_once_for_interactive_and_hosted_turns() {
     use crate::llm_client::mock::{MockLlmClient, canned};
     let _home = crate::test_support::SealedHome::new();
-    let server = slow_account_service(Duration::from_secs(30)).await;
+    let server =
+        slow_account_service(&[("Account profile preference.", Duration::from_secs(30))]).await;
     let _account = crate::profile_constitution::serve_account_for_test(
         crate::profile_constitution::fixture_account_store(&server.uri()),
         server.uri(),
