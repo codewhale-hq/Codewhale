@@ -1,0 +1,32 @@
+name: Native Windows test-build pipe acceptance
+on:
+  push:
+    branches: [ci/windows-pipe-archive-0105]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  pipe:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify and fetch exact archived CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: '46072323349'
+          SOURCE_SHA: afd0d9dfaa26191929c001813980eb442370bb60
+        run: |
+          $actual = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:SOURCE_RUN" --jq '.head_sha'
+          if ($actual -ne $env:SOURCE_SHA) { throw "Unexpected artifact source $actual" }
+          do {
+            $asset = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:SOURCE_RUN/artifacts?per_page=100" --jq '.artifacts[]|select(.name=="test-archive-windows-latest" and .expired==false)|.id'
+            if ($LASTEXITCODE -ne 0) { throw "Could not read candidate artifacts" }
+            if ($asset) { break }
+            $build = gh api "repos/$env:GITHUB_REPOSITORY/actions/jobs/140752162002" --jq '.status'
+            if ($build -eq "completed") { throw "Build complete without the archive" }
+            Start-Sleep -Seconds 30
+          } while ($true)
+          gh run download $env:SOURCE_RUN --repo $env:GITHUB_REPOSITORY --name test-archive-windows-latest --dir "$env:RUNNER_TEMP/pipe-exe"
+      - name: Exercise CI CLI on anonymous Windows pipes
+        run: python scripts/release/windows-pipe-acceptance.py "$env:RUNNER_TEMP/pipe-exe/codewhale.exe"
