@@ -79,6 +79,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The shared pet companion (`codewhale pet serve`)** and, in the terminal, sound, replay export, the browser appearance studio, source selection, the pixel, particle, cove, braille and whale-girl views, view cycling and avatar packs; `/pet inspect|status|appearance|style|source|export|sound|avatar|action|view` and the F6 and F8 keys. F5 still opens replies and agents. Files left in `~/.codewhale/pet-shared` are neither read nor deleted. Plugins can still register avatar packs; the terminal no longer draws them.
 - **The `SUPERFAST_ENABLED`, `SUPERFAST_PROVIDER`, `SUPERFAST_BASE_URL`, `SUPERFAST_MODEL` and `SUPERFAST_TIMEOUT_MS` variables** and the gate's separate 150 ms call. Setting any of them logs one warning naming `[auto.router] shadow_gate`. (#6603)
 
+### Contributors
+
+Thanks to [@chuenchen309](https://github.com/chuenchen309) and [@NieZhuZhu](https://github.com/NieZhuZhu).
+
 ## [0.10.5] - 2026-11-24
 
 Codewhale v0.10.5 simplifies the terminal and runtime, expands DeepSeek Harness 0.2.2 host compatibility (with 13/33 pinned packages passing the full local Engine lifecycle and 15/36 cold-activating in the extension host), serves the shared `codewhale-app` web build from `codewhale web`, adds external ACP agent selection in `/model`, unifies the `codewhale-design` 5.5.0 Obsidian/Porcelain Whale Dark/Light palette and Title Case permission dial across all 15 TUI locales, aligns telemetry disclosures to first-party-only collection, and lands community security and reliability fixes.
