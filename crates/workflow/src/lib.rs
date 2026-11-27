@@ -847,6 +847,7 @@ pub struct MockWorkflowExecutor {
     leaf_outcomes: BTreeMap<String, MockLeafOutcome>,
     predicate_results: BTreeMap<String, Vec<bool>>,
     generated_nodes: BTreeMap<String, Vec<WorkflowNode>>,
+    reserved_node_ids: BTreeSet<String>,
     cancelled: bool,
     max_leaf_steps: Option<u32>,
     leaf_steps_executed: u32,
@@ -905,7 +906,7 @@ impl MockWorkflowExecutor {
         &mut self,
         spec: &WorkflowSpec,
     ) -> Result<WorkflowExecution, WorkflowExecutionError> {
-        validate_workflow_nodes(&spec.nodes)?;
+        self.reserved_node_ids = validate_workflow_nodes(&spec.nodes)?;
         let mut execution = WorkflowExecution::default();
         self.execute_nodes(&spec.nodes, &mut execution)?;
         Ok(execution)
@@ -1124,9 +1125,8 @@ impl MockWorkflowExecutor {
             )
             .collect();
         finished.insert(spec.id.clone());
-        let mut known = finished.clone();
-        validate_workflow_nodes_inner(&nodes, &mut known)?;
-        validate_workflow_references(&nodes, &known)?;
+        validate_workflow_nodes_inner(&nodes, &mut self.reserved_node_ids)?;
+        validate_workflow_references(&nodes, &self.reserved_node_ids)?;
         validate_reference_order(&nodes, &mut finished)?;
         self.execute_nodes(&nodes, execution)?;
         let status = if execution.should_stop_mock_execution() {
@@ -1905,14 +1905,15 @@ fn node_id(node: &WorkflowNode) -> String {
 
 pub(crate) fn validate_workflow_nodes(
     nodes: &[WorkflowNode],
-) -> Result<(), WorkflowExecutionError> {
+) -> Result<BTreeSet<String>, WorkflowExecutionError> {
     if nodes.is_empty() {
         return Err(WorkflowExecutionError::EmptyWorkflow);
     }
     let mut seen = BTreeSet::new();
     validate_workflow_nodes_inner(nodes, &mut seen)?;
     validate_workflow_references(nodes, &seen)?;
-    validate_reference_order(nodes, &mut BTreeSet::new())
+    validate_reference_order(nodes, &mut BTreeSet::new())?;
+    Ok(seen)
 }
 
 pub(crate) fn validate_workflow_node_shapes(
@@ -3980,6 +3981,28 @@ mod tests {
                 reference: "missing".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn expand_reserves_ids_of_later_nested_steps_before_generated_nodes_run() {
+        let mut workflow = expand_workflow("plan");
+        workflow.nodes.push(WorkflowNode::Sequence(SequenceSpec {
+            id: "later".into(),
+            children: vec![leaf_node("write")],
+        }));
+        let mut executor = MockWorkflowExecutor::new()
+            .with_generated_nodes("split", vec![leaf_node("first"), leaf_node("write")]);
+
+        assert_eq!(
+            executor.run(&workflow).unwrap_err(),
+            WorkflowExecutionError::DuplicateNodeId {
+                node: "write".into()
+            }
+        );
+        assert_eq!(executor.leaf_steps_executed, 1);
+        executor
+            .run(&workflow_spec(vec![leaf_node("first")]))
+            .expect("a new workflow reserves its own IDs");
     }
 
     #[test]
