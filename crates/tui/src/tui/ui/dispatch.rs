@@ -404,42 +404,79 @@ pub(crate) fn queued_message_content_for_app(
         validate_extension_command_context(app, message)?;
         return Ok(message.display.clone());
     }
-    if let Some(provenance) = message.skill_provenance.as_ref() {
-        provenance
-            .verify_for(&app.workspace, Some(app.extension_plugin_view().as_ref()))
-            .map_err(anyhow::Error::msg)?;
+    MentionContext::capture(app, message, cwd).content(message, git_cache)
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct MentionContext {
+    workspace: PathBuf,
+    cwd: Option<PathBuf>,
+    completion_index: Option<std::sync::Arc<[String]>>,
+    plugins: Option<std::sync::Arc<codewhale_plugins::PluginRegistry>>,
+}
+
+impl MentionContext {
+    fn capture(app: &App, message: &QueuedMessage, cwd: Option<PathBuf>) -> Self {
+        Self {
+            workspace: app.workspace.clone(),
+            cwd,
+            completion_index: app.composer.mention_discovery.fuzzy_candidates(
+                &app.workspace,
+                &app.composer.mention_cwd,
+                app.mention_walk_depth,
+                app.workspace_follow_symlinks,
+            ),
+            plugins: message
+                .skill_provenance
+                .as_ref()
+                .map(|_| app.extension_plugin_view()),
+        }
     }
-    // Pass the process CWD explicitly so the resolver's two-pass logic can
-    // honor the user's launch directory when it differs from `--workspace`
-    // (issue #101 — file mentions silently routing to the wrong root).
-    // The completion index is the composer's already-built fuzzy scan: a
-    // bounded fallback for exact misses, with no submit-time tree walk (#4365).
-    let completion_index = app.composer.mention_discovery.fuzzy_candidates(
-        &app.workspace,
-        &app.composer.mention_cwd,
-        app.mention_walk_depth,
-        app.workspace_follow_symlinks,
-    );
-    // Stabilize macOS screencapture temp references before anything else sees
-    // the text: macOS deletes those Temporary Items dirs minutes after capture.
-    let stabilization_dir = crate::tui::file_mention::screenshot_stabilization_dir(&app.workspace);
-    let display = crate::tui::file_mention::stabilize_screenshot_references(
-        &message.display,
-        &stabilization_dir,
-    );
-    let user_request = crate::tui::file_mention::user_request_with_file_mentions_cached(
-        &display,
-        &app.workspace,
-        cwd,
-        git_cache,
-        completion_index,
-    );
-    if let Some(skill_instruction) = message.skill_instruction.as_ref() {
-        Ok(format!(
-            "{skill_instruction}\n\n---\n\nUser request: {user_request}"
-        ))
-    } else {
-        Ok(user_request)
+
+    fn resolve(&self, message: &QueuedMessage) -> Result<(String, Vec<ContextReference>)> {
+        let mut git_cache = crate::tui::git_mention::GitMentionCache::default();
+        let references = crate::tui::file_mention::context_references_from_input_cached(
+            &message.display,
+            &self.workspace,
+            self.cwd.clone(),
+            &mut git_cache,
+            self.completion_index.as_deref(),
+        );
+        Ok((self.content(message, &mut git_cache)?, references))
+    }
+
+    fn content(
+        &self,
+        message: &QueuedMessage,
+        git_cache: &mut crate::tui::git_mention::GitMentionCache,
+    ) -> Result<String> {
+        if let Some(provenance) = message.skill_provenance.as_ref() {
+            provenance
+                .verify_for(&self.workspace, self.plugins.as_deref())
+                .map_err(anyhow::Error::msg)?;
+        }
+        // Stabilize macOS screencapture temp references before anything else sees
+        // the text: macOS deletes those Temporary Items dirs minutes after capture.
+        let stabilization_dir =
+            crate::tui::file_mention::screenshot_stabilization_dir(&self.workspace);
+        let display = crate::tui::file_mention::stabilize_screenshot_references(
+            &message.display,
+            &stabilization_dir,
+        );
+        let user_request = crate::tui::file_mention::user_request_with_file_mentions_cached(
+            &display,
+            &self.workspace,
+            self.cwd.clone(),
+            git_cache,
+            self.completion_index.as_deref(),
+        );
+        if let Some(skill_instruction) = message.skill_instruction.as_ref() {
+            Ok(format!(
+                "{skill_instruction}\n\n---\n\nUser request: {user_request}"
+            ))
+        } else {
+            Ok(user_request)
+        }
     }
 }
 
@@ -668,32 +705,8 @@ pub(crate) fn prepare_user_dispatch(
         plan_paused_command_message(app, &message.display)
     };
 
-    let cwd = std::env::current_dir().ok();
-    // One cache for this submit: the references pass and the payload pass
-    // otherwise each shell out for `@git`/`@diff`, making git compute a large
-    // working-tree diff twice to attach it once (#4067 review follow-up).
-    let mut git_cache = crate::tui::git_mention::GitMentionCache::default();
-    let completion_index = app.composer.mention_discovery.fuzzy_candidates(
-        &app.workspace,
-        &app.composer.mention_cwd,
-        app.mention_walk_depth,
-        app.workspace_follow_symlinks,
-    );
-    let references = if extension_command {
-        Vec::new()
-    } else {
-        crate::tui::file_mention::context_references_from_input_cached(
-            &message.display,
-            &app.workspace,
-            cwd.clone(),
-            &mut git_cache,
-            completion_index,
-        )
-    };
-    let mut content = queued_message_content_for_app(app, &message, cwd, &mut git_cache)?;
-    if let Some(note) = paused_dispatch.note() {
-        content.push_str(note);
-    }
+    let mention_context = (!extension_command)
+        .then(|| MentionContext::capture(app, &message, std::env::current_dir().ok()));
     let (app_route_identity, route_config) =
         app_scoped_runtime_config(app, config).map_err(anyhow::Error::msg)?;
 
@@ -712,7 +725,6 @@ pub(crate) fn prepare_user_dispatch(
         tool_evidence: app.tool_evidence.clone(),
         history_len: app.history.len(),
         history_revisions_len: app.history_revisions.len(),
-        api_messages_len: app.api_messages.len(),
         last_send_at: app.last_send_at,
         active_turn_user_index: app.active_turn_user_index,
     };
@@ -726,7 +738,6 @@ pub(crate) fn prepare_user_dispatch(
     app.tool_evidence.clear();
     app.needs_redraw = true;
 
-    let message_index = app.api_messages.len();
     // Already painted at Queue time — reuse that cell for reference
     // recording instead of duplicating the bubble.
     let history_cell = paint_user_turn_cell(app, &message, message.display.clone());
@@ -736,16 +747,6 @@ pub(crate) fn prepare_user_dispatch(
     // the async dispatch completion (which can lag by a route plan). The
     // failure path restores the pre-send timestamp from the snapshot.
     app.last_send_at = Some(Instant::now());
-    if !extension_command {
-        app.push_api_message(Message {
-            role: Role::User,
-            content: vec![ContentBlock::Text {
-                text: content.clone(),
-                cache_control: None,
-            }],
-        });
-    }
-
     let goal_objective = if extension_command {
         app.goal.objective.clone()
     } else {
@@ -773,9 +774,10 @@ pub(crate) fn prepare_user_dispatch(
     };
     Ok(UserDispatchPrepare {
         submission_id: uuid::Uuid::new_v4().to_string(),
+        content: message.display.clone(),
         message,
-        content,
-        references,
+        mention_context,
+        references: Vec::new(),
         paused_dispatch,
         app_route_identity,
         route_config,
@@ -809,9 +811,24 @@ pub(crate) fn prepare_user_dispatch(
         snapshot,
         cost_scope: codewhale_engine::cost_status::scope_token(),
         accounting_origin,
-        message_index,
         history_cell,
     })
+}
+
+impl UserDispatchPrepare {
+    pub(super) async fn resolve_mentions(&mut self) -> Result<()> {
+        if let Some(context) = self.mention_context.take() {
+            let message = self.message.clone();
+            let (mut content, references) =
+                tokio::task::spawn_blocking(move || context.resolve(&message)).await??;
+            if let Some(note) = self.paused_dispatch.note() {
+                content.push_str(note);
+            }
+            self.content = content;
+            self.references = references;
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn start_user_dispatch(
@@ -974,10 +991,13 @@ impl Drop for UnacceptedDispatchUsage {
 }
 
 pub(crate) async fn spawned_dispatch_inner(
-    prepare: UserDispatchPrepare,
+    mut prepare: UserDispatchPrepare,
     recovery: DispatchRecovery,
     engine_handle: EngineHandle,
 ) -> crate::tui::app::DispatchApplyFn {
+    if let Err(error) = prepare.resolve_mentions().await {
+        return build_dispatch_error_closure(prepare, recovery, error.to_string());
+    }
     if let Some((command, session_id)) = prepare.message.extension_command.as_ref()
         && let Err(error) =
             codewhale_engine::extension_host::command::validate_reference(command, session_id).await
@@ -1201,13 +1221,17 @@ pub(crate) fn build_dispatch_success_closure(
                 config,
                 app.goal.objective.as_deref(),
             ));
-            // Composer API messages and input cells were prepared synchronously;
-            // command messages arrive from Core. Record accepted references now.
-            app.record_context_references(
-                prepare.history_cell,
-                prepare.message_index,
-                prepare.references,
-            );
+            let message_index = app.api_messages.len();
+            if prepare.message.extension_command.is_none() {
+                app.push_api_message(Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::Text {
+                        text: prepare.content,
+                        cache_control: None,
+                    }],
+                });
+            }
+            app.record_context_references(prepare.history_cell, message_index, prepare.references);
             app.scroll_to_bottom();
 
             app.last_effective_reasoning_effort = Some(outcome.effective_reasoning_effort);
@@ -1328,7 +1352,6 @@ pub(crate) fn build_dispatch_error_closure(
             // saw the rolled-back echo would match a different cell that
             // later lands at the same version and length.
             app.history_version = app.history_version.wrapping_add(1);
-            app.truncate_api_messages(prepare.snapshot.api_messages_len);
             app.last_send_at = prepare.snapshot.last_send_at;
             app.active_turn_user_index = prepare.snapshot.active_turn_user_index;
             app.needs_redraw = true;
@@ -1465,23 +1488,8 @@ pub(crate) async fn steer_user_message(
     let paused_dispatch = plan_paused_command_message(app, &message.display);
     let paused_note = paused_dispatch.note().map(str::to_string);
     paused_dispatch.apply(app, engine_handle);
-    let cwd = std::env::current_dir().ok();
-    // Same single-submit cache as the other send path — see #4067 follow-up.
-    let mut git_cache = crate::tui::git_mention::GitMentionCache::default();
-    let completion_index = app.composer.mention_discovery.fuzzy_candidates(
-        &app.workspace,
-        &app.composer.mention_cwd,
-        app.mention_walk_depth,
-        app.workspace_follow_symlinks,
-    );
-    let references = crate::tui::file_mention::context_references_from_input_cached(
-        &message.display,
-        &app.workspace,
-        cwd.clone(),
-        &mut git_cache,
-        completion_index,
-    );
-    let mut content = queued_message_content_for_app(app, &message, cwd, &mut git_cache)?;
+    let context = MentionContext::capture(app, &message, std::env::current_dir().ok());
+    let (mut content, references) = context.resolve(&message)?;
     if let Some(note) = paused_note.as_deref() {
         content.push_str(note);
     }

@@ -216,7 +216,7 @@ fn filesystem_scanner(key: &MentionDiscoveryKey, cancelled: &dyn Fn() -> bool) -
 #[derive(Debug)]
 struct CachedMentionDiscovery {
     key: MentionDiscoveryKey,
-    entries: Vec<String>,
+    entries: Arc<[String]>,
     collected_at: Instant,
 }
 
@@ -327,7 +327,7 @@ impl MentionDiscovery {
         self.in_flight = None;
         self.cached = Some(CachedMentionDiscovery {
             key: result.key,
-            entries: result.entries,
+            entries: result.entries.into(),
             collected_at: result.collected_at,
         });
         true
@@ -337,7 +337,7 @@ impl MentionDiscovery {
         self.cached
             .as_ref()
             .filter(|cached| &cached.key == key)
-            .map(|cached| cached.entries.as_slice())
+            .map(|cached| cached.entries.as_ref())
     }
 
     /// Cached fuzzy-scan candidates for send-time `@`-mention fallback
@@ -351,14 +351,17 @@ impl MentionDiscovery {
         cwd: &Option<PathBuf>,
         walk_depth: usize,
         follow_links: bool,
-    ) -> Option<&[String]> {
+    ) -> Option<Arc<[String]>> {
         let key = MentionDiscoveryKey::fuzzy(
             workspace.to_path_buf(),
             cwd.clone(),
             walk_depth,
             follow_links,
         );
-        self.cached_entries(&key)
+        self.cached
+            .as_ref()
+            .filter(|cached| cached.key == key)
+            .map(|cached| Arc::clone(&cached.entries))
     }
 
     /// Cancel the active generation while keeping a same-key cache available

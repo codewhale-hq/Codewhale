@@ -231,7 +231,6 @@ pub(crate) struct UserDispatchSnapshot {
     pub(crate) tool_evidence: Vec<ToolEvidence>,
     pub(crate) history_len: usize,
     pub(crate) history_revisions_len: usize,
-    pub(crate) api_messages_len: usize,
     pub(crate) last_send_at: Option<Instant>,
     pub(crate) active_turn_user_index: Option<usize>,
 }
@@ -274,7 +273,7 @@ pub(crate) struct UserDispatchPrepare {
     pub(super) snapshot: UserDispatchSnapshot,
     pub(super) cost_scope: codewhale_engine::cost_status::CostScopeToken,
     pub(super) accounting_origin: Option<codewhale_engine::cost_status::NativeUsageOrigin>,
-    pub(super) message_index: usize,
+    pub(super) mention_context: Option<super::dispatch::MentionContext>,
     pub(super) history_cell: usize,
 }
 
