@@ -50,6 +50,9 @@ impl crate::compaction::CompactionNoticeSink for EngineCompactionNoticeSink {
     fn notice(&self, message: String) {
         let _ = self.tx.try_send(Event::Status { message });
     }
+    fn tool_projection_warning(&self, warning: codewhale_models::ToolProjectionWarning) {
+        let _ = self.tx.try_send(warning.into());
+    }
     fn accounting_origin(&self) -> std::io::Result<Option<crate::cost_status::NativeUsageOrigin>> {
         if let Some(child) = self.child.as_ref() {
             let origin = child.usage_origin();
@@ -1505,5 +1508,48 @@ mod tests {
             }
             other => panic!("expected a Status event, got {other:?}"),
         }
+    }
+    #[tokio::test]
+    async fn compaction_forwards_blocking_tool_projection_warning() {
+        let client = crate::llm_client::mock::MockLlmClient::new(vec![]);
+        let mut reply: codewhale_models::MessageResponse =
+            serde_json::from_value(serde_json::json!({
+                "id": "summary", "type": "message", "role": "assistant", "model": "test",
+                "content": [{"type": "text", "text": "Continue repairing the parser."}],
+                "usage": {"input_tokens": 8, "output_tokens": 4}
+            }))
+            .unwrap();
+        reply.tool_projection_warning = Some(codewhale_models::ToolProjectionWarning {
+            provider: "Moonshot".into(),
+            omitted_tool_names: vec!["schema_tool".into()],
+            omitted_tool_count: 1,
+        });
+        client.push_message_response(reply);
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut prepared = crate::compaction::PreparedCompactionEnvelope::new(
+            crate::compaction::CompactionConfig::default(),
+        );
+        prepared.notice_sink = Some(Arc::new(EngineCompactionNoticeSink {
+            tx,
+            child: None,
+            origin: None,
+        }));
+        let history = [serde_json::from_value(serde_json::json!({
+            "role": "user", "content": [{"type": "text", "text": "Repair the parser."}]
+        }))
+        .unwrap()];
+        crate::compaction::compact_messages_safe(
+            &client,
+            &history,
+            None,
+            &prepared,
+            &mut Usage::default(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(rx.try_recv(), Ok(Event::ToolProjectionWarning {
+            provider, omitted_tool_names, omitted_tool_count: 1,
+        }) if provider == "Moonshot" && omitted_tool_names == ["schema_tool"]));
+        assert!(rx.try_recv().is_err());
     }
 }

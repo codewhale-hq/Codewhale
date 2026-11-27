@@ -332,6 +332,17 @@ impl PreparedOutboundRequest {
         }
     }
 
+    pub fn tool_projection_warning(&self) -> Option<codewhale_models::ToolProjectionWarning> {
+        (!self.omitted_tool_names.is_empty()).then(|| codewhale_models::ToolProjectionWarning {
+            provider: self.endpoint.provider_display.clone(),
+            omitted_tool_names:
+                codewhale_models::tool_projection::bounded_tool_projection_warning_names(
+                    &self.omitted_tool_names,
+                ),
+            omitted_tool_count: self.omitted_tool_names.len(),
+        })
+    }
+
     pub fn serialized_body_bytes(&self) -> anyhow::Result<usize> {
         let mut writer = codewhale_util::utils::CountingWriter::new();
         serde_json::to_writer(&mut writer, &self.body)?;

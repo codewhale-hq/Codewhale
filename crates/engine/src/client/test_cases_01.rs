@@ -1313,6 +1313,7 @@ async fn cache_free_message_call_neither_reads_nor_writes_global_cache() {
     codewhale_runtime::llm_response_cache::response_cache().put(
         cache_key,
         MessageResponse {
+            tool_projection_warning: None,
             id: "cached-sentinel-must-survive".to_string(),
             r#type: "message".to_string(),
             role: "assistant".to_string(),

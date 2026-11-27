@@ -551,6 +551,7 @@ mod tests {
 
     fn mock_response_with_usage(text: &str, usage: Usage) -> MessageResponse {
         MessageResponse {
+            tool_projection_warning: None,
             id: "mock_msg".to_string(),
             r#type: "message".to_string(),
             role: "assistant".to_string(),

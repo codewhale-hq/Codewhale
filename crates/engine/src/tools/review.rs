@@ -1617,6 +1617,7 @@ impl ToolSpec for ReviewTool {
             });
         let mut usage = Usage::default();
         let mut source_records = Vec::new();
+        let mut projection_notices = std::collections::BTreeSet::new();
         let mut accumulator = plan.as_ref().map(PrReviewAccumulator::new);
         let mut single_output = None;
         let mut anchors = super::review_core::ReviewAnchorReport::default();
@@ -1653,6 +1654,12 @@ impl ToolSpec for ReviewTool {
                         ));
                     }
                 };
+            projection_notices.extend(
+                result
+                    .tool_projection_warnings
+                    .iter()
+                    .map(crate::core::events::render_tool_projection_warning),
+            );
             source_records.extend(result.source_records.iter().cloned());
             add_review_usage(&mut usage, &result.usage);
             for tool in &result.tools_used {
@@ -1746,6 +1753,7 @@ impl ToolSpec for ReviewTool {
             single_output.expect("one non-PR review response")
         };
         let mut output = output;
+        output.not_reviewed.extend(projection_notices);
         if let Some(note) = stop
             .as_ref()
             .map(|stop| super::review_triage::partial_review_note(stop, &triage, &budget))

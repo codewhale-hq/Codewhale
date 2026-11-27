@@ -331,6 +331,7 @@ fn synthesize_message_response(turn: CannedTurn, model: &str) -> MessageResponse
     }
 
     MessageResponse {
+        tool_projection_warning: None,
         id: "mock_msg".to_string(),
         r#type: "message".to_string(),
         role: "assistant".to_string(),
@@ -363,6 +364,7 @@ pub mod canned {
     pub fn message_start(id: &str) -> StreamEvent {
         StreamEvent::MessageStart {
             message: MessageResponse {
+                tool_projection_warning: None,
                 id: id.to_string(),
                 r#type: "message".to_string(),
                 role: "assistant".to_string(),
@@ -598,6 +600,7 @@ mod tests {
     async fn create_message_uses_canned_message_response_first() {
         let mock = MockLlmClient::new(vec![canned::simple_text_turn("from stream")]);
         mock.push_message_response(MessageResponse {
+            tool_projection_warning: None,
             id: "preset".to_string(),
             r#type: "message".to_string(),
             role: "assistant".to_string(),

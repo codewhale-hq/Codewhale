@@ -80,6 +80,11 @@ pub struct CompactionConfig {
 pub trait CompactionNoticeSink: Send + Sync + std::fmt::Debug {
     /// Deliver one already-rendered, user-visible sentence.
     fn notice(&self, message: String);
+    fn tool_projection_warning(&self, warning: codewhale_models::ToolProjectionWarning) {
+        self.notice(crate::core::events::render_tool_projection_warning(
+            &warning,
+        ));
+    }
     /// Captured dispatch origin for a child; ordinary engines retain the existing billing path.
     fn accounting_origin(&self) -> std::io::Result<Option<crate::cost_status::NativeUsageOrigin>> {
         Ok(None)
@@ -2179,6 +2184,10 @@ async fn create_summary(
         // A rejected summary or canceled retry still consumed these tokens.
         crate::core::turn::add_usage_to(invocation_usage, &response.usage);
 
+        if let (Some(sink), Some(warning)) = (notice_sink, response.tool_projection_warning) {
+            sink.tool_projection_warning(warning);
+        }
+
         // Usage above is already billed; a provider-declared incomplete
         // summary must still fail rather than replace the session history
         // with a fragment.
@@ -3769,6 +3778,7 @@ mod tests {
             let content = outcome
                 .ok_or_else(|| anyhow::anyhow!("scripted summary responses exhausted"))??;
             Ok(codewhale_models::MessageResponse {
+                tool_projection_warning: None,
                 id: "summary-scripted".to_string(),
                 r#type: "message".to_string(),
                 role: "assistant".to_string(),
@@ -3818,6 +3828,7 @@ mod tests {
         ) -> anyhow::Result<codewhale_models::MessageResponse> {
             *self.request.lock().expect("capture summary request") = Some(request);
             Ok(codewhale_models::MessageResponse {
+                tool_projection_warning: None,
                 id: "summary-fixture".to_string(),
                 r#type: "message".to_string(),
                 role: "assistant".to_string(),
@@ -4832,6 +4843,7 @@ mod tests {
             _request: MessageRequest,
         ) -> anyhow::Result<codewhale_models::MessageResponse> {
             Ok(codewhale_models::MessageResponse {
+                tool_projection_warning: None,
                 id: "summary-truncated".to_string(),
                 r#type: "message".to_string(),
                 role: "assistant".to_string(),

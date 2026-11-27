@@ -561,6 +561,7 @@ async fn injected_deepseek_delayed_refusal_and_title_emit_events_without_persist
         vec![
             StreamEvent::MessageStart {
                 message: codewhale_models::MessageResponse {
+                    tool_projection_warning: None,
                     id: "mock_msg_delayed_refusal".to_string(),
                     r#type: "message".to_string(),
                     role: "assistant".to_string(),
@@ -892,6 +893,7 @@ async fn engine_cancellation_drops_active_injected_model_request() {
 
 fn guardian_fixture_response(text: &str) -> codewhale_models::MessageResponse {
     codewhale_models::MessageResponse {
+        tool_projection_warning: None,
         id: "guardian-fixture".to_string(),
         r#type: "message".to_string(),
         role: "assistant".to_string(),

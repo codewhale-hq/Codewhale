@@ -1582,6 +1582,7 @@ impl CodewhaleClient {
             // Emit a synthetic MessageStart
             yield Ok(StreamEvent::MessageStart {
                 message: MessageResponse {
+                    tool_projection_warning: None,
                     id: String::new(),
                     r#type: "message".to_string(),
                     role: "assistant".to_string(),
@@ -4121,6 +4122,7 @@ fn parse_chat_message_for_route(
         .map(str::to_string);
 
     Ok(MessageResponse {
+        tool_projection_warning: None,
         id,
         r#type: "message".to_string(),
         role: "assistant".to_string(),

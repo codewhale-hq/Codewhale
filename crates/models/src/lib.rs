@@ -96,9 +96,18 @@ pub struct ServerToolUsage {
     pub tool_image_search: Option<u32>,
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct ToolProjectionWarning {
+    pub provider: String,
+    pub omitted_tool_names: Vec<String>,
+    pub omitted_tool_count: usize,
+}
+
 /// Response payload for a message request.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MessageResponse {
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub tool_projection_warning: Option<ToolProjectionWarning>,
     pub id: String,
     pub r#type: String,
     pub role: String,

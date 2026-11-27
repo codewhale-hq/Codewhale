@@ -392,6 +392,7 @@ impl CodewhaleClient {
             // Emit synthetic MessageStart.
             yield Ok(StreamEvent::MessageStart {
                 message: MessageResponse {
+                    tool_projection_warning: None,
                     id: String::new(),
                     r#type: "message".to_string(),
                     role: "assistant".to_string(),
@@ -980,6 +981,7 @@ impl CodewhaleClient {
         let mut stream = self.handle_responses_stream(prepared).await?;
 
         let mut response = MessageResponse {
+            tool_projection_warning: None,
             id: String::new(),
             r#type: "message".to_string(),
             role: "assistant".to_string(),

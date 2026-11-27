@@ -382,6 +382,7 @@ async fn compaction_non_streaming_returns_queued_message_response() {
 
     let mock = MockLlmClient::new(vec![]);
     mock.push_message_response(MessageResponse {
+        tool_projection_warning: None,
         id: "compact_msg".to_string(),
         r#type: "message".to_string(),
         role: "assistant".to_string(),

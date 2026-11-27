@@ -5585,6 +5585,7 @@ async fn dsh_llm_arm_dispatches_through_the_engine_and_refuses_foreign_tickets_a
     let _grants = super::dsh_broker::TestGrants::only(&[DshService::Workspace, DshService::Llm]);
     let mock = Arc::new(crate::llm_client::mock::MockLlmClient::new(Vec::new()));
     mock.push_message_response(codewhale_models::MessageResponse {
+        tool_projection_warning: None,
         id: "mock_msg".to_string(),
         r#type: "message".to_string(),
         role: "assistant".to_string(),
@@ -5785,6 +5786,7 @@ async fn a_completion_is_recorded_on_the_tool_result_without_its_text() {
     let _grants = super::dsh_broker::TestGrants::only(&[DshService::Workspace, DshService::Llm]);
     let mock = Arc::new(crate::llm_client::mock::MockLlmClient::new(Vec::new()));
     mock.push_message_response(codewhale_models::MessageResponse {
+        tool_projection_warning: None,
         id: "mock_msg".to_string(),
         r#type: "message".to_string(),
         role: "assistant".to_string(),

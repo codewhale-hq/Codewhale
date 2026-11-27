@@ -795,6 +795,12 @@ pub async fn run_purge(
         ));
     }
 
+    if let Some(warning) = response.tool_projection_warning {
+        return Err(crate::core::events::render_tool_projection_warning(
+            &warning,
+        ));
+    }
+
     // 5. Find the `purge_context` tool call in the response.
     let tool_input = response.content.iter().find_map(|block| {
         if let ContentBlock::ToolUse { name, input, .. } = block
@@ -1213,6 +1219,7 @@ mod tests {
 
     fn msg_response_with_tool_call(operations: serde_json::Value) -> MessageResponse {
         MessageResponse {
+            tool_projection_warning: None,
             id: "resp_test".to_string(),
             r#type: "message".to_string(),
             role: "assistant".to_string(),
@@ -1237,6 +1244,7 @@ mod tests {
 
     fn msg_response_without_tool_call(text: &str) -> MessageResponse {
         MessageResponse {
+            tool_projection_warning: None,
             id: "resp_plain".to_string(),
             r#type: "message".to_string(),
             role: "assistant".to_string(),

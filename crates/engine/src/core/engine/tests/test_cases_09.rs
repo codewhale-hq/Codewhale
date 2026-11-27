@@ -2860,6 +2860,7 @@ async fn interactive_tui_turn_preserves_ask_and_auto_review_interactive_behavior
         canned::simple_text_turn("done"),
     ]));
     mock.push_message_response(MessageResponse {
+        tool_projection_warning: None,
         id: "review-allow".to_string(),
         r#type: "message".to_string(),
         role: "assistant".to_string(),
@@ -3078,6 +3079,7 @@ async fn auto_review_s2_owner_approve_retry_one_use_exact_call_and_gate_preserva
     .expect("args c");
 
     let guardian_reply = |id: &str, json_text: &str| MessageResponse {
+        tool_projection_warning: None,
         id: id.to_string(),
         r#type: "message".to_string(),
         role: "assistant".to_string(),
@@ -3593,6 +3595,7 @@ async fn auto_review_s2_interactive_fallback_to_ask_trips_and_resumes() {
         events
     };
     let deny_resp = |id: &str| MessageResponse {
+        tool_projection_warning: None,
         id: id.to_string(),
         r#type: "message".to_string(),
         role: "assistant".to_string(),
@@ -3710,6 +3713,7 @@ async fn auto_review_s2_interactive_fallback_to_ask_trips_and_resumes() {
     .expect("args");
     for _ in 0..3 {
         mock.push_message_response(MessageResponse {
+            tool_projection_warning: None,
             id: "g-bad-json".to_string(),
             r#type: "message".to_string(),
             role: "assistant".to_string(),
@@ -3800,6 +3804,7 @@ async fn auto_review_s2_interactive_fallback_to_ask_trips_and_resumes() {
             mock.push_turn(canned::tool_call_turn(&format!("allow_{step}"), "Bash", &allow_args));
             mock.push_turn(canned::simple_text_turn("allowed"));
             mock.push_message_response(MessageResponse {
+                tool_projection_warning: None,
                 id: format!("g-allow-{step}"),
                 r#type: "message".to_string(),
                 role: "assistant".to_string(),
@@ -3959,6 +3964,7 @@ async fn auto_review_s2_unattended_continues_past_blocks_and_stops_at_bounds() {
     let mock_10 = Arc::new(MockLlmClient::new(ten_turns));
     for i in 0..10 {
         mock_10.push_message_response(MessageResponse {
+            tool_projection_warning: None,
             id: format!("bad-{i}"),
             r#type: "message".to_string(),
             role: "assistant".to_string(),

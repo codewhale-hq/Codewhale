@@ -81,6 +81,7 @@ mod tests {
 
     fn response_with_usage(id: &str) -> MessageResponse {
         MessageResponse {
+            tool_projection_warning: None,
             id: id.to_string(),
             r#type: "message".to_string(),
             role: "assistant".to_string(),

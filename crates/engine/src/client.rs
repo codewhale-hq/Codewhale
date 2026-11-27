@@ -3993,25 +3993,6 @@ impl CodewhaleClient {
         })
     }
 
-    fn prepend_tool_projection_warning(
-        stream: crate::llm_client::StreamEventBox,
-        provider: String,
-        omitted_tool_names: Vec<String>,
-        omitted_tool_count: usize,
-    ) -> crate::llm_client::StreamEventBox {
-        Box::pin(async_stream::stream! {
-            yield Ok(codewhale_models::StreamEvent::ToolProjectionWarning {
-                provider,
-                omitted_tool_names,
-                omitted_tool_count,
-            });
-            let mut stream = stream;
-            while let Some(event) = stream.next().await {
-                yield event;
-            }
-        })
-    }
-
     fn hold_remote_control_inference_permit_for_stream(
         stream: crate::llm_client::StreamEventBox,
         permit: Option<RemoteControlInferencePermit>,
@@ -5488,18 +5469,17 @@ impl CodewhaleClient {
         let _permit = self.acquire_provider_request_permit().await;
         let cacheable = allow_response_cache
             && codewhale_runtime::llm_response_cache::request_is_cacheable(&request);
-        let prepared = self.prepare_outbound_request(request.clone(), false)?;
-        if !prepared.omitted_tool_names.is_empty() {
+        let mut prepared = self.prepare_outbound_request(request.clone(), false)?;
+        let mut warning = prepared.tool_projection_warning();
+        if let Some(warning) = &warning {
             tracing::warn!(
-                provider = %prepared.endpoint.provider_display,
-                omitted_tool_count = prepared.omitted_tool_names.len(),
-                omitted_tools = ?codewhale_models::tool_projection::bounded_tool_projection_warning_names(
-                    &prepared.omitted_tool_names,
-                ),
+                provider = %warning.provider,
+                omitted_tool_count = warning.omitted_tool_count,
+                omitted_tools = ?warning.omitted_tool_names,
                 "omitted incompatible tools for this request"
             );
         }
-        match self.dispatch_prepared_message(&prepared, cacheable).await {
+        let mut response = match self.dispatch_prepared_message(&prepared, cacheable).await {
             Err(error) => {
                 let Some(retry) =
                     self.prepare_image_elision_retry(request, false, &prepared, &error)?
@@ -5507,10 +5487,14 @@ impl CodewhaleClient {
                     return Err(error);
                 };
                 crate::llm_client::observe_transport_attempt();
-                self.dispatch_prepared_message(&retry, cacheable).await
+                prepared = retry;
+                warning = prepared.tool_projection_warning();
+                self.dispatch_prepared_message(&prepared, cacheable).await?
             }
-            result => result,
-        }
+            Ok(response) => response,
+        };
+        response.tool_projection_warning = warning;
+        Ok(response)
     }
 
     fn prepare_image_elision_retry(
@@ -5724,26 +5708,17 @@ impl LlmClient for CodewhaleClient {
             }
             Ok(stream) => stream,
         };
-        let projection_warning = (!prepared.omitted_tool_names.is_empty()).then(|| {
-            let omitted_tool_count = prepared.omitted_tool_names.len();
-            (
-                prepared.endpoint.provider_display.clone(),
-                codewhale_models::tool_projection::bounded_tool_projection_warning_names(
-                    &prepared.omitted_tool_names,
-                ),
-                omitted_tool_count,
-            )
-        });
-        let stream = match projection_warning {
-            Some((provider, omitted_tool_names, omitted_tool_count)) => {
-                Self::prepend_tool_projection_warning(
-                    stream,
-                    provider,
-                    omitted_tool_names,
-                    omitted_tool_count,
-                )
-            }
-            None => stream,
+        let stream = if let Some(warning) = prepared.tool_projection_warning() {
+            let event = codewhale_models::StreamEvent::ToolProjectionWarning {
+                provider: warning.provider,
+                omitted_tool_names: warning.omitted_tool_names,
+                omitted_tool_count: warning.omitted_tool_count,
+            };
+            futures_util::stream::once(async move { Ok(event) })
+                .chain(stream)
+                .boxed()
+        } else {
+            stream
         };
         let stream = Self::hold_provider_request_permit_for_stream(stream, permit);
         Ok(Self::hold_remote_control_inference_permit_for_stream(

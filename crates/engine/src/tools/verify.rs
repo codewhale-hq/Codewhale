@@ -921,6 +921,7 @@ mod tests {
 
     fn text_response(model: &str, body: &str) -> codewhale_models::MessageResponse {
         codewhale_models::MessageResponse {
+            tool_projection_warning: None,
             id: "msg_test".to_string(),
             r#type: "message".to_string(),
             role: "assistant".to_string(),

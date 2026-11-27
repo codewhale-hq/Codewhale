@@ -457,6 +457,7 @@ fn leaks_tool_call_markup(text: &str) -> bool {
 
 #[derive(Debug, Clone)]
 pub struct ReviewCoreResult {
+    pub tool_projection_warnings: Vec<codewhale_models::ToolProjectionWarning>,
     pub source_records: Vec<crate::cost_status::RuntimeUsageRecord>,
     pub output: ReviewOutput,
     pub raw: String,
@@ -791,6 +792,7 @@ pub async fn run_review_core(
     }];
     let mut usage = Usage::default();
     let mut source_records = Vec::new();
+    let mut tool_projection_warnings = Vec::new();
     let mut steps = 0;
     let mut tool_calls = 0;
     let mut used: Vec<String> = Vec::new();
@@ -839,6 +841,7 @@ pub async fn run_review_core(
             request.money_cap_usd.is_some(),
         )
         .await?;
+        tool_projection_warnings.extend(response.tool_projection_warning);
         source_records.push(record);
         super::review::add_review_usage(&mut usage, &response.usage);
         stop_reason = response.stop_reason.clone();
@@ -981,6 +984,7 @@ pub async fn run_review_core(
             &tools,
             &steps,
             &mut source_records,
+            &mut tool_projection_warnings,
             &mut usage,
         )
         .await?
@@ -1016,6 +1020,7 @@ pub async fn run_review_core(
         .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
         .count();
     Ok(ReviewCoreResult {
+        tool_projection_warnings,
         source_records,
         output,
         raw: final_text,
@@ -1048,6 +1053,7 @@ async fn refute_claims(
     tools: &[Arc<dyn ToolSpec>],
     steps_used: &u32,
     source_records: &mut Vec<crate::cost_status::RuntimeUsageRecord>,
+    tool_projection_warnings: &mut Vec<codewhale_models::ToolProjectionWarning>,
     usage: &mut Usage,
 ) -> Result<Option<Vec<Refutation>>> {
     let Some(context) = request.workspace.as_ref().map(ToolContext::new) else {
@@ -1122,6 +1128,7 @@ async fn refute_claims(
             request.money_cap_usd.is_some(),
         )
         .await?;
+        tool_projection_warnings.extend(response.tool_projection_warning);
         source_records.push(record);
         super::review::add_review_usage(usage, &response.usage);
         final_text.clear();
@@ -1409,6 +1416,7 @@ mod tests {
 
     fn response(content: Vec<ContentBlock>) -> MessageResponse {
         MessageResponse {
+            tool_projection_warning: None,
             id: "msg_test".to_string(),
             r#type: "message".to_string(),
             role: "assistant".to_string(),

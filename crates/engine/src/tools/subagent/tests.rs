@@ -15884,6 +15884,7 @@ fn subagent_request_budget_inherits_the_resolved_route_allowance() {
 #[test]
 fn incomplete_response_failure_keeps_the_provider_stop_cause() {
     let response = MessageResponse {
+        tool_projection_warning: None,
         id: "response_incomplete".to_string(),
         r#type: "message".to_string(),
         role: "assistant".to_string(),

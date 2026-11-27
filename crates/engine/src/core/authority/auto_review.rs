@@ -9962,6 +9962,7 @@ mod tests {
 
         let mock = MockLlmClient::new(Vec::new());
         mock.push_message_response(MessageResponse {
+            tool_projection_warning: None,
             id: "review".to_string(),
             r#type: "message".to_string(),
             role: "assistant".to_string(),

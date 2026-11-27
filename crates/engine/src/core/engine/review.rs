@@ -470,6 +470,9 @@ impl Engine {
             .ok()
             .flatten();
         let mut result = result?;
+        for warning in result.tool_projection_warnings {
+            let _ = self.send_event(warning.into()).await;
+        }
         let accounting = result.source_records.last().cloned().or(accounting);
         turn.add_parent_usage(&result.usage);
         let elapsed_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);

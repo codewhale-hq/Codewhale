@@ -300,6 +300,7 @@ mod tests {
 
     fn text_response(text: &str) -> MessageResponse {
         MessageResponse {
+            tool_projection_warning: None,
             id: "draft_msg".to_string(),
             r#type: "message".to_string(),
             role: "assistant".to_string(),

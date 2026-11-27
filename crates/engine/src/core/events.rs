@@ -1078,6 +1078,24 @@ pub fn tool_projection_warning_message(
     )
 }
 
+impl From<codewhale_models::ToolProjectionWarning> for Event {
+    fn from(warning: codewhale_models::ToolProjectionWarning) -> Self {
+        Self::ToolProjectionWarning {
+            provider: warning.provider,
+            omitted_tool_names: warning.omitted_tool_names,
+            omitted_tool_count: warning.omitted_tool_count,
+        }
+    }
+}
+
+pub fn render_tool_projection_warning(warning: &codewhale_models::ToolProjectionWarning) -> String {
+    tool_projection_warning_message(
+        &warning.provider,
+        &warning.omitted_tool_names,
+        warning.omitted_tool_count,
+    )
+}
+
 impl Event {
     /// Create an error event from a categorized envelope. The envelope's own
     /// `recoverable` flag controls whether the UI flips into offline mode.

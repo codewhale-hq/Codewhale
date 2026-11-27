@@ -594,6 +594,7 @@ async fn full_caller_channel_never_delays_original_cancel_or_loses_usage_and_ker
         entered: tokio::sync::Notify::new(),
     });
     replies.mock.push_message_response(MessageResponse {
+        tool_projection_warning: None,
         id: "completed-python-round".into(),
         r#type: "message".into(),
         role: "assistant".into(),
@@ -855,6 +856,7 @@ async fn a_plugin_completion_carries_no_constitution_and_no_plugin_prompt_sectio
     let config = fixture_config("captured-model");
     let mock = Arc::new(crate::llm_client::mock::MockLlmClient::new(Vec::new()));
     let reply = |text: &str| MessageResponse {
+        tool_projection_warning: None,
         id: "isolated-policy-msg".into(),
         r#type: "message".into(),
         role: "assistant".into(),
@@ -972,6 +974,7 @@ async fn a_complete_rlm_response_is_used_when_its_settlement_is_not_acknowledged
     let config = fixture_config("captured-model");
     let mock = Arc::new(crate::llm_client::mock::MockLlmClient::new(Vec::new()));
     mock.push_message_response(MessageResponse {
+        tool_projection_warning: None,
         id: "rlm-complete-unsettled".into(),
         r#type: "message".into(),
         role: "assistant".into(),

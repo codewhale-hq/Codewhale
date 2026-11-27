@@ -483,6 +483,7 @@ mod tests {
 
     fn response(text: &str, usage: Usage) -> MessageResponse {
         MessageResponse {
+            tool_projection_warning: None,
             id: "review".to_string(),
             r#type: "message".to_string(),
             role: "assistant".to_string(),

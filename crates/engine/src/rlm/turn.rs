@@ -339,6 +339,7 @@ mod tests {
         let marker_literal = serde_json::to_string(&marker.to_string_lossy()).expect("literal");
         let mock = Arc::new(MockLlmClient::new(Vec::new()));
         mock.push_message_response(MessageResponse {
+            tool_projection_warning: None,
             id: "mock_gated_rlm".to_string(),
             r#type: "message".to_string(),
             role: "assistant".to_string(),
@@ -432,6 +433,7 @@ mod tests {
         };
         let mock = Arc::new(MockLlmClient::new(Vec::new()));
         mock.push_message_response(MessageResponse {
+            tool_projection_warning: None,
             id: "mock_truncated_rlm".to_string(),
             r#type: "message".to_string(),
             role: "assistant".to_string(),
@@ -490,6 +492,7 @@ mod tests {
     async fn root_provider_success_without_usage_retains_exact_missing_receipt() {
         let mock = Arc::new(MockLlmClient::new(Vec::new()));
         mock.push_message_response(MessageResponse {
+            tool_projection_warning: None,
             id: "mock_missing_rlm_usage".to_string(),
             r#type: "message".to_string(),
             role: "assistant".to_string(),
@@ -543,6 +546,7 @@ mod tests {
 
     fn text_response(text: &str) -> MessageResponse {
         MessageResponse {
+            tool_projection_warning: None,
             id: "mock_rlm_round".to_string(),
             r#type: "message".to_string(),
             role: "assistant".to_string(),
@@ -1037,6 +1041,7 @@ mod tests {
         let prompt = format!("{}{}", "a".repeat(PROMPT_PREVIEW_LEN + 100), secret_tail);
         let mock = Arc::new(MockLlmClient::new(Vec::new()));
         mock.push_message_response(MessageResponse {
+            tool_projection_warning: None,
             id: "context-metadata".into(),
             r#type: "message".into(),
             role: "assistant".into(),

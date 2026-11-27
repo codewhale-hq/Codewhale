@@ -773,15 +773,28 @@
     }
 
     #[tokio::test]
-    async fn moonshot_stream_emits_one_projection_warning() {
+    async fn moonshot_emits_matching_blocking_and_stream_projection_warnings() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(json!({"stream": true})))
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "text/event-stream")
                     .set_body_string("data: [DONE]\n\n"),
             )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(|request: &wiremock::Request| {
+                request.body_json::<Value>().is_ok_and(|body| body["stream"] != true)
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "test", "model": "k3",
+                "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]
+            })))
             .expect(1)
             .mount(&server)
             .await;
@@ -802,6 +815,13 @@
         request.tools = Some(vec![good, bad]);
         request.tool_choice = Some(json!("auto"));
 
+        let blocking = client
+            .create_message(request.clone())
+            .await
+            .expect("blocking response");
+        let warning = blocking
+            .tool_projection_warning
+            .expect("blocking omission warning");
         let mut stream = client
             .create_message_stream(request)
             .await
@@ -822,6 +842,9 @@
         assert!(provider.contains("Moonshot"), "{provider}");
         assert_eq!(omitted_tool_names, vec!["mcp_pattern_tool"]);
         assert_eq!(omitted_tool_count, 1);
+        assert_eq!(warning.provider, provider);
+        assert_eq!(warning.omitted_tool_names, omitted_tool_names);
+        assert_eq!(warning.omitted_tool_count, omitted_tool_count);
 
         let mut additional_warnings = 0;
         while let Some(event) = stream.next().await {
@@ -838,13 +861,12 @@
         );
 
         let requests = server.received_requests().await.expect("recorded request");
-        assert_eq!(requests.len(), 1);
-        let body: Value = serde_json::from_slice(&requests[0].body).expect("request JSON");
-        assert_eq!(body["tools"].as_array().map(Vec::len), Some(1));
-        assert!(
-            !body.to_string().contains("private-regex-9901"),
-            "omitted schema values must not reach the wire: {body}"
-        );
+        assert_eq!(requests.len(), 2);
+        for request in requests {
+            let body: Value = serde_json::from_slice(&request.body).expect("request JSON");
+            assert_eq!(body["tools"].as_array().map(Vec::len), Some(1));
+            assert!(!body.to_string().contains("private-regex-9901"));
+        }
     }
 
     /// #6528 — a rejected key names the route, host, key source and the

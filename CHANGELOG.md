@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Reopening an older session preserves user messages that begin with a summary heading, including a paste identical to its saved summary. (#6557, #7562)
+- Non-streaming model responses report which incompatible tools the provider route omitted, with the same bounded names and total count as streaming requests. (#5633)
 
 - **Making room keeps a message that starts with a summary header:** a user message that begins with an old compaction summary header (for example a pasted transcript) is no longer mistaken for a checkpoint and dropped on the next compaction. Thanks [@NieZhuZhu](https://github.com/NieZhuZhu) ([#7565](https://github.com/codewhale-hq/Codewhale/pull/7565)).
 - **Inline skill completion after Chinese or Japanese text:** typing `/` or `$` straight after CJK text or full-width punctuation, as in `请用$my`, now opens the skill completion list, as `@` file mentions already do. Thanks [@chuenchen309](https://github.com/chuenchen309) ([#7563](https://github.com/codewhale-hq/Codewhale/pull/7563)).
