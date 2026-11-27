@@ -106,7 +106,6 @@ fn create_test_app(root: &Path) -> (App, TempDir) {
         config_path: Some(config_path),
         skills_dir: temp.path().join("skills"),
         memory_path: temp.path().join("memory.md"),
-        notes_path: temp.path().join("notes.txt"),
         mcp_config_path: temp.path().join("mcp.json"),
         ..crate::tui::test_support::test_tui_options(root)
     };

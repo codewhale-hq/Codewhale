@@ -2384,9 +2384,6 @@ pub struct App {
     /// `compact` keeps the route, context, cost and balance and drops the
     /// telemetry and the help hint.
     pub metrics_line: codewhale_runtime::config::ChromeRowPreset,
-    /// Project documentation (AGENTS.md or CLAUDE.md)
-    #[expect(dead_code)]
-    pub project_doc: Option<String>,
     /// Plan state for tracking tasks
     pub plan_state: SharedPlanState,
     /// Todo list for the canonical `work_update` progress surface.

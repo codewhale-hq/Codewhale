@@ -218,8 +218,6 @@ pub struct TuiOptions {
     pub max_subagents: usize,
     pub skills_dir: PathBuf,
     pub memory_path: PathBuf,
-    #[expect(dead_code)]
-    pub notes_path: PathBuf,
     pub mcp_config_path: PathBuf,
     pub use_memory: bool,
     /// Start in agent mode (defaults to agent; --yolo starts in YOLO)
@@ -350,10 +348,6 @@ pub enum SubmitDisposition {
     Queue,
     /// Amend the active turn immediately (#382).
     Steer,
-    /// Park on `queued_messages` for dispatch after TurnComplete.
-    /// Legacy path; #382 unified busy states under `Queue`.
-    #[expect(dead_code)]
-    QueueFollowUp,
 }
 
 /// Enter-shaped gestures understood by the composer state machine.

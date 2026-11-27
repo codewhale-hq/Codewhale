@@ -15985,7 +15985,6 @@ async fn run_interactive_prepared(
             use_bracketed_paste,
             skills_dir,
             memory_path: config.memory_path(),
-            notes_path: config.notes_path(),
             mcp_config_path: config.mcp_config_path(),
             use_memory: config.memory_enabled(),
             start_in_agent_mode: yolo,

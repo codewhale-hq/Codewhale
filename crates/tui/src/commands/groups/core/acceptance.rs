@@ -133,7 +133,6 @@ fn create_test_app_with_tmpdir(tmpdir: &TempDir) -> App {
     let options = TuiOptions {
         skills_dir: tmpdir.path().join("skills"),
         memory_path: tmpdir.path().join("memory.md"),
-        notes_path: tmpdir.path().join("notes.txt"),
         mcp_config_path: tmpdir.path().join("mcp.json"),
         ..crate::tui::test_support::test_tui_options(tmpdir.path())
     };

@@ -5897,7 +5897,6 @@ mod progressive_tests {
             config_path: None,
             skills_dir: skills_dir.clone(),
             memory_path: tmp.path().join("memory.md"),
-            notes_path: tmp.path().join("notes.txt"),
             mcp_config_path: tmp.path().join("mcp.json"),
             ..crate::tui::test_support::test_tui_options(tmp.path())
         };

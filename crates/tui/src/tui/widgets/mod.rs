@@ -3535,8 +3535,7 @@ pub(crate) fn composer_submit_hint(app: &App, clipped: bool) -> Option<ComposerS
                 palette::WHALE_ACTION,
             )
         }
-        ComposerSubmitAction::Submit(SubmitDisposition::Queue)
-        | ComposerSubmitAction::Submit(SubmitDisposition::QueueFollowUp) => {
+        ComposerSubmitAction::Submit(SubmitDisposition::Queue) => {
             if app.offline_mode {
                 let id = if app.onboarding_explore_offline {
                     MessageId::ComposerHintOfflineConnect

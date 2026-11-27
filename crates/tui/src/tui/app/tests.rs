@@ -5880,7 +5880,6 @@ fn submit_disposition_scenario() {
     }
     // from submit_disposition_queue_when_busy_and_streaming
     {
-        // #382: Busy + streaming → Queue (was QueueFollowUp; now unified)
         let mut app = App::new(test_options(false), &Config::default());
         app.is_loading = true;
         app.offline_mode = false;

@@ -66,7 +66,6 @@ impl SurfaceHarness {
         let options = TuiOptions {
             skills_dir: temp.path().join("skills"),
             memory_path: temp.path().join("memory.md"),
-            notes_path: temp.path().join("notes.txt"),
             mcp_config_path: temp.path().join("mcp.json"),
             ..crate::tui::test_support::test_tui_options(temp.path())
         };

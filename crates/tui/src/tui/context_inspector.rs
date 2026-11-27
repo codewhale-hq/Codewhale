@@ -1155,7 +1155,6 @@ mod tests {
             TuiOptions {
                 model: "unknown-model".to_string(),
                 skills_dir: PathBuf::from("/tmp/skills"),
-                notes_path: PathBuf::from("notes.md"),
                 ..crate::tui::test_support::test_tui_options(PathBuf::from("/tmp/project"))
             },
             &Config::default(),

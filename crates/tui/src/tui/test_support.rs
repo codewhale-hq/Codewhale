@@ -29,7 +29,6 @@ pub(crate) fn test_tui_options(workspace: impl AsRef<Path>) -> crate::tui::app::
         max_subagents: 1,
         skills_dir: PathBuf::from("."),
         memory_path: PathBuf::from("memory.md"),
-        notes_path: PathBuf::from("notes.txt"),
         mcp_config_path: PathBuf::from("mcp.json"),
         use_memory: false,
         // Majority-of-fixtures defaults, measured across the 89 literals this

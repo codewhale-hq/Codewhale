@@ -1669,21 +1669,6 @@ pub(crate) async fn attempt_steer_with_queue_fallback(
     }
 }
 
-/// Park a draft on the queued-messages bucket for dispatch after TurnComplete.
-/// Unlike a steer, the message is NOT forwarded immediately — it waits for
-/// the current turn to finish, then dispatches as a normal user message.
-pub(crate) async fn queue_follow_up(app: &mut App, message: QueuedMessage) -> Result<()> {
-    let Some(mut message) = reject_if_queue_full(app, message) else {
-        return Ok(());
-    };
-    echo_queued_user_turn(app, &mut message);
-    enqueue_offline_message(app, message);
-    let toast = queued_follow_up_toast(app);
-    app.status_message = Some(toast.clone());
-    app.push_status_toast(toast, StatusToastLevel::Info, Some(3_000));
-    Ok(())
-}
-
 fn queued_follow_up_toast(app: &App) -> String {
     if app.offline_mode {
         return app.tr(MessageId::ToastQueuedOffline).into_owned();
@@ -1809,7 +1794,6 @@ pub(crate) async fn dispatch_composer_message(
             attempt_steer_with_queue_fallback(app, config, engine_handle, message, recovery).await;
             Ok(())
         }
-        SubmitDisposition::QueueFollowUp => queue_follow_up(app, message).await,
     }
 }
 

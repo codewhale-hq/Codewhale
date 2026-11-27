@@ -42,7 +42,6 @@ impl App {
             max_subagents,
             skills_dir: global_skills_dir,
             memory_path,
-            notes_path: _,
             mcp_config_path,
             use_memory,
             start_in_agent_mode,
@@ -1118,7 +1117,6 @@ impl App {
             // once here so every render pass — main cache and full-screen
             // overlay — shares one effective width; `None` = full width.
             prose_measure: config.prose_measure(),
-            project_doc: None,
             plan_state,
             todos,
             runtime_services: RuntimeToolServices {

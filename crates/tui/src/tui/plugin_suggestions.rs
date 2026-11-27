@@ -379,7 +379,6 @@ mod tests {
             config_path: Some(app_dir.join("config.toml")),
             skills_dir: app_dir.join("skills"),
             memory_path: app_dir.join("memory.md"),
-            notes_path: app_dir.join("notes.txt"),
             mcp_config_path: app_dir.join("mcp.json"),
             ..crate::tui::test_support::test_tui_options(root.path())
         };

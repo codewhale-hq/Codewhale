@@ -808,7 +808,6 @@ mod tests {
         let options = TuiOptions {
             skills_dir: tmp.path().join("skills"),
             memory_path: tmp.path().join("memory.md"),
-            notes_path: tmp.path().join("notes.txt"),
             mcp_config_path: tmp.path().join("mcp.json"),
             ..crate::tui::test_support::test_tui_options(workspace)
         };

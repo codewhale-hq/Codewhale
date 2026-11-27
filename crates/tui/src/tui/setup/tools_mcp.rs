@@ -717,7 +717,6 @@ mod tests {
             config_path,
             skills_dir: skills_dir.clone(),
             memory_path: workspace.join("memory.md"),
-            notes_path: workspace.join("notes.txt"),
             mcp_config_path,
             ..crate::tui::test_support::test_tui_options(workspace)
         };

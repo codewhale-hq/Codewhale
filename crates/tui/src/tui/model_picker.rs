@@ -7496,7 +7496,6 @@ api_key = "fixture-xai-key"
             max_subagents: 1,
             skills_dir: temp.path().join("skills"),
             memory_path: temp.path().join("memory"),
-            notes_path: temp.path().join("notes"),
             mcp_config_path: temp.path().join("mcp.json"),
             use_memory: false,
             start_in_agent_mode: false,

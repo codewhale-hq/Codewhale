@@ -24,7 +24,6 @@ fn make_app(tmpdir: &tempfile::TempDir, locale: Locale, has_api_key: bool) -> Ap
         TuiOptions {
             skills_dir: tmpdir.path().join("skills"),
             memory_path: tmpdir.path().join("memory.md"),
-            notes_path: tmpdir.path().join("notes.txt"),
             mcp_config_path: tmpdir.path().join("mcp.json"),
             ..crate::tui::test_support::test_tui_options(tmpdir.path())
         },

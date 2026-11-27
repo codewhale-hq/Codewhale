@@ -1332,7 +1332,6 @@ mod tests {
                 screen_mode: crate::tui::app::ScreenMode::Inline,
                 use_bracketed_paste: false,
                 memory_path: memory_path.clone(),
-                notes_path: tmp.path().join("notes.txt"),
                 mcp_config_path: tmp.path().join("mcp.json"),
                 use_memory: true,
                 start_in_agent_mode: true,
@@ -1417,7 +1416,6 @@ mod tests {
             crate::tui::app::TuiOptions {
                 screen_mode: crate::tui::app::ScreenMode::Inline,
                 use_bracketed_paste: false,
-                notes_path: tmp.path().join("notes.txt"),
                 mcp_config_path: tmp.path().join("mcp.json"),
                 start_in_agent_mode: true,
                 ..crate::tui::test_support::test_tui_options(tmp.path())

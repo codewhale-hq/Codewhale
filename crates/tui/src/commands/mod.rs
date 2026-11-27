@@ -2099,7 +2099,6 @@ mod tests {
             config_path: Some(config_path),
             skills_dir: workspace.join("skills"),
             memory_path: workspace.join("memory.md"),
-            notes_path: workspace.join("notes.txt"),
             mcp_config_path: workspace.join("mcp.json"),
             ..crate::tui::test_support::test_tui_options(workspace.clone())
         };
