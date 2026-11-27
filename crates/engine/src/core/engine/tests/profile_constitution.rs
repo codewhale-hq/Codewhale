@@ -461,7 +461,6 @@ async fn stop_ends_a_slow_account_read_at_once_for_interactive_and_hosted_turns(
             }
         );
         let after_stop = ended.checked_duration_since(stopped).unwrap();
-        eprintln!("Stop to turn return (host_managed={host_managed}): {after_stop:?}");
         assert!(
             after_stop < Duration::from_secs(1),
             "Stop took {after_stop:?} while the account read was pending"
@@ -490,8 +489,10 @@ async fn stop_ends_a_slow_account_read_at_once_for_interactive_and_hosted_turns(
                     ..
                 } => {
                     let delivered = received.checked_duration_since(stopped).unwrap();
-                    eprintln!("Stop to TurnComplete delivery: {delivered:?}");
-                    assert!(delivered < Duration::from_secs(1), "{delivered:?}");
+                    assert!(
+                        delivered < Duration::from_secs(1),
+                        "hosted Stop took {delivered:?} to deliver TurnComplete"
+                    );
                     assert!(tool_catalog.is_none());
                     Some(Some(status))
                 }
