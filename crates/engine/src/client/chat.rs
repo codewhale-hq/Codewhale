@@ -3165,7 +3165,7 @@ fn build_chat_messages_with_reasoning(
                     && pending_tool_calls.is_empty()
                     && out.last().is_some_and(|entry| entry["role"] == "tool")
                 {
-                    out.push(json!({"role": "assistant", "content": ""}));
+                    out.push(json!({"role": "assistant", "content": " "}));
                 }
                 if (Some(message_index) == summary_index
                     || Some(message_index) == summary_target
@@ -7376,7 +7376,7 @@ mod image_block_wire_tests {
             ["user", "assistant", "tool", "assistant", "user"],
             "{wire:?}"
         );
-        assert_eq!(wire[3]["content"], "");
+        assert_eq!(wire[3]["content"], " ");
         assert_eq!(
             wire[4]["content"],
             "Another language model started to solve this problem and produced a summary of the earlier turns."
