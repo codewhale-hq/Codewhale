@@ -105,9 +105,7 @@ impl PetWatch {
                 .lock()
                 .is_ok_and(|mut state| !std::mem::replace(&mut state.2, true))
             {
-                codewhale_util::utils::spawn_blocking_supervised("whale-identity", move || {
-                    read_identity(&poll);
-                });
+                start_identity_read(poll);
             }
         }
         applied
@@ -171,24 +169,26 @@ impl PetWatch {
         }
     }
 }
-fn read_identity(poll: &Mutex<(IdentityStamp, Option<DiskIdentity>, bool)>) {
-    use codewhale_runtime::settings::Settings;
-    let stamp = Settings::path()
-        .ok()
-        .and_then(|path| std::fs::metadata(path).ok())
-        .and_then(|meta| Some((meta.modified().ok()?, meta.len())));
-    let seen = poll.lock().map(|state| state.0).unwrap_or(None);
-    let identity = (stamp != seen)
-        .then(Settings::load_persisted)
-        .and_then(Result::ok)
-        .map(|settings| (settings.whale_name, settings.whale_color));
-    if let Ok(mut state) = poll.lock() {
-        if identity.is_some() {
-            state.0 = stamp;
-            state.1 = identity;
+fn start_identity_read(poll: Arc<Mutex<(IdentityStamp, Option<DiskIdentity>, bool)>>) {
+    codewhale_util::utils::spawn_blocking_supervised("whale-identity", move || {
+        use codewhale_runtime::settings::Settings;
+        let stamp = Settings::path()
+            .ok()
+            .and_then(|path| std::fs::metadata(path).ok())
+            .and_then(|meta| Some((meta.modified().ok()?, meta.len())));
+        let seen = poll.lock().map(|state| state.0).unwrap_or(None);
+        let identity = (stamp != seen)
+            .then(Settings::load_persisted)
+            .and_then(Result::ok)
+            .map(|settings| (settings.whale_name, settings.whale_color));
+        if let Ok(mut state) = poll.lock() {
+            if identity.is_some() {
+                state.0 = stamp;
+                state.1 = identity;
+            }
+            state.2 = false;
         }
-        state.2 = false;
-    }
+    });
 }
 /// Existing protocol projection defines the variant names. This allowlist
 /// removes payloads before the dot whale's bounded queue; no model text escapes.
