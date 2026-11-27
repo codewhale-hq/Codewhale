@@ -726,6 +726,27 @@ pub struct ExternalAgentLaunch {
     pub env: BTreeMap<String, String>,
 }
 
+static SIGN_IN: std::sync::LazyLock<std::sync::Mutex<BTreeMap<String, bool>>> =
+    std::sync::LazyLock::new(Default::default);
+
+pub fn record_sign_in(agent_id: &str, signed_in: bool) {
+    if let Ok(mut known) = SIGN_IN.lock() {
+        known.insert(agent_id.to_string(), signed_in);
+    }
+}
+
+pub fn sign_in_status(agent_id: &str) -> &'static str {
+    match SIGN_IN
+        .lock()
+        .ok()
+        .and_then(|known| known.get(agent_id).copied())
+    {
+        Some(true) => "signed_in",
+        Some(false) => ExecutorUnavailable::NEEDS_SIGN_IN,
+        None => "unknown",
+    }
+}
+
 pub async fn launch(id: &str) -> Result<ExternalAgentLaunch, ExecutorUnavailable> {
     let Some(agent) = find(id) else {
         if let Some(custom) = find_custom(id) {
@@ -1122,6 +1143,15 @@ mod tests {
         assert_eq!(parsed[0].id, "desk");
         assert_eq!(parsed[0].args, ["acp"]);
         assert_eq!(parsed[0].env["AGENT_PROFILE"], "desk");
+    }
+
+    #[test]
+    fn sign_in_status_follows_what_the_agent_last_showed() {
+        assert_eq!(sign_in_status("sign-in-probe"), "unknown");
+        record_sign_in("sign-in-probe", false);
+        assert_eq!(sign_in_status("sign-in-probe"), "needs_sign_in");
+        record_sign_in("sign-in-probe", true);
+        assert_eq!(sign_in_status("sign-in-probe"), "signed_in");
     }
 
     #[test]

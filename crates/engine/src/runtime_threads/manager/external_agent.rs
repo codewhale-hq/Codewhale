@@ -291,13 +291,15 @@ impl Drop for AgentProcess {
 
 fn sign_in_or(
     error: anyhow::Error,
-    agent_name: &str,
+    launch: &ExternalAgentLaunch,
     login: Option<&'static str>,
 ) -> anyhow::Error {
+    let agent_name = launch.agent_name.as_str();
     if error
         .downcast_ref::<AcpError>()
         .is_some_and(AcpError::is_auth_required)
     {
+        crate::fleet::agents::record_sign_in(&launch.agent_id, false);
         let hint = login
             .map(|command| format!(" Run `{command}` in a terminal, then try again."))
             .unwrap_or_default();
@@ -324,7 +326,7 @@ fn executor_choices(executor: &ExecutorRecord) -> Vec<(&'static str, String)> {
         .collect()
 }
 
-fn refuse(code: &'static str, message: impl Into<String>) -> anyhow::Error {
+pub(super) fn refuse(code: &'static str, message: impl Into<String>) -> anyhow::Error {
     crate::fleet::agents::ExecutorUnavailable::new(code, message).into()
 }
 
@@ -416,8 +418,7 @@ fn start_session_blocking(
         apply_choices(&mut client, &session_id, &offer, &choices)?;
         Ok((identity, session_id, offer.control("mode").cloned()))
     })();
-    let (identity, session_id, mode) =
-        setup.map_err(|error| sign_in_or(error, &launch.agent_name, login))?;
+    let (identity, session_id, mode) = setup.map_err(|error| sign_in_or(error, &launch, login))?;
     if !valid_id(&session_id) {
         bail!("{} named an invalid session id", launch.agent_name);
     }
@@ -463,7 +464,7 @@ fn probe_options_blocking(
     })();
     drop(client);
     process.stop();
-    probed.map_err(|error| sign_in_or(error, &launch.agent_name, login))
+    probed.map_err(|error| sign_in_or(error, &launch, login))
 }
 
 fn valid_id(value: &str) -> bool {
@@ -1961,6 +1962,11 @@ impl RuntimeThreadManager {
         mut projection: ExternalProjection,
         outcome: Result<String, String>,
     ) -> Result<()> {
+        if outcome.is_ok()
+            && let Some(executor) = thread.executor.as_ref()
+        {
+            crate::fleet::agents::record_sign_in(&executor.agent_id, true);
+        }
         let (interrupted, killed) = self
             .active
             .lock()

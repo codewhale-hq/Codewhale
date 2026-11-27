@@ -1101,6 +1101,19 @@ async fn per_turn_controls_an_agent_cannot_honor_are_typed_refusals() -> Result<
             "{error:#}"
         );
     }
+    for error in [
+        manager.fork_thread(&thread.id).await.unwrap_err(),
+        manager
+            .compact_thread(&thread.id, Default::default())
+            .await
+            .unwrap_err(),
+    ] {
+        assert_eq!(
+            refusal_code(&error),
+            Some("unsupported_control"),
+            "{error:#}"
+        );
+    }
     assert!(
         received(&workspace).is_empty(),
         "no agent was started for a refused turn"
