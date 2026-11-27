@@ -31,7 +31,6 @@ pub mod settings_schema;
 pub mod setup_state;
 pub mod suggest;
 pub mod user_constitution;
-pub mod whale_identity;
 #[cfg(windows)]
 pub mod windows_identity;
 mod xai_credentials;

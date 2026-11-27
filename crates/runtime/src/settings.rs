@@ -1893,12 +1893,13 @@ impl Settings {
                 }
             }
             "whale_name" => {
-                self.whale_name = codewhale_config::whale_identity::normalize_whale_name(value)
-                    .map_err(|error| anyhow::anyhow!("Failed to update setting: {error}."))?;
+                self.whale_name =
+                    codewhale_command_contract::whale_identity::normalize_whale_name(value)
+                        .map_err(|error| anyhow::anyhow!("Failed to update setting: {error}."))?;
             }
             "whale_color" | "whale_colour" => {
                 self.whale_color =
-                    codewhale_config::whale_identity::normalize_whale_color(value)
+                    codewhale_command_contract::whale_identity::normalize_whale_color(value)
                         .map_err(|error| anyhow::anyhow!("Failed to update setting: {error}"))?;
             }
             quota if quota.starts_with(AGENT_QUOTA_KEY_PREFIX) => {

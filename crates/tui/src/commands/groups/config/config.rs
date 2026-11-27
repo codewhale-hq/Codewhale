@@ -17,7 +17,7 @@ use codewhale_command_contract::outcome::{ConfigAction, ConfigCommandResult};
 use codewhale_command_contract::types::{
     CommandMode, CommandRailPanel, CommandScreenMode, CommandWorkSurfacePlacement,
 };
-use codewhale_config::whale_identity::{normalize_whale_color, normalize_whale_name};
+use codewhale_command_contract::whale_identity::{normalize_whale_color, normalize_whale_name};
 
 /// `/config` only: config authority plus `PRESENTATION` for its keyed messages
 /// and `PERMISSIONS` because `ask-rules` forwards to the permission-rules editor.

@@ -9,7 +9,6 @@ publish = false
 
 [dependencies]
 codewhale-command-contract = { path = "../../crates/command-contract", version = "0.10.1" }
-codewhale-config = { path = "../../crates/config", version = "0.10.5" }
 codewhale-protocol = { path = "../../crates/protocol", version = "0.10.1" }
 codewhale-sanitize = { path = "../../crates/sanitize", version = "0.10.2" }
 serde_json.workspace = true

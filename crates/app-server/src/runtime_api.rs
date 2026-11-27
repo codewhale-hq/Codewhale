@@ -14523,7 +14523,7 @@ async fn adopt_whale_setting(
     key: String,
     candidate: String,
 ) -> Result<Json<SetConfigResponse>, ApiError> {
-    use codewhale_config::whale_identity::{normalize_whale_color, normalize_whale_name};
+    use codewhale_command_contract::whale_identity::{normalize_whale_color, normalize_whale_name};
     use codewhale_runtime::settings::Settings;
 
     let is_name = key == "whale_name";

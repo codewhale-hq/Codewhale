@@ -73,12 +73,12 @@ impl PetWatch {
         self.color
     }
     pub fn set_color(&mut self, color: Option<&str>) {
-        self.color = color.and_then(codewhale_config::whale_identity::whale_color_rgb);
+        self.color = color.and_then(codewhale_command_contract::whale_identity::whale_color_rgb);
         self.identity_checked = Some(Instant::now());
     }
     pub fn apply_identity(&mut self, name: Option<&str>, color: Option<&str>) {
         self.name = name.map(str::to_owned);
-        self.color = color.and_then(codewhale_config::whale_identity::whale_color_rgb);
+        self.color = color.and_then(codewhale_command_contract::whale_identity::whale_color_rgb);
     }
     fn refresh_identity(&mut self, now: Instant) -> bool {
         let pending = self
@@ -91,7 +91,7 @@ impl PetWatch {
                 || self.color
                     != color
                         .as_deref()
-                        .and_then(codewhale_config::whale_identity::whale_color_rgb);
+                        .and_then(codewhale_command_contract::whale_identity::whale_color_rgb);
             self.apply_identity(name.as_deref(), color.as_deref());
             changed
         });
