@@ -535,12 +535,8 @@ pub fn restore_compaction_checkpoint(
     mut messages: Vec<Message>,
     checkpoint: Option<&SystemPrompt>,
 ) -> Vec<Message> {
+    crate::runtime_handoff::relocate_restored_compaction_topology(&mut messages);
     let Some(checkpoint) = checkpoint else {
-        // Nothing to reinsert, so there is nothing to replace. Topology
-        // relocation is still safe here: it only reorders Agent-topology
-        // sidecars to their placement anchor and never deletes, so a history
-        // without a saved summary keeps every message it carries.
-        crate::runtime_handoff::relocate_restored_compaction_topology(&mut messages);
         return messages;
     };
     let typed_position = messages.iter().position(is_checkpoint_for_compaction);
@@ -557,7 +553,6 @@ pub fn restore_compaction_checkpoint(
         checkpoint_index.min(messages.len()),
         compaction_checkpoint_message(checkpoint),
     );
-    crate::runtime_handoff::relocate_restored_compaction_topology(&mut messages);
     messages
 }
 
@@ -2949,9 +2944,7 @@ mod tests {
         // A restored carrier is the projection of a sidecar a previous save
         // already wrote. The next compaction's save must retire it when it
         // installs the fresh sidecar — keeping it beside the fresh one would
-        // persist a superseded duplicate that no later replay removes. The
-        // restored carrier survives into the replacement history, which ends
-        // at the summary boundary where a save anchors the fresh sidecar.
+        // persist a superseded duplicate that no later replay removes.
         let bare_summary = Message {
             role: Role::User,
             content: vec![ContentBlock::Text {
@@ -2963,7 +2956,7 @@ mod tests {
             msg("user", "Analyze the data"),
             tool_use("call_1", "read", json!({"path": "a.txt"})),
             tool_result("call_1", "ready"),
-            bare_summary,
+            bare_summary.clone(),
         ];
         crate::runtime_handoff::replace_agent_topology_checkpoint(&mut messages, &[]);
         let summary = SystemPrompt::Text(build_compaction_summary_block_text("Summary", ""));
@@ -2994,9 +2987,12 @@ mod tests {
              one beside it: {recompacted:?}"
         );
         assert!(
-            crate::runtime_handoff::is_agent_topology_checkpoint(&recompacted[1]),
-            "the survivor is the fresh live sidecar at its anchor: {recompacted:?}"
+            recompacted
+                .last()
+                .is_some_and(crate::runtime_handoff::is_agent_topology_checkpoint),
+            "the fresh sidecar follows the last retained user turn: {recompacted:?}"
         );
+        assert_eq!(recompacted[recompacted.len() - 2], bare_summary);
     }
 
     #[test]

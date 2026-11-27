@@ -3160,6 +3160,13 @@ fn build_chat_messages_with_reasoning(
                 if include_tool_budget_metadata && let Some(turn_meta) = &turn_meta_budget {
                     msg["_turn_meta_budget"] = turn_meta_budget_json(turn_meta);
                 }
+                if summary_target.is_some()
+                    && summary_index.is_some_and(|checkpoint| message_index == checkpoint + 1)
+                    && pending_tool_calls.is_empty()
+                    && out.last().is_some_and(|entry| entry["role"] == "tool")
+                {
+                    out.push(json!({"role": "assistant", "content": ""}));
+                }
                 if (Some(message_index) == summary_index
                     || Some(message_index) == summary_target
                     || codewhale_models::turn_classify::is_wire_compaction_checkpoint_message(
@@ -7364,11 +7371,38 @@ mod image_block_wire_tests {
             .iter()
             .map(|message| message["role"].as_str().unwrap())
             .collect();
-        assert_eq!(roles, ["user", "assistant", "tool"], "{wire:?}");
+        assert_eq!(
+            roles,
+            ["user", "assistant", "tool", "assistant", "user"],
+            "{wire:?}"
+        );
+        assert_eq!(wire[3]["content"], "");
+        assert_eq!(
+            wire[4]["content"],
+            "Another language model started to solve this problem and produced a summary of the earlier turns."
+        );
         let prompt = wire[0]["content"].as_str().unwrap();
         assert!(prompt.contains("Compacted summary"));
         assert!(prompt.contains("Analyze the data"));
         assert!(prompt.contains("restored Agent topology checkpoint"));
+
+        let mut saved_again = restored;
+        crate::runtime_handoff::replace_agent_topology_checkpoint(&mut saved_again, &[]);
+        let restored_again = crate::compaction::restore_compaction_checkpoint(
+            crate::runtime_handoff::project_owned_messages_for_restore(saved_again),
+            Some(&summary),
+        );
+        let second_wire = build_chat_messages(None, &restored_again, "gpt-4o");
+        assert_eq!(
+            second_wire
+                .iter()
+                .map(|m| m["role"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            roles
+        );
+        let final_prompt = second_wire[4]["content"].as_str().unwrap();
+        assert!(final_prompt.starts_with(wire[4]["content"].as_str().unwrap()));
+        assert!(final_prompt.contains("restored Agent topology checkpoint"));
     }
 
     #[test]

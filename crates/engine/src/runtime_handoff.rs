@@ -1193,8 +1193,15 @@ fn restored_topology_anchor(messages: &[Message], index: usize) -> Option<usize>
         crate::compaction::is_compaction_checkpoint_message_in_era(message, post_provenance)
     });
     let follows_tool_result = index > 0 && carries_tool_result(&messages[index - 1]);
-    if summary_before.is_none() && !follows_tool_result {
-        return None;
+    if !follows_tool_result {
+        let summary = summary_before?;
+        if post_provenance
+            && messages[summary + 1..index]
+                .iter()
+                .any(|message| classify_user_turn_prompt(message) != UserTurnPromptKind::NotPrompt)
+        {
+            return None;
+        }
     }
     let before = summary_before
         .or_else(|| {
@@ -1242,10 +1249,7 @@ fn restored_topology_anchor(messages: &[Message], index: usize) -> Option<usize>
 /// carrier to its placement anchor on restore repairs the session in place
 /// instead of asking for a new one. Engine-saved sessions — a replacement
 /// history carries exactly one checkpoint — saved by the placement anchor
-/// are already at that anchor and restore byte-identical. A host-imported
-/// history carrying an older summary before an already-anchored carrier is
-/// shuffled instead; that is wire-legal and self-heals at the next save via
-/// the both-forms retire. Relocation only reorders:
+/// are already at that anchor and restore byte-identical. Relocation only reorders:
 /// nothing is deleted, and a user turn that merely pastes a summary header is
 /// never a carrier here, so real user content cannot be moved.
 pub(crate) fn relocate_restored_compaction_topology(messages: &mut Vec<Message>) {
