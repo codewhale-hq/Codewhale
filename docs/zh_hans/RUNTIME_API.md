@@ -2642,6 +2642,19 @@ URL；任何状态、错误或日志都不携带它、key、授权码或 verifie
 其他值一律 `400`，即使 `persist` 为 false。响应的 `value` 就是实际保存的值。
 与其他 config.toml 键一样，持久化写入在 `POST /v1/config/reload` 之后生效。
 
+### 迁移已保存的鲸鱼名字或颜色
+
+从本地存储升级时，客户端可用 `POST /v1/config` 填写尚未设置的
+`whale_name` 或 `whale_color`。在 `if_unset` 中传入原有偏好，省略 `value`。
+
+```json
+{"key":"whale_name","if_unset":"First Mate","persist":true}
+```
+
+引擎持有设置锁时检查并写入该字段。成功响应包含规范化后的 `value` 和
+`persisted: true`。HTTP 409 表示该字段已有值，可通过
+`GET /v1/settings/schema` 读取。在读取或写入确认已有持久化值之前，保留本地偏好。
+
 ## 运行时数据模型
 
 运行时使用持久的 Thread/Turn/Item 生命周期。

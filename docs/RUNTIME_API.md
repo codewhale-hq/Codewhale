@@ -3814,6 +3814,21 @@ Any other value is `400`, also when `persist` is false. The response `value`
 is what was stored. As with the other config.toml keys, a persisted write
 takes effect after `POST /v1/config/reload`.
 
+### Migrating a saved whale name or color
+
+A client upgrading from local storage can use `POST /v1/config` to fill an
+empty `whale_name` or `whale_color`. Send the saved preference in `if_unset`
+and omit `value`.
+
+```json
+{"key":"whale_name","if_unset":"First Mate","persist":true}
+```
+
+The Engine checks and writes the field under the settings lock. A successful
+response contains the normalized `value` and `persisted: true`. HTTP 409 means
+the setting already has a value. Read it from `GET /v1/settings/schema`.
+Keep the local preference until either read or write confirms a saved value.
+
 ## Runtime data model
 
 The runtime uses a durable Thread/Turn/Item lifecycle.
