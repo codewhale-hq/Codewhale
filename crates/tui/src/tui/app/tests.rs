@@ -8562,6 +8562,56 @@ async fn pet_view_choice_restores_without_launch_overlay_and_preserves_other_set
     assert!(!Settings::load_persisted().unwrap().pet_mode);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn whale_name_and_colour_survive_a_restart_and_follow_another_writer() {
+    let _lock = lock_test_env();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _env = sealed_settings_home(tmp.path());
+    let _writes = crate::tui::startup_defaults::allow_writes_in_tests();
+    let path = tmp.path().join(".codewhale/settings.toml");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "# keep this comment\nlow_motion = true\n").unwrap();
+    let mut app = App::new(test_options(false), &Config::default());
+    assert_eq!(app.pet_watch.name(), None);
+    app.pet_watch.detach_for_test();
+    for command in ["/whale name  Moby   Dick", "/whale color harbor"] {
+        let result = crate::commands::execute_with_config(command, &mut app, &Config::default());
+        assert!(!result.is_error, "{command}: {:?}", result.message);
+    }
+    assert!(
+        crate::commands::execute_with_config("/whale color blue", &mut app, &Config::default())
+            .is_error
+    );
+    assert_eq!(app.pet_watch.name(), Some("Moby Dick"));
+    app.startup_defaults.flush();
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains("# keep this comment"), "{saved}");
+    assert!(saved.contains("whale_name = \"Moby Dick\""), "{saved}");
+    assert!(saved.contains("whale_color = \"harbor\""), "{saved}");
+
+    let mut restored = App::new(test_options(false), &Config::default());
+    assert_eq!(restored.pet_watch.name(), Some("Moby Dick"));
+    assert_eq!(restored.pet_watch.color(), Some([0x78, 0x96, 0xdf]));
+    assert!(restored.low_motion);
+
+    Settings::transact(|settings| {
+        settings.set("whale_name", "Ahab")?;
+        settings.set("whale_color", "#0a141e")
+    })
+    .unwrap();
+    restored.pet_watch.detach_for_test();
+    restored.pet_watch.enabled = true;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut now = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while restored.pet_watch.name() != Some("Ahab") && std::time::Instant::now() < deadline {
+        crate::tui::pet_watch::tick(&mut restored, now);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        now += std::time::Duration::from_secs(3);
+    }
+    assert_eq!(restored.pet_watch.name(), Some("Ahab"));
+    assert_eq!(restored.pet_watch.color(), Some([10, 20, 30]));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pet_view_save_failure_keeps_the_live_view_and_reports_without_overwriting_bad_settings() {
     let _lock = lock_test_env();

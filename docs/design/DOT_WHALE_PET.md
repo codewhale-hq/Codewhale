@@ -117,9 +117,10 @@ whale with a notice. `/whale still` and reduced motion select the still pose.
 `/whale color` recolours the frame in the terminal, keeping each dot's
 brightness; it does not change the dot field.
 
-What the view does not do: it keeps no recording, plays no sound, opens no
-port, writes no file and shares nothing with another terminal or the desktop
-app. The name, colour and hold-still choices are not saved.
+What the view does not do: it keeps no recording, plays no sound and opens no
+port. Its only shared state is the name and colour in `settings.toml`
+(`whale_name`, `whale_color`), which the desktop app reads and writes too;
+hold-still is not saved.
 
 To regenerate the bundle after changing `pet/src/core`:
 

@@ -14355,6 +14355,39 @@ async fn settings_schema_write_fallthrough_persists_declared_settings_keys() -> 
     assert_eq!(row["value"], "compact");
     assert_eq!(row["persisted"], true);
 
+    for (key, value) in [("whale_name", " Moby  Dick "), ("whale_color", "Harbor")] {
+        let response = client
+            .post(format!("http://{addr}/v1/config"))
+            .json(&json!({"key": key, "value": value, "persist": true}))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<serde_json::Value>()
+            .await?;
+        assert_eq!(response["persisted"], true, "{key}");
+    }
+    let rejected = client
+        .post(format!("http://{addr}/v1/config"))
+        .json(&json!({"key": "whale_color", "value": "blue", "persist": true}))
+        .send()
+        .await?;
+    assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+    assert!(rejected.text().await?.contains("scout, patch"));
+    let body = get_settings_schema(&client, &addr).await;
+    let identity = |key: &str| {
+        body["settings"]
+            .as_array()
+            .expect("settings array")
+            .iter()
+            .find(|row| row["key"] == key)
+            .cloned()
+            .expect("whale row")
+    };
+    assert_eq!(identity("whale_name")["value"], "Moby Dick");
+    assert_eq!(identity("whale_name")["editable"], true);
+    assert_eq!(identity("whale_color")["value"], "harbor");
+    assert_eq!(identity("whale_color")["persisted"], true);
+
     // A key the schema does not declare still fails closed.
     let status = client
         .post(format!("http://{addr}/v1/config"))

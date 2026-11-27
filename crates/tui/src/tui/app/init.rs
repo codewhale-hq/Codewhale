@@ -1274,6 +1274,10 @@ impl App {
         };
         // Restore presentation only; the visible-frame tick owns companion startup.
         app.pet_watch.enabled = settings.pet_mode;
+        app.pet_watch.apply_identity(
+            settings.whale_name.as_deref(),
+            settings.whale_color.as_deref(),
+        );
         if settings.pet_mode {
             app.launch.visible = false;
         }

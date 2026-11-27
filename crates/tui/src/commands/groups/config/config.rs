@@ -17,6 +17,7 @@ use codewhale_command_contract::outcome::{ConfigAction, ConfigCommandResult};
 use codewhale_command_contract::types::{
     CommandMode, CommandRailPanel, CommandScreenMode, CommandWorkSurfacePlacement,
 };
+use codewhale_command_contract::whale_identity::{normalize_whale_color, normalize_whale_name};
 
 /// `/config` only: config authority plus `PRESENTATION` for its keyed messages
 /// and `PERMISSIONS` because `ask-rules` forwards to the permission-rules editor.
@@ -619,8 +620,7 @@ fn is_conversation_mode_word(arg: &str) -> bool {
 pub(super) const MODE_USAGE: &str = "/mode [work|plan|1|2|<conversation mode>]";
 
 /// `/whale` usage, shared with the registration metadata.
-pub const WHALE_USAGE: &str = "/whale [full|still|name <text>|color <#rrggbb|default>]";
-const WHALE_NAME_MAX_CHARS: usize = 32;
+pub const WHALE_USAGE: &str = "/whale [full|still|name <text>|color <name|#rrggbb|default>]";
 
 pub fn connect(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandResult {
     let raw = arg.map(str::trim).unwrap_or("");
@@ -1070,49 +1070,33 @@ pub fn whale(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandR
                 CommandPetLabel::StillOff
             }))
         }
+        ("name" | "color" | "colour", "") => usage(),
         ("name", text) => {
-            let Some(name) = whale_name(text) else {
-                return usage();
+            let name = match normalize_whale_name(text) {
+                Ok(Some(name)) => name,
+                Ok(None) => return usage(),
+                Err(error) => return ConfigCommandResult::error(error),
             };
             facet.set_name(&name);
             ConfigCommandResult::message(
                 facet.label(CommandPetLabel::Named).replace("{name}", &name),
             )
         }
-        ("color" | "colour", value) if value.eq_ignore_ascii_case("default") => {
-            facet.set_color(None);
-            ConfigCommandResult::message(facet.label(CommandPetLabel::ColorReset))
-        }
         ("color" | "colour", value) => {
-            let Some([r, g, b]) = whale_color(value) else {
-                return usage();
+            let color = match normalize_whale_color(value) {
+                Ok(color) => color,
+                Err(error) => return ConfigCommandResult::error(error),
             };
-            facet.set_color(Some([r, g, b]));
-            ConfigCommandResult::message(
-                facet
+            facet.set_color(color.as_deref());
+            ConfigCommandResult::message(match color {
+                Some(color) => facet
                     .label(CommandPetLabel::Colored)
-                    .replace("{color}", &format!("#{r:02x}{g:02x}{b:02x}")),
-            )
+                    .replace("{color}", &color),
+                None => facet.label(CommandPetLabel::ColorReset),
+            })
         }
         _ => usage(),
     }
-}
-
-fn whale_name(text: &str) -> Option<String> {
-    let name = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    (!name.is_empty()
-        && name.chars().count() <= WHALE_NAME_MAX_CHARS
-        && !name.chars().any(char::is_control))
-    .then_some(name)
-}
-
-fn whale_color(value: &str) -> Option<[u8; 3]> {
-    let hex = value.strip_prefix('#').unwrap_or(value);
-    if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
-    }
-    let channel = |at: usize| u8::from_str_radix(&hex[at..at + 2], 16).ok();
-    Some([channel(0)?, channel(2)?, channel(4)?])
 }
 
 /// `/trust [on|off|add|remove|list]` (alias `/xinren`).
@@ -1447,7 +1431,7 @@ mod tests {
         saved: Vec<bool>,
         still: bool,
         name: Option<String>,
-        color: Option<[u8; 3]>,
+        color: Option<String>,
     }
 
     impl CommandPetContext for Whale {
@@ -1469,8 +1453,8 @@ mod tests {
         fn set_name(&mut self, name: &str) {
             self.name = Some(name.to_owned());
         }
-        fn set_color(&mut self, color: Option<[u8; 3]>) {
-            self.color = color;
+        fn set_color(&mut self, color: Option<&str>) {
+            self.color = color.map(str::to_owned);
         }
         fn label(&self, which: CommandPetLabel) -> String {
             match which {
@@ -1549,7 +1533,12 @@ mod tests {
         );
         assert_eq!(facet.name.as_deref(), Some("Moby Dick"));
         let too_long = format!("name {}", "x".repeat(33));
-        for rejected in ["name", "name \u{1b}[31m", too_long.as_str()] {
+        for rejected in [
+            "name",
+            "name \u{1b}[31m",
+            "name a\u{202e}b",
+            too_long.as_str(),
+        ] {
             assert!(
                 run_whale(&mut facet, Some(rejected)).is_error,
                 "{rejected:?}"
@@ -1565,9 +1554,15 @@ mod tests {
                 .as_deref(),
             Some("colored #7fb2e0")
         );
-        assert_eq!(facet.color, Some([0x7f, 0xb2, 0xe0]));
+        assert_eq!(facet.color.as_deref(), Some("#7fb2e0"));
+        assert_eq!(
+            run_whale(&mut facet, Some("colour Harbor"))
+                .message
+                .as_deref(),
+            Some("colored harbor")
+        );
         assert!(!run_whale(&mut facet, Some("colour 000000")).is_error);
-        assert_eq!(facet.color, Some([0, 0, 0]));
+        assert_eq!(facet.color.as_deref(), Some("#000000"));
         for rejected in [
             "color",
             "color blue",
@@ -1577,8 +1572,13 @@ mod tests {
             "color +12345",
         ] {
             assert!(run_whale(&mut facet, Some(rejected)).is_error, "{rejected}");
-            assert_eq!(facet.color, Some([0, 0, 0]));
+            assert_eq!(facet.color.as_deref(), Some("#000000"));
         }
+        assert!(
+            run_whale(&mut facet, Some("color blue"))
+                .message
+                .is_some_and(|message| message.contains("scout, patch, harbor"))
+        );
         assert_eq!(
             run_whale(&mut facet, Some("color DEFAULT"))
                 .message

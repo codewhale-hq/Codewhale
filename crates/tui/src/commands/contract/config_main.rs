@@ -202,12 +202,20 @@ impl CommandPetContext for PetAdapter<'_> {
     fn set_name(&mut self, name: &str) {
         let mut app = self.host.app.borrow_mut();
         app.pet_watch.set_name(Some(name.to_owned()));
+        app.startup_defaults
+            .spawn(crate::tui::startup_defaults::StartupDefaults::whale_name(
+                name,
+            ));
         app.needs_redraw = true;
     }
 
-    fn set_color(&mut self, color: Option<[u8; 3]>) {
+    fn set_color(&mut self, color: Option<&str>) {
         let mut app = self.host.app.borrow_mut();
         app.pet_watch.set_color(color);
+        app.startup_defaults
+            .spawn(crate::tui::startup_defaults::StartupDefaults::whale_color(
+                color,
+            ));
         app.needs_redraw = true;
     }
 

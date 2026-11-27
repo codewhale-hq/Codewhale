@@ -429,6 +429,10 @@ pub struct Settings {
     /// never confused with unrestricted filesystem writes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whale_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whale_color: Option<String>,
     /// Archived provider model choices used only by the config selection
     /// migration. Preserve them on unrelated settings saves until migrated.
     pub provider_models: Option<std::collections::HashMap<String, String>>,
@@ -681,6 +685,8 @@ impl Default for Settings {
             default_model: None,
             reasoning_effort: None,
             permission_posture: None,
+            whale_name: None,
+            whale_color: None,
             sandbox_mode: None,
             provider_models: None,
             enabled_models: None,
@@ -1602,6 +1608,8 @@ impl Settings {
             "reasoning_effort" | "effort" => "reasoning_effort",
             "permission_posture" | "permissions" => "permission_posture",
             "sandbox_mode" | "sandbox" | "filesystem_sandbox" => "sandbox_mode",
+            "whale_name" => "whale_name",
+            "whale_color" | "whale_colour" => "whale_color",
             _ => return None,
         })
     }
@@ -1883,6 +1891,16 @@ impl Settings {
                         "Failed to update setting: invalid sandbox_mode '{value}'. Expected: read-only, workspace-write, danger-full-access, or external-sandbox."
                     );
                 }
+            }
+            "whale_name" => {
+                self.whale_name =
+                    codewhale_command_contract::whale_identity::normalize_whale_name(value)
+                        .map_err(|error| anyhow::anyhow!("Failed to update setting: {error}."))?;
+            }
+            "whale_color" | "whale_colour" => {
+                self.whale_color =
+                    codewhale_command_contract::whale_identity::normalize_whale_color(value)
+                        .map_err(|error| anyhow::anyhow!("Failed to update setting: {error}"))?;
             }
             quota if quota.starts_with(AGENT_QUOTA_KEY_PREFIX) => {
                 self.agents.set_quota_key(quota, value)?;
@@ -3777,6 +3795,57 @@ mod tests {
             .expect("pick Ask after another posture");
         let reloaded = Settings::load().expect("reload settings");
         assert_eq!(reloaded.permission_posture.as_deref(), Some("ask"));
+    }
+
+    #[test]
+    fn whale_name_and_color_persist_validate_and_clear() {
+        let _g = config_path_test_guard();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let settings_path = tmp.path().join("settings.toml");
+        let _config_override =
+            EnvVarRestore::set("DEEPSEEK_CONFIG_PATH", tmp.path().join("config.toml"));
+        std::fs::write(&settings_path, "calm_mode = false\n").expect("old settings");
+        let old = Settings::load().expect("a file without whale keys loads");
+        assert!(!old.calm_mode);
+        assert_eq!(
+            (old.whale_name.as_deref(), old.whale_color.as_deref()),
+            (None, None)
+        );
+        assert!(!old.is_set("whale_name"));
+
+        Settings::transact(|settings| {
+            settings.set("whale_name", "  Moby   Dick ")?;
+            settings.set("whale_color", "#7FB2E0")
+        })
+        .expect("save identity");
+        let saved = Settings::load().expect("reload");
+        assert_eq!(saved.whale_name.as_deref(), Some("Moby Dick"));
+        assert_eq!(saved.whale_color.as_deref(), Some("#7fb2e0"));
+        assert_eq!(saved.value("whale_color").as_deref(), Some("#7fb2e0"));
+        assert!(saved.is_set("whale_name") && !saved.calm_mode);
+
+        for (key, value) in [
+            ("whale_color", "blue"),
+            ("whale_name", "Mo\u{202e}by"),
+            ("whale_name", &"x".repeat(33)),
+        ] {
+            let error = Settings::transact(|settings| settings.set(key, value))
+                .expect_err("rejected")
+                .to_string();
+            assert!(error.contains(key), "{error}");
+        }
+        assert_eq!(
+            Settings::load().expect("reload").whale_name.as_deref(),
+            Some("Moby Dick")
+        );
+
+        Settings::transact(|settings| {
+            settings.set("whale_name", "")?;
+            settings.set("whale_color", "default")
+        })
+        .expect("clear identity");
+        let cleared = std::fs::read_to_string(&settings_path).expect("read");
+        assert!(!cleared.contains("whale_"), "{cleared}");
     }
 
     #[test]
@@ -6196,6 +6265,8 @@ zai = ["GLM-5.2", "GLM-5.3"]
                 &["sandbox_mode", "sandbox", "filesystem_sandbox"],
                 "read-only",
             ),
+            (&["whale_name"], "Moby"),
+            (&["whale_color", "whale_colour"], "harbor"),
         ];
         for (spellings, value) in cases {
             let canonical = spellings[0];

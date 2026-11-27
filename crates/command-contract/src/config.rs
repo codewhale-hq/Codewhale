@@ -301,7 +301,7 @@ pub trait CommandPetContext {
     fn still(&self) -> bool;
     fn set_still(&mut self, still: bool);
     fn set_name(&mut self, name: &str);
-    fn set_color(&mut self, color: Option<[u8; 3]>);
+    fn set_color(&mut self, color: Option<&str>);
     fn label(&self, which: CommandPetLabel) -> String;
 }
 

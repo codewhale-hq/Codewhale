@@ -3729,6 +3729,8 @@ impl App {
                         StartupDefaultSubject::Mode => MessageId::StartupDefaultSubjectMode,
                         StartupDefaultSubject::Thinking => MessageId::StartupDefaultSubjectThinking,
                         StartupDefaultSubject::PetMode => MessageId::ConfigLabelPetMode,
+                        StartupDefaultSubject::WhaleName => MessageId::ConfigLabelWhaleName,
+                        StartupDefaultSubject::WhaleColor => MessageId::ConfigLabelWhaleColor,
                     })
                     .into_owned()
                 })
