@@ -1,0 +1,23 @@
+name: Native Windows CLI pipe acceptance
+on:
+  push:
+    branches: [ci/windows-pipe-acceptance-0105]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  pipe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check release artifact source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: '46010463482'
+          SOURCE_SHA: eb3a402db2b8d96a64aff00123746b3abfaa9bff
+        run: |
+          $actual = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:SOURCE_RUN" --jq '.head_sha'
+          if ($actual -ne $env:SOURCE_SHA) { throw "Unexpected artifact source $actual" }
+          gh run download $env:SOURCE_RUN --repo $env:GITHUB_REPOSITORY --name codewhale-windows-x64.exe --dir "$env:RUNNER_TEMP/pipe-exe"
+      - name: Exercise release CLI on anonymous Windows pipes
+        run: python scripts/release/windows-pipe-acceptance.py "$env:RUNNER_TEMP/pipe-exe/codewhale-windows-x64.exe"
