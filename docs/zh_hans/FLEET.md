@@ -423,6 +423,7 @@ Manager 智能体应把 fleet 操作当作带类型的、有账本的控制平�
 - `task failure`（任务失败）：worker 完成了，但产生了错误结果、领域失败、缺少必需 artifact，或显式的任务级错误。
 - `verifier failure`（verifier 失败）：worker 结果存在，但 scorer/verifier 失败、超时，或与回执不一致。
 - `needs-human`：缺少权限、机密请求、破坏性操作、反复的 restart 耗尽、含糊的产品决策，或 manager 无法从带类型 artifact 解决的冲突证据。
+- `not startable`：issue 或任务没有维护者授予的 `agent-ready`；不要接管、实现或向它派发 worker。
 
 选择一个带类型的动作：
 

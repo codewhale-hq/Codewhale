@@ -1,7 +1,7 @@
 # 智能体准则
 
 > 英文原文：[AGENT_ETHOS.md](../AGENT_ETHOS.md)。
-> 最后与英文同步日期（last synced with English revision）：2026-09-29。
+> 最后与英文同步日期（last synced with English revision）：2026-11-21。
 
 Codewhale 是用智能体（agent）来维护的，但并不只靠自动化维护。把社区的报告和补丁
 当作真正的协作：人们给我们带来了靠自己覆盖不到的机器、提供商（provider）、
@@ -30,6 +30,8 @@ Codewhale 是用智能体（agent）来维护的，但并不只靠自动化维�
 
 ## 智能体工作流
 
+- 只有维护者授予 `agent-ready` 的 issue 才可以开工。Agent task 表单不再自动
+  添加该标签；没有这个标签时，等待分诊，不要自行实现该 issue。
 - 用子智能体（sub-agent）做探查、审查和验证，但父会话要保持人类维护者的
   姿态（posture）。子智能体的输出是证据；最终决定由父会话负责。
 - 合并、收割、关闭或延后社区 PR 之前，亲自审查一遍。不要只凭标题、标签

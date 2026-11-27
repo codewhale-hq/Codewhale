@@ -199,6 +199,17 @@ the work even when credit is preserved.
   a sync helper containing blocking calls runs only under `spawn_blocking`
   or on a dedicated thread. `scripts/check-blocking-calls-budget.py`
   ratchets the unprotected-site count.
+- A behaviour-changing commit states it in the body: `Behaviour: <old> ->
+  <new>` or `No-behaviour-change: <why>`. `scripts/check-behaviour-line.py`
+  lists fix/feat/perf/refactor commits without one: warn-only in
+  `scripts/preflight.sh` (so on every `main` landing), and over the whole
+  release range in the release candidate's Regression report job. The
+  threshold and severity for calling the change a regression are in
+  `docs/ISSUE_TRIAGE.md`.
+- Behavioural guards live in `crates/engine/tests/behavioural_guards.rs`: one
+  positive assertion per promise, each citing its issue. Do not delete a guard
+  without the behaviour; `crates/core/tests/single_turn_loop.rs` is the named-
+  allowlist precedent.
 
 ## Code, migrations, and evidence
 

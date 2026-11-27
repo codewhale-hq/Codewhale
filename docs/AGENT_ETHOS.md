@@ -33,6 +33,9 @@ could not cover by ourselves.
 
 ## Agent Workflow
 
+- Treat an issue as startable only when a maintainer has granted
+  `agent-ready`. The Agent task form no longer applies the label; without it,
+  wait for triage instead of implementing the issue.
 - Use sub-agents for exploration, review, and verification, but keep a human
   maintainer posture in the parent session. Sub-agent output is evidence; the
   parent is responsible for the final decision.

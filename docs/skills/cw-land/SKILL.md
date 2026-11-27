@@ -37,7 +37,11 @@ Stage 5 of the loop: [cw-orient](../cw-orient/SKILL.md) →
 
 2. **Commit narrow and build-green.** One coherent change per commit; the tree
    builds at every commit. Put the real verification in the message — actual
-   pass/fail counts, not "tests pass".
+   pass/fail counts, not "tests pass". Every commit that changes a default,
+   limit, or rendered block states the previous value (`Behaviour: <old> ->
+   <new>`); a commit that does not change behaviour says
+   `No-behaviour-change: <why>`. `scripts/check-behaviour-line.py` reads the
+   push range in preflight and warns; it does not block the push.
 
    Before every push, run the cheap drift checks that have turned a green
    `main` red most often. They take seconds:

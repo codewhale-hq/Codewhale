@@ -44,6 +44,8 @@ and leave a ledgered receipt or a safe escalation draft.
    - `needs-human`: missing authority, unsafe secret boundary, destructive
      action, repeated restart exhaustion, ambiguous product decision, or
      conflict between artifacts and verifier.
+   - `not startable`: the issue or task has no `agent-ready` grant from a
+     maintainer; do not pick it up or dispatch a worker against it.
 5. Choose one typed action:
    - run has orphaned leases after a manager restart:
      `codewhale fleet resume <run-id>` (idempotent reconcile).
