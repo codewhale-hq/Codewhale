@@ -24,7 +24,7 @@ fn test_options(yolo: bool) -> TuiOptions {
 }
 
 #[test]
-fn truncating_api_messages_keeps_preserved_stamps_in_place() {
+fn shorter_api_snapshots_keep_preserved_stamps_in_place() {
     let mut app = App::new(test_options(false), &Config::default());
     let message = |text: &str| Message {
         role: codewhale_models::Role::User,
@@ -38,10 +38,10 @@ fn truncating_api_messages_keeps_preserved_stamps_in_place() {
     app.api_messages =
         std::sync::Arc::new(vec![message("first"), message("second"), message("third")]);
     app.api_message_stamps = vec![first, first + chrono::Duration::minutes(1), third];
-    app.truncate_api_messages(2);
+    app.set_api_messages(Arc::new(vec![message("first"), message("second")]));
     assert_eq!(app.api_messages.len(), 2);
     assert_eq!(app.api_message_stamps.len(), 2);
-    app.truncate_api_messages(1);
+    app.set_api_messages(Arc::new(vec![message("first")]));
     assert_eq!(app.api_messages.len(), 1);
     assert_eq!(app.api_message_stamps, vec![first]);
 }

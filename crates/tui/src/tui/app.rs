@@ -6284,14 +6284,6 @@ impl App {
         self.api_messages = Arc::new(messages);
     }
 
-    pub fn truncate_api_messages(&mut self, new_len: usize) {
-        self.api_messages_mut().truncate(new_len);
-        self.api_message_stamps
-            .resize_with(self.api_messages.len(), Utc::now);
-        self.session_turn_outcomes
-            .retain(|outcome| outcome.after_message_count <= self.api_messages.len());
-    }
-
     pub fn clear_api_messages(&mut self) {
         self.session_journal = codewhale_runtime::session_tree::SessionJournal::new();
         self.api_messages_mut().clear();
