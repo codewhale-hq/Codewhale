@@ -59,11 +59,11 @@ class DocsDriftTest(unittest.TestCase):
     def head(self) -> str:
         return self.git("rev-parse", "HEAD").strip()
 
-    def run_checker(self, base: str) -> subprocess.CompletedProcess[str]:
+    def run_checker(self, base: str, *flags: str) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env["CODEWHALE_REPO_ROOT"] = str(self.repo)
         return subprocess.run(
-            [sys.executable, str(CHECKER), base, "HEAD"],
+            [sys.executable, str(CHECKER), *flags, base, "HEAD"],
             cwd=self.repo,
             env=env,
             capture_output=True,
@@ -118,6 +118,34 @@ class DocsDriftTest(unittest.TestCase):
         result = self.run_checker(base)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("does not mention skills", result.stderr)
+
+    def test_no_behaviour_change_elsewhere_does_not_excuse_the_owner(self) -> None:
+        base = self.head()
+        self.write("crates/skills/src/lib.rs", "pub fn skills() { let _ = 1; }\n")
+        self.commit("feat(skills): tighten the loader")
+        self.write("README.md", "readme\n")
+        self.commit("docs: readme", "No-behaviour-change: docs only")
+        result = self.run_checker(base)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("changed but the summary did not", result.stderr)
+
+    def test_row_without_flag_skips_the_mention_check(self) -> None:
+        self.write("docs/features.toml", REGISTRY.replace('flag = "skills"\n', ""))
+        self.write("docs/SKILLS.md", "# Skills\n\nNo registry slug named here.\n")
+        self.commit("chore: drop the flag")
+        base = self.head()
+        self.write("crates/skills/src/lib.rs", "pub fn skills() { let _ = 1; }\n")
+        self.commit("refactor(skills): move the loader", "No-behaviour-change: file move only")
+        result = self.run_checker(base)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_warn_only_reports_and_exits_zero(self) -> None:
+        base = self.head()
+        self.write("crates/skills/src/lib.rs", "pub fn skills() { let _ = 1; }\n")
+        self.commit("feat(skills): tighten the loader")
+        result = self.run_checker(base, "--warn-only")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("changed but the summary did not", result.stderr)
 
 
 if __name__ == "__main__":

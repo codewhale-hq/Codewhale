@@ -28,6 +28,10 @@ fi
 grep -Fq '1 of 1 behaviour-changing commit(s)' "${fixture}/missing.out"
 grep -Fq 'fix(engine): drop a default' "${fixture}/missing.out"
 
+# --warn-only reports the same finding and exits 0.
+(cd "${fixture}" && "${python_bin}" "${checker}" --warn-only "${base}" HEAD >warn.out 2>&1)
+grep -Fq '1 of 1 behaviour-changing commit(s)' "${fixture}/warn.out"
+
 # A Behaviour: line passes.
 printf 'b\n' >"${fixture}/b.txt"
 git -C "${fixture}" add b.txt

@@ -34,6 +34,8 @@
 #     persistence-backlog)
 #   - feature release-note receipts      add each feat commit's #issue to
 #     for this branch's own commits      CHANGELOG.md in the same PR
+#   - behaviour statements and feature   a Behaviour: or No-behaviour-change: line;
+#     docs drift (warn-only)             the touched row's summary and docs page
 #   - clippy (with --clippy)            the Lint job's exact command; fix the lint
 set -uo pipefail
 
@@ -52,7 +54,7 @@ while [[ "$#" -gt 0 ]]; do
     --full) full=1; shift ;;
     --clippy) clippy=1; shift ;;
     --base) base="${2:?--base needs a ref}"; shift 2 ;;
-    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,39p' "$0"; exit 0 ;;
     *) echo "usage: $0 [--check] [--full] [--clippy] [--base REF]" >&2; exit 2 ;;
   esac
 done
@@ -135,12 +137,12 @@ if [[ -z "${base}" ]]; then
   base="$(git merge-base HEAD origin/main 2>/dev/null || true)"
 fi
 if [[ -n "${base}" ]]; then
-  step "commit behaviour statements (${base:0:12}..HEAD)" \
+  step "commit behaviour statements, warn-only (${base:0:12}..HEAD)" \
     "add a 'Behaviour: <old> -> <new>' or 'No-behaviour-change: <why>' line to each fix/feat/perf/refactor commit" \
-    python3 scripts/check-behaviour-line.py "${base}" HEAD
-  step "feature docs drift (${base:0:12}..HEAD)" \
+    python3 scripts/check-behaviour-line.py --warn-only "${base}" HEAD
+  step "feature docs drift, warn-only (${base:0:12}..HEAD)" \
     "update the touched feature row's summary and docs, or add 'No-behaviour-change:'" \
-    python3 scripts/check-docs-drift.py "${base}" HEAD
+    python3 scripts/check-docs-drift.py --warn-only "${base}" HEAD
   step "feature release-note receipts (${base:0:12}..HEAD)" \
     "add each feat commit's #issue to CHANGELOG.md in this branch" \
     ./scripts/release/check-feature-release-notes.sh "${base}" HEAD

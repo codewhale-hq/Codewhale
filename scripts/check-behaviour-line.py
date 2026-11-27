@@ -16,8 +16,8 @@ a semantic one. It makes silence a decision; the regression pass reads the
 statement next to the diff.
 
 Usage:
-    scripts/check-behaviour-line.py [base] [head]
-    scripts/check-behaviour-line.py --range base..head
+    scripts/check-behaviour-line.py [--warn-only] [base] [head]
+    scripts/check-behaviour-line.py [--warn-only] --range base..head
 
 Defaults: base = BEFORE_SHA when set, else the merge base with origin/main;
 head = HEAD.
@@ -75,6 +75,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("base", nargs="?", help="range base (default: BEFORE_SHA or origin/main merge base)")
     parser.add_argument("head", nargs="?", default="HEAD", help="range head (default: HEAD)")
     parser.add_argument("--range", dest="range_spec", help="BASE..HEAD")
+    parser.add_argument(
+        "--warn-only",
+        action="store_true",
+        help="print the findings but exit 0 (preflight and the release-candidate report)",
+    )
     args = parser.parse_args(argv)
 
     if args.range_spec:
@@ -108,7 +113,7 @@ def main(argv: list[str]) -> int:
             "'No-behaviour-change: <why not>'",
             file=sys.stderr,
         )
-        return 1
+        return 0 if args.warn_only else 1
 
     print(
         f"check-behaviour-line: {checked} behaviour-changing commit(s) carry a "
