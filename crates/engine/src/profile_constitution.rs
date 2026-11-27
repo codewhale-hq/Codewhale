@@ -134,8 +134,25 @@ async fn load_for(
     expected: Option<&AccountEpoch>,
 ) -> Result<Option<ProfileConstitutionSnapshot>> {
     let api_base = runtime_account_api_base();
-    let store = AccountSessionStore::new(secure_account_session_secrets()?, profile, &api_base);
+    let profile = profile.map(str::to_owned);
+    let base = api_base.clone();
+    let store = tokio::task::spawn_blocking(move || {
+        anyhow::Ok(AccountSessionStore::new(
+            secure_account_session_secrets()?,
+            profile.as_deref(),
+            &base,
+        ))
+    })
+    .await??;
     load_from(&store, &api_base, expected).await
+}
+
+async fn off_runtime<T: Send + 'static>(
+    store: &AccountSessionStore,
+    operation: impl FnOnce(&AccountSessionStore) -> Result<T> + Send + 'static,
+) -> Result<T> {
+    let store = store.clone();
+    tokio::task::spawn_blocking(move || operation(&store)).await?
 }
 
 /// Offline preview cannot promise a request hash before account admission.
@@ -192,7 +209,7 @@ async fn load_from(
     api_base: &str,
     expected: Option<&AccountEpoch>,
 ) -> Result<Option<ProfileConstitutionSnapshot>> {
-    let captured = store.snapshot()?;
+    let captured = off_runtime(store, |store| Ok(store.snapshot()?)).await?;
     if let Some(expected) = expected {
         ensure!(
             epoch_of(&captured)? == *expected,
@@ -227,8 +244,12 @@ async fn load_from(
     let bytes = codewhale_util::utils::read_response_body_capped(response, 256 * 1024).await?;
     let value: serde_json::Value =
         serde_json::from_slice(&bytes).context("The account profile response is invalid")?;
+    let unchanged = off_runtime(store, move |store| {
+        store.with_transaction(|current| Ok::<_, anyhow::Error>(current.matches(&captured)))
+    })
+    .await?;
     ensure!(
-        store.with_transaction(|current| Ok::<_, anyhow::Error>(current.matches(&captured)))?,
+        unchanged,
         "The signed-in account changed while loading its constitution; retry"
     );
     snapshot_from_me(value, account)

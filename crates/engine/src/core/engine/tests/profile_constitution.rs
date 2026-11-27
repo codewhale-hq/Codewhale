@@ -107,7 +107,9 @@ const END_OF_EVENTS: &str = "profile constitution test: end of events";
 
 /// Every event delivered before the `END_OF_EVENTS` status, in order. The
 /// sentinel keeps the receiver drained during a turn without racing the turn.
-fn collect_events(handle: EngineHandle) -> tokio::task::JoinHandle<Vec<Event>> {
+fn collect_timed_events(
+    handle: EngineHandle,
+) -> tokio::task::JoinHandle<Vec<(std::time::Instant, Event)>> {
     tokio::spawn(async move {
         let mut events = Vec::new();
         let mut receiver = handle.rx_event.write().await;
@@ -115,9 +117,21 @@ fn collect_events(handle: EngineHandle) -> tokio::task::JoinHandle<Vec<Event>> {
             if matches!(&event, Event::Status { message } if message == END_OF_EVENTS) {
                 break;
             }
-            events.push(event);
+            events.push((std::time::Instant::now(), event));
         }
         events
+    })
+}
+
+fn collect_events(handle: EngineHandle) -> tokio::task::JoinHandle<Vec<Event>> {
+    let timed = collect_timed_events(handle);
+    tokio::spawn(async move {
+        timed
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(_, event)| event)
+            .collect()
     })
 }
 
@@ -298,7 +312,7 @@ async fn prompt_turn(
     engine: &mut Engine,
     config: &Config,
     mock: &crate::llm_client::mock::MockLlmClient,
-) -> String {
+) -> (std::time::Instant, String) {
     let Op::SendMessage(spec) = external_user_message_op("Say hello", AppMode::Agent, config)
     else {
         unreachable!()
@@ -306,12 +320,10 @@ async fn prompt_turn(
     let started = std::time::Instant::now();
     let outcome = engine.handle_send_message(spec).await;
     assert!(!matches!(outcome, SendMessageOutcome::NotStarted { .. }));
-    assert!(
-        started.elapsed() < Duration::from_secs(3),
-        "the turn waited {:?} on a 4 s account read",
-        started.elapsed()
-    );
-    serde_json::to_string(mock.captured_requests().last().unwrap()).unwrap()
+    (
+        started,
+        serde_json::to_string(mock.captured_requests().last().unwrap()).unwrap(),
+    )
 }
 
 #[tokio::test]
@@ -319,7 +331,8 @@ async fn slow_account_service_does_not_delay_the_turn_and_its_read_is_used_next_
     use crate::llm_client::mock::{MockLlmClient, canned};
     let _home = crate::test_support::SealedHome::new();
     save_local_constitution();
-    let server = slow_account_service(Duration::from_secs(4)).await;
+    let read = Duration::from_secs(3);
+    let server = slow_account_service(read).await;
     let _account = crate::profile_constitution::serve_account_for_test(
         crate::profile_constitution::fixture_account_store(&server.uri()),
         server.uri(),
@@ -336,8 +349,8 @@ async fn slow_account_service_does_not_delay_the_turn_and_its_read_is_used_next_
         &config,
         mock.clone(),
     );
-    let events = collect_events(handle);
-    let first = prompt_turn(&mut engine, &config, &mock).await;
+    let events = collect_timed_events(handle);
+    let (first_started, first) = prompt_turn(&mut engine, &config, &mock).await;
     assert!(first.contains("Local fallback preference."));
     assert!(!first.contains("Account profile preference."));
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
@@ -348,7 +361,7 @@ async fn slow_account_service_does_not_delay_the_turn_and_its_read_is_used_next_
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    let second = prompt_turn(&mut engine, &config, &mock).await;
+    let (_, second) = prompt_turn(&mut engine, &config, &mock).await;
     assert!(
         second.contains("Account profile preference."),
         "the finished read reaches the next turn"
@@ -368,7 +381,7 @@ async fn slow_account_service_does_not_delay_the_turn_and_its_read_is_used_next_
     let count = |wanted: &str| {
         events
             .iter()
-            .filter(|event| matches!(event, Event::Status { message } if message == wanted))
+            .filter(|(_, event)| matches!(event, Event::Status { message } if message == wanted))
             .count()
     };
     assert_eq!(
@@ -376,11 +389,22 @@ async fn slow_account_service_does_not_delay_the_turn_and_its_read_is_used_next_
         1,
         "the person is told once that the account read is late"
     );
+    let waited = events
+        .iter()
+        .find_map(|(at, event)| {
+            matches!(event, Event::Status { message } if *message == loading).then_some(*at)
+        })
+        .unwrap()
+        .duration_since(first_started);
+    assert!(
+        waited < crate::profile_constitution::TURN_WAIT + Duration::from_secs(1),
+        "the turn waited {waited:?} on a {read:?} account read"
+    );
     assert_eq!(count(&unavailable), 0);
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event, Event::TurnStarted { .. }))
+            .filter(|(_, event)| matches!(event, Event::TurnStarted { .. }))
             .count(),
         2
     );
