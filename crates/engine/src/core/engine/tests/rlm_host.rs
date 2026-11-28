@@ -619,19 +619,20 @@ async fn full_caller_channel_never_delays_original_cancel_or_loses_usage_and_ker
     let cancel = caller.fixture_origin_cancel();
     let usage = RlmUsageAccumulator::new();
     let (tx, mut rx) = mpsc::channel(1);
+    let deadline = caller.deadline().expect("admitted caller has a deadline");
     let call = caller.dispatch(RlmInvocation {
         prompt: "context held only by Python".into(),
         mode: RlmMode::Recursive { depth_remaining: 0 },
         prompt_policy: RlmPromptPolicy::Session,
         max_tokens: None,
         task_instructions: None,
-        deadline: Some(tokio::time::Instant::now() + Duration::from_secs(60)),
+        deadline: Some(deadline),
         gate: Some(crate::tools::codemode::NestedCallGate::admitting_for_test()),
         events: Some(tx.clone()),
         usage: usage.clone(),
     });
     tokio::pin!(call);
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout_at(deadline, async {
         loop {
             tokio::select! {
                 biased;
@@ -649,6 +650,10 @@ async fn full_caller_channel_never_delays_original_cancel_or_loses_usage_and_ker
     let result = tokio::time::timeout(Duration::from_secs(1), &mut call)
         .await
         .expect("original cancellation must interrupt a full observational channel");
+    assert!(
+        tokio::time::Instant::now() < deadline,
+        "cancellation must finish before the invocation deadline"
+    );
     assert_eq!(result.iterations, 2);
     assert_eq!(result.usage.input_tokens, 7);
     assert_eq!(result.usage.output_tokens, 11);
