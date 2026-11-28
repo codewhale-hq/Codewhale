@@ -652,7 +652,7 @@ fn auto_reasoning_change_invalidates_the_previous_route_and_receipt() {
 
     assert_eq!(app.reasoning_effort, ReasoningEffort::Medium);
     assert_eq!(
-        app.setup_notice().map(|notice| notice.text.as_str()),
+        app.status_toasts.back().map(|notice| notice.text.as_str()),
         Some("Reasoning effort: med"),
         "the change must describe the new unresolved request, not the old Codex receipt"
     );
@@ -700,12 +700,13 @@ fn thinking_is_locked_but_mode_moves_while_a_turn_is_running() {
         "thinking must not change while busy"
     );
     assert!(
-        app.setup_notice()
+        app.status_toasts
+            .back()
             .map(|notice| notice.text.as_str())
             .unwrap_or_default()
             .contains("locked"),
         "expected a 'locked' status message, got {:?}",
-        app.setup_notice()
+        app.status_toasts.back()
     );
 
     app.select_mode(AppMode::Plan);
@@ -729,7 +730,7 @@ fn cycle_effort_updates_effort_status_and_compaction() {
     assert_eq!(app.reasoning_effort, ReasoningEffort::Low);
     assert_eq!(app.reasoning_effort_preference, Some(ReasoningEffort::Low));
     assert_eq!(
-        app.setup_notice().map(|notice| notice.text.as_str()),
+        app.status_toasts.back().map(|notice| notice.text.as_str()),
         Some("Reasoning effort: low"),
         "Ctrl+T must give visible feedback like the hotbar action"
     );
@@ -7950,11 +7951,12 @@ fn hotbar_mode_row_for_the_live_mode_still_shows_the_saved_receipt() {
 
     assert_eq!(outcome, SettingSelection::PersistedSame);
     assert!(
-        app.status_message
-            .as_deref()
+        app.status_toasts
+            .back()
+            .map(|notice| notice.text.as_str())
             .is_some_and(|message| message.contains("saved as startup default")),
         "got {:?}",
-        app.status_message
+        app.status_toasts.back()
     );
     app.startup_defaults.flush();
     assert_eq!(

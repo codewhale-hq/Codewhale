@@ -17,6 +17,14 @@ pub enum StatusToastLevel {
 }
 
 impl StatusToastLevel {
+    fn feedback_ttl_ms(self) -> u64 {
+        match self {
+            Self::Info => 4_000,
+            Self::Success | Self::Warning => 5_000,
+            Self::Error => App::STICKY_ERROR_TTL_MS,
+        }
+    }
+
     /// Resolve every toast surface through the same semantic theme slots.
     pub(crate) fn ink(self) -> codewhale_palette::ChromeInk {
         use codewhale_palette::ChromeInk;
@@ -48,6 +56,7 @@ pub(crate) enum StatusToastKind {
     LegacyTransient,
     Onboarding,
     ProviderRoute,
+    DeferredInitialPrompt,
     /// An explicit command result stays visible over a completed turn.
     CommandReceipt,
     ActionRequired,
@@ -152,6 +161,43 @@ impl StatusToast {
 }
 
 impl App {
+    pub(crate) fn show_command_result(&mut self, text: impl Into<String>, level: StatusToastLevel) {
+        self.prepare_interactive_notice();
+        let mut receipt =
+            StatusToast::new(text, level, Some(level.feedback_ttl_ms())).for_command_receipt();
+        if let Some(previous) = self.status_toasts.iter().position(|notice| {
+            notice.kind == receipt.kind
+                && notice.event_id.is_none()
+                && notice.level == level
+                && notice.text == receipt.text
+        }) && let Some(previous) = self.status_toasts.remove(previous)
+            && !previous.is_expired(receipt.created_at)
+        {
+            receipt.created_at = previous.created_at;
+        }
+        self.push_status_toast_record(receipt);
+    }
+
+    pub(crate) fn defer_initial_prompt_notice(&mut self, text: &str) {
+        if self
+            .status_toasts
+            .iter()
+            .any(|notice| notice.kind == StatusToastKind::DeferredInitialPrompt)
+        {
+            return;
+        }
+        let mut notice = StatusToast::new(text, StatusToastLevel::Info, None);
+        notice.kind = StatusToastKind::DeferredInitialPrompt;
+        self.push_status_toast_record(notice);
+    }
+
+    pub(crate) fn retire_deferred_prompt_notice(&mut self) {
+        let before = self.status_toasts.len();
+        self.status_toasts
+            .retain(|notice| notice.kind != StatusToastKind::DeferredInitialPrompt);
+        self.needs_redraw |= self.status_toasts.len() != before;
+    }
+
     pub(crate) fn setup_notice(&self) -> Option<&StatusToast> {
         self.status_toasts
             .iter()
@@ -183,6 +229,27 @@ impl App {
         self.show_setup_notice(text, level, StatusToastKind::ProviderRoute);
     }
 
+    pub(crate) fn finish_route_step(&mut self, text: String, level: StatusToastLevel) {
+        let (text, level) = match self.route_receipt() {
+            Some(prior)
+                if matches!(
+                    prior.level,
+                    StatusToastLevel::Warning | StatusToastLevel::Error
+                ) =>
+            {
+                let severity =
+                    if level == StatusToastLevel::Error || prior.level == StatusToastLevel::Error {
+                        StatusToastLevel::Error
+                    } else {
+                        StatusToastLevel::Warning
+                    };
+                (format!("{} · {text}", prior.text), severity)
+            }
+            _ => (text, level),
+        };
+        self.show_route_receipt(text, level);
+    }
+
     fn show_setup_notice(
         &mut self,
         text: impl Into<String>,
@@ -191,12 +258,7 @@ impl App {
     ) {
         self.prepare_interactive_notice();
         self.clear_setup_notice();
-        let ttl_ms = match level {
-            StatusToastLevel::Info => 4_000,
-            StatusToastLevel::Success | StatusToastLevel::Warning => 5_000,
-            StatusToastLevel::Error => Self::STICKY_ERROR_TTL_MS,
-        };
-        let mut notice = StatusToast::new(text, level, Some(ttl_ms));
+        let mut notice = StatusToast::new(text, level, Some(level.feedback_ttl_ms()));
         notice.kind = kind;
         self.push_status_toast_record(notice);
     }
@@ -657,6 +719,13 @@ mod tests {
                 .text,
             "Selected route"
         );
+        app.show_route_receipt("Could not save setup progress", StatusToastLevel::Warning);
+        app.finish_route_step("Thinking unchanged".to_owned(), StatusToastLevel::Info);
+        app.finish_route_step("Startup route saved".to_owned(), StatusToastLevel::Success);
+        let partial = app.route_receipt().unwrap();
+        assert_eq!(partial.level, StatusToastLevel::Warning);
+        assert!(partial.text.contains("Could not save setup progress"));
+        assert!(partial.text.contains("Startup route saved"));
         app.show_onboarding_notice("Trust required", StatusToastLevel::Warning);
         assert!(app.route_receipt().is_none());
         app.clear_setup_notice();

@@ -137,6 +137,7 @@ Codewhale v0.10.5 simplifies the terminal and runtime, expands DeepSeek Harness 
 
 ### Fixed
 
+- A blocked submit or mid-turn steer keeps the hook’s reason with the restored input. Deferred startup hints clear when their draft clears. (#7464)
 - Onboarding keeps the provider and trust results visible in their own screens while temporary footer notices expire. A new action cannot append an unrelated message to a route-save result. (#7464)
 - Composer, file-mention and context-menu hints keep their normal priority even when a filename contains words like “error” or “failed”. Copying a transcript cell shows the clipboard receipt after a turn finishes.
 

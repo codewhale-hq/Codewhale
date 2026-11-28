@@ -22,7 +22,7 @@ pub(crate) fn surface_session_load_failure(app: &mut App, message: String) {
         severity: codewhale_error_taxonomy::ErrorSeverity::Error,
         code: None,
     });
-    app.status_message = Some(message);
+    app.show_command_result(message, StatusToastLevel::Error);
 }
 
 /// Complete all fallible queue work before a session switch mutates the App.
@@ -1030,17 +1030,23 @@ pub(crate) fn recover_unstarted_external_message(
         }
         DispatchRecovery::Draft => {
             restore_queued_or_draft_message(app, recovery, message);
-            app.status_message = Some(format!("{error}; queued draft restored"));
+            app.show_command_result(
+                format!("{error}; queued draft restored"),
+                StatusToastLevel::Error,
+            );
         }
         DispatchRecovery::Queued {
             restore_index,
             was_held,
         } => {
             restore_queued_message(app, restore_index, was_held, message);
-            app.status_message = Some(format!(
-                "{error}; {} queued follow-up(s) restored",
-                app.queued_message_count()
-            ));
+            app.show_command_result(
+                format!(
+                    "{error}; {} queued follow-up(s) restored",
+                    app.queued_message_count()
+                ),
+                StatusToastLevel::Error,
+            );
         }
     }
     app.push_status_toast(
@@ -1055,11 +1061,8 @@ pub(crate) fn restore_message_submit_denial(
     app: &mut App,
     message: QueuedMessage,
     recovery: DispatchRecovery,
+    denial: String,
 ) {
-    let denial = app
-        .status_message
-        .clone()
-        .unwrap_or_else(|| "message_submit hook blocked submission".to_string());
     app.dispatch_in_flight = false;
     match recovery {
         DispatchRecovery::Immediate | DispatchRecovery::Initial => {
@@ -1075,7 +1078,6 @@ pub(crate) fn restore_message_submit_denial(
             restore_queued_message(app, restore_index, was_held, message);
         }
     }
-    app.status_message = Some(denial.clone());
     app.push_status_toast(denial, StatusToastLevel::Warning, Some(6_000));
     app.needs_redraw = true;
 }
@@ -1134,7 +1136,7 @@ pub(crate) fn begin_launch_session(
     app.session_title = Some(app.tr(MessageId::SessionsNewSessionTitle).into_owned());
     app.launch.dismiss();
     app.launch.status = None;
-    app.status_message = None;
+    app.retire_deferred_prompt_notice();
     commands::CommandResult::action(AppAction::SyncSession {
         session_id: Some(session_id),
         messages: Vec::new(),
@@ -1165,16 +1167,17 @@ pub(crate) async fn switch_workspace(
 ) {
     if app.is_loading {
         let busy = app.tr(MessageId::WorkspaceSwitchBusy).into_owned();
-        app.status_message = Some(busy.clone());
+        app.show_command_result(busy.clone(), StatusToastLevel::Warning);
         app.add_message(HistoryCell::System { content: busy });
         return;
     }
 
     let shown = workspace.display().to_string();
     if app.workspace == workspace {
-        app.status_message = Some(
+        app.show_command_result(
             app.tr(MessageId::WorkspaceUnchanged)
                 .replace("{path}", &shown),
+            StatusToastLevel::Info,
         );
         return;
     }
@@ -1204,7 +1207,10 @@ pub(crate) async fn switch_workspace(
         .tr(MessageId::WorkspaceSwitched)
         .replace("{path}", &shown);
     app.add_message(HistoryCell::System { content: switched });
-    app.status_message = Some(app.tr(MessageId::WorkspaceStatus).replace("{path}", &shown));
+    app.show_command_result(
+        app.tr(MessageId::WorkspaceStatus).replace("{path}", &shown),
+        StatusToastLevel::Success,
+    );
 }
 
 /// A message submitted with no usable key (#6566). Nothing reached a model:
@@ -1219,7 +1225,7 @@ pub(crate) async fn switch_workspace(
 pub(crate) fn keep_unsent_message_for_connect(app: &mut App, message: QueuedMessage, error: &str) {
     if message.extension_command.is_some() {
         app.restore_unsent_message(message);
-        app.status_message = Some(error.to_string());
+        app.show_command_result(error.to_string(), StatusToastLevel::Error);
         return;
     }
     tracing::warn!(
@@ -1263,7 +1269,6 @@ pub(crate) fn keep_unsent_message_for_connect(app: &mut App, message: QueuedMess
     let status = app
         .tr(MessageId::DispatchNotSentStatus)
         .replace("{reason}", &reason);
-    app.status_message = Some(status.clone());
     app.set_sticky_status(
         status,
         StatusToastLevel::Error,
@@ -1297,7 +1302,7 @@ pub(crate) fn restore_failed_immediate_submit(
 ) {
     if message.extension_command.is_some() {
         app.restore_unsent_message(message);
-        app.status_message = Some(error.to_string());
+        app.show_command_result(error.to_string(), StatusToastLevel::Error);
         return;
     }
     tracing::warn!(
@@ -1311,7 +1316,6 @@ pub(crate) fn restore_failed_immediate_submit(
     app.active_skill_provenance = message.skill_provenance;
     let status = tr(app.ui_locale, MessageId::ComposerDispatchFailedRestored)
         .replace("{error}", &error.to_string());
-    app.status_message = Some(status.clone());
     app.set_sticky_status(
         status,
         StatusToastLevel::Error,
@@ -1332,13 +1336,19 @@ pub(crate) fn restore_hotbar_defaults(app: &mut App, config: &mut Config) {
     ) {
         Ok(path) => {
             config.hotbar = Some(defaults);
-            app.status_message = Some(format!(
-                "Hotbar enabled with the default slots ({}). Customize with `/hotbar`.",
-                path.display()
-            ));
+            app.show_command_result(
+                format!(
+                    "Hotbar enabled with the default slots ({}). Customize with `/hotbar`.",
+                    path.display()
+                ),
+                StatusToastLevel::Success,
+            );
         }
         Err(err) => {
-            app.status_message = Some(format!("Failed to enable the Hotbar: {err}"));
+            app.show_command_result(
+                format!("Failed to enable the Hotbar: {err}"),
+                StatusToastLevel::Error,
+            );
             app.add_message(HistoryCell::System {
                 content: format!("Failed to enable the Hotbar: {err}"),
             });
@@ -1375,10 +1385,13 @@ pub(crate) fn persist_rules_from_approval(
                 Some(codewhale_execpolicy::PermissionAction::Allow) => "allow",
                 _ => "ask",
             };
-            app.status_message = Some(format!(
-                "Saved {added} {action} permission rule(s) to {}",
-                path.display()
-            ));
+            app.show_command_result(
+                format!(
+                    "Saved {added} {action} permission rule(s) to {}",
+                    path.display()
+                ),
+                StatusToastLevel::Success,
+            );
             true
         }
         Ok((_added, path)) => {
@@ -1386,14 +1399,20 @@ pub(crate) fn persist_rules_from_approval(
                 Some(codewhale_execpolicy::PermissionAction::Allow) => "Allow",
                 _ => "Ask",
             };
-            app.status_message = Some(format!(
-                "{action} permission rule already saved in {}",
-                path.display()
-            ));
+            app.show_command_result(
+                format!(
+                    "{action} permission rule already saved in {}",
+                    path.display()
+                ),
+                StatusToastLevel::Info,
+            );
             true
         }
         Err(err) => {
-            app.status_message = Some(format!("Failed to save permission rule: {err:#}"));
+            app.show_command_result(
+                format!("Failed to save permission rule: {err:#}"),
+                StatusToastLevel::Error,
+            );
             false
         }
     }
@@ -1821,7 +1840,10 @@ mod launch_resume_tests {
         assert_eq!(app.onboarding, OnboardingState::Provider);
         assert!(app.onboarding_needs_api_key);
 
-        app.status_message = Some("Make room automatically: on".to_string());
+        app.show_command_result(
+            "Make room automatically: on".to_string(),
+            StatusToastLevel::Info,
+        );
         let shown = app
             .active_status_toast(crate::tui::underwater::ShellPhase::Idle)
             .expect("footer notice");
@@ -1992,8 +2014,10 @@ pub(crate) fn begin_fresh_session(
         started: Instant::now(),
         deadline_reported: false,
     });
-    app.status_message =
-        Some("Starting a new session; waiting for Engine confirmation.".to_string());
+    app.show_command_result(
+        "Starting a new session; waiting for Engine confirmation.".to_string(),
+        StatusToastLevel::Info,
+    );
     app.needs_redraw = true;
     Ok(())
 }
@@ -2121,7 +2145,7 @@ pub(crate) fn poll_fresh_session(app: &mut App, engine: &EngineHandle) -> bool {
             return false;
         }
         pending.deadline_reported = true;
-        app.status_message = Some("The new session is still awaiting Engine confirmation. The current draft and transcript are preserved; sending is paused.".to_string());
+        app.show_command_result("The new session is still awaiting Engine confirmation. The current draft and transcript are preserved; sending is paused.".to_string(), StatusToastLevel::Warning);
         app.needs_redraw = true;
     }
     app.pending_fresh_session = Some(pending);
@@ -2210,7 +2234,7 @@ fn commit_fresh_session(app: &mut App, mut pending: PendingFreshSession) -> bool
     if !crate::commands::groups::core::reset_conversation_state(app) {
         app.composer = composer;
         app.queued_draft = queued_draft;
-        app.status_message = Some("The Engine confirmed the new session; waiting for Work state before updating the UI. Input is preserved.".to_string());
+        app.show_command_result("The Engine confirmed the new session; waiting for Work state before updating the UI. Input is preserved.".to_string(), StatusToastLevel::Info);
         app.pending_fresh_session = Some(pending);
         return false;
     }
@@ -2252,7 +2276,7 @@ fn commit_fresh_session(app: &mut App, mut pending: PendingFreshSession) -> bool
     app.add_message(HistoryCell::System {
         content: message.clone(),
     });
-    app.status_message = Some(message);
+    app.show_command_result(message, StatusToastLevel::Success);
     app.refresh_agent_approved_plugins_notice();
     app.needs_redraw = true;
     true

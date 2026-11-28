@@ -352,18 +352,16 @@ pub(crate) fn apply_engine_error_to_app(
     // toast in the footer — that duplicates the transcript entry.
 }
 
-/// Apply the gate result on the event loop. Returns `true` when dispatch may
-/// continue; a denial leaves the original message out of history/model input.
 pub(crate) fn apply_message_submit_outcome(
     app: &mut App,
     message: &mut QueuedMessage,
     outcome: codewhale_engine::hooks::MessageSubmitOutcome,
-) -> bool {
+) -> Result<(), String> {
     if let Some(warning) = outcome.warning() {
-        app.status_message = Some(warning.to_string());
+        app.push_status_toast(warning, StatusToastLevel::Warning, Some(6_000));
     }
     match outcome {
-        codewhale_engine::hooks::MessageSubmitOutcome::Unchanged { .. } => true,
+        codewhale_engine::hooks::MessageSubmitOutcome::Unchanged { .. } => Ok(()),
         codewhale_engine::hooks::MessageSubmitOutcome::Replaced { text, .. } => {
             // A queued message was already echoed with its pre-hook text.
             // Retarget that one cell so dispatch reuses it instead of adding a
@@ -379,12 +377,9 @@ pub(crate) fn apply_message_submit_outcome(
             }
             message.display = text;
             message.owner_input = false;
-            true
+            Ok(())
         }
-        codewhale_engine::hooks::MessageSubmitOutcome::Blocked { reason } => {
-            app.status_message = Some(reason);
-            false
-        }
+        codewhale_engine::hooks::MessageSubmitOutcome::Blocked { reason } => Err(reason),
     }
 }
 
@@ -843,9 +838,11 @@ pub(crate) async fn apply_model_picker_choice(
     save_as_startup_default: bool,
 ) {
     app.clear_setup_notice();
-    if app.reject_setting_change_while_busy(
-        codewhale_localization::MessageId::SettingSubjectModelAndThinking,
-    ) {
+    if app.is_loading {
+        let message = app.setting_locked_message(
+            codewhale_localization::MessageId::SettingSubjectModelAndThinking,
+        );
+        app.show_route_receipt(message, StatusToastLevel::Warning);
         note_startup_default_not_saved(app, save_as_startup_default);
         return;
     }
@@ -1038,7 +1035,7 @@ pub(crate) async fn apply_model_picker_choice(
 fn save_picker_route_as_default(app: &mut App, config: &Config, effort: ReasoningEffort) {
     use codewhale_localization::MessageId;
     if config.project_model.as_deref() == Some(app.model.as_str()) {
-        app.show_route_receipt(
+        app.finish_route_step(
             app.tr(MessageId::ProjectModelNotSavedAsDefault)
                 .replace("{model}", &app.model),
             StatusToastLevel::Warning,
@@ -1071,7 +1068,7 @@ fn save_picker_route_as_default(app: &mut App, config: &Config, effort: Reasonin
                 .replace("{model}", project_model),
         );
     }
-    app.show_route_receipt(receipt, level);
+    app.finish_route_step(receipt, level);
 }
 
 pub(crate) async fn apply_picker_effort_choice(
@@ -1127,7 +1124,7 @@ pub(crate) async fn apply_picker_effort_choice(
             app.model_display_label()
         )
     };
-    app.show_route_receipt(summary, StatusToastLevel::Info);
+    app.finish_route_step(summary, StatusToastLevel::Info);
 }
 
 pub(crate) async fn apply_provider_fallback_switch(
@@ -4455,14 +4452,13 @@ pub(crate) async fn apply_provider_picker_setup_confirmed(
     };
 
     if let Err(reason) = config.verify_provider_identity(&identity) {
-        app.push_status_toast(reason, StatusToastLevel::Error, Some(8_000));
+        app.show_route_receipt(reason, StatusToastLevel::Error);
         return false;
     }
     if identity.persisted_id().is_none() {
-        app.push_status_toast(
+        app.show_route_receipt(
             "Choose the exact custom provider table before changing its credentials or endpoint.",
             StatusToastLevel::Error,
-            Some(8_000),
         );
         return false;
     }
@@ -4470,12 +4466,14 @@ pub(crate) async fn apply_provider_picker_setup_confirmed(
 
     let model = model.trim().to_string();
     if model.is_empty() {
+        let message = format!(
+            "Cannot finish {} setup: default model is empty.\nProvider unchanged.",
+            provider.as_str()
+        );
         app.add_message(HistoryCell::System {
-            content: format!(
-                "Cannot finish {} setup: default model is empty.\nProvider unchanged.",
-                provider.as_str()
-            ),
+            content: message.clone(),
         });
+        app.show_route_receipt(message, StatusToastLevel::Error);
         return false;
     }
 
@@ -4485,18 +4483,20 @@ pub(crate) async fn apply_provider_picker_setup_confirmed(
     // is persisted rather than leaving a key on the wrong endpoint.
     if let Some(base_url) = base_url.as_deref() {
         if let Err(err) = save_provider_base_url_for_identity(&identity, config, base_url) {
+            let message = format!(
+                "Failed to save {} endpoint `{base_url}`: {err}\nProvider unchanged.",
+                provider.as_str()
+            );
             app.add_message(HistoryCell::System {
-                content: format!(
-                    "Failed to save {} endpoint `{base_url}`: {err}\nProvider unchanged.",
-                    provider.as_str()
-                ),
+                content: message.clone(),
             });
+            app.show_route_receipt(message, StatusToastLevel::Error);
             return false;
         }
         if let Err(reason) =
             config.set_provider_base_url_override(&identity, Some(base_url.to_string()))
         {
-            app.push_status_toast(reason.to_string(), StatusToastLevel::Error, Some(8_000));
+            app.show_route_receipt(reason.to_string(), StatusToastLevel::Error);
             return false;
         }
     }
@@ -4504,7 +4504,7 @@ pub(crate) async fn apply_provider_picker_setup_confirmed(
     // Persist key first via the existing comment-preserving path, then pin the
     // chosen default model on the same document when the provider uses a
     // `[providers.<name>]` table.
-    let mut save_confirmation = None;
+    let save_confirmation;
     match save_api_key_for_identity(&identity, config, &api_key) {
         Ok(saved) => {
             // #5195: name where the key actually landed (secret store backend
@@ -4513,43 +4513,55 @@ pub(crate) async fn apply_provider_picker_setup_confirmed(
             // so the key is available in every folder.
             let destination = saved.describe();
             if let Err(err) = save_provider_model_for_identity(&identity, config, &model) {
+                let note = format!(
+                    "Saved {} API key to {destination} (available in all folders), but failed to pin model `{model}`: {err}",
+                    provider.as_str(),
+                );
                 app.add_message(HistoryCell::System {
-                    content: format!(
-                        "Saved {} API key to {destination} (available in all folders), but failed to pin model `{model}`: {err}",
-                        provider.as_str(),
-                    ),
+                    content: note.clone(),
                 });
+                save_confirmation = (note, StatusToastLevel::Warning);
             } else if let Some(context_window) = context_window {
                 if let Err(err) =
                     save_provider_context_window_for_identity(&identity, config, context_window)
                 {
+                    let note = format!(
+                        "Saved {} API key and model to {destination} (available in all folders), but failed to save context window: {err}",
+                        provider.as_str(),
+                    );
                     app.add_message(HistoryCell::System {
-                        content: format!(
-                            "Saved {} API key and model to {destination} (available in all folders), but failed to save context window: {err}",
+                        content: note.clone(),
+                    });
+                    save_confirmation = (note, StatusToastLevel::Warning);
+                } else {
+                    save_confirmation = (
+                        format!(
+                            "Saved {} API key, model, and context window to {destination} (available in all folders)",
                             provider.as_str(),
                         ),
-                    });
-                } else {
-                    save_confirmation = Some(format!(
-                        "Saved {} API key, model, and context window to {destination} (available in all folders)",
-                        provider.as_str(),
-                    ));
+                        StatusToastLevel::Success,
+                    );
                 }
             } else {
-                save_confirmation = Some(format!(
-                    "Saved {} API key and model to {destination} (available in all folders)",
-                    provider.as_str(),
-                ));
+                save_confirmation = (
+                    format!(
+                        "Saved {} API key and model to {destination} (available in all folders)",
+                        provider.as_str(),
+                    ),
+                    StatusToastLevel::Success,
+                );
             }
             app.api_key_env_only = false;
         }
         Err(err) => {
+            let message = format!(
+                "Failed to save {} API key: {err}\nProvider unchanged.",
+                provider.as_str()
+            );
             app.add_message(HistoryCell::System {
-                content: format!(
-                    "Failed to save {} API key: {err}\nProvider unchanged.",
-                    provider.as_str()
-                ),
+                content: message.clone(),
             });
+            app.show_route_receipt(message, StatusToastLevel::Error);
             return false;
         }
     }
@@ -4564,15 +4576,15 @@ pub(crate) async fn apply_provider_picker_setup_confirmed(
         })
         .and_then(|()| mirror_saved_api_key_in_config(config, &identity, api_key))
     {
-        app.push_status_toast(reason, StatusToastLevel::Error, Some(8_000));
+        app.show_route_receipt(reason, StatusToastLevel::Error);
         return false;
     }
     let switched = switch_provider(app, engine_handle, config, identity, Some(model)).await;
     // The switch overwrites the status line with the route summary (the full
     // summary also lands in the transcript), so the save confirmation is
     // applied last — it is the answer to the action the user just confirmed.
-    if switched && let Some(confirmation) = save_confirmation {
-        app.show_route_receipt(confirmation, StatusToastLevel::Success);
+    if switched {
+        app.finish_route_step(save_confirmation.0, save_confirmation.1);
     }
     switched
 }
@@ -4612,17 +4624,19 @@ pub(crate) async fn apply_codewhale_owned_login(
                     codewhale_config::quote_os_path(&activation.auth_path),
                     codewhale_config::quote_os_path(&activation.config_path)
                 ),
-                StatusToastLevel::Error,
+                StatusToastLevel::Success,
             );
             app.api_key_env_only = false;
         }
         Err(err) => {
+            let message = format!(
+                "Failed to finalize {} {login_kind}: {err:#}\nProvider unchanged.",
+                provider.as_str()
+            );
             app.add_message(HistoryCell::System {
-                content: format!(
-                    "Failed to finalize {} {login_kind}: {err:#}\nProvider unchanged.",
-                    provider.as_str()
-                ),
+                content: message.clone(),
             });
+            app.show_route_receipt(message, StatusToastLevel::Error);
             return false;
         }
     }
@@ -4634,13 +4648,12 @@ pub(crate) async fn apply_codewhale_owned_login(
             .await
             .is_err()
         {
-            app.push_status_toast(
+            app.show_route_receipt(
                 format!(
                     "{}  codewhale models --update --provider openai-codex",
                     app.tr(MessageId::ProviderNoCatalogModels)
                 ),
                 StatusToastLevel::Warning,
-                Some(App::STICKY_ERROR_TTL_MS),
             );
             return false;
         }
@@ -4648,7 +4661,7 @@ pub(crate) async fn apply_codewhale_owned_login(
     let identity = match config.builtin_provider_identity(provider) {
         Ok(identity) => identity,
         Err(reason) => {
-            app.push_status_toast(reason, StatusToastLevel::Error, Some(8_000));
+            app.show_route_receipt(reason, StatusToastLevel::Error);
             return false;
         }
     };

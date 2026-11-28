@@ -27,17 +27,19 @@ pub(crate) fn dispatch_hotbar_slot(
     };
 
     let Some(action) = app.hotbar_actions.get(&action_id) else {
-        app.status_message = Some(format!(
-            "Hotbar slot {slot} action is not available: {action_id}"
-        ));
+        app.show_command_result(
+            format!("Hotbar slot {slot} action is not available: {action_id}"),
+            StatusToastLevel::Warning,
+        );
         app.needs_redraw = true;
         return Ok(Some(HotbarDispatch::Handled));
     };
 
     if let Some(reason) = action.disabled_reason(app) {
-        app.status_message = Some(format!(
-            "Hotbar slot {slot} action is not available: {reason}"
-        ));
+        app.show_command_result(
+            format!("Hotbar slot {slot} action is not available: {reason}"),
+            StatusToastLevel::Warning,
+        );
         app.needs_redraw = true;
         return Ok(Some(HotbarDispatch::Handled));
     }
@@ -223,22 +225,30 @@ pub(crate) async fn submit_initial_input_if_ready(
     if app.pending_fresh_session.is_some() {
         return Ok(());
     }
-    if !app.auto_submit_initial_input {
+    if !app.auto_submit_initial_input || app.input.trim().is_empty() {
+        app.retire_deferred_prompt_notice();
+        if app.input.trim().is_empty()
+            && app.onboarding == OnboardingState::None
+            && !app.redaction_gate
+        {
+            app.auto_submit_initial_input = false;
+        }
         return Ok(());
     }
 
     if app.onboarding != OnboardingState::None || app.redaction_gate {
-        if app.status_message.is_none() && !app.input.trim().is_empty() {
-            app.status_message = Some(INITIAL_PROMPT_DEFERRED_STATUS.to_string());
+        if app
+            .active_status_toast(crate::tui::underwater::ShellPhase::Typing)
+            .is_none()
+        {
+            app.defer_initial_prompt_notice(INITIAL_PROMPT_DEFERRED_STATUS);
         }
         return Ok(());
     }
 
     app.auto_submit_initial_input = false;
+    app.retire_deferred_prompt_notice();
     if let Some(input) = app.submit_input() {
-        if app.status_message.as_deref() == Some(INITIAL_PROMPT_DEFERRED_STATUS) {
-            app.status_message = None;
-        }
         let queued = build_queued_message(app, input);
         dispatch_user_message_with_recovery(
             app,
@@ -303,7 +313,10 @@ pub(crate) async fn send_queued_message_at_index_now(
 ) -> Result<bool> {
     let was_held = index < app.held_restored_queue;
     let Some(message) = app.take_queued_message_for_dispatch(index) else {
-        app.status_message = Some("Queued message not found".to_string());
+        app.show_command_result(
+            "Queued message not found".to_string(),
+            StatusToastLevel::Warning,
+        );
         return Ok(true);
     };
     send_taken_queued_message_now(
@@ -329,9 +342,10 @@ pub(crate) async fn send_taken_queued_message_now(
 ) -> Result<()> {
     if app.offline_mode {
         restore_queued_or_draft_message(app, recovery, message);
-        app.status_message = Some(
+        app.show_command_result(
             app.tr(MessageId::ToastOfflineQueuedCount)
                 .replace("{count}", &app.queued_message_count().to_string()),
+            StatusToastLevel::Warning,
         );
         return Ok(());
     }
@@ -341,7 +355,7 @@ pub(crate) async fn send_taken_queued_message_now(
         // there is no turn to steer into yet. Re-queue; the completion/turn
         // lifecycle will drive the next drain.
         restore_queued_or_draft_message(app, recovery, message);
-        app.status_message = Some(queued_follow_up_toast(app));
+        app.show_command_result(queued_follow_up_toast(app), StatusToastLevel::Info);
         return Ok(());
     }
     if app.is_loading {
@@ -351,7 +365,10 @@ pub(crate) async fn send_taken_queued_message_now(
     {
         // The completion closure re-queued the message and set the status.
     } else {
-        app.status_message = Some(app.tr(MessageId::ToastSentIntoTurn).into_owned());
+        app.show_command_result(
+            app.tr(MessageId::ToastSentIntoTurn).into_owned(),
+            StatusToastLevel::Success,
+        );
     }
     Ok(())
 }
@@ -508,8 +525,10 @@ pub(crate) async fn dispatch_user_message_with_recovery(
 ) -> Result<()> {
     if app.pending_fresh_session.is_some() {
         restore_queued_or_draft_message(app, recovery, message);
-        app.status_message =
-            Some("A new session is awaiting Engine confirmation; sending is paused.".to_string());
+        app.show_command_result(
+            "A new session is awaiting Engine confirmation; sending is paused.".to_string(),
+            StatusToastLevel::Warning,
+        );
         return Ok(());
     }
     if message.extension_command.is_some() {
@@ -524,7 +543,7 @@ pub(crate) async fn dispatch_user_message_with_recovery(
         });
         if let Err(error) = admitted {
             app.restore_unsent_message(message);
-            app.status_message = Some(error.to_string());
+            app.show_command_result(error.to_string(), StatusToastLevel::Error);
             return Err(error);
         }
     }
@@ -539,7 +558,10 @@ pub(crate) async fn dispatch_user_message_with_recovery(
             engine_handle.cancel();
         }
         app.stopped_turn = true;
-        app.status_message = Some("Turn stopped. Tool calls blocked for this turn.".to_string());
+        app.show_command_result(
+            "Turn stopped. Tool calls blocked for this turn.".to_string(),
+            StatusToastLevel::Warning,
+        );
         return Ok(());
     }
     app.stopped_turn = false;
@@ -598,9 +620,11 @@ pub(crate) async fn dispatch_user_message_with_recovery(
                           engine_handle: &EngineHandle,
                           config: &Config|
                           -> anyhow::Result<()> {
-                        if !apply_message_submit_outcome(app, &mut message, outcome) {
+                        if let Err(denial) =
+                            apply_message_submit_outcome(app, &mut message, outcome)
+                        {
                             app.dispatch_in_flight = false;
-                            restore_message_submit_denial(app, message, recovery);
+                            restore_message_submit_denial(app, message, recovery, denial);
                             return Ok(());
                         }
                         let _ = start_user_dispatch(app, config, engine_handle, message, recovery);
@@ -626,8 +650,8 @@ pub(crate) async fn dispatch_user_message_with_recovery(
                 lost_message_submit_outcome(&strict_gates)
             }
         };
-        if !apply_message_submit_outcome(app, &mut message, outcome) {
-            restore_message_submit_denial(app, message, recovery);
+        if let Err(denial) = apply_message_submit_outcome(app, &mut message, outcome) {
+            restore_message_submit_denial(app, message, recovery, denial);
             return Ok(());
         }
     }
@@ -1270,9 +1294,10 @@ pub(crate) fn build_dispatch_success_closure(
                     PersistRequest::SaveCheckpoint { session },
                     &projection,
                 ) {
-                    app.status_message = Some(format!(
-                        "To-do list update pending while saving turn checkpoint ({err})"
-                    ));
+                    app.show_command_result(
+                        format!("To-do list update pending while saving turn checkpoint ({err})"),
+                        StatusToastLevel::Warning,
+                    );
                 }
             }
 
@@ -1357,17 +1382,19 @@ pub(crate) fn build_dispatch_error_closure(
                     was_held,
                 } => {
                     restore_queued_message(app, restore_index, was_held, prepare.message);
-                    app.status_message = Some(
+                    app.show_command_result(
                         app.tr(MessageId::DispatchFailedQueued)
                             .replace("{error}", &error)
                             .replace("{count}", &app.queued_message_count().to_string()),
+                        StatusToastLevel::Error,
                     );
                 }
                 DispatchRecovery::Draft => {
                     restore_queued_or_draft_message(app, DispatchRecovery::Draft, prepare.message);
-                    app.status_message = Some(format!(
-                        "Message dispatch failed ({error}); queued draft restored"
-                    ));
+                    app.show_command_result(
+                        format!("Message dispatch failed ({error}); queued draft restored"),
+                        StatusToastLevel::Error,
+                    );
                 }
                 DispatchRecovery::Initial => {
                     if missing_credential {
@@ -1508,7 +1535,7 @@ fn start_next_steer(app: &mut App, engine_handle: &EngineHandle) -> bool {
         Ok(permit) => permit,
         Err(err) => {
             restore_preparing_steers(app);
-            app.status_message = Some(format!("Could not steer: {err}"));
+            app.show_command_result(format!("Could not steer: {err}"), StatusToastLevel::Error);
             return false;
         }
     };
@@ -1530,7 +1557,7 @@ fn start_next_steer(app: &mut App, engine_handle: &EngineHandle) -> bool {
             if !origin.tx_op.same_channel(&engine.tx_op) || workspace != app.workspace || session != app.current_session_id {
                 restore_preparing_steers(app);
                 app.held_restored_queue = app.queued_messages.len();
-                app.status_message = Some("Steering was interrupted by a workspace or session change. Recovered input is held for review.".into());
+                app.show_command_result("Steering was interrupted by a workspace or session change. Recovered input is held for review.", StatusToastLevel::Warning);
                 return Ok(());
             }
             let result = if app.is_loading
@@ -1567,16 +1594,16 @@ fn start_next_steer(app: &mut App, engine_handle: &EngineHandle) -> bool {
                     anyhow::bail!("steering preparation was retired");
                 };
                 let mut message = pending.message.clone();
-                if !apply_message_submit_outcome(app, &mut message, outcome) {
-                    return Ok(false);
+                if let Err(denial) = apply_message_submit_outcome(app, &mut message, outcome) {
+                    return Ok(Some(denial));
                 }
                 let (content, references, permit) =
                     payload.ok_or_else(|| anyhow::anyhow!("missing steering input"))?;
                 commit_prepared_steer(app, engine, message, content, references, permit);
-                Ok(true)
+                Ok(None)
             });
-            match result {
-                Ok(true) => {
+            let failure = match result {
+                Ok(None) => {
                     app.preparing_steers.pop_front();
                     app.push_status_toast(
                         app.tr(MessageId::ToastSentIntoTurn).into_owned(),
@@ -1584,19 +1611,14 @@ fn start_next_steer(app: &mut App, engine_handle: &EngineHandle) -> bool {
                         Some(1_500),
                     );
                     start_next_steer(app, engine);
+                    None
                 }
-                failure => {
-                    restore_preparing_steers(app);
-                    let text = match failure {
-                        Err(err) => {
-                            let text = format!("{} ({err})", app.tr(MessageId::ToastCouldNotSendIntoTurn));
-                            app.status_message = Some(text.clone());
-                            text
-                        }
-                        _ => app.tr(MessageId::ToastHookBlockedFollowUp).into_owned(),
-                    };
-                    app.push_status_toast(text, StatusToastLevel::Warning, Some(4_000));
-                }
+                Err(err) => Some(format!("{} ({err})", app.tr(MessageId::ToastCouldNotSendIntoTurn))),
+                Ok(Some(reason)) => Some(format!("{}: {reason}", app.tr(MessageId::ToastHookBlockedFollowUp))),
+            };
+            if let Some(failure) = failure {
+                restore_preparing_steers(app);
+                app.push_status_toast(failure, StatusToastLevel::Warning, Some(4_000));
             }
             persist_offline_queue_state(app);
             Ok(())
@@ -1619,7 +1641,10 @@ pub(crate) fn attempt_steer_with_queue_fallback(
             engine_handle.cancel();
             app.stopped_turn = true;
             restore_preparing_steers(app);
-            app.status_message = Some("Turn stopped. Tool calls blocked for this turn.".into());
+            app.show_command_result(
+                "Turn stopped. Tool calls blocked for this turn.",
+                StatusToastLevel::Warning,
+            );
         }
         restore_queued_or_draft_message(app, recovery, message);
         return false;
@@ -1749,7 +1774,10 @@ fn commit_prepared_steer(
         });
     app.needs_redraw = true;
 
-    app.status_message = Some("Steering current turn...".to_string());
+    app.show_command_result(
+        "Steering current turn...".to_string(),
+        StatusToastLevel::Info,
+    );
 }
 
 /// Promote every in-flight steer the engine's record now contains.
@@ -1851,8 +1879,10 @@ pub(crate) async fn dispatch_composer_message(
 ) -> Result<()> {
     if app.pending_fresh_session.is_some() {
         restore_queued_or_draft_message(app, recovery, message);
-        app.status_message =
-            Some("A new session is awaiting Engine confirmation; sending is paused.".to_string());
+        app.show_command_result(
+            "A new session is awaiting Engine confirmation; sending is paused.".to_string(),
+            StatusToastLevel::Warning,
+        );
         return Ok(());
     }
     if message.extension_command.is_some() {
@@ -1912,7 +1942,6 @@ pub(crate) async fn dispatch_composer_message(
                 .tr(codewhale_localization::MessageId::AgentFocusFollowUpFailed)
                 .replace("{agent}", &label)
                 .replace("{reason}", reason);
-            app.status_message = Some(failed.clone());
             app.push_status_toast(failed, StatusToastLevel::Warning, Some(5_000));
         }
         return Ok(());
@@ -1945,7 +1974,6 @@ pub(crate) async fn dispatch_composer_message(
             // A second, empty Enter inside the window sends this now.
             app.arm_double_tap_window();
             let toast = queued_follow_up_toast(app);
-            app.status_message = Some(toast.clone());
             app.push_status_toast(toast, StatusToastLevel::Info, Some(3_000));
             Ok(())
         }

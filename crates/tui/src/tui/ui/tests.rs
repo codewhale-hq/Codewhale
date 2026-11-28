@@ -1424,7 +1424,8 @@ fn ctrl_t_cycles_reasoning_effort_under_auto_model() {
         ));
         assert_eq!(app.reasoning_effort, expected);
         assert!(
-            app.setup_notice()
+            app.status_toasts
+                .back()
                 .map(|notice| notice.text.as_str())
                 .is_some_and(|message| {
                     message.contains(&format!("Reasoning effort: {}", expected.short_label()))
@@ -12389,8 +12390,8 @@ fn first_run_ollama_choice_survives_restart_from_canonical_config() {
     assert!(!restarted.onboarding_needs_api_key);
 }
 
-#[test]
-fn failed_first_run_route_persistence_keeps_provider_setup_active() {
+#[tokio::test]
+async fn failed_first_run_route_persistence_keeps_provider_setup_active() {
     let _lock = crate::test_support::lock_test_env();
     let tmp = TempDir::new().expect("settings tempdir");
     let bad_home = tmp.path().join("codewhale-home-file");
@@ -12432,6 +12433,13 @@ fn failed_first_run_route_persistence_keeps_provider_setup_active() {
         "a failed restart-route write must stay visible: {:?}",
         app.setup_notice(),
     );
+    let old = std::time::Instant::now() - std::time::Duration::from_secs(30);
+    app.status_toasts.back_mut().unwrap().created_at = old;
+    let engine = codewhale_engine::core::engine::mock_engine_handle();
+    open_model_connection_setup(&mut app, &Config::default(), &engine.handle, false).await;
+    assert!(!app.view_stack.is_empty());
+    let visible = render_test_app(&mut app, &Config::default(), 120, 30);
+    assert!(visible.contains("Save failed"), "{visible}");
 }
 
 #[tokio::test]
@@ -13067,9 +13075,14 @@ async fn immediate_submit_closed_mailbox_restores_composer_and_skill() {
     assert_eq!(app.cursor_position, app.input.chars().count());
     assert_eq!(app.active_skill.as_deref(), Some("keep the selected skill"));
     assert!(!app.is_loading);
-    assert!(app.status_message.as_deref().is_some_and(|status| {
-        status.contains("Message not sent") && status.contains("restored to composer")
-    }));
+    assert!(
+        app.sticky_status
+            .as_ref()
+            .map(|notice| notice.text.as_str())
+            .is_some_and(|status| {
+                status.contains("Message not sent") && status.contains("restored to composer")
+            })
+    );
     let sticky = app
         .sticky_status
         .as_ref()
@@ -13120,12 +13133,18 @@ async fn immediate_submit_custom_provider_preflight_restores_exact_message() {
     assert!(app.api_messages.is_empty());
     assert!(app.history.is_empty());
     assert!(app.last_submitted_prompt.is_none());
-    assert!(app.status_message.as_deref().is_some_and(|status| {
-        status.contains("Failed to configure provider route")
-            && status.contains("restored to composer")
-            && status
-                .contains("Next step: Run /provider setup lm-studio to fix base URL/TLS settings.")
-    }));
+    assert!(
+        app.sticky_status
+            .as_ref()
+            .map(|notice| notice.text.as_str())
+            .is_some_and(|status| {
+                status.contains("Failed to configure provider route")
+                    && status.contains("restored to composer")
+                    && status.contains(
+                        "Next step: Run /provider setup lm-studio to fix base URL/TLS settings.",
+                    )
+            })
+    );
     let sticky = app
         .sticky_status
         .as_ref()
@@ -13256,8 +13275,9 @@ async fn immediate_submit_custom_provider_missing_key_preflight_shows_auth_next_
     );
     assert!(app.last_submitted_prompt.is_none());
     let status = app
-        .status_message
-        .as_deref()
+        .sticky_status
+        .as_ref()
+        .map(|notice| notice.text.as_str())
         .expect("missing-key preflight should set status");
     assert!(status.contains("Message not sent"));
     assert!(status.contains("Failed to configure provider route lm-studio / local-model."));
@@ -14720,7 +14740,9 @@ async fn denied_steer_restores_queued_draft_and_keeps_active_turn() {
     assert_eq!(app.queued_draft, Some(message));
     assert_eq!(app.queued_message_count(), 0);
     assert!(app.status_toasts.back().is_some_and(|toast| {
-        toast.level == StatusToastLevel::Warning && toast.text.contains("blocked the follow-up")
+        toast.level == StatusToastLevel::Warning
+            && toast.text.contains("blocked the follow-up")
+            && toast.text.contains("policy denied steer")
     }));
 }
 
@@ -15589,13 +15611,10 @@ printf '%s\n' '{"text":"after timeout"}'
     .expect("dispatch user message");
 
     assert!(
-        matches!(
-            app.status_message.as_deref(),
-            Some(status) if status == "hook timed out after 1s"
-                || status.ends_with("(session persistence actor is not initialized)")
-        ),
-        "{:?}",
-        app.status_message
+        app.status_toasts
+            .iter()
+            .any(|notice| notice.text == "hook timed out after 1s"
+                && notice.level == StatusToastLevel::Warning)
     );
     match engine.rx_op.recv().await.expect("send message op") {
         codewhale_engine::core::ops::Op::SendMessage(TurnSpec { content, .. }) => {
@@ -15638,15 +15657,9 @@ printf '%s\n' '{"text":"after soft failure"}'
     .await
     .expect("dispatch user message");
 
-    assert!(
-        matches!(
-            app.status_message.as_deref(),
-            Some(status) if status == "message_submit hook exited with code 9"
-                || status.ends_with("(session persistence actor is not initialized)")
-        ),
-        "{:?}",
-        app.status_message
-    );
+    assert!(app.status_toasts.iter().any(|notice| notice.text
+        == "message_submit hook exited with code 9"
+        && notice.level == StatusToastLevel::Warning));
     match engine.rx_op.recv().await.expect("send message op") {
         codewhale_engine::core::ops::Op::SendMessage(TurnSpec { content, .. }) => {
             assert_eq!(content, "after soft failure");
@@ -15780,7 +15793,12 @@ exit 2
     .await
     .expect("blocked submit is handled locally");
 
-    assert_eq!(app.status_message.as_deref(), Some("blocked by test hook"));
+    assert!(
+        app.status_toasts
+            .iter()
+            .any(|notice| notice.text == "blocked by test hook"
+                && notice.level == StatusToastLevel::Warning)
+    );
     assert!(app.api_messages.is_empty());
     assert!(
         app.history
@@ -17796,7 +17814,8 @@ fn hotbar_bound_reasoning_action_updates_auto_model_preference() {
     ));
     assert_eq!(app.reasoning_effort, ReasoningEffort::Low);
     assert!(
-        app.setup_notice()
+        app.status_toasts
+            .back()
             .map(|notice| notice.text.as_str())
             .is_some_and(|message| message.contains("Reasoning effort: low"))
     );
@@ -21544,7 +21563,9 @@ async fn startup_prompt_waits_for_onboarding_then_dispatches() {
     assert!(app.auto_submit_initial_input);
     assert_eq!(app.input, "阅读项目 and wait");
     assert_eq!(
-        app.status_message.as_deref(),
+        app.active_status_toast(crate::tui::underwater::ShellPhase::Typing)
+            .as_ref()
+            .map(|notice| notice.text.as_str()),
         Some(INITIAL_PROMPT_DEFERRED_STATUS)
     );
     assert!(engine.rx_op.try_recv().is_err());
@@ -21566,6 +21587,39 @@ async fn startup_prompt_waits_for_onboarding_then_dispatches() {
         }
         other => panic!("expected SendMessage, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn deleting_a_deferred_startup_draft_retires_only_its_notice() {
+    let mut app = create_test_app();
+    let config = Config::default();
+    let engine = codewhale_engine::core::engine::mock_engine_handle();
+    app.auto_submit_initial_input = true;
+    app.onboarding = OnboardingState::Welcome;
+    app.input = "review me".to_string();
+    submit_initial_input_if_ready(&mut app, &config, &engine.handle)
+        .await
+        .unwrap();
+    assert!(
+        app.status_toasts
+            .iter()
+            .any(|notice| notice.text == INITIAL_PROMPT_DEFERRED_STATUS)
+    );
+    app.push_status_toast("Unrelated request", StatusToastLevel::Warning, Some(8_000));
+    app.input.clear();
+    submit_initial_input_if_ready(&mut app, &config, &engine.handle)
+        .await
+        .unwrap();
+    assert!(
+        !app.status_toasts
+            .iter()
+            .any(|notice| notice.text == INITIAL_PROMPT_DEFERRED_STATUS)
+    );
+    assert!(
+        app.status_toasts
+            .iter()
+            .any(|notice| notice.text == "Unrelated request")
+    );
 }
 
 #[tokio::test]
@@ -22253,11 +22307,16 @@ fn hook_replaced_queued_message_keeps_one_user_cell() {
     let mut app = create_test_app();
     let mut message = QueuedMessage::new("draft as typed".to_string(), None);
     echo_queued_user_turn(&mut app, &mut message);
-    assert!(apply_message_submit_outcome(
-        &mut app,
-        &mut message,
-        codewhale_engine::hooks::MessageSubmitOutcome::replaced("draft as rewritten".to_string()),
-    ));
+    assert!(
+        apply_message_submit_outcome(
+            &mut app,
+            &mut message,
+            codewhale_engine::hooks::MessageSubmitOutcome::replaced(
+                "draft as rewritten".to_string()
+            ),
+        )
+        .is_ok()
+    );
 
     paint_user_turn_cell(&mut app, &message, message.display.clone());
 
@@ -22730,7 +22789,13 @@ async fn operate_streaming_enter_queues_another_parallel_task() {
     let toast = app.status_toasts.back().expect("Operate queue toast");
     assert_eq!(toast.level, StatusToastLevel::Info);
     assert_eq!(toast.text, "Queued — sends after this turn.");
-    assert_eq!(app.status_message.as_deref(), Some(toast.text.as_str()));
+    assert_eq!(
+        app.status_toasts
+            .iter()
+            .filter(|notice| notice.text == toast.text)
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -28902,8 +28967,9 @@ async fn approval_decision_persists_ask_rules_to_permissions_file() {
     let store = codewhale_config::ConfigStore::load(Some(config_path)).expect("load config store");
     assert_eq!(store.permissions().rules, vec![rule]);
     assert!(
-        app.status_message
-            .as_deref()
+        app.status_toasts
+            .back()
+            .map(|notice| notice.text.as_str())
             .is_some_and(|message| message.contains("Saved 1 ask permission rule"))
     );
 
@@ -28961,8 +29027,9 @@ async fn approval_decision_persists_exact_workspace_allow_rule() {
     let store = codewhale_config::ConfigStore::load(Some(config_path)).expect("load config store");
     assert_eq!(store.permissions().rules, vec![rule]);
     assert!(
-        app.status_message
-            .as_deref()
+        app.status_toasts
+            .back()
+            .map(|notice| notice.text.as_str())
             .is_some_and(|message| message.contains("Saved 1 allow permission rule"))
     );
 

@@ -2489,7 +2489,7 @@ mod tests {
         assert_eq!(app.reasoning_effort, ReasoningEffort::Low);
         assert!(reasoning.is_active(&app));
         assert_eq!(
-            app.setup_notice().map(|notice| notice.text.as_str()),
+            app.status_toasts.back().map(|notice| notice.text.as_str()),
             Some("Reasoning effort: low")
         );
 
@@ -2583,7 +2583,7 @@ mod tests {
             assert_eq!(app.reasoning_effort, expected_effort);
             let expected_message = format!("Reasoning effort: {expected_label}");
             assert_eq!(
-                app.setup_notice().map(|notice| notice.text.as_str()),
+                app.status_toasts.back().map(|notice| notice.text.as_str()),
                 Some(expected_message.as_str())
             );
         }

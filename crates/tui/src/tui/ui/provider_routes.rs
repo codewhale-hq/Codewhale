@@ -709,7 +709,11 @@ async fn switch_provider_inner(
     )>,
 ) -> bool {
     app.clear_setup_notice();
-    if app.reject_setting_change_while_busy(MessageId::SettingSubjectProvider) {
+    if app.is_loading {
+        app.show_route_receipt(
+            app.setting_locked_message(MessageId::SettingSubjectProvider),
+            StatusToastLevel::Warning,
+        );
         return false;
     }
     if let Err(reason) = config.verify_provider_identity(&identity) {

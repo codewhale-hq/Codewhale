@@ -1763,8 +1763,8 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
         // first-run privacy disclosure cannot become invisible outside the
         // Provider step.
         if !app.view_stack.is_empty() {
-            let buf = f.buffer_mut();
-            app.view_stack.render(size, buf);
+            let area = onboarding::render_provider_notice(f, size, app);
+            app.view_stack.render(area, f.buffer_mut());
         }
         return None;
     }

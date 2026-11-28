@@ -168,15 +168,68 @@ fn action_hints(app: &App) -> Vec<ActionHint> {
     }
 }
 
+pub(crate) fn render_provider_notice(f: &mut Frame, area: Rect, app: &App) -> Rect {
+    let Some(notice) = app.setup_notice() else {
+        return area;
+    };
+    if app.onboarding != OnboardingState::Provider || area.height < 2 {
+        return area;
+    }
+    let lines = wrap_words(&notice.text, usize::from(area.width.max(1)));
+    let height = u16::try_from(lines.len())
+        .unwrap_or(u16::MAX)
+        .min((area.height / 3).max(1));
+    let color = match notice.level {
+        super::app::StatusToastLevel::Error => {
+            theme_or(app.ui_theme.error_fg, palette::STATUS_ERROR)
+        }
+        super::app::StatusToastLevel::Warning => {
+            theme_or(app.ui_theme.warning, palette::STATUS_WARNING)
+        }
+        _ => theme_or(app.ui_theme.text_body, palette::TEXT_PRIMARY),
+    };
+    let header = Rect::new(area.x, area.y, area.width, height);
+    f.render_widget(
+        Paragraph::new(lines.into_iter().map(Line::from).collect::<Vec<_>>())
+            .style(Style::default().fg(color).bg(app.ui_theme.surface_bg)),
+        header,
+    );
+    Rect::new(area.x, area.y + height, area.width, area.height - height)
+}
+
 fn screen_lines(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
-    match app.onboarding {
+    let mut lines = match app.onboarding {
         OnboardingState::Welcome => welcome::lines(app, width),
         OnboardingState::Language => language::lines(app, width, height),
         OnboardingState::Provider => provider_lines(app, width),
         OnboardingState::TrustDirectory => trust_directory::lines(app, width),
         OnboardingState::Ready => welcome::ready_lines(app, width),
         OnboardingState::None => Vec::new(),
+    };
+    if matches!(
+        app.onboarding,
+        OnboardingState::Language | OnboardingState::Provider
+    ) && let Some(notice) = app.setup_notice()
+        && app.onboarding_key_rejected.as_deref() != Some(notice.text.as_str())
+    {
+        let color = match notice.level {
+            super::app::StatusToastLevel::Error => {
+                theme_or(app.ui_theme.error_fg, palette::STATUS_ERROR)
+            }
+            super::app::StatusToastLevel::Warning => {
+                theme_or(app.ui_theme.warning, palette::STATUS_WARNING)
+            }
+            _ => theme_or(app.ui_theme.text_body, palette::TEXT_PRIMARY),
+        };
+        let offset = lines.len().min(1);
+        lines.splice(
+            offset..offset,
+            wrap_words(&notice.text, width)
+                .into_iter()
+                .map(|segment| Line::from(Span::styled(segment, Style::default().fg(color)))),
+        );
     }
+    lines
 }
 
 fn provider_lines(app: &App, width: usize) -> Vec<Line<'static>> {

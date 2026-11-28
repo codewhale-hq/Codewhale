@@ -184,8 +184,9 @@ pub(crate) fn pause_pausable_command(app: &mut App, engine_handle: &EngineHandle
     app.paused = true;
     app.pausable = true;
     engine_handle.set_paused(true);
-    app.status_message = Some(
+    app.show_command_result(
         "Request paused. Send `continue` or `resume` to continue, or Esc to cancel.".to_string(),
+        StatusToastLevel::Info,
     );
 }
 

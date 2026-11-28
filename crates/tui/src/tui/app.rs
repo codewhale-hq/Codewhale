@@ -3850,7 +3850,7 @@ impl App {
     pub(crate) fn reject_setting_change_while_busy(&mut self, subject: MessageId) -> bool {
         if self.is_loading {
             let message = self.setting_locked_message(subject);
-            self.show_route_receipt(message, StatusToastLevel::Warning);
+            self.show_command_result(message, StatusToastLevel::Warning);
             self.needs_redraw = true;
             true
         } else {
@@ -3871,7 +3871,7 @@ impl App {
     pub(crate) fn report_mode_selection(&mut self, mode: AppMode, outcome: SettingSelection) {
         if outcome == SettingSelection::PersistedSame {
             let receipt = self.mode_startup_default_receipt(mode);
-            self.show_route_receipt(receipt, StatusToastLevel::Info);
+            self.show_command_result(receipt, StatusToastLevel::Success);
             self.needs_redraw = true;
         }
     }
@@ -3978,7 +3978,7 @@ impl App {
             )
         {
             let msg = format!("Reasoning effort unchanged: Work receipt failed ({err})");
-            self.show_route_receipt(msg.clone(), StatusToastLevel::Error);
+            self.show_command_result(msg.clone(), StatusToastLevel::Error);
             self.needs_redraw = true;
             return Err(msg);
         }
@@ -3993,7 +3993,7 @@ impl App {
             crate::tui::startup_defaults::StartupDefaults::reasoning_effort(requested.as_setting()),
         );
         self.update_model_compaction_budget();
-        self.show_route_receipt(
+        self.show_command_result(
             format!(
                 "Reasoning effort: {}",
                 Self::reasoning_effort_resolution_label(requested, effective, self.api_provider)
