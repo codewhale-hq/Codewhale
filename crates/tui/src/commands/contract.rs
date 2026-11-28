@@ -36,10 +36,12 @@ mod composer;
 mod config_main;
 mod core_navigation;
 mod core_policy;
+mod fleet_lane;
 mod model_reference;
 mod model_setup;
 mod workflow;
 use core_navigation::{NavigationAdapter, VoiceInputAdapter};
+use fleet_lane::{FleetAdapter, LaneAdapter};
 pub(in crate::commands) mod config_policy;
 #[cfg(test)]
 mod config_policy_baseline;
@@ -5563,6 +5565,8 @@ pub(crate) struct CommandContextBundle<'a> {
     work_surface: WorkSurfaceAdapter<'a>,
     navigation: NavigationAdapter<'a>,
     voice_input: VoiceInputAdapter<'a>,
+    fleet: FleetAdapter<'a>,
+    lane: LaneAdapter<'a>,
 }
 
 impl<'a> CommandContextBundle<'a> {
@@ -5695,6 +5699,12 @@ impl<'a> CommandContextBundle<'a> {
         if capabilities.contains(CommandCapabilities::VOICE_INPUT) {
             contexts = contexts.with_voice_input(&mut self.voice_input);
         }
+        if capabilities.contains(CommandCapabilities::FLEET) {
+            contexts = contexts.with_fleet(&mut self.fleet);
+        }
+        if capabilities.contains(CommandCapabilities::LANE) {
+            contexts = contexts.with_lane(&mut self.lane);
+        }
         contexts
     }
 
@@ -5795,7 +5805,9 @@ impl App {
             login: LoginAdapter { host: host.clone() },
             work_surface: WorkSurfaceAdapter { host: host.clone() },
             navigation: NavigationAdapter { host: host.clone() },
-            voice_input: VoiceInputAdapter { host },
+            voice_input: VoiceInputAdapter { host: host.clone() },
+            fleet: FleetAdapter { host: host.clone() },
+            lane: LaneAdapter { host },
         }
     }
 }

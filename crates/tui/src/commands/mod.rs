@@ -22,6 +22,7 @@ mod core_navigation_host;
 #[cfg(test)]
 mod core_navigation_host_tests;
 pub mod discovery;
+mod fleet_host;
 pub(crate) mod groups;
 #[cfg(test)]
 mod model_setup_host_tests;
@@ -97,7 +98,7 @@ pub use traits::CommandInfo;
 // Long-standing public paths that predate the group layout.
 /// `/fleet add` and the picker's ⇧F share these gates; the UI applies them
 /// against the live `Config`.
-pub(crate) use groups::core::fleet::{fleet_catalog_rejection, fleet_provider_rejection};
+pub(crate) use fleet_host::{fleet_catalog_rejection, fleet_provider_rejection};
 pub(crate) use groups::memory::{notes_path, read_notes};
 pub use groups::project::share;
 

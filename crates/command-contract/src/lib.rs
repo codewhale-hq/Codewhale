@@ -26,6 +26,7 @@ pub mod money;
 pub mod tool_outputs;
 pub mod whale_identity;
 
+pub mod fleet_lane;
 pub mod model_setup;
 
 pub mod core_policy;

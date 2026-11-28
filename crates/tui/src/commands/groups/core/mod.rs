@@ -12,8 +12,10 @@ mod core;
 mod exit;
 #[cfg(test)]
 mod feedback;
-pub(in crate::commands) mod fleet;
+#[cfg(test)]
+mod fleet;
 mod hooks;
+#[cfg(test)]
 mod lane;
 pub(in crate::commands) mod navigation;
 mod pin;
@@ -30,6 +32,7 @@ use crate::commands::CommandResult;
 use crate::commands::traits::{
     Command, CommandGroup, ContextualCommand, FunctionCommand, RegisterCommand,
 };
+use codewhale_commands::fleet_lane::{FleetCmd, LaneCmd};
 use codewhale_commands::model_setup::{
     HfCmd, ModelCmd, ModelDbCmd, ModelsCmd, ProfileCmd, ProviderCmd, SetupCmd,
 };
@@ -81,14 +84,8 @@ impl CommandGroup for CoreCommands {
                 ContextualCommand::from_contract::<subagents::SubagentsCmd>()
                     .expect("subagents registration")
             ),
-            Box::new(FunctionCommand::new(
-                fleet::FleetCmd::info(),
-                fleet::FleetCmd::execute,
-            )),
-            Box::new(FunctionCommand::new(
-                lane::LaneCmd::info(),
-                lane::LaneCmd::execute,
-            )),
+            Box::new(ContextualCommand::from_contract::<FleetCmd>().expect("fleet registration")),
+            Box::new(ContextualCommand::from_contract::<LaneCmd>().expect("lane registration")),
             Box::new(
                 ContextualCommand::from_contract::<WorkflowCmd>().expect("workflow registration")
             ),
@@ -130,6 +127,34 @@ impl CommandGroup for CoreCommands {
             crate::commands::core_navigation_host::registration::<13>(),
             Box::new(ContextualCommand::from_contract::<pin::PinCmd>().expect("pin registration")),
         ])
+    }
+}
+
+impl TryFrom<codewhale_command_contract::fleet_lane::FleetAction> for crate::tui::app::AppAction {
+    type Error = String;
+
+    fn try_from(
+        action: codewhale_command_contract::fleet_lane::FleetAction,
+    ) -> Result<Self, String> {
+        use codewhale_command_contract::fleet_lane::FleetAction;
+        Ok(match action {
+            FleetAction::OpenRoster => Self::OpenFleetRoster,
+            FleetAction::OpenSetup => Self::OpenFleetSetup,
+            FleetAction::OpenList => Self::OpenFleetList,
+            FleetAction::OpenWorkers => Self::ListSubAgents,
+            FleetAction::AddModel {
+                provider,
+                model,
+                roles,
+            } => Self::FleetAddModel {
+                provider,
+                model,
+                roles,
+            },
+            FleetAction::RemoveModel { provider, model } => {
+                Self::FleetRemoveModel { provider, model }
+            }
+        })
     }
 }
 

@@ -63,16 +63,16 @@ pub enum SetupAction<'a> {
     Provider(&'a str),
 }
 
-pub fn resolve_action<T, A: TryFrom<T, Error = String>>(
-    intent: T,
-    message: Option<String>,
-) -> CommandResult<A> {
+pub fn resolve_action<T, A: TryFrom<T>>(intent: T, message: Option<String>) -> CommandResult<A>
+where
+    A::Error: std::fmt::Display,
+{
     match A::try_from(intent) {
         Ok(action) => CommandResult {
             message,
             action: Some(action),
             is_error: false,
         },
-        Err(reason) => CommandResult::error(reason),
+        Err(reason) => CommandResult::error(reason.to_string()),
     }
 }

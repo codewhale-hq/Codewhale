@@ -115,6 +115,8 @@ impl CommandCapabilities {
     pub const WORKFLOW_CONTROL: Self = Self(1 << 42);
     pub const AUTO_REVIEW: Self = Self(1 << 43);
     pub const MODEL_SELECTION: Self = Self(1 << 36);
+    pub const FLEET: Self = Self(1 << 38);
+    pub const LANE: Self = Self(1 << 39);
 
     /// Raw bit pattern, for tests that pin the capability-space capacity.
     ///
@@ -201,6 +203,8 @@ pub struct CommandContexts<'a> {
     response_copy: Option<&'a mut dyn crate::navigation::CommandResponseCopyContext>,
     composer: Option<&'a mut dyn CommandComposerContext>,
     background: Option<&'a mut dyn CommandBackgroundContext>,
+    fleet: Option<&'a mut dyn crate::fleet_lane::CommandFleetContext>,
+    lane: Option<&'a mut dyn crate::fleet_lane::CommandLaneContext>,
 }
 
 /// Consumed envelope used when one handler needs several independent facets.
@@ -285,6 +289,8 @@ impl<'a> CommandContexts<'a> {
             model_selection: None,
             response_copy: None,
             composer: None,
+            fleet: None,
+            lane: None,
         }
     }
 
@@ -501,6 +507,27 @@ impl<'a> CommandContexts<'a> {
         &mut self,
     ) -> Option<&'a mut dyn crate::model_setup::CommandModelSelectionContext> {
         self.model_selection.take()
+    }
+
+    pub fn with_fleet(mut self, value: &'a mut dyn crate::fleet_lane::CommandFleetContext) -> Self {
+        assert!(
+            self.fleet.replace(value).is_none(),
+            "fleet facet already set"
+        );
+        self
+    }
+
+    pub fn take_fleet(&mut self) -> Option<&'a mut dyn crate::fleet_lane::CommandFleetContext> {
+        self.fleet.take()
+    }
+
+    pub fn with_lane(mut self, value: &'a mut dyn crate::fleet_lane::CommandLaneContext) -> Self {
+        assert!(self.lane.replace(value).is_none(), "lane facet already set");
+        self
+    }
+
+    pub fn take_lane(&mut self) -> Option<&'a mut dyn crate::fleet_lane::CommandLaneContext> {
+        self.lane.take()
     }
 
     pub fn with_response_copy(
