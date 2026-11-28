@@ -4858,7 +4858,12 @@ impl ModelPickerView {
         let title = self
             .assignment_context
             .as_ref()
-            .map(|(role, _)| format!("Model · {role}"))
+            .map(|(role, _)| {
+                format!(
+                    "{} · {role}",
+                    tr(self.locale, MessageId::SettingSubjectModel)
+                )
+            })
             .unwrap_or_else(|| {
                 tr(self.locale, MessageId::RouteSurfaceTitle).replace("{view}", view.title_label())
             });
@@ -5861,6 +5866,18 @@ mod tests {
             assert!(text.contains("reviewer"), "{text}");
             assert!(text.contains("Choose where to save"), "{text}");
         }
+        picker.locale = Locale::ZhHans;
+        let area = Rect::new(0, 0, 100, 24);
+        let mut buf = Buffer::empty(area);
+        picker.render(area, &mut buf);
+        let title: String = buf
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+            .split_whitespace()
+            .collect();
+        assert!(title.contains("模型·reviewer"));
         picker.update_query("model".into());
         assert!(matches!(
             picker.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),

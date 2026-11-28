@@ -143,6 +143,7 @@ Codewhale v0.10.5 simplifies the terminal and runtime, expands DeepSeek Harness 
 
 - `/clear` keeps the current conversation and queued input if it cannot prepare the new session for saving.
 - `/effort` and `/thinking` report a failed Work receipt and keep the previous reasoning preference when a change cannot be recorded.
+- The saved-team editor shows model choices, reasoning settings and edit controls in the selected terminal language. (#7469)
 - Saved-team deletion receipts, legacy file details and migration results use the selected terminal language. (#7469)
 - The terminal stays responsive while steering a running turn or previewing a request that includes file and Git mentions. Queued steers are prepared in order.
 

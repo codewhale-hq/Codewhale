@@ -40,13 +40,14 @@ use crate::tui::app::App;
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
 };
-use codewhale_agent_contract::role::public_role_label;
+use codewhale_agent_contract::role::{FleetRole, public_role_label};
 use codewhale_engine::fleet::store::{
     FleetFile, FleetMember, FleetOperator, FleetScope, MemberCapability, load_fleet_in_scope,
     save_fleet, set_selected,
 };
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_protocol::display::interpolate;
 use codewhale_runtime::config::Config;
 use codewhale_tui_kit::menu_style;
 
@@ -207,7 +208,7 @@ impl FleetDetailView {
         session_provider: &str,
         session_model: &str,
     ) -> Self {
-        let routes = build_route_rows(config);
+        let routes = build_route_rows(locale, config);
         let source_path = source.clone();
         let saved_source = crate::commands::contract::run_owner_blocking(move || {
             Ok(std::fs::read_to_string(&source_path).ok())
@@ -248,12 +249,24 @@ impl FleetDetailView {
     /// session route. Called at open and after every route edit.
     fn refresh_scout_receipt(&mut self) {
         self.scout_receipt = self.fleet.has_scout().then(|| {
-            codewhale_engine::fleet::scout::resolve_scout_route(
+            use codewhale_engine::fleet::scout::ScoutSource;
+            let resolved = codewhale_engine::fleet::scout::resolve_scout_route(
                 self.fleet.member("scout"),
                 &self.session_provider,
                 &self.session_model,
+            );
+            let source = match resolved.source {
+                ScoutSource::Pinned => MessageId::ModelPickerPinnedChip,
+                ScoutSource::CatalogSuggestion => MessageId::FleetEditorCatalogSuggestion,
+                ScoutSource::Inherited => MessageId::FleetEditorInheritedRoute,
+                ScoutSource::Unavailable(_) => MessageId::PickerActionUnavailable,
+            };
+            format!(
+                "{}/{} ({})",
+                resolved.provider,
+                resolved.model,
+                tr(self.locale, source)
             )
-            .receipt_line()
         });
     }
 
@@ -325,11 +338,15 @@ impl FleetDetailView {
         self.rename_mode = false;
         match save_fleet(&self.fleet, self.scope, &self.workspace) {
             Ok(path) => Some(ViewAction::EmitAndClose(ViewEvent::FleetStoreChanged {
-                message: tr(self.locale, MessageId::FleetRenamedNotice)
-                    .replace("{old_name}", &old_name)
-                    .replace("{new_name}", &new_name)
-                    .replace("{scope}", &long_scope_label(self.locale, self.scope))
-                    .replace("{path}", &path.display().to_string()),
+                message: interpolate(
+                    &tr(self.locale, MessageId::FleetRenamedNotice),
+                    &[
+                        ("{old_name}", &old_name),
+                        ("{new_name}", &new_name),
+                        ("{scope}", &long_scope_label(self.locale, self.scope)),
+                        ("{path}", &path.display().to_string()),
+                    ],
+                ),
             })),
             Err(err) => {
                 self.fleet.name = old_name;
@@ -356,7 +373,11 @@ impl FleetDetailView {
                     route.provider.as_deref().unwrap_or(""),
                     route.model.as_deref().unwrap_or(""),
                     *idx == 0,
-                )
+                ) || (*idx == 0
+                    && route
+                        .label
+                        .to_lowercase()
+                        .contains(&self.pick_query.trim().to_lowercase()))
             })
             .collect()
     }
@@ -470,10 +491,14 @@ impl FleetDetailView {
         let role = self
             .selected_member()
             .map(|member| member.id.clone())
-            .unwrap_or_else(|| "Coordinator".into());
+            .unwrap_or_else(|| tr(self.locale, MessageId::FleetEditorCoordinator).into_owned());
         (
             role,
-            format!("{} · {}", self.fleet.name, self.scope.label()),
+            format!(
+                "{} · {}",
+                self.fleet.name,
+                long_scope_label(self.locale, self.scope)
+            ),
         )
     }
 
@@ -571,15 +596,17 @@ impl FleetDetailView {
         match save_fleet(&self.fleet, self.scope, &self.workspace) {
             Ok(path) => {
                 self.saved_source = self.fleet.render_toml().ok();
-                Ok(tr(self.locale, MessageId::FleetRouteSaved)
-                    .replace("{fleet}", &self.fleet.name)
-                    .replace(
-                        "{route}",
-                        &route.unwrap_or_else(|| {
-                            tr(self.locale, MessageId::FleetRouteInherited).into_owned()
-                        }),
-                    )
-                    .replace("{path}", &path.display().to_string()))
+                let route = route.unwrap_or_else(|| {
+                    tr(self.locale, MessageId::FleetRouteInherited).into_owned()
+                });
+                Ok(interpolate(
+                    &tr(self.locale, MessageId::FleetRouteSaved),
+                    &[
+                        ("{fleet}", &self.fleet.name),
+                        ("{route}", &route),
+                        ("{path}", &path.display().to_string()),
+                    ],
+                ))
             }
             Err(err) => {
                 self.fleet = previous;
@@ -701,10 +728,14 @@ impl FleetDetailView {
         }
         match save_fleet(&self.fleet, self.scope, &self.workspace) {
             Ok(path) => Some(ViewAction::EmitAndClose(ViewEvent::FleetStoreChanged {
-                message: tr(self.locale, MessageId::FleetSavedNotice)
-                    .replace("{name}", &self.fleet.name)
-                    .replace("{scope}", &long_scope_label(self.locale, self.scope))
-                    .replace("{path}", &path.display().to_string()),
+                message: interpolate(
+                    &tr(self.locale, MessageId::FleetSavedNotice),
+                    &[
+                        ("{name}", &self.fleet.name),
+                        ("{scope}", &long_scope_label(self.locale, self.scope)),
+                        ("{path}", &path.display().to_string()),
+                    ],
+                ),
             })),
             Err(err) => Some(ViewAction::Emit(ViewEvent::OpenTextPager {
                 title: tr(self.locale, MessageId::FleetSaveFailedTitle).into_owned(),
@@ -718,10 +749,14 @@ impl FleetDetailView {
         let target = self.scope.toggled();
         match save_fleet(&self.fleet, target, &self.workspace) {
             Ok(path) => Some(ViewAction::EmitAndClose(ViewEvent::FleetStoreChanged {
-                message: tr(self.locale, MessageId::FleetCopiedNotice)
-                    .replace("{name}", &self.fleet.name)
-                    .replace("{scope}", &long_scope_label(self.locale, target))
-                    .replace("{path}", &path.display().to_string()),
+                message: interpolate(
+                    &tr(self.locale, MessageId::FleetCopiedNotice),
+                    &[
+                        ("{name}", &self.fleet.name),
+                        ("{scope}", &long_scope_label(self.locale, target)),
+                        ("{path}", &path.display().to_string()),
+                    ],
+                ),
             })),
             Err(err) => Some(ViewAction::Emit(ViewEvent::OpenTextPager {
                 title: tr(self.locale, MessageId::FleetCopyFailedTitle).into_owned(),
@@ -733,10 +768,14 @@ impl FleetDetailView {
     fn select_scope(&self, scope: FleetScope) -> Option<ViewAction> {
         match set_selected(&self.fleet.name, scope, &self.workspace) {
             Ok(path) => Some(ViewAction::EmitAndClose(ViewEvent::FleetStoreChanged {
-                message: tr(self.locale, MessageId::FleetSelectedNotice)
-                    .replace("{name}", &self.fleet.name)
-                    .replace("{scope}", &long_scope_label(self.locale, scope))
-                    .replace("{path}", &path.display().to_string()),
+                message: interpolate(
+                    &tr(self.locale, MessageId::FleetSelectedNotice),
+                    &[
+                        ("{name}", &self.fleet.name),
+                        ("{scope}", &long_scope_label(self.locale, scope)),
+                        ("{path}", &path.display().to_string()),
+                    ],
+                ),
             })),
             Err(err) => Some(ViewAction::Emit(ViewEvent::OpenTextPager {
                 title: tr(self.locale, MessageId::FleetSelectFailedTitle).into_owned(),
@@ -747,17 +786,34 @@ impl FleetDetailView {
 
     fn footer_hints(&self) -> Vec<ActionHint> {
         match self.step {
+            DetailStep::Overview if self.rename_mode => vec![
+                ActionHint::new("Enter", tr(self.locale, MessageId::SessionsActionRename)),
+                ActionHint::new("Esc", tr(self.locale, MessageId::PickerActionCancel)),
+            ],
+            DetailStep::Overview if self.pending_remove => vec![
+                ActionHint::new(
+                    "y/Enter",
+                    tr(self.locale, MessageId::ExtensionsActionRemove),
+                ),
+                ActionHint::new("n/Esc", tr(self.locale, MessageId::PickerActionCancel)),
+            ],
             DetailStep::PickRoute => vec![
-                ActionHint::new("type", "filter"),
-                ActionHint::new("↑/↓", "move"),
-                ActionHint::new("Enter", "pick"),
+                ActionHint::new(
+                    tr(self.locale, MessageId::RouteActionType),
+                    tr(self.locale, MessageId::FleetEditorActionFilter),
+                ),
+                ActionHint::new("↑/↓", tr(self.locale, MessageId::PickerActionMove)),
+                ActionHint::new("Enter", tr(self.locale, MessageId::CtxInspActionSelect)),
                 ActionHint::new(
                     "Esc",
-                    if self.pick_query.is_empty() {
-                        "back"
-                    } else {
-                        "clear filter"
-                    },
+                    tr(
+                        self.locale,
+                        if self.pick_query.is_empty() {
+                            MessageId::OnboardActionBack
+                        } else {
+                            MessageId::PickerActionClearSearch
+                        },
+                    ),
                 ),
             ],
             DetailStep::Overview => {
@@ -765,23 +821,35 @@ impl FleetDetailView {
                     .selected_member()
                     .is_some_and(|member| member.shortlist);
                 let mut hints = vec![
-                    ActionHint::new("↑/↓", "move"),
+                    ActionHint::new("↑/↓", tr(self.locale, MessageId::PickerActionMove)),
                     ActionHint::new("Enter", tr(self.locale, MessageId::PickerActionModels)),
-                    ActionHint::new("r", "rename"),
-                    ActionHint::new("s", "save"),
-                    ActionHint::new("c", "copy destination"),
-                    ActionHint::new("u/w", "select"),
+                    ActionHint::new("r", tr(self.locale, MessageId::SessionsActionRename)),
+                    ActionHint::new("s", tr(self.locale, MessageId::RouterActionSave)),
+                    ActionHint::new("c", tr(self.locale, MessageId::FleetEditorActionCopy)),
+                    ActionHint::new("u/w", tr(self.locale, MessageId::CtxInspActionSelect)),
                 ];
                 if !shortlist {
-                    hints.push(ActionHint::new("t", "reasoning"));
+                    hints.push(ActionHint::new(
+                        "t",
+                        tr(self.locale, MessageId::FleetEditorReasoning),
+                    ));
                 }
                 if self.selected > 0 {
                     if !shortlist {
-                        hints.push(ActionHint::new("v", "vision"));
+                        hints.push(ActionHint::new(
+                            "v",
+                            tr(self.locale, MessageId::FleetEditorVision),
+                        ));
                     }
-                    hints.push(ActionHint::new("a/d", "add/remove"));
+                    hints.push(ActionHint::new(
+                        "a/d",
+                        tr(self.locale, MessageId::FleetEditorActionMembers),
+                    ));
                 }
-                hints.push(ActionHint::new("Esc", "back"));
+                hints.push(ActionHint::new(
+                    "Esc",
+                    tr(self.locale, MessageId::OnboardActionBack),
+                ));
                 hints
             }
         }
@@ -1002,26 +1070,38 @@ impl ModalView for FleetDetailView {
 
         // Header.
         let title = if self.rename_mode {
-            format!("Renaming: {}▏", self.rename_input)
-        } else {
             format!(
-                "Team `{}` · {} scope · {}",
-                self.fleet.name,
-                self.scope.label(),
-                self.source.display()
+                "{}▏",
+                tr(self.locale, MessageId::FleetEditorRename).replace("{name}", &self.rename_input)
+            )
+        } else {
+            interpolate(
+                &tr(self.locale, MessageId::FleetEditorTitle),
+                &[
+                    ("{name}", &self.fleet.name),
+                    ("{scope}", &long_scope_label(self.locale, self.scope)),
+                    ("{path}", &self.source.display().to_string()),
+                ],
             )
         };
         let mut header = vec![
             Line::from(vec![
-                Span::styled("─ Team ", Style::default().fg(palette::WHALE_ACTION).bold()),
+                Span::styled(
+                    format!("─ {} ", tr(self.locale, MessageId::FleetRosterHeaderLabel)),
+                    Style::default().fg(palette::WHALE_ACTION).bold(),
+                ),
                 Span::styled(title, Style::default().fg(palette::TEXT_SECONDARY)),
             ]),
             Line::from(""),
         ];
-        let operator_line = match &self.fleet.operator {
-            Some(op) => format!("  Coordinator: {}/{}", op.provider, op.model),
-            None => "  Coordinator: uses the session's model".to_string(),
-        };
+        let route = self.fleet.operator.as_ref().map_or_else(
+            || tr(self.locale, MessageId::FleetListSummarySessionModel).into_owned(),
+            |op| format!("{}/{}", op.provider, op.model),
+        );
+        let operator_line = format!(
+            "  {}",
+            tr(self.locale, MessageId::FleetEditorCoordinatorRoute).replace("{route}", &route)
+        );
         header.push(Line::from(Span::styled(
             operator_line,
             Style::default().fg(palette::TEXT_DIM),
@@ -1065,6 +1145,25 @@ impl FleetDetailView {
             .is_none_or(|row| row.roster_missing)
     }
 
+    fn reasoning_label(&self, tier: &str) -> String {
+        let id = match tier {
+            "inherit" => Some(MessageId::FleetEditorInherit),
+            "off" => Some(MessageId::SubagentsValueOff),
+            "minimal" => Some(MessageId::FleetEditorMinimal),
+            "low" => Some(MessageId::FleetEditorLow),
+            "medium" => Some(MessageId::FleetEditorMedium),
+            "high" => Some(MessageId::FleetEditorHigh),
+            "max" => Some(MessageId::FleetEditorMax),
+            "xhigh" => Some(MessageId::FleetEditorExtraHigh),
+            "ultra" => Some(MessageId::FleetEditorUltra),
+            "auto" => Some(MessageId::AppModeAuto),
+            _ => None,
+        };
+        let value = id.map(|id| tr(self.locale, id));
+        tr(self.locale, MessageId::WorkflowReceiptReasoning)
+            .replace("{value}", value.as_deref().unwrap_or(tier))
+    }
+
     fn render_overview(&self, area: Rect, buf: &mut Buffer) {
         self.row_hitboxes.borrow_mut().clear();
         if area.width == 0 || area.height == 0 {
@@ -1084,7 +1183,7 @@ impl FleetDetailView {
             };
             let operator_text = match &self.fleet.operator {
                 Some(op) => format!("{}/{}", op.provider, op.model),
-                None => "inherits session route".to_string(),
+                None => tr(self.locale, MessageId::FleetEditorInheritedRoute).into_owned(),
             };
             let reasoning = self
                 .fleet
@@ -1099,11 +1198,11 @@ impl FleetDetailView {
                 .is_some_and(|op| self.pin_drifted(&op.provider, &op.model));
             let mut spans = vec![
                 Span::styled(if selected { "» " } else { "  " }, base),
-                Span::styled("operator", base),
+                Span::styled(tr(self.locale, MessageId::FleetEditorCoordinator), base),
                 Span::styled("  ", Style::default()),
                 Span::styled(operator_text, Style::default().fg(palette::TEXT_MUTED)),
                 Span::styled(
-                    format!(" · reasoning: {reasoning}"),
+                    format!(" · {}", self.reasoning_label(reasoning)),
                     Style::default().fg(palette::TEXT_DIM),
                 ),
             ];
@@ -1135,25 +1234,40 @@ impl FleetDetailView {
                 Style::default().fg(palette::TEXT_SECONDARY)
             };
             let route = match (&member.provider, &member.model) {
-                (Some(p), Some(m)) => format!("model {p}/{m}"),
-                _ => "same model as this session".to_string(),
+                (Some(p), Some(m)) => tr(self.locale, MessageId::FleetEditorModel)
+                    .replace("{route}", &format!("{p}/{m}")),
+                _ => tr(self.locale, MessageId::FleetModelInheritSummary).into_owned(),
             };
             let reasoning = member.reasoning.as_deref().unwrap_or("inherit");
             let vision = if member.requires.iter().any(|r| r == "vision") {
-                " · vision"
+                format!(" · {}", tr(self.locale, MessageId::FleetEditorVision))
             } else {
-                ""
+                String::new()
             };
             if self.pending_remove && selected {
                 lines.push(Line::from(vec![Span::styled(
-                    format!("  Remove member `{}`? y/n", member.id),
+                    format!(
+                        "  {}",
+                        tr(self.locale, MessageId::FleetEditorRemove).replace("{id}", &member.id)
+                    ),
                     Style::default().fg(palette::WHALE_ERROR),
                 )]));
             } else {
                 let role = if member.shortlist {
                     String::new()
                 } else {
-                    format!(" · role {}", public_role_label(member.role_label()))
+                    let role = member.role_label();
+                    let label = match role {
+                        "manager" => Some(tr(self.locale, MessageId::FleetEditorManager)),
+                        "synthesizer" => Some(tr(self.locale, MessageId::FleetEditorSynthesizer)),
+                        _ => FleetRole::parse(role)
+                            .map(|parsed| super::format_agent_type(self.locale, &parsed)),
+                    };
+                    format!(
+                        " · {}",
+                        tr(self.locale, MessageId::WorkflowReceiptRole)
+                            .replace("{value}", label.as_deref().unwrap_or(role))
+                    )
                 };
                 let member_label = member
                     .display_name
@@ -1178,7 +1292,7 @@ impl FleetDetailView {
                         if member.shortlist {
                             String::new()
                         } else {
-                            format!(" · reasoning: {reasoning}{vision}")
+                            format!(" · {}{vision}", self.reasoning_label(reasoning))
                         },
                         Style::default().fg(palette::TEXT_DIM),
                     ),
@@ -1228,32 +1342,36 @@ impl FleetDetailView {
         let rows_visible = usize::from(area.height).max(1);
         let pick_scroll = self.pick_row.saturating_sub(rows_visible.saturating_sub(1));
         let target_label = match self.pick_target {
-            FleetRouteTarget::Operator => "operator",
+            FleetRouteTarget::Operator => tr(self.locale, MessageId::FleetEditorCoordinator),
             FleetRouteTarget::Member(idx) => self
                 .fleet
                 .members
                 .get(idx)
-                .map(|m| m.id.as_str())
-                .unwrap_or("member"),
+                .map(|member| std::borrow::Cow::Borrowed(member.id.as_str()))
+                .unwrap_or_else(|| tr(self.locale, MessageId::FleetEditorTarget)),
+        };
+        let prompt = if self.pick_query.is_empty() {
+            tr(self.locale, MessageId::FleetEditorPicker).replace("{target}", &target_label)
+        } else {
+            interpolate(
+                &tr(self.locale, MessageId::FleetEditorFiltered),
+                &[
+                    ("{target}", &target_label),
+                    ("{query}", &self.pick_query),
+                    ("{shown}", &filtered.len().to_string()),
+                    ("{total}", &self.routes.len().to_string()),
+                ],
+            )
         };
         let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(Line::from(Span::styled(
-            if self.pick_query.is_empty() {
-                format!("  Model for {target_label} — type to filter, Enter picks.")
-            } else {
-                format!(
-                    "  Model for {target_label} — filter: {} ({} of {})",
-                    self.pick_query,
-                    filtered.len(),
-                    self.routes.len()
-                )
-            },
+            format!("  {prompt}"),
             Style::default().fg(palette::TEXT_MUTED),
         )));
         lines.push(Line::from(""));
         if filtered.is_empty() {
             lines.push(Line::from(Span::styled(
-                "  No route matches. Backspace to widen the filter.",
+                format!("  {}", tr(self.locale, MessageId::FleetModelNoMatch)),
                 Style::default().fg(palette::TEXT_DIM),
             )));
         }
@@ -1293,9 +1411,9 @@ impl FleetDetailView {
 /// Build the model-picker rows: "same as session" first, then every
 /// concrete model across configured providers, with its readiness label —
 /// the same list the fleet setup wizard's Model step shows.
-fn build_route_rows(config: &Config) -> Vec<RouteRow> {
+fn build_route_rows(locale: Locale, config: &Config) -> Vec<RouteRow> {
     let mut rows = vec![RouteRow {
-        label: "same as session".to_string(),
+        label: tr(locale, MessageId::FleetModelInheritSummary).into_owned(),
         summary: String::new(),
         provider: None,
         model: None,
@@ -1306,22 +1424,40 @@ fn build_route_rows(config: &Config) -> Vec<RouteRow> {
     let routes = super::fleet_setup::cross_provider_model_routes(config, active.as_ref(), &health);
     for (provider, model, readiness) in routes {
         let provider_label = crate::tui::views::fleet_setup::provider_display_label(&provider);
-        let readiness_label = readiness
-            .blocked_reason()
-            .map(|r| r.into_owned())
-            .unwrap_or_else(|| readiness.label().into_owned());
         let roster_missing = codewhale_engine::provider_catalog_live::pin_missing_from_fresh_roster(
             config, &provider, &model,
         ) == Some(true);
         rows.push(RouteRow {
             label: format!("{provider_label}/{model}"),
-            summary: readiness_label,
+            summary: route_readiness_label(locale, readiness),
             provider: Some(provider),
             model: Some(model),
             roster_missing,
         });
     }
     rows
+}
+
+fn route_readiness_label(
+    locale: Locale,
+    state: codewhale_engine::provider_readiness::ResolvedProviderReadiness,
+) -> String {
+    use codewhale_engine::provider_readiness::ResolvedProviderReadiness as Readiness;
+    let id = match state {
+        Readiness::MissingKey => MessageId::FleetEditorMissingKey,
+        Readiness::MissingLogin => MessageId::FleetEditorMissingLogin,
+        Readiness::ExternalConsentPendingSelection => MessageId::FleetEditorConsent,
+        Readiness::SavedUnchecked => MessageId::FleetEditorSaved,
+        Readiness::ImportedTokenUnchecked => MessageId::FleetEditorImported,
+        Readiness::NoAuthUnchecked => MessageId::FleetEditorNoAuth,
+        Readiness::LocalUnchecked => MessageId::FleetEditorLocal,
+        Readiness::Ready => MessageId::SetupReportReady,
+        Readiness::ConnectionCheckedModelUnchecked => MessageId::FleetEditorUnchecked,
+        Readiness::InvalidRoute => MessageId::FleetEditorInvalidRoute,
+        Readiness::Legacy => MessageId::FleetEditorLegacyRoute,
+        Readiness::SavedLastCheckFailed { message, .. } => return message,
+    };
+    tr(locale, id).into_owned()
 }
 
 /// Reasoning tiers a route may genuinely express, keyed by provider class.
@@ -1384,6 +1520,89 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn editor_renders_localized_routes_roles_prompts_and_keeps_member_ids() {
+        fn draw(view: &FleetDetailView) -> String {
+            let area = Rect::new(0, 0, 190, 14);
+            let mut buf = Buffer::empty(area);
+            view.render(area, &mut buf);
+            buf.content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .split_whitespace()
+                .collect()
+        }
+
+        let ws = tempfile::tempdir().unwrap();
+        let _home = crate::test_support::SealedHome::at(ws.path());
+        for (locale, coordinator, reasoning, role, rename, remove, filter) in [
+            (
+                Locale::En,
+                "Coordinator:deepseek/deepseek-v4-flash",
+                "reasoninghigh",
+                "roleexplore",
+                "Renaming:",
+                "Removemember",
+                "filter:",
+            ),
+            (
+                Locale::ZhHans,
+                "协调者：deepseek/deepseek-v4-flash",
+                "思考高",
+                "角色侦察员",
+                "重命名：",
+                "移除成员",
+                "筛选：",
+            ),
+        ] {
+            let mut fleet = sample_fleet("Team-{scope}");
+            fleet.members[0].id = "agent-literal".into();
+            fleet.members[0].reasoning = Some("high".into());
+            let source = save_fleet(&fleet, FleetScope::Workspace, ws.path()).unwrap();
+            let mut view = FleetDetailView::from_parts(
+                fleet,
+                locale,
+                FleetScope::Workspace,
+                source,
+                ws.path().into(),
+                &Config::default(),
+                "deepseek",
+                "deepseek-v4-pro",
+            );
+            view.selected = 1;
+            let overview = draw(&view);
+            for text in [
+                coordinator,
+                reasoning,
+                role,
+                "Team-{scope}",
+                "agent-literal",
+            ] {
+                assert!(overview.contains(text), "{text}: {overview}");
+            }
+            let Some(ViewAction::EmitAndClose(ViewEvent::FleetStoreChanged { message })) =
+                view.save()
+            else {
+                panic!("expected save receipt")
+            };
+            assert!(message.contains("Team-{scope}"), "{message}");
+            view.start_rename();
+            assert_eq!(view.footer_hints()[0].key, "Enter");
+            assert!(draw(&view).contains(rename));
+            view.rename_mode = false;
+            view.pending_remove = true;
+            assert_eq!(view.footer_hints()[0].key, "y/Enter");
+            assert!(draw(&view).contains(&format!("{remove}`agent-literal`")));
+            view.pending_remove = false;
+            view.open_route_picker(FleetRouteTarget::Member(0));
+            view.pick_query = "{shown}".into();
+            let picker = draw(&view);
+            assert!(picker.contains("agent-literal"));
+            assert!(picker.contains(&format!("{filter}{{shown}}")), "{picker}");
+        }
     }
 
     #[test]
