@@ -7,7 +7,6 @@ mod advisor;
 mod agent;
 mod clear;
 mod constitution;
-mod copy;
 // This group dir intentionally has a `core.rs` child module with the same
 // name. The module_inception allow is a permanent structure rationale, not
 // migration scaffolding; see docs/architecture/command-dispatch.md.
@@ -57,10 +56,7 @@ impl CommandGroup for CoreCommands {
                 clear::ClearCmd::info(),
                 clear::ClearCmd::execute,
             )),
-            Box::new(FunctionCommand::new(
-                copy::CopyCmd::info(),
-                copy::CopyCmd::execute,
-            )),
+            crate::commands::core_navigation_host::registration::<2>(),
             Box::new(FunctionCommand::new(
                 exit::ExitCmd::info(),
                 exit::ExitCmd::execute,
@@ -121,7 +117,7 @@ impl CommandGroup for CoreCommands {
                 workflow::AutoCmd::info(),
                 workflow::AutoCmd::execute,
             )),
-            crate::commands::core_navigation_host::registration::<2>(),
+            crate::commands::core_navigation_host::registration::<3>(),
             Box::new(FunctionCommand::new(
                 setup::SetupCmd::info(),
                 setup::SetupCmd::execute,
@@ -134,17 +130,17 @@ impl CommandGroup for CoreCommands {
                 agent::AgentCmd::info(),
                 agent::AgentCmd::execute,
             )),
-            crate::commands::core_navigation_host::registration::<3>(),
             crate::commands::core_navigation_host::registration::<4>(),
             crate::commands::core_navigation_host::registration::<5>(),
+            crate::commands::core_navigation_host::registration::<6>(),
             Box::new(FunctionCommand::new(
                 feedback::FeedbackCmd::info(),
                 feedback::FeedbackCmd::execute,
             )),
             Box::new(FunctionCommand::new(hf::HfCmd::info(), hf::HfCmd::execute)),
-            crate::commands::core_navigation_host::registration::<6>(),
             crate::commands::core_navigation_host::registration::<7>(),
             crate::commands::core_navigation_host::registration::<8>(),
+            crate::commands::core_navigation_host::registration::<9>(),
             Box::new(FunctionCommand::new(
                 profile::ProfileCmd::info(),
                 profile::ProfileCmd::execute,
@@ -153,11 +149,11 @@ impl CommandGroup for CoreCommands {
                 rlm::RlmCmd::info(),
                 rlm::RlmCmd::execute,
             )),
-            crate::commands::core_navigation_host::registration::<9>(),
             crate::commands::core_navigation_host::registration::<10>(),
-            Box::new(FunctionCommand::new(&effort::EFFORT_INFO, effort::effort,)),
             crate::commands::core_navigation_host::registration::<11>(),
+            Box::new(FunctionCommand::new(&effort::EFFORT_INFO, effort::effort,)),
             crate::commands::core_navigation_host::registration::<12>(),
+            crate::commands::core_navigation_host::registration::<13>(),
             Box::new(FunctionCommand::new(
                 pin::PinCmd::info(),
                 pin::PinCmd::execute

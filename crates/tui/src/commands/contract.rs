@@ -185,6 +185,7 @@ pub(crate) fn key_to_message_id(key: &'static str) -> Option<MessageId> {
         "cmd_branch_description" => MessageId::CmdBranchDescription,
         "cmd_cache_description" => MessageId::CmdCacheDescription,
         "cmd_change_description" => MessageId::CmdChangeDescription,
+        "cmd_copy_description" => MessageId::CmdCopyDescription,
         "cmd_clear_description" => MessageId::CmdClearDescription,
         "cmd_color_description" => MessageId::CmdColorDescription,
         "cmd_compact_description" => MessageId::CmdCompactDescription,

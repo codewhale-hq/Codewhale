@@ -1,7 +1,7 @@
 # Core navigation normal-library proof
 
 This unpublished workspace package mounts the **actual production navigation
-root**, all ten leaf modules and all 13 registrations. It contains no substitute
+root**, all eleven leaf modules and all 14 registrations. It contains no substitute
 App, copied implementation, test-only root or host adapter. Shared metadata,
 results/actions, facets and nested payloads are normal dependencies.
 
@@ -30,7 +30,7 @@ services. New normal packages require source review, not automatic approval.
 Host registration, concrete filesystem/view/config effects, real-App tests and
 voice recording/transcription remain outside the movable slice. The rest of core
 is not claimed portable by this package: the top-level `core` frontier remains
-pending for its other 27 registrations at adoption. Physical movement is a later feature.
+pending for its other registrations. Physical movement is a later feature.
 
 ## Developer and CI coverage
 

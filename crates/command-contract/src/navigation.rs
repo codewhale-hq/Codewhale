@@ -84,6 +84,8 @@ pub enum AnchorWriteError {
 }
 
 pub trait CommandNavigationContext {
+    fn completed_assistant_output(&self) -> Option<String>;
+    fn show_copy_receipt(&mut self, message: &str, is_error: bool);
     fn help_topic(&self, topic: &str) -> NavigationHelpTopic;
     fn cached_skills(&self) -> Vec<NavigationSkill>;
     fn help_is_open(&self) -> bool;

@@ -13,6 +13,26 @@ pub(super) struct NavigationAdapter<'a> {
 }
 
 impl CommandNavigationContext for NavigationAdapter<'_> {
+    fn completed_assistant_output(&self) -> Option<String> {
+        self.host
+            .app
+            .borrow()
+            .completed_assistant_output_receipt()
+            .map(str::to_owned)
+    }
+
+    fn show_copy_receipt(&mut self, message: &str, is_error: bool) {
+        use crate::tui::app::{StatusToast, StatusToastLevel};
+        let level = if is_error {
+            StatusToastLevel::Error
+        } else {
+            StatusToastLevel::Info
+        };
+        self.host.app.borrow_mut().push_status_toast_record(
+            StatusToast::new(message.to_owned(), level, Some(8_000)).for_command_receipt(),
+        );
+    }
+
     fn help_topic(&self, topic: &str) -> NavigationHelpTopic {
         let app = self.host.app.borrow();
         let builtin = crate::commands::get_command_info(topic);
@@ -206,6 +226,13 @@ pub(super) fn replace_anchor_document(
 
 pub(super) fn resolve_message(key: &str) -> Option<MessageId> {
     Some(match key {
+        "cmd_copy_no_output" => MessageId::CmdCopyNoOutput,
+        "cmd_copy_queued" => MessageId::CmdCopyQueued,
+        "cmd_copy_queued_no_backup" => MessageId::CmdCopyQueuedNoBackup,
+        "cmd_copy_success" => MessageId::CmdCopySuccess,
+        "cmd_copy_success_no_backup" => MessageId::CmdCopySuccessNoBackup,
+        "cmd_copy_failed" => MessageId::CmdCopyFailed,
+        "cmd_copy_failed_no_backup" => MessageId::CmdCopyFailedNoBackup,
         "voice_disabled" => MessageId::VoiceDisabled,
         "voice_enabled" => MessageId::VoiceEnabled,
         "voice_err_no_recorder" => MessageId::VoiceErrNoRecorder,

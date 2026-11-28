@@ -10,14 +10,14 @@ PROOF = "tests/portable-core-navigation/src/lib.rs"
 MANIFEST = "tests/portable-core-navigation/Cargo.toml"
 HOST = f"{GROUP}/mod.rs"
 PAIRS = (
-    ("anchor", "AnchorCmd"), ("help", "HelpCmd"), ("hotbar", "HotbarCmd"),
+    ("anchor", "AnchorCmd"), ("help", "HelpCmd"), ("copy", "CopyCmd"), ("hotbar", "HotbarCmd"),
     ("links", "LinksCmd"), ("transcript", "TranscriptCmd"), ("turn", "TurnCmd"),
     ("home", "HomeCmd"), ("home", "OverviewCmd"), ("workspace", "WorkspaceCmd"),
     ("translate", "TranslateCmd"), ("voice", "VoiceCmd"),
     ("voice", "VoiceSendCmd"), ("voice", "VoiceControlCmd"),
 )
 NAMES = {
-    "anchor": ("anchor",), "help": ("help",), "hotbar": ("hotbar",),
+    "anchor": ("anchor",), "help": ("help",), "copy": ("copy",), "hotbar": ("hotbar",),
     "links": ("links",), "transcript": ("transcript",), "turn": ("turn",),
     "home": ("home", "overview"), "workspace": ("workspace",),
     "translate": ("translate",), "voice": ("voice", "voicesend", "voicecontrol"),
@@ -118,8 +118,8 @@ def violations(root):
             if conditional_source(text):
                 errors.append(f"conditional declared movable source: {name}")
     inventory = source_text(root / ROOTS[0])
-    if tuple(PAIR.findall(inventory)) != PAIRS or not re.search(r';\s*13\s*\]', inventory):
-        errors.append("production inventory must contain all 13 real matching registrations in original filtered order")
+    if tuple(PAIR.findall(inventory)) != PAIRS or not re.search(r';\s*14\s*\]', inventory):
+        errors.append("production inventory must contain all 14 real matching registrations in original filtered order")
     for module, expected in NAMES.items():
         path = root / GROUP / f"{module}.rs"
         if path.is_file() and tuple(re.findall(r'\bname:\s*"([^"]+)"', source_text(path))) != expected:
@@ -128,7 +128,7 @@ def violations(root):
         r'core_navigation_host::registration::<(\d+)>\(\)', source_text(root / HOST)
     )]
     if actual != list(range(len(PAIRS))):
-        errors.append("real host core registry must contain all 13 inventory entries exactly once in relative order")
+        errors.append("real host core registry must contain all 14 inventory entries exactly once in relative order")
     return errors
 
 
@@ -140,7 +140,7 @@ def main():
     for error in errors:
         print(f"[core-navigation-proof] FAIL: {error}")
     if not errors:
-        print("[core-navigation-proof] PASS: all 13 actual registrations, complete source closure, host parity and approved normal graph; core remains pending")
+        print("[core-navigation-proof] PASS: all 14 actual registrations, complete source closure, host parity and approved normal graph; core remains pending")
     return bool(errors)
 
 

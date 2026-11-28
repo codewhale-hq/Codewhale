@@ -16,6 +16,8 @@ mod config_main_import_host;
 mod config_policy_host;
 pub(crate) mod contract;
 pub(crate) use contract::from_command_mode;
+#[cfg(test)]
+mod core_copy_host_tests;
 mod core_navigation_host;
 #[cfg(test)]
 mod core_navigation_host_tests;
@@ -1491,6 +1493,7 @@ mod tests {
         }
         for (name, service, needs_presentation) in [
             ("help", Caps::NAVIGATION, true),
+            ("copy", Caps::NAVIGATION | Caps::SESSION_EXPORT, true),
             ("home", Caps::NAVIGATION, true),
             ("overview", Caps::NAVIGATION, true),
             ("links", Caps::NAVIGATION, true),

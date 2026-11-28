@@ -1,5 +1,7 @@
 #[path = "anchor.rs"]
 pub mod anchor;
+#[path = "copy.rs"]
+pub mod copy;
 #[path = "help.rs"]
 pub mod help;
 #[path = "home.rs"]
@@ -26,10 +28,11 @@ use codewhale_command_contract::outcome::CoreNavigationCommandResult;
 pub fn portable_handlers() -> [(
     &'static CommandInfo,
     CommandHandler<CoreNavigationCommandResult>,
-); 13] {
+); 14] {
     [
         (anchor::AnchorCmd::info(), anchor::AnchorCmd::handler()),
         (help::HelpCmd::info(), help::HelpCmd::handler()),
+        (copy::CopyCmd::info(), copy::CopyCmd::handler()),
         (hotbar::HotbarCmd::info(), hotbar::HotbarCmd::handler()),
         (links::LinksCmd::info(), links::LinksCmd::handler()),
         (
