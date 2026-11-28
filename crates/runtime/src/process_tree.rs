@@ -269,6 +269,26 @@ impl ProcessTree {
     }
 }
 
+/// Bounded wait for the direct child to exit without reaping it. Returns true
+/// once it has exited, propagates an observation error, and returns
+/// false when the grace elapsed first.
+#[cfg(unix)]
+pub fn wait_leader_exit_until(
+    child: &std::process::Child,
+    deadline: std::time::Instant,
+) -> std::io::Result<bool> {
+    loop {
+        if leader_exited_unreaped(child.id())? {
+            return Ok(true);
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        std::thread::sleep(remaining.min(std::time::Duration::from_millis(10)));
+    }
+}
+
 /// Whether child `pid` has exited and still awaits its reap. Non-blocking and
 /// non-reaping (`WNOWAIT`): while this is `true` the pid, and the process
 /// group it leads, cannot be reused. Errors when `pid` is not an unreaped

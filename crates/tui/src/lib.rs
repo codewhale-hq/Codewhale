@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use tempfile::NamedTempFile;
+#[cfg(not(unix))]
 use wait_timeout::ChildExt;
 
 use codewhale_dependencies::ExternalTool;
@@ -14782,10 +14783,6 @@ fn run_sandbox_command(config: &Config, args: SandboxArgs) -> Result<()> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
-    // The command leads a process group (a Job on Windows, joined before its
-    // first instruction runs) so the timeout ends everything it started. The
-    // sandbox run is the tree's lifetime: dropping `tree` on return ends
-    // anything the command left running, as `contained_output` does.
     let (mut child, tree) = codewhale_runtime::process_tree::spawn_contained_std(&mut cmd)
         .map_err(|e| anyhow::anyhow!("Failed to run command: {e}"))?;
     let stdout_handle = child
@@ -14830,29 +14827,7 @@ fn run_sandbox_command(config: &Config, args: SandboxArgs) -> Result<()> {
         let _ = done_tx.send(());
     });
 
-    let timeout = exec_env.timeout;
-    let deadline = Instant::now() + timeout;
-    let Some(status) = child.wait_timeout(timeout)? else {
-        let _ = tree.kill();
-        let _ = child.kill();
-        let _ = child.wait();
-        bail!("Command timed out after {}ms", timeout.as_millis());
-    };
-    // A descendant may still hold the output pipes. Let it finish inside the
-    // same budget, then end the tree so the drain always reaches EOF.
-    let mut drained = 0;
-    while drained < 2 {
-        match done_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-            Ok(()) => drained += 1,
-            Err(_) => break,
-        }
-    }
-    if drained < 2 {
-        let _ = tree.kill();
-        while drained < 2 && done_rx.recv_timeout(Duration::from_secs(1)).is_ok() {
-            drained += 1;
-        }
-    }
+    let status = wait_for_sandbox_output(child, tree, done_rx, exec_env.timeout)?;
 
     let stderr = stderr_tail
         .lock()
@@ -14871,6 +14846,52 @@ fn run_sandbox_command(config: &Config, args: SandboxArgs) -> Result<()> {
         bail!("Command failed with exit code {exit_code}");
     }
     Ok(())
+}
+
+fn wait_for_sandbox_output(
+    mut child: std::process::Child,
+    tree: codewhale_runtime::process_tree::ProcessTree,
+    done: std::sync::mpsc::Receiver<()>,
+    timeout: Duration,
+) -> Result<std::process::ExitStatus> {
+    let deadline = Instant::now() + timeout;
+    #[cfg(unix)]
+    let exited = match codewhale_runtime::process_tree::wait_leader_exit_until(&child, deadline) {
+        Err(error) if error.raw_os_error() == Some(libc::ECHILD) => {
+            tree.disarm();
+            return Err(error.into());
+        }
+        result => result,
+    };
+    #[cfg(not(unix))]
+    let exited = child.wait_timeout(timeout).map(|status| status.is_some());
+    let mut pending_streams = 2;
+    let mut drain_until = |deadline: Instant| {
+        while pending_streams > 0 {
+            if done
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .is_err()
+            {
+                return false;
+            }
+            pending_streams -= 1;
+        }
+        true
+    };
+    let finish_drain_after_cleanup = matches!(exited, Ok(true)) && !drain_until(deadline);
+    let _ = tree.kill();
+    tree.disarm();
+    if !matches!(exited, Ok(true)) {
+        let _ = child.kill();
+    }
+    let status = child.wait();
+    if finish_drain_after_cleanup {
+        drain_until(Instant::now() + Duration::from_secs(1));
+    }
+    if !exited? {
+        bail!("Command timed out after {}ms", timeout.as_millis());
+    }
+    Ok(status?)
 }
 
 fn parse_sandbox_policy(

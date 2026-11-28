@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Quick Open and the Files filter find nested files in the active conversation’s workspace.
+- On Unix, `sandbox run` finishes its process-group cleanup before reaping the command and preserves its exit status.
 - Explicit Runtime shutdown stops the background shell jobs it owns, including jobs started before a thread's first turn. Their final status remains available to clients. Session store switches are refused while owned jobs are still active.
 - Terminal notifications now report queued sends only after acceptance and clear an earlier hotbar or permission-save failure when its retry succeeds. (#7464)
 

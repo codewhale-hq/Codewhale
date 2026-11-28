@@ -53,3 +53,59 @@ fn sandbox_read_guard_denies_active_and_known_agent_credentials_in_real_file_too
         },
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn sandbox_wait_preserves_the_leader_until_output_is_drained() {
+    use codewhale_runtime::process_tree::{leader_exited_unreaped, spawn_contained_std};
+    use std::process::Command;
+    use std::sync::mpsc::sync_channel;
+    use std::time::Duration;
+
+    let (child, tree) = spawn_contained_std(Command::new("sh").args(["-c", "exit 7"])).unwrap();
+    let pid = child.id();
+    let (done_tx, done_rx) = sync_channel(0);
+    let observer = std::thread::spawn(move || {
+        done_tx.send(()).unwrap();
+        let leader_still_waitable = leader_exited_unreaped(pid);
+        done_tx.send(()).unwrap();
+        leader_still_waitable
+    });
+    let status = crate::wait_for_sandbox_output(child, tree, done_rx, Duration::from_secs(5))
+        .expect("wait for the command and both streams");
+    assert!(observer.join().unwrap().unwrap());
+    assert_eq!(status.code(), Some(7));
+}
+
+#[cfg(unix)]
+#[test]
+fn sandbox_wait_collects_pending_output_after_cleanup() {
+    use codewhale_runtime::process_tree::{
+        leader_exited_unreaped, spawn_contained_std, wait_leader_exit_until,
+    };
+    use std::process::Command;
+    use std::sync::mpsc::sync_channel;
+    use std::time::{Duration, Instant};
+
+    let (child, tree) = spawn_contained_std(Command::new("sh").args(["-c", "exit 0"])).unwrap();
+    assert!(wait_leader_exit_until(&child, Instant::now() + Duration::from_secs(5)).unwrap());
+    let pid = child.id();
+    let (done_tx, done_rx) = sync_channel(0);
+    let last_output = std::thread::spawn(move || {
+        done_tx.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let error = loop {
+            if let Err(error) = leader_exited_unreaped(pid) {
+                break error;
+            }
+            assert!(Instant::now() < deadline, "command was not reaped");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(error.raw_os_error(), Some(libc::ECHILD));
+        done_tx.send(()).expect("collect the final output");
+    });
+    let status = crate::wait_for_sandbox_output(child, tree, done_rx, Duration::from_millis(350))
+        .expect("the command exited before the deadline");
+    last_output.join().unwrap();
+    assert!(status.success());
+}

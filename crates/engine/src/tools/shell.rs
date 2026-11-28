@@ -10,6 +10,8 @@
 
 use anyhow::{Context, Result, anyhow};
 use base64::Engine as _;
+#[cfg(unix)]
+use codewhale_runtime::process_tree::wait_leader_exit_until;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -701,23 +703,6 @@ fn wait_child_bounded(child: &mut Child, grace: Duration) -> bool {
             return false;
         }
         std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
-/// Bounded wait for the direct child to exit without reaping it. Returns true
-/// once it has exited, propagates an observation error, and returns
-/// false when the grace elapsed first.
-#[cfg(unix)]
-fn wait_leader_exit_until(child: &Child, deadline: Instant) -> std::io::Result<bool> {
-    loop {
-        if codewhale_runtime::process_tree::leader_exited_unreaped(child.id())? {
-            return Ok(true);
-        }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Ok(false);
-        }
-        std::thread::sleep(remaining.min(Duration::from_millis(10)));
     }
 }
 
