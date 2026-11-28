@@ -187,6 +187,16 @@ async fn execute_ordinary(state: RuntimeApiState, request: RuntimeOwnerRequest) 
             .await)?;
             serde_json::to_value(value)?
         }
+        RuntimeOwnerRequest::LookupTurnOperation {
+            thread_id,
+            operation_key,
+        } => {
+            let Json(receipt) =
+                api(
+                    get_thread_turn_operation(State(state), Path((thread_id, operation_key))).await,
+                )?;
+            serde_json::to_value(receipt)?
+        }
         RuntimeOwnerRequest::StartTurn { thread_id, body } => {
             let (_, Json(value)) = api(start_thread_turn_for_caller(
                 State(state),

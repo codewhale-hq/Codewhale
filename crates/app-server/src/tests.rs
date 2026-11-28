@@ -2400,6 +2400,220 @@ async fn stdio_runtime_bridge_streams_response_delta_events() {
     assert_eq!(lines[1]["delta"], "hello");
 }
 
+#[tokio::test]
+async fn native_stdio_recovers_lost_admission_and_cleans_up_disconnected_callers() {
+    #[derive(Clone, Default)]
+    struct Fixture {
+        starts: Arc<Mutex<Vec<(String, String)>>>,
+        lookups: Arc<Mutex<Vec<(String, String)>>>,
+        interrupts: Arc<Mutex<Vec<(String, String)>>>,
+        started: Arc<tokio::sync::Notify>,
+        interrupted: Arc<tokio::sync::Notify>,
+        finish_start: Arc<tokio::sync::Notify>,
+        pending_reads: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    async fn start(
+        State(f): State<Fixture>,
+        AxumPath(thread): AxumPath<String>,
+        Json(body): Json<Value>,
+    ) -> StatusCode {
+        let key = body["operation_key"].as_str().unwrap().to_owned();
+        assert!(uuid::Uuid::parse_str(&key).is_ok());
+        f.starts.lock().await.push((thread.clone(), key));
+        f.started.notify_one();
+        if thread == "cancel" || thread == "drop" {
+            f.finish_start.notified().await;
+        }
+        if thread.starts_with("refused") {
+            StatusCode::FORBIDDEN
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+    }
+    async fn lookup(
+        State(f): State<Fixture>,
+        AxumPath(identity): AxumPath<(String, String)>,
+    ) -> Response {
+        assert!(f.starts.lock().await.contains(&identity));
+        if identity.0 == "drop" {
+            match f
+                .pending_reads
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            {
+                0 => return StatusCode::NOT_FOUND.into_response(),
+                1 => return StatusCode::CONFLICT.into_response(),
+                _ => {}
+            }
+        }
+        f.lookups.lock().await.push(identity.clone());
+        if identity.0 == "refused" {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        let thread = if identity.0 == "mismatch" {
+            "somewhere-else"
+        } else {
+            &identity.0
+        };
+        Json(json!({"thread_id":thread,"id":"ours","effective_model":"fixture"})).into_response()
+    }
+    async fn interrupt(
+        State(f): State<Fixture>,
+        AxumPath(identity): AxumPath<(String, String)>,
+    ) -> Json<Value> {
+        f.interrupts.lock().await.push(identity);
+        f.interrupted.notify_one();
+        Json(json!({"interrupted":true}))
+    }
+    async fn events(AxumPath(thread): AxumPath<String>) -> impl IntoResponse {
+        let frames = ["another-turn", "ours"].map(|id| sse_frame("turn.completed", json!({
+            "thread_id":thread,"turn_id":id,"payload":{"turn":{"id":id,"thread_id":thread,"status":"completed"}}
+        }))).join("");
+        ([(header::CONTENT_TYPE, "text/event-stream")], frames)
+    }
+    let f = Fixture::default();
+    let router = Router::new()
+        .route("/v1/threads/{id}/turns", post(start))
+        .route("/v1/threads/{id}/turn-operations/{key}", get(lookup))
+        .route("/v1/threads/{id}/turns/{turn}/interrupt", post(interrupt))
+        .route("/v1/threads/{id}/events", get(events))
+        .with_state(f.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let owner = Arc::new(MockRuntimeFrontend {
+        stalled_subscription: None,
+        bridge: Arc::new(Mutex::new(RuntimeBridge::from_base_url_for_test(format!(
+            "http://{addr}"
+        )))),
+    });
+    let subscription_started = Arc::new(tokio::sync::Notify::new());
+    let stalled = Arc::new(MockRuntimeFrontend {
+        stalled_subscription: Some(subscription_started.clone()),
+        bridge: owner.bridge.clone(),
+    });
+    let token = tokio_util::sync::CancellationToken::new();
+    let cancellation = token.clone();
+    let pending = tokio::spawn(async move {
+        message_native_thread(
+            stalled,
+            "no-subscription",
+            RuntimeTurnInput {
+                input: "hello",
+                images: &[],
+                max_output_tokens: None,
+                expected_workspace: None,
+                cancellation: Some(&cancellation),
+            },
+            &mut tokio::io::sink(),
+            None,
+            None,
+            None,
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), subscription_started.notified())
+        .await
+        .unwrap();
+    token.cancel();
+    let error = tokio::time::timeout(Duration::from_secs(5), pending)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(error.to_string().contains("before native turn admission"));
+    assert!(f.starts.lock().await.is_empty());
+    for thread in [
+        "observe",
+        "refused",
+        "refused-after-start",
+        "mismatch",
+        "cancel",
+        "drop",
+    ] {
+        let token = tokio_util::sync::CancellationToken::new();
+        let cloned = token.clone();
+        let owner = owner.clone();
+        let task = tokio::spawn(async move {
+            message_native_thread(
+                owner,
+                thread,
+                RuntimeTurnInput {
+                    input: "hello",
+                    images: &[],
+                    max_output_tokens: None,
+                    expected_workspace: None,
+                    cancellation: Some(&cloned),
+                },
+                &mut tokio::io::sink(),
+                None,
+                None,
+                None,
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), f.started.notified())
+            .await
+            .unwrap();
+        match thread {
+            "observe" => assert_eq!(task.await.unwrap().unwrap()["data"]["turn_id"], "ours"),
+            "refused" | "refused-after-start" => {
+                if thread == "refused-after-start" {
+                    tokio::time::timeout(Duration::from_secs(5), f.interrupted.notified())
+                        .await
+                        .unwrap();
+                }
+                let error = task.await.unwrap().unwrap_err();
+                assert_eq!(
+                    error.downcast_ref::<RuntimeOwnerFailure>().unwrap().status,
+                    403
+                );
+            }
+            "mismatch" => assert!(
+                format!("{:#}", task.await.unwrap().unwrap_err())
+                    .contains("another thread identity")
+            ),
+            _ => {
+                if thread == "drop" {
+                    task.abort();
+                    assert!(task.await.unwrap_err().is_cancelled());
+                } else {
+                    token.cancel();
+                    assert!(
+                        format!("{:#}", task.await.unwrap().unwrap_err())
+                            .contains("canceled during native turn admission")
+                    );
+                }
+                assert!(f.lookups.lock().await.iter().all(|(id, _)| id != thread));
+                f.finish_start.notify_one();
+                tokio::time::timeout(Duration::from_secs(5), f.interrupted.notified())
+                    .await
+                    .unwrap();
+            }
+        }
+    }
+    let starts = f.starts.lock().await;
+    assert_eq!(starts.len(), 6);
+    assert_eq!(
+        starts
+            .iter()
+            .map(|(_, key)| key)
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        6
+    );
+    assert_eq!(*starts, *f.lookups.lock().await);
+    assert_eq!(
+        *f.interrupts.lock().await,
+        [
+            ("refused-after-start".into(), "ours".into()),
+            ("cancel".into(), "ours".into()),
+            ("drop".into(), "ours".into())
+        ]
+    );
+    server.abort();
+}
+
 /// Audit R03-05: a stream that breaks before `turn.completed` must not
 /// report `response_end` ahead of the error, and must not leave the
 /// runtime turn running with nothing able to interrupt it.
@@ -3638,10 +3852,12 @@ async fn private_websocket_upgrade_refuses_origin_and_bounded_header_exhaustion(
 
 struct MockRuntimeFrontend {
     bridge: SharedRuntimeBridge,
+    stalled_subscription: Option<Arc<tokio::sync::Notify>>,
 }
 
 pub(super) async fn install_mock_native_services(state: &mut AppState) {
     state.owner_frontend = Some(Arc::new(MockRuntimeFrontend {
+        stalled_subscription: None,
         bridge: state
             .runtime_bridge
             .lock()
@@ -3817,6 +4033,21 @@ impl RuntimeOwnerFrontend for MockRuntimeFrontend {
                     Some(serde_json::to_value(body)?),
                     Vec::new(),
                 ),
+                RuntimeOwnerRequest::LookupTurnOperation {
+                    thread_id,
+                    operation_key,
+                } => (
+                    Method::GET,
+                    vec![
+                        "v1".into(),
+                        "threads".into(),
+                        thread_id,
+                        "turn-operations".into(),
+                        operation_key,
+                    ],
+                    None,
+                    Vec::new(),
+                ),
                 RuntimeOwnerRequest::StartTurn { thread_id, body } => (
                     Method::POST,
                     vec![
@@ -3951,6 +4182,10 @@ impl RuntimeOwnerFrontend for MockRuntimeFrontend {
         Box<dyn std::future::Future<Output = Result<RuntimeOwnerEventStream>> + Send + '_>,
     > {
         Box::pin(async move {
+            if let Some(started) = &self.stalled_subscription {
+                started.notify_one();
+                std::future::pending::<()>().await;
+            }
             let (client, mut url, token) = {
                 let bridge = self.bridge.lock().await;
                 (

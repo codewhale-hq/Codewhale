@@ -285,6 +285,10 @@ pub enum RuntimeOwnerRequest {
     HistoryMutate(codewhale_protocol::CanonicalThreadMutationRequest),
     HistoryLookup(codewhale_protocol::CanonicalThreadOperationLookup),
     HistoryRecover(codewhale_protocol::CanonicalThreadOperationRecovery),
+    LookupTurnOperation {
+        thread_id: String,
+        operation_key: String,
+    },
     StartTurn {
         thread_id: String,
         body: Value,

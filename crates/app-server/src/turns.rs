@@ -173,6 +173,7 @@ pub(crate) async fn run_native_turn_for<W: AsyncWrite + Unpin>(
                 error.context(NativeTurnContext {
                     thread_id: runtime_thread_id,
                     turn_id: None,
+                    operation_key: None,
                 })
             }
         })
@@ -183,7 +184,7 @@ pub(crate) async fn run_native_turn_for<W: AsyncWrite + Unpin>(
         if let Some(context) = error.downcast_ref::<NativeTurnContext>() {
             response.wire.data = Some(json!({
                 "thread_id": context.thread_id, "turn_id": context.turn_id,
-                "replay_safe": false,
+                "operation_key": context.operation_key, "replay_safe": false,
             }));
         }
         if crate::stdio::is_control_write_failure(&error) {
@@ -326,6 +327,7 @@ pub(crate) fn turn_terminal_status(payload: &Value) -> Result<TurnTerminalStatus
 struct NativeTurnContext {
     thread_id: String,
     turn_id: Option<String>,
+    operation_key: Option<String>,
 }
 
 struct NativeTurnClaim {
@@ -389,7 +391,187 @@ impl Drop for NativeTurnClaim {
     }
 }
 
-async fn message_native_thread<W: AsyncWrite + Unpin>(
+async fn native_turn_cancelled(token: Option<&CancellationToken>) {
+    match token {
+        Some(token) => token.cancelled().await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+struct ConfirmedNativeTurn {
+    turn_id: String,
+    model: Option<String>,
+    refusal: Option<anyhow::Error>,
+}
+
+async fn resolve_native_admission(
+    owner: &Arc<dyn RuntimeOwnerFrontend>,
+    thread_id: &str,
+    operation_key: &str,
+    acknowledgement: Result<Value>,
+) -> Result<ConfirmedNativeTurn> {
+    let turn_id = |record: &Value| -> Result<String> {
+        anyhow::ensure!(
+            record.get("thread_id").and_then(Value::as_str) == Some(thread_id),
+            "native owner returned another thread identity"
+        );
+        record
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .context("native owner returned no turn identity")
+    };
+    let admission = match acknowledgement.and_then(|value| {
+        Ok(ConfirmedNativeTurn {
+            turn_id: turn_id(&value["turn"])?,
+            model: value
+                .pointer("/thread/model")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            refusal: None,
+        })
+    }) {
+        Ok(result) => return Ok(result),
+        Err(error) => error,
+    };
+    let refused = admission
+        .downcast_ref::<crate::RuntimeOwnerFailure>()
+        .is_some_and(|failure| (400..500).contains(&failure.status));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let receipt = loop {
+        let lookup = tokio::time::timeout_at(
+            deadline,
+            owner_calls::execute(
+                owner,
+                RuntimeOwnerRequest::LookupTurnOperation {
+                    thread_id: thread_id.to_owned(),
+                    operation_key: operation_key.to_owned(),
+                },
+            ),
+        )
+        .await;
+        let error = match lookup {
+            Ok(Ok(receipt)) => break receipt,
+            Ok(Err(error)) => error,
+            Err(_) => {
+                return Err(admission.context(
+                    "native turn admission could not be confirmed before the lookup deadline",
+                ));
+            }
+        };
+        match error
+            .downcast_ref::<crate::RuntimeOwnerFailure>()
+            .map(|failure| failure.status)
+        {
+            Some(404) if refused => return Err(admission),
+            Some(404 | 409) => {
+                tokio::time::sleep_until(
+                    deadline.min(tokio::time::Instant::now() + Duration::from_millis(200)),
+                )
+                .await;
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(admission.context(format!(
+                        "native turn admission remained unconfirmed: {error:#}"
+                    )));
+                }
+            }
+            _ => {
+                return Err(
+                    error.context(format!("could not confirm admission after {admission:#}"))
+                );
+            }
+        }
+    };
+    Ok(ConfirmedNativeTurn {
+        turn_id: turn_id(&receipt)?,
+        model: receipt
+            .get("effective_model")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        refusal: refused.then_some(admission),
+    })
+}
+
+async fn admit_native_turn(
+    owner: Arc<dyn RuntimeOwnerFrontend>,
+    thread_id: &str,
+    mut body: Value,
+    registration: Option<(TurnRegistry, String)>,
+    connection: Option<crate::connection::ConnectionId>,
+    cancellation: Option<&CancellationToken>,
+) -> Result<(NativeTurnClaim, Option<String>, NativeTurnContext)> {
+    let operation_key = Uuid::new_v4().to_string();
+    body["operation_key"] = json!(operation_key);
+    let context = NativeTurnContext {
+        thread_id: thread_id.to_owned(),
+        turn_id: None,
+        operation_key: Some(operation_key.clone()),
+    };
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let runtime_thread_id = thread_id.to_owned();
+    let cancel_before_dispatch = cancellation.cloned();
+    tokio::spawn(async move {
+        if sender.is_closed()
+            || cancel_before_dispatch
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled)
+        {
+            return;
+        }
+        let acknowledgement = owner_calls::execute(
+            &owner,
+            RuntimeOwnerRequest::StartTurn {
+                thread_id: runtime_thread_id.clone(),
+                body,
+            },
+        )
+        .await;
+        let outcome = async {
+            let accepted = resolve_native_admission(
+                &owner,
+                &runtime_thread_id,
+                &operation_key,
+                acknowledgement,
+            )
+            .await?;
+            let mut claim = NativeTurnClaim {
+                live: InFlightTurn {
+                    owner: TurnExecutionOwner::Native(owner),
+                    runtime_thread_id: runtime_thread_id.clone(),
+                    turn_id: accepted.turn_id,
+                    connection,
+                },
+                registration,
+                registration_published: false,
+                terminal_observed: false,
+                cleanup: None,
+            };
+            if let Some(refusal) = accepted.refusal {
+                if let Err(cleanup) = claim.finish().await {
+                    return Err(refusal.context(format!(
+                        "native cleanup did not confirm interruption: {cleanup:#}"
+                    )));
+                }
+                return Err(refusal);
+            }
+            Ok((claim, accepted.model))
+        }
+        .await;
+        if let Err(Err(error)) = sender.send(outcome) {
+            tracing::warn!(%error, %runtime_thread_id, %operation_key, "disconnected native turn admission could not be confirmed");
+        }
+    });
+    let admission = tokio::select! {
+        biased;
+        _ = native_turn_cancelled(cancellation) => Err(anyhow!("control request canceled during native turn admission")),
+        result = receiver => result.context("native turn admission task ended").and_then(|result| result),
+    };
+    let (claim, model) = admission.context(context.clone())?;
+    Ok((claim, model, context))
+}
+
+pub(super) async fn message_native_thread<W: AsyncWrite + Unpin>(
     owner: Arc<dyn RuntimeOwnerFrontend>,
     thread_id: &str,
     input: RuntimeTurnInput<'_>,
@@ -398,18 +580,12 @@ async fn message_native_thread<W: AsyncWrite + Unpin>(
     mut transcript: Option<&mut TurnTranscript>,
     connection: Option<crate::connection::ConnectionId>,
 ) -> Result<Value> {
-    anyhow::ensure!(
-        !input
-            .cancellation
-            .is_some_and(CancellationToken::is_cancelled),
-        "control request was canceled before native turn admission"
-    );
-    let mut events = tokio::time::timeout(
-        Duration::from_secs(30),
-        owner.events(thread_id.to_owned(), 0),
-    )
-    .await
-    .context("native event observation did not open before admission")??;
+    let mut events = tokio::select! {
+        biased;
+        _ = native_turn_cancelled(input.cancellation) => anyhow::bail!("control request was canceled before native turn admission"),
+        subscription = tokio::time::timeout(Duration::from_secs(30), owner.events(thread_id.to_owned(), 0))
+            => subscription.context("native event observation did not open before admission")??,
+    };
     anyhow::ensure!(
         !input
             .cancellation
@@ -426,46 +602,20 @@ async fn message_native_thread<W: AsyncWrite + Unpin>(
     if let Some(limit) = input.max_output_tokens {
         body["maxOutputTokens"] = json!(limit);
     }
-    let accepted = owner_calls::execute(
-        &owner,
-        RuntimeOwnerRequest::StartTurn {
-            thread_id: thread_id.to_owned(),
-            body,
-        },
+    let (mut claim, model, mut context) = admit_native_turn(
+        owner,
+        thread_id,
+        body,
+        registration,
+        connection,
+        input.cancellation,
     )
     .await?;
-    let turn_id = accepted
-        .pointer("/turn/id")
-        .and_then(Value::as_str)
-        .context("native owner admission returned no turn identity")?
-        .to_owned();
-    anyhow::ensure!(
-        accepted.pointer("/turn/thread_id").and_then(Value::as_str) == Some(thread_id),
-        "native owner admission returned another thread identity; no automatic replay"
-    );
+    let turn_id = claim.live.turn_id.clone();
+    context.turn_id = Some(turn_id.clone());
     let response_id = format!("{thread_id}:{turn_id}");
-    let live = InFlightTurn {
-        owner: TurnExecutionOwner::Native(owner),
-        runtime_thread_id: thread_id.to_owned(),
-        turn_id: turn_id.clone(),
-        connection,
-    };
-    let mut claim = NativeTurnClaim {
-        live,
-        registration,
-        registration_published: false,
-        terminal_observed: false,
-        cleanup: None,
-    };
-    let context = NativeTurnContext {
-        thread_id: thread_id.to_owned(),
-        turn_id: Some(turn_id.clone()),
-    };
     if let Some(transcript) = transcript.as_deref_mut() {
-        transcript.model = accepted
-            .pointer("/thread/model")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
+        transcript.model = model;
         transcript.events.push(EventFrame::ResponseStart {
             response_id: response_id.clone(),
         });
@@ -491,12 +641,7 @@ async fn message_native_thread<W: AsyncWrite + Unpin>(
         })).await?;
         loop {
             let frame = tokio::select! {
-                _ = async {
-                    match input.cancellation {
-                        Some(cancellation) => cancellation.cancelled().await,
-                        None => std::future::pending::<()>().await,
-                    }
-                } => anyhow::bail!("control request canceled; native turn cleanup required"),
+                _ = native_turn_cancelled(input.cancellation) => anyhow::bail!("control request canceled; native turn cleanup required"),
                 frame = events.next() => frame,
             };
             let Some(frame) = frame else { break; };

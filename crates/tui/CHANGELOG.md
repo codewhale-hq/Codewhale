@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - On Windows, verifier commands start inside a Job Object so Stop can also end the helper processes they launch.
+- Native stdio submissions recover a lost acknowledgement through the Runtime’s saved operation receipt. Disconnecting during admission cleans up the matching turn without resubmitting the prompt.
+
 - External agent discovery and launches use the first compatible installed CLI when an older copy comes first on the executable search path.
 
 ### Added
