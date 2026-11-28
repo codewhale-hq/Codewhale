@@ -5545,6 +5545,39 @@ async fn persistent_service_requires_explicit_headless_exec_authority() {
     assert!(error.to_string().contains("Full Access shell authority"));
 }
 
+#[cfg(not(target_env = "ohos"))]
+#[test]
+fn failed_wait_retains_the_child_until_exit_is_observed() {
+    let workspace = tempdir().unwrap();
+    let mut manager = ShellManager::new(workspace.path().into());
+    manager.seed_finished_record_for_test("pending-exit", Duration::ZERO);
+    let mut child = std::process::Command::new(if cfg!(windows) { "sort.exe" } else { "sort" })
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let input = child.stdin.take().unwrap();
+    let shell = manager.processes.get_mut("pending-exit").unwrap();
+    shell.child = Some(ShellChild::Pty(Box::new(child)));
+    shell.status = ShellStatus::Failed;
+    shell.wait_failed = true;
+    shell.collect_output();
+    manager.pin_job_receipt("pending-exit").unwrap();
+    manager.cleanup(Duration::ZERO);
+    assert_eq!(manager.unsettled_owned_job_count(), 1);
+    drop(input);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while manager.unsettled_owned_job_count() > 0 {
+        assert!(Instant::now() < deadline, "expected to observe sort's exit");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    manager.cleanup(Duration::ZERO);
+    let witness = manager.job_receipt_witness("pending-exit").unwrap();
+    assert!(witness.wait_failed);
+    assert!(!witness.terminal_confirmed);
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn committed_persistent_service_survives_manager_drop_and_reports_identity() {
@@ -5578,12 +5611,15 @@ async fn committed_persistent_service_survives_manager_drop_and_reports_identity
         .expect("task id")
         .to_string();
 
-    let receipts = context
-        .shell_manager
-        .lock()
-        .expect("shell manager")
-        .commit_persistent_services()
-        .expect("commit persistent service");
+    let receipts = {
+        let mut manager = context.shell_manager.lock().expect("shell manager");
+        assert_eq!(manager.unsettled_owned_job_count(), 1);
+        let receipts = manager
+            .commit_persistent_services()
+            .expect("commit persistent service");
+        assert_eq!(manager.unsettled_owned_job_count(), 0);
+        receipts
+    };
     assert_eq!(receipts.len(), 1);
     assert_eq!(receipts[0].task_id, task_id);
     assert_eq!(receipts[0].process_group_id, receipts[0].pid);

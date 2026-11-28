@@ -5464,26 +5464,16 @@ async fn adopt_runtime_store_inner(
     config: &Config,
     binding: crate::runtime_threads::RuntimeStoreBinding,
 ) -> Result<(), String> {
-    // Nothing in the store being left may still need this process. The
-    // synchronous half (approvals, user input, dynamic tools) was checked by
-    // the loader; this half needs the Runtime's `active` lock, which is why it
-    // lives here rather than there.
-    if let Some(tasks) = app.runtime_services.task_manager.as_ref()
-        && let Some(disposable) = tasks.current_store_is_disposable().await
-        && !disposable.map_err(|error| error.to_string())?
-    {
-        return Err(
-            "The Runtime store this session is running on still has work in flight. \
-             Finish or stop it before switching sessions."
-                .to_string(),
-        );
-    }
     let Some(previous) = app.runtime_services.task_manager.clone() else {
         return Err(
             "This session needs its own Runtime store, but this host has no task manager to rebind."
                 .to_string(),
         );
     };
+    let release = previous
+        .prepare_store_release()
+        .await
+        .map_err(|error| error.to_string())?;
     let abandoned = previous.session_store_binding();
 
     // Open the target *before* releasing the store this host holds.
@@ -5518,6 +5508,9 @@ async fn adopt_runtime_store_inner(
     })?;
 
     // Committed: the target opened. Now settle and release the old store.
+    if let Some(release) = release {
+        release.close();
+    }
     previous.shutdown_and_wait().await.map_err(|error| {
         format!("Could not settle the Runtime work this session was running: {error}")
     })?;

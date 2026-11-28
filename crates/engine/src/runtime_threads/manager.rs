@@ -3661,6 +3661,17 @@ pub(super) struct RecoveredTurnReceipt {
     pub(super) unresolved_dynamic_tools: Vec<DynamicToolCallParams>,
 }
 
+pub struct RuntimeStoreRelease {
+    _admission: tokio::sync::OwnedRwLockWriteGuard<()>,
+    cancel: CancellationToken,
+}
+
+impl RuntimeStoreRelease {
+    pub fn close(self) {
+        self.cancel.cancel();
+    }
+}
+
 /// Manages active engine threads, lifecycle, and event persistence.
 ///
 /// # Lock ordering invariant
@@ -4937,21 +4948,52 @@ impl RuntimeThreadManager {
     /// work directories, so even a store that has never run a turn reports
     /// `HasDurableWork`. Asking it about the store being left would refuse
     /// every switch out of a host that merely started.
-    ///
-    /// What makes a store undroppable is work still in flight *in this
-    /// process*: a loaded engine with an active turn, or a request waiting on a
-    /// decision nobody else can answer ([`Self::has_unsettled_requests`]).
-    /// Finished history is not work — it stays on disk for whichever process
-    /// opens the store next, exactly as it would after a clean exit.
     pub async fn current_store_is_disposable(&self) -> Result<bool> {
         if self.has_unsettled_requests() {
             return Ok(false);
         }
-        let active = self.active.lock().await;
-        Ok(active
-            .engines
-            .values()
-            .all(|state| state.active_turn.is_none()))
+        let managers = {
+            let active = self.active.lock().await;
+            if active
+                .engines
+                .values()
+                .any(|state| state.active_turn.is_some())
+                || active
+                    .external
+                    .values()
+                    .any(|state| state.active_turn.is_some())
+            {
+                return Ok(false);
+            }
+            active.shell_managers.values().cloned().collect::<Vec<_>>()
+        };
+        if managers.is_empty() {
+            return Ok(true);
+        }
+        Ok(tokio::task::spawn_blocking(move || {
+            managers.into_iter().all(|manager| {
+                manager
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .unsettled_owned_job_count()
+                    == 0
+            })
+        })
+        .await?)
+    }
+
+    pub(crate) async fn prepare_store_release(&self) -> Result<RuntimeStoreRelease> {
+        let admission = self.session_checkpoint_guard().await;
+        self.ensure_accepting_execution()?;
+        if !self.current_store_is_disposable().await? {
+            bail!(
+                "The Runtime store this session is running on still has work in flight. Finish or stop it before switching sessions."
+            );
+        }
+        Ok(RuntimeStoreRelease {
+            _admission: admission,
+            cancel: self.cancel_token.clone(),
+        })
     }
 
     pub async fn close_execution_admission(&self) {
@@ -5013,6 +5055,27 @@ impl RuntimeThreadManager {
         for (_, _, worker) in &workers {
             if let Err(error) = await_retained_completion(worker).await {
                 failure = Some(anyhow!("Runtime engine shutdown failed: {error}"));
+            }
+        }
+        for (thread_id, manager) in self.shell_managers_snapshot().await {
+            let stopped = tokio::task::spawn_blocking(move || {
+                let mut manager = manager.lock().unwrap_or_else(|poison| poison.into_inner());
+                manager.kill_all_owned_running();
+                manager.unsettled_owned_job_count()
+            })
+            .await;
+            match stopped {
+                Ok(0) => {}
+                Ok(count) => {
+                    failure = Some(anyhow!(
+                        "Runtime shutdown left {count} unsettled shell jobs for {thread_id}"
+                    ));
+                }
+                Err(error) => {
+                    failure = Some(anyhow!(
+                        "Runtime shell shutdown failed for {thread_id}: {error}"
+                    ));
+                }
             }
         }
         // Recovery reads can publish receipts too. Flushes that already passed
@@ -17506,6 +17569,9 @@ source_usage_records: Default::default(),
             )
         };
         let mut active = self.active.lock().await;
+        if create {
+            self.ensure_accepting_execution()?;
+        }
         let manager = match active.shell_managers.entry(thread_id.to_string()) {
             std::collections::hash_map::Entry::Occupied(entry) => Some(entry.get().clone()),
             std::collections::hash_map::Entry::Vacant(entry) => create.then(|| {

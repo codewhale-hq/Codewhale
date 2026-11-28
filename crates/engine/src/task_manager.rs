@@ -2336,6 +2336,15 @@ impl TaskManager {
         }
     }
 
+    pub async fn prepare_store_release(
+        &self,
+    ) -> Result<Option<crate::runtime_threads::manager::RuntimeStoreRelease>> {
+        match &self.runtime_threads {
+            Some(runtime) => Ok(Some(runtime.prepare_store_release().await?)),
+            None => Ok(None),
+        }
+    }
+
     pub async fn set_default_workspace(&self, workspace: PathBuf) {
         let mut default_workspace = self.default_workspace.lock().await;
         *default_workspace = workspace;

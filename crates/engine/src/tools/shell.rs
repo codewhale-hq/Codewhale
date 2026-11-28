@@ -1585,6 +1585,12 @@ impl Drop for ShellSpawnIntentGuard {
 }
 
 impl BackgroundShell {
+    fn has_unsettled_child(&self) -> bool {
+        self.ownership != ShellOwnership::Released
+            && self.child.is_some()
+            && !self.terminal_exit_confirmed
+    }
+
     /// Wall time to report: elapsed while running, frozen once finished.
     fn wall_duration(&self) -> Duration {
         self.finished_at
@@ -1615,6 +1621,13 @@ impl BackgroundShell {
     fn poll(&mut self) -> bool {
         self.refresh_output_activity();
         if self.status != ShellStatus::Running {
+            if self.has_unsettled_child()
+                && let Some(child) = self.child.as_mut()
+                && child.try_wait().is_ok_and(|status| status.is_some())
+            {
+                self.terminal_exit_confirmed = true;
+                self.child = None;
+            }
             self.mark_finished();
             self.publish_lifecycle_best_effort();
             return true;
@@ -1773,7 +1786,9 @@ impl BackgroundShell {
         {
             self.pty_master = None;
         }
-        self.child = None;
+        if self.terminal_exit_confirmed {
+            self.child = None;
+        }
     }
 
     fn write_stdin(&mut self, input: &str, close: bool) -> Result<()> {
@@ -3951,6 +3966,21 @@ impl ShellManager {
         shell.status == ShellStatus::Running
     }
 
+    pub(crate) fn unsettled_owned_job_count(&mut self) -> usize {
+        let mut unsettled = 0;
+        for shell in self
+            .processes
+            .values_mut()
+            .filter(|shell| shell.has_unsettled_child())
+        {
+            shell.poll();
+            if shell.has_unsettled_child() {
+                unsettled += 1;
+            }
+        }
+        unsettled
+    }
+
     pub fn running_jobs(&mut self) -> Vec<ShellRunningJob> {
         self.processes
             .values_mut()
@@ -4558,7 +4588,7 @@ impl ShellManager {
         let pins = &self.receipt_pins;
         let witnesses = &mut self.receipt_witnesses;
         self.processes.retain(|id, shell| {
-            if shell.status == ShellStatus::Running {
+            if shell.status == ShellStatus::Running || shell.has_unsettled_child() {
                 return true;
             }
             shell.mark_finished();
@@ -4596,7 +4626,9 @@ impl ShellManager {
         let mut finished = self
             .processes
             .iter()
-            .filter(|(_, shell)| shell.status != ShellStatus::Running)
+            .filter(|(_, shell)| {
+                shell.status != ShellStatus::Running && !shell.has_unsettled_child()
+            })
             .map(|(id, shell)| {
                 (
                     id.clone(),

@@ -12,6 +12,84 @@ fn fixture_config() -> Config {
 }
 
 #[tokio::test]
+async fn shutdown_settles_a_managed_shell_before_the_first_engine_load() -> Result<()> {
+    use crate::tools::shell::ShellStatus;
+
+    let _env = crate::test_support::lock_test_env();
+    let root = tempfile::tempdir()?;
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
+    let runtime = RuntimeThreadManager::open(
+        fixture_config(),
+        root.path().into(),
+        test_manager_config(root.path().join("runtime")),
+    )?;
+    let thread = runtime
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let retained = runtime.clone();
+    let release = runtime.prepare_store_release().await?;
+    assert!(retained.config_admission.try_read().is_err());
+    drop(release);
+    assert!(retained.config_admission.try_read().is_ok());
+    retained.ensure_accepting_execution()?;
+    let job_id = {
+        let manager = runtime
+            .thread_shell_manager(&thread.id, true)
+            .await?
+            .unwrap();
+        let mut manager = manager.lock().unwrap();
+        let command = if cfg!(windows) {
+            "powershell.exe -NoProfile -Command Start-Sleep -Seconds 60"
+        } else {
+            "exec sleep 60"
+        };
+        let job = manager.execute_with_options_env_for_session(
+            command,
+            None,
+            5_000,
+            true,
+            None,
+            false,
+            None,
+            HashMap::new(),
+            &thread.id,
+        )?;
+        assert_eq!(job.status, ShellStatus::Running);
+        let id = job.task_id.unwrap();
+        manager.pin_job_receipt(&id)?;
+        id
+    };
+    assert!(runtime.loaded_engine(&thread.id).await.is_none());
+    assert!(!runtime.current_store_is_disposable().await?);
+    assert!(runtime.prepare_store_release().await.is_err());
+    assert!(retained.config_admission.try_read().is_ok());
+    retained.ensure_accepting_execution()?;
+    runtime.shutdown_and_wait().await?;
+    drop(runtime);
+    assert!(
+        retained
+            .thread_shell_manager(&thread.id, true)
+            .await
+            .is_err()
+    );
+    let manager = retained
+        .thread_shell_manager(&thread.id, false)
+        .await?
+        .unwrap();
+    let receipt = manager
+        .lock()
+        .unwrap()
+        .job_receipt_witness(&job_id)
+        .unwrap();
+    assert_eq!(receipt.status, ShellStatus::Killed);
+    assert!(receipt.terminal_confirmed);
+    assert_eq!(receipt.owner_session_id, thread.id);
+    assert!(retained.current_store_is_disposable().await?);
+    retained.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn idle_runtime_engine_cycles_are_drained_before_same_scope_reopen() -> Result<()> {
     let _env = crate::test_support::lock_test_env();
     let root = tempfile::tempdir()?;

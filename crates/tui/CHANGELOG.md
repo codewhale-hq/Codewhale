@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Explicit Runtime shutdown stops the background shell jobs it owns, including jobs started before a thread's first turn. Their final status remains available to clients. Session store switches are refused while owned jobs are still active.
 - Terminal notifications now report queued sends only after acceptance and clear an earlier hotbar or permission-save failure when its retry succeeds. (#7464)
 
 - The terminal saved-team picker now shows its selection, team scopes, migration prompt, delete confirmation and keyboard hints in the chosen UI language. (#7469)

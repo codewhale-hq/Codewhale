@@ -1289,7 +1289,7 @@ async fn refused_switch_keeps_the_live_session_and_its_manager_body() -> anyhow:
     app.runtime_turn_status = Some("in_progress".to_string());
     let current = tasks.session_store_binding().expect("host holds a store");
     let next_config = config.clone();
-    let (app, error) = crate::test_support::boxed_phase(move || async move {
+    let (mut app, error) = crate::test_support::boxed_phase(move || async move {
         let result =
             apply_loaded_session_config_snapshot(&mut app, &mut config, saved, next_config, false)
                 .await;
@@ -1320,6 +1320,25 @@ async fn refused_switch_keeps_the_live_session_and_its_manager_body() -> anyhow:
         .canonicalize()
         .unwrap_or_else(|_| current.data_dir.clone());
     assert_eq!(held_dir, expected_dir, "the host kept its own store");
+    app.runtime_turn_status = None;
+    let binding =
+        codewhale_engine::runtime_threads::RuntimeStoreBinding::for_store_dir(&target_store)?;
+    let held_target =
+        codewhale_engine::runtime_threads::RuntimeProcessOwnerLock::acquire(&target_store)?;
+    let config = fixture_config();
+    let error = crate::tui::ui::apply::adopt_runtime_store(&mut app, &config, binding)
+        .await
+        .expect_err("a competing store owner must refuse the trial open");
+    assert!(error.contains("could not be opened"), "{error}");
+    assert_eq!(app.input, "keep my draft");
+    assert_eq!(tasks.session_store_binding().as_ref(), Some(&current));
+    drop(
+        tasks
+            .prepare_store_release()
+            .await?
+            .expect("old Runtime still admits work"),
+    );
+    drop(held_target);
     tasks.shutdown_and_wait().await?;
     Ok(())
 }
