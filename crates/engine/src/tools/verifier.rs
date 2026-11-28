@@ -1259,11 +1259,7 @@ async fn run_gate(gate: VerifierGate, context: &ToolContext) -> GateResult {
     };
     // A gate never reads input; an inherited stdin could block it on the
     // Engine's own terminal or pipe.
-    cmd.stdin(Stdio::null()).kill_on_drop(true);
-    // Its own process group, so a timeout or Stop reaches every helper the
-    // gate started (headless Chrome forks several), not just the leader.
-    #[cfg(unix)]
-    cmd.process_group(0);
+    cmd.stdin(Stdio::null());
     // Gates run workspace code: the runner starts from the sanitized child
     // environment, and only the gate's own declared variables are layered on
     // top.
@@ -1273,8 +1269,8 @@ async fn run_gate(gate: VerifierGate, context: &ToolContext) -> GateResult {
             .map(|(key, value)| (key.as_str(), value.as_str())),
     );
 
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
+    let (mut child, tree) = match codewhale_runtime::process_tree::spawn_contained_tokio(&mut cmd) {
+        Ok(contained) => contained,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return GateResult {
                 name: gate.name,
@@ -1316,33 +1312,6 @@ async fn run_gate(gate: VerifierGate, context: &ToolContext) -> GateResult {
             };
         }
     };
-    // Armed until the gate settles cleanly; dropping this future (Stop)
-    // kills the whole tree.
-    let tree = match codewhale_runtime::process_tree::ProcessTree::attach_tokio(&child) {
-        Ok(tree) => tree,
-        Err(err) => {
-            let _ = child.start_kill();
-            return GateResult {
-                name: gate.name,
-                ecosystem: gate.ecosystem,
-                status: GateStatus::Failed,
-                command,
-                cwd: gate.cwd.display().to_string(),
-                exit_code: None,
-                duration_ms: started.elapsed().as_millis() as u64,
-                stdout: String::new(),
-                stderr: format!("Failed to contain verifier: {err}"),
-                stdout_truncated: false,
-                stderr_truncated: false,
-                stdout_log_ref: None,
-                stderr_log_ref: None,
-                skipped_reason: None,
-                zero_tests_matched: false,
-                warning: None,
-            };
-        }
-    };
-
     let mut stdout = GateCapture::new(session_id, &gate.name, "stdout");
     let mut stderr = GateCapture::new(session_id, &gate.name, "stderr");
     let mut exited = false;

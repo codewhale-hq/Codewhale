@@ -319,16 +319,7 @@ pub fn spawn_contained_std(
     command: &mut std::process::Command,
 ) -> std::io::Result<(std::process::Child, ProcessTree)> {
     use wait_timeout::ChildExt;
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0000_0004 | 0x0800_0000); // suspended, no window
-    }
+    configure_contained_command(command);
     let mut child = command.spawn()?;
     let tree = match ProcessTree::attach(&child) {
         Ok(tree) => tree,
@@ -339,7 +330,7 @@ pub fn spawn_contained_std(
         }
     };
     #[cfg(windows)]
-    if let Err(error) = resume_windows_process(&child) {
+    if let Err(error) = resume_windows_process(child.id()) {
         drop(tree);
         let _ = child.kill();
         let _ = child.wait_timeout(std::time::Duration::from_millis(250));
@@ -348,8 +339,42 @@ pub fn spawn_contained_std(
     Ok((child, tree))
 }
 
+fn configure_contained_command(command: &mut std::process::Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use windows::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
+        command.creation_flags(CREATE_SUSPENDED.0 | CREATE_NO_WINDOW.0);
+    }
+}
+
+pub fn spawn_contained_tokio(
+    command: &mut tokio::process::Command,
+) -> std::io::Result<(tokio::process::Child, ProcessTree)> {
+    configure_contained_command(command.as_std_mut());
+    let child = command.kill_on_drop(true).spawn()?;
+    let tree = ProcessTree::attach_tokio(&child).map_err(|error| {
+        std::io::Error::other(format!("failed to contain child process: {error}"))
+    })?;
+    #[cfg(windows)]
+    {
+        let pid = child
+            .id()
+            .ok_or_else(|| std::io::Error::other("child already exited"))?;
+        resume_windows_process(pid).map_err(|error| {
+            std::io::Error::other(format!("failed to start contained process: {error}"))
+        })?;
+    }
+    Ok((child, tree))
+}
+
 #[cfg(windows)]
-fn resume_windows_process(child: &std::process::Child) -> std::io::Result<()> {
+fn resume_windows_process(pid: u32) -> std::io::Result<()> {
     let snapshot =
         // SAFETY: returned handle is owned here; closed before return.
         unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0).map_err(windows_io_error)? };
@@ -362,7 +387,7 @@ fn resume_windows_process(child: &std::process::Child) -> std::io::Result<()> {
         let mut next = unsafe { Thread32First(snapshot, &mut entry) };
         let mut resumed = 0usize;
         while next.is_ok() {
-            if entry.th32OwnerProcessID == child.id() {
+            if entry.th32OwnerProcessID == pid {
                 // SAFETY: returned handle is owned here; closed below.
                 let thread = unsafe {
                     OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID)
