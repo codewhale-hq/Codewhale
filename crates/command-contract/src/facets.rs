@@ -9,6 +9,9 @@ pub use crate::config_policy::{CommandConfigStatusContext, CommandPermissionsCon
 
 use std::path::{Path, PathBuf};
 
+mod composer;
+pub use composer::*;
+
 mod background;
 pub use background::*;
 

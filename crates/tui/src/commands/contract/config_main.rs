@@ -23,6 +23,16 @@ pub(crate) struct ConfigAdapter<'a> {
 }
 
 impl CommandConfigContext for ConfigAdapter<'_> {
+    fn mcp_config_path(&self) -> PathBuf {
+        self.host.app.borrow().mcp_config_path.clone()
+    }
+
+    fn hugging_face_mcp_server_name(&self) -> Result<Option<String>, String> {
+        let config = codewhale_engine::mcp::load_config(&self.mcp_config_path())
+            .map_err(|error| error.to_string())?;
+        Ok(configured_hf_mcp_server(&config).map(str::to_owned))
+    }
+
     fn translation_enabled(&self) -> bool {
         self.host.app.borrow().translation_enabled
     }
@@ -493,5 +503,89 @@ impl CommandWorkSurfaceContext for WorkSurfaceAdapter<'_> {
 
     fn mark_redraw(&mut self) {
         self.host.app.borrow_mut().needs_redraw = true;
+    }
+}
+
+fn configured_hf_mcp_server(config: &codewhale_mcp::config::McpConfig) -> Option<&str> {
+    config
+        .servers
+        .iter()
+        .find(|(name, server)| looks_like_hf_mcp_server(name, server))
+        .map(|(name, _)| name.as_str())
+}
+
+fn looks_like_hf_mcp_server(name: &str, server: &codewhale_mcp::config::McpServerConfig) -> bool {
+    let compact_name: String = name
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(|ch| ch.to_lowercase())
+        .collect();
+    if matches!(
+        compact_name.as_str(),
+        "huggingface" | "huggingfacemcp" | "hfmcp" | "hfmcpserver"
+    ) {
+        return true;
+    }
+
+    server.url.as_deref().is_some_and(|url| {
+        let url = url.to_ascii_lowercase();
+        url.contains("huggingface.co/mcp") || url.contains("huggingface.co/api/mcp")
+    })
+}
+
+#[cfg(test)]
+mod hf_tests {
+    use crate::tui::app::{App, TuiOptions};
+    use codewhale_runtime::config::Config;
+    use std::{fs, path::PathBuf};
+    use tempfile::tempdir;
+    fn app_with_mcp_path(mcp_config_path: PathBuf) -> App {
+        App::new(
+            TuiOptions {
+                screen_mode: crate::tui::app::ScreenMode::Inline,
+                max_subagents: 2,
+                mcp_config_path,
+                ..crate::tui::test_support::test_tui_options(PathBuf::from("."))
+            },
+            &Config::default(),
+        )
+    }
+
+    #[test]
+    fn hf_mcp_status_detects_settings_named_server() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+        fs::write(
+            &path,
+            r#"{"mcpServers":{"hf-mcp-server":{"url":"https://huggingface.co/mcp"}}}"#,
+        )
+        .expect("write mcp config");
+        let mut app = app_with_mcp_path(path);
+
+        let result = crate::commands::execute("/hf mcp status", &mut app);
+
+        assert!(!result.is_error);
+        let message = result.message.expect("status message");
+        assert!(message.contains("appears configured"));
+        assert!(message.contains("hf-mcp-server"));
+    }
+
+    #[test]
+    fn hf_mcp_status_reports_missing_server_without_network() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+        fs::write(&path, r#"{"servers":{"local":{"command":"node"}}}"#).expect("write mcp config");
+        let mut app = app_with_mcp_path(path);
+
+        let result = crate::commands::execute("/hf mcp status", &mut app);
+
+        assert!(!result.is_error);
+        assert!(
+            result
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("not configured")
+        );
     }
 }

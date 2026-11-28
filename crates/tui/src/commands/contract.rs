@@ -32,6 +32,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+mod composer;
 mod config_main;
 mod core_navigation;
 mod model_reference;
@@ -5479,6 +5480,7 @@ fn default_codewhale_tools_dir() -> Option<PathBuf> {
 /// be called sequentially without exposing TUI types across the boundary.
 pub(crate) struct CommandContextBundle<'a> {
     session: SessionAdapter<'a>,
+    composer: composer::ComposerAdapter<'a>,
     model: ModelAdapter<'a>,
     cost: CostAdapter<'a>,
     mode_policy: ModePolicyAdapter<'a>,
@@ -5606,6 +5608,9 @@ impl<'a> CommandContextBundle<'a> {
         if capabilities.contains(CommandCapabilities::WORK_SURFACE) {
             contexts = contexts.with_work_surface(&mut self.work_surface);
         }
+        if capabilities.contains(CommandCapabilities::COMPOSER) {
+            contexts = contexts.with_composer(&mut self.composer);
+        }
         if capabilities.contains(CommandCapabilities::NAVIGATION) {
             contexts = contexts.with_navigation(&mut self.navigation);
         }
@@ -5672,6 +5677,7 @@ impl App {
         });
         CommandContextBundle {
             session: SessionAdapter { host: host.clone() },
+            composer: composer::ComposerAdapter { host: host.clone() },
             model: ModelAdapter { host: host.clone() },
             cost: CostAdapter { host: host.clone() },
             mode_policy: ModePolicyAdapter { host: host.clone() },

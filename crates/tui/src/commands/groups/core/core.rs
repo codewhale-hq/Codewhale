@@ -1,4 +1,4 @@
-//! Remaining legacy core commands: clear, exit, model and related interactions.
+//! Remaining legacy core commands: clear, model and related interactions.
 
 use crate::tui::app::{App, AppAction};
 #[cfg(test)]

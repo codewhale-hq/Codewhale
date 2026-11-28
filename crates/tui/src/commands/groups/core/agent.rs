@@ -1,38 +1,37 @@
 //! `/agent` command.
 
-use crate::commands::traits::{CommandInfo, RegisterCommand};
-use crate::tui::app::{App, AppAction};
-use codewhale_localization::MessageId;
+use codewhale_command_contract::handler::CommandHandler;
+use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
+use codewhale_command_contract::outcome::{CommandResult, CoreAction};
 
-use super::CommandResult;
-
-pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
+const COMMAND_INFO: CommandInfo = CommandInfo {
     name: "agent",
     aliases: &["daili"],
     usage: "/agent [N] <task>",
-    description_id: MessageId::CmdAgentDescription,
+    description_key: "cmd_agent_description",
 };
 
-pub(in crate::commands) struct AgentCmd;
+pub(super) struct AgentCmd;
 
-impl RegisterCommand for AgentCmd {
+impl<A: From<CoreAction>> RegisterCommand<CommandResult<A>> for AgentCmd {
     fn info() -> &'static CommandInfo {
         &COMMAND_INFO
     }
 
-    fn execute(app: &mut App, arg: Option<&str>) -> CommandResult {
-        agent(app, arg)
+    fn handler() -> CommandHandler<CommandResult<A>> {
+        CommandHandler::Pure(agent)
     }
 }
 
-pub fn agent(_app: &mut App, arg: Option<&str>) -> CommandResult {
+fn agent<A: From<CoreAction>>(arg: Option<&str>) -> CommandResult<A> {
     if let Some(action) = parse_agent_control_action(arg) {
         if action.action == "cancel" {
             return CommandResult::with_message_and_action(
                 format!("Cancelling agent {}...", action.agent_id),
-                AppAction::CancelSubAgent {
+                CoreAction::CancelSubAgent {
                     agent_id: action.agent_id,
-                },
+                }
+                .into(),
             );
         }
         let message = format!(
@@ -41,7 +40,7 @@ pub fn agent(_app: &mut App, arg: Option<&str>) -> CommandResult {
         );
         return CommandResult::with_message_and_action(
             format!("Agent {} requested for {}.", action.action, action.agent_id),
-            AppAction::SendMessage(message),
+            CoreAction::SendMessage(message).into(),
         );
     }
 
@@ -58,19 +57,9 @@ pub fn agent(_app: &mut App, arg: Option<&str>) -> CommandResult {
             );
         }
     };
-    let message = agent_dispatch_brief(&task, max_depth);
     CommandResult::with_message_and_action(
         format!("Opening persistent sub-agent at depth {max_depth}..."),
-        AppAction::SendMessage(message),
-    )
-}
-
-/// The model-facing /agent brief. `handle_read` is deferred on the default
-/// catalog, so the brief teaches its activation path (#6747).
-pub(crate) fn agent_dispatch_brief(task: &str, max_depth: impl std::fmt::Display) -> String {
-    format!(
-        "Launch one sub-agent for this task by calling `agent` with name `slash_agent`, `prompt: {task:?}`, and `max_depth: {max_depth}`. Use `handle_read` on the returned transcript_handle if you need more detail ({}). Verify any claimed side effects with `read` before reporting success.",
-        codewhale_engine::tools::handle::HANDLE_READ_ACTIVATION_HINT
+        CoreAction::LaunchSubAgent { task, max_depth }.into(),
     )
 }
 
@@ -96,49 +85,4 @@ fn parse_agent_control_action(arg: Option<&str>) -> Option<AgentControlAction> {
         action,
         agent_id: agent_id.to_string(),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    use crate::tui::app::TuiOptions;
-
-    fn test_app() -> App {
-        let options = TuiOptions {
-            ..crate::tui::test_support::test_tui_options(PathBuf::from("."))
-        };
-        App::new(options, &codewhale_runtime::config::Config::default())
-    }
-
-    /// #6747: the /agent brief names only callable tools and teaches the
-    /// deferred `handle_read` activation path.
-    #[test]
-    fn agent_dispatch_brief_names_only_callable_tools() {
-        codewhale_engine::tools::canonical_action_test_support::assert_text_names_only_callable_tools(
-            "/agent brief",
-            &agent_dispatch_brief("inspect the repo", 1),
-        );
-    }
-
-    #[test]
-    fn agent_control_actions_route_to_existing_agent_tool() {
-        let mut app = test_app();
-        let result = agent(&mut app, Some("peek agent_123"));
-
-        assert!(!result.is_error);
-        let Some(AppAction::SendMessage(message)) = result.action else {
-            panic!("expected SendMessage action");
-        };
-        assert!(message.contains("action `peek`"));
-        assert!(message.contains("agent_id `agent_123`"));
-        assert!(message.contains("Do not start a new agent"));
-
-        let result = agent(&mut app, Some("cancel agent_123"));
-        let Some(AppAction::CancelSubAgent { agent_id }) = result.action else {
-            panic!("expected CancelSubAgent action");
-        };
-        assert_eq!(agent_id, "agent_123");
-    }
 }

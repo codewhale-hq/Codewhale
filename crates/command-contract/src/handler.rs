@@ -5,15 +5,15 @@
 //! `CommandHandler<crate::commands::CommandResult>`.
 
 use crate::facets::{
-    CommandBackgroundContext, CommandConfigStatusContext, CommandCostContext,
-    CommandDebugChangeContext, CommandDebugDiagnosticsContext, CommandDebugDiffContext,
-    CommandDebugHistoryContext, CommandDebugReceiptsContext, CommandDebugUndoContext,
-    CommandMediaContext, CommandMemoryContext, CommandModePolicyContext, CommandModelContext,
-    CommandPermissionsContext, CommandPluginContext, CommandPresentationContext,
-    CommandProjectContext, CommandSessionContext, CommandSessionControlContext,
-    CommandSessionExportContext, CommandSessionLifecycleContext, CommandSessionStructcopyContext,
-    CommandSkillGroupContext, CommandSkillsContext, CommandSystemPromptContext,
-    CommandWorkspaceContext,
+    CommandBackgroundContext, CommandComposerContext, CommandConfigStatusContext,
+    CommandCostContext, CommandDebugChangeContext, CommandDebugDiagnosticsContext,
+    CommandDebugDiffContext, CommandDebugHistoryContext, CommandDebugReceiptsContext,
+    CommandDebugUndoContext, CommandMediaContext, CommandMemoryContext, CommandModePolicyContext,
+    CommandModelContext, CommandPermissionsContext, CommandPluginContext,
+    CommandPresentationContext, CommandProjectContext, CommandSessionContext,
+    CommandSessionControlContext, CommandSessionExportContext, CommandSessionLifecycleContext,
+    CommandSessionStructcopyContext, CommandSkillGroupContext, CommandSkillsContext,
+    CommandSystemPromptContext, CommandWorkspaceContext,
 };
 
 /// Exact host capabilities exposed to one contextual command handler.
@@ -56,9 +56,8 @@ impl CommandCapabilities {
     /// original `u16` backing without speculative widening in FEAT-023.
     pub const SESSION_CONTROL: Self = Self(1 << 14);
     /// Session-export host data (FEAT-025 D1), the next non-conflicting bit
-    /// after `SESSION_CONTROL`. Required only by the host-dependent `/export`
-    /// command (and its `/daochu` alias) and by `/share`, which publishes the
-    /// same redacted projection; every concrete App, snapshot, clipboard,
+    /// after `SESSION_CONTROL`. Used by `/export`, `/copy`, and `/share`
+    /// for transcript or clipboard delivery; every concrete App, snapshot, clipboard,
     /// filesystem, history, and turn-handoff access stays behind the TUI export
     /// adapter.
     ///
@@ -106,6 +105,7 @@ impl CommandCapabilities {
     pub const NAVIGATION: Self = Self(1 << 30);
     pub const VOICE_INPUT: Self = Self(1 << 31);
     pub const BACKGROUND: Self = Self(1 << 32);
+    pub const COMPOSER: Self = Self(1 << 33);
 
     /// Raw bit pattern, for tests that pin the capability-space capacity.
     ///
@@ -181,6 +181,7 @@ pub struct CommandContexts<'a> {
     work_surface: Option<&'a mut dyn crate::config::CommandWorkSurfaceContext>,
     navigation: Option<&'a mut dyn crate::navigation::CommandNavigationContext>,
     voice_input: Option<&'a mut dyn crate::navigation::CommandVoiceInputContext>,
+    composer: Option<&'a mut dyn CommandComposerContext>,
     background: Option<&'a mut dyn CommandBackgroundContext>,
 }
 
@@ -256,6 +257,7 @@ impl<'a> CommandContexts<'a> {
             navigation: None,
             voice_input: None,
             background: None,
+            composer: None,
         }
     }
 
@@ -356,6 +358,18 @@ impl<'a> CommandContexts<'a> {
             "voice-input facet already set"
         );
         self
+    }
+
+    pub fn with_composer(mut self, value: &'a mut dyn CommandComposerContext) -> Self {
+        assert!(
+            self.composer.replace(value).is_none(),
+            "composer facet already set"
+        );
+        self
+    }
+
+    pub fn take_composer(&mut self) -> Option<&'a mut dyn CommandComposerContext> {
+        self.composer.take()
     }
 
     pub fn with_background(mut self, value: &'a mut dyn CommandBackgroundContext) -> Self {

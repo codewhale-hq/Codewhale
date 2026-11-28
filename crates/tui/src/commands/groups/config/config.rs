@@ -1649,6 +1649,12 @@ mod tests {
     struct PanicConfig;
 
     impl CommandConfigContext for PanicConfig {
+        fn mcp_config_path(&self) -> std::path::PathBuf {
+            panic!("config facet touched")
+        }
+        fn hugging_face_mcp_server_name(&self) -> Result<Option<String>, String> {
+            panic!("config facet touched")
+        }
         fn translation_enabled(&self) -> bool {
             panic!("config facet touched")
         }

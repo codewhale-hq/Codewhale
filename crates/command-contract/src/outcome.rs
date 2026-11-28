@@ -191,6 +191,8 @@ pub type ConfigStatusCommandResult = CommandResult<std::convert::Infallible>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoreAction {
+    LaunchSubAgent { task: String, max_depth: u32 },
+    CancelSubAgent { agent_id: String },
     SendMessage(String),
     ListSubAgents,
     Quit,

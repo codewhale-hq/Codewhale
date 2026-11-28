@@ -82,14 +82,12 @@ impl CommandGroup for CoreCommands {
                 provider::ProviderCmd::info(),
                 provider::ProviderCmd::execute,
             )),
-            Box::new(FunctionCommand::new(
-                queue::QueueCmd::info(),
-                queue::QueueCmd::execute,
-            )),
-            Box::new(FunctionCommand::new(
-                stash::StashCmd::info(),
-                stash::StashCmd::execute,
-            )),
+            Box::new(
+                ContextualCommand::from_contract::<queue::QueueCmd>().expect("queue registration")
+            ),
+            Box::new(
+                ContextualCommand::from_contract::<stash::StashCmd>().expect("stash registration")
+            ),
             Box::new(FunctionCommand::new(
                 hooks::HooksCmd::info(),
                 hooks::HooksCmd::execute,
@@ -127,10 +125,9 @@ impl CommandGroup for CoreCommands {
                 constitution::ConstitutionCmd::info(),
                 constitution::ConstitutionCmd::execute,
             )),
-            Box::new(FunctionCommand::new(
-                agent::AgentCmd::info(),
-                agent::AgentCmd::execute,
-            )),
+            Box::new(
+                ContextualCommand::from_contract::<agent::AgentCmd>().expect("agent registration")
+            ),
             crate::commands::core_navigation_host::registration::<4>(),
             crate::commands::core_navigation_host::registration::<5>(),
             crate::commands::core_navigation_host::registration::<6>(),
@@ -138,7 +135,7 @@ impl CommandGroup for CoreCommands {
                 feedback::FeedbackCmd::info(),
                 feedback::FeedbackCmd::execute,
             )),
-            Box::new(FunctionCommand::new(hf::HfCmd::info(), hf::HfCmd::execute)),
+            Box::new(ContextualCommand::from_contract::<hf::HfCmd>().expect("hf registration")),
             crate::commands::core_navigation_host::registration::<7>(),
             crate::commands::core_navigation_host::registration::<8>(),
             crate::commands::core_navigation_host::registration::<9>(),
@@ -163,10 +160,68 @@ impl From<codewhale_command_contract::outcome::CoreAction> for crate::tui::app::
         match action {
             CoreAction::ListSubAgents => Self::ListSubAgents,
             CoreAction::SendMessage(message) => Self::SendMessage(message),
+            CoreAction::LaunchSubAgent { task, max_depth } => {
+                Self::SendMessage(agent_dispatch_brief(&task, max_depth))
+            }
+            CoreAction::CancelSubAgent { agent_id } => Self::CancelSubAgent { agent_id },
             CoreAction::Quit => Self::Quit,
             CoreAction::FetchModels => Self::FetchModels,
             CoreAction::SetAdvisorEnabled { enabled } => Self::SetAdvisorEnabled { enabled },
             CoreAction::SwitchProfile { profile } => Self::SwitchProfile { profile },
         }
+    }
+}
+
+/// The model-facing /agent brief. `handle_read` is deferred on the default
+/// catalog, so the brief teaches its activation path (#6747).
+fn agent_dispatch_brief(task: &str, max_depth: u32) -> String {
+    format!(
+        "Launch one sub-agent for this task by calling `agent` with name `slash_agent`, `prompt: {task:?}`, and `max_depth: {max_depth}`. Use `handle_read` on the returned transcript_handle if you need more detail ({}). Verify any claimed side effects with `read` before reporting success.",
+        codewhale_engine::tools::handle::HANDLE_READ_ACTIVATION_HINT
+    )
+}
+
+#[cfg(test)]
+mod agent_host_tests {
+    use crate::tui::app::{App, AppAction};
+    use std::path::PathBuf;
+
+    use crate::tui::app::TuiOptions;
+
+    fn test_app() -> App {
+        let options = TuiOptions {
+            ..crate::tui::test_support::test_tui_options(PathBuf::from("."))
+        };
+        App::new(options, &codewhale_runtime::config::Config::default())
+    }
+
+    /// #6747: the /agent brief names only callable tools and teaches the
+    /// deferred `handle_read` activation path.
+    #[test]
+    fn agent_dispatch_brief_names_only_callable_tools() {
+        codewhale_engine::tools::canonical_action_test_support::assert_text_names_only_callable_tools(
+            "/agent brief",
+            &super::agent_dispatch_brief("inspect the repo", 1),
+        );
+    }
+
+    #[test]
+    fn agent_control_actions_route_to_existing_agent_tool() {
+        let mut app = test_app();
+        let result = crate::commands::execute("/agent peek agent_123", &mut app);
+
+        assert!(!result.is_error);
+        let Some(AppAction::SendMessage(message)) = result.action else {
+            panic!("expected SendMessage action");
+        };
+        assert!(message.contains("action `peek`"));
+        assert!(message.contains("agent_id `agent_123`"));
+        assert!(message.contains("Do not start a new agent"));
+
+        let result = crate::commands::execute("/agent cancel agent_123", &mut app);
+        let Some(AppAction::CancelSubAgent { agent_id }) = result.action else {
+            panic!("expected CancelSubAgent action");
+        };
+        assert_eq!(agent_id, "agent_123");
     }
 }

@@ -1,28 +1,29 @@
 //! `/hf` - Hugging Face MCP and provider concept helpers.
 
-use crate::commands::traits::{CommandInfo, RegisterCommand};
-use crate::tui::app::App;
-use codewhale_localization::MessageId;
-use codewhale_mcp::config::{McpConfig, McpServerConfig};
+use codewhale_command_contract::config::CommandConfigContext;
+use codewhale_command_contract::handler::{CommandCapabilities, CommandContexts, CommandHandler};
+use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
+use codewhale_command_contract::outcome::CommandResult;
 
-use super::CommandResult;
-
-pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
+const COMMAND_INFO: CommandInfo = CommandInfo {
     name: "hf",
     aliases: &["huggingface"],
     usage: "/hf [mcp <status|setup>|concepts]",
-    description_id: MessageId::CmdHfDescription,
+    description_key: "cmd_hf_description",
 };
 
-pub(in crate::commands) struct HfCmd;
+pub(super) struct HfCmd;
 
-impl RegisterCommand for HfCmd {
+impl<A> RegisterCommand<CommandResult<A>> for HfCmd {
     fn info() -> &'static CommandInfo {
         &COMMAND_INFO
     }
 
-    fn execute(app: &mut App, arg: Option<&str>) -> CommandResult {
-        hf(app, arg)
+    fn handler() -> CommandHandler<CommandResult<A>> {
+        CommandHandler::Contextual {
+            capabilities: CommandCapabilities::CONFIG,
+            handler: hf,
+        }
     }
 }
 
@@ -60,7 +61,7 @@ Codewhale has three distinct Hugging Face surfaces:
    Use explicit Hub tooling such as huggingface_hub or git-based flows.
    Codewhale does not upload to the Hub through /hf.";
 
-pub fn hf(app: &mut App, args: Option<&str>) -> CommandResult {
+fn hf<A>(contexts: CommandContexts<'_>, args: Option<&str>) -> CommandResult<A> {
     let raw = args.unwrap_or("").trim();
     if raw.is_empty() {
         return usage();
@@ -69,7 +70,10 @@ pub fn hf(app: &mut App, args: Option<&str>) -> CommandResult {
     let mut parts = raw.split_whitespace();
     let subcommand = parts.next().unwrap_or_default().to_ascii_lowercase();
     match subcommand.as_str() {
-        "mcp" => hf_mcp(app, parts.next()),
+        "mcp" => match contexts.into_parts().config {
+            Some(config) => hf_mcp(config, parts.next()),
+            None => CommandResult::error("Command capability unavailable: config"),
+        },
         "concepts" | "explain" => CommandResult::message(HF_CONCEPTS),
         _ => CommandResult::error(format!(
             "Unknown /hf subcommand: {subcommand}. Use /hf mcp <status|setup> or /hf concepts."
@@ -77,7 +81,7 @@ pub fn hf(app: &mut App, args: Option<&str>) -> CommandResult {
     }
 }
 
-fn usage() -> CommandResult {
+fn usage<A>() -> CommandResult<A> {
     CommandResult::message(
         "Usage: /hf mcp <status|setup>\n\
          /hf concepts\n\n\
@@ -85,41 +89,42 @@ fn usage() -> CommandResult {
     )
 }
 
-fn hf_mcp(app: &mut App, action: Option<&str>) -> CommandResult {
+fn hf_mcp<A>(config: &dyn CommandConfigContext, action: Option<&str>) -> CommandResult<A> {
     match action.unwrap_or("status").to_ascii_lowercase().as_str() {
-        "status" => hf_mcp_status(app),
-        "setup" => CommandResult::message(hf_mcp_setup_message(app)),
+        "status" => hf_mcp_status(config),
+        "setup" => CommandResult::message(hf_mcp_setup_message(&config.mcp_config_path())),
         other => CommandResult::error(format!(
             "Unknown /hf mcp subcommand: {other}. Use status or setup."
         )),
     }
 }
 
-fn hf_mcp_status(app: &App) -> CommandResult {
-    match codewhale_engine::mcp::load_config(&app.mcp_config_path) {
-        Ok(config) => {
-            if let Some(server_name) = configured_hf_mcp_server(&config) {
+fn hf_mcp_status<A>(config: &dyn CommandConfigContext) -> CommandResult<A> {
+    let path = config.mcp_config_path();
+    match config.hugging_face_mcp_server_name() {
+        Ok(server) => {
+            if let Some(server_name) = server {
                 CommandResult::message(format!(
                     "Hugging Face MCP appears configured as `{server_name}` in {}.\n\
                      Run /mcp reload to rebuild the live model-visible tool pool if tools are not visible yet.",
-                    app.mcp_config_path.display()
+                    path.display()
                 ))
             } else {
                 CommandResult::message(format!(
                     "Hugging Face MCP is not configured in {}.\n\
                      Run /hf mcp setup for the settings-generated config workflow.",
-                    app.mcp_config_path.display()
+                    path.display()
                 ))
             }
         }
         Err(err) => CommandResult::error(format!(
             "Could not read MCP config {}: {err}",
-            app.mcp_config_path.display()
+            path.display()
         )),
     }
 }
 
-fn hf_mcp_setup_message(app: &App) -> String {
+fn hf_mcp_setup_message(path: &std::path::Path) -> String {
     format!(
         "Use Hugging Face's settings-generated MCP configuration when available:\n\
          1. Open {HF_MCP_SETTINGS_URL} while signed in.\n\
@@ -132,59 +137,13 @@ fn hf_mcp_setup_message(app: &App) -> String {
          Do not commit real Hugging Face tokens.\n\n\
          Docs: {HF_MCP_DOCS_URL}\n\
          Server: {HF_MCP_SERVER_URL}",
-        app.mcp_config_path.display()
+        path.display()
     )
-}
-
-fn configured_hf_mcp_server(config: &McpConfig) -> Option<&str> {
-    config
-        .servers
-        .iter()
-        .find(|(name, server)| looks_like_hf_mcp_server(name, server))
-        .map(|(name, _)| name.as_str())
-}
-
-fn looks_like_hf_mcp_server(name: &str, server: &McpServerConfig) -> bool {
-    let compact_name: String = name
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .flat_map(|ch| ch.to_lowercase())
-        .collect();
-    if matches!(
-        compact_name.as_str(),
-        "huggingface" | "huggingfacemcp" | "hfmcp" | "hfmcpserver"
-    ) {
-        return true;
-    }
-
-    server.url.as_deref().is_some_and(|url| {
-        let url = url.to_ascii_lowercase();
-        url.contains("huggingface.co/mcp") || url.contains("huggingface.co/api/mcp")
-    })
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use std::path::PathBuf;
-
-    use crate::tui::app::TuiOptions;
-    use codewhale_runtime::config::Config;
-    use tempfile::tempdir;
-
     use super::*;
-
-    fn app_with_mcp_path(mcp_config_path: PathBuf) -> App {
-        App::new(
-            TuiOptions {
-                screen_mode: crate::tui::app::ScreenMode::Inline,
-                max_subagents: 2,
-                mcp_config_path,
-                ..crate::tui::test_support::test_tui_options(PathBuf::from("."))
-            },
-            &Config::default(),
-        )
-    }
 
     #[test]
     fn hf_mcp_config_skeleton_keeps_token_placeholder_only() {
@@ -205,48 +164,9 @@ mod tests {
     }
 
     #[test]
-    fn hf_mcp_status_detects_settings_named_server() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("mcp.json");
-        fs::write(
-            &path,
-            r#"{"mcpServers":{"hf-mcp-server":{"url":"https://huggingface.co/mcp"}}}"#,
-        )
-        .expect("write mcp config");
-        let app = app_with_mcp_path(path);
-
-        let result = hf_mcp_status(&app);
-
-        assert!(!result.is_error);
-        let message = result.message.expect("status message");
-        assert!(message.contains("appears configured"));
-        assert!(message.contains("hf-mcp-server"));
-    }
-
-    #[test]
-    fn hf_mcp_status_reports_missing_server_without_network() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("mcp.json");
-        fs::write(&path, r#"{"servers":{"local":{"command":"node"}}}"#).expect("write mcp config");
-        let app = app_with_mcp_path(path);
-
-        let result = hf_mcp_status(&app);
-
-        assert!(!result.is_error);
-        assert!(
-            result
-                .message
-                .as_deref()
-                .unwrap_or_default()
-                .contains("not configured")
-        );
-    }
-
-    #[test]
     fn hf_usage_and_setup_do_not_advertise_hub_search() {
-        let app = app_with_mcp_path(PathBuf::from("mcp.json"));
-        let usage = usage().message.expect("usage");
-        let setup = hf_mcp_setup_message(&app);
+        let usage = usage::<()>().message.expect("usage");
+        let setup = hf_mcp_setup_message(std::path::Path::new("mcp.json"));
 
         assert!(!usage.contains("/hf search"));
         assert!(!setup.contains("/hf search"));

@@ -5,29 +5,29 @@
 //! surface; Ctrl+G (or Ctrl+S) in the composer is the corresponding push entry
 //! point.
 
-use crate::commands::traits::{CommandInfo, RegisterCommand};
-use crate::composer_stash;
-use crate::tui::app::App;
-use codewhale_localization::MessageId;
+use codewhale_command_contract::facets::CommandComposerContext;
+use codewhale_command_contract::handler::{CommandCapabilities, CommandContexts, CommandHandler};
+use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
+use codewhale_command_contract::outcome::CommandResult;
 
-use super::CommandResult;
-
-pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
+const COMMAND_INFO: CommandInfo = CommandInfo {
     name: "stash",
     aliases: &["park"],
     usage: "/stash [list|pop|clear]",
-    description_id: MessageId::CmdStashDescription,
+    description_key: "cmd_stash_description",
 };
 
-pub(in crate::commands) struct StashCmd;
+pub(super) struct StashCmd;
 
-impl RegisterCommand for StashCmd {
+impl<A> RegisterCommand<CommandResult<A>> for StashCmd {
     fn info() -> &'static CommandInfo {
         &COMMAND_INFO
     }
-
-    fn execute(app: &mut App, arg: Option<&str>) -> CommandResult {
-        stash(app, arg)
+    fn handler() -> CommandHandler<CommandResult<A>> {
+        CommandHandler::Contextual {
+            capabilities: CommandCapabilities::COMPOSER,
+            handler: stash,
+        }
     }
 }
 
@@ -39,20 +39,23 @@ impl RegisterCommand for StashCmd {
 ///   the composer; the popped entry is removed from disk.
 /// * `/stash clear`  — wipe the entire stash file. Reports how many
 ///   entries were dropped so the user knows what they deleted.
-pub fn stash(app: &mut App, arg: Option<&str>) -> CommandResult {
+fn stash<A>(mut contexts: CommandContexts<'_>, arg: Option<&str>) -> CommandResult<A> {
+    let Some(composer) = contexts.take_composer() else {
+        return CommandResult::error("Command capability unavailable: composer");
+    };
     let sub = arg.map(str::trim).unwrap_or("list").to_ascii_lowercase();
     match sub.as_str() {
-        "" | "list" | "ls" | "show" => list(),
-        "pop" | "restore" => pop(app),
-        "clear" | "wipe" | "drop" => clear(),
+        "" | "list" | "ls" | "show" => list(composer),
+        "pop" | "restore" => pop(composer),
+        "clear" | "wipe" | "drop" => clear(composer),
         other => CommandResult::error(format!(
             "unknown subcommand `{other}`. Try `/stash list`, `/stash pop`, or `/stash clear`."
         )),
     }
 }
 
-fn list() -> CommandResult {
-    let entries = composer_stash::load_stash();
+fn list<A>(composer: &dyn CommandComposerContext) -> CommandResult<A> {
+    let entries = composer.parked_drafts();
     if entries.is_empty() {
         return CommandResult::message(
             "Stash empty. Press Ctrl+G (or Ctrl+S) in the composer to park the current draft.",
@@ -61,35 +64,24 @@ fn list() -> CommandResult {
     let mut out = String::new();
     out.push_str(&format!("{} parked draft(s):\n\n", entries.len()));
     for (idx, entry) in entries.iter().enumerate() {
-        out.push_str(&format_stash_line(idx, &entry.ts, &entry.text));
+        out.push_str(&format_stash_line(idx, &entry.timestamp, &entry.text));
     }
     out.push_str("\nUse `/stash pop` to restore the most recent draft.");
     CommandResult::message(out)
 }
 
-fn clear() -> CommandResult {
-    match composer_stash::clear_stash() {
+fn clear<A>(composer: &mut dyn CommandComposerContext) -> CommandResult<A> {
+    match composer.clear_parked() {
         Ok(0) => CommandResult::message("Stash already empty — nothing to clear."),
         Ok(n) => CommandResult::message(format!("Cleared {n} parked draft(s) from the stash.")),
         Err(err) => CommandResult::error(format!("Failed to clear stash: {err}")),
     }
 }
 
-fn pop(app: &mut App) -> CommandResult {
-    match composer_stash::pop_stash() {
-        Some(entry) => {
-            // Replace the current composer contents with the popped
-            // draft. We don't merge — replacing is the predictable
-            // behaviour and matches the "restore the parked draft"
-            // mental model. Mirror the queue-edit pattern for the
-            // cursor reset.
-            app.input = entry.text.clone();
-            app.cursor_position = app.input.len();
-            let preview = preview_first_line(&entry.text, 60);
-            // Tell the user how many drafts remain so they can plan
-            // whether to keep popping or move on. Matches the
-            // confirmation pattern used by the queue surface.
-            let remaining = composer_stash::load_stash().len();
+fn pop<A>(composer: &mut dyn CommandComposerContext) -> CommandResult<A> {
+    match composer.restore_parked() {
+        Some((text, remaining)) => {
+            let preview = preview_first_line(&text, 60);
             let suffix = match remaining {
                 0 => " (stash now empty)".to_string(),
                 1 => " (1 more parked)".to_string(),

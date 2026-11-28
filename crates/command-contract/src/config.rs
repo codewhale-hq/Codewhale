@@ -220,6 +220,8 @@ pub const EFFECT_REPLY_TEMPLATES: &[(&str, &[&str])] = &[
 /// message; the portable handler owns argument parsing and subcommand routing.
 /// A missing facet must fail safely rather than panic.
 pub trait CommandConfigContext {
+    fn mcp_config_path(&self) -> PathBuf;
+    fn hugging_face_mcp_server_name(&self) -> Result<Option<String>, String>;
     /// Path of the active user configuration file, when one is resolved.
     fn config_path(&self) -> Option<PathBuf>;
     fn translation_enabled(&self) -> bool;
