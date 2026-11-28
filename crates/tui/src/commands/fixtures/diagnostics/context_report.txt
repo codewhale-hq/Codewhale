@@ -6,18 +6,18 @@ Estimated active context: 48 tokens
 Overflow guard: 48 tokens (conservative 1.5x estimate that blocks oversized requests; not the pressure the meter and auto-compaction read)
 Window: 1000000 tokens (0.0% used, low; source: catalog)
 Change the window: set `context_window` on the active `[providers.<name>]` table in config.toml (docs/CONFIGURATION.md, "Context length").
-Source-entry total: 1882 tokens
+Source-entry total: 1890 tokens
 Manage standing law: /constitution (status/preview), /constitution repo (repo-local law), /setup report (readiness).
 
 Sources:
-- Constitution: Bundled constitution, language policy, and output policy [bundled in this codewhale-engine build (BASE_PROMPT, compiled in)] - 1478 tokens (High, tier 1)
+- Constitution: Bundled constitution, language policy, and output policy [bundled in this codewhale-engine build (BASE_PROMPT, compiled in)] - 1484 tokens (High, tier 1)
 - ProjectContext: Project instructions - 0 tokens (High, tier 5) - installed instruction receipt unavailable
 - ProjectContextPack: Project context pack [<workspace>] - 0 tokens (High, tier 5) - disabled; project_map provides this information on demand
 - SkillsBlock: Available skills [<skills>] - 0 tokens (High, tier 5) - no skills discovered
 - ContextManagement: WORK runtime mode - 0 tokens (High, tier 3) - mode enforced by runtime policy and the live tool catalog; no prompt doctrine
 - CompactionRelayTemplate: Session relay template [bundled in this codewhale-engine build (COMPACT_TEMPLATE, compiled in)] - 0 tokens (High, tier 3) - loaded only when /relay is requested; automatic compaction owns its successor brief
-- RuntimePolicy: Core execution discipline - 295 tokens (High, tier 3)
-- AuthorityRecap: Authority recap - 88 tokens (High, tier 1)
+- RuntimePolicy: Core execution discipline - 296 tokens (High, tier 3)
+- AuthorityRecap: Authority recap - 89 tokens (High, tier 1)
 - EnvironmentBlock: Runtime environment [<workspace>] - 21 tokens (High, tier 4)
 - HandoffRelay: Previous session relay [<workspace>/.codewhale/handoff.md] - 0 tokens (High, tier 6) - no relay artifact found
 - UserMemory: User memory [<memory>] - 0 tokens (High, tier 6) - disabled, missing, or empty
