@@ -4195,7 +4195,12 @@ mod tests {
         let restored = restore_compaction_checkpoint(original.to_vec(), Some(&summary));
         assert_eq!(
             restored,
-            [original[0].clone(), original[1].clone(), checkpoint.clone()]
+            [
+                original[0].clone(),
+                original[1].clone(),
+                checkpoint.clone(),
+                original[2].clone(),
+            ]
         );
         let result = compact_messages_safe(&client, &restored, None, &prepared, &mut usage)
             .await
@@ -4208,6 +4213,14 @@ mod tests {
         let request = client.request.into_inner().unwrap().unwrap();
         assert!(request.messages.contains(&checkpoint));
         assert!(!result.messages.contains(&checkpoint));
+        assert_eq!(
+            result
+                .messages
+                .iter()
+                .filter(|msg| *msg == &original[2])
+                .count(),
+            1
+        );
         assert_eq!(
             result
                 .messages
