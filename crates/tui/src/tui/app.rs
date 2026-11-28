@@ -84,7 +84,6 @@ pub use types::{
 };
 pub(crate) use types::{
     CacheReplayTarget, GoalControlIntent, PendingGoalControl, UnansweredSubmission,
-    WORKFLOW_DRAFT_INSTRUCTION_PREFIX,
 };
 
 const ACCOUNT_PREFERENCES_NOTICE: &str = "account-preferences-notice";

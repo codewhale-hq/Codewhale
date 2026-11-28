@@ -224,7 +224,7 @@ RUST_ALLOW: dict[str, dict[str, set[str]]] = {
     "crates/tui/src/tui/setup/fleet_draft.rs": {"": {"worker", "posture"}},
     "crates/tui/src/tui/setup/model_draft.rs": {"": {"approval policy"}},
     "crates/tui/src/commands/groups/core/agent.rs": {"Launch one sub-agent": {"sub-agent"}},
-    "crates/tui/src/commands/groups/core/workflow.rs": {"{WORKFLOW_DRAFT_INSTRUCTION_PREFIX}": {"worker"}},
+    "crates/commands/src/workflow.rs": {"{WORKFLOW_DRAFT_INSTRUCTION_PREFIX}": {"worker"}},
     "crates/engine/src/operate.rs": {"Keep Operate alive": {"worker"}},
     "crates/engine/src/fleet/worker_runtime.rs": {"- Use the policy-gated tools": {"worker"}},
     "crates/engine/src/fleet/roster.rs": {"Give the operator a direct second opinion": {"operator"}},

@@ -25,6 +25,8 @@ pub mod discovery;
 pub(crate) mod groups;
 #[cfg(test)]
 mod model_setup_host_tests;
+#[cfg(test)]
+mod workflow_host_tests;
 
 // FEAT-025 host services for the session-export slice: the shared recovery
 // writer and the protected export-destination resolver/writer. Declared at the

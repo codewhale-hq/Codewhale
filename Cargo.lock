@@ -1111,6 +1111,7 @@ version = "0.10.5"
 dependencies = [
  "codewhale-command-contract",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

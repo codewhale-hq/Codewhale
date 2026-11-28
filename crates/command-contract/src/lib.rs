@@ -29,3 +29,4 @@ pub mod whale_identity;
 pub mod model_setup;
 
 pub mod core_policy;
+pub mod workflow;

@@ -111,6 +111,8 @@ impl CommandCapabilities {
     pub const FEEDBACK: Self = Self(1 << 44);
     pub const EFFORT: Self = Self(1 << 45);
     pub const CLEAR: Self = Self(1 << 46);
+    pub const WORKFLOW_CONTROL: Self = Self(1 << 42);
+    pub const AUTO_REVIEW: Self = Self(1 << 43);
     pub const MODEL_SELECTION: Self = Self(1 << 36);
 
     /// Raw bit pattern, for tests that pin the capability-space capacity.
@@ -191,6 +193,8 @@ pub struct CommandContexts<'a> {
     effort: Option<&'a mut dyn crate::core_policy::EffortContext>,
     clear: Option<&'a mut dyn crate::core_policy::ClearContext>,
     provider_routes: Option<&'a mut dyn crate::model_setup::CommandProviderRoutesContext>,
+    workflow: Option<&'a mut dyn crate::workflow::CommandWorkflowContext>,
+    auto_review: Option<&'a mut dyn crate::workflow::CommandAutoReviewContext>,
     model_selection: Option<&'a mut dyn crate::model_setup::CommandModelSelectionContext>,
     response_copy: Option<&'a mut dyn crate::navigation::CommandResponseCopyContext>,
     composer: Option<&'a mut dyn CommandComposerContext>,
@@ -273,6 +277,8 @@ impl<'a> CommandContexts<'a> {
             effort: None,
             clear: None,
             provider_routes: None,
+            workflow: None,
+            auto_review: None,
             model_selection: None,
             response_copy: None,
             composer: None,
@@ -429,6 +435,36 @@ impl<'a> CommandContexts<'a> {
 
     pub fn take_feedback(&mut self) -> Option<&'a mut dyn crate::core_policy::FeedbackContext> {
         self.feedback.take()
+    }
+
+    pub fn with_workflow(
+        mut self,
+        value: &'a mut dyn crate::workflow::CommandWorkflowContext,
+    ) -> Self {
+        assert!(
+            self.workflow.replace(value).is_none(),
+            "workflow facet already set"
+        );
+        self
+    }
+    pub fn take_workflow(&mut self) -> Option<&'a mut dyn crate::workflow::CommandWorkflowContext> {
+        self.workflow.take()
+    }
+
+    pub fn with_auto_review(
+        mut self,
+        value: &'a mut dyn crate::workflow::CommandAutoReviewContext,
+    ) -> Self {
+        assert!(
+            self.auto_review.replace(value).is_none(),
+            "auto_review facet already set"
+        );
+        self
+    }
+    pub fn take_auto_review(
+        &mut self,
+    ) -> Option<&'a mut dyn crate::workflow::CommandAutoReviewContext> {
+        self.auto_review.take()
     }
 
     pub fn with_model_selection(

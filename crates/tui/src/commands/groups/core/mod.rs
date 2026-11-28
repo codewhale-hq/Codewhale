@@ -22,7 +22,6 @@ mod rlm;
 mod stash;
 mod subagents;
 pub mod util;
-mod workflow;
 
 pub(crate) use crate::commands::session_reset::reset_conversation_state;
 pub(crate) use constitution::open_manager as open_constitution_manager;
@@ -34,6 +33,8 @@ use crate::commands::traits::{
 use codewhale_commands::model_setup::{
     HfCmd, ModelCmd, ModelDbCmd, ModelsCmd, ProfileCmd, ProviderCmd, SetupCmd,
 };
+
+use codewhale_commands::workflow::{AutoCmd, WorkflowCmd, WorkflowsCmd};
 
 pub struct CoreCommands;
 
@@ -88,18 +89,13 @@ impl CommandGroup for CoreCommands {
                 lane::LaneCmd::info(),
                 lane::LaneCmd::execute,
             )),
-            Box::new(FunctionCommand::new(
-                workflow::WorkflowCmd::info(),
-                workflow::WorkflowCmd::execute,
-            )),
-            Box::new(FunctionCommand::new(
-                workflow::WorkflowsCmd::info(),
-                workflow::WorkflowsCmd::execute,
-            )),
-            Box::new(FunctionCommand::new(
-                workflow::AutoCmd::info(),
-                workflow::AutoCmd::execute,
-            )),
+            Box::new(
+                ContextualCommand::from_contract::<WorkflowCmd>().expect("workflow registration")
+            ),
+            Box::new(
+                ContextualCommand::from_contract::<WorkflowsCmd>().expect("workflows registration")
+            ),
+            Box::new(ContextualCommand::from_contract::<AutoCmd>().expect("auto registration")),
             crate::commands::core_navigation_host::registration::<3>(),
             Box::new(ContextualCommand::from_contract::<SetupCmd>().expect("setup registration")),
             Box::new(FunctionCommand::new(

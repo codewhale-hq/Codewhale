@@ -330,12 +330,6 @@ pub struct InflightSteer {
     pub references: Vec<codewhale_core::ContextReference>,
 }
 
-/// Prefix for the bounded, tool-less model turn produced by `/workflow`.
-///
-/// The marker travels with the queued message so a draft that waits behind an
-/// active turn keeps the same no-tools policy when it is eventually sent.
-pub(crate) const WORKFLOW_DRAFT_INSTRUCTION_PREFIX: &str = "[codewhale.workflow-draft.v1]";
-
 /// How a freshly-typed user input should be sent.
 ///
 /// Picked by [`App::decide_composer_submit`] when the user submits a
@@ -443,7 +437,11 @@ impl QueuedMessage {
     pub(crate) fn is_workflow_draft(&self) -> bool {
         self.skill_instruction
             .as_deref()
-            .is_some_and(|instruction| instruction.starts_with(WORKFLOW_DRAFT_INSTRUCTION_PREFIX))
+            .is_some_and(|instruction| {
+                instruction.starts_with(
+                    codewhale_command_contract::workflow::WORKFLOW_DRAFT_INSTRUCTION_PREFIX,
+                )
+            })
     }
 
     #[cfg_attr(not(test), expect(dead_code))]

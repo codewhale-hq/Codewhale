@@ -7,9 +7,11 @@
 //! circular dependency. The concrete implementations live in
 //! `crate::commands::config_main_host`, reached only through the host adapters.
 
+#[cfg(test)]
+use codewhale_command_contract::config::CommandWorkflowSummary;
 use codewhale_command_contract::config::{
     CommandAccountState, CommandPetContext, CommandPetLabel, CommandWorkSurfaceContext,
-    CommandWorkflowSummary, ConfigMessage, ConfigReply, TrustPathError,
+    ConfigMessage, ConfigReply, TrustPathError,
 };
 use codewhale_command_contract::facets::CommandModeSelection;
 use codewhale_command_contract::handler::{CommandCapabilities, CommandContexts};
@@ -18,6 +20,7 @@ use codewhale_command_contract::types::{
     CommandMode, CommandRailPanel, CommandScreenMode, CommandWorkSurfacePlacement,
 };
 use codewhale_command_contract::whale_identity::{normalize_whale_color, normalize_whale_name};
+use codewhale_command_contract::workflow::render_workflow_summary;
 
 /// `/config` only: config authority plus `PRESENTATION` for its keyed messages
 /// and `PERMISSIONS` because `ask-rules` forwards to the permission-rules editor.
@@ -1234,45 +1237,6 @@ pub fn auth(arg: Option<&str>) -> ConfigCommandResult {
         action: Some(action),
         is_error: false,
     }
-}
-
-/// Render the `/config workflow` report from the typed effective facts.
-pub fn render_workflow_summary(summary: CommandWorkflowSummary) -> String {
-    let on = |value: bool| if value { "on" } else { "off" };
-    [
-        "[workflow] — config.toml".to_string(),
-        format!(
-            "automatic = {}  · the agent may start a workflow itself for broad or staged work; off means only /workflow starts one",
-            on(summary.automatic)
-        ),
-        format!(
-            "auto_start_read_only = {}  · read-only plans start without an approval card",
-            on(summary.auto_start_read_only)
-        ),
-        format!(
-            "require_approval_for_writes = {}  · plans that write, use shell/network, or elevate show an approval card first",
-            on(summary.require_approval_for_writes)
-        ),
-        format!(
-            "max_children = {} · max_concurrent = {} · max_depth = {}  · hard ceilings for one run",
-            summary.max_children, summary.max_concurrent, summary.max_depth
-        ),
-        format!(
-            "default_token_budget = {}  · shared admission cap for a run and its children (0 = none)",
-            summary.default_token_budget
-        ),
-        String::new(),
-        "[goal] — config.toml".to_string(),
-        format!(
-            "max_continuations = {}  · automatic continuation passes before a goal pauses; 0 = unlimited (completion, blocked, or you stop it)",
-            summary.goal_max_continuations
-        ),
-        format!(
-            "enforce_token_budget = {}  · true = a goal's token budget is a hard stop; false = advisory telemetry",
-            on(summary.goal_enforce_token_budget)
-        ),
-    ]
-    .join("\n")
 }
 
 /// Compose the `/import-claude --apply` follow-up sentence for a typed fact.

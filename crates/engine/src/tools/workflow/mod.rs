@@ -6076,27 +6076,7 @@ pub fn structcopy_run_projection(
     Some(value)
 }
 
-/// One workflow run as the human-facing `/workflow` command reads it: a
-/// bounded projection of the run record with no raw event payloads and no
-/// filesystem paths beyond the source file name.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct HostWorkflowRunLine {
-    pub run_id: String,
-    /// Human-facing stage derived from the durable owner record and its typed
-    /// event tail: queued | running | waiting | completed | degraded | failed |
-    /// cancelled. This is presentation state, not a second lifecycle owner.
-    pub status: &'static str,
-    /// Whether the canonical owner record is still nonterminal. Controls key
-    /// off this bit instead of reverse-parsing the display stage.
-    pub active: bool,
-    /// The run's goal, its workflow id, or the source file name.
-    pub label: String,
-    pub started_at_ms: u64,
-    pub completed_at_ms: Option<u64>,
-    pub child_count: usize,
-    pub last_progress: Option<String>,
-    pub error: Option<String>,
-}
+pub use codewhale_command_contract::workflow::HostWorkflowRunLine;
 
 fn host_workflow_stage(record: &WorkflowRunRecord) -> &'static str {
     match record.status {

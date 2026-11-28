@@ -87,14 +87,6 @@ pub(in crate::commands) fn workflow_summary(app: &App) -> CommandWorkflowSummary
     }
 }
 
-/// `/workflow settings` / `/config workflow`: render the typed facts with the
-/// portable helper (one render implementation).
-pub(in crate::commands) fn workflow_settings(app: &App) -> CommandResult {
-    CommandResult::message(
-        crate::commands::groups::config::config::render_workflow_summary(workflow_summary(app)),
-    )
-}
-
 pub(crate) fn apply_preset(app: &mut App, name: &str, persist: bool) -> ConfigReply {
     if name.is_empty() || name.starts_with('-') {
         return ConfigReply::message(

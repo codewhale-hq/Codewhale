@@ -38,6 +38,7 @@ mod core_navigation;
 mod core_policy;
 mod model_reference;
 mod model_setup;
+mod workflow;
 use core_navigation::{NavigationAdapter, VoiceInputAdapter};
 pub(in crate::commands) mod config_policy;
 #[cfg(test)]
@@ -2735,6 +2736,9 @@ pub(crate) fn key_to_plugin_message_id(key: &str) -> Option<MessageId> {
 /// Resolve a stable utility message key to the current catalog id.
 fn key_to_utility_message_id(key: &str) -> Option<MessageId> {
     Some(match key {
+        "auto_receipt_on" => MessageId::AutoReceiptOn,
+        "auto_receipt_plan_note" => MessageId::AutoReceiptPlanNote,
+        "auto_receipt_broad_allows_paused" => MessageId::AutoReceiptBroadAllowsPaused,
         "automation_usage" => MessageId::AutomationUsage,
         "mcp_recommended_unknown_id" => MessageId::McpRecommendedUnknownId,
         "mcp_recommendations_heading" => MessageId::McpRecommendationsHeading,
@@ -5524,6 +5528,8 @@ pub(crate) struct CommandContextBundle<'a> {
     effort: core_policy::PolicyAdapter<'a>,
     clear: core_policy::PolicyAdapter<'a>,
     provider_routes: ModelAdapter<'a>,
+    workflow: workflow::WorkflowAdapter<'a>,
+    auto_review: workflow::WorkflowAdapter<'a>,
     model_selection: ModelAdapter<'a>,
     cost: CostAdapter<'a>,
     mode_policy: ModePolicyAdapter<'a>,
@@ -5576,6 +5582,12 @@ impl<'a> CommandContextBundle<'a> {
         }
         if capabilities.contains(CommandCapabilities::CLEAR) {
             contexts = contexts.with_clear(&mut self.clear);
+        }
+        if capabilities.contains(CommandCapabilities::WORKFLOW_CONTROL) {
+            contexts = contexts.with_workflow(&mut self.workflow);
+        }
+        if capabilities.contains(CommandCapabilities::AUTO_REVIEW) {
+            contexts = contexts.with_auto_review(&mut self.auto_review);
         }
         if capabilities.contains(CommandCapabilities::MODEL_SELECTION) {
             contexts = contexts.with_model_selection(&mut self.model_selection);
@@ -5745,6 +5757,8 @@ impl App {
             effort: core_policy::PolicyAdapter { host: host.clone() },
             clear: core_policy::PolicyAdapter { host: host.clone() },
             provider_routes: ModelAdapter { host: host.clone() },
+            workflow: workflow::WorkflowAdapter { host: host.clone() },
+            auto_review: workflow::WorkflowAdapter { host: host.clone() },
             model_selection: ModelAdapter { host: host.clone() },
             cost: CostAdapter { host: host.clone() },
             mode_policy: ModePolicyAdapter { host: host.clone() },

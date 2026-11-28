@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 codewhale-command-contract = { path = "../command-contract", version = "0.10.5" }
 serde_json.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true
