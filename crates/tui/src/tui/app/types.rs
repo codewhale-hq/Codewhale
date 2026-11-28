@@ -28,7 +28,7 @@ pub enum SettingSelection {
     /// is the normal shape after a session restore, where the live value and
     /// the startup default legitimately disagree.
     PersistedSame,
-    /// Refused by the turn lock (#2982). Nothing was written anywhere.
+    /// Refused by the turn lock or the Work receipt store.
     Refused,
 }
 

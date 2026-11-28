@@ -75,6 +75,38 @@ impl From<ClearedConversation> for AppAction {
     }
 }
 
+fn resolve_supported_effort(
+    app: &crate::tui::app::App,
+    value: &str,
+) -> Result<ReasoningEffort, EffortFailure> {
+    let effort = ReasoningEffort::parse_strict(value).map_err(|_| EffortFailure::Unknown)?;
+    let requested = if app.auto_model {
+        effort
+    } else {
+        effort.normalize_for_route(app.api_provider, &app.active_route_base_url, &app.model)
+    };
+    let available = crate::tui::model_picker::picker_efforts_for_route(
+        app.api_provider,
+        &app.active_route_base_url,
+        &app.model,
+        app.auto_model,
+    );
+    if !available.is_empty() && !available.contains(&requested) && !available.contains(&effort) {
+        return Err(EffortFailure::Unavailable {
+            model: app.model.clone(),
+            labels: available
+                .iter()
+                .map(|effort| {
+                    effort
+                        .display_label_for_provider(app.api_provider)
+                        .to_owned()
+                })
+                .collect(),
+        });
+    }
+    Ok(requested)
+}
+
 impl EffortContext for PolicyAdapter<'_> {
     fn available_labels(&self) -> Vec<String> {
         let app = self.host.app.borrow();
@@ -106,35 +138,39 @@ impl EffortContext for PolicyAdapter<'_> {
                 .to_owned(),
         )
     }
+    fn cycle_checked(&mut self) -> Result<(String, String), String> {
+        let mut app = self.host.app.borrow_mut();
+        let prev = app
+            .reasoning_effort
+            .display_label_for_provider(app.api_provider)
+            .to_owned();
+        match app.cycle_effort_checked()? {
+            crate::tui::app::SettingSelection::Refused => {
+                Err(app.setting_locked_message(MessageId::SettingSubjectThinking))
+            }
+            crate::tui::app::SettingSelection::Changed
+            | crate::tui::app::SettingSelection::PersistedSame => Ok((
+                prev,
+                app.reasoning_effort
+                    .display_label_for_provider(app.api_provider)
+                    .to_owned(),
+            )),
+        }
+    }
     fn set_supported_effort(&mut self, value: &str) -> Result<String, EffortFailure> {
         let mut app = self.host.app.borrow_mut();
-        let effort = ReasoningEffort::parse_strict(value).map_err(|_| EffortFailure::Unknown)?;
-        let requested = if app.auto_model {
-            effort
-        } else {
-            effort.normalize_for_route(app.api_provider, &app.active_route_base_url, &app.model)
-        };
-        let available = crate::tui::model_picker::picker_efforts_for_route(
-            app.api_provider,
-            &app.active_route_base_url,
-            &app.model,
-            app.auto_model,
-        );
-        if !available.is_empty() && !available.contains(&requested) && !available.contains(&effort)
-        {
-            return Err(EffortFailure::Unavailable {
-                model: app.model.clone(),
-                labels: available
-                    .iter()
-                    .map(|effort| {
-                        effort
-                            .display_label_for_provider(app.api_provider)
-                            .to_owned()
-                    })
-                    .collect(),
-            });
-        }
+        let requested = resolve_supported_effort(&app, value)?;
         app.commit_reasoning_effort(requested);
+        Ok(requested
+            .display_label_for_provider(app.api_provider)
+            .to_owned())
+    }
+    fn set_supported_effort_checked(&mut self, value: &str) -> Result<String, EffortChangeFailure> {
+        let mut app = self.host.app.borrow_mut();
+        let requested =
+            resolve_supported_effort(&app, value).map_err(EffortChangeFailure::Selection)?;
+        app.commit_reasoning_effort_checked(requested)
+            .map_err(EffortChangeFailure::Receipt)?;
         Ok(requested
             .display_label_for_provider(app.api_provider)
             .to_owned())

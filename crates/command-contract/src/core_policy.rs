@@ -20,10 +20,22 @@ pub enum EffortFailure {
     Unavailable { model: String, labels: Vec<String> },
 }
 
+pub enum EffortChangeFailure {
+    Selection(EffortFailure),
+    Receipt(String),
+}
+
 pub trait EffortContext {
     fn available_labels(&self) -> Vec<String>;
     fn cycle(&mut self) -> (String, String);
     fn set_supported_effort(&mut self, value: &str) -> Result<String, EffortFailure>;
+    fn cycle_checked(&mut self) -> Result<(String, String), String> {
+        Ok(self.cycle())
+    }
+    fn set_supported_effort_checked(&mut self, value: &str) -> Result<String, EffortChangeFailure> {
+        self.set_supported_effort(value)
+            .map_err(EffortChangeFailure::Selection)
+    }
 }
 
 pub trait FeedbackContext {

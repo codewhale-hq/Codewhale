@@ -3903,15 +3903,20 @@ impl App {
     /// the hotbar whether the turn lock refused the action or the provider
     /// simply exposes a single tier.
     pub fn cycle_effort(&mut self) -> SettingSelection {
+        self.cycle_effort_checked()
+            .unwrap_or(SettingSelection::Refused)
+    }
+
+    pub(crate) fn cycle_effort_checked(&mut self) -> Result<SettingSelection, String> {
         if self.reject_setting_change_while_busy(MessageId::SettingSubjectThinking) {
-            return SettingSelection::Refused;
+            return Ok(SettingSelection::Refused);
         }
         let previous = self.reasoning_effort;
-        self.apply_reasoning_effort_cycle();
+        self.apply_reasoning_effort_cycle()?;
         if self.reasoning_effort == previous {
-            SettingSelection::PersistedSame
+            Ok(SettingSelection::PersistedSame)
         } else {
-            SettingSelection::Changed
+            Ok(SettingSelection::Changed)
         }
     }
 
@@ -3920,9 +3925,9 @@ impl App {
     /// budget. Auto routing and concrete models alike walk the same ladder as
     /// `/model` and `/effort`. Shared by the Ctrl+T shortcut (`cycle_effort`) and the
     /// hotbar `reasoning.cycle` action so the two paths cannot drift.
-    pub(crate) fn apply_reasoning_effort_cycle(&mut self) {
+    pub(crate) fn apply_reasoning_effort_cycle(&mut self) -> Result<(), String> {
         let requested = self.next_reasoning_effort_for_active_route();
-        self.commit_reasoning_effort(requested);
+        self.commit_reasoning_effort_checked(requested)
     }
 
     fn next_reasoning_effort_for_active_route(&self) -> ReasoningEffort {
@@ -3964,6 +3969,13 @@ impl App {
     }
 
     pub(crate) fn commit_reasoning_effort(&mut self, requested: ReasoningEffort) {
+        let _ = self.commit_reasoning_effort_checked(requested);
+    }
+
+    pub(crate) fn commit_reasoning_effort_checked(
+        &mut self,
+        requested: ReasoningEffort,
+    ) -> Result<(), String> {
         let effective = self.effective_reasoning_effort_for_active_route(requested);
         let route_truth = self.active_reasoning_route_truth();
         let provider_kind = route_truth.map_or(self.api_provider, |(provider, _, _, _)| provider);
@@ -3986,11 +3998,10 @@ impl App {
                 model.as_deref(),
             )
         {
-            self.status_message = Some(format!(
-                "Reasoning effort unchanged: Work receipt failed ({err})"
-            ));
+            let msg = format!("Reasoning effort unchanged: Work receipt failed ({err})");
+            self.status_message = Some(msg.clone());
             self.needs_redraw = true;
-            return;
+            return Err(msg);
         }
         self.reasoning_effort = requested;
         self.reasoning_effort_preference = Some(requested);
@@ -4008,6 +4019,7 @@ impl App {
             Self::reasoning_effort_resolution_label(requested, effective, self.api_provider)
         ));
         self.needs_redraw = true;
+        Ok(())
     }
 
     #[must_use]

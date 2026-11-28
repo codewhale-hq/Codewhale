@@ -1294,7 +1294,7 @@ fn active_turn_zai_receipt_overrides_all_mutable_parallel_route_metadata() {
         "high→thinking enabled; granularity unavailable"
     );
 
-    app.apply_reasoning_effort_cycle();
+    app.apply_reasoning_effort_cycle().unwrap();
     let work = app
         .work_state_snapshot()
         .expect("Work snapshot")
@@ -7214,7 +7214,7 @@ fn reasoning_cycle_persists_through_the_same_owner_as_the_picker() {
 
     // Ctrl+T and the hotbar `reasoning.cycle` action both land in
     // `apply_reasoning_effort_cycle`.
-    app.apply_reasoning_effort_cycle();
+    app.apply_reasoning_effort_cycle().unwrap();
 
     // One step up DeepSeek's ladder from Off is Low, not the old shortcut's High.
     assert_eq!(app.reasoning_effort, ReasoningEffort::Low);
@@ -7328,7 +7328,7 @@ async fn rapid_thinking_selections_persist_the_last_one() {
     app.reasoning_effort = ReasoningEffort::Off;
 
     for _ in 0..6 {
-        app.apply_reasoning_effort_cycle();
+        app.apply_reasoning_effort_cycle().unwrap();
     }
     app.startup_defaults.flush();
 
@@ -7366,7 +7366,7 @@ async fn fixed_route_thinking_cycle_persists_raw_preference() {
     app.model = codewhale_config::catalog::reviewed::constants::MOONSHOT_KIMI_K3_MODEL.to_string();
     app.reasoning_effort = ReasoningEffort::Max;
 
-    app.apply_reasoning_effort_cycle();
+    app.apply_reasoning_effort_cycle().unwrap();
     app.startup_defaults.flush();
 
     // Cycling off the top of K3's ladder wraps to Auto rather than Off now
@@ -7397,7 +7397,7 @@ async fn queued_mode_and_thinking_writes_finish_before_a_synchronous_selection()
     app.auto_model = false;
     app.reasoning_effort = ReasoningEffort::Off;
     assert_eq!(app.select_mode(AppMode::Plan), SettingSelection::Changed);
-    app.apply_reasoning_effort_cycle();
+    app.apply_reasoning_effort_cycle().unwrap();
 
     // A newer synchronous effort selection drains the older queued mode and
     // effort first, so a late background writer cannot restore the old effort.
@@ -7523,7 +7523,7 @@ async fn thinking_and_an_unrelated_direct_setting_write_do_not_clobber_each_othe
     app.reasoning_effort = ReasoningEffort::Off;
 
     for index in 0..6 {
-        app.apply_reasoning_effort_cycle();
+        app.apply_reasoning_effort_cycle().unwrap();
         // Interleaved on the same thread, exactly as the event loop would when a
         // `/set --save` or a divider drag lands between two Ctrl+T presses.
         Settings::transact(|settings| settings.set("max_history", &(100 + index).to_string()))
@@ -7583,7 +7583,7 @@ async fn rapid_mixed_writes_settle_on_the_last_value_for_every_field() {
             }),
             SettingSelection::Changed
         );
-        app.apply_reasoning_effort_cycle();
+        app.apply_reasoning_effort_cycle().unwrap();
         // Synchronous direct writers.
         assert!(
             app.select_approval_posture(app.mode_prefs.agent_approval_mode.cycle_permission_next())

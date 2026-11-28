@@ -136,6 +136,64 @@ mod tests {
     }
 
     #[test]
+    fn effort_reports_work_receipt_failure_and_preserves_effort() {
+        let _home = crate::test_support::SealedHome::new();
+        let mut app = create_test_app();
+        app.runtime_services.work = Some(codewhale_engine::work_graph::new_shared_work_runtime(
+            app.todos.clone(),
+            app.plan_state.clone(),
+        ));
+        let before = app.reasoning_effort;
+        assert_ne!(before, ReasoningEffort::High);
+
+        let previous_preference = app.reasoning_effort_preference;
+        let todos = app.todos.clone();
+        let todo_guard = todos.try_lock().expect("lock todos");
+        let named_failed = crate::commands::execute("/effort high", &mut app);
+        assert!(named_failed.is_error);
+        assert!(
+            named_failed
+                .message
+                .as_deref()
+                .is_some_and(|msg| msg.contains("Work receipt failed")),
+            "{:?}",
+            named_failed.message
+        );
+        assert_eq!(app.reasoning_effort, before);
+
+        let cycle_failed = crate::commands::execute("/thinking", &mut app);
+        assert!(cycle_failed.is_error);
+        assert!(
+            cycle_failed
+                .message
+                .as_deref()
+                .is_some_and(|msg| msg.contains("Work receipt failed")),
+            "{:?}",
+            cycle_failed.message
+        );
+        assert_eq!(app.reasoning_effort, before);
+        assert_eq!(app.reasoning_effort_preference, previous_preference);
+        drop(todo_guard);
+
+        let named_ok = crate::commands::execute("/effort high", &mut app);
+        assert!(!named_ok.is_error);
+        assert_eq!(named_ok.message.as_deref(), Some("Effort set to high"));
+        assert_eq!(app.reasoning_effort, ReasoningEffort::High);
+
+        let cycle_ok = crate::commands::execute("/effort", &mut app);
+        assert!(!cycle_ok.is_error);
+        assert!(
+            cycle_ok
+                .message
+                .as_deref()
+                .is_some_and(|msg| msg.starts_with("Effort: high → ")),
+            "{:?}",
+            cycle_ok.message
+        );
+        assert_ne!(app.reasoning_effort, ReasoningEffort::High);
+    }
+
+    #[test]
     fn test_clear_resets_all_state() {
         let mut app = create_test_app();
         // Set up some state

@@ -91,22 +91,25 @@ fn effort<A>(mut ctx: CommandContexts<'_>, arg: Option<&str>) -> Result<CommandR
     };
     if arg.is_empty() {
         let labels = label_list(effort.available_labels());
-        let (prev, next) = effort.cycle();
+        let (prev, next) = effort.cycle_checked()?;
         return Ok(CommandResult::message(format!(
             "Effort: {prev} → {next} (available: {labels})"
         )));
     }
-    match effort.set_supported_effort(&arg) {
+    match effort.set_supported_effort_checked(&arg) {
+        Err(EffortChangeFailure::Receipt(message)) => Err(message),
         Ok(label) => Ok(CommandResult::message(format!("Effort set to {label}"))),
-        Err(EffortFailure::Unknown) => Err(format!(
+        Err(EffortChangeFailure::Selection(EffortFailure::Unknown)) => Err(format!(
             "{} — Usage: /effort <{}> (also /thinking)",
             text.translate("cmd_effort_description", &[])?,
             label_list(effort.available_labels())
         )),
-        Err(EffortFailure::Unavailable { model, labels }) => Err(format!(
-            "'{arg}' not available for {model} — available: {}",
-            label_list(labels)
-        )),
+        Err(EffortChangeFailure::Selection(EffortFailure::Unavailable { model, labels })) => {
+            Err(format!(
+                "'{arg}' not available for {model} — available: {}",
+                label_list(labels)
+            ))
+        }
     }
 }
 
