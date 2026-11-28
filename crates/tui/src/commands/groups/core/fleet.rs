@@ -286,7 +286,9 @@ impl RegisterCommand for FleetCmd {
                 CommandResult::action(AppAction::OpenFleetList)
             }
             // The current-session sub-agent projection, named for what it is.
-            "workers" | "worker" | "agents" | "subagents" => super::core::subagents(app),
+            "workers" | "worker" | "agents" | "subagents" => {
+                crate::commands::core_navigation_host::dispatch(app, "subagents", None)
+            }
             "help" | "?" => CommandResult::message(help_text()),
             other => match ControlOperation::parse_verb(ControlDomain::Fleet, other) {
                 Some(operation) => run_control(app, operation, target),

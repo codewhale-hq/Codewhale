@@ -73,6 +73,7 @@ pub struct NavigationLinks {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceTarget {
     Missing,
+    File,
     NotDirectory,
     Directory { canonical_or_candidate: PathBuf },
 }
@@ -83,7 +84,16 @@ pub enum AnchorWriteError {
     Write(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubagentRosterDisplay {
+    Modal,
+    Transcript,
+}
+
 pub trait CommandNavigationContext {
+    fn open_model_reference(&mut self);
+    fn prepare_subagent_roster(&mut self, display: SubagentRosterDisplay);
+    fn toggle_window_pin(&mut self);
     fn completed_assistant_output(&self) -> Option<String>;
     fn show_copy_receipt(&mut self, message: &str, is_error: bool);
     fn help_topic(&self, topic: &str) -> NavigationHelpTopic;

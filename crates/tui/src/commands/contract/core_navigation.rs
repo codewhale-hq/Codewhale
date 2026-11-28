@@ -4,7 +4,7 @@ use crate::tui::views::{HelpView, ModalKind};
 use codewhale_command_contract::navigation::{
     CommandNavigationContext, NavigationBuiltinHelp, NavigationHelpTopic, NavigationLinks,
     NavigationOverview, NavigationProviderKind, NavigationProviderLinks, NavigationSkill,
-    NavigationUserHelp,
+    NavigationUserHelp, SubagentRosterDisplay,
 };
 use codewhale_localization::MessageId;
 
@@ -13,6 +13,35 @@ pub(super) struct NavigationAdapter<'a> {
 }
 
 impl CommandNavigationContext for NavigationAdapter<'_> {
+    fn open_model_reference(&mut self) {
+        self.host
+            .app
+            .borrow_mut()
+            .view_stack
+            .push(super::model_reference::view());
+    }
+
+    fn toggle_window_pin(&mut self) {
+        crate::tui::window_control::toggle_pin(&mut self.host.app.borrow_mut());
+    }
+
+    fn prepare_subagent_roster(&mut self, display: SubagentRosterDisplay) {
+        use crate::tui::views::{SubAgentsView, subagent_view_agents};
+        let mut app = self.host.app.borrow_mut();
+        match display {
+            SubagentRosterDisplay::Modal
+                if app.view_stack.top_kind() != Some(ModalKind::SubAgents) =>
+            {
+                let agents = subagent_view_agents(&app, &app.subagent_cache);
+                let view = SubAgentsView::for_app(&app, agents);
+                app.view_stack.push(view);
+            }
+            SubagentRosterDisplay::Modal => {}
+            SubagentRosterDisplay::Transcript => app.agent_roster_print_requested = true,
+        }
+        app.status_message = Some(app.tr(MessageId::SubagentsFetching).into_owned());
+    }
+
     fn completed_assistant_output(&self) -> Option<String> {
         self.host
             .app
@@ -233,6 +262,8 @@ pub(super) fn resolve_message(key: &str) -> Option<MessageId> {
         "cmd_copy_success_no_backup" => MessageId::CmdCopySuccessNoBackup,
         "cmd_copy_failed" => MessageId::CmdCopyFailed,
         "cmd_copy_failed_no_backup" => MessageId::CmdCopyFailedNoBackup,
+        "profile_usage" => MessageId::ProfileUsage,
+        "profile_switching" => MessageId::ProfileSwitching,
         "voice_disabled" => MessageId::VoiceDisabled,
         "voice_enabled" => MessageId::VoiceEnabled,
         "voice_err_no_recorder" => MessageId::VoiceErrNoRecorder,

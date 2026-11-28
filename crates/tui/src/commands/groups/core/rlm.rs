@@ -1,31 +1,33 @@
 //! `/rlm` command.
 
-use crate::commands::traits::{CommandInfo, RegisterCommand};
-use crate::tui::app::{App, AppAction};
-use codewhale_localization::MessageId;
+use codewhale_command_contract::handler::{CommandCapabilities, CommandContexts, CommandHandler};
+use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
+use codewhale_command_contract::navigation::WorkspaceTarget;
+use codewhale_command_contract::outcome::{CommandResult, CoreAction};
 
-use super::CommandResult;
-
-pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
+const COMMAND_INFO: CommandInfo = CommandInfo {
     name: "rlm",
     aliases: &["recursive", "digui"],
     usage: "/rlm [N] <file_or_text>",
-    description_id: MessageId::CmdRlmDescription,
+    description_key: "cmd_rlm_description",
 };
 
-pub(in crate::commands) struct RlmCmd;
+pub(super) struct RlmCmd;
 
-impl RegisterCommand for RlmCmd {
+impl<A: From<CoreAction>> RegisterCommand<CommandResult<A>> for RlmCmd {
     fn info() -> &'static CommandInfo {
         &COMMAND_INFO
     }
 
-    fn execute(app: &mut App, arg: Option<&str>) -> CommandResult {
-        rlm(app, arg)
+    fn handler() -> CommandHandler<CommandResult<A>> {
+        CommandHandler::Contextual {
+            capabilities: CommandCapabilities::WORKSPACE,
+            handler: rlm,
+        }
     }
 }
 
-pub fn rlm(app: &mut App, arg: Option<&str>) -> CommandResult {
+fn rlm<A: From<CoreAction>>(contexts: CommandContexts<'_>, arg: Option<&str>) -> CommandResult<A> {
     let (_legacy_depth, target) = match super::util::parse_depth_prefixed_arg(arg, 1) {
         Ok(parsed) => parsed,
         Err(message) => return CommandResult::error(message),
@@ -42,7 +44,11 @@ pub fn rlm(app: &mut App, arg: Option<&str>) -> CommandResult {
         }
     };
 
-    let source = if resolves_to_existing_file(app, &target) {
+    let Some(workspace) = contexts.into_parts().workspace else {
+        return CommandResult::error("Command capability unavailable: workspace");
+    };
+    let candidate = workspace.workspace().join(&target);
+    let source = if workspace.inspect_workspace_target(&candidate) == WorkspaceTarget::File {
         format!("the workspace file `{target}`")
     } else {
         format!("this text: {target:?}")
@@ -53,16 +59,6 @@ pub fn rlm(app: &mut App, arg: Option<&str>) -> CommandResult {
 
     CommandResult::with_message_and_action(
         "Loading that into a persistent working context...".to_string(),
-        AppAction::SendMessage(message),
+        CoreAction::SendMessage(message).into(),
     )
-}
-
-fn resolves_to_existing_file(app: &App, input: &str) -> bool {
-    let path = std::path::Path::new(input);
-    let candidate = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        app.workspace.join(path)
-    };
-    candidate.is_file()
 }

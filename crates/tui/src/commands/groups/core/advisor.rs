@@ -11,33 +11,31 @@
 //! concise LLM advisory call, and emits a note into the status area.
 //! Failures do not affect the parent turn. Off by default.
 
-use crate::commands::traits::{CommandInfo, RegisterCommand};
-use crate::tui::app::{App, AppAction};
-use codewhale_localization::MessageId;
+use codewhale_command_contract::handler::CommandHandler;
+use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
+use codewhale_command_contract::outcome::{CommandResult, CoreAction};
 
-use super::CommandResult;
-
-pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
+const COMMAND_INFO: CommandInfo = CommandInfo {
     name: "advisor",
     aliases: &["watchers", "watch"],
     usage: "/advisor [on|off|status]",
-    description_id: MessageId::CmdAdvisorDescription,
+    description_key: "cmd_advisor_description",
 };
 
-pub(in crate::commands) struct AdvisorCmd;
+pub(super) struct AdvisorCmd;
 
-impl RegisterCommand for AdvisorCmd {
+impl<A: From<CoreAction>> RegisterCommand<CommandResult<A>> for AdvisorCmd {
     fn info() -> &'static CommandInfo {
         &COMMAND_INFO
     }
 
-    fn execute(_app: &mut App, arg: Option<&str>) -> CommandResult {
-        match arg.map(str::trim).filter(|s| !s.is_empty()) {
+    fn handler() -> CommandHandler<CommandResult<A>> {
+        CommandHandler::Pure(|arg| match arg.map(str::trim).filter(|s| !s.is_empty()) {
             Some("on") | Some("enable") | Some("yes") | Some("1") | Some("true") => {
-                CommandResult::action(AppAction::SetAdvisorEnabled { enabled: true })
+                CommandResult::action(CoreAction::SetAdvisorEnabled { enabled: true }.into())
             }
             Some("off") | Some("disable") | Some("no") | Some("0") | Some("false") => {
-                CommandResult::action(AppAction::SetAdvisorEnabled { enabled: false })
+                CommandResult::action(CoreAction::SetAdvisorEnabled { enabled: false }.into())
             }
             Some("status") | None => {
                 // The engine owns the authoritative state; report from config.
@@ -49,6 +47,6 @@ impl RegisterCommand for AdvisorCmd {
             Some(unknown) => CommandResult::error(format!(
                 "Unknown advisor argument: {unknown:?}. Use `on`, `off`, or `status`."
             )),
-        }
+        })
     }
 }

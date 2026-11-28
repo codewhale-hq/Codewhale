@@ -70,7 +70,7 @@ fn workspace_switch(
                 &[("path", &candidate.display().to_string())],
             )?));
         }
-        WorkspaceTarget::NotDirectory => {
+        WorkspaceTarget::File | WorkspaceTarget::NotDirectory => {
             return Ok(CommandResult::error(presentation.translate(
                 "workspace_not_directory",
                 &[("path", &candidate.display().to_string())],

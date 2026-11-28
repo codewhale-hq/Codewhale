@@ -1,35 +1,43 @@
 //! `/subagents` compatibility command.
 
-use crate::commands::traits::{CommandInfo, RegisterCommand};
-use crate::tui::app::App;
-use codewhale_localization::MessageId;
+use codewhale_command_contract::handler::{CommandCapabilities, CommandHandler};
+use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
+use codewhale_command_contract::navigation::SubagentRosterDisplay;
+use codewhale_command_contract::outcome::{CommandResult, CoreAction};
 
-use super::CommandResult;
-
-pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
+const COMMAND_INFO: CommandInfo = CommandInfo {
     name: "subagents",
     aliases: &["agents", "zhinengti"],
     usage: "/subagents [list]",
-    description_id: MessageId::CmdSubagentsDescription,
+    description_key: "cmd_subagents_description",
 };
 
-pub(in crate::commands) struct SubagentsCmd;
+pub(super) struct SubagentsCmd;
 
-impl RegisterCommand for SubagentsCmd {
+impl<A: From<CoreAction>> RegisterCommand<CommandResult<A>> for SubagentsCmd {
     fn info() -> &'static CommandInfo {
         &COMMAND_INFO
     }
 
-    fn execute(app: &mut App, arg: Option<&str>) -> CommandResult {
-        // `list` prints the roster into the transcript instead of opening the
-        // modal, so a session transcript (and `exec`, which has no modal at
-        // all) carries the same agent history the TUI shows (#5479 spec 5).
-        match arg.map(str::trim).unwrap_or_default() {
-            "" => super::core::subagents(app),
-            "list" | "roster" | "ls" => super::core::subagents_roster(app),
-            other => CommandResult::error(format!(
-                "Unknown /agents argument {other:?}. Usage: /agents [list]"
-            )),
+    fn handler() -> CommandHandler<CommandResult<A>> {
+        CommandHandler::Contextual {
+            capabilities: CommandCapabilities::NAVIGATION,
+            handler: |contexts, arg| {
+                let display = match arg.map(str::trim).unwrap_or_default() {
+                    "" => SubagentRosterDisplay::Modal,
+                    "list" | "roster" | "ls" => SubagentRosterDisplay::Transcript,
+                    other => {
+                        return CommandResult::error(format!(
+                            "Unknown /agents argument {other:?}. Usage: /agents [list]"
+                        ));
+                    }
+                };
+                let Some(navigation) = contexts.into_parts().navigation else {
+                    return CommandResult::error("Command capability unavailable: navigation");
+                };
+                navigation.prepare_subagent_roster(display);
+                CommandResult::action(CoreAction::ListSubAgents.into())
+            },
         }
     }
 }

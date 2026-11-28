@@ -34,6 +34,7 @@ use std::rc::Rc;
 
 mod config_main;
 mod core_navigation;
+mod model_reference;
 use core_navigation::{NavigationAdapter, VoiceInputAdapter};
 pub(in crate::commands) mod config_policy;
 #[cfg(test)]
@@ -2489,16 +2490,15 @@ impl CommandWorkspaceContext for WorkspaceAdapter<'_> {
         candidate: &Path,
     ) -> codewhale_command_contract::navigation::WorkspaceTarget {
         use codewhale_command_contract::navigation::WorkspaceTarget;
-        if !candidate.exists() {
-            WorkspaceTarget::Missing
-        } else if !candidate.is_dir() {
-            WorkspaceTarget::NotDirectory
-        } else {
-            WorkspaceTarget::Directory {
+        match candidate.metadata() {
+            Ok(metadata) if metadata.is_file() => WorkspaceTarget::File,
+            Ok(metadata) if metadata.is_dir() => WorkspaceTarget::Directory {
                 canonical_or_candidate: candidate
                     .canonicalize()
-                    .unwrap_or_else(|_| candidate.to_path_buf()),
-            }
+                    .unwrap_or_else(|_| candidate.to_owned()),
+            },
+            Ok(_) => WorkspaceTarget::NotDirectory,
+            Err(_) => WorkspaceTarget::Missing,
         }
     }
 

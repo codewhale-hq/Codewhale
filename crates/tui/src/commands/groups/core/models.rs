@@ -1,26 +1,24 @@
 //! `/models` command.
 
-use crate::commands::traits::{CommandInfo, RegisterCommand};
-use crate::tui::app::App;
-use codewhale_localization::MessageId;
+use codewhale_command_contract::handler::CommandHandler;
+use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
+use codewhale_command_contract::outcome::{CommandResult, CoreAction};
 
-use super::CommandResult;
-
-pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
+const COMMAND_INFO: CommandInfo = CommandInfo {
     name: "models",
     aliases: &["moxingliebiao"],
     usage: "/models",
-    description_id: MessageId::CmdModelsDescription,
+    description_key: "cmd_models_description",
 };
 
-pub(in crate::commands) struct ModelsCmd;
+pub(super) struct ModelsCmd;
 
-impl RegisterCommand for ModelsCmd {
+impl<A: From<CoreAction>> RegisterCommand<CommandResult<A>> for ModelsCmd {
     fn info() -> &'static CommandInfo {
         &COMMAND_INFO
     }
 
-    fn execute(app: &mut App, _arg: Option<&str>) -> CommandResult {
-        super::core::models(app)
+    fn handler() -> CommandHandler<CommandResult<A>> {
+        CommandHandler::Pure(|_| CommandResult::action(CoreAction::FetchModels.into()))
     }
 }

@@ -190,6 +190,16 @@ pub type ConfigPolicyCommandResult = ConfigCommandResult;
 pub type ConfigStatusCommandResult = CommandResult<std::convert::Infallible>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoreAction {
+    SendMessage(String),
+    ListSubAgents,
+    Quit,
+    FetchModels,
+    SetAdvisorEnabled { enabled: bool },
+    SwitchProfile { profile: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoreNavigationAction {
     OpenHotbarSetup,
     DisableHotbar,

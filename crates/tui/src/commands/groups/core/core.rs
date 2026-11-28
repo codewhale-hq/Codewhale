@@ -1,7 +1,8 @@
 //! Remaining legacy core commands: clear, exit, model and related interactions.
 
 use crate::tui::app::{App, AppAction};
-use crate::tui::views::{ModalKind, SubAgentsView, subagent_view_agents};
+#[cfg(test)]
+use crate::tui::views::ModalKind;
 use codewhale_config::ProviderKind;
 #[cfg(test)]
 use codewhale_engine::reasoning_preference::ReasoningEffort;
@@ -145,11 +146,6 @@ pub(crate) fn reset_conversation_state(app: &mut App) -> bool {
     // copies: the reset finalizes those children engine-side.
     crate::tui::pending_requests::clear_all(app);
     true
-}
-
-/// Exit the application
-pub fn exit() -> CommandResult {
-    CommandResult::action(AppAction::Quit)
 }
 
 /// Switch or view current model. With no argument, open the two-pane
@@ -327,46 +323,6 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
     } else {
         CommandResult::action(AppAction::OpenModelPicker)
     }
-}
-
-/// Fetch and list available models from the configured API endpoint.
-pub fn models(_app: &mut App) -> CommandResult {
-    CommandResult::action(AppAction::FetchModels)
-}
-
-/// List Fleet worker status from the engine.
-/// Request a refresh and print the agent roster into the transcript once it
-/// lands. One-shot: the flag is cleared by the event handler, so ambient
-/// refreshes (sidebar polls, spawn/complete events) never spam the transcript.
-pub fn subagents_roster(app: &mut App) -> CommandResult {
-    app.agent_roster_print_requested = true;
-    app.status_message = Some(tr(app.ui_locale, MessageId::SubagentsFetching).to_string());
-    CommandResult::action(AppAction::ListSubAgents)
-}
-
-pub fn subagents(app: &mut App) -> CommandResult {
-    if app.view_stack.top_kind() != Some(ModalKind::SubAgents) {
-        let agents = subagent_view_agents(app, &app.subagent_cache);
-        app.view_stack.push(SubAgentsView::for_app(app, agents));
-    }
-    app.status_message = Some(tr(app.ui_locale, MessageId::SubagentsFetching).to_string());
-    CommandResult::action(AppAction::ListSubAgents)
-}
-
-/// Switch to a configured profile.
-pub fn profile_switch(app: &mut App, arg: Option<&str>) -> CommandResult {
-    let profile_name = match arg {
-        Some(name) if !name.trim().is_empty() => name.trim().to_string(),
-        _ => {
-            return CommandResult::error(tr(app.ui_locale, MessageId::ProfileUsage));
-        }
-    };
-    CommandResult::with_message_and_action(
-        tr(app.ui_locale, MessageId::ProfileSwitching).replace("{name}", &profile_name),
-        AppAction::SwitchProfile {
-            profile: profile_name,
-        },
-    )
 }
 
 #[cfg(test)]
@@ -655,7 +611,7 @@ mod tests {
 
     #[test]
     fn test_exit_returns_quit_action() {
-        let result = exit();
+        let result = crate::commands::execute("/exit", &mut create_test_app());
         assert!(result.message.is_none());
         assert!(matches!(result.action, Some(AppAction::Quit)));
     }
@@ -1128,7 +1084,7 @@ mod tests {
     #[test]
     fn test_models_triggers_fetch_action() {
         let mut app = create_test_app();
-        let result = models(&mut app);
+        let result = crate::commands::execute("/models", &mut app);
         assert!(result.message.is_none());
         assert!(matches!(result.action, Some(AppAction::FetchModels)));
     }
@@ -1147,7 +1103,7 @@ mod tests {
     #[test]
     fn test_subagents_pushes_view_and_sets_status() {
         let mut app = create_test_app();
-        let result = subagents(&mut app);
+        let result = crate::commands::execute("/subagents", &mut app);
         assert!(result.message.is_none());
         assert!(matches!(result.action, Some(AppAction::ListSubAgents)));
         assert_eq!(app.view_stack.top_kind(), Some(ModalKind::SubAgents));

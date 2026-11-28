@@ -39,7 +39,9 @@ pub(crate) use self::core::reset_conversation_state;
 pub(crate) use constitution::open_manager as open_constitution_manager;
 
 use crate::commands::CommandResult;
-use crate::commands::traits::{Command, CommandGroup, FunctionCommand, RegisterCommand};
+use crate::commands::traits::{
+    Command, CommandGroup, ContextualCommand, FunctionCommand, RegisterCommand,
+};
 
 pub struct CoreCommands;
 
@@ -47,20 +49,19 @@ impl CommandGroup for CoreCommands {
     fn commands(&self) -> &'static [Box<dyn Command>] {
         cached_command_list!(vec![
             crate::commands::core_navigation_host::registration::<0>(),
-            Box::new(FunctionCommand::new(
-                advisor::AdvisorCmd::info(),
-                advisor::AdvisorCmd::execute,
-            )),
+            Box::new(
+                ContextualCommand::from_contract::<advisor::AdvisorCmd>()
+                    .expect("advisor registration")
+            ),
             crate::commands::core_navigation_host::registration::<1>(),
             Box::new(FunctionCommand::new(
                 clear::ClearCmd::info(),
                 clear::ClearCmd::execute,
             )),
             crate::commands::core_navigation_host::registration::<2>(),
-            Box::new(FunctionCommand::new(
-                exit::ExitCmd::info(),
-                exit::ExitCmd::execute,
-            )),
+            Box::new(
+                ContextualCommand::from_contract::<exit::ExitCmd>().expect("exit registration")
+            ),
             Box::new(FunctionCommand::new(
                 model::ModelCmd::info(),
                 model::ModelCmd::execute,
@@ -69,14 +70,14 @@ impl CommandGroup for CoreCommands {
                 router::RouterCmd::info(),
                 router::RouterCmd::execute,
             )),
-            Box::new(FunctionCommand::new(
-                models::ModelsCmd::info(),
-                models::ModelsCmd::execute,
-            )),
-            Box::new(FunctionCommand::new(
-                modeldb::ModelDbCmd::info(),
-                modeldb::ModelDbCmd::execute,
-            )),
+            Box::new(
+                ContextualCommand::from_contract::<models::ModelsCmd>()
+                    .expect("models registration")
+            ),
+            Box::new(
+                ContextualCommand::from_contract::<modeldb::ModelDbCmd>()
+                    .expect("modeldb registration")
+            ),
             Box::new(FunctionCommand::new(
                 provider::ProviderCmd::info(),
                 provider::ProviderCmd::execute,
@@ -93,10 +94,10 @@ impl CommandGroup for CoreCommands {
                 hooks::HooksCmd::info(),
                 hooks::HooksCmd::execute,
             )),
-            Box::new(FunctionCommand::new(
-                subagents::SubagentsCmd::info(),
-                subagents::SubagentsCmd::execute,
-            )),
+            Box::new(
+                ContextualCommand::from_contract::<subagents::SubagentsCmd>()
+                    .expect("subagents registration")
+            ),
             Box::new(FunctionCommand::new(
                 fleet::FleetCmd::info(),
                 fleet::FleetCmd::execute,
@@ -141,23 +142,31 @@ impl CommandGroup for CoreCommands {
             crate::commands::core_navigation_host::registration::<7>(),
             crate::commands::core_navigation_host::registration::<8>(),
             crate::commands::core_navigation_host::registration::<9>(),
-            Box::new(FunctionCommand::new(
-                profile::ProfileCmd::info(),
-                profile::ProfileCmd::execute,
-            )),
-            Box::new(FunctionCommand::new(
-                rlm::RlmCmd::info(),
-                rlm::RlmCmd::execute,
-            )),
+            Box::new(
+                ContextualCommand::from_contract::<profile::ProfileCmd>()
+                    .expect("profile registration")
+            ),
+            Box::new(ContextualCommand::from_contract::<rlm::RlmCmd>().expect("rlm registration")),
             crate::commands::core_navigation_host::registration::<10>(),
             crate::commands::core_navigation_host::registration::<11>(),
             Box::new(FunctionCommand::new(&effort::EFFORT_INFO, effort::effort,)),
             crate::commands::core_navigation_host::registration::<12>(),
             crate::commands::core_navigation_host::registration::<13>(),
-            Box::new(FunctionCommand::new(
-                pin::PinCmd::info(),
-                pin::PinCmd::execute
-            )),
+            Box::new(ContextualCommand::from_contract::<pin::PinCmd>().expect("pin registration")),
         ])
+    }
+}
+
+impl From<codewhale_command_contract::outcome::CoreAction> for crate::tui::app::AppAction {
+    fn from(action: codewhale_command_contract::outcome::CoreAction) -> Self {
+        use codewhale_command_contract::outcome::CoreAction;
+        match action {
+            CoreAction::ListSubAgents => Self::ListSubAgents,
+            CoreAction::SendMessage(message) => Self::SendMessage(message),
+            CoreAction::Quit => Self::Quit,
+            CoreAction::FetchModels => Self::FetchModels,
+            CoreAction::SetAdvisorEnabled { enabled } => Self::SetAdvisorEnabled { enabled },
+            CoreAction::SwitchProfile { profile } => Self::SwitchProfile { profile },
+        }
     }
 }
