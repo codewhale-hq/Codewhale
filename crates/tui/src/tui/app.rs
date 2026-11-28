@@ -3216,27 +3216,6 @@ impl App {
         }
     }
 
-    /// Persist the route this session is *actually* running as the startup
-    /// default.
-    ///
-    /// This reads the live route rather than [`Self::pending_route_save`] on
-    /// purpose. The pending record is bookkeeping for the save *prompt*, and it
-    /// is written by several different paths (same-provider apply, cross-
-    /// provider `switch_provider`, `/model`). Cross-checking it before an
-    /// explicit "make this my default" action meant that any ordering
-    /// disagreement dropped the write with no error shown — the user saw a
-    /// normal "Model: x → y" line and reasonably assumed it had stuck, then the
-    /// next launch reopened the old route. An explicit request now always
-    /// reports what it did.
-    pub fn save_live_route_as_startup_default(&mut self) -> String {
-        match self.try_save_live_route_as_startup_default() {
-            Ok(receipt) => receipt,
-            Err(err) => self
-                .tr(MessageId::RouteSaveFailed)
-                .replace("{error}", &err.to_string()),
-        }
-    }
-
     /// Persist the live route with a typed failure for onboarding, whose next
     /// transition depends on knowing that the restart route actually landed.
     pub(crate) fn try_save_live_route_as_startup_default(&mut self) -> anyhow::Result<String> {
@@ -3871,7 +3850,7 @@ impl App {
     pub(crate) fn reject_setting_change_while_busy(&mut self, subject: MessageId) -> bool {
         if self.is_loading {
             let message = self.setting_locked_message(subject);
-            self.status_message = Some(message);
+            self.show_route_receipt(message, StatusToastLevel::Warning);
             self.needs_redraw = true;
             true
         } else {
@@ -3892,7 +3871,7 @@ impl App {
     pub(crate) fn report_mode_selection(&mut self, mode: AppMode, outcome: SettingSelection) {
         if outcome == SettingSelection::PersistedSame {
             let receipt = self.mode_startup_default_receipt(mode);
-            self.status_message = Some(receipt);
+            self.show_route_receipt(receipt, StatusToastLevel::Info);
             self.needs_redraw = true;
         }
     }
@@ -3999,7 +3978,7 @@ impl App {
             )
         {
             let msg = format!("Reasoning effort unchanged: Work receipt failed ({err})");
-            self.status_message = Some(msg.clone());
+            self.show_route_receipt(msg.clone(), StatusToastLevel::Error);
             self.needs_redraw = true;
             return Err(msg);
         }
@@ -4014,10 +3993,13 @@ impl App {
             crate::tui::startup_defaults::StartupDefaults::reasoning_effort(requested.as_setting()),
         );
         self.update_model_compaction_budget();
-        self.status_message = Some(format!(
-            "Reasoning effort: {}",
-            Self::reasoning_effort_resolution_label(requested, effective, self.api_provider)
-        ));
+        self.show_route_receipt(
+            format!(
+                "Reasoning effort: {}",
+                Self::reasoning_effort_resolution_label(requested, effective, self.api_provider)
+            ),
+            StatusToastLevel::Info,
+        );
         self.needs_redraw = true;
         Ok(())
     }

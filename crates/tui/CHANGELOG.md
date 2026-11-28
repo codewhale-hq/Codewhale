@@ -137,6 +137,7 @@ Codewhale v0.10.5 simplifies the terminal and runtime, expands DeepSeek Harness 
 
 ### Fixed
 
+- Onboarding keeps the provider and trust results visible in their own screens while temporary footer notices expire. A new action cannot append an unrelated message to a route-save result. (#7464)
 - Composer, file-mention and context-menu hints keep their normal priority even when a filename contains words like “error” or “failed”. Copying a transcript cell shows the clipboard receipt after a turn finishes.
 
 - `/clear` keeps the current conversation and queued input if it cannot prepare the new session for saving.

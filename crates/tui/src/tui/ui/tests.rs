@@ -1423,9 +1423,13 @@ fn ctrl_t_cycles_reasoning_effort_under_auto_model() {
             &KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
         ));
         assert_eq!(app.reasoning_effort, expected);
-        assert!(app.status_message.as_deref().is_some_and(|message| {
-            message.contains(&format!("Reasoning effort: {}", expected.short_label()))
-        }));
+        assert!(
+            app.setup_notice()
+                .map(|notice| notice.text.as_str())
+                .is_some_and(|message| {
+                    message.contains(&format!("Reasoning effort: {}", expected.short_label()))
+                })
+        );
     }
 }
 
@@ -11985,7 +11989,7 @@ async fn successful_native_xai_oauth_activation_completes_onboarding() {
     assert!(
         switched,
         "xAI switch failed: status={:?}, history={:?}, config={:?}, saved={:?}",
-        app.status_message,
+        app.setup_notice(),
         app.history,
         config.provider_config_for(&config.test_identity_for_kind(ProviderKind::Xai)),
         std::fs::read_to_string(config_env.config_path())
@@ -12130,8 +12134,11 @@ fn setup_confirm_toast_names_secret_store_and_global_scope() {
                     )
                     .await;
 
-                    assert!(switched, "setup confirm failed: {:?}", app.status_message);
-                    let toast = app.status_message.as_deref().expect("save toast");
+                    assert!(switched, "setup confirm failed: {:?}", app.setup_notice());
+                    let toast = app
+                        .setup_notice()
+                        .map(|notice| notice.text.as_str())
+                        .expect("save toast");
                     assert!(
                         toast.contains("secret store"),
                         "toast must name the secret store, got: {toast}"
@@ -12304,14 +12311,16 @@ fn first_run_ollama_choice_survives_restart_from_canonical_config() {
     );
     assert!(app.pending_route_save.is_none());
     assert!(
-        app.status_message.as_deref().is_some_and(|message| {
-            message.contains(&format!(
-                "Remembered ollama/{}",
-                codewhale_config::descriptors::defaults::DEFAULT_OLLAMA_MODEL
-            ))
-        }),
+        app.setup_notice()
+            .map(|notice| notice.text.as_str())
+            .is_some_and(|message| {
+                message.contains(&format!(
+                    "Remembered ollama/{}",
+                    codewhale_config::descriptors::defaults::DEFAULT_OLLAMA_MODEL
+                ))
+            }),
         "onboarding must truthfully receipt the durable startup route: {:?}",
-        app.status_message,
+        app.setup_notice(),
     );
 
     // The root default was DeepSeek's own model (the outgoing route had no
@@ -12417,11 +12426,11 @@ fn failed_first_run_route_persistence_keeps_provider_setup_active() {
         "a failed write must retain the route-save retry",
     );
     assert!(
-        app.status_message
-            .as_deref()
+        app.setup_notice()
+            .map(|notice| notice.text.as_str())
             .is_some_and(|message| message.contains("Save failed:")),
         "a failed restart-route write must stay visible: {:?}",
-        app.status_message,
+        app.setup_notice(),
     );
 }
 
@@ -12545,11 +12554,11 @@ async fn provider_switch_succeeds_without_writing_when_config_is_unwritable() {
     // switch, and the receipt must not claim a partial persistence that never
     // ran.
     assert!(
-        app.status_message
-            .as_deref()
+        app.setup_notice()
+            .map(|notice| notice.text.as_str())
             .is_none_or(|message| !message.contains("not fully persisted")),
         "the receipt must not claim a partial persistence that never ran: {:?}",
-        app.status_message
+        app.setup_notice()
     );
     let pending = app.pending_route_save.as_ref().expect("pending save");
     assert_eq!(pending.model, "deepseek-v4-flash");
@@ -12679,8 +12688,8 @@ async fn provider_switch_foreign_direct_model_rejected_before_mutation() {
     );
     assert!(app.pending_provider_switch.is_none());
     assert!(
-        app.status_message
-            .as_deref()
+        app.setup_notice()
+            .map(|notice| notice.text.as_str())
             .unwrap_or_default()
             .contains("Route rejected before provider switch")
     );
@@ -17787,8 +17796,8 @@ fn hotbar_bound_reasoning_action_updates_auto_model_preference() {
     ));
     assert_eq!(app.reasoning_effort, ReasoningEffort::Low);
     assert!(
-        app.status_message
-            .as_deref()
+        app.setup_notice()
+            .map(|notice| notice.text.as_str())
             .is_some_and(|message| message.contains("Reasoning effort: low"))
     );
     assert!(app.needs_redraw);
@@ -22760,12 +22769,12 @@ fn onboarding_after_provider_setup_does_not_repeat_language_step() {
     app.onboarding_needs_api_key = false;
     app.onboarding_missing_key_recovery = false;
     app.trust_mode = true;
-    app.status_message = Some("saved".to_string());
+    app.show_route_receipt("saved", StatusToastLevel::Success);
 
     crate::tui::onboarding::advance_onboarding_after_provider(&mut app);
 
     assert_eq!(app.onboarding, OnboardingState::Ready);
-    assert_eq!(app.status_message, None);
+    assert!(app.setup_notice().is_none());
 }
 
 #[test]
@@ -22978,8 +22987,7 @@ fn trust_directory_completion_advances_to_ready() {
     app.onboarding_had_trust_step = true;
     app.trust_mode = false;
     let enter_hint = app.tr(MessageId::OnboardTrustEnterHint).into_owned();
-    app.status_message = Some(enter_hint.clone());
-    app.sync_status_message_to_toasts();
+    app.show_onboarding_notice(enter_hint.clone(), StatusToastLevel::Info);
     assert!(
         app.status_toasts
             .iter()
@@ -22993,7 +23001,7 @@ fn trust_directory_completion_advances_to_ready() {
     assert!(app.trust_mode);
     assert_eq!(app.onboarding, OnboardingState::Ready);
     assert!(app.runtime_services.hook_executor.is_some());
-    assert!(app.status_message.is_none());
+    assert!(app.setup_notice().is_none());
     assert!(
         app.status_toasts
             .iter()
@@ -23022,7 +23030,10 @@ fn trust_directory_continue_untrusted_advances_without_recording_trust() {
         codewhale_runtime::config::needs_trust(&app.workspace),
         "declining trust must not write a trusted marker"
     );
-    let notice = app.status_message.expect("restricted-mode notice");
+    let notice = app
+        .setup_notice()
+        .map(|notice| notice.text.as_str())
+        .expect("restricted-mode notice");
     assert!(
         notice.contains("without workspace trust") || notice.contains("restricted"),
         "unexpected notice: {notice}"
@@ -26592,11 +26603,11 @@ async fn model_picker_startup_default_overrides_configured_xai_route_after_resta
     assert_eq!(app.api_provider, ProviderKind::Deepseek);
     assert_eq!(app.model, "deepseek-v4-flash");
     assert!(
-        app.status_message
-            .as_deref()
+        app.setup_notice()
+            .map(|notice| notice.text.as_str())
             .is_some_and(|message| message.contains("startup default")),
         "the explicit save must report what it wrote: {:?}",
-        app.status_message
+        app.setup_notice()
     );
     let saved = assert_saved_startup_route("deepseek", "deepseek", "deepseek-v4-flash");
     assert_eq!(
@@ -26788,8 +26799,8 @@ async fn reselecting_live_model_and_thinking_is_session_local() {
     assert_eq!(std::fs::read(global_config).ok(), startup_before);
     assert!(app.pending_route_save.is_some());
     assert!(
-        app.status_message
-            .as_deref()
+        app.setup_notice()
+            .map(|notice| notice.text.as_str())
             .is_some_and(|message| message.contains("Model unchanged"))
     );
     let state = codewhale_config::SetupState::load()
@@ -26839,8 +26850,8 @@ async fn shift_d_on_project_pinned_model_leaves_global_default_alone() {
         None
     );
     assert!(
-        app.status_message
-            .as_deref()
+        app.setup_notice()
+            .map(|notice| notice.text.as_str())
             .is_some_and(|message| message.contains("project"))
     );
 }
@@ -26870,8 +26881,8 @@ async fn reselecting_live_thinking_in_picker_is_session_local() {
     );
     assert_eq!(app.reasoning_effort_preference, Some(ReasoningEffort::High));
     assert!(
-        app.status_message
-            .as_deref()
+        app.setup_notice()
+            .map(|notice| notice.text.as_str())
             .is_some_and(|message| message.contains("Thinking unchanged"))
     );
 }
@@ -27067,8 +27078,8 @@ async fn model_picker_startup_default_reports_settings_write_failure() {
     // Ordinary Enter remains a live session change even when settings are
     // unavailable; it must not imply an invisible startup write.
     assert!(
-        app.status_message
-            .as_deref()
+        app.setup_notice()
+            .map(|notice| notice.text.as_str())
             .is_some_and(|message| message.contains("Model:"))
     );
     let pending = app.pending_route_save.as_ref().expect("pending save");
@@ -34457,11 +34468,11 @@ async fn refused_route_change_does_not_pin_a_startup_default_and_says_so() {
         "a refused change must never pin the route the user tried to leave"
     );
     assert!(
-        app.status_message
-            .as_deref()
+        app.setup_notice()
+            .map(|notice| notice.text.as_str())
             .is_some_and(|message| message.contains("Startup default unchanged")),
         "the operator must be told the default did not move: {:?}",
-        app.status_message
+        app.setup_notice()
     );
 }
 

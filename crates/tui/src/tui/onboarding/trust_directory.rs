@@ -113,7 +113,7 @@ pub fn lines(app: &App, content_width: usize) -> Vec<Line<'static>> {
             )));
         }
     }
-    if let Some(message) = app.status_message.as_deref() {
+    if let Some(message) = app.setup_notice().map(|notice| notice.text.as_str()) {
         lines.push(Line::from(""));
         for segment in super::wrap_words(message, content_width) {
             lines.push(Line::from(Span::styled(

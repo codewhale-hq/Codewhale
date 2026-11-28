@@ -10,7 +10,6 @@ pub(crate) fn complete_trust_directory_onboarding(
     app: &mut App,
     config: &Config,
 ) -> Result<(), String> {
-    let enter_hint = app.tr(MessageId::OnboardTrustEnterHint).into_owned();
     onboarding::mark_trusted(&app.workspace).map_err(|err| err.to_string())?;
     app.trust_mode = true;
     // `rebind`, not `new`: trusting the directory can add project hooks, but
@@ -26,8 +25,7 @@ pub(crate) fn complete_trust_directory_onboarding(
         app.workspace.clone(),
     );
     app.runtime_services.hook_executor = Some(std::sync::Arc::new(app.hooks.clone()));
-    app.status_message = None;
-    app.status_toasts.retain(|toast| toast.text != enter_hint);
+    app.clear_setup_notice();
     advance_after_trust_directory_choice(app);
     Ok(())
 }
@@ -38,7 +36,10 @@ pub(crate) fn complete_trust_directory_onboarding(
 /// re-prompt until the user trusts (or uses an explicit trust command).
 pub(crate) fn continue_without_trusting_directory(app: &mut App) {
     app.trust_mode = false;
-    app.status_message = Some(app.tr(MessageId::OnboardTrustUntrustedNotice).to_string());
+    app.show_onboarding_notice(
+        app.tr(MessageId::OnboardTrustUntrustedNotice).into_owned(),
+        StatusToastLevel::Warning,
+    );
     advance_after_trust_directory_choice(app);
 }
 
@@ -92,7 +93,7 @@ pub(crate) fn back_from_provider_onboarding(app: &mut App) {
         // A returning user declined missing-key recovery: leave onboarding
         // for the offline composer without mutating the saved route.
         app.onboarding = OnboardingState::None;
-        app.status_message = None;
+        app.clear_setup_notice();
         app.needs_redraw = true;
         return;
     }
@@ -103,7 +104,7 @@ pub(crate) fn back_from_provider_onboarding(app: &mut App) {
     } else {
         OnboardingState::Welcome
     };
-    app.status_message = None;
+    app.clear_setup_notice();
 }
 
 pub(crate) fn begin_first_connection_setup(app: &mut App) {
@@ -125,7 +126,9 @@ pub(crate) fn complete_provider_picker_onboarding(app: &mut App, provider: Provi
     // clean first run can finish on Ollama (or another non-DeepSeek route)
     // while the next launch silently reconstructs the old DeepSeek default.
     // The user-global `config.toml` owns this startup choice.
-    let provider_action_receipt = app.status_message.take();
+    let provider_action_receipt = app
+        .route_receipt()
+        .map(|notice| (notice.text.clone(), notice.level));
     let startup_default_receipt = match app.try_save_live_route_as_startup_default() {
         Ok(receipt) => receipt,
         Err(err) => {
@@ -136,12 +139,15 @@ pub(crate) fn complete_provider_picker_onboarding(app: &mut App, provider: Provi
             // focused for an immediate retry.
             app.onboarding_provider = provider;
             app.onboarding_needs_api_key = true;
-            app.status_message = Some(match provider_action_receipt {
-                Some(receipt) if !receipt.trim().is_empty() => {
-                    format!("{receipt} · Save failed: {err}")
-                }
-                _ => format!("Save failed: {err}"),
-            });
+            app.show_route_receipt(
+                match provider_action_receipt {
+                    Some((receipt, _)) if !receipt.trim().is_empty() => {
+                        format!("{receipt} · Save failed: {err}")
+                    }
+                    _ => format!("Save failed: {err}"),
+                },
+                StatusToastLevel::Error,
+            );
             app.needs_redraw = true;
             return;
         }
@@ -158,12 +164,20 @@ pub(crate) fn complete_provider_picker_onboarding(app: &mut App, provider: Provi
     // `advance_onboarding_after_provider` clears the previous switch status.
     // Restore the persistence receipt last so an I/O failure remains visible
     // instead of allowing onboarding to imply that the restart route landed.
-    app.status_message = Some(match provider_action_receipt {
-        Some(receipt) if !receipt.trim().is_empty() => {
-            format!("{receipt} · {startup_default_receipt}")
-        }
-        _ => startup_default_receipt,
-    });
+    let level = provider_action_receipt
+        .as_ref()
+        .map(|(_, level)| *level)
+        .filter(|level| matches!(level, StatusToastLevel::Error | StatusToastLevel::Warning))
+        .unwrap_or(StatusToastLevel::Success);
+    app.show_route_receipt(
+        match provider_action_receipt {
+            Some((receipt, _)) if !receipt.trim().is_empty() => {
+                format!("{receipt} · {startup_default_receipt}")
+            }
+            _ => startup_default_receipt,
+        },
+        level,
+    );
 }
 
 pub(crate) fn complete_provider_picker_onboarding_if_switched(
@@ -694,11 +708,12 @@ async fn switch_provider_inner(
         &codewhale_engine::provider_catalog_live::ProviderCatalogRefreshTicket,
     )>,
 ) -> bool {
+    app.clear_setup_notice();
     if app.reject_setting_change_while_busy(MessageId::SettingSubjectProvider) {
         return false;
     }
     if let Err(reason) = config.verify_provider_identity(&identity) {
-        app.push_status_toast(reason, StatusToastLevel::Error, Some(8_000));
+        app.show_route_receipt(reason, StatusToastLevel::Error);
         return false;
     }
     let target = identity.provider;
@@ -731,7 +746,7 @@ async fn switch_provider_inner(
     if let Some((outgoing, value)) = config.root_model_alias_owned_by_outgoing(&identity) {
         if let Err(reason) = config.set_provider_model_override(&outgoing, Some(value)) {
             app.pending_provider_switch = None;
-            app.push_status_toast(reason.to_string(), StatusToastLevel::Error, Some(8_000));
+            app.show_route_receipt(reason.to_string(), StatusToastLevel::Error);
             return false;
         }
         config.default_text_model = None;
@@ -778,13 +793,16 @@ async fn switch_provider_inner(
                     *config = previous_config;
                     app.refresh_notification_settings(config);
                     app.view_stack.push(picker);
-                    app.status_message = Some(format!(
-                        "{} needs a key or local runtime — enter one to switch.",
-                        identity
-                            .compatibility()
-                            .map(|row| row.label)
-                            .unwrap_or(identity.key.as_str())
-                    ));
+                    app.show_route_receipt(
+                        format!(
+                            "{} needs a key or local runtime — enter one to switch.",
+                            identity
+                                .compatibility()
+                                .map(|row| row.label)
+                                .unwrap_or(identity.key.as_str())
+                        ),
+                        StatusToastLevel::Warning,
+                    );
                     app.needs_redraw = true;
                     return false;
                 }
@@ -797,10 +815,13 @@ async fn switch_provider_inner(
                     requested_identity, previous_identity
                 ),
             });
-            app.status_message = Some(format!(
-                "Route rejected before provider switch: {}.",
-                target.as_str()
-            ));
+            app.show_route_receipt(
+                format!(
+                    "Route rejected before provider switch: {}.",
+                    target.as_str()
+                ),
+                StatusToastLevel::Error,
+            );
             return false;
         }
     };
@@ -947,12 +968,19 @@ async fn switch_provider_inner(
         content: switch_summary,
     });
 
-    let mut status_message = format!("Provider: {target_identity} via {new_endpoint}");
+    let mut summary = format!("Provider: {target_identity} via {new_endpoint}");
     let persisted = persist_warning.is_none();
     if persist_warning.is_some() {
-        status_message.push_str(" (not fully persisted)");
+        summary.push_str(" (not fully persisted)");
     }
-    app.status_message = Some(status_message);
+    app.show_route_receipt(
+        summary,
+        if persisted {
+            StatusToastLevel::Info
+        } else {
+            StatusToastLevel::Warning
+        },
+    );
     // #3927: activating a route is the single event that retires the
     // explore-offline label. Nothing time-based or screen-based clears it.
     onboarding::clear_offline_explore_on_route_activation(app);
@@ -1217,12 +1245,11 @@ pub(crate) fn clear_active_provider_api_key_from_memory(
 pub(crate) fn record_provider_model_setup_progress(app: &mut App, config: &Config) {
     if let Err(err) = crate::tui::setup::record_provider_model_setup_state_for_app(app, config) {
         let note = format!("Setup provider/model state was not saved: {err:#}");
-        if let Some(status) = app.status_message.as_mut() {
-            status.push_str(" · ");
-            status.push_str(&note);
-        } else {
-            app.status_message = Some(note.clone());
-        }
+        let text = match app.route_receipt() {
+            Some(receipt) => format!("{} · {note}", receipt.text),
+            None => note.clone(),
+        };
+        app.show_route_receipt(text, StatusToastLevel::Warning);
         app.add_message(HistoryCell::System { content: note });
     }
 }

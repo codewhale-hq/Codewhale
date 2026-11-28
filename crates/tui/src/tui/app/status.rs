@@ -46,6 +46,8 @@ pub(crate) enum StatusToastKind {
     InputHint,
     CopyReceipt,
     LegacyTransient,
+    Onboarding,
+    ProviderRoute,
     /// An explicit command result stays visible over a completed turn.
     CommandReceipt,
     ActionRequired,
@@ -60,6 +62,13 @@ pub(crate) enum StatusToastKind {
 }
 
 impl StatusToast {
+    fn is_setup_notice(&self) -> bool {
+        matches!(
+            self.kind,
+            StatusToastKind::Onboarding | StatusToastKind::ProviderRoute
+        )
+    }
+
     #[must_use]
     pub fn new(text: impl Into<String>, level: StatusToastLevel, ttl_ms: Option<u64>) -> Self {
         Self {
@@ -143,6 +152,55 @@ impl StatusToast {
 }
 
 impl App {
+    pub(crate) fn setup_notice(&self) -> Option<&StatusToast> {
+        self.status_toasts
+            .iter()
+            .rev()
+            .find(|notice| notice.is_setup_notice())
+    }
+
+    pub(crate) fn route_receipt(&self) -> Option<&StatusToast> {
+        self.setup_notice()
+            .filter(|notice| notice.kind == StatusToastKind::ProviderRoute)
+    }
+
+    pub(crate) fn clear_setup_notice(&mut self) {
+        let previous = self.status_toasts.len();
+        self.status_toasts
+            .retain(|notice| !notice.is_setup_notice());
+        self.needs_redraw |= self.status_toasts.len() != previous;
+    }
+
+    pub(crate) fn show_onboarding_notice(
+        &mut self,
+        text: impl Into<String>,
+        level: StatusToastLevel,
+    ) {
+        self.show_setup_notice(text, level, StatusToastKind::Onboarding);
+    }
+
+    pub(crate) fn show_route_receipt(&mut self, text: impl Into<String>, level: StatusToastLevel) {
+        self.show_setup_notice(text, level, StatusToastKind::ProviderRoute);
+    }
+
+    fn show_setup_notice(
+        &mut self,
+        text: impl Into<String>,
+        level: StatusToastLevel,
+        kind: StatusToastKind,
+    ) {
+        self.prepare_interactive_notice();
+        self.clear_setup_notice();
+        let ttl_ms = match level {
+            StatusToastLevel::Info => 4_000,
+            StatusToastLevel::Success | StatusToastLevel::Warning => 5_000,
+            StatusToastLevel::Error => Self::STICKY_ERROR_TTL_MS,
+        };
+        let mut notice = StatusToast::new(text, level, Some(ttl_ms));
+        notice.kind = kind;
+        self.push_status_toast_record(notice);
+    }
+
     fn prepare_interactive_notice(&mut self) {
         self.sync_status_message_to_toasts();
         if self.onboarding == OnboardingState::None
@@ -231,7 +289,10 @@ impl App {
             let oldest = self
                 .status_toasts
                 .iter()
-                .position(|toast| toast.kind != StatusToastKind::Standing)
+                .position(|toast| {
+                    toast.kind != StatusToastKind::Standing
+                        && !(self.onboarding != OnboardingState::None && toast.is_setup_notice())
+                })
                 .unwrap_or(0);
             self.status_toasts.remove(oldest);
         }
@@ -447,7 +508,10 @@ impl App {
 
     fn prune_expired_status_toasts(&mut self, now: Instant) {
         let queued_before = self.status_toasts.len();
-        self.status_toasts.retain(|toast| !toast.is_expired(now));
+        self.status_toasts.retain(|toast| {
+            !toast.is_expired(now)
+                || (self.onboarding != OnboardingState::None && toast.is_setup_notice())
+        });
         let queued_removed = self.status_toasts.len() != queued_before;
         let sticky_removed = self
             .sticky_status
@@ -470,10 +534,15 @@ impl App {
         self.prune_expired_status_toasts(now);
 
         let eligible = |toast: &&StatusToast| {
+            if toast.is_expired(now) {
+                return false;
+            }
             phase != crate::tui::underwater::ShellPhase::Done
                 || matches!(
                     toast.kind,
-                    StatusToastKind::CommandReceipt | StatusToastKind::CopyReceipt
+                    StatusToastKind::CommandReceipt
+                        | StatusToastKind::CopyReceipt
+                        | StatusToastKind::ProviderRoute
                 )
                 || matches!(
                     toast.level,
@@ -568,6 +637,31 @@ mod tests {
             app.status_toasts[1].kind,
             StatusToastKind::RedactionGate(RedactionGateNotice::WriteFailure)
         );
+    }
+
+    #[test]
+    fn onboarding_receipt_outlives_its_footer_and_only_route_actions_supply_route_text() {
+        let mut app = app();
+        app.onboarding = OnboardingState::Provider;
+        app.show_route_receipt("Selected route", StatusToastLevel::Success);
+        let expired_at = Instant::now() - Duration::from_secs(30);
+        app.status_toasts.back_mut().unwrap().created_at = expired_at;
+        for n in 0..32 {
+            app.show_copy_notice(format!("Copy {n}"), StatusToastLevel::Info, 4_000);
+            app.push_status_toast(format!("Progress {n}"), StatusToastLevel::Info, Some(4_000));
+        }
+        assert_eq!(app.route_receipt().unwrap().text, "Selected route");
+        assert_ne!(
+            app.active_status_toast(crate::tui::underwater::ShellPhase::Typing)
+                .unwrap()
+                .text,
+            "Selected route"
+        );
+        app.show_onboarding_notice("Trust required", StatusToastLevel::Warning);
+        assert!(app.route_receipt().is_none());
+        app.clear_setup_notice();
+        assert!(app.setup_notice().is_none());
+        assert!(!app.status_toasts.is_empty());
     }
 
     #[test]

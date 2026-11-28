@@ -28,7 +28,7 @@ pub fn ready_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let notice = if app.onboarding_explore_offline {
         Some(app.tr(MessageId::OnboardOfflineNotice).into_owned())
     } else {
-        app.status_message.clone()
+        app.setup_notice().map(|notice| notice.text.clone())
     };
     if let Some(message) = notice {
         let warn_fg = super::theme_or(app.ui_theme.warning, palette::STATUS_WARNING);
@@ -112,7 +112,10 @@ mod tests {
     fn ready_screen_reads_offline_truth_from_typed_state() {
         let mut app = test_app_with_locale(Locale::En);
         app.onboarding_explore_offline = true;
-        app.status_message = Some("Workspace trust was not changed.".to_string());
+        app.show_onboarding_notice(
+            "Workspace trust was not changed.",
+            crate::tui::app::StatusToastLevel::Warning,
+        );
         let text = body(&app, ready_lines(&app, 70));
         assert!(
             text.contains(app.tr(MessageId::OnboardOfflineNotice).as_ref()),

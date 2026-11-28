@@ -855,12 +855,12 @@ fn note_startup_default_not_saved(app: &mut App, save_as_startup_default: bool) 
     if !save_as_startup_default {
         return;
     }
-    let existing = app.status_message.take();
     let note = "Startup default unchanged — the route was not applied.";
-    app.status_message = Some(match existing {
-        Some(message) if !message.trim().is_empty() => format!("{message} · {note}"),
-        _ => note.to_string(),
-    });
+    let (text, level) = match app.route_receipt() {
+        Some(receipt) => (format!("{} · {note}", receipt.text), receipt.level),
+        None => (note.to_owned(), StatusToastLevel::Warning),
+    };
+    app.show_route_receipt(text, level);
 }
 
 /// Route every Fleet-setup entry point to the storage surface that actually
@@ -1958,11 +1958,11 @@ mod provider_key_validation_tests {
         assert!(!saved.contains("sk-verified"));
         assert_eq!(app.view_stack.top_kind(), Some(ModalKind::ProviderPicker));
         assert!(
-            app.status_message
-                .as_deref()
+            app.setup_notice()
+                .map(|notice| notice.text.as_str())
                 .is_some_and(|status| { status.contains("The provider accepted the key") }),
             "status names connection-probe success: {:?}",
-            app.status_message
+            app.setup_notice()
         );
         // The probe proves only this temporary credential generation, not the
         // original uncredentialed Config or any model's entitlement.
@@ -2490,11 +2490,11 @@ api_key = "fixture-other-provider-key"
         assert!(!saved.contains("sk-rejected"));
         assert_eq!(app.view_stack.top_kind(), Some(ModalKind::ProviderPicker));
         assert!(
-            app.status_message
-                .as_deref()
+            app.setup_notice()
+                .map(|notice| notice.text.as_str())
                 .is_some_and(|status| status.contains("The provider did not accept this key")),
             "status names validation failure: {:?}",
-            app.status_message
+            app.setup_notice()
         );
 
         let picker = app.view_stack.pop().expect("provider picker reopened");

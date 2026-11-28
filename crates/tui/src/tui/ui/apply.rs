@@ -842,6 +842,7 @@ pub(crate) async fn apply_model_picker_choice(
     previous_effort: codewhale_engine::reasoning_preference::ReasoningEffort,
     save_as_startup_default: bool,
 ) {
+    app.clear_setup_notice();
     if app.reject_setting_change_while_busy(
         codewhale_localization::MessageId::SettingSubjectModelAndThinking,
     ) {
@@ -849,16 +850,15 @@ pub(crate) async fn apply_model_picker_choice(
         return;
     }
     let Some(target_identity) = target_identity else {
-        app.push_status_toast(
+        app.show_route_receipt(
             "The selected model has no admitted provider route.",
             StatusToastLevel::Error,
-            Some(8_000),
         );
         note_startup_default_not_saved(app, save_as_startup_default);
         return;
     };
     if let Err(reason) = config.verify_provider_identity(&target_identity) {
-        app.push_status_toast(reason, StatusToastLevel::Error, Some(8_000));
+        app.show_route_receipt(reason, StatusToastLevel::Error);
         note_startup_default_not_saved(app, save_as_startup_default);
         return;
     }
@@ -888,7 +888,7 @@ pub(crate) async fn apply_model_picker_choice(
         if !model_is_auto {
             apply_picker_effort_choice(app, engine_handle, effort, previous_effort).await;
             if save_as_startup_default {
-                app.status_message = Some(save_picker_route_as_default(app, config, effort));
+                save_picker_route_as_default(app, config, effort);
             }
             return;
         }
@@ -897,7 +897,7 @@ pub(crate) async fn apply_model_picker_choice(
     let current_identity = match app.admitted_provider_identity().cloned() {
         Ok(identity) => identity,
         Err(reason) => {
-            app.push_status_toast(reason, StatusToastLevel::Error, Some(8_000));
+            app.show_route_receipt(reason, StatusToastLevel::Error);
             note_startup_default_not_saved(app, save_as_startup_default);
             return;
         }
@@ -921,7 +921,7 @@ pub(crate) async fn apply_model_picker_choice(
                 }
             }
             Err(reason) => {
-                app.status_message = Some(reason);
+                app.show_route_receipt(reason, StatusToastLevel::Error);
                 note_startup_default_not_saved(app, save_as_startup_default);
                 return;
             }
@@ -1024,28 +1024,39 @@ pub(crate) async fn apply_model_picker_choice(
             format!("Model unchanged: {model_summary} · thinking {effort_summary}")
         }
     };
-    app.status_message = Some(summary);
+    app.show_route_receipt(summary, StatusToastLevel::Info);
     // Setup progress records that a concrete route was selected successfully;
     // it is a local receipt, not a claim that the route became the default.
     if model_changed || !model_is_auto {
         record_provider_model_setup_progress(app, config);
     }
     if save_as_startup_default {
-        app.status_message = Some(save_picker_route_as_default(app, config, effort));
+        save_picker_route_as_default(app, config, effort);
     }
 }
 
-fn save_picker_route_as_default(app: &mut App, config: &Config, effort: ReasoningEffort) -> String {
+fn save_picker_route_as_default(app: &mut App, config: &Config, effort: ReasoningEffort) {
     use codewhale_localization::MessageId;
     if config.project_model.as_deref() == Some(app.model.as_str()) {
-        return app
-            .tr(MessageId::ProjectModelNotSavedAsDefault)
-            .replace("{model}", &app.model);
+        app.show_route_receipt(
+            app.tr(MessageId::ProjectModelNotSavedAsDefault)
+                .replace("{model}", &app.model),
+            StatusToastLevel::Warning,
+        );
+        return;
     }
-    let mut receipt = app.save_live_route_as_startup_default();
+    let (mut receipt, mut level) = match app.try_save_live_route_as_startup_default() {
+        Ok(receipt) => (receipt, StatusToastLevel::Success),
+        Err(err) => (
+            app.tr(MessageId::RouteSaveFailed)
+                .replace("{error}", &err.to_string()),
+            StatusToastLevel::Error,
+        ),
+    };
     if let Err(error) = app.startup_defaults.apply_blocking(
         crate::tui::startup_defaults::StartupDefaults::reasoning_effort(effort.as_setting()),
     ) {
+        level = StatusToastLevel::Error;
         receipt.push_str(" · ");
         receipt.push_str(
             &app.tr(MessageId::StartupDefaultNotSaved)
@@ -1060,7 +1071,7 @@ fn save_picker_route_as_default(app: &mut App, config: &Config, effort: Reasonin
                 .replace("{model}", project_model),
         );
     }
-    receipt
+    app.show_route_receipt(receipt, level);
 }
 
 pub(crate) async fn apply_picker_effort_choice(
@@ -1116,7 +1127,7 @@ pub(crate) async fn apply_picker_effort_choice(
             app.model_display_label()
         )
     };
-    app.status_message = Some(summary);
+    app.show_route_receipt(summary, StatusToastLevel::Info);
 }
 
 pub(crate) async fn apply_provider_fallback_switch(
@@ -1138,7 +1149,7 @@ pub(crate) async fn apply_provider_fallback_switch(
         Err(reason) => {
             app.set_provider_identity_record(previous_identity);
             app.provider_chain = previous_chain;
-            app.status_message = Some(reason);
+            app.show_route_receipt(reason, StatusToastLevel::Error);
             return;
         }
     };
@@ -1151,11 +1162,14 @@ pub(crate) async fn apply_provider_fallback_switch(
                 "Fallback provider {} route was rejected: {reason}",
                 target.as_str()
             ));
-            app.status_message = Some(format!(
-                "Fallback provider {} rejected; provider remains {}.",
-                target.as_str(),
-                previous_provider.as_str()
-            ));
+            app.show_route_receipt(
+                format!(
+                    "Fallback provider {} rejected; provider remains {}.",
+                    target.as_str(),
+                    previous_provider.as_str()
+                ),
+                StatusToastLevel::Error,
+            );
             return;
         }
     };
@@ -1172,11 +1186,14 @@ pub(crate) async fn apply_provider_fallback_switch(
             "Fallback provider {} was unavailable: {err}",
             target.as_str()
         ));
-        app.status_message = Some(format!(
-            "Fallback provider {} unavailable; provider remains {}.",
-            target.as_str(),
-            previous_provider.as_str()
-        ));
+        app.show_route_receipt(
+            format!(
+                "Fallback provider {} unavailable; provider remains {}.",
+                target.as_str(),
+                previous_provider.as_str()
+            ),
+            StatusToastLevel::Error,
+        );
         return;
     }
     *config = *next_config;
@@ -1238,11 +1255,14 @@ pub(crate) async fn apply_provider_fallback_switch(
             new_endpoint
         ),
     });
-    app.status_message = Some(format!(
-        "Fallback provider: {} via {}",
-        target.as_str(),
-        new_endpoint
-    ));
+    app.show_route_receipt(
+        format!(
+            "Fallback provider: {} via {}",
+            target.as_str(),
+            new_endpoint
+        ),
+        StatusToastLevel::Warning,
+    );
 }
 
 pub(super) fn reject_inline_inference_while_runtime_chat_owns_run(
@@ -4012,7 +4032,10 @@ pub(crate) async fn apply_provider_picker_custom_provider(
             app.add_message(HistoryCell::System {
                 content: format!("Failed to save custom provider {provider_id}: {err}"),
             });
-            app.status_message = Some("Custom provider was not saved.".to_string());
+            app.show_route_receipt(
+                "Custom provider was not saved.".to_string(),
+                StatusToastLevel::Warning,
+            );
             return false;
         }
     };
@@ -4044,10 +4067,13 @@ pub(crate) async fn apply_provider_picker_custom_provider(
     });
     entry.auth_mode = keyless_local.then(|| "none".to_string());
 
-    app.status_message = Some(format!(
-        "Custom provider {provider_id} saved to {}",
-        written.display()
-    ));
+    app.show_route_receipt(
+        format!(
+            "Custom provider {provider_id} saved to {}",
+            written.display()
+        ),
+        StatusToastLevel::Success,
+    );
     let identity = match config.resolve_provider_pin_identity(&provider_id) {
         Ok(identity) if identity.provider == ProviderKind::Custom => identity,
         Ok(_) => {
@@ -4359,16 +4385,14 @@ pub(crate) async fn apply_provider_picker_api_key_with_verifier(
                 })
             {
                 app.view_stack.push(picker);
-                app.status_message = Some(
-                    app.tr(MessageId::ProviderConnectionCheckedPickModel)
-                        .into_owned(),
-                );
+                app.show_route_receipt(app.tr(MessageId::ProviderConnectionCheckedPickModel)
+                        .into_owned(), StatusToastLevel::Success);
             } else {
-                app.status_message = Some(format!(
+                app.show_route_receipt(format!(
                     "{} {}",
                     app.tr(MessageId::ProviderConnectionChecked),
                     app.tr(MessageId::ProviderPickerNotReopened)
-                ));
+                ), StatusToastLevel::Warning);
             }
             app.needs_redraw = true;
         }
@@ -4402,12 +4426,12 @@ pub(crate) async fn apply_provider_picker_api_key_with_verifier(
                 })
             {
                 app.view_stack.push(picker);
-                app.status_message = Some(plain);
+                app.show_route_receipt(plain, StatusToastLevel::Error);
             } else {
-                app.status_message = Some(format!(
-                    "{plain} {}",
-                    app.tr(MessageId::ProviderPickerNotReopened)
-                ));
+                app.show_route_receipt(
+                    format!("{plain} {}", app.tr(MessageId::ProviderPickerNotReopened)),
+                    StatusToastLevel::Error,
+                );
             }
             app.needs_redraw = true;
         }
@@ -4548,7 +4572,7 @@ pub(crate) async fn apply_provider_picker_setup_confirmed(
     // summary also lands in the transcript), so the save confirmation is
     // applied last — it is the answer to the action the user just confirmed.
     if switched && let Some(confirmation) = save_confirmation {
-        app.status_message = Some(confirmation);
+        app.show_route_receipt(confirmation, StatusToastLevel::Success);
     }
     switched
 }
@@ -4582,11 +4606,14 @@ pub(crate) async fn apply_codewhale_owned_login(
                 None => activation.summary(locale),
             };
             app.add_message(HistoryCell::System { content });
-            app.status_message = Some(format!(
-                "{status_prefix}; activated {} via {}",
-                codewhale_config::quote_os_path(&activation.auth_path),
-                codewhale_config::quote_os_path(&activation.config_path)
-            ));
+            app.show_route_receipt(
+                format!(
+                    "{status_prefix}; activated {} via {}",
+                    codewhale_config::quote_os_path(&activation.auth_path),
+                    codewhale_config::quote_os_path(&activation.config_path)
+                ),
+                StatusToastLevel::Error,
+            );
             app.api_key_env_only = false;
         }
         Err(err) => {

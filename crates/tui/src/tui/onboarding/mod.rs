@@ -449,7 +449,7 @@ pub fn first_task_seed(workspace: &Path, locale: codewhale_localization::Locale)
 
 /// Welcome → the first decision this run actually needs.
 pub fn advance_onboarding_from_welcome(app: &mut App) {
-    app.status_message = None;
+    app.clear_setup_notice();
     app.onboarding = if app.onboarding_had_language_step {
         OnboardingState::Language
     } else if app.onboarding_needs_api_key {
@@ -463,7 +463,7 @@ pub fn advance_onboarding_from_welcome(app: &mut App) {
 
 /// Language → the next decision; the language step never repeats.
 pub fn advance_onboarding_after_language(app: &mut App) {
-    app.status_message = None;
+    app.clear_setup_notice();
     app.onboarding = if app.onboarding_needs_api_key {
         OnboardingState::Provider
     } else if trust_decision_required(app) {
@@ -477,7 +477,7 @@ pub fn advance_onboarding_after_language(app: &mut App) {
 /// screen. A message already typed skips the ready screen and returns to the
 /// composer with the draft intact.
 pub fn advance_onboarding_after_provider(app: &mut App) {
-    app.status_message = None;
+    app.clear_setup_notice();
     if trust_decision_required(app) {
         app.onboarding = OnboardingState::TrustDirectory;
     } else if !app.composer.input.trim().is_empty() && !app.onboarding_explore_offline {
@@ -510,9 +510,9 @@ pub fn choose_offline_explore(app: &mut App) {
     app.offline_mode = true;
     // `advance_*` clears the status bar, so the label is applied after it.
     advance_onboarding_after_provider(app);
-    app.status_message = Some(
-        app.tr(codewhale_localization::MessageId::OnboardOfflineNotice)
-            .into_owned(),
+    app.show_onboarding_notice(
+        app.tr(MessageId::OnboardOfflineNotice).into_owned(),
+        super::app::StatusToastLevel::Warning,
     );
     app.needs_redraw = true;
 }

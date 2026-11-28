@@ -6668,7 +6668,7 @@ pub(crate) async fn run_event_loop(
                     }
                     KeyCode::Esc if app.onboarding == OnboardingState::Language => {
                         app.onboarding = OnboardingState::Welcome;
-                        app.status_message = None;
+                        app.clear_setup_notice();
                     }
                     // Language picker hotkeys select + persist (#566).
                     //
@@ -6694,8 +6694,10 @@ pub(crate) async fn run_event_loop(
                                     onboarding::advance_onboarding_after_language(app);
                                 }
                                 Err(err) => {
-                                    app.status_message =
-                                        Some(format!("Failed to save locale: {err}"));
+                                    app.show_onboarding_notice(
+                                        format!("Failed to save locale: {err}"),
+                                        StatusToastLevel::Error,
+                                    );
                                 }
                             }
                         }
@@ -6727,8 +6729,10 @@ pub(crate) async fn run_event_loop(
                             // grant trust by reflex (accidental-trust risk). Nor
                             // is it a silent dead key: point the user at the
                             // explicit keys the rail advertises.
-                            app.status_message =
-                                Some(app.tr(MessageId::OnboardTrustEnterHint).to_string());
+                            app.show_onboarding_notice(
+                                app.tr(MessageId::OnboardTrustEnterHint).to_string(),
+                                StatusToastLevel::Info,
+                            );
                         }
                         OnboardingState::Ready => {
                             // Enter opens the product: the real composer,
@@ -6752,8 +6756,10 @@ pub(crate) async fn run_event_loop(
                         match onboarding::trust_directory::choice_for_key(key.code, key.modifiers) {
                             Some(onboarding::trust_directory::TrustChoice::Trust) => {
                                 if let Err(err) = complete_trust_directory_onboarding(app, config) {
-                                    app.status_message =
-                                        Some(format!("Failed to trust workspace: {err}"));
+                                    app.show_onboarding_notice(
+                                        format!("Failed to trust workspace: {err}"),
+                                        StatusToastLevel::Error,
+                                    );
                                 }
                             }
                             Some(onboarding::trust_directory::TrustChoice::ContinueUntrusted) => {
