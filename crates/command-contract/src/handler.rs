@@ -111,6 +111,7 @@ impl CommandCapabilities {
     pub const FEEDBACK: Self = Self(1 << 44);
     pub const EFFORT: Self = Self(1 << 45);
     pub const CLEAR: Self = Self(1 << 46);
+    pub const WORKFLOW_REVIEW: Self = Self(1 << 37);
     pub const WORKFLOW_CONTROL: Self = Self(1 << 42);
     pub const AUTO_REVIEW: Self = Self(1 << 43);
     pub const MODEL_SELECTION: Self = Self(1 << 36);
@@ -193,6 +194,7 @@ pub struct CommandContexts<'a> {
     effort: Option<&'a mut dyn crate::core_policy::EffortContext>,
     clear: Option<&'a mut dyn crate::core_policy::ClearContext>,
     provider_routes: Option<&'a mut dyn crate::model_setup::CommandProviderRoutesContext>,
+    workflow_review: Option<&'a dyn crate::workflow::CommandWorkflowReviewContext>,
     workflow: Option<&'a mut dyn crate::workflow::CommandWorkflowContext>,
     auto_review: Option<&'a mut dyn crate::workflow::CommandAutoReviewContext>,
     model_selection: Option<&'a mut dyn crate::model_setup::CommandModelSelectionContext>,
@@ -277,6 +279,7 @@ impl<'a> CommandContexts<'a> {
             effort: None,
             clear: None,
             provider_routes: None,
+            workflow_review: None,
             workflow: None,
             auto_review: None,
             model_selection: None,
@@ -435,6 +438,22 @@ impl<'a> CommandContexts<'a> {
 
     pub fn take_feedback(&mut self) -> Option<&'a mut dyn crate::core_policy::FeedbackContext> {
         self.feedback.take()
+    }
+
+    pub fn with_workflow_review(
+        mut self,
+        value: &'a dyn crate::workflow::CommandWorkflowReviewContext,
+    ) -> Self {
+        assert!(
+            self.workflow_review.replace(value).is_none(),
+            "workflow review facet already set"
+        );
+        self
+    }
+    pub fn take_workflow_review(
+        &mut self,
+    ) -> Option<&'a dyn crate::workflow::CommandWorkflowReviewContext> {
+        self.workflow_review.take()
     }
 
     pub fn with_workflow(

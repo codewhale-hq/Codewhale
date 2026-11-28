@@ -2611,6 +2611,12 @@ mod tests {
             ("clear", Some(Caps::CLEAR.union(Caps::PRESENTATION))),
             ("effort", Some(Caps::EFFORT.union(Caps::PRESENTATION))),
             ("feedback", Some(Caps::FEEDBACK.union(Caps::PRESENTATION))),
+            (
+                "workflow",
+                Some(Caps::WORKFLOW_CONTROL.union(Caps::WORKFLOW_REVIEW)),
+            ),
+            ("workflows", Some(Caps::WORKFLOW_CONTROL)),
+            ("auto", Some(Caps::AUTO_REVIEW.union(Caps::PRESENTATION))),
             ("router", None),
         ] {
             let handler = registry().get(name).unwrap().contextual_handler().unwrap();
@@ -2628,15 +2634,7 @@ mod tests {
         legacy.sort_unstable();
         assert_eq!(
             legacy,
-            [
-                "auto",
-                "constitution",
-                "fleet",
-                "hooks",
-                "lane",
-                "workflow",
-                "workflows",
-            ],
+            ["constitution", "fleet", "hooks", "lane",],
             "legacy registrations must match the remaining core migration work"
         );
     }

@@ -3,8 +3,21 @@ use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
 use codewhale_command_contract::outcome::CommandResult;
 use codewhale_command_contract::workflow::*;
 
+pub struct WorkflowInstruction {
+    display: String,
+    instruction: String,
+}
+
+impl WorkflowInstruction {
+    pub fn into_parts(self) -> (String, String) {
+        (self.display, self.instruction)
+    }
+}
+
+pub struct OpenWorkflowsManager;
+
 pub struct WorkflowCmd;
-impl<A: From<WorkflowAction>> RegisterCommand<CommandResult<A>> for WorkflowCmd {
+impl<A: From<WorkflowInstruction>> RegisterCommand<CommandResult<A>> for WorkflowCmd {
     fn info() -> &'static CommandInfo {
         &CommandInfo {
             name: "workflow",
@@ -15,19 +28,23 @@ impl<A: From<WorkflowAction>> RegisterCommand<CommandResult<A>> for WorkflowCmd 
     }
     fn handler() -> CommandHandler<CommandResult<A>> {
         CommandHandler::Contextual {
-            capabilities: CommandCapabilities::WORKFLOW_CONTROL,
+            capabilities: CommandCapabilities::WORKFLOW_CONTROL
+                .union(CommandCapabilities::WORKFLOW_REVIEW),
             handler: |mut ctx, arg| {
                 let Some(host) = ctx.take_workflow() else {
                     return CommandResult::error("Command capability unavailable: workflow");
                 };
-                workflow(host, arg)
+                let Some(review) = ctx.take_workflow_review() else {
+                    return CommandResult::error("Command capability unavailable: workflow review");
+                };
+                workflow(host, review, arg)
             },
         }
     }
 }
 
 pub struct WorkflowsCmd;
-impl<A: From<WorkflowAction>> RegisterCommand<CommandResult<A>> for WorkflowsCmd {
+impl<A: From<OpenWorkflowsManager>> RegisterCommand<CommandResult<A>> for WorkflowsCmd {
     fn info() -> &'static CommandInfo {
         &CommandInfo {
             name: "workflows",
@@ -149,13 +166,14 @@ fn workflow_confirm_instruction(draft: &WorkflowDraftEnvelope) -> String {
     )
 }
 
-fn workflow<A: From<WorkflowAction>>(
+fn workflow<A: From<WorkflowInstruction>>(
     host: &mut dyn CommandWorkflowContext,
+    review: &dyn CommandWorkflowReviewContext,
     arg: Option<&str>,
 ) -> CommandResult<A> {
     let arg = arg.map(str::trim).filter(|value| !value.is_empty());
 
-    if let Some(action) = parse_workflow_control_action(host, arg) {
+    if let Some(action) = parse_workflow_control_action(host, review, arg) {
         return action;
     }
 
@@ -165,7 +183,7 @@ fn workflow<A: From<WorkflowAction>>(
     let display = workflow_display("Workflow draft: ", objective.as_deref());
     CommandResult::with_message_and_action(
         "Drafting a workflow for review. Nothing will run until /workflow confirm.",
-        WorkflowAction::Instruction {
+        WorkflowInstruction {
             display,
             instruction: workflow_draft_instruction(&id, objective.as_deref()),
         }
@@ -173,14 +191,15 @@ fn workflow<A: From<WorkflowAction>>(
     )
 }
 
-fn parse_workflow_control_action<A: From<WorkflowAction>>(
+fn parse_workflow_control_action<A: From<WorkflowInstruction>>(
     host: &mut dyn CommandWorkflowContext,
+    review: &dyn CommandWorkflowReviewContext,
     arg: Option<&str>,
 ) -> Option<CommandResult<A>> {
     let arg = arg?;
     let (verb, rest) = split_verb(arg);
     match verb {
-        "confirm" if rest.is_empty() => Some(match host.pending_draft() {
+        "confirm" if rest.is_empty() => Some(match review.pending_draft() {
             PendingWorkflowDraft::Ready(draft) => {
                 let display = match draft.source_path.as_deref() {
                     Some(path) => workflow_display("Workflow file confirmed: ", Some(path)),
@@ -188,7 +207,7 @@ fn parse_workflow_control_action<A: From<WorkflowAction>>(
                 };
                 CommandResult::with_message_and_action(
                     "Workflow confirmed. Starting the reviewed plan...",
-                    WorkflowAction::Instruction {
+                    WorkflowInstruction {
                         display,
                         instruction: workflow_confirm_instruction(&draft),
                     }
@@ -225,7 +244,7 @@ fn parse_workflow_control_action<A: From<WorkflowAction>>(
             let display = workflow_display("Workflow file draft: ", Some(rest));
             Some(CommandResult::with_message_and_action(
                 "Reviewing the saved workflow. Nothing will run until /workflow confirm.",
-                WorkflowAction::Instruction {
+                WorkflowInstruction {
                     display,
                     instruction: workflow_source_draft_instruction(&id, rest),
                 }
@@ -243,7 +262,7 @@ fn split_verb(arg: &str) -> (&str, &str) {
     }
 }
 
-fn workflow_control<A: From<WorkflowAction>>(
+fn workflow_control<A>(
     host: &mut dyn CommandWorkflowContext,
     verb: &str,
     rest: &str,
@@ -295,10 +314,7 @@ fn describe_run(line: &HostWorkflowRunLine, now_ms: u64) -> String {
     text
 }
 
-fn workflow_status<A: From<WorkflowAction>>(
-    host: &mut dyn CommandWorkflowContext,
-    run_id: &str,
-) -> CommandResult<A> {
+fn workflow_status<A>(host: &mut dyn CommandWorkflowContext, run_id: &str) -> CommandResult<A> {
     let runs = host.runs();
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -336,10 +352,7 @@ fn workflow_status<A: From<WorkflowAction>>(
     CommandResult::message(lines.join("\n"))
 }
 
-fn workflow_cancel<A: From<WorkflowAction>>(
-    host: &mut dyn CommandWorkflowContext,
-    run_id: &str,
-) -> CommandResult<A> {
+fn workflow_cancel<A>(host: &mut dyn CommandWorkflowContext, run_id: &str) -> CommandResult<A> {
     if run_id.contains(char::is_whitespace) {
         return CommandResult::error("Usage: /workflow cancel [run_id]");
     }
@@ -369,13 +382,13 @@ fn workflow_cancel<A: From<WorkflowAction>>(
     }
 }
 
-fn workflows<A: From<WorkflowAction>>(
+fn workflows<A: From<OpenWorkflowsManager>>(
     host: &mut dyn CommandWorkflowContext,
     arg: Option<&str>,
 ) -> CommandResult<A> {
     let arg = arg.map(str::trim).filter(|value| !value.is_empty());
     let Some(arg) = arg else {
-        return CommandResult::action(WorkflowAction::OpenManager.into());
+        return CommandResult::action(OpenWorkflowsManager.into());
     };
     let (verb, rest) = split_verb(arg);
     workflow_control(host, verb, rest, WORKFLOWS_USAGE).unwrap_or_else(|| CommandResult::error(
@@ -427,9 +440,6 @@ mod tests {
     fn workflows_cannot_dispatch_confirmation_or_saved_sources() {
         struct EmptyWorkspace;
         impl CommandWorkflowContext for EmptyWorkspace {
-            fn pending_draft(&self) -> PendingWorkflowDraft {
-                panic!("observation must never read drafts")
-            }
             fn runs(&self) -> Vec<HostWorkflowRunLine> {
                 panic!("unexpected journal read")
             }
@@ -442,7 +452,7 @@ mod tests {
         }
 
         let CommandHandler::Contextual { handler, .. } =
-            <WorkflowsCmd as RegisterCommand<CommandResult<WorkflowAction>>>::handler()
+            <WorkflowsCmd as RegisterCommand<CommandResult<OpenWorkflowsManager>>>::handler()
         else {
             panic!("expected contextual workflow command");
         };

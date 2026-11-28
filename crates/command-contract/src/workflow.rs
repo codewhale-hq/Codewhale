@@ -48,16 +48,11 @@ pub struct HostWorkflowRunLine {
     pub error: Option<String>,
 }
 
-pub enum WorkflowAction {
-    Instruction {
-        display: String,
-        instruction: String,
-    },
-    OpenManager,
+pub trait CommandWorkflowReviewContext {
+    fn pending_draft(&self) -> PendingWorkflowDraft;
 }
 
 pub trait CommandWorkflowContext {
-    fn pending_draft(&self) -> PendingWorkflowDraft;
     fn runs(&self) -> Vec<HostWorkflowRunLine>;
     fn cancel(&mut self, run_id: &str) -> Result<HostWorkflowRunLine, String>;
     fn settings(&self) -> CommandWorkflowSummary;

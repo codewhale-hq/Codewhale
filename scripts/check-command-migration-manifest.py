@@ -1197,6 +1197,7 @@ UNLISTED_SLICE_ASSIGNMENT: dict[str, dict[str, list[str]]] = {
 
 
 CORE_MOVED_SOURCES = {
+    "crates/tui/src/commands/groups/core/workflow.rs": "crates/commands/src/workflow.rs",
     "crates/tui/src/commands/groups/core/clear.rs": "crates/commands/src/core_policy.rs",
     "crates/tui/src/commands/groups/core/effort.rs": "crates/commands/src/core_policy.rs",
 }

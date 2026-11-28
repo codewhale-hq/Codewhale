@@ -5528,6 +5528,7 @@ pub(crate) struct CommandContextBundle<'a> {
     effort: core_policy::PolicyAdapter<'a>,
     clear: core_policy::PolicyAdapter<'a>,
     provider_routes: ModelAdapter<'a>,
+    workflow_review: workflow::WorkflowAdapter<'a>,
     workflow: workflow::WorkflowAdapter<'a>,
     auto_review: workflow::WorkflowAdapter<'a>,
     model_selection: ModelAdapter<'a>,
@@ -5582,6 +5583,9 @@ impl<'a> CommandContextBundle<'a> {
         }
         if capabilities.contains(CommandCapabilities::CLEAR) {
             contexts = contexts.with_clear(&mut self.clear);
+        }
+        if capabilities.contains(CommandCapabilities::WORKFLOW_REVIEW) {
+            contexts = contexts.with_workflow_review(&self.workflow_review);
         }
         if capabilities.contains(CommandCapabilities::WORKFLOW_CONTROL) {
             contexts = contexts.with_workflow(&mut self.workflow);
@@ -5757,6 +5761,7 @@ impl App {
             effort: core_policy::PolicyAdapter { host: host.clone() },
             clear: core_policy::PolicyAdapter { host: host.clone() },
             provider_routes: ModelAdapter { host: host.clone() },
+            workflow_review: workflow::WorkflowAdapter { host: host.clone() },
             workflow: workflow::WorkflowAdapter { host: host.clone() },
             auto_review: workflow::WorkflowAdapter { host: host.clone() },
             model_selection: ModelAdapter { host: host.clone() },

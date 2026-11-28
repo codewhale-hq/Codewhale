@@ -9,25 +9,29 @@ pub(super) struct WorkflowAdapter<'a> {
     pub(super) host: SharedCommandHost<'a>,
 }
 
-impl From<WorkflowAction> for AppAction {
-    fn from(action: WorkflowAction) -> Self {
-        match action {
-            WorkflowAction::OpenManager => Self::OpenWorkflowsManager,
-            WorkflowAction::Instruction {
-                display,
-                instruction,
-            } => Self::WorkflowInstruction {
-                display,
-                instruction,
-            },
+impl From<codewhale_commands::workflow::OpenWorkflowsManager> for AppAction {
+    fn from(_: codewhale_commands::workflow::OpenWorkflowsManager) -> Self {
+        Self::OpenWorkflowsManager
+    }
+}
+
+impl From<codewhale_commands::workflow::WorkflowInstruction> for AppAction {
+    fn from(intent: codewhale_commands::workflow::WorkflowInstruction) -> Self {
+        let (display, instruction) = intent.into_parts();
+        Self::WorkflowInstruction {
+            display,
+            instruction,
         }
     }
 }
-impl CommandWorkflowContext for WorkflowAdapter<'_> {
+
+impl CommandWorkflowReviewContext for WorkflowAdapter<'_> {
     fn pending_draft(&self) -> PendingWorkflowDraft {
         pending_workflow_draft(&self.host.app.borrow())
     }
+}
 
+impl CommandWorkflowContext for WorkflowAdapter<'_> {
     fn runs(&self) -> Vec<HostWorkflowRunLine> {
         let app = self.host.app.borrow();
         codewhale_engine::tools::workflow::host_workflow_runs(
