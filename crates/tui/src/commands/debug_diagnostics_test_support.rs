@@ -122,7 +122,6 @@ pub(crate) fn assert_fixture(name: &str, actual: &str) {
     );
 }
 
-/// The captured Linux environment contributes 21 tokens to the 2207 total.
 /// Keep its text frozen independently of the production prompt renderer, but
 /// substitute real host facts: Windows/pwsh.exe contributes 22, for example.
 /// Never derive expectations from the report being tested or erase its counts.
@@ -140,7 +139,13 @@ fn context_fixture_for_host(expected: &str, platform: &str, shell: &str) -> Stri
             .strip_prefix("\"total_estimated_tokens\": ")
             .and_then(|rest| rest.trim_end_matches(',').parse::<usize>().ok())
     });
-    let mut adjusted = expected
+    static ENVIRONMENT_COUNT: OnceLock<Regex> = OnceLock::new();
+    let environment_count = ENVIRONMENT_COUNT.get_or_init(|| {
+        Regex::new(r#"("source_kind": "environment_block",[^{}]*?"estimated_tokens": )21,"#)
+            .expect("environment entry token count regex")
+    });
+    let mut adjusted = environment_count
+        .replace_all(expected, format!("${{1}}{tokens},"))
         .replace(
             "EnvironmentBlock: Runtime environment [<workspace>] - 21 tokens",
             &format!("EnvironmentBlock: Runtime environment [<workspace>] - {tokens} tokens"),
@@ -148,24 +153,17 @@ fn context_fixture_for_host(expected: &str, platform: &str, shell: &str) -> Stri
         .replace(
             "Runtime environment (21)",
             &format!("Runtime environment ({tokens})"),
-        )
-        .replace(
-            "\"estimated_tokens\": 21,",
-            &format!("\"estimated_tokens\": {tokens},"),
         );
-    let delta = tokens.saturating_sub(21);
     if let Some(total) = text_total {
-        let total = total + delta;
         adjusted = adjusted.replace(
-            &format!("Source-entry total: {} tokens", total - delta),
             &format!("Source-entry total: {total} tokens"),
+            &format!("Source-entry total: {} tokens", total - 21 + tokens),
         );
     }
     if let Some(total) = json_total {
-        let total = total + delta;
         adjusted = adjusted.replace(
-            &format!("\"total_estimated_tokens\": {},", total - delta),
             &format!("\"total_estimated_tokens\": {total},"),
+            &format!("\"total_estimated_tokens\": {},", total - 21 + tokens),
         );
     }
     adjusted
@@ -290,37 +288,33 @@ fn normalisers_replace_only_documented_volatile_fields() {
 
 #[test]
 fn context_expectations_preserve_counts_for_each_host() {
-    for name in [
-        "context_report.txt",
-        "context_json.txt",
-        "context_summary.txt",
-        "context_prompt_json.txt",
-    ] {
-        let baseline = fixture(name);
-        assert_eq!(
-            context_fixture_for_host(&baseline, "linux", "/bin/bash"),
-            baseline
-        );
-        // The Windows environment adds one token to the captured Linux total.
-        let windows = baseline
-            .replace("- 21 tokens", "- 22 tokens")
-            .replace("environment (21)", "environment (22)")
-            .replace("\"estimated_tokens\": 21,", "\"estimated_tokens\": 22,")
-            .replace("1882", "1883");
-        let expected = context_fixture_for_host(&baseline, "windows", "pwsh.exe");
-        assert_eq!(expected, windows, "{name}");
-        // A fixture that carries no host-dependent number (the top-source list
-        // can stop naming the environment block) is identical on both hosts, so
-        // only the host-carrying fixtures can prove the difference is kept.
-        let host_dependent = baseline.contains("- 21 tokens")
-            || baseline.contains("environment (21)")
-            || baseline.contains("\"estimated_tokens\": 21,");
-        if host_dependent {
-            assert_ne!(expected, baseline, "{name} must retain the host difference");
-            assert_ne!(expected, windows.replace("22", "23"));
+    let captures = [
+        "Source-entry total: @total@ tokens\n- EnvironmentBlock: Runtime environment [<workspace>] - @env@ tokens\n- Other: fixture - 21 tokens",
+        "Top sources: Other (21), Runtime environment (@env@)",
+        r#"{
+  "entries": [
+    {"source_kind": "other", "estimated_tokens": 21, "label": "Other"},
+    {"source_kind": "environment_block", "estimated_tokens": @env@, "label": "Runtime environment"}
+  ],
+  "total_estimated_tokens": @total@,
+  "other": 121
+}"#,
+    ];
+    for capture in captures {
+        let baseline = capture.replace("@env@", "21").replace("@total@", "121");
+        for (platform, shell, environment, total) in [
+            ("linux", "/bin/bash", "21", "121"),
+            ("windows", "pwsh.exe", "22", "122"),
+            ("linux", "sh", "19", "119"),
+        ] {
+            let expected = capture
+                .replace("@env@", environment)
+                .replace("@total@", total);
+            assert_eq!(
+                context_fixture_for_host(&baseline, platform, shell),
+                expected
+            );
         }
-        // A regression in another source still fails on every fixture.
-        assert_ne!(expected, windows.replace("1478", "1479"));
     }
 }
 

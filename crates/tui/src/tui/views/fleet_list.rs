@@ -1094,7 +1094,7 @@ mod tests {
 
         // A legacy exact fleet file (workflow schema) in the personal dir.
         std::fs::create_dir_all(home.path().join("fleets")).unwrap();
-        let legacy_path = home.path().join("fleets/stopship.toml");
+        let legacy_path = home.path().join("fleets").join("stopship.toml");
         let legacy_source = r#"schema = "exact"
 schema_revision = 1
 name = "stopship"
@@ -1162,7 +1162,7 @@ provider = "deepseek"
         )
         .unwrap();
 
-        let personal = home.path().join("agents/scout.toml");
+        let personal = home.path().join("agents").join("scout.toml");
         std::fs::create_dir_all(personal.parent().unwrap()).unwrap();
         std::fs::write(&personal, "id = \"scout\"\nrole_hint = \"scout\"").unwrap();
 
