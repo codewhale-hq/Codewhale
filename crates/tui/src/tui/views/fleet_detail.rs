@@ -335,7 +335,7 @@ impl FleetDetailView {
                 self.fleet.name = old_name;
                 Some(ViewAction::Emit(ViewEvent::OpenTextPager {
                     title: tr(self.locale, MessageId::FleetRenameFailedTitle).into_owned(),
-                    content: format!("{err:#}"),
+                    content: err.message(self.locale),
                 }))
             }
         }
@@ -585,7 +585,7 @@ impl FleetDetailView {
                 self.fleet = previous;
                 self.route_edit_needs_refresh();
                 Err(tr(self.locale, MessageId::FleetToggleFailed)
-                    .replace("{error}", &err.to_string()))
+                    .replace("{error}", &err.message(self.locale)))
             }
         }
     }
@@ -709,7 +709,7 @@ impl FleetDetailView {
             Err(err) => Some(ViewAction::Emit(ViewEvent::OpenTextPager {
                 title: tr(self.locale, MessageId::FleetSaveFailedTitle).into_owned(),
                 content: tr(self.locale, MessageId::FleetSaveFailedBody)
-                    .replace("{error}", &format!("{err:#}")),
+                    .replace("{error}", &err.message(self.locale)),
             })),
         }
     }
@@ -725,7 +725,7 @@ impl FleetDetailView {
             })),
             Err(err) => Some(ViewAction::Emit(ViewEvent::OpenTextPager {
                 title: tr(self.locale, MessageId::FleetCopyFailedTitle).into_owned(),
-                content: format!("{err:#}"),
+                content: err.message(self.locale),
             })),
         }
     }
@@ -740,7 +740,7 @@ impl FleetDetailView {
             })),
             Err(err) => Some(ViewAction::Emit(ViewEvent::OpenTextPager {
                 title: tr(self.locale, MessageId::FleetSelectFailedTitle).into_owned(),
-                content: format!("{err:#}"),
+                content: err.message(self.locale),
             })),
         }
     }

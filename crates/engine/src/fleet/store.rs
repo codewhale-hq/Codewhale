@@ -1208,6 +1208,16 @@ pub fn migrate_legacy_roster(
     save: bool,
     save_scope: FleetScope,
 ) -> Result<MigrationReceipt, FleetStoreError> {
+    migrate_legacy_roster_localized(fleet_config, workspace, save, save_scope, Locale::En)
+}
+
+pub fn migrate_legacy_roster_localized(
+    fleet_config: &codewhale_config::FleetConfigToml,
+    workspace: &Path,
+    save: bool,
+    save_scope: FleetScope,
+    locale: Locale,
+) -> Result<MigrationReceipt, FleetStoreError> {
     let roster = FleetRoster::load(fleet_config, workspace);
     let mut fleet = FleetFile::new(
         "Default".to_string(),
@@ -1239,12 +1249,10 @@ pub fn migrate_legacy_roster(
             .iter()
             .filter(|s| s.id == member.id)
             .map(|s| {
-                format!(
-                    "{} copy at {} ignored in favor of {}",
-                    s.shadowed_origin,
-                    s.shadowed_source.display(),
-                    s.winner_origin
-                )
+                tr(locale, MessageId::FleetMigrationShadow)
+                    .replace("{ignored}", &s.shadowed_origin.to_string())
+                    .replace("{winner}", &s.winner_origin.to_string())
+                    .replace("{path}", &s.shadowed_source.display().to_string())
             })
             .collect();
         let mut row = row;

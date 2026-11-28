@@ -135,6 +135,7 @@ Codewhale v0.10.5 simplifies the terminal and runtime, expands DeepSeek Harness 
 
 ### Fixed
 
+- Saved-team deletion receipts, legacy file details and migration results use the selected terminal language. (#7469)
 - Context estimates count Chinese, Japanese and Korean text by character, including in mixed-language prompts and tool output. Compaction uses the same estimate when fitting older user messages within the retention budget. (Refs #6561)
 - The terminal records an error when the Engine cannot dismiss an inactive approval or question. Compaction notices use their assigned severity and leave other status messages intact. (#7464)
 

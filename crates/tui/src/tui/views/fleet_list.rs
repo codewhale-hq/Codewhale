@@ -29,8 +29,8 @@ use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
 };
 use codewhale_engine::fleet::store::{
-    FleetEntry, FleetScope, SelectedFleet, delete_fleet, list_fleets, migrate_legacy_roster,
-    selected_fleet, set_selected,
+    FleetEntry, FleetScope, SelectedFleet, delete_fleet, list_fleets,
+    migrate_legacy_roster_localized, selected_fleet, set_selected,
 };
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
@@ -234,23 +234,40 @@ impl FleetListView {
         if entry.legacy {
             return None;
         }
-        match set_selected(&entry.name, scope, &self.workspace) {
-            Ok(path) => Some(FleetListOutcome::Done {
-                message: tr(self.locale, MessageId::FleetSelectedNotice)
-                    .replace("{name}", &entry.name)
-                    .replace(
-                        "{scope}",
-                        &super::fleet_detail::long_scope_label(self.locale, scope),
-                    )
-                    .replace("{path}", &path.display().to_string()),
-            }),
-            Err(err) => Some(FleetListOutcome::Done {
-                message: format!(
-                    "{}: {err}",
-                    tr(self.locale, MessageId::FleetSelectFailedTitle)
-                ),
-            }),
+        Some(FleetListOutcome::Done {
+            message: self.select_team(&entry.name, scope),
+        })
+    }
+
+    fn select_team(&self, name: &str, scope: FleetScope) -> String {
+        match set_selected(name, scope, &self.workspace) {
+            Ok(path) => self.team_receipt(MessageId::FleetSelectedNotice, name, scope, &path),
+            Err(err) => format!(
+                "{}: {}",
+                tr(self.locale, MessageId::FleetSelectFailedTitle),
+                err.message(self.locale)
+            ),
         }
+    }
+
+    fn team_receipt(
+        &self,
+        id: MessageId,
+        name: &str,
+        scope: FleetScope,
+        path: &std::path::Path,
+    ) -> String {
+        codewhale_protocol::display::interpolate(
+            &tr(self.locale, id),
+            &[
+                (
+                    "{scope}",
+                    &super::fleet_detail::long_scope_label(self.locale, scope),
+                ),
+                ("{name}", name),
+                ("{path}", &path.display().to_string()),
+            ],
+        )
     }
 
     fn confirm_delete(&mut self) -> Option<FleetListOutcome> {
@@ -260,14 +277,11 @@ impl FleetListView {
         let scope = entry.scope;
         match delete_fleet(&name, scope, &self.workspace) {
             Ok(path) => Some(FleetListOutcome::Done {
-                message: format!(
-                    "Deleted Team `{name}` ({}) — removed {}",
-                    scope.label(),
-                    path.display()
-                ),
+                message: self.team_receipt(MessageId::FleetDeletedNotice, &name, scope, &path),
             }),
             Err(err) => Some(FleetListOutcome::Done {
-                message: format!("Delete failed: {err}"),
+                message: tr(self.locale, MessageId::SessionsDeleteFailed)
+                    .replace("{error}", &err.message(self.locale)),
             }),
         }
     }
@@ -313,15 +327,24 @@ impl ModalView for FleetListView {
                 };
                 if entry.legacy {
                     return ViewAction::Emit(ViewEvent::OpenTextPager {
-                        title: format!("Team `{}` — legacy format", entry.name),
+                        title: tr(self.locale, MessageId::FleetLegacyTitle)
+                            .replace("{name}", &entry.name),
                         content: format!(
-                            "This team file predates the named-team format ({}).\n\n\
-                             It is listed so nothing you saved disappears, but it is \
-                             read-only here. To edit it, create a new team and copy \
-                             the settings you want; legacy files are never migrated \
-                             silently.\n\nParse error: {}",
-                            entry.path.display(),
-                            entry.parse_error.as_deref().unwrap_or("unknown")
+                            "{}\n\n{}",
+                            tr(self.locale, MessageId::FleetLegacyGuide),
+                            codewhale_protocol::display::interpolate(
+                                &tr(self.locale, MessageId::FleetStoreErrorParse),
+                                &[
+                                    ("{path}", &entry.path.display().to_string()),
+                                    (
+                                        "{message}",
+                                        entry.parse_error.as_deref().unwrap_or(&tr(
+                                            self.locale,
+                                            MessageId::WorkflowReceiptUnknown
+                                        ))
+                                    )
+                                ]
+                            )
                         ),
                     });
                 }
@@ -342,52 +365,44 @@ impl ModalView for FleetListView {
                 ViewAction::None
             }
             KeyCode::Char('m') if self.banner_visible() => {
-                match migrate_legacy_roster(
+                match migrate_legacy_roster_localized(
                     &self.fleet_config,
                     &self.workspace,
                     true,
                     FleetScope::Personal,
+                    self.locale,
                 ) {
                     Ok(receipt) => {
-                        let mut content = format!(
-                            "Migrated {} legacy role profiles into Team `Default` \
-                             (user-global) — wrote {}\n\n",
-                            receipt.rows.len(),
-                            receipt.saved_to.display()
-                        );
+                        let mut content = tr(self.locale, MessageId::FleetMigratedNotice)
+                            .replace("{count}", &receipt.rows.len().to_string())
+                            .replace("{path}", &receipt.saved_to.display().to_string());
+                        content.push_str("\n\n");
                         for row in &receipt.rows {
                             let pin = match &row.pin {
                                 Some((model, provider)) => {
                                     format!("{provider}/{model}")
                                 }
-                                None => "same model as this session".to_string(),
+                                None => tr(self.locale, MessageId::FleetListSummarySessionModel)
+                                    .into_owned(),
                             };
                             content.push_str(&format!("- {} → {pin}", row.id));
                             if let Some(shadow) = &row.conflicting_shadow {
-                                content.push_str(&format!(" [conflict: {shadow}]"));
+                                content.push_str(&format!(" [{shadow}]"));
                             }
                             content.push('\n');
                         }
-                        content.push_str(
-                            "\nLegacy profile files were left untouched — they are no \
-                             longer live configuration once a team is selected.",
-                        );
-                        if let Ok(path) =
-                            set_selected("Default", FleetScope::Personal, &self.workspace)
-                        {
-                            content.push_str(&format!(
-                                "\n\nTeam `Default` is now your user-global default — wrote {}.",
-                                path.display()
-                            ));
-                        }
+                        content.push('\n');
+                        content.push_str(&tr(self.locale, MessageId::FleetLegacyInactive));
+                        content.push_str("\n\n");
+                        content.push_str(&self.select_team("Default", FleetScope::Personal));
                         ViewAction::Emit(ViewEvent::OpenTextPager {
-                            title: "Legacy migration receipt".to_string(),
+                            title: tr(self.locale, MessageId::FleetMigrationReceipt).into_owned(),
                             content,
                         })
                     }
                     Err(err) => ViewAction::Emit(ViewEvent::OpenTextPager {
-                        title: "Legacy migration failed".to_string(),
-                        content: format!("{err:#}"),
+                        title: tr(self.locale, MessageId::FleetMigrationFailed).into_owned(),
+                        content: err.message(self.locale),
                     }),
                 }
             }
@@ -997,6 +1012,7 @@ mod tests {
 
         save_in(ws.path(), FleetScope::Workspace, "Temp Fleet");
         let mut view = FleetListView::new(&app_in(ws.path().to_path_buf()), &Config::default());
+        view.locale = Locale::ZhHans;
         assert_eq!(view.entries.len(), 1);
         assert_eq!(view.entries[0].name, "Temp Fleet");
 
@@ -1025,7 +1041,11 @@ mod tests {
         let ViewAction::EmitAndClose(ViewEvent::FleetStoreChanged { message }) = action else {
             panic!("expected FleetStoreChanged, got {action:?}");
         };
-        assert!(message.contains("Deleted Team `Temp Fleet`"), "{message}");
+        assert!(
+            message.contains("已删除团队 `Temp Fleet`")
+                && message.contains(ws.path().to_str().unwrap()),
+            "{message}"
+        );
         assert!(list_fleets(ws.path()).is_empty());
     }
 
@@ -1093,13 +1113,23 @@ members = []"#;
         assert_eq!(entry.scope, FleetScope::Personal);
         assert_eq!(entry.path, legacy_path);
 
-        let action = view.handle_key(key(KeyCode::Enter));
-        let ViewAction::Emit(ViewEvent::OpenTextPager { title, content }) = action else {
-            panic!("legacy entry must open a read-only pager: {action:?}");
-        };
-        assert_eq!(title, "Team `stopship` — legacy format");
-        assert!(content.contains("This team file predates the named-team format"));
-        assert!(content.contains("create a new team"));
+        for (locale, expected_title, guide) in [
+            (
+                Locale::En,
+                "Team `stopship` — legacy format",
+                "create a new team",
+            ),
+            (Locale::ZhHans, "团队 `stopship` — 旧版格式", "创建新团队"),
+        ] {
+            view.locale = locale;
+            let action = view.handle_key(key(KeyCode::Enter));
+            let ViewAction::Emit(ViewEvent::OpenTextPager { title, content }) = action else {
+                panic!("legacy entry must open a read-only pager: {action:?}");
+            };
+            assert_eq!(title, expected_title);
+            assert!(content.contains(guide));
+            assert!(content.contains(legacy_path.to_str().unwrap()));
+        }
 
         assert_eq!(
             std::fs::read_to_string(&legacy_path).unwrap(),
@@ -1111,9 +1141,8 @@ members = []"#;
     #[test]
     fn migration_banner_appears_only_when_needed_and_migrates() {
         let _lock = crate::test_support::lock_test_env();
-        let prev = std::env::var_os("CODEWHALE_HOME");
-        // SAFETY: serialised by lock_test_env.
-        unsafe { std::env::set_var("CODEWHALE_HOME", sealed_home()) };
+        let home = tempfile::TempDir::new().unwrap();
+        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
         let ws = tempfile::TempDir::new().unwrap();
 
         // No legacy profiles: no banner.
@@ -1133,19 +1162,27 @@ provider = "deepseek"
         )
         .unwrap();
 
+        let personal = home.path().join("agents/scout.toml");
+        std::fs::create_dir_all(personal.parent().unwrap()).unwrap();
+        std::fs::write(&personal, "id = \"scout\"\nrole_hint = \"scout\"").unwrap();
+
         let mut view = FleetListView::new(&app_in(ws.path().to_path_buf()), &Config::default());
         assert!(
             view.banner_visible(),
             "banner must show with legacy profiles"
         );
 
+        view.locale = Locale::ZhHans;
         let action = view.handle_key(key(KeyCode::Char('m')));
         let ViewAction::Emit(ViewEvent::OpenTextPager { title, content }) = action else {
             panic!("migration must open the receipt pager: {action:?}");
         };
-        assert_eq!(title, "Legacy migration receipt");
-        assert!(content.contains("Team `Default`"));
-        assert!(content.contains("once a team is selected"));
+        assert_eq!(title, "旧版配置迁移结果");
+        assert!(content.contains("用户全局团队 `Default`"));
+        assert!(content.contains("选定团队后"));
+        assert!(content.contains("deepseek/deepseek-v4-flash"));
+        assert!(content.contains("已忽略 personal"), "{content}");
+        assert!(content.contains(personal.to_str().unwrap()), "{content}");
 
         // The Default team now exists and is the user-global selection.
         let entries = list_fleets(ws.path());
@@ -1156,14 +1193,6 @@ provider = "deepseek"
         let sel = codewhale_engine::fleet::store::selected_fleet(ws.path())
             .expect("selection after migration");
         assert_eq!(sel.name, "Default");
-
-        // SAFETY: serialised by lock_test_env.
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var("CODEWHALE_HOME", v),
-                None => std::env::remove_var("CODEWHALE_HOME"),
-            }
-        }
     }
 
     #[test]
@@ -1276,7 +1305,9 @@ provider = "deepseek"
 
     #[test]
     fn reload_picks_up_a_saved_coordinator_change() {
-        unsafe { std::env::set_var("CODEWHALE_HOME", sealed_home()) };
+        let _lock = crate::test_support::lock_test_env();
+        let home = tempfile::TempDir::new().unwrap();
+        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
         let ws = tempfile::TempDir::new().unwrap();
         save_in(ws.path(), FleetScope::Workspace, "Reload Probe");
         let app = app_in(ws.path().to_path_buf());
