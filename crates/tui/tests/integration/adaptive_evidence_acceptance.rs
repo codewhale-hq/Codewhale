@@ -54,13 +54,15 @@ async fn headless_bash_success_and_failure_are_distinct_bounded_exact_evidence()
         receipt_for(&requests, SUCCESS_CALL_ID).expect("model-visible Bash success receipt");
     let failure_receipt =
         receipt_for(&requests, FAILURE_CALL_ID).expect("model-visible Bash failure receipt");
-    for (receipt, sentinel) in [
-        (&success_receipt, SUCCESS_SENTINEL),
-        (&failure_receipt, FAILURE_SENTINEL),
+    for (outcome, receipt, sentinel) in [
+        ("success", &success_receipt, SUCCESS_SENTINEL),
+        ("failure", &failure_receipt, FAILURE_SENTINEL),
     ] {
         assert!(
             receipt.contains("of output omitted"),
-            "model-facing truncation must state how much was omitted"
+            "the {outcome} receipt must state how much was omitted ({} bytes, starts with {:?})",
+            receipt.len(),
+            receipt.chars().take(180).collect::<String>()
         );
         assert!(
             receipt.contains("full output at"),
@@ -438,12 +440,15 @@ fn probe_command(sentinel: &str, prefix: &str, success: bool) -> String {
     let stderr_line = format!(
         "'{prefix}-ERR-{{0}}-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'"
     );
-    let stdout_loop = format!("0..2799 | ForEach-Object {{ Write-Output ({stdout_line} -f $_) }}");
-    let stderr_loop = format!(
-        "0..2799 | ForEach-Object {{ if ($_ -eq {SENTINEL_LINE}) {{ [Console]::Error.WriteLine('{sentinel}') }}; [Console]::Error.WriteLine(({stderr_line} -f $_)) }}"
-    );
     let trailer = if success { "" } else { "; exit 7" };
-    format!("{stdout_loop}; {stderr_loop}{trailer}")
+    format!(
+        "$out = [Text.StringBuilder]::new(); $err = [Text.StringBuilder]::new(); \
+         for ($i = 0; $i -lt 2800; $i++) {{ \
+           [void]$out.AppendLine(({stdout_line} -f $i)); \
+           if ($i -eq {SENTINEL_LINE}) {{ [void]$err.AppendLine('{sentinel}') }}; \
+           [void]$err.AppendLine(({stderr_line} -f $i)) \
+         }}; [Console]::Out.Write($out.ToString()); [Console]::Error.Write($err.ToString()){trailer}"
+    )
 }
 
 fn final_sse() -> String {
