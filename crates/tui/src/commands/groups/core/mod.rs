@@ -5,7 +5,6 @@
 mod acceptance;
 mod advisor;
 mod agent;
-mod constitution;
 #[cfg(test)]
 #[allow(clippy::module_inception)]
 mod core;
@@ -14,7 +13,6 @@ mod exit;
 mod feedback;
 #[cfg(test)]
 mod fleet;
-mod hooks;
 #[cfg(test)]
 mod lane;
 pub(in crate::commands) mod navigation;
@@ -26,13 +24,14 @@ mod subagents;
 pub mod util;
 
 pub(crate) use crate::commands::session_reset::reset_conversation_state;
-pub(crate) use constitution::open_manager as open_constitution_manager;
 
 use crate::commands::CommandResult;
 use crate::commands::traits::{
     Command, CommandGroup, ContextualCommand, FunctionCommand, RegisterCommand,
 };
 use codewhale_commands::fleet_lane::{FleetCmd, LaneCmd};
+use codewhale_commands::constitution::ConstitutionCmd;
+use codewhale_commands::hooks::HooksCmd;
 use codewhale_commands::model_setup::{
     HfCmd, ModelCmd, ModelDbCmd, ModelsCmd, ProfileCmd, ProviderCmd, SetupCmd,
 };
@@ -76,10 +75,7 @@ impl CommandGroup for CoreCommands {
             Box::new(
                 ContextualCommand::from_contract::<stash::StashCmd>().expect("stash registration")
             ),
-            Box::new(FunctionCommand::new(
-                hooks::HooksCmd::info(),
-                hooks::HooksCmd::execute,
-            )),
+            Box::new(ContextualCommand::from_contract::<HooksCmd>().expect("hooks registration")),
             Box::new(
                 ContextualCommand::from_contract::<subagents::SubagentsCmd>()
                     .expect("subagents registration")
@@ -95,10 +91,10 @@ impl CommandGroup for CoreCommands {
             Box::new(ContextualCommand::from_contract::<AutoCmd>().expect("auto registration")),
             crate::commands::core_navigation_host::registration::<3>(),
             Box::new(ContextualCommand::from_contract::<SetupCmd>().expect("setup registration")),
-            Box::new(FunctionCommand::new(
-                constitution::ConstitutionCmd::info(),
-                constitution::ConstitutionCmd::execute,
-            )),
+            Box::new(
+                ContextualCommand::from_contract::<ConstitutionCmd>()
+                    .expect("constitution registration"),
+            ),
             Box::new(
                 ContextualCommand::from_contract::<agent::AgentCmd>().expect("agent registration")
             ),

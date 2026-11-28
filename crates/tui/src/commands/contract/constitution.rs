@@ -3,107 +3,94 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
+use super::SharedCommandHost;
+use crate::tui::app::{App, AppAction};
+use crate::tui::pager::PagerView;
+use codewhale_command_contract::constitution::{
+    CommandConstitutionContext, ConstitutionAction, ConstitutionLocale,
+};
 use codewhale_config::{
     ConstitutionChoice, ConstitutionSource, ConstitutionValidity, RuntimePostureSource, SetupState,
     SetupStep, UserConstitution, UserConstitutionLoad,
 };
-
-use crate::commands::traits::{CommandInfo, RegisterCommand};
-use crate::tui::app::{App, AppAction};
-use crate::tui::pager::PagerView;
 use codewhale_localization::{Locale, MessageId};
 
-use super::CommandResult;
+pub(crate) struct ConstitutionAdapter<'a> {
+    pub(super) host: SharedCommandHost<'a>,
+}
 
-pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
-    name: "constitution",
-    aliases: &["law"],
-    usage: "/constitution [status|preview|base|suggestions|ratify <id>|migrate|rollback|bundled|edit|review|repair|repo|explain|posture|help]",
-    description_id: MessageId::CmdConstitutionDescription,
-};
+impl TryFrom<ConstitutionAction> for AppAction {
+    type Error = String;
 
-pub(in crate::commands) struct ConstitutionCmd;
+    fn try_from(action: ConstitutionAction) -> Result<Self, String> {
+        Ok(match action {
+            ConstitutionAction::OpenManager { review } => Self::OpenConstitutionManager { review },
+            ConstitutionAction::OpenSetupConstitution => Self::OpenSetupWizardAt {
+                step: SetupStep::Constitution,
+            },
+            ConstitutionAction::OpenSetupPosture => Self::OpenSetupWizardAt {
+                step: SetupStep::TrustSandbox,
+            },
+            ConstitutionAction::UseBundled => Self::UseBundledConstitution,
+            ConstitutionAction::PreviewEffectiveBasePrompt => Self::PreviewEffectiveBasePrompt,
+        })
+    }
+}
 
-impl RegisterCommand for ConstitutionCmd {
-    fn info() -> &'static CommandInfo {
-        &COMMAND_INFO
+impl CommandConstitutionContext for ConstitutionAdapter<'_> {
+    fn locale(&self) -> ConstitutionLocale {
+        match self.host.app.borrow().ui_locale {
+            Locale::ZhHans => ConstitutionLocale::ZhHans,
+            _ => ConstitutionLocale::En,
+        }
     }
 
-    fn execute(app: &mut App, arg: Option<&str>) -> CommandResult {
-        match arg.map(str::trim).filter(|arg| !arg.is_empty()) {
-            None | Some("status" | "home" | "manager") => {
-                CommandResult::action(AppAction::OpenConstitutionManager { review: false })
-            }
-            Some("preview") => {
-                open_preview(app);
-                CommandResult::ok()
-            }
-            Some("review" | "existing") => {
-                CommandResult::action(AppAction::OpenConstitutionManager { review: true })
-            }
-            Some("repo" | "repo-local" | "law") => {
-                open_repo_law(app);
-                CommandResult::ok()
-            }
-            Some("explain" | "agents") => {
-                open_explanation(app);
-                CommandResult::ok()
-            }
-            Some("edit" | "guided" | "custom") => {
-                CommandResult::action(AppAction::OpenSetupWizardAt {
-                    step: SetupStep::Constitution,
-                })
-            }
-            Some("repair" | "fix") => CommandResult::with_message_and_action(
-                repair_text(app.ui_locale),
-                AppAction::OpenSetupWizardAt {
-                    step: SetupStep::Constitution,
-                },
-            ),
-            Some("posture" | "runtime-posture") => {
-                CommandResult::action(AppAction::OpenSetupWizardAt {
-                    step: SetupStep::TrustSandbox,
-                })
-            }
-            Some("bundled" | "default" | "use-bundled" | "use-default") => {
-                CommandResult::action(AppAction::UseBundledConstitution)
-            }
-            // The exact effective base prompt for the next turn (#3928). Routed
-            // as an action because the assembly needs the session config, so the
-            // preview is built by the same function the dispatch path uses
-            // rather than a lookalike reconstruction.
-            Some("base" | "prompt" | "base-prompt" | "effective") => {
-                CommandResult::action(AppAction::PreviewEffectiveBasePrompt)
-            }
-            Some("suggestions" | "proposed") => {
-                open_suggestions(app);
-                CommandResult::ok()
-            }
-            Some("migrate") => CommandResult::message(migrate_text(app.ui_locale)),
-            Some("rollback" | "undo-migrate") => {
-                CommandResult::message(rollback_text(app.ui_locale))
-            }
-            Some(rest) if rest.starts_with("ratify") => {
-                let ids: Vec<String> = rest
-                    .trim_start_matches("ratify")
-                    .split_whitespace()
-                    .map(str::to_string)
-                    .collect();
-                let (message, ratified) = ratify_text(
-                    app.ui_locale,
-                    app.constitution_reviewed_digest.as_deref(),
-                    &ids,
-                );
-                if ratified.is_some() {
-                    app.constitution_reviewed_digest = ratified;
-                }
-                CommandResult::message(message)
-            }
-            Some("help") => CommandResult::message(help_text(app.ui_locale)),
-            Some(other) => CommandResult::error(format!(
-                "Unknown /constitution target '{other}'. Try `/constitution` for the manager."
-            )),
+    fn open_pager(&mut self, title: &str, body: &str) {
+        open_pager(&mut self.host.app.borrow_mut(), title, body);
+    }
+
+    fn preview_text(&self) -> String {
+        preview_text(self.host.app.borrow().ui_locale)
+    }
+
+    fn repo_constitution_block(&self) -> Option<String> {
+        codewhale_engine::project_context::load_repo_constitution_block(
+            &self.host.app.borrow().workspace,
+        )
+        .0
+    }
+
+    fn show_pending_suggestions(&mut self, title: &str) {
+        let mut app = self.host.app.borrow_mut();
+        let (text, reviewed) = suggestions_text(app.ui_locale);
+        app.constitution_reviewed_digest = reviewed;
+        open_pager(&mut app, title, &text);
+    }
+
+    fn ratify_clauses(&mut self, ids: &[&str]) -> String {
+        let mut app = self.host.app.borrow_mut();
+        let owned_ids: Vec<String> = ids.iter().map(|id| (*id).to_string()).collect();
+        let (message, ratified) = ratify_text(
+            app.ui_locale,
+            app.constitution_reviewed_digest.as_deref(),
+            &owned_ids,
+        );
+        if ratified.is_some() {
+            app.constitution_reviewed_digest = ratified;
         }
+        message
+    }
+
+    fn migrate(&self) -> String {
+        migrate_text(self.host.app.borrow().ui_locale)
+    }
+
+    fn rollback(&self) -> String {
+        rollback_text(self.host.app.borrow().ui_locale)
+    }
+
+    fn repair_text(&self) -> String {
+        repair_text(self.host.app.borrow().ui_locale)
     }
 }
 
@@ -117,48 +104,6 @@ pub(crate) fn open_manager(app: &mut App, review: bool, account: Result<bool, St
         manager_title(locale)
     };
     open_pager(app, title, &text);
-}
-
-fn open_preview(app: &mut App) {
-    let locale = app.ui_locale;
-    let text = format!(
-        "{}\n\n{}",
-        match locale {
-            Locale::ZhHans =>
-                "这是本机宪章预览。已登录账户的宪章（包括默认值）优先；请在账户设置中预览。",
-            _ =>
-                "This previews the local constitution. The signed-in profile constitution, including its defaults, takes precedence; preview it in account settings.",
-        },
-        preview_text(locale)
-    );
-    open_pager(app, rendered_title(locale), &text);
-}
-
-fn open_repo_law(app: &mut App) {
-    let locale = app.ui_locale;
-    let text =
-        match codewhale_engine::project_context::load_repo_constitution_block(&app.workspace).0 {
-            Some(block) => block,
-            None => no_repo_law_text(locale).to_string(),
-        };
-    open_pager(app, repo_title(locale), &text);
-}
-
-fn open_explanation(app: &mut App) {
-    let locale = app.ui_locale;
-    open_pager(app, explanation_title(locale), agents_explanation(locale));
-}
-
-/// Suggestions review surface (#3930).
-///
-/// Suggested clauses are shown here and *only* here — they are absent from
-/// `/constitution preview`, from the rendered block, and from the cache digest,
-/// because unratified model advice is not law.
-fn open_suggestions(app: &mut App) {
-    let locale = app.ui_locale;
-    let (text, reviewed) = suggestions_text(locale);
-    app.constitution_reviewed_digest = reviewed;
-    open_pager(app, suggestions_title(locale), &text);
 }
 
 fn suggestions_text(locale: Locale) -> (String, Option<String>) {
@@ -390,13 +335,6 @@ fn format_preserved(keys: &[String], locale: Locale) -> String {
         }
     } else {
         keys.join(", ")
-    }
-}
-
-fn suggestions_title(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "待批准的建议条款",
-        _ => "Suggested Clauses",
     }
 }
 
@@ -882,46 +820,6 @@ fn ignored_whale_warnings(warnings: &[String]) -> Vec<&str> {
         .collect()
 }
 
-fn help_text(locale: Locale) -> String {
-    match locale {
-        Locale::ZhHans => "\
-用法：/constitution [status|preview|base|suggestions|ratify <id>|migrate|rollback|bundled|edit|review|repair|repo|explain|posture|help]
-
-常用命令：
-- /constitution：打开宪章管理器和当前层级。
-- /constitution preview：显示会注入模型的确切用户全局宪章块；缺失、空、无效或不可读时显示修复说明。
-- /constitution edit：打开 /setup 的引导式宪章步骤；用 1-6 调整，按 G 预览，再按 G 保存。
-- /constitution repair：说明当前文件状态，然后打开同一个引导式修复步骤。
-- /constitution bundled：记录使用内置/默认准则，不创建自定义文件。
-- /constitution repo：查看 .codewhale/constitution.json 仓库本地准则。
-- /constitution explain：解释内置基础准则、用户全局宪章、仓库宪章、AGENTS.md、记忆和交接的区别。
-- /constitution base：显示下一轮实际组装的确切基础提示词，附来源、摘要和字节/词元度量；只读，不发送请求，也不展开工具目录。
-- /constitution suggestions：查看待批准的建议条款；它们不会注入模型，也不影响提示词缓存。
-- /constitution ratify <id>：明确批准某条建议条款；若基线在审阅后发生变化则拒绝批准。
-- /constitution migrate：把宪章文件迁移到当前架构版本并给出回执；被拒绝时文件保持原样。
-- /constitution rollback：恢复迁移前的备份。
-- /constitution posture：打开运行时姿态；宪章只提供模型指导，不会更改批准、沙盒、Shell、网络、信任或 MCP 权限。",
-        _ => "\
-Usage: /constitution [status|preview|base|suggestions|ratify <id>|migrate|rollback|bundled|edit|review|repair|repo|explain|posture|help]
-
-Common commands:
-- /constitution: open the constitution manager and active stack.
-- /constitution preview: show the exact user-global constitution block that would be injected; missing, empty, invalid, or unreadable files show repair guidance instead.
-- /constitution edit: open the guided /setup Constitution step; tune 1-6, press G to preview, then G again to save.
-- /constitution repair: explain the current file state, then open the same guided repair step.
-- /constitution bundled: record bundled/default law without creating a custom file.
-- /constitution repo: inspect repo-local .codewhale/constitution.json law.
-- /constitution explain: compare Constitution, user-global law, repo law, AGENTS.md, memory, and handoff.
-- /constitution base: show the exact effective base prompt assembled for the next turn, with per-block provenance, digests, and byte/token measures. Read-only: no provider request, no tool-catalog expansion.
-- /constitution suggestions: review suggested clauses awaiting ratification; they are not injected and do not move the prompt-cache digest.
-- /constitution ratify <id>: explicitly ratify a suggested clause. Refused if the base changed after you reviewed it.
-- /constitution migrate: migrate the constitution file to the current schema with a receipt; a rejected file is left exactly as it was.
-- /constitution rollback: restore the pre-migration backup.
-- /constitution posture: open runtime posture; constitution text is model guidance only and does not change approvals, sandbox, shell, network, trust, or MCP permissions.",
-    }
-    .to_string()
-}
-
 fn repair_text(locale: Locale) -> String {
     let state = load_setup_state();
     let load = load_user_constitution();
@@ -983,34 +881,6 @@ fn review_title(locale: Locale) -> &'static str {
     match locale {
         Locale::ZhHans => "宪章检查",
         _ => "Constitution Review",
-    }
-}
-
-fn rendered_title(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "渲染后的用户宪章",
-        _ => "Rendered User Constitution",
-    }
-}
-
-fn repo_title(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "仓库本地宪章",
-        _ => "Repo-Local Constitution",
-    }
-}
-
-fn explanation_title(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "AGENTS.md 与宪章",
-        _ => "AGENTS.md vs Constitution",
-    }
-}
-
-fn no_repo_law_text(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "此工作区未找到仓库本地宪章 .codewhale/constitution.json。",
-        _ => "No repo-local constitution found at .codewhale/constitution.json for this workspace.",
     }
 }
 
@@ -1085,43 +955,6 @@ fn path_error_preview_text(locale: Locale, error: &str) -> String {
         Locale::ZhHans => format!("无法为用户全局宪章解析 CODEWHALE_HOME：\n\n{error}"),
         _ => {
             format!("Could not resolve CODEWHALE_HOME for the user-global constitution:\n\n{error}")
-        }
-    }
-}
-
-fn agents_explanation(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => {
-            "\
-AGENTS.md 与宪章
-
-内置基础准则是精简的全局判断约定：身份、事实、验证、克制和优先级顺序。
-
-用户全局宪章是个人长期偏好。它是结构化数据，确定性渲染，并低于当前用户请求和内置基础准则。
-
-.codewhale/constitution.json 是仓库本地宪章。它属于某个工作区，并作为独立的仓库宪章块渲染。
-
-AGENTS.md 和项目说明是项目规则/实现指导。它们可以描述构建命令、仓库规范和本地流程；按优先级顺序，它们低于当前用户请求和内置基础准则，高于用户全局长期偏好、记忆和交接。
-
-WHALE.md 已忽略。将普通项目说明迁移到 AGENTS.md，将 Codewhale 专属权限策略迁移到 .codewhale/constitution.json。
-
-运行时姿态是独立设置。宪章可以建议主动性，但不会改变批准策略、沙盒、Shell、网络、信任、MCP 权限或默认模式。使用 /constitution posture 查看这些控制。"
-        }
-        _ => {
-            "\
-AGENTS.md vs constitution
-
-The bundled Constitution is the compact global judgment contract: identity, ground truth, verification, restraint, and precedence.
-
-The user-global constitution is personal standing preference law. It is structured, rendered deterministically, and subordinate to the current user request and the bundled Constitution.
-
-.codewhale/constitution.json is repo-local law. It belongs to a workspace and is rendered as a separate repo constitution block.
-
-AGENTS.md and project instructions are project law / implementation guidance. They can describe build commands, repository norms, and local workflows. Under “Whose word wins,” they sit below the current user request and bundled Constitution, and above user-global standing preferences, memory, and handoff.
-
-WHALE.md is ignored. Move ordinary project instructions to AGENTS.md and Codewhale-specific authority policy to .codewhale/constitution.json.
-
-Runtime posture is separate. A constitution can recommend autonomy, but it does not change approval policy, sandbox, shell, network, trust, MCP permissions, or default mode. Use /constitution posture to review those controls."
         }
     }
 }
@@ -1286,9 +1119,10 @@ impl ConstitutionManagerCopy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::app::TuiOptions;
+    use crate::tui::app::{App, AppAction, TuiOptions};
     use crate::tui::pager::PagerView;
     use crate::tui::views::ModalKind;
+    use codewhale_config::SetupStep;
     use codewhale_runtime::config::Config;
     use std::path::PathBuf;
     use tempfile::tempdir;
@@ -1318,7 +1152,7 @@ mod tests {
         let mut app = test_app();
         app.ui_locale = Locale::En;
 
-        let result = ConstitutionCmd::execute(&mut app, None);
+        let result = crate::commands::execute("/constitution", &mut app);
         assert_eq!(
             result.action,
             Some(AppAction::OpenConstitutionManager { review: false })
@@ -1347,7 +1181,7 @@ mod tests {
     fn constitution_bundled_emits_action() {
         let mut app = test_app();
 
-        let result = ConstitutionCmd::execute(&mut app, Some("bundled"));
+        let result = crate::commands::execute("/constitution bundled", &mut app);
 
         assert_eq!(result.action, Some(AppAction::UseBundledConstitution));
     }
@@ -1356,7 +1190,7 @@ mod tests {
     fn constitution_edit_opens_setup_at_constitution() {
         let mut app = test_app();
 
-        let result = ConstitutionCmd::execute(&mut app, Some("edit"));
+        let result = crate::commands::execute("/constitution edit", &mut app);
 
         assert_eq!(
             result.action,
@@ -1371,7 +1205,7 @@ mod tests {
         let mut app = test_app();
         app.ui_locale = Locale::En;
 
-        let result = ConstitutionCmd::execute(&mut app, Some("help"));
+        let result = crate::commands::execute("/constitution help", &mut app);
 
         let message = result.message.expect("help message");
         assert!(message.contains("Usage: /constitution"));
@@ -1392,7 +1226,7 @@ mod tests {
         let mut app = test_app();
         app.ui_locale = Locale::En;
 
-        let result = ConstitutionCmd::execute(&mut app, Some("repair"));
+        let result = crate::commands::execute("/constitution repair", &mut app);
 
         assert_eq!(
             result.action,
@@ -1423,7 +1257,7 @@ mod tests {
         constitution.save().expect("save constitution");
         let mut app = test_app();
 
-        let result = ConstitutionCmd::execute(&mut app, Some("preview"));
+        let result = crate::commands::execute("/constitution preview", &mut app);
 
         assert!(result.message.is_none());
         let body = pop_pager_body(&mut app);
@@ -1463,7 +1297,7 @@ mod tests {
     fn constitution_base_previews_the_exact_next_turn_prompt() {
         let mut app = test_app();
 
-        let result = ConstitutionCmd::execute(&mut app, Some("base"));
+        let result = crate::commands::execute("/constitution base", &mut app);
 
         // Routed as an action so the preview is assembled by the same function
         // the dispatch path uses, with the session config in hand.
@@ -1479,14 +1313,14 @@ mod tests {
         let mut app = test_app();
         app.ui_locale = Locale::En;
 
-        ConstitutionCmd::execute(&mut app, Some("suggestions"));
+        crate::commands::execute("/constitution suggestions", &mut app);
         let suggestions = pop_pager_body(&mut app);
         assert!(suggestions.contains("[c1]"));
         assert!(suggestions.contains("focused suite"));
         assert!(suggestions.contains("Ratified clauses in force: 0"));
 
         // The same clause must be absent from the injected preview.
-        ConstitutionCmd::execute(&mut app, Some("preview"));
+        crate::commands::execute("/constitution preview", &mut app);
         let preview = pop_pager_body(&mut app);
         assert!(preview.contains("<codewhale_user_constitution"));
         assert!(
@@ -1503,32 +1337,32 @@ mod tests {
         let mut app = test_app();
         app.ui_locale = Locale::En;
 
-        let bare = ConstitutionCmd::execute(&mut app, Some("ratify"))
+        let bare = crate::commands::execute("/constitution ratify", &mut app)
             .message
             .expect("usage message");
         assert!(bare.contains("Usage: /constitution ratify <id>"));
 
-        let unreviewed = ConstitutionCmd::execute(&mut app, Some("ratify c1"))
+        let unreviewed = crate::commands::execute("/constitution ratify c1", &mut app)
             .message
             .expect("refusal message");
         assert!(unreviewed.contains("Nothing was ratified"), "{unreviewed}");
 
-        ConstitutionCmd::execute(&mut app, Some("suggestions"));
+        crate::commands::execute("/constitution suggestions", &mut app);
         pop_pager_body(&mut app);
 
-        let unknown = ConstitutionCmd::execute(&mut app, Some("ratify nope"))
+        let unknown = crate::commands::execute("/constitution ratify nope", &mut app)
             .message
             .expect("refusal message");
         assert!(unknown.contains("Nothing was ratified"));
 
-        let ok = ConstitutionCmd::execute(&mut app, Some("ratify c1"))
+        let ok = crate::commands::execute("/constitution ratify c1", &mut app)
             .message
             .expect("ratified message");
         assert!(ok.contains("Ratified 1 clause(s): c1"), "{ok}");
         assert!(ok.contains("Digest"), "{ok}");
 
         // Now — and only now — it appears in the injected block.
-        ConstitutionCmd::execute(&mut app, Some("preview"));
+        crate::commands::execute("/constitution preview", &mut app);
         assert!(pop_pager_body(&mut app).contains("focused suite"));
     }
 
@@ -1545,7 +1379,7 @@ mod tests {
         let mut app = test_app();
         app.ui_locale = Locale::En;
 
-        let message = ConstitutionCmd::execute(&mut app, Some("migrate"))
+        let message = crate::commands::execute("/constitution migrate", &mut app)
             .message
             .expect("migrate receipt");
         assert!(message.contains("Migrated schema v1"), "{message}");
@@ -1558,7 +1392,7 @@ mod tests {
             "a v1 file carries no clauses, so no model-facing byte moved: {message}"
         );
 
-        let rolled = ConstitutionCmd::execute(&mut app, Some("rollback"))
+        let rolled = crate::commands::execute("/constitution rollback", &mut app)
             .message
             .expect("rollback receipt");
         assert!(rolled.contains("Restored the pre-migration constitution"));
@@ -1578,7 +1412,7 @@ mod tests {
         let mut app = test_app();
         app.ui_locale = Locale::En;
 
-        let message = ConstitutionCmd::execute(&mut app, Some("migrate"))
+        let message = crate::commands::execute("/constitution migrate", &mut app)
             .message
             .expect("rejection receipt");
         assert!(message.contains("Not migrated"), "{message}");
@@ -1591,7 +1425,7 @@ mod tests {
         let mut app = test_app();
         app.ui_locale = Locale::En;
 
-        let help = ConstitutionCmd::execute(&mut app, Some("help"))
+        let help = crate::commands::execute("/constitution help", &mut app)
             .message
             .expect("help message");
         assert!(help.contains("/constitution base"));
@@ -1636,7 +1470,7 @@ mod tests {
         let mut app = test_app();
         app.ui_locale = codewhale_localization::Locale::ZhHans;
 
-        let result = ConstitutionCmd::execute(&mut app, Some("preview"));
+        let result = crate::commands::execute("/constitution preview", &mut app);
 
         assert!(result.message.is_none());
         let body = pop_pager_body(&mut app);
@@ -1652,7 +1486,7 @@ mod tests {
         let mut app = test_app();
         app.ui_locale = codewhale_localization::Locale::ZhHans;
 
-        let result = ConstitutionCmd::execute(&mut app, Some("explain"));
+        let result = crate::commands::execute("/constitution explain", &mut app);
 
         assert!(result.message.is_none());
         let body = pop_pager_body(&mut app);

@@ -34,9 +34,11 @@ use std::rc::Rc;
 
 mod composer;
 mod config_main;
+pub(crate) mod constitution;
 mod core_navigation;
 mod core_policy;
 mod fleet_lane;
+mod hooks;
 mod model_reference;
 mod model_setup;
 mod workflow;
@@ -5567,6 +5569,8 @@ pub(crate) struct CommandContextBundle<'a> {
     voice_input: VoiceInputAdapter<'a>,
     fleet: FleetAdapter<'a>,
     lane: LaneAdapter<'a>,
+    constitution: constitution::ConstitutionAdapter<'a>,
+    hooks: hooks::HooksAdapter<'a>,
 }
 
 impl<'a> CommandContextBundle<'a> {
@@ -5705,6 +5709,12 @@ impl<'a> CommandContextBundle<'a> {
         if capabilities.contains(CommandCapabilities::LANE) {
             contexts = contexts.with_lane(&mut self.lane);
         }
+        if capabilities.contains(CommandCapabilities::CONSTITUTION) {
+            contexts = contexts.with_constitution(&mut self.constitution);
+        }
+        if capabilities.contains(CommandCapabilities::HOOKS) {
+            contexts = contexts.with_hooks(&mut self.hooks);
+        }
         contexts
     }
 
@@ -5807,7 +5817,9 @@ impl App {
             navigation: NavigationAdapter { host: host.clone() },
             voice_input: VoiceInputAdapter { host: host.clone() },
             fleet: FleetAdapter { host: host.clone() },
-            lane: LaneAdapter { host },
+            lane: LaneAdapter { host:host.clone() },
+            constitution: constitution::ConstitutionAdapter { host: host.clone() },
+            hooks: hooks::HooksAdapter { host },
         }
     }
 }

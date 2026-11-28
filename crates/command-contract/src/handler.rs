@@ -117,6 +117,8 @@ impl CommandCapabilities {
     pub const MODEL_SELECTION: Self = Self(1 << 36);
     pub const FLEET: Self = Self(1 << 38);
     pub const LANE: Self = Self(1 << 39);
+    pub const CONSTITUTION: Self = Self(1 << 40);
+    pub const HOOKS: Self = Self(1 << 41);
 
     /// Raw bit pattern, for tests that pin the capability-space capacity.
     ///
@@ -205,6 +207,8 @@ pub struct CommandContexts<'a> {
     background: Option<&'a mut dyn CommandBackgroundContext>,
     fleet: Option<&'a mut dyn crate::fleet_lane::CommandFleetContext>,
     lane: Option<&'a mut dyn crate::fleet_lane::CommandLaneContext>,
+    constitution: Option<&'a mut dyn crate::constitution::CommandConstitutionContext>,
+    hooks: Option<&'a mut dyn crate::hooks::CommandHooksContext>,
 }
 
 /// Consumed envelope used when one handler needs several independent facets.
@@ -291,6 +295,8 @@ impl<'a> CommandContexts<'a> {
             composer: None,
             fleet: None,
             lane: None,
+            constitution: None,
+            hooks: None,
         }
     }
 
@@ -507,6 +513,35 @@ impl<'a> CommandContexts<'a> {
         &mut self,
     ) -> Option<&'a mut dyn crate::model_setup::CommandModelSelectionContext> {
         self.model_selection.take()
+    }
+
+    pub fn with_constitution(
+        mut self,
+        value: &'a mut dyn crate::constitution::CommandConstitutionContext,
+    ) -> Self {
+        assert!(
+            self.constitution.replace(value).is_none(),
+            "constitution facet already set"
+        );
+        self
+    }
+
+    pub fn take_constitution(
+        &mut self,
+    ) -> Option<&'a mut dyn crate::constitution::CommandConstitutionContext> {
+        self.constitution.take()
+    }
+
+    pub fn with_hooks(mut self, value: &'a mut dyn crate::hooks::CommandHooksContext) -> Self {
+        assert!(
+            self.hooks.replace(value).is_none(),
+            "hooks facet already set"
+        );
+        self
+    }
+
+    pub fn take_hooks(&mut self) -> Option<&'a mut dyn crate::hooks::CommandHooksContext> {
+        self.hooks.take()
     }
 
     pub fn with_fleet(mut self, value: &'a mut dyn crate::fleet_lane::CommandFleetContext) -> Self {
