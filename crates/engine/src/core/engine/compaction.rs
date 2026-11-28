@@ -253,7 +253,7 @@ impl Engine {
                 .saturating_add(if current_text.trim().is_empty() {
                     0
                 } else {
-                    current_text.len() / 4 + 12
+                    crate::compaction::estimate_message_text_tokens(current_text) + 12
                 });
         let budget = crate::route_budget::route_context_budget_with_window(
             prompt_context.provider,
@@ -283,8 +283,11 @@ impl Engine {
             }
             return Some(format!("{estimate} Automatic compaction is enabled."));
         }
-        let conservative =
-            self.active_input_tokens_with_current_text(current_text, system_prompt, messages);
+        let conservative = crate::compaction::estimate_input_tokens_conservative_with_text(
+            messages,
+            system_prompt,
+            current_text,
+        );
         let pressure = codewhale_runtime::context_budget::usage_percent(
             budget.window_tokens,
             conservative as u64,

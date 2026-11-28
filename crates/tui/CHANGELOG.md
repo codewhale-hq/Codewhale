@@ -41,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Context estimates count Chinese, Japanese and Korean text by character, including in mixed-language prompts and tool output. Compaction uses the same estimate when fitting older user messages within the retention budget. (Refs #6561)
+
 - The terminal saved-team picker now shows its selection, team scopes, migration prompt, delete confirmation and keyboard hints in the chosen UI language. (#7469)
 
 - Reopening an older session preserves user messages that begin with a summary heading, including a paste identical to its saved summary. (#6557, #7562)

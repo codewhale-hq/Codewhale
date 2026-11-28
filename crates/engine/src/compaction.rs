@@ -561,29 +561,19 @@ pub fn estimate_tokens_for_message(message: &Message, include_thinking: bool) ->
         .content
         .iter()
         .map(|c| match c {
-            ContentBlock::Text { text, .. } => text.len() / 4,
+            ContentBlock::Text { text, .. } => estimate_message_text_tokens(text),
             // Replay-capable routes retain reasoning even on text-only
             // assistant messages and across later user turns.
-            ContentBlock::Thinking { thinking, .. } if include_thinking => thinking.len() / 4,
-            ContentBlock::Thinking { .. } => 0,
-            ContentBlock::ToolUse { input, .. } => {
-                compact_json_len(input).map_or(100, |len| len / 4)
+            ContentBlock::Thinking { thinking, .. } if include_thinking => {
+                estimate_message_text_tokens(thinking)
             }
+            ContentBlock::Thinking { .. } => 0,
+            ContentBlock::ToolUse { input, .. } => estimate_json_tokens(input).unwrap_or(100),
             ContentBlock::ToolResult {
                 content,
                 content_blocks,
                 ..
-            } => {
-                let images = content_blocks.as_ref().map_or(0, |blocks| {
-                    blocks
-                        .iter()
-                        .filter(|block| {
-                            block.get("type").and_then(serde_json::Value::as_str) == Some("image")
-                        })
-                        .count()
-                });
-                content.len() / 4 + images * IMAGE_TOKEN_ESTIMATE
-            }
+            } => estimate_tool_result_tokens(content, content_blocks.as_deref()),
             // An inline image is real input the model pays for; estimating it
             // at 0 undercounts the budget and risks overflow in image-heavy
             // sessions. Use a conservative flat per-image estimate (vision
@@ -591,13 +581,13 @@ pub fn estimate_tokens_for_message(message: &Message, include_thinking: bool) ->
             // early rather than overflowing.
             ContentBlock::ImageUrl { .. } => IMAGE_TOKEN_ESTIMATE,
             ContentBlock::ServerToolUse { input, .. } => {
-                compact_json_len(input).unwrap_or_default() / 4
+                estimate_json_tokens(input).unwrap_or_default()
             }
             ContentBlock::ToolSearchToolResult { content, .. }
             | ContentBlock::CodeExecutionToolResult { content, .. }
             | ContentBlock::WebSearchToolResult { content, .. }
             | ContentBlock::WebFetchToolResult { content, .. } => {
-                compact_json_len(content).unwrap_or_default() / 4
+                estimate_json_tokens(content).unwrap_or_default()
             }
             ContentBlock::WebSearchCall {
                 sources,
@@ -605,27 +595,63 @@ pub fn estimate_tokens_for_message(message: &Message, include_thinking: bool) ->
                 action,
                 ..
             } => {
-                (sources.as_ref().and_then(compact_json_len).unwrap_or(0)
-                    + page.as_ref().and_then(compact_json_len).unwrap_or(0)
-                    + action.as_ref().and_then(compact_json_len).unwrap_or(0))
-                    / 4
+                sources.as_ref().and_then(estimate_json_tokens).unwrap_or(0)
+                    + page.as_ref().and_then(estimate_json_tokens).unwrap_or(0)
+                    + action.as_ref().and_then(estimate_json_tokens).unwrap_or(0)
             }
             ContentBlock::ServerToolCalls { steps } => {
-                steps
-                    .iter()
-                    .map(|step| compact_json_len(step).unwrap_or_default())
-                    .sum::<usize>()
-                    / 4
+                steps.iter().filter_map(estimate_json_tokens).sum()
             }
-            ContentBlock::File { file_id } => file_id.len() / 4,
+            ContentBlock::File { file_id } => estimate_message_text_tokens(file_id),
         })
         .sum::<usize>()
 }
 
-fn compact_json_len(value: &serde_json::Value) -> Option<usize> {
-    let mut counter = codewhale_util::utils::CountingWriter::new();
+fn estimate_tool_result_tokens(content: &str, blocks: Option<&[serde_json::Value]>) -> usize {
+    let images = blocks
+        .unwrap_or_default()
+        .iter()
+        .filter(|block| block.get("type").and_then(serde_json::Value::as_str) == Some("image"))
+        .count();
+    estimate_message_text_tokens(content) + images * IMAGE_TOKEN_ESTIMATE
+}
+
+fn token_units(bytes: &[u8], ascii_per_token: usize) -> usize {
+    if bytes.is_ascii() {
+        return bytes.len();
+    }
+    bytes
+        .iter()
+        .map(|&byte| match byte {
+            0x00..=0x7f => 1,
+            0x80..=0xbf => 0,
+            _ => ascii_per_token,
+        })
+        .sum()
+}
+
+pub(crate) fn estimate_message_text_tokens(text: &str) -> usize {
+    token_units(text.as_bytes(), 4).div_ceil(4)
+}
+
+#[derive(Default)]
+struct JsonTokenCounter(usize);
+
+impl std::io::Write for JsonTokenCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 += token_units(bytes, 4);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn estimate_json_tokens<T: serde::Serialize + ?Sized>(value: &T) -> Option<usize> {
+    let mut counter = JsonTokenCounter::default();
     serde_json::to_writer(&mut counter, value).ok()?;
-    Some(counter.count())
+    Some(counter.0.div_ceil(4))
 }
 
 /// Conservative flat token estimate for an inline image (`ContentBlock::ImageUrl`).
@@ -635,7 +661,7 @@ fn compact_json_len(value: &serde_json::Value) -> Option<usize> {
 const IMAGE_TOKEN_ESTIMATE: usize = 1000;
 
 pub fn estimate_tokens(messages: &[Message]) -> usize {
-    // Rough estimate: ~4 bytes per token. Count every retained reasoning
+    // Count every retained reasoning
     // block: DeepSeek/Kimi replay text-only assistant reasoning too. This
     // route-neutral estimate cannot assume a transport will omit it.
     messages
@@ -651,19 +677,11 @@ pub fn message_has_tool_use(message: &Message) -> bool {
         .any(|block| matches!(block, ContentBlock::ToolUse { .. }))
 }
 
-/// Conservative text estimate: three characters per token, but never below
-/// the bytes/4 estimate the message path uses. Characters alone read
-/// multibyte (CJK) text at ~0.33 tokens each, *under* the byte estimate's
-/// ~0.75, which made the "conservative" figure the smaller one exactly where
-/// it matters.
-///
-/// Known limitation: both are heuristics, not a tokenizer. CJK costs roughly
-/// 0.6-1.5 tokens per character depending on the provider's tokenizer, so a
-/// CJK-heavy prompt can still be underestimated; the compaction trigger
-/// bounds that by taking the larger of this estimate and the provider-billed
-/// prompt size.
+/// Conservative text estimate using three ASCII characters per token and one
+/// token per non-ASCII scalar. Provider-billed prompt size still informs the
+/// compaction trigger when the provider's tokenizer differs.
 pub fn estimate_text_tokens_conservative(text: &str) -> usize {
-    text.chars().count().div_ceil(3).max(text.len().div_ceil(4))
+    token_units(text.as_bytes(), 3).div_ceil(3)
 }
 
 fn estimate_system_tokens_conservative(system: Option<&SystemPrompt>) -> usize {
@@ -683,9 +701,30 @@ pub fn estimate_input_tokens_conservative(
     messages: &[Message],
     system: Option<&SystemPrompt>,
 ) -> usize {
-    let message_tokens = estimate_tokens(messages).saturating_mul(3).div_ceil(2);
+    estimate_input_tokens_conservative_with_text(messages, system, "")
+}
+
+pub(crate) fn estimate_input_tokens_conservative_with_text(
+    messages: &[Message],
+    system: Option<&SystemPrompt>,
+    current_text: &str,
+) -> usize {
+    let has_draft = !current_text.trim().is_empty();
+    let draft_tokens = if has_draft {
+        estimate_message_text_tokens(current_text)
+    } else {
+        0
+    };
+    let message_tokens = estimate_tokens(messages)
+        .saturating_add(draft_tokens)
+        .saturating_mul(3)
+        .div_ceil(2);
     let system_tokens = estimate_system_tokens_conservative(system);
-    let framing_overhead = messages.len().saturating_mul(12).saturating_add(48);
+    let framing_overhead = messages
+        .len()
+        .saturating_add(usize::from(has_draft))
+        .saturating_mul(12)
+        .saturating_add(48);
     message_tokens
         .saturating_add(system_tokens)
         .saturating_add(framing_overhead)
@@ -719,9 +758,8 @@ pub fn estimate_request_input_tokens(
     system: Option<&SystemPrompt>,
     tools: Option<&[Tool]>,
 ) -> usize {
-    estimate_input_tokens_for_pressure(messages, system).saturating_add(tools.map_or(0, |tools| {
-        serde_json::to_string(tools).map_or(0, |schema| schema.len().div_ceil(4))
-    }))
+    estimate_input_tokens_for_pressure(messages, system)
+        .saturating_add(tools.and_then(estimate_json_tokens).unwrap_or(0))
 }
 
 pub fn calibrate_token_estimate(estimate: usize, ratio: (usize, usize)) -> usize {
@@ -807,7 +845,7 @@ pub fn compaction_pressure_reached(
 /// Pressure check that additionally honors provider-billed prompt tokens.
 ///
 /// Billed usage is the ground truth for how large the context actually is;
-/// the estimator undercounts non-ASCII text and cannot see server-side
+/// the estimator can undercount tokens and cannot see server-side
 /// framing. Whichever signal is higher decides, so an undercounting estimate
 /// cannot hide pressure the provider already billed for. Callers must only
 /// pass a billed count that describes the message list being checked —
@@ -1128,7 +1166,7 @@ struct PlannedPrune {
     summary: String,
     content_len: usize,
     blocks_len: usize,
-    image_count: usize,
+    original_tokens: usize,
 }
 
 impl PlannedPrune {
@@ -1144,9 +1182,8 @@ impl PlannedPrune {
     /// [`estimate_tokens_for_message`] so a projection built from these
     /// deltas equals re-estimating the pruned transcript.
     fn tokens_reclaimed(&self) -> usize {
-        let before = self.content_len / 4 + self.image_count * IMAGE_TOKEN_ESTIMATE;
-        let after = self.summary.len() / 4;
-        before.saturating_sub(after)
+        self.original_tokens
+            .saturating_sub(estimate_message_text_tokens(&self.summary))
     }
 }
 
@@ -1241,14 +1278,7 @@ fn plan_tool_result_prunes(messages: &[Message], protected_window: usize) -> Vec
             summary,
             content_len: content.len(),
             blocks_len: tool_result_content_blocks_len(content_blocks.as_deref()),
-            image_count: content_blocks.as_ref().map_or(0, |blocks| {
-                blocks
-                    .iter()
-                    .filter(|block| {
-                        block.get("type").and_then(serde_json::Value::as_str) == Some("image")
-                    })
-                    .count()
-            }),
+            original_tokens: estimate_tool_result_tokens(content, content_blocks.as_deref()),
         });
     }
     plan
@@ -1640,7 +1670,14 @@ fn retain_user_messages(
                 // that would turn runtime-owned traffic into a user prompt.
                 break;
             };
-            *text = truncate_chars(text, remaining.saturating_mul(3)).to_string();
+            let limit = remaining.saturating_mul(3);
+            let mut units = 0;
+            if let Some((end, _)) = text.char_indices().find(|(_, ch)| {
+                units += if ch.is_ascii() { 1 } else { 3 };
+                units > limit
+            }) {
+                text.truncate(end);
+            }
             remaining = 0;
         }
         selected.push(retained);
@@ -4443,12 +4480,12 @@ mod tests {
     fn retained_budget_never_partially_promotes_structural_metadata() {
         let runtime = crate::runtime_handoff::operate_contract_runtime_message();
         let text = msg("user", "αβγδεζηθικ");
-        let retained = retained_user_messages(&[runtime.clone(), text.clone()], 5);
+        let retained = retained_user_messages(&[runtime.clone(), text.clone()], 10);
         assert_eq!(retained, vec![text]);
         assert!(retained_user_messages(&[runtime], 1).is_empty());
         assert_eq!(
             user_text_of(&retained_user_messages(&[msg("user", "αβγδεζηθικ")], 2)[0]).as_deref(),
-            Some("αβγδεζ"),
+            Some("αβ"),
         );
     }
 
@@ -4929,11 +4966,40 @@ mod tests {
     }
 
     #[test]
-    fn conservative_estimate_never_reads_cjk_below_the_byte_estimate() {
-        let cjk = "中".repeat(1200); // 3,600 UTF-8 bytes
-        assert!(estimate_text_tokens_conservative(&cjk) >= cjk.len() / 4);
-        // ASCII keeps its three-characters-per-token reading.
+    fn mixed_script_input_counts_toward_compaction_and_retention_budgets() {
+        let text = "code中文かな한글".repeat(200);
+        let messages = [msg("user", &text)];
+        assert_eq!(estimate_tokens(&messages), 1_400);
+        assert_eq!(estimate_text_tokens_conservative(&text), 1_467);
         assert_eq!(estimate_text_tokens_conservative(&"a".repeat(300)), 100);
+        assert_eq!(estimate_tokens(&[msg("user", &"a".repeat(300))]), 75);
+        let config = CompactionConfig {
+            token_threshold: 1_400,
+            ..CompactionConfig::default()
+        };
+        assert!(compaction_pressure_reached(&messages, None, &config));
+        let system = SystemPrompt::Text(text.clone());
+        assert!(compaction_pressure_reached(&[], Some(&system), &config));
+
+        let json = json!({"input": text});
+        let call = tool_use("read", "File", json.clone());
+        assert_eq!(
+            estimate_tokens_for_message(&call, true),
+            estimate_message_text_tokens(&json.to_string())
+        );
+        let result = tool_result("read", &text);
+        let mut history = vec![call, result];
+        let plan = plan_tool_result_prunes(&history, 0);
+        assert_eq!(plan.len(), 1);
+        let before = estimate_tokens(&history);
+        let reclaimed = plan[0].tokens_reclaimed();
+        assert!(prune_tool_results(&mut history, 0) > 0);
+        assert_eq!(before - estimate_tokens(&history), reclaimed);
+
+        assert_eq!(
+            retained_user_messages(&messages, 4),
+            [msg("user", "code中文")]
+        );
     }
 
     #[test]

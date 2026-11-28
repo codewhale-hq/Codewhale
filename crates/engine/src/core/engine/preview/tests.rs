@@ -463,9 +463,14 @@ fn context_pressure_delta_matches_clone_and_push_reference() {
         "   ",
         "short",
         "a much longer composer draft with punctuation…",
+        "中文のかな한글",
     ] {
         let via_pressure_line_input =
-            engine.active_input_tokens_with_current_text(text, None, &engine.session.messages);
+            crate::compaction::estimate_input_tokens_conservative_with_text(
+                &engine.session.messages,
+                None,
+                text,
+            );
         assert_eq!(
             via_pressure_line_input,
             reference(&engine, text),

@@ -5428,43 +5428,6 @@ impl Engine {
         }
     }
 
-    fn active_input_tokens_with_current_text(
-        &self,
-        current_text: &str,
-        system_prompt: Option<&SystemPrompt>,
-        messages: &[Message],
-    ) -> usize {
-        // Estimate the supplied history IN PLACE — no full-transcript clone
-        // per `<turn_meta>` build (#perf-r5). `&AppendLog` deref-coerces to
-        // `&[Message]` exactly like the cache call site.
-        let base = estimate_input_tokens_conservative(messages, system_prompt);
-        if current_text.trim().is_empty() {
-            return base;
-        }
-        // Arithmetic equivalent of pushing one more user message: `own`
-        // un-inflated tokens (Text block rule, `len()/4` — same as the
-        // estimator's per-message byte sum S) plus one framing increment.
-        // The estimator inflates S by ceil(3/2) as a WHOLE, so
-        // ceil((S+own)*3/2) − ceil(S*3/2) = floor(own*3/2) + 1 exactly when
-        // S is even and own is odd; pinned exhaustively (80k pairs) and per
-        // case by `context_pressure_delta_matches_clone_and_push_reference`.
-        let sum: usize = messages
-            .iter()
-            .map(|m| {
-                crate::compaction::estimate_tokens_for_message(
-                    m,
-                    crate::compaction::message_has_tool_use(m),
-                )
-            })
-            .sum();
-        let own = current_text.len() / 4;
-        let mut inflated_delta = own * 3 / 2;
-        if sum.is_multiple_of(2) && own % 2 == 1 {
-            inflated_delta += 1;
-        }
-        base.saturating_add(inflated_delta).saturating_add(12)
-    }
-
     /// Goal pacing for the model: the budget figure only, and only while a
     /// goal is actually active. Usage/time deltas, rates, and continuation
     /// counts are UI telemetry — they changed every turn and invalidated the
@@ -12583,7 +12546,6 @@ pub use handle::AutoReviewRetryApprovalError;
 mod run_completion;
 pub use run_completion::EngineRunCompletion;
 pub mod preview;
-use crate::compaction::estimate_input_tokens_conservative;
 #[cfg(test)]
 pub use context::compact_tool_result_for_context;
 #[cfg(any(test, feature = "test-support"))]
