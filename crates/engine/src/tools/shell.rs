@@ -3026,10 +3026,6 @@ impl ShellManager {
         cmd.current_dir(working_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        #[cfg(unix)]
-        {
-            cmd.process_group(0);
-        }
         install_parent_death_signal(&mut cmd);
 
         // Without input, stdin is closed rather than inherited: an unexpected
@@ -3048,116 +3044,78 @@ impl ShellManager {
         // was active on entry (issue #1690).
         let _raw_mode = codewhale_runtime::host_terminal::suspend_raw_mode();
 
-        let mut child = cmd
-            .spawn()
+        let (mut child, tree) = codewhale_runtime::process_tree::spawn_contained_std(&mut cmd)
             .with_context(|| format!("Failed to execute: {original_command}"))?;
-        #[cfg(windows)]
-        let windows_job = attach_windows_job(&child, original_command);
 
-        if let Some(input) = stdin_data
-            && let Some(mut stdin) = child.stdin.take()
-        {
-            stdin
-                .write_all(input.as_bytes())
-                .context("Failed to write to stdin")?;
-            stdin.flush().ok();
-        }
+        let run = (|| -> Result<_> {
+            let stdout = child.stdout.take().context("Failed to capture stdout")?;
+            let stderr = child.stderr.take().context("Failed to capture stderr")?;
+            let stdout_rx = spawn_sync_reader_thread(stdout);
+            let stderr_rx = spawn_sync_reader_thread(stderr);
+            if let Some(input) = stdin_data
+                && let Some(mut stdin) = child.stdin.take()
+            {
+                stdin
+                    .write_all(input.as_bytes())
+                    .context("Failed to write to stdin")?;
+            }
 
-        let stdout_handle = child.stdout.take().context("Failed to capture stdout")?;
-        let stderr_handle = child.stderr.take().context("Failed to capture stderr")?;
-
-        // Spawn threads to read output. Use bounded receives below so a killed
-        // or detached descendant that keeps pipe handles open cannot wedge the
-        // foreground shell path while the global tool lock is held (#2571).
-        let stdout_rx = spawn_sync_reader_thread(stdout_handle);
-        let stderr_rx = spawn_sync_reader_thread(stderr_handle);
-
-        // Wait with timeout
-        if let Some(status) = child.wait_timeout(timeout)? {
-            let status = ShellExitStatus::from_std(status);
             #[cfg(unix)]
-            let _ = kill_child_process_group(&mut child);
-            #[cfg(windows)]
-            terminate_and_close_windows_job(windows_job);
-            let stdout = recv_sync_reader_output(&stdout_rx);
-            let stderr = recv_sync_reader_output(&stderr_rx);
-            let stdout_str = String::from_utf8_lossy(&stdout).to_string();
-            let stderr_str = String::from_utf8_lossy(&stderr).to_string();
-            let exit_code = status
-                .code
-                .and_then(|code| i32::try_from(code).ok())
-                .unwrap_or(-1);
+            let completed =
+                wait_leader_exit_bounded(&child, timeout) && tree.kill_if_leader_exited();
+            #[cfg(not(unix))]
+            let completed = child.wait_timeout(timeout)?.is_some();
+            Ok((stdout_rx, stderr_rx, completed))
+        })();
 
-            // Check if sandbox denied the operation
-            let sandbox_denied = SandboxManager::was_denied(sandbox_type, exit_code, &stderr_str);
-            let (stdout, stdout_meta) = truncate_with_meta(&stdout_str);
-            let (stderr, stderr_meta) = truncate_with_meta(&stderr_str);
-
-            Ok(ShellResult {
-                task_id: None,
-                status: if status.success {
-                    ShellStatus::Completed
-                } else {
-                    ShellStatus::Failed
-                },
-                exit_code: status.code,
-                stdout,
-                stderr,
-                duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                stdout_len: stdout_meta.original_len,
-                stderr_len: stderr_meta.original_len,
-                stdout_omitted: stdout_meta.omitted,
-                stderr_omitted: stderr_meta.omitted,
-                stdout_truncated: stdout_meta.truncated,
-                stderr_truncated: stderr_meta.truncated,
-                sandboxed,
-                sandbox_type: if sandboxed {
-                    Some(sandbox_type.to_string())
-                } else {
-                    None
-                },
-                sandbox_denied,
-            })
+        let _ = tree.kill().or_else(|_| child.kill());
+        tree.disarm();
+        drop(tree);
+        let status = child.wait();
+        let (stdout_rx, stderr_rx, completed) = run?;
+        let status = if completed {
+            Some(ShellExitStatus::from_std(status?))
         } else {
-            // Timeout - kill the process
-            #[cfg(unix)]
-            let _ = kill_child_process_group(&mut child);
-            #[cfg(windows)]
-            let _ = terminate_child_and_close_windows_job(windows_job, &mut child);
-            #[cfg(all(not(unix), not(windows)))]
-            let _ = child.kill();
-            let status = child.wait().ok();
-            let stdout = recv_sync_reader_output(&stdout_rx);
-            let stderr = recv_sync_reader_output(&stderr_rx);
-            let stdout_str = String::from_utf8_lossy(&stdout).to_string();
-            let stderr_str = String::from_utf8_lossy(&stderr).to_string();
-            let (stdout, stdout_meta) = truncate_with_meta(&stdout_str);
-            let (stderr, stderr_meta) = truncate_with_meta(&stderr_str);
+            status.ok().map(ShellExitStatus::from_std)
+        };
+        let exit_code = status.and_then(|status| status.code);
+        let stdout = recv_sync_reader_output(&stdout_rx);
+        let stderr = recv_sync_reader_output(&stderr_rx);
+        let (stdout, stdout_meta) = truncate_with_meta(&String::from_utf8_lossy(&stdout));
+        let stderr = String::from_utf8_lossy(&stderr);
+        let sandbox_denied = completed
+            && SandboxManager::was_denied(
+                sandbox_type,
+                exit_code
+                    .and_then(|code| i32::try_from(code).ok())
+                    .unwrap_or(-1),
+                &stderr,
+            );
+        let (stderr, stderr_meta) = truncate_with_meta(&stderr);
 
-            Ok(ShellResult {
-                task_id: None,
-                status: ShellStatus::TimedOut,
-                exit_code: status
-                    .map(ShellExitStatus::from_std)
-                    .and_then(|status| status.code),
-                stdout,
-                stderr,
-                duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                stdout_len: stdout_meta.original_len,
-                stderr_len: stderr_meta.original_len,
-                stdout_omitted: stdout_meta.omitted,
-                stderr_omitted: stderr_meta.omitted,
-                stdout_truncated: stdout_meta.truncated,
-                stderr_truncated: stderr_meta.truncated,
-                sandboxed,
-                sandbox_type: if sandboxed {
-                    Some(sandbox_type.to_string())
-                } else {
-                    None
-                },
-                sandbox_denied: false,
-            })
-        }
+        Ok(ShellResult {
+            task_id: None,
+            status: if !completed {
+                ShellStatus::TimedOut
+            } else if status.is_some_and(|status| status.success) {
+                ShellStatus::Completed
+            } else {
+                ShellStatus::Failed
+            },
+            exit_code,
+            stdout,
+            stderr,
+            duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            stdout_len: stdout_meta.original_len,
+            stderr_len: stderr_meta.original_len,
+            stdout_omitted: stdout_meta.omitted,
+            stderr_omitted: stderr_meta.omitted,
+            stdout_truncated: stdout_meta.truncated,
+            stderr_truncated: stderr_meta.truncated,
+            sandboxed,
+            sandbox_type: sandboxed.then(|| sandbox_type.to_string()),
+            sandbox_denied,
+        })
     }
 
     /// Execute command interactively with timeout (sandboxed).

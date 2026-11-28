@@ -4686,6 +4686,35 @@ fn finished_job_bounds_evict_by_finish_time() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn foreground_shell_reaps_child_on_stdin_failure() {
+    let workspace = tempdir().expect("tempdir");
+    let mut manager = ShellManager::new(workspace.path().to_path_buf());
+    let input = "x".repeat(2 * 1024 * 1024);
+    let err = manager
+        .execute_with_options_env(
+            "echo $$ > helper.pid; exec 0<&-; exec sleep 9",
+            None,
+            15_000,
+            false,
+            Some(&input),
+            false,
+            None,
+            HashMap::new(),
+        )
+        .expect_err("closed stdin");
+    assert!(
+        err.to_string().contains("Failed to write to stdin"),
+        "{err}"
+    );
+    let pid = wait_for_shell_pid_file(&workspace.path().join("helper.pid"));
+    assert!(
+        wait_for_shell_pid_exit(pid),
+        "foreground child is still present"
+    );
+}
+
 /// The synchronous path closes stdin when there is no input: `cat` gets EOF
 /// instead of reading, or blocking on, Codewhale's own stdin.
 #[cfg(unix)]
