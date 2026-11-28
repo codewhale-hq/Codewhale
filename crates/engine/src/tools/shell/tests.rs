@@ -4447,8 +4447,7 @@ fn test_macos_provenance_not_triggered_on_unrelated_eperm() {
 
 // Regression test for #828: shell spawns an orphaned background subprocess
 // (simulating `nohup curl`) that keeps the pipe write-end open after the shell
-// exits. collect_output() must not block indefinitely — it kills the whole
-// process group first, allowing reader threads to get EOF and exit.
+// exits. The readers must see EOF when the manager finishes the process group.
 #[cfg(unix)]
 #[test]
 fn test_orphaned_subprocess_does_not_block_collect_output() {
@@ -4693,7 +4692,7 @@ fn killed_shell_does_not_wait_for_blocked_reader_threads() {
     };
 
     let started = std::time::Instant::now();
-    shell.collect_output();
+    shell.finish_child();
 
     assert!(
         started.elapsed() < std::time::Duration::from_secs(1),
@@ -5562,7 +5561,7 @@ fn failed_wait_retains_the_child_until_exit_is_observed() {
     shell.child = Some(ShellChild::Pty(Box::new(child)));
     shell.status = ShellStatus::Failed;
     shell.wait_failed = true;
-    shell.collect_output();
+    shell.finish_child();
     manager.pin_job_receipt("pending-exit").unwrap();
     manager.cleanup(Duration::ZERO);
     assert_eq!(manager.unsettled_owned_job_count(), 1);
