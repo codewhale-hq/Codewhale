@@ -139,6 +139,7 @@ Codewhale v0.10.5 simplifies the terminal and runtime, expands DeepSeek Harness 
 
 - Composer, file-mention and context-menu hints keep their normal priority even when a filename contains words like “error” or “failed”. Copying a transcript cell shows the clipboard receipt after a turn finishes.
 
+- `/clear` keeps the current conversation and queued input if it cannot prepare the new session for saving.
 - Saved-team deletion receipts, legacy file details and migration results use the selected terminal language. (#7469)
 - The terminal stays responsive while steering a running turn or previewing a request that includes file and Git mentions. Queued steers are prepared in order.
 

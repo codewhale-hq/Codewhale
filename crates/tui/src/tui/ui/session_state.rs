@@ -181,13 +181,16 @@ pub(crate) fn try_persist_session(app: &mut App, mut request: PersistRequest) ->
     persistence_actor::try_persist(request)
 }
 
+pub(crate) fn prepare_fresh_session_write(
+    id: &str,
+) -> Result<codewhale_engine::session_manager::SessionWriteReceipt, String> {
+    SessionManager::default_location()
+        .and_then(|manager| manager.expect_absent_session(id))
+        .map_err(|error| error.to_string())
+}
+
 pub(crate) fn expect_fresh_session(app: &mut App, id: &str) -> Result<(), String> {
-    let manager = SessionManager::default_location().map_err(|error| error.to_string())?;
-    app.session_write_receipt = Some(
-        manager
-            .expect_absent_session(id)
-            .map_err(|error| error.to_string())?,
-    );
+    app.session_write_receipt = Some(prepare_fresh_session_write(id)?);
     app.session_write_owner = Some(codewhale_engine::session_manager::SessionWriteOwner::control());
     Ok(())
 }
@@ -1956,9 +1959,7 @@ pub(crate) fn begin_fresh_session(
     }
     let provider_identity = app.admitted_provider_identity()?.clone();
     let queue_transition = prepare_offline_queue_transition(app, &id)?;
-    let write_receipt = SessionManager::default_location()
-        .and_then(|manager| manager.expect_absent_session(&id))
-        .map_err(|error| error.to_string())?;
+    let write_receipt = prepare_fresh_session_write(&id)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     engine
         .try_send(Op::GetSessionSnapshot {

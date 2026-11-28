@@ -178,6 +178,12 @@ mod tests {
             .clone()
             .expect("/clear claims the next session id");
         assert_ne!(next_id, "existing-session");
+        assert!(app.session_write_receipt.is_some());
+        assert!(app.session_write_owner.is_some());
+        assert_eq!(
+            app.offline_queue_lease.as_ref().unwrap().session_id(),
+            next_id
+        );
         assert!(uuid::Uuid::parse_str(&next_id).is_ok(), "{next_id}");
         match result.action {
             Some(AppAction::SyncSession {

@@ -4,6 +4,7 @@ pub(super) struct PolicyAdapter<'a> {
 use crate::tui::app::AppAction;
 use codewhale_command_contract::core_policy::*;
 use codewhale_engine::reasoning_preference::ReasoningEffort;
+use codewhale_engine::session_manager::{SessionWriteOwner, SessionWriteReceipt};
 use codewhale_engine::tools::github::report;
 use codewhale_localization::MessageId;
 
@@ -21,33 +22,43 @@ pub(super) fn resolve_message(key: &str) -> Option<MessageId> {
 
 impl ClearContext for PolicyAdapter<'_> {
     fn start_empty_conversation(&mut self) -> Result<ClearedConversation, ClearFailure> {
-        let mut app = self.host.app.borrow_mut();
-        let blockers = app.session_transition_blockers();
-        if !blockers.is_empty() {
-            return Err(ClearFailure::Busy(blockers));
-        }
-        let new_id = uuid::Uuid::new_v4().to_string();
-        let queue = crate::tui::ui::prepare_offline_queue_transition(&app, &new_id)
-            .map_err(ClearFailure::Transition)?;
-        if !crate::commands::groups::core::reset_conversation_state(&mut app) {
-            return Err(ClearFailure::Busy(Vec::new()));
-        }
-        crate::tui::ui::install_offline_queue_transition(&mut app, queue);
-        app.set_current_session_id(Some(new_id.clone()));
-        crate::tui::ui::expect_fresh_session(&mut app, &new_id)
-            .map_err(ClearFailure::Transition)?;
-        app.current_session_metadata = None;
-        app.session_title = None;
-        app.window_title = None;
-        app.composer_color = None;
-        Ok(ClearedConversation {
-            session_id: new_id,
-            model: app.model.clone(),
-            workspace: app.workspace.clone(),
-            mode: super::to_command_mode(app.mode),
-            agent_preset: app.agent_preset(),
-        })
+        clear_conversation(
+            &mut self.host.app.borrow_mut(),
+            crate::tui::ui::prepare_fresh_session_write,
+        )
     }
+}
+
+fn clear_conversation(
+    app: &mut crate::tui::app::App,
+    prepare_write: impl FnOnce(&str) -> Result<SessionWriteReceipt, String>,
+) -> Result<ClearedConversation, ClearFailure> {
+    let blockers = app.session_transition_blockers();
+    if !blockers.is_empty() {
+        return Err(ClearFailure::Busy(blockers));
+    }
+    let new_id = uuid::Uuid::new_v4().to_string();
+    let queue = crate::tui::ui::prepare_offline_queue_transition(app, &new_id)
+        .map_err(ClearFailure::Transition)?;
+    let write_receipt = prepare_write(&new_id).map_err(ClearFailure::Transition)?;
+    if !crate::commands::groups::core::reset_conversation_state(app) {
+        return Err(ClearFailure::Busy(Vec::new()));
+    }
+    crate::tui::ui::install_offline_queue_transition(app, queue);
+    app.set_current_session_id(Some(new_id.clone()));
+    app.session_write_receipt = Some(write_receipt);
+    app.session_write_owner = Some(SessionWriteOwner::control());
+    app.current_session_metadata = None;
+    app.session_title = None;
+    app.window_title = None;
+    app.composer_color = None;
+    Ok(ClearedConversation {
+        session_id: new_id,
+        model: app.model.clone(),
+        workspace: app.workspace.clone(),
+        mode: super::to_command_mode(app.mode),
+        agent_preset: app.agent_preset(),
+    })
 }
 
 impl From<ClearedConversation> for AppAction {
@@ -163,5 +174,61 @@ impl From<FeedbackAction> for AppAction {
             }
             FeedbackAction::Review { id, change } => Self::ReviewIssueReport { id, change },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::{app::App, history::HistoryCell};
+    use codewhale_engine::session_manager::SessionManager;
+    use std::sync::Arc;
+
+    #[test]
+    fn clear_receipt_failure_keeps_session_and_releases_candidate_lease() {
+        let workspace = tempfile::tempdir().unwrap();
+        let _home = crate::test_support::SealedHome::at(workspace.path());
+        let manager = SessionManager::default_location().unwrap();
+        let old_id = uuid::Uuid::new_v4().to_string();
+        let old_owner = SessionWriteOwner::control();
+        let mut app = App::new(
+            crate::tui::test_support::test_tui_options(workspace.path()),
+            &Default::default(),
+        );
+        app.set_current_session_id(Some(old_id.clone()));
+        app.session_write_receipt = Some(manager.expect_absent_session(&old_id).unwrap());
+        app.session_write_owner = Some(old_owner.clone());
+        app.offline_queue_lease = Some(manager.acquire_offline_queue_lease(&old_id).unwrap());
+        let old_lease = Arc::downgrade(app.offline_queue_lease.as_ref().unwrap());
+        app.session_title = Some("original".into());
+        app.input = "draft".into();
+        app.history.push(HistoryCell::User {
+            content: "old".into(),
+        });
+        let bad_store = workspace.path().join("regular-file");
+        std::fs::write(&bad_store, []).unwrap();
+        let mut candidate = String::new();
+        let result = clear_conversation(&mut app, |id| {
+            candidate = id.to_owned();
+            assert!(manager.acquire_offline_queue_lease(id).is_err());
+            SessionManager::new(bad_store)
+                .and_then(|store| store.expect_absent_session(id))
+                .map_err(|error| error.to_string())
+        });
+        assert!(matches!(result, Err(ClearFailure::Transition(_))));
+        assert_eq!(app.current_session_id.as_ref(), Some(&old_id));
+        assert!(app.session_write_receipt.is_some());
+        assert_eq!(app.session_write_owner, Some(old_owner));
+        assert_eq!(app.session_title.as_deref(), Some("original"));
+        assert_eq!(app.input, "draft");
+        assert!(
+            matches!(app.history.last(), Some(HistoryCell::User { content }) if content == "old")
+        );
+        assert!(Arc::ptr_eq(
+            &old_lease.upgrade().unwrap(),
+            app.offline_queue_lease.as_ref().unwrap()
+        ));
+        assert!(manager.acquire_offline_queue_lease(&old_id).is_err());
+        assert!(manager.acquire_offline_queue_lease(&candidate).is_ok());
     }
 }
