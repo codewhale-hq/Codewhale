@@ -41,9 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Context estimates count Chinese, Japanese and Korean text by character, including in mixed-language prompts and tool output. Compaction uses the same estimate when fitting older user messages within the retention budget. (Refs #6561)
-- The terminal records an error when the Engine cannot dismiss an inactive approval or question. Compaction notices use their assigned severity and leave other status messages intact. (#7464)
-
 - The terminal saved-team picker now shows its selection, team scopes, migration prompt, delete confirmation and keyboard hints in the chosen UI language. (#7469)
 
 - Reopening an older session preserves user messages that begin with a summary heading, including a paste identical to its saved summary. (#6557, #7562)
@@ -137,6 +134,9 @@ Codewhale v0.10.5 simplifies the terminal and runtime, expands DeepSeek Harness 
 - **The website offers the macOS desktop app:** `codewhale.net/app` now has signed, notarized Desktop 0.10.4 downloads for Apple silicon and Intel Macs, each with its size and SHA-256 checksum, and `/download` goes to that page.
 
 ### Fixed
+
+- Context estimates count Chinese, Japanese and Korean text by character, including in mixed-language prompts and tool output. Compaction uses the same estimate when fitting older user messages within the retention budget. (Refs #6561)
+- The terminal records an error when the Engine cannot dismiss an inactive approval or question. Compaction notices use their assigned severity and leave other status messages intact. (#7464)
 
 - **Session switch adopts a populated Runtime store:** switching to a conversation whose Runtime store already holds a thread record no longer refuses the switch; the check tests the store being left, not the target, and the host keeps its own store until the switch explicitly releases it. Thanks [@Serendo](https://github.com/Serendo). (#6225, #6418, #7451)
 - **Treat `find -delete` as a destructive action in execution policy:** `execpolicy` now classifies `find ... -delete` as destructive so Auto-Review and Ask postures gate it consistently, alongside Windows CI linker/test ceiling tuning (#7512). Thanks [@WTFitsmemyself](https://github.com/WTFitsmemyself). (#7496)
