@@ -242,7 +242,7 @@
   "crates/engine/src/tools/shell.rs": {
     "path_canonicalize": 2,
     "std_fs": 2,
-    "thread_sleep": 2
+    "thread_sleep": 3
   },
   "crates/engine/src/tools/skill.rs": {
     "std_fs": 1

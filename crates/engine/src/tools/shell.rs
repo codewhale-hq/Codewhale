@@ -708,17 +708,17 @@ fn wait_child_bounded(child: &mut Child, grace: Duration) -> bool {
 /// once it has exited (or is no longer an unreaped child of this process),
 /// false when the grace elapsed first.
 #[cfg(unix)]
-fn wait_leader_exit_bounded(child: &Child, grace: Duration) -> bool {
-    let deadline = Instant::now() + grace;
+fn wait_leader_exit_until(child: &Child, deadline: Instant) -> bool {
     loop {
         match codewhale_runtime::process_tree::leader_exited_unreaped(child.id()) {
             Ok(true) | Err(_) => return true,
             Ok(false) => {}
         }
-        if Instant::now() >= deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
             return false;
         }
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(remaining.min(Duration::from_millis(10)));
     }
 }
 
@@ -733,7 +733,7 @@ fn terminate_child_process_group(child: &mut Child) -> std::io::Result<()> {
     // Cooperative stop first so shells and their children can run traps and
     // clean up; bounded so a SIGTERM-ignoring command cannot stall the caller.
     let _ = signal_child_process_group(child, libc::SIGTERM);
-    if wait_leader_exit_bounded(child, KILL_TERM_GRACE) {
+    if wait_leader_exit_until(child, Instant::now() + KILL_TERM_GRACE) {
         // The leader exited on SIGTERM; descendants may linger, so SIGKILL
         // the rest of the group (ESRCH when it is already empty) while the
         // unreaped leader still pins the group id, then reap it.
@@ -1300,6 +1300,67 @@ fn spawn_sync_reader_thread<R: Read + Send + 'static>(
 fn recv_sync_reader_output(rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
     rx.recv_timeout(SYNC_READER_DRAIN_TIMEOUT)
         .unwrap_or_default()
+}
+
+#[cfg(unix)]
+fn set_foreground_stdin_nonblocking(stdin: &ChildStdin) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let fd = stdin.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn set_foreground_stdin_nonblocking(stdin: &ChildStdin) -> std::io::Result<()> {
+    use windows_sys::Win32::System::Pipes::{PIPE_NOWAIT, SetNamedPipeHandleState};
+    let ok = unsafe {
+        SetNamedPipeHandleState(
+            stdin.as_raw_handle(),
+            &PIPE_NOWAIT,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn set_foreground_stdin_nonblocking(_: &ChildStdin) -> std::io::Result<()> {
+    Err(std::io::ErrorKind::Unsupported.into())
+}
+
+fn write_foreground_input(
+    writer: &mut impl Write,
+    mut input: &[u8],
+    remaining: impl Fn() -> Duration,
+) -> std::io::Result<bool> {
+    while !input.is_empty() {
+        let budget = remaining();
+        if budget.is_zero() {
+            return Ok(false);
+        }
+        match writer.write(input) {
+            #[cfg(windows)]
+            Ok(0) => {}
+            #[cfg(not(windows))]
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(count) => {
+                input = &input[count..];
+                continue;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(error),
+        }
+        std::thread::sleep(remaining().min(Duration::from_millis(5)));
+    }
+    Ok(true)
 }
 
 /// Cell dimensions accepted by the existing PTY owner. Pixel sizes remain
@@ -3012,7 +3073,7 @@ impl ShellManager {
         exec_env: &ExecEnv,
     ) -> Result<ShellResult> {
         let started = Instant::now();
-        let timeout = Duration::from_millis(timeout_ms);
+        let deadline = started + Duration::from_millis(timeout_ms);
         let sandbox_type = exec_env.sandbox_type;
         let sandboxed = exec_env.is_sandboxed();
 
@@ -3055,16 +3116,23 @@ impl ShellManager {
             if let Some(input) = stdin_data
                 && let Some(mut stdin) = child.stdin.take()
             {
-                stdin
-                    .write_all(input.as_bytes())
-                    .context("Failed to write to stdin")?;
+                set_foreground_stdin_nonblocking(&stdin).context("Failed to prepare stdin")?;
+                if !write_foreground_input(&mut stdin, input.as_bytes(), || {
+                    deadline.saturating_duration_since(Instant::now())
+                })
+                .context("Failed to write to stdin")?
+                {
+                    return Ok((stdout_rx, stderr_rx, false));
+                }
             }
 
             #[cfg(unix)]
             let completed =
-                wait_leader_exit_bounded(&child, timeout) && tree.kill_if_leader_exited();
+                wait_leader_exit_until(&child, deadline) && tree.kill_if_leader_exited();
             #[cfg(not(unix))]
-            let completed = child.wait_timeout(timeout)?.is_some();
+            let completed = child
+                .wait_timeout(deadline.saturating_duration_since(Instant::now()))?
+                .is_some();
             Ok((stdout_rx, stderr_rx, completed))
         })();
 

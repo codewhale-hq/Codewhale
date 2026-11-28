@@ -14,6 +14,111 @@ use windows::Win32::System::Threading::GetCurrentProcess;
 const BACKGROUND_COMPLETION_WAIT_MS: u64 = 30_000;
 
 #[test]
+fn foreground_input_preserves_write_errors_and_stops_after_a_partial_write() {
+    let mut storage = [0; 2];
+    let checks = std::cell::Cell::new(0);
+    let completed = write_foreground_input(&mut storage.as_mut_slice(), b"abcd", || {
+        let count = checks.get();
+        checks.set(count + 1);
+        if count == 0 {
+            Duration::from_secs(1)
+        } else {
+            Duration::ZERO
+        }
+    })
+    .unwrap();
+    assert!(!completed);
+    assert_eq!(storage, *b"ab");
+    assert_eq!(checks.get(), 2);
+
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let mut read_only = std::fs::File::open(file.path()).unwrap();
+    let expected = read_only.write(b"x").unwrap_err();
+    let actual =
+        write_foreground_input(&mut read_only, b"x", || Duration::from_secs(1)).unwrap_err();
+    assert_eq!(actual.raw_os_error(), expected.raw_os_error());
+}
+
+#[test]
+fn foreground_input_round_trips_through_eof() {
+    let workspace = tempdir().unwrap();
+    let mut manager = ShellManager::new(workspace.path().to_path_buf());
+    let sort = if cfg!(windows) {
+        "sort.exe"
+    } else {
+        "exec sort"
+    };
+    let result = manager
+        .execute_with_options_env(
+            sort,
+            None,
+            15_000,
+            false,
+            Some("pear\napple\n"),
+            false,
+            None,
+            HashMap::new(),
+        )
+        .unwrap();
+    assert_eq!(result.status, ShellStatus::Completed, "{result:?}");
+    assert_eq!(result.exit_code, Some(0));
+    assert_eq!(result.stdout.lines().collect::<Vec<_>>(), ["apple", "pear"]);
+    assert_eq!(result.stdout_len, result.stdout.len());
+    assert_eq!(result.stdout_omitted, 0);
+    assert!(result.stderr.is_empty());
+}
+
+#[test]
+fn foreground_input_delivers_multiple_pipe_buffers_in_order() {
+    const HELPER_ENV: &str = "CODEWHALE_TEST_FOREGROUND_STDIN_COPY";
+    let input = (0..32_768)
+        .map(|n| format!("record-{n:05}\n"))
+        .collect::<String>();
+    if std::env::var(HELPER_ENV).as_deref() == Ok("1") {
+        let mut received = Vec::new();
+        std::io::stdin().lock().read_to_end(&mut received).unwrap();
+        assert_eq!(received.len(), input.len());
+        assert!(
+            received == input.as_bytes(),
+            "foreground input changed in transit"
+        );
+        println!("received {} bytes", received.len());
+        return;
+    }
+    let workspace = tempdir().unwrap();
+    let manager = ShellManager::new(workspace.path().to_path_buf());
+    let executable = std::env::current_exe().unwrap();
+    let spec = CommandSpec::program(
+        executable.to_str().unwrap(),
+        vec![
+            "--exact".into(),
+            "tools::shell::tests::foreground_input_delivers_multiple_pipe_buffers_in_order".into(),
+            "--nocapture".into(),
+        ],
+        workspace.path().to_owned(),
+        Duration::from_secs(30),
+    )
+    .with_policy(manager.sandbox_policy.clone())
+    .with_env(HashMap::from([(HELPER_ENV.into(), "1".into())]));
+    let env = manager.sandbox_manager.try_prepare(&spec).unwrap();
+    let result = ShellManager::execute_sync_sandboxed(
+        "copy stdin",
+        workspace.path(),
+        30_000,
+        Some(&input),
+        &env,
+    )
+    .unwrap();
+    assert_eq!(result.status, ShellStatus::Completed, "{result:?}");
+    assert!(
+        result
+            .stdout
+            .contains(&format!("received {} bytes", input.len())),
+        "{result:?}"
+    );
+}
+
+#[test]
 fn managed_program_preserves_resolved_path_and_argument_boundaries() {
     const FIXTURE_ENV: &str = "CODEWHALE_TEST_ARGV_FIXTURE";
     if std::env::var(FIXTURE_ENV).as_deref() == Ok("1") {

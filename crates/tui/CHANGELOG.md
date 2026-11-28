@@ -149,6 +149,7 @@ Codewhale v0.10.5 simplifies the terminal and runtime, expands DeepSeek Harness 
 - Saved-team deletion receipts, legacy file details and migration results use the selected terminal language. (#7469)
 - The terminal stays responsive while steering a running turn or previewing a request that includes file and Git mentions. Queued steers are prepared in order.
 
+- Foreground shell commands use one timeout for writing stdin and waiting for completion, and return captured output when that timeout expires. (#6558)
 - Foreground shell commands now clean up their child processes when writing input fails. (#6558)
 - Context estimates count Chinese, Japanese and Korean text by character, including in mixed-language prompts and tool output. Compaction uses the same estimate when fitting older user messages within the retention budget. (Refs #6561)
 - The terminal records an error when the Engine cannot dismiss an inactive approval or question. Compaction notices use their assigned severity and leave other status messages intact. (#7464)
