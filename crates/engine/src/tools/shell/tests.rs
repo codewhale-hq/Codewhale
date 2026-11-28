@@ -82,7 +82,12 @@ fn foreground_input_delivers_multiple_pipe_buffers_in_order() {
             received == input.as_bytes(),
             "foreground input changed in transit"
         );
-        println!("received {} bytes", received.len());
+        writeln!(
+            std::io::stdout().lock(),
+            "received {} bytes",
+            received.len()
+        )
+        .unwrap();
         return;
     }
     let workspace = tempdir().unwrap();
