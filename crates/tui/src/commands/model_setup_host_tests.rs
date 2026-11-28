@@ -1,202 +1,16 @@
-//! Provider switching: flip between DeepSeek, hosted providers, and self-hosted
-//! OpenAI-compatible DeepSeek V4 servers at runtime.
-//!
-//! `/provider` with no args opens the picker modal (#52). `/provider <name>`
-//! keeps the v0.6.6 CLI form for muscle-memory + scripted use.
-
-use crate::commands::traits::{CommandInfo, RegisterCommand};
+use crate::commands::CommandResult;
 use crate::tui::app::{App, AppAction};
-use codewhale_config::ProviderKind;
-use codewhale_localization::MessageId;
+use codewhale_config::{ProviderKind, SetupStep};
 
-use super::CommandResult;
-
-pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
-    name: "provider",
-    aliases: &[],
-    usage: "/provider [setup [name]|name [model]]",
-    description_id: MessageId::CmdProviderDescription,
-};
-
-pub(in crate::commands) struct ProviderCmd;
-
-impl RegisterCommand for ProviderCmd {
-    fn info() -> &'static CommandInfo {
-        &COMMAND_INFO
-    }
-
-    fn execute(app: &mut App, arg: Option<&str>) -> CommandResult {
-        provider(app, arg)
-    }
+fn run(name: &str, app: &mut App, arg: Option<&str>) -> CommandResult {
+    crate::commands::execute(&format!("/{name} {}", arg.unwrap_or_default()), app)
 }
 
-/// Switch or view the current LLM backend.
-///
-/// With no args, opens the picker modal. With `<provider> [model]`, performs
-/// the switch directly (e.g. `/provider nim flash` lands on
-/// `deepseek-ai/deepseek-v4-flash`). The optional model accepts shorthand
-/// (`flash`, `pro`, `v4-flash`, `v4-pro`) or any normal provider model ID.
-pub fn provider(app: &mut App, args: Option<&str>) -> CommandResult {
-    let trimmed = args.map(str::trim).filter(|s| !s.is_empty());
-    let Some(args) = trimmed else {
-        return CommandResult::action(AppAction::OpenProviderPicker);
-    };
-
-    let mut parts = args.split_whitespace();
-    let name = parts.next().unwrap_or("");
-    let model_arg = parts.next();
-
-    if name.eq_ignore_ascii_case("fallback") {
-        return provider_fallback(app, model_arg);
-    }
-    if name.eq_ignore_ascii_case("setup") {
-        return match model_arg {
-            None => CommandResult::action(AppAction::OpenProviderSetup { provider: None }),
-            Some(raw) => match provider_setup_action_for_name(raw) {
-                Ok(action) => CommandResult::action(action),
-                Err(message) => CommandResult::error(message),
-            },
-        };
-    }
-
-    if codewhale_runtime::config::is_legacy_antigravity_identity(name) {
-        return CommandResult::error(
-            codewhale_config::LEGACY_ANTIGRAVITY_TOMBSTONE_MESSAGE.to_string(),
-        );
-    }
-
-    let Some(row) = codewhale_config::descriptors::compatibility_for_selector(name) else {
-        return CommandResult::error(format!(
-            "Unknown provider '{name}'. Expected: {}.",
-            ProviderKind::names_hint()
-        ));
-    };
-
-    let target = row.kind;
-    let selected_key: codewhale_config::ProviderId = row.id.into();
-
-    let model = match model_arg {
-        None => None,
-        Some(raw) => {
-            let trimmed = raw.trim();
-            if is_route_ambiguous_deepseek_alias(target, trimmed) {
-                Some(trimmed.to_string())
-            } else {
-                match codewhale_config::route::resolve_model(target, trimmed, None) {
-                    Ok(resolved) => Some(resolved.logical),
-                    Err(_) => {
-                        return CommandResult::error(format!(
-                            "Invalid model '{raw}'. Provide a non-empty model id."
-                        ));
-                    }
-                }
-            }
-        }
-    };
-
-    if app
-        .provider_identity
-        .as_ref()
-        .is_some_and(|identity| identity.key == selected_key)
-        && model.is_none()
-        && !(target == ProviderKind::Ollama
-            && codewhale_runtime::config::is_unresolved_local_ollama_model(&app.model))
-    {
-        return CommandResult::message(format!("Already on provider: {}", selected_key));
-    }
-
-    CommandResult::action(AppAction::SwitchProvider {
-        provider: selected_key,
-        model,
-    })
-}
-
-pub(in crate::commands) fn provider_setup_action_for_name(raw: &str) -> Result<AppAction, String> {
-    if codewhale_runtime::config::is_legacy_antigravity_identity(raw) {
-        return Err(codewhale_config::LEGACY_ANTIGRAVITY_TOMBSTONE_MESSAGE.to_string());
-    }
-    if raw.eq_ignore_ascii_case("ds4") || raw.eq_ignore_ascii_case("dwarfstar") {
-        return Ok(AppAction::OpenDs4Setup);
-    }
-    // First-class aliases (zen, opencode-zen, …) resolve through the provider
-    // registry. There are no setup templates anymore: named custom hosts are
-    // configured with `/provider setup` and the blank custom form (#6289).
-    match codewhale_config::descriptors::compatibility_for_selector(raw) {
-        Some(provider) => Ok(AppAction::OpenProviderSetup {
-            provider: Some(provider.id.into()),
-        }),
-        None => Err(format!(
-            "Unknown provider '{raw}'. Expected: {}.",
-            ProviderKind::names_hint()
-        )),
-    }
-}
-
-fn is_route_ambiguous_deepseek_alias(provider: ProviderKind, model: &str) -> bool {
-    matches!(
-        provider,
-        ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
-    ) && (model.eq_ignore_ascii_case("deepseek-chat")
-        || model.eq_ignore_ascii_case("deepseek-reasoner"))
-}
-
-fn provider_fallback(app: &mut App, subcommand: Option<&str>) -> CommandResult {
-    match subcommand {
-        Some("reset") => {
-            let Some((_, primary, _)) = app.fallback_chain_entries().first().copied() else {
-                return CommandResult::message(
-                    "No fallback providers configured. Add `fallback_providers` to your config.",
-                );
-            };
-            CommandResult::with_message_and_action(
-                format!(
-                    "Fallback chain reset to primary provider: {}.",
-                    primary.as_str()
-                ),
-                AppAction::SwitchProvider {
-                    provider: primary.as_str().into(),
-                    model: None,
-                },
-            )
-        }
-        Some(other) => CommandResult::error(format!(
-            "Unknown fallback command '{other}'. Usage: /provider fallback [reset]"
-        )),
-        None => {
-            let entries = app.fallback_chain_entries();
-            if entries.is_empty() {
-                return CommandResult::message(
-                    "No fallback providers configured. Add `fallback_providers` to your config.",
-                );
-            }
-
-            let mut lines = vec![
-                format!(
-                    "Current provider: {}",
-                    app.provider_identity_for_persistence()
-                ),
-                "Fallback chain:".to_string(),
-            ];
-            for (index, provider, is_current) in entries {
-                let role = if index == 0 { "primary" } else { "fallback" };
-                let marker = if is_current { " <- current" } else { "" };
-                lines.push(format!(
-                    "  [{index}] {} ({role}){marker}",
-                    provider.as_str()
-                ));
-            }
-            if let Some(reason) = app.last_fallback_reason.as_deref() {
-                lines.push(format!("Last fallback: {reason}"));
-            }
-            lines.push("Use `/provider fallback reset` to return to the primary provider.".into());
-            CommandResult::message(lines.join("\n"))
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
+mod provider {
     use super::*;
+    fn provider(app: &mut App, args: Option<&str>) -> CommandResult {
+        run("provider", app, args)
+    }
     use crate::test_support::lock_test_env;
     use crate::tui::app::TuiOptions;
     use codewhale_runtime::config::Config;
@@ -233,8 +47,9 @@ mod tests {
             assert!(message.contains("GEMINI_API_KEY"), "{identity}: {message}");
             assert_eq!(app.api_provider, codewhale_config::ProviderKind::Deepseek);
 
-            let setup = provider_setup_action_for_name(identity)
-                .expect_err("setup must not open for the tombstone");
+            let result = provider(&mut app, Some(&format!("setup {identity}")));
+            assert!(result.is_error && result.action.is_none());
+            let setup = result.message.unwrap();
             assert!(setup.contains("provider `google`"), "{identity}: {setup}");
         }
     }
@@ -874,5 +689,210 @@ mod tests {
             }
             other => panic!("expected SwitchProvider action, got {other:?}"),
         }
+    }
+}
+
+mod setup {
+    use super::*;
+    fn setup(app: &mut App, args: Option<&str>) -> CommandResult {
+        run("setup", app, args)
+    }
+    use crate::tui::app::TuiOptions;
+    use codewhale_runtime::config::Config;
+    use std::path::PathBuf;
+
+    fn test_app() -> App {
+        let options = TuiOptions {
+            ..crate::tui::test_support::test_tui_options(PathBuf::from("."))
+        };
+        App::new(options, &Config::default())
+    }
+
+    #[test]
+    fn setup_command_opens_wizard() {
+        let mut app = test_app();
+
+        let result = setup(&mut app, None);
+
+        assert_eq!(result.action, Some(AppAction::OpenSetupWizard));
+        assert!(result.message.is_none());
+    }
+
+    #[test]
+    fn setup_checkpoint_alias_opens_wizard() {
+        let mut app = test_app();
+
+        let result = setup(&mut app, Some("checkpoint"));
+
+        assert_eq!(result.action, Some(AppAction::OpenSetupWizard));
+        assert!(result.message.is_none());
+    }
+
+    #[test]
+    fn setup_report_opens_verification_step() {
+        let mut app = test_app();
+
+        let result = setup(&mut app, Some("report"));
+
+        assert_eq!(
+            result.action,
+            Some(AppAction::OpenSetupWizardAt {
+                step: SetupStep::Verification
+            })
+        );
+        assert!(result.message.is_none());
+    }
+
+    #[test]
+    fn setup_named_steps_open_matching_wizard_cards() {
+        let cases = [
+            ("provider", SetupStep::ProviderModel),
+            ("model", SetupStep::ProviderModel),
+            ("runtime", SetupStep::TrustSandbox),
+            ("posture", SetupStep::TrustSandbox),
+            ("constitution", SetupStep::Constitution),
+            ("hotbar", SetupStep::Hotbar),
+            ("shortcuts", SetupStep::Hotbar),
+            ("tools", SetupStep::ToolsMcp),
+            ("tool", SetupStep::ToolsMcp),
+            ("tools-mcp", SetupStep::ToolsMcp),
+            ("tools_mcp", SetupStep::ToolsMcp),
+            ("mcp", SetupStep::ToolsMcp),
+            ("skills", SetupStep::ToolsMcp),
+            ("plugins", SetupStep::ToolsMcp),
+            ("remote", SetupStep::RemoteRuntime),
+            ("cloud", SetupStep::RemoteRuntime),
+            ("persistence", SetupStep::Persistence),
+            ("persist", SetupStep::Persistence),
+            ("storage", SetupStep::Persistence),
+        ];
+
+        for (arg, step) in cases {
+            let mut app = test_app();
+            let result = setup(&mut app, Some(arg));
+            assert_eq!(
+                result.action,
+                Some(AppAction::OpenSetupWizardAt { step }),
+                "{arg}"
+            );
+            assert!(result.message.is_none(), "{arg}");
+        }
+    }
+
+    #[test]
+    fn setup_fleet_target_opens_the_operate_fleet_step() {
+        for target in ["fleet", "operate", "operate-fleet", "operate_fleet"] {
+            let mut app = test_app();
+            let result = setup(&mut app, Some(target));
+
+            assert_eq!(
+                result.action,
+                Some(AppAction::OpenSetupWizardAt {
+                    step: SetupStep::OperateFleet
+                }),
+                "{target}"
+            );
+            assert!(result.message.is_none(), "{target}");
+        }
+    }
+
+    #[test]
+    fn setup_retired_pod_target_is_rejected() {
+        let mut app = test_app();
+        let result = setup(&mut app, Some("pod"));
+
+        assert!(result.is_error);
+        assert!(
+            result
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("/setup fleet")),
+            "retired target must point at the canonical spelling, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn setup_usage_advertises_the_canonical_fleet_target() {
+        assert!(
+            crate::commands::get_command_info("setup")
+                .unwrap()
+                .usage
+                .contains("fleet")
+        );
+        assert!(
+            !crate::commands::get_command_info("setup")
+                .unwrap()
+                .usage
+                .contains("pod")
+        );
+    }
+
+    #[test]
+    fn setup_unknown_target_points_to_fleet_setup() {
+        let mut app = test_app();
+        let result = setup(&mut app, Some("bogus"));
+
+        assert!(result.is_error);
+        assert!(
+            result
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("/setup fleet"))
+        );
+    }
+
+    #[test]
+    fn setup_provider_named_opens_provider_setup_catalog() {
+        let mut app = test_app();
+
+        let result = setup(&mut app, Some("provider anthropic"));
+
+        assert_eq!(
+            result.action,
+            Some(AppAction::OpenProviderSetup {
+                provider: Some(ProviderKind::Anthropic.as_str().into())
+            })
+        );
+        assert!(result.message.is_none());
+    }
+
+    #[test]
+    fn setup_provider_ds4_opens_keyless_local_preset() {
+        let mut app = test_app();
+
+        let result = setup(&mut app, Some("provider ds4"));
+
+        assert_eq!(result.action, Some(AppAction::OpenDs4Setup));
+        assert!(result.message.is_none());
+    }
+
+    #[test]
+    fn setup_provider_agnes_rejects_retired_template_name() {
+        let mut app = test_app();
+
+        let result = setup(&mut app, Some("provider agnes"));
+
+        assert!(result.action.is_none());
+        assert!(
+            result
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("Unknown provider 'agnes'"))
+        );
+    }
+
+    #[test]
+    fn setup_provider_named_rejects_unknown_provider() {
+        let mut app = test_app();
+
+        let result = setup(&mut app, Some("provider imaginary"));
+
+        assert!(result.action.is_none());
+        assert!(
+            result
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("Unknown provider 'imaginary'"))
+        );
     }
 }

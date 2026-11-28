@@ -209,7 +209,7 @@ fn from_capability_state(state: CapabilityState) -> CommandCapabilityState {
     }
 }
 
-fn to_compaction_config(config: CommandCompactionConfig) -> CompactionConfig {
+pub(super) fn to_compaction_config(config: CommandCompactionConfig) -> CompactionConfig {
     CompactionConfig {
         enabled: config.enabled,
         token_threshold: config.token_threshold,
@@ -225,7 +225,7 @@ fn to_compaction_config(config: CommandCompactionConfig) -> CompactionConfig {
     }
 }
 
-fn from_compaction_config(config: CompactionConfig) -> CommandCompactionConfig {
+pub(super) fn from_compaction_config(config: CompactionConfig) -> CommandCompactionConfig {
     CommandCompactionConfig {
         enabled: config.enabled,
         token_threshold: config.token_threshold,

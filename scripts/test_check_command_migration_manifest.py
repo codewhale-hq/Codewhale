@@ -427,6 +427,21 @@ class LiveGateTests(unittest.TestCase):
         )
 
 
+class ModelAndSetupFrontierTests(unittest.TestCase):
+    def test_complete_model_and_setup_slice_uses_portable_source_files(self) -> None:
+        core = mod.load_topology()["topology"]["core"]
+        node = next(node for node in core["slices"] if node["name"] == "core::model-and-setup")
+        scope = mod.slice_source_scope("core", node)
+        owners = {path.relative_to(ROOT).as_posix() for path in
+                  (ROOT / "crates/commands/src/model_setup").glob("*.rs") if path.name != "mod.rs"}
+        self.assertEqual(set(scope), owners)
+        self.assertTrue(set(scope).issubset(mod.group_source_scope("core", core, ROOT)))
+        self.assertFalse(any((ROOT / path).exists() for path in node["scope"]))
+        items, errors = mod.scan_leaf_handlers(scope, ROOT)
+        self.assertEqual(errors, [])
+        self.assertEqual([item.qual_path for item in items if item.is_concrete_app], [])
+
+
 class DebugGroupFrontierTests(unittest.TestCase):
     def test_complete_debug_inventory_has_no_pending_host_handlers(self) -> None:
         doc = mod.load_topology()

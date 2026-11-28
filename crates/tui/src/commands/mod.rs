@@ -23,6 +23,8 @@ mod core_navigation_host;
 mod core_navigation_host_tests;
 pub mod discovery;
 pub(crate) mod groups;
+#[cfg(test)]
+mod model_setup_host_tests;
 
 // FEAT-025 host services for the session-export slice: the shared recovery
 // writer and the protected export-destination resolver/writer. Declared at the
@@ -2583,6 +2585,9 @@ mod tests {
             "hf",
             "modeldb",
             "models",
+            "model",
+            "provider",
+            "setup",
             "pin",
             "profile",
             "queue",
@@ -2594,6 +2599,19 @@ mod tests {
                 registry().has_contextual_handler(name),
                 "/{name} must use the command contract"
             );
+        }
+        use codewhale_command_contract::handler::{CommandCapabilities as Caps, CommandHandler};
+        for (name, expected) in [
+            ("model", Some(Caps::MODEL_SELECTION)),
+            ("provider", Some(Caps::PROVIDER_ROUTES)),
+            ("setup", None),
+        ] {
+            let handler = registry().get(name).unwrap().contextual_handler().unwrap();
+            let actual = match handler {
+                CommandHandler::Pure(_) => None,
+                CommandHandler::Contextual { capabilities, .. } => Some(capabilities),
+            };
+            assert_eq!(actual, expected, "/{name} host capabilities");
         }
         let mut legacy: Vec<_> = registry()
             .iter()
@@ -2612,10 +2630,7 @@ mod tests {
                 "fleet",
                 "hooks",
                 "lane",
-                "model",
-                "provider",
                 "router",
-                "setup",
                 "workflow",
                 "workflows",
             ],

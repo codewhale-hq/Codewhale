@@ -1199,6 +1199,9 @@ UNLISTED_SLICE_ASSIGNMENT: dict[str, dict[str, list[str]]] = {
 def slice_source_scope(group_name: str, slice_node: dict) -> list[str]:
     """A slice's historical scope plus the unlisted files the immutable
     topology never assigned to it."""
+    if slice_node["name"] == "core::model-and-setup":
+        return sorted(path.replace("crates/tui/src/commands/groups/core/", "crates/commands/src/model_setup/", 1)
+                      for path in slice_node.get("scope", []))
     extra = UNLISTED_SLICE_ASSIGNMENT.get(group_name, {}).get(slice_node["name"], [])
     return sorted(set(slice_node.get("scope", [])) | set(extra))
 
@@ -1217,6 +1220,12 @@ def group_source_scope(group_name: str, node: dict, root: Path) -> list[str]:
         scope = {path.replace("crates/tui/src/commands/groups/debug/",
                               "crates/commands/src/debug/", 1) for path in scope}
         directories.append(root / "crates/commands/src/debug")
+    if group_name == "core":
+        for slice_node in node.get("slices", []):
+            if slice_node["name"] == "core::model-and-setup":
+                scope.difference_update(slice_node["scope"])
+                scope.update(slice_source_scope(group_name, slice_node))
+                directories.append(root / "crates/commands/src/model_setup")
     for directory in directories:
         scope.update(path.relative_to(root).as_posix() for path in directory.rglob("*.rs"))
     return sorted(scope)

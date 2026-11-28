@@ -1,13 +1,13 @@
-//! Remaining legacy core commands: clear, model and related interactions.
+//! Conversation reset and core command host tests.
 
 use crate::tui::app::{App, AppAction};
 #[cfg(test)]
 use crate::tui::views::ModalKind;
+#[cfg(test)]
 use codewhale_config::ProviderKind;
 #[cfg(test)]
 use codewhale_engine::reasoning_preference::ReasoningEffort;
 use codewhale_localization::{MessageId, tr};
-use codewhale_runtime::config::normalize_custom_model_id;
 
 use super::CommandResult;
 
@@ -148,186 +148,12 @@ pub(crate) fn reset_conversation_state(app: &mut App) -> bool {
     true
 }
 
-/// Switch or view current model. With no argument, open the two-pane
-/// picker (Pro/Flash + thinking effort) per #39 — gives users a discoverable
-/// way to flip both knobs without memorising the docs.
-pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
-    // `/model router …` is `/router …` (#6525): one Router setup view.
-    if let Some(name) = model_name.map(str::trim) {
-        let (head, rest) = name.split_once(char::is_whitespace).unwrap_or((name, ""));
-        if head.eq_ignore_ascii_case("router") {
-            return super::router::router_command(Some(rest));
-        }
-    }
-    if model_name.is_some_and(|name| name.eq_ignore_ascii_case("save-default")) {
-        // Explicit persistence of the pending session route as the startup
-        // default — only an explicit command can write settings after an
-        // in-session route change.
-        let message = app.apply_route_save_choice(
-            crate::tui::views::route_save_prompt::RouteSaveChoice::SaveAsDefault,
-        );
-        return CommandResult::message(message);
-    }
-    if let Some(name) = model_name {
-        // Manual Models.dev catalog refresh (#4187). Dispatched async so the
-        // TUI event loop is not blocked; failure keeps prior/bundled rows.
-        if name.trim().eq_ignore_ascii_case("refresh") {
-            return CommandResult::action(AppAction::RefreshModelsDevCatalog);
-        }
-        if name.trim().eq_ignore_ascii_case("auto") {
-            let old_model = app.model_display_label();
-            let model_changed = !app.auto_model || app.model != "auto";
-            app.set_model_selection("auto".to_string());
-            app.active_route_limits = app.context_window_override_limits();
-            app.active_context_window = app.configured_context_window_for(&app.model);
-            app.active_context_window_source = app
-                .active_context_window
-                .map(|window| window.source)
-                .unwrap_or(codewhale_engine::route_runtime::ContextWindowSource::Fallback);
-            app.update_model_compaction_budget();
-            if model_changed {
-                app.clear_model_scoped_telemetry();
-            } else {
-                app.session.last_prompt_tokens = None;
-                app.session.last_completion_tokens = None;
-            }
-            let provider_identity = app.provider_identity_for_persistence().to_string();
-            app.provider_models
-                .insert(provider_identity.clone(), "auto".to_string());
-            // Temporary by default; the route-save prompt owns persistence.
-            app.note_session_route_change(&provider_identity, "auto");
-            let mut message = tr(app.ui_locale, MessageId::ModelChanged)
-                .replace("{old}", &old_model)
-                .replace("{new}", "auto");
-            message.push_str(&tr(app.ui_locale, MessageId::ModelChangedSessionNote));
-            return CommandResult::with_message_and_action(
-                message,
-                AppAction::UpdateCompaction(app.compaction_config()),
-            );
-        }
-        let declared = app.api_provider != ProviderKind::OpenaiCodex
-            && codewhale_config::catalog::configured::validate_configured_models(
-                &app.configured_models,
-            )
-            .is_ok()
-            && app.configured_models.iter().any(|model| {
-                model.id == name
-                    && model.matches_route(
-                        app.provider_identity_for_persistence(),
-                        &app.active_route_base_url,
-                    )
-            });
-        let model_id = if declared {
-            name.to_string()
-        } else if app.accepts_custom_model_ids() {
-            let Some(model_id) = normalize_custom_model_id(name) else {
-                return CommandResult::error(format!(
-                    "Invalid model '{name}'. Expected a non-empty model ID."
-                ));
-            };
-            model_id
-        } else {
-            let Ok(resolved) = codewhale_config::route::resolve_model(app.api_provider, name, None)
-            else {
-                return CommandResult::error(format!(
-                    "Invalid model '{name}'. Expected auto or a model for the active provider ({}).",
-                    app.api_provider.as_str()
-                ));
-            };
-            resolved.wire_id
-        };
-        let strict_direct_custom_endpoint = app.accepts_custom_model_ids()
-            && matches!(app.api_provider, ProviderKind::Deepseek | ProviderKind::Zai);
-        let route_resolution = if declared {
-            match codewhale_engine::route_runtime::resolve_declared_model_candidate(
-                app.api_provider,
-                app.provider_identity_for_persistence(),
-                &model_id,
-                &app.active_route_base_url,
-                app.active_context_window_override,
-                app.active_model_context_windows.as_ref(),
-                &app.configured_models,
-            ) {
-                Ok(resolution) => Some(resolution),
-                Err(reason) => return CommandResult::error(reason),
-            }
-        } else if strict_direct_custom_endpoint {
-            None
-        } else {
-            // `/model` normally resolves against the active provider's
-            // catalog-default endpoint so it retains the existing local
-            // provider/model validation. The one endpoint-sensitive model
-            // selection is Kimi Code's bare `k3`: resolve it against the
-            // committed Kimi Code route rather than silently falling back to
-            // Moonshot's direct API route. Do not pass an unrelated stale
-            // endpoint through here; doing so would turn a foreign provider
-            // model into an apparent custom-route selection.
-            let route_base_url = codewhale_runtime::config::is_exact_kimi_code_k3_route(
-                app.api_provider,
-                &app.active_route_base_url,
-                &model_id,
-            )
-            .then(|| app.active_route_base_url.clone());
-            match codewhale_engine::route_runtime::resolve_route_candidate_with_context_metadata(
-                app.api_provider,
-                Some(&model_id),
-                None,
-                route_base_url,
-                app.active_context_window_override,
-                app.active_model_context_windows.as_ref(),
-                None,
-            ) {
-                Ok(resolution) => Some(resolution),
-                Err(reason) => return CommandResult::error(reason),
-            }
-        };
-        let old_model = app.model_display_label();
-        let model_changed = app.auto_model || app.model != model_id;
-        app.set_model_selection(model_id.clone());
-        if let Some(resolution) = route_resolution {
-            app.set_active_route_resolution(
-                resolution.candidate.endpoint().base_url.clone(),
-                resolution.candidate.limits(),
-                resolution.context_window,
-            );
-        } else {
-            app.active_route_limits = app.context_window_override_limits();
-            app.active_context_window = app.configured_context_window_for(&app.model);
-            app.active_context_window_source = app
-                .configured_context_window_for(&app.model)
-                .map(|resolution| resolution.source)
-                .unwrap_or(codewhale_engine::route_runtime::ContextWindowSource::Fallback);
-        }
-        app.update_model_compaction_budget();
-        if model_changed {
-            app.clear_model_scoped_telemetry();
-        } else {
-            app.session.last_prompt_tokens = None;
-            app.session.last_completion_tokens = None;
-        }
-        let provider_identity = app.provider_identity_for_persistence().to_string();
-        app.provider_models
-            .insert(provider_identity.clone(), model_id.clone());
-        app.note_route_used(&provider_identity, &model_id);
-        // Route changes are temporary by default: nothing is written here.
-        // The route-save prompt offers the explicit persistence choices.
-        app.note_session_route_change(&provider_identity, &model_id);
-        let mut message = tr(app.ui_locale, MessageId::ModelChanged)
-            .replace("{old}", &old_model)
-            .replace("{new}", &model_id);
-        message.push_str(&tr(app.ui_locale, MessageId::ModelChangedSessionNote));
-        CommandResult::with_message_and_action(
-            message,
-            AppAction::UpdateCompaction(app.compaction_config()),
-        )
-    } else {
-        CommandResult::action(AppAction::OpenModelPicker)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn model(app: &mut App, arg: Option<&str>) -> CommandResult {
+        crate::commands::execute(&format!("/model {}", arg.unwrap_or_default()), app)
+    }
     use crate::tui::app::{App, TuiOptions, TurnCacheRecord};
     use crate::tui::history::HistoryCell;
     use codewhale_engine::client::PromptInspection;

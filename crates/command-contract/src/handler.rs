@@ -107,6 +107,8 @@ impl CommandCapabilities {
     pub const BACKGROUND: Self = Self(1 << 32);
     pub const COMPOSER: Self = Self(1 << 33);
     pub const RESPONSE_COPY: Self = Self(1 << 34);
+    pub const PROVIDER_ROUTES: Self = Self(1 << 35);
+    pub const MODEL_SELECTION: Self = Self(1 << 36);
 
     /// Raw bit pattern, for tests that pin the capability-space capacity.
     ///
@@ -182,6 +184,8 @@ pub struct CommandContexts<'a> {
     work_surface: Option<&'a mut dyn crate::config::CommandWorkSurfaceContext>,
     navigation: Option<&'a mut dyn crate::navigation::CommandNavigationContext>,
     voice_input: Option<&'a mut dyn crate::navigation::CommandVoiceInputContext>,
+    provider_routes: Option<&'a mut dyn crate::model_setup::CommandProviderRoutesContext>,
+    model_selection: Option<&'a mut dyn crate::model_setup::CommandModelSelectionContext>,
     response_copy: Option<&'a mut dyn crate::navigation::CommandResponseCopyContext>,
     composer: Option<&'a mut dyn CommandComposerContext>,
     background: Option<&'a mut dyn CommandBackgroundContext>,
@@ -259,6 +263,8 @@ impl<'a> CommandContexts<'a> {
             navigation: None,
             voice_input: None,
             background: None,
+            provider_routes: None,
+            model_selection: None,
             response_copy: None,
             composer: None,
         }
@@ -361,6 +367,40 @@ impl<'a> CommandContexts<'a> {
             "voice-input facet already set"
         );
         self
+    }
+
+    pub fn with_provider_routes(
+        mut self,
+        value: &'a mut dyn crate::model_setup::CommandProviderRoutesContext,
+    ) -> Self {
+        assert!(
+            self.provider_routes.replace(value).is_none(),
+            "provider-routes facet already set"
+        );
+        self
+    }
+
+    pub fn take_provider_routes(
+        &mut self,
+    ) -> Option<&'a mut dyn crate::model_setup::CommandProviderRoutesContext> {
+        self.provider_routes.take()
+    }
+
+    pub fn with_model_selection(
+        mut self,
+        value: &'a mut dyn crate::model_setup::CommandModelSelectionContext,
+    ) -> Self {
+        assert!(
+            self.model_selection.replace(value).is_none(),
+            "model-selection facet already set"
+        );
+        self
+    }
+
+    pub fn take_model_selection(
+        &mut self,
+    ) -> Option<&'a mut dyn crate::model_setup::CommandModelSelectionContext> {
+        self.model_selection.take()
     }
 
     pub fn with_response_copy(
