@@ -1782,6 +1782,40 @@ pub(crate) struct SessionExportAdapter<'a> {
     host: SharedCommandHost<'a>,
 }
 
+impl codewhale_command_contract::navigation::CommandResponseCopyContext
+    for SessionExportAdapter<'_>
+{
+    fn copy_completed_response(
+        &mut self,
+    ) -> Option<codewhale_command_contract::navigation::ResponseCopyDelivery> {
+        let content = self
+            .host
+            .app
+            .borrow()
+            .completed_assistant_output_receipt()?
+            .to_owned();
+        Some(
+            codewhale_command_contract::navigation::ResponseCopyDelivery {
+                requires_terminal_paste: self.clipboard_requires_terminal_paste(),
+                recovery_path: self.write_recovery_copy(&content),
+                clipboard_result: self.write_clipboard(&content),
+            },
+        )
+    }
+
+    fn show_copy_receipt(&mut self, message: &str, is_error: bool) {
+        use crate::tui::app::{StatusToast, StatusToastLevel};
+        let level = if is_error {
+            StatusToastLevel::Error
+        } else {
+            StatusToastLevel::Info
+        };
+        self.host.app.borrow_mut().push_status_toast_record(
+            StatusToast::new(message.to_owned(), level, Some(8_000)).for_command_receipt(),
+        );
+    }
+}
+
 impl CommandSessionExportContext for SessionExportAdapter<'_> {
     /// Conversation export projection: metadata, transcript, and restore-point
     /// state.
@@ -5495,6 +5529,7 @@ pub(crate) struct CommandContextBundle<'a> {
     plugin: PluginAdapter<'a>,
     lifecycle: SessionLifecycleAdapter<'a>,
     control: SessionControlAdapter<'a>,
+    response_copy: SessionExportAdapter<'a>,
     export: SessionExportAdapter<'a>,
     structcopy: SessionStructcopyAdapter<'a>,
     debug_receipts: DebugOperationsAdapter<'a>,
@@ -5565,6 +5600,9 @@ impl<'a> CommandContextBundle<'a> {
         }
         if capabilities.contains(CommandCapabilities::SESSION_STRUCTCOPY) {
             contexts = contexts.with_structcopy(&mut self.structcopy);
+        }
+        if capabilities.contains(CommandCapabilities::RESPONSE_COPY) {
+            contexts = contexts.with_response_copy(&mut self.response_copy);
         }
         if capabilities.contains(CommandCapabilities::SESSION_EXPORT) {
             contexts = contexts.with_export(&mut self.export);
@@ -5692,6 +5730,7 @@ impl App {
             plugin: PluginAdapter { host: host.clone() },
             lifecycle: SessionLifecycleAdapter { host: host.clone() },
             control: SessionControlAdapter { host: host.clone() },
+            response_copy: SessionExportAdapter { host: host.clone() },
             export: SessionExportAdapter { host: host.clone() },
             structcopy: SessionStructcopyAdapter { host: host.clone() },
             debug_receipts: DebugOperationsAdapter { host: host.clone() },

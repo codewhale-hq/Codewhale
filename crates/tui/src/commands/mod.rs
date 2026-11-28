@@ -1493,7 +1493,7 @@ mod tests {
         }
         for (name, service, needs_presentation) in [
             ("help", Caps::NAVIGATION, true),
-            ("copy", Caps::NAVIGATION | Caps::SESSION_EXPORT, true),
+            ("copy", Caps::RESPONSE_COPY, true),
             ("home", Caps::NAVIGATION, true),
             ("overview", Caps::NAVIGATION, true),
             ("links", Caps::NAVIGATION, true),
@@ -1565,6 +1565,8 @@ mod tests {
                 before_voice
             );
             let mut bundle = app.command_contexts();
+            let mut contexts = bundle.contexts(capabilities);
+            let response_copy = contexts.take_response_copy().is_some();
             let ContextParts {
                 session,
                 model,
@@ -1598,7 +1600,7 @@ mod tests {
                 work_surface,
                 navigation,
                 voice_input,
-            } = bundle.contexts(capabilities).into_parts();
+            } = contexts.into_parts();
             for (capability, exposed) in [
                 (Caps::SESSION, session.is_some()),
                 (Caps::MODEL, model.is_some()),
@@ -1616,6 +1618,7 @@ mod tests {
                 (Caps::SESSION_LIFECYCLE, lifecycle.is_some()),
                 (Caps::SESSION_CONTROL, control.is_some()),
                 (Caps::SESSION_EXPORT, export.is_some()),
+                (Caps::RESPONSE_COPY, response_copy),
                 (Caps::SESSION_STRUCTCOPY, structcopy.is_some()),
                 (Caps::DEBUG_RECEIPTS, debug_receipts.is_some()),
                 (Caps::DEBUG_CHANGE, debug_change.is_some()),
@@ -2572,115 +2575,52 @@ mod tests {
 
     #[test]
     fn feat015_unmigrated_production_entries_remain_legacy() {
-        // FEAT-015 shipped no production contextual command. Later FEATs
-        // register bounded portable groups/slices; every entry outside the
-        // explicit list must still use the original legacy dispatcher.
-        const MIGRATED_GROUPS: &[&str] = &[
-            "voice",
-            "voicesend",
-            "voicecontrol",
-            "translate",
-            "anchor",
-            "workspace",
-            "help",
-            "home",
-            "overview",
-            "links",
-            "hotbar",
-            "transcript",
-            "turn",
-            // FEAT-018 utility group.
-            "attach",
-            "automation",
-            "jobs",
-            "mcp",
-            "network",
-            "task",
-            "update",
-            // FEAT-021 project group.
-            "init",
-            "lsp",
-            "share",
-            "goal",
-            // FEAT-019 memory group.
-            "note",
-            "memory",
-            // FEAT-020 plugins group.
-            "plugin",
-            // FEAT-022 skills group.
-            "skills",
-            "skill",
-            "review",
-            "restore",
-            // FEAT-023 session lifecycle slice.
-            "branch",
-            "compact",
-            "fork",
-            "load",
-            "new",
-            "purge",
-            "save",
-            "sessions",
-            "tree",
-            // FEAT-024 session control slice.
-            "relay",
-            "rename",
-            "resume",
-            "rc",
-            "remote-env",
-            "title",
-            "color",
-            // FEAT-025 session export slice.
-            "export",
-            // FEAT-026 completes the session structural-copy slice.
-            "structcopy",
-            // FEAT-027 config policy/status slice.
-            "permissions",
-            "status",
-            // FEAT-028 completes the config group (all 19 commands portable).
-            "config",
-            "import-claude",
-            "login",
-            "connect",
-            "disconnect",
-            "auth",
-            "workbar",
-            "whale",
-            "settings",
-            "statusline",
-            "mode",
-            "fullscreen",
-            "inline",
-            "theme",
-            "verbose",
-            "trust",
-            "logout",
-            // FEAT-029 complete debug group, including receipts and mutation.
-            "tokens",
-            "cost",
-            "receipts",
-            "balance",
-            "cache",
-            "preview-request",
-            "tools",
-            "change",
-            "system",
-            "context",
-            "edit",
-            "diff",
-            "undo",
-            "retry",
-        ];
-        for info in command_infos() {
-            if info.name == "feat015ctx" || MIGRATED_GROUPS.contains(&info.name) {
-                continue;
-            }
+        for name in [
+            "advisor",
+            "agent",
+            "copy",
+            "exit",
+            "hf",
+            "modeldb",
+            "models",
+            "pin",
+            "profile",
+            "queue",
+            "rlm",
+            "stash",
+            "subagents",
+        ] {
             assert!(
-                !registry().has_contextual_handler(info.name),
-                "/{} must remain on the legacy dispatch path",
-                info.name
+                registry().has_contextual_handler(name),
+                "/{name} must use the command contract"
             );
         }
+        let mut legacy: Vec<_> = registry()
+            .iter()
+            .filter(|command| command.contextual_handler().is_none())
+            .map(|command| command.info().name)
+            .collect();
+        legacy.sort_unstable();
+        assert_eq!(
+            legacy,
+            [
+                "auto",
+                "clear",
+                "constitution",
+                "effort",
+                "feedback",
+                "fleet",
+                "hooks",
+                "lane",
+                "model",
+                "provider",
+                "router",
+                "setup",
+                "workflow",
+                "workflows",
+            ],
+            "legacy registrations must match the remaining core migration work"
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -3533,10 +3473,6 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // FEAT-025: session export entry registers through the portable bridge
-    // (D1/D3/D5). `/export` (alias `/daochu`) declares exactly SESSION_EXPORT;
-    // `/structcopy` remains a direct host handler for FEAT-026, so the root
-    // `session` frontier stays pending.
     // ---------------------------------------------------------------------
 
     #[test]
@@ -3566,31 +3502,18 @@ mod tests {
             "/export declares export authority only"
         );
 
-        // Least authority is catalogue-wide: no other registration may declare
-        // the session-export capability.
-        let export_declarers: Vec<&str> = registry()
-            .iter()
-            .filter(|command| {
-                command
-                    .contextual_handler()
-                    .is_some_and(|handler| match handler {
-                        CommandHandler::Contextual { capabilities, .. } => {
-                            capabilities.contains(CommandCapabilities::SESSION_EXPORT)
-                        }
-                        CommandHandler::Pure(_) => false,
-                    })
-            })
-            .map(|command| command.info().name)
-            .collect();
-        // `/share` publishes the same redacted projection `/export` renders,
-        // so it holds the same authority and nothing more.
-        let mut export_declarers = export_declarers;
-        export_declarers.sort_unstable();
+        let declarers = |capability| {
+            let mut names: Vec<_> = registry().iter().filter(|command| {
+                matches!(command.contextual_handler(), Some(CommandHandler::Contextual { capabilities, .. }) if capabilities.contains(capability))
+            }).map(|command| command.info().name).collect();
+            names.sort_unstable();
+            names
+        };
         assert_eq!(
-            export_declarers,
-            vec!["export", "share"],
-            "only /export and /share may declare SESSION_EXPORT"
+            declarers(CommandCapabilities::SESSION_EXPORT),
+            ["export", "share"]
         );
+        assert_eq!(declarers(CommandCapabilities::RESPONSE_COPY), ["copy"]);
 
         // Export has no direct host fallback. Structcopy also uses the
         // contract route after FEAT-026, with its own independent authority.

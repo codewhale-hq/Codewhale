@@ -94,8 +94,6 @@ pub trait CommandNavigationContext {
     fn open_model_reference(&mut self);
     fn prepare_subagent_roster(&mut self, display: SubagentRosterDisplay);
     fn toggle_window_pin(&mut self);
-    fn completed_assistant_output(&self) -> Option<String>;
-    fn show_copy_receipt(&mut self, message: &str, is_error: bool);
     fn help_topic(&self, topic: &str) -> NavigationHelpTopic;
     fn cached_skills(&self) -> Vec<NavigationSkill>;
     fn help_is_open(&self) -> bool;
@@ -104,6 +102,17 @@ pub trait CommandNavigationContext {
     fn restore_home(&mut self);
     fn overview(&self) -> NavigationOverview;
     fn links(&self) -> NavigationLinks;
+}
+
+pub struct ResponseCopyDelivery {
+    pub requires_terminal_paste: bool,
+    pub recovery_path: Option<PathBuf>,
+    pub clipboard_result: Result<(), String>,
+}
+
+pub trait CommandResponseCopyContext {
+    fn copy_completed_response(&mut self) -> Option<ResponseCopyDelivery>;
+    fn show_copy_receipt(&mut self, message: &str, is_error: bool);
 }
 
 pub trait CommandVoiceInputContext {

@@ -106,6 +106,7 @@ impl CommandCapabilities {
     pub const VOICE_INPUT: Self = Self(1 << 31);
     pub const BACKGROUND: Self = Self(1 << 32);
     pub const COMPOSER: Self = Self(1 << 33);
+    pub const RESPONSE_COPY: Self = Self(1 << 34);
 
     /// Raw bit pattern, for tests that pin the capability-space capacity.
     ///
@@ -181,6 +182,7 @@ pub struct CommandContexts<'a> {
     work_surface: Option<&'a mut dyn crate::config::CommandWorkSurfaceContext>,
     navigation: Option<&'a mut dyn crate::navigation::CommandNavigationContext>,
     voice_input: Option<&'a mut dyn crate::navigation::CommandVoiceInputContext>,
+    response_copy: Option<&'a mut dyn crate::navigation::CommandResponseCopyContext>,
     composer: Option<&'a mut dyn CommandComposerContext>,
     background: Option<&'a mut dyn CommandBackgroundContext>,
 }
@@ -257,6 +259,7 @@ impl<'a> CommandContexts<'a> {
             navigation: None,
             voice_input: None,
             background: None,
+            response_copy: None,
             composer: None,
         }
     }
@@ -358,6 +361,23 @@ impl<'a> CommandContexts<'a> {
             "voice-input facet already set"
         );
         self
+    }
+
+    pub fn with_response_copy(
+        mut self,
+        value: &'a mut dyn crate::navigation::CommandResponseCopyContext,
+    ) -> Self {
+        assert!(
+            self.response_copy.replace(value).is_none(),
+            "response-copy facet already set"
+        );
+        self
+    }
+
+    pub fn take_response_copy(
+        &mut self,
+    ) -> Option<&'a mut dyn crate::navigation::CommandResponseCopyContext> {
+        self.response_copy.take()
     }
 
     pub fn with_composer(mut self, value: &'a mut dyn CommandComposerContext) -> Self {

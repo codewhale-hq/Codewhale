@@ -1,8 +1,9 @@
 //! `/copy` command — copy the last completed assistant response.
 
-use codewhale_command_contract::facets::{CommandPresentationContext, CommandSessionExportContext};
+use codewhale_command_contract::facets::CommandPresentationContext;
 use codewhale_command_contract::handler::{CommandCapabilities, CommandContexts, CommandHandler};
 use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
+use codewhale_command_contract::navigation::ResponseCopyDelivery;
 use codewhale_command_contract::outcome::CoreNavigationCommandResult as CommandResult;
 
 pub const COMMAND_INFO: CommandInfo = CommandInfo {
@@ -21,27 +22,22 @@ impl RegisterCommand<CommandResult> for CopyCmd {
 
     fn handler() -> CommandHandler<CommandResult> {
         CommandHandler::Contextual {
-            capabilities: CommandCapabilities::NAVIGATION
-                .union(CommandCapabilities::SESSION_EXPORT)
+            capabilities: CommandCapabilities::RESPONSE_COPY
                 .union(CommandCapabilities::PRESENTATION),
             handler: copy,
         }
     }
 }
 
-fn copy(contexts: CommandContexts<'_>, _: Option<&str>) -> CommandResult {
-    let parts = contexts.into_parts();
-    let Some(navigation) = parts.navigation else {
-        return CommandResult::error("Command capability unavailable: navigation");
+fn copy(mut contexts: CommandContexts<'_>, _: Option<&str>) -> CommandResult {
+    let Some(response_copy) = contexts.take_response_copy() else {
+        return CommandResult::error("Command capability unavailable: response copy");
     };
-    let Some(export) = parts.export else {
-        return CommandResult::error("Command capability unavailable: export");
-    };
-    let Some(presentation) = parts.presentation else {
+    let Some(presentation) = contexts.into_parts().presentation else {
         return CommandResult::error("Command capability unavailable: presentation");
     };
-    let result = match navigation.completed_assistant_output() {
-        Some(content) => deliver(export, presentation, &content),
+    let result = match response_copy.copy_completed_response() {
+        Some(delivery) => delivery_message(presentation, delivery),
         None => presentation.translate("cmd_copy_no_output", &[]),
     };
     let result = match result {
@@ -49,21 +45,22 @@ fn copy(contexts: CommandContexts<'_>, _: Option<&str>) -> CommandResult {
         Err(message) => CommandResult::error(message),
     };
     if let Some(message) = &result.message {
-        navigation.show_copy_receipt(message, result.is_error);
+        response_copy.show_copy_receipt(message, result.is_error);
     }
     result
 }
 
-fn deliver(
-    export: &dyn CommandSessionExportContext,
+fn delivery_message(
     presentation: &dyn CommandPresentationContext,
-    content: &str,
+    delivery: ResponseCopyDelivery,
 ) -> Result<String, String> {
-    let terminal = export.clipboard_requires_terminal_paste();
-    let recovery = export.write_recovery_copy(content);
-    let path = recovery.as_ref().map(|path| path.display().to_string());
-    let error = export.write_clipboard(content).err();
-    match (error.as_deref(), path.as_deref(), terminal) {
+    let path = delivery.recovery_path.map(|p| p.display().to_string());
+    let error = delivery.clipboard_result.err();
+    match (
+        error.as_deref(),
+        path.as_deref(),
+        delivery.requires_terminal_paste,
+    ) {
         (None, Some(path), true) => presentation.translate("cmd_copy_queued", &[("path", path)]),
         (None, None, true) => presentation.translate("cmd_copy_queued_no_backup", &[]),
         (None, Some(path), false) => presentation.translate("cmd_copy_success", &[("path", path)]),

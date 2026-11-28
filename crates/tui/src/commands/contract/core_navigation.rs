@@ -42,26 +42,6 @@ impl CommandNavigationContext for NavigationAdapter<'_> {
         app.status_message = Some(app.tr(MessageId::SubagentsFetching).into_owned());
     }
 
-    fn completed_assistant_output(&self) -> Option<String> {
-        self.host
-            .app
-            .borrow()
-            .completed_assistant_output_receipt()
-            .map(str::to_owned)
-    }
-
-    fn show_copy_receipt(&mut self, message: &str, is_error: bool) {
-        use crate::tui::app::{StatusToast, StatusToastLevel};
-        let level = if is_error {
-            StatusToastLevel::Error
-        } else {
-            StatusToastLevel::Info
-        };
-        self.host.app.borrow_mut().push_status_toast_record(
-            StatusToast::new(message.to_owned(), level, Some(8_000)).for_command_receipt(),
-        );
-    }
-
     fn help_topic(&self, topic: &str) -> NavigationHelpTopic {
         let app = self.host.app.borrow();
         let builtin = crate::commands::get_command_info(topic);
