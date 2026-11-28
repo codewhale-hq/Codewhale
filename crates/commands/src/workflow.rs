@@ -409,32 +409,51 @@ fn auto<A>(
     if arg.map(str::trim).is_some_and(|value| !value.is_empty()) {
         return CommandResult::error("Usage: /auto");
     }
+    let translations = || -> Result<_, String> {
+        Ok((
+            presentation.translate("auto_receipt_on", &[])?,
+            presentation.translate("auto_receipt_plan_note", &[])?,
+            presentation.translate("auto_receipt_broad_allows_paused", &[])?,
+        ))
+    };
+    let (on, plan, paused) = match translations() {
+        Ok(messages) => messages,
+        Err(reason) => return CommandResult::error(reason),
+    };
     let receipt = match host.enable_auto_review() {
         Ok(receipt) => receipt,
         Err(reason) => return CommandResult::error(reason),
     };
-    let mut messages = Vec::new();
-    for (show, key) in [
-        (true, "auto_receipt_on"),
-        (receipt.plan_mode, "auto_receipt_plan_note"),
-        (
-            receipt.broad_allows_paused,
-            "auto_receipt_broad_allows_paused",
-        ),
-    ] {
-        if show {
-            match presentation.translate(key, &[]) {
-                Ok(line) => messages.push(line),
-                Err(reason) => return CommandResult::error(reason),
-            }
-        }
-    }
-    CommandResult::message(messages.join(" "))
+    let messages = [
+        Some(on),
+        receipt.plan_mode.then_some(plan),
+        receipt.broad_allows_paused.then_some(paused),
+    ];
+    CommandResult::message(messages.into_iter().flatten().collect::<Vec<_>>().join(" "))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_keeps_posture_when_a_receipt_translation_is_unavailable() {
+        struct Host;
+        impl CommandAutoReviewContext for Host {
+            fn enable_auto_review(&mut self) -> Result<AutoReviewReceipt, String> {
+                panic!("mutated before checking receipts")
+            }
+        }
+        impl codewhale_command_contract::facets::CommandPresentationContext for Host {
+            fn translate(&self, key: &str, _: &[(&str, &str)]) -> Result<String, String> {
+                match key {
+                    "auto_receipt_broad_allows_paused" => Err(key.into()),
+                    _ => Ok(key.into()),
+                }
+            }
+        }
+        assert!(auto::<()>(&mut Host, &Host, None).is_error);
+    }
 
     #[test]
     fn workflows_cannot_dispatch_confirmation_or_saved_sources() {

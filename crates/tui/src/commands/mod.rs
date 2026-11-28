@@ -2580,7 +2580,7 @@ mod tests {
     }
 
     #[test]
-    fn feat015_unmigrated_production_entries_remain_legacy() {
+    fn feat015_all_production_entries_use_command_contract() {
         for name in [
             "advisor",
             "agent",
@@ -2619,6 +2619,10 @@ mod tests {
             ("workflows", Some(Caps::WORKFLOW_CONTROL)),
             ("auto", Some(Caps::AUTO_REVIEW.union(Caps::PRESENTATION))),
             ("router", None),
+            ("constitution", Some(Caps::CONSTITUTION)),
+            ("hooks", Some(Caps::HOOKS)),
+            ("fleet", Some(Caps::FLEET)),
+            ("lane", Some(Caps::LANE)),
         ] {
             let handler = registry().get(name).unwrap().contextual_handler().unwrap();
             let actual = match handler {
@@ -2627,16 +2631,14 @@ mod tests {
             };
             assert_eq!(actual, expected, "/{name} host capabilities");
         }
-        let mut legacy: Vec<_> = registry()
+        let legacy: Vec<_> = registry()
             .iter()
             .filter(|command| command.contextual_handler().is_none())
             .map(|command| command.info().name)
             .collect();
-        legacy.sort_unstable();
-        assert_eq!(
-            legacy,
-            ["constitution", "fleet", "hooks", "lane",],
-            "legacy registrations must match the remaining core migration work"
+        assert!(
+            legacy.is_empty(),
+            "built-in commands without portable handlers: {legacy:?}"
         );
     }
 

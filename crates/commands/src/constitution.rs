@@ -1,6 +1,4 @@
-use codewhale_command_contract::constitution::{
-    CommandConstitutionContext, ConstitutionAction, ConstitutionLocale,
-};
+use codewhale_command_contract::constitution::{ConstitutionAction, ConstitutionLocale};
 use codewhale_command_contract::handler::{CommandCapabilities, CommandContexts, CommandHandler};
 use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
 use codewhale_command_contract::model_setup::resolve_action;
@@ -239,6 +237,7 @@ Common commands:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codewhale_command_contract::constitution::CommandConstitutionContext;
 
     struct MockConstitutionContext {
         locale: ConstitutionLocale,

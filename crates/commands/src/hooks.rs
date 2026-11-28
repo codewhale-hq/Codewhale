@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use codewhale_command_contract::handler::{CommandCapabilities, CommandContexts, CommandHandler};
-use codewhale_command_contract::hooks::{CommandHooksContext, HooksAction, HooksListSnapshot};
+use codewhale_command_contract::hooks::{HooksAction, HooksListSnapshot};
 use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
 use codewhale_command_contract::model_setup::resolve_action;
 use codewhale_command_contract::outcome::CommandResult;
@@ -229,6 +229,7 @@ fn render_list<A>(snapshot: &HooksListSnapshot) -> CommandResult<A> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codewhale_command_contract::hooks::CommandHooksContext;
     use codewhale_command_contract::hooks::ProjectHooksReview;
 
     #[derive(Default)]

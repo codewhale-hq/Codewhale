@@ -54,7 +54,7 @@ if grep -En 'mode-derived-yolo-bypass|YOLO derives bypass|settings\.default_mode
 fi
 
 if grep -En 'Agent or Yolo|Plan/Agent/Yolo' \
-  crates/engine/src/core/engine/tool_catalog.rs crates/tui/src/commands/groups/core/hooks.rs; then
+  crates/engine/src/core/engine/tool_catalog.rs crates/commands/src/hooks.rs; then
   printf '%s\n' 'retired mode wording remains in tool or hooks help' >&2
   exit 1
 fi

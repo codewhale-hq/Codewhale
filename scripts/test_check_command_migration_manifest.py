@@ -418,13 +418,23 @@ class LiveGateTests(unittest.TestCase):
         frontier = doc["frontier"]
         self.assertEqual(frontier, sorted(frontier))
         self.assertEqual(len(frontier), len(set(frontier)))
-        # FEAT-018 removed utility, FEAT-019 removed memory, FEAT-020 removed plugins,
-        # FEAT-021 removed project, FEAT-022 removed skills, FEAT-029 completed debug,
-        # FEAT-026 completed session, and FEAT-028 completed config; core remains.
-        self.assertEqual(
-            set(frontier),
-            {"core"},
-        )
+        self.assertEqual(frontier, [])
+
+
+    def test_core_frontier_covers_the_live_policy_and_coordination_leaves(self) -> None:
+        core = mod.load_topology()["topology"]["core"]
+        scopes = {node["name"]: set(mod.slice_source_scope("core", node)) for node in core["slices"]}
+        group_scope = set(mod.group_source_scope("core", core, ROOT))
+        for name, modules in {
+            "core::policy": ["core_policy", "constitution"],
+            "core::coordination": ["fleet_lane/fleet", "fleet_lane/lane", "hooks", "router", "workflow"],
+        }.items():
+            sources = {f"crates/commands/src/{module}.rs" for module in modules}
+            self.assertLessEqual(sources, scopes[name])
+            self.assertLessEqual(sources, group_scope)
+            items, violations = mod.scan_leaf_handlers(sorted(sources), ROOT)
+            self.assertEqual(violations, [])
+            self.assertFalse(any(item.is_concrete_app for item in items))
 
 
 class ModelAndSetupFrontierTests(unittest.TestCase):

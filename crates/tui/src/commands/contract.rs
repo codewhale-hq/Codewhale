@@ -120,7 +120,7 @@ use codewhale_net::network_policy::NetworkPolicy;
 /// (`scripts/check-command-migration-manifest.py`) reads this exact
 /// declaration by source regex and the Rust frontier tests assert it.
 #[cfg_attr(not(test), expect(dead_code))]
-pub(crate) const PENDING_GROUPS: &[&str] = &["core"];
+pub(crate) const PENDING_GROUPS: &[&str] = &[];
 
 // ---------------------------------------------------------------------------
 // Boundary-value mappings (D8)
@@ -5817,7 +5817,7 @@ impl App {
             navigation: NavigationAdapter { host: host.clone() },
             voice_input: VoiceInputAdapter { host: host.clone() },
             fleet: FleetAdapter { host: host.clone() },
-            lane: LaneAdapter { host:host.clone() },
+            lane: LaneAdapter { host: host.clone() },
             constitution: constitution::ConstitutionAdapter { host: host.clone() },
             hooks: hooks::HooksAdapter { host },
         }

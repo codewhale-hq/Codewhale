@@ -1197,9 +1197,12 @@ UNLISTED_SLICE_ASSIGNMENT: dict[str, dict[str, list[str]]] = {
 
 
 CORE_MOVED_SOURCES = {
-    "crates/tui/src/commands/groups/core/workflow.rs": "crates/commands/src/workflow.rs",
-    "crates/tui/src/commands/groups/core/clear.rs": "crates/commands/src/core_policy.rs",
-    "crates/tui/src/commands/groups/core/effort.rs": "crates/commands/src/core_policy.rs",
+    f"crates/tui/src/commands/groups/core/{old}.rs": f"crates/commands/src/{new}.rs"
+    for old, new in {
+        "clear": "core_policy", "effort": "core_policy", "feedback": "core_policy",
+        "constitution": "constitution", "hooks": "hooks", "workflow": "workflow",
+        "fleet": "fleet_lane/fleet", "lane": "fleet_lane/lane",
+    }.items()
 }
 
 
@@ -1229,6 +1232,7 @@ def group_source_scope(group_name: str, node: dict, root: Path) -> list[str]:
         directories.append(root / "crates/commands/src/debug")
     if group_name == "core":
         scope.add("crates/commands/src/router.rs")
+        directories.append(root / "crates/commands/src/fleet_lane")
         scope = {CORE_MOVED_SOURCES.get(path, path) for path in scope}
         for slice_node in node.get("slices", []):
             if slice_node["name"] == "core::model-and-setup":

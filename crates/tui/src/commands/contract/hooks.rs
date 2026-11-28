@@ -42,15 +42,10 @@ impl CommandHooksContext for HooksAdapter<'_> {
                 command_preview: preview_command(&hook.command, 60),
             })
             .collect();
-        let problem_summaries = config
-            .problems
-            .iter()
-            .map(codewhale_engine::hooks::config::problem_summary)
-            .collect();
         HooksListSnapshot {
             enabled: config.enabled,
             hooks,
-            problem_summaries,
+            problem_summaries: problem_summaries(&config.problems),
         }
     }
 
@@ -92,16 +87,11 @@ fn render_timeout(
     }
 }
 
-#[cfg(test)]
-fn render_problems(problems: &[codewhale_config::hooks::HookConfigProblem]) -> String {
-    let mut out = String::new();
-    for problem in problems {
-        out.push_str(&format!(
-            "  - {}\n",
-            codewhale_engine::hooks::config::problem_summary(problem)
-        ));
-    }
-    out
+fn problem_summaries(problems: &[codewhale_config::hooks::HookConfigProblem]) -> Vec<String> {
+    problems
+        .iter()
+        .map(codewhale_engine::hooks::config::problem_summary)
+        .collect()
 }
 
 fn condition_summary(condition: &HookCondition) -> String {
@@ -257,7 +247,7 @@ mod tests {
         assert_eq!(render_timeout(&zeroed, &hook), "90s");
 
         let problems = zeroed.validate();
-        let rendered = render_problems(&problems);
+        let rendered = problem_summaries(&problems).join("\n");
         assert!(rendered.contains("`[hooks]` setting"), "{rendered}");
         assert!(rendered.contains("default_timeout_secs = 0"), "{rendered}");
     }
@@ -451,7 +441,7 @@ mod tests {
                 rejected: false,
             },
         ];
-        let rendered = render_problems(&problems);
+        let rendered = problem_summaries(&problems).join("\n");
         assert!(rendered.contains("rejected: `session_start` hook `gate`"));
         assert!(rendered.contains("warning: `shell_env` hook `(unnamed)`"));
         assert!(!rendered.contains('$'), "{rendered}");

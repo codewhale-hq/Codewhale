@@ -140,7 +140,7 @@ def main():
     for error in errors:
         print(f"[core-navigation-proof] FAIL: {error}")
     if not errors:
-        print("[core-navigation-proof] PASS: all 14 actual registrations, complete source closure, host parity and approved normal graph; core remains pending")
+        print("[core-navigation-proof] PASS: all 14 actual registrations, complete source closure, host parity and approved normal graph")
     return bool(errors)
 
 

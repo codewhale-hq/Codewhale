@@ -25,12 +25,11 @@ pub mod util;
 
 pub(crate) use crate::commands::session_reset::reset_conversation_state;
 
+#[cfg(test)]
 use crate::commands::CommandResult;
-use crate::commands::traits::{
-    Command, CommandGroup, ContextualCommand, FunctionCommand, RegisterCommand,
-};
-use codewhale_commands::fleet_lane::{FleetCmd, LaneCmd};
+use crate::commands::traits::{Command, CommandGroup, ContextualCommand};
 use codewhale_commands::constitution::ConstitutionCmd;
+use codewhale_commands::fleet_lane::{FleetCmd, LaneCmd};
 use codewhale_commands::hooks::HooksCmd;
 use codewhale_commands::model_setup::{
     HfCmd, ModelCmd, ModelDbCmd, ModelsCmd, ProfileCmd, ProviderCmd, SetupCmd,

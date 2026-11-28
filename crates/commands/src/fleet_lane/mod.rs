@@ -216,7 +216,12 @@ mod tests {
         else {
             panic!("expected contextual");
         };
-        let rejected = reject_handler(CommandContexts::empty(), None);
+        fleet.workers_prepared = false;
+        let rejected = reject_handler(
+            CommandContexts::empty().with_fleet(&mut fleet),
+            Some("workers"),
+        );
+        assert!(!fleet.workers_prepared);
         assert!(rejected.is_error);
         assert!(rejected.action.is_none());
         assert_eq!(

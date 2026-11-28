@@ -152,8 +152,13 @@ where
             let Some(fleet_ctx) = contexts.take_fleet() else {
                 return CommandResult::error("Command capability unavailable: fleet");
             };
-            fleet_ctx.prepare_workers_view();
-            resolve_action(FleetAction::OpenWorkers, None)
+            match A::try_from(FleetAction::OpenWorkers) {
+                Ok(action) => {
+                    fleet_ctx.prepare_workers_view();
+                    CommandResult::action(action)
+                }
+                Err(reason) => CommandResult::error(reason.to_string()),
+            }
         }
         "help" | "?" => {
             let Some(fleet_ctx) = contexts.take_fleet() else {
