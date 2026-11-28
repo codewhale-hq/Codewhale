@@ -705,18 +705,17 @@ fn wait_child_bounded(child: &mut Child, grace: Duration) -> bool {
 }
 
 /// Bounded wait for the direct child to exit without reaping it. Returns true
-/// once it has exited (or is no longer an unreaped child of this process),
+/// once it has exited, propagates an observation error, and returns
 /// false when the grace elapsed first.
 #[cfg(unix)]
-fn wait_leader_exit_until(child: &Child, deadline: Instant) -> bool {
+fn wait_leader_exit_until(child: &Child, deadline: Instant) -> std::io::Result<bool> {
     loop {
-        match codewhale_runtime::process_tree::leader_exited_unreaped(child.id()) {
-            Ok(true) | Err(_) => return true,
-            Ok(false) => {}
+        if codewhale_runtime::process_tree::leader_exited_unreaped(child.id())? {
+            return Ok(true);
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return false;
+            return Ok(false);
         }
         std::thread::sleep(remaining.min(Duration::from_millis(10)));
     }
@@ -733,7 +732,7 @@ fn terminate_child_process_group(child: &mut Child) -> std::io::Result<()> {
     // Cooperative stop first so shells and their children can run traps and
     // clean up; bounded so a SIGTERM-ignoring command cannot stall the caller.
     let _ = signal_child_process_group(child, libc::SIGTERM);
-    if wait_leader_exit_until(child, Instant::now() + KILL_TERM_GRACE) {
+    if wait_leader_exit_until(child, Instant::now() + KILL_TERM_GRACE)? {
         // The leader exited on SIGTERM; descendants may linger, so SIGKILL
         // the rest of the group (ESRCH when it is already empty) while the
         // unreaped leader still pins the group id, then reap it.
@@ -1097,6 +1096,24 @@ impl ShellChild {
         }
     }
 
+    fn poll_owned_exit(&mut self) -> std::io::Result<Option<ShellExitStatus>> {
+        #[cfg(unix)]
+        match self {
+            Self::Process(child) => {
+                match codewhale_runtime::process_tree::leader_exited_unreaped(child.id()) {
+                    Ok(false) => return Ok(None),
+                    Ok(true) => {
+                        let _ = kill_child_process_group(child);
+                    }
+                    Err(_) => {}
+                }
+            }
+            #[cfg(not(target_env = "ohos"))]
+            Self::Pty(_) => {}
+        }
+        self.try_wait()
+    }
+
     #[cfg(not(windows))]
     fn kill(&mut self) -> std::io::Result<()> {
         match self {
@@ -1435,7 +1452,6 @@ pub struct BackgroundShell {
     /// Write end of the process-group watcher's pipe for `Managed` shells;
     /// closing it (drop, or the TUI dying) kills the job's group (#6654).
     #[cfg(unix)]
-    #[allow(dead_code, reason = "held only so its Drop closes the pipe")]
     parent_death_watch: Option<std::io::PipeWriter>,
     stdout_thread: Option<std::thread::JoinHandle<()>>,
     stderr_thread: Option<std::thread::JoinHandle<()>>,
@@ -1609,7 +1625,7 @@ impl BackgroundShell {
             .then(|| self.child.as_ref().and_then(ShellChild::process_id))
             .flatten();
         let completed = if let Some(ref mut child) = self.child {
-            match child.try_wait() {
+            match child.poll_owned_exit() {
                 Ok(Some(status)) => {
                     self.terminal_exit_confirmed = true;
                     self.exit_code = status.code;
@@ -1619,7 +1635,7 @@ impl BackgroundShell {
                         ShellStatus::Failed
                     };
                     self.heavy_permit.take();
-                    self.collect_output();
+                    self.finish_child();
                     self.scratch.take();
                     true
                 }
@@ -1628,7 +1644,7 @@ impl BackgroundShell {
                     self.status = ShellStatus::Failed;
                     self.wait_failed = true;
                     self.heavy_permit.take();
-                    self.collect_output();
+                    self.finish_child();
                     self.scratch.take();
                     true
                 }
@@ -1741,26 +1757,9 @@ impl BackgroundShell {
         stdout.saturating_add(stderr)
     }
 
-    /// Collect output from the background threads
-    fn collect_output(&mut self) {
-        // Kill the whole process group before joining reader threads.
-        // When the shell spawned persistent background jobs (e.g. `nohup curl`),
-        // those subprocesses keep the pipe write-ends open after the shell exits.
-        // Without this kill, the reader join would block until the descendant
-        // exits, freezing the UI event loop that calls list_jobs() → poll() →
-        // collect_output(). The joins themselves are additionally bounded
-        // (READER_JOIN_GRACE) because a descendant in its own session/process
-        // group escapes even the group kill (#52).
+    fn finish_child(&mut self) {
         #[cfg(unix)]
-        if let Some(child) = self.child.as_mut() {
-            match child {
-                ShellChild::Process(proc) => {
-                    let _ = kill_child_process_group(proc);
-                }
-                #[cfg(not(target_env = "ohos"))]
-                ShellChild::Pty(_) => {}
-            }
-        }
+        drop(self.parent_death_watch.take());
         #[cfg(windows)]
         terminate_and_close_windows_job(self.windows_job.take());
         if let Some(handle) = self.stdout_thread.take() {
@@ -1987,7 +1986,7 @@ impl BackgroundShell {
         self.status = ShellStatus::Killed;
         self.mark_finished();
         self.heavy_permit.take();
-        self.collect_output();
+        self.finish_child();
         self.scratch.take();
         self.publish_lifecycle_best_effort();
         Ok(())
@@ -3127,8 +3126,8 @@ impl ShellManager {
             }
 
             #[cfg(unix)]
-            let completed =
-                wait_leader_exit_until(&child, deadline) && tree.kill_if_leader_exited();
+            let completed = wait_leader_exit_until(&child, deadline).unwrap_or(true)
+                && tree.kill_if_leader_exited();
             #[cfg(not(unix))]
             let completed = child
                 .wait_timeout(deadline.saturating_duration_since(Instant::now()))?

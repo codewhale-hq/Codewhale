@@ -2685,6 +2685,13 @@ fn test_background_execution() {
 
     assert_eq!(final_result.status, ShellStatus::Completed);
     assert!(final_result.stdout.contains("done"));
+    assert_eq!(final_result.exit_code, Some(0));
+    assert_eq!(
+        manager.kill(&task_id).unwrap().status,
+        ShellStatus::Completed
+    );
+    #[cfg(unix)]
+    assert!(manager.processes[&task_id].parent_death_watch.is_none());
 }
 
 #[test]
@@ -2713,6 +2720,9 @@ fn test_kill() {
     // Kill it
     let killed = manager.kill(&task_id).expect("kill");
     assert_eq!(killed.status, ShellStatus::Killed);
+    assert_eq!(manager.kill(&task_id).unwrap().status, ShellStatus::Killed);
+    #[cfg(unix)]
+    assert!(manager.processes[&task_id].parent_death_watch.is_none());
 }
 
 #[test]
