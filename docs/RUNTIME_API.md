@@ -114,9 +114,9 @@ does not add account/Computer ownership scopes to Engine-local device tokens.
 
 `GET /v1/workspace/files/search?query=runtime&limit=20` returns
 `{"paths":["src/runtime.rs"]}` through the existing authenticated `/v1/*`
-router. It searches only the server's configured workspace, not a thread's
-workspace or the process's current directory. No workspace/path override is
-accepted. The response contains workspace-relative file paths with `/`
+router. Pass `thread_id` to search the workspace recorded for that thread.
+Omit it to search the server's configured workspace. The response contains
+workspace-relative file paths with `/`
 separators, never file contents, absolute paths, or directories.
 
 - `query` is a literal partial filename/path, without an `@` prefix, at most
@@ -2642,12 +2642,11 @@ know about. Input is attributable by route: `input` is the client's writer,
   exited; observe the exit through `output` (`running` / `exit_code`) rather
   than the acknowledgement
 
-Every call resolves the thread's recorded workspace again. An unknown thread
-is `404`; a workspace that is missing, replaced by a link or changed during
-resolution is `409` `thread_workspace_unavailable`; and an identity that is not
-one of this thread's live shells in that workspace (another thread's, another
-workspace's, a reset shell's, or one from before an Engine restart) is `404`
-`terminal_not_found`. The Engine never substitutes a shell with the same name.
+Every call resolves the thread's recorded workspace again, including directory
+aliases. An unknown thread returns `404`. A missing workspace or a path that
+fails validation during resolution returns `409` `thread_workspace_unavailable`.
+The Engine returns `404` `terminal_not_found` if the shell belongs to another
+thread or workspace, has been reset, or predates the current Engine process. The Engine never substitutes a shell with the same name.
 
 Reconnect and restart semantics:
 
@@ -3017,18 +3016,21 @@ thread deletion.
   `memory`): show "not measured yet", never zero. An unknown thread is 404.
 
 **Thread-scoped reads.** `GET /v1/git`, `/v1/changes`, `/v1/diff`,
-`/v1/workspace/diff`, `/v1/git/graph`, `/v1/workspace/files` and
-`/v1/workspace/files/read` accept an optional `thread_id`. With it, the route
+`/v1/workspace/diff`, `/v1/git/graph`, `/v1/workspace/files`,
+`/v1/workspace/files/search` and `/v1/workspace/files/read` accept an optional `thread_id`. With it, the route
 reads the workspace recorded on that thread (the runtime store's thread record
 is the only source) instead of the server's workspace, through the same
-confined paths. Without it the route behaves exactly as before. An unknown
-thread is 404; a recorded workspace that is not an absolute path, or that is
-missing, replaced by a link or changed during resolution is 409 with
-`error.code` `thread_workspace_unavailable`. Mutating git routes, file
-writes, `/v1/workspace/status` and file search stay on the server workspace.
-Clients must require the `thread_scoped_reads` capability on
-`GET /v1/runtime/info` before sending `thread_id`: older Engines reject the
-unknown query parameter.
+confined paths. Omitting the parameter uses the server workspace. An unknown
+thread returns 404. The Engine resolves the recorded absolute directory path,
+including an alias selected when the thread was created. If the directory
+is missing or the path fails validation during resolution, the Engine returns
+409 with `error.code` `thread_workspace_unavailable`. Mutating git routes, file
+writes and `/v1/workspace/status` stay on the server workspace.
+Check the `thread_scoped_reads` capability on `GET /v1/runtime/info` before
+sending `thread_id`. Engine 0.10.4 advertises the capability for other reads
+and returns HTTP 400 for scoped file search. A client receiving
+that response should show that search is unavailable for this conversation.
+Retrying without the thread ID would search the server workspace.
 
 **Status unavailable.** `GET /v1/workspace/status` and `GET /v1/git` report
 `status_unavailable: true` when `git status` could not be read (git failed to

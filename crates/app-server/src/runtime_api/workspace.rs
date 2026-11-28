@@ -69,6 +69,7 @@ pub(super) struct WorkspaceFileSearchQuery {
     #[serde(default)]
     query: String,
     limit: Option<usize>,
+    thread_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,48 +91,51 @@ pub(super) async fn workspace_file_search(
     if !(1..=100).contains(&limit) {
         return Err(ApiError::bad_request("limit must be between 1 and 100"));
     }
+    let workspace = scoped_workspace(&state, query.thread_id.as_deref()).await?;
     if query.query.trim().is_empty() {
         return Ok(Json(WorkspaceFileSearchResponse { paths: Vec::new() }));
     }
-    let paths = tokio::task::spawn_blocking(move || {
-        collect_workspace_file_suggestions(&state.workspace, &query.query, limit)
+    let paths = tokio::task::spawn_blocking(move || -> Result<_, ApiError> {
+        let root = if query.thread_id.is_some() {
+            workspace
+        } else {
+            workspace
+                .canonicalize()
+                .map_err(|_| ApiError::internal("workspace is unavailable"))?
+        };
+        Ok(collect_workspace_file_suggestions(
+            &root,
+            &query.query,
+            limit,
+        ))
     })
     .await
     .map_err(|_| ApiError::internal("workspace file search failed"))??;
     Ok(Json(WorkspaceFileSearchResponse { paths }))
 }
 
-fn collect_workspace_file_suggestions(
-    root: &FsPath,
-    query: &str,
-    limit: usize,
-) -> Result<Vec<String>, ApiError> {
+fn collect_workspace_file_suggestions(root: &FsPath, query: &str, limit: usize) -> Vec<String> {
     use codewhale_runtime::working_set::{Workspace, rank_completion_candidates};
 
-    let root = root
-        .canonicalize()
-        .map_err(|_| ApiError::internal("workspace is unavailable"))?;
-    let workspace = Workspace::with_cwd(root.clone(), None);
+    let workspace = Workspace::with_cwd(root.to_owned(), None);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     // Reuse the composer's bounded discovery and ignore policy, without its
     // divergent-cwd pass or symlink-directory traversal. No persistent index.
     let candidates = workspace
         .completion_discovery_candidates(20_000, &|| std::time::Instant::now() >= deadline);
-    Ok(
-        rank_completion_candidates(&candidates, query, candidates.len())
-            .into_iter()
-            .filter(|candidate| {
-                let path = FsPath::new(candidate);
-                path.components()
-                    .all(|component| matches!(component, std::path::Component::Normal(_)))
-                    && root
-                        .join(path)
-                        .canonicalize()
-                        .is_ok_and(|resolved| resolved.starts_with(&root) && resolved.is_file())
-            })
-            .take(limit)
-            .collect(),
-    )
+    rank_completion_candidates(&candidates, query, candidates.len())
+        .into_iter()
+        .filter(|candidate| {
+            let path = FsPath::new(candidate);
+            path.components()
+                .all(|component| matches!(component, std::path::Component::Normal(_)))
+                && root
+                    .join(path)
+                    .canonicalize()
+                    .is_ok_and(|resolved| resolved.starts_with(root) && resolved.is_file())
+        })
+        .take(limit)
+        .collect()
 }
 
 #[derive(Debug, Serialize)]
@@ -1187,8 +1191,7 @@ mod tests {
         ] {
             std::fs::write(root.join(name), "not returned")?;
         }
-        let paths = collect_workspace_file_suggestions(root, ".rs", 100)
-            .map_err(|error| anyhow::anyhow!(error.message))?;
+        let paths = collect_workspace_file_suggestions(&root.canonicalize()?, ".rs", 100);
         assert_eq!(paths, [".agents/guide.rs", "local.rs"]);
         Ok(())
     }
@@ -1212,8 +1215,7 @@ mod tests {
         symlink(&other, root.join(".agents"))?;
         symlink(other.join("missing.rs"), root.join("broken.rs"))?;
         symlink(&root, root.join("loop"))?;
-        let paths = collect_workspace_file_suggestions(&root, ".rs", 100)
-            .map_err(|error| anyhow::anyhow!(error.message))?;
+        let paths = collect_workspace_file_suggestions(&root.canonicalize()?, ".rs", 100);
         assert_eq!(paths, ["alias.rs", "inside.rs"]);
         Ok(())
     }

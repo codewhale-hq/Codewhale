@@ -2692,6 +2692,42 @@ async fn workspace_file_search_auth_matching_and_bounds() -> Result<()> {
             .await?;
         assert_eq!(body, json!({"paths": expected}), "query={query:?}");
     }
+    let other_workspace = tmp.path().join("thread-workspace");
+    fs::create_dir_all(other_workspace.join("subfolder"))?;
+    fs::write(other_workspace.join("subfolder/thread-match.rs"), "")?;
+    let thread: Value = client
+        .post(format!("http://{addr}/v1/threads"))
+        .bearer_auth("file-search-token")
+        .json(&json!({ "workspace": other_workspace, "allow_shell": false }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let thread_id = thread["id"].as_str().context("missing thread id")?;
+    let scoped = |id: &str| {
+        client
+            .get(search_url(&[("query", "match"), ("thread_id", id)]))
+            .bearer_auth("file-search-token")
+    };
+    let body: Value = scoped(thread_id)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(body, json!({ "paths": ["subfolder/thread-match.rs"] }));
+    assert_eq!(
+        scoped("missing-thread").send().await?.status(),
+        StatusCode::NOT_FOUND
+    );
+    fs::rename(&other_workspace, tmp.path().join("moved-workspace"))?;
+    let missing = scoped(thread_id).send().await?;
+    assert_eq!(missing.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        missing.json::<Value>().await?["error"]["code"],
+        "thread_workspace_unavailable"
+    );
     for (limit, expected_count) in [(None, 20), (Some("1"), 1), (Some("100"), 100)] {
         let mut url = search_url(&[("query", "bounded")]);
         if let Some(limit) = limit {

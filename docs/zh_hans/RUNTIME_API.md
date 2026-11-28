@@ -103,8 +103,8 @@ Drive 保留现有 Runtime/控制权限，但不能铸造、列举或撤销设�
 ### 工作区文件建议
 
 `GET /v1/workspace/files/search?query=runtime&limit=20` 通过既有的、需认证的
-`/v1/*` 路由返回 `{"paths":["src/runtime.rs"]}`。它只搜索服务器配置的工作区，
-不搜索线程的工作区或进程的当前目录。不接受任何工作区/路径覆盖参数。
+`/v1/*` 路由返回 `{"paths":["src/runtime.rs"]}`。传入 `thread_id` 时，搜索该线程记录的工作区。
+省略该参数时，搜索服务器配置的工作区。
 响应包含以 `/` 分隔的工作区相对文件路径，绝不包含文件内容、绝对路径或目录。
 
 - `query` 是字面的文件名/路径片段，不带 `@` 前缀，最多 256 个 UTF-8 字节。缺失、
@@ -1846,8 +1846,8 @@ token 但成本为 `0.0`。于 v0.8.10 加入（#564）。
   `{ "terminal_id", "killed" }`，若它早已退出则 `killed: false`；通过
   `output`（`running` / `exit_code`）观察退出，而不是看这次确认
 
-每次调用都会重新解析线程记录的工作区。未知线程返回 `404`；缺失、被替换为链接
-或在解析期间发生变化的工作区返回 `409` `thread_workspace_unavailable`；
+每次调用都会重新解析线程记录的工作区，包括目录别名。未知线程返回 `404`。
+工作区缺失或路径在解析期间未通过验证时返回 `409` `thread_workspace_unavailable`。
 不属于该线程在该工作区中的活动 shell 的标识（其他线程的、其他工作区的、
 已重置的，或 Engine 重启之前的）返回 `404` `terminal_not_found`。
 Engine 从不以同名 shell 代替。
@@ -2087,12 +2087,16 @@ POST 前保留预期指纹，并在响应及按键 GET 恢复时核对，之后�
   被解析出来的响应。
 
 **线程范围的读取。** `GET /v1/git`、`/v1/changes`、`/v1/diff`、
-`/v1/workspace/diff`、`/v1/git/graph`、`/v1/workspace/files` 与
-`/v1/workspace/files/read` 接受可选的 `thread_id`。提供时，路由读取该线程记录的工作区
+`/v1/workspace/diff`、`/v1/git/graph`、`/v1/workspace/files`、
+`/v1/workspace/files/search` 与 `/v1/workspace/files/read` 接受可选的 `thread_id`。提供时，路由读取该线程记录的工作区
 （唯一来源是运行时存储中的线程记录），而不是服务器的工作区，并走同样的受限路径。
-不提供时行为与之前完全一致。未知线程返回 404；记录的工作区不是绝对路径、已不存在、被替换为链接或在解析期间发生变化时，
-返回 409，`error.code` 为 `thread_workspace_unavailable`。会修改内容的 git 路由、文件写入、
-`/v1/workspace/status` 与文件搜索仍使用服务器工作区。
+省略该参数时使用服务器工作区。未知线程返回 404。Engine 解析线程记录的目录绝对路径，
+包括创建线程时选定的目录别名。如果目录已不存在，或路径在解析期间未通过验证，
+则返回 409，`error.code` 为 `thread_workspace_unavailable`。会修改内容的 git 路由、文件写入、
+`/v1/workspace/status` 仍使用服务器工作区。
+发送 `thread_id` 前，应检查 `GET /v1/runtime/info` 的 `thread_scoped_reads` 能力。
+Engine 0.10.4 为其他读取操作声明了该能力，对线程内的文件搜索返回 HTTP 400。
+客户端应提示当前对话的文件搜索不可用。省略线程 ID 重试会搜索服务器的工作区。
 
 **Git**（工作区仓库操作，APPS-106）
 - `GET /v1/git` — 状态详情：`git_repo`、`branch`、`head`
