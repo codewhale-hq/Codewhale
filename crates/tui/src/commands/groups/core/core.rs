@@ -1,152 +1,9 @@
-//! Conversation reset and core command host tests.
-
-use crate::tui::app::{App, AppAction};
-#[cfg(test)]
+use crate::tui::app::AppAction;
 use crate::tui::views::ModalKind;
-#[cfg(test)]
 use codewhale_config::ProviderKind;
-#[cfg(test)]
 use codewhale_engine::reasoning_preference::ReasoningEffort;
-use codewhale_localization::{MessageId, tr};
 
 use super::CommandResult;
-
-/// Clear conversation history
-pub fn clear(app: &mut App) -> CommandResult {
-    if app.session_transition_blocked() {
-        // The same gate the lifecycle commands consult, so the refusal owes
-        // the same explanation. The sentence stays localized; a blocker row
-        // is data (id, status, elapsed, summary) and is not translated
-        // anywhere else either.
-        let mut message = tr(app.ui_locale, MessageId::ClearConversationBusy).to_string();
-        for blocker in app.session_transition_blockers() {
-            message.push_str("\n  • ");
-            message.push_str(&blocker);
-        }
-        return CommandResult::error(message);
-    }
-    let new_id = uuid::Uuid::new_v4().to_string();
-    let queue_transition = match crate::tui::ui::prepare_offline_queue_transition(app, &new_id) {
-        Ok(transition) => transition,
-        Err(error) => return CommandResult::error(error),
-    };
-    if !reset_conversation_state(app) {
-        return CommandResult::error(
-            tr(app.ui_locale, MessageId::ClearConversationBusy).to_string(),
-        );
-    }
-    // The App owns the session id: it keys the turn-start crash checkpoint
-    // and every autosave, so mint the next id here (as `/new` does) rather
-    // than letting the engine generate one the App only learns about from
-    // `SessionUpdated`. Two ids for one conversation orphan the checkpoint.
-    crate::tui::ui::install_offline_queue_transition(app, queue_transition);
-    app.set_current_session_id(Some(new_id.clone()));
-    if let Err(error) = crate::tui::ui::expect_fresh_session(app, &new_id) {
-        return CommandResult::error(error);
-    }
-    app.current_session_metadata = None;
-    app.session_title = None;
-    app.window_title = None;
-    app.composer_color = None;
-    let locale = app.ui_locale;
-    let message = tr(locale, MessageId::ClearConversation).to_string();
-    CommandResult::with_message_and_action(
-        message,
-        AppAction::SyncSession {
-            session_id: Some(new_id),
-            messages: Vec::new(),
-            system_prompt: None,
-            model: app.model.clone(),
-            workspace: app.workspace.clone(),
-            mode: app.mode,
-            agent_preset: app.agent_preset(),
-        },
-    )
-}
-
-/// Reset the active conversation without choosing the next session id.
-pub(crate) fn reset_conversation_state(app: &mut App) -> bool {
-    // Work state is the only contended portion. Acquire and clear it first so
-    // `/clear` and `/new` are all-or-nothing rather than losing conversation
-    // state while leaving an old To-do attached to the next session.
-    if !app.clear_todos() {
-        return false;
-    }
-    // Explicit reset discards the queue it was invoked on. Capture its owner
-    // before `/clear` or `/new` installs the next session id.
-    if let Some(lease) = app.offline_queue_lease.clone() {
-        crate::tui::persistence_actor::persist(
-            crate::tui::persistence_actor::PersistRequest::ClearOfflineQueue { lease },
-        );
-    }
-    // Atomically retire background accounting before zeroing the session.
-    // Late reports retain the old scope token and are discarded instead of
-    // appearing in the new conversation.
-    let _settled_old_cost_scope = codewhale_engine::cost_status::close_current_scope();
-    app.clear_history();
-    app.mark_history_updated();
-    app.clear_api_messages();
-    app.system_prompt = None;
-    app.goal = crate::tui::app::HostGoalState::default();
-    app.last_known_goal_state = None;
-    app.pending_goal_controls.clear();
-    app.pending_goal_controls
-        .push_back(crate::tui::app::PendingGoalControl {
-            goal_id: None,
-            intent: crate::tui::app::GoalControlIntent::SetStatus {
-                status: codewhale_engine::tools::goal::GoalStatus::Active,
-                clear: true,
-            },
-            dispatched: false,
-        });
-    app.goal_continuation_waiting = false;
-    app.paused_goal_objective = None;
-    app.paused = false;
-    app.pausable = false;
-    app.viewport.transcript_selection.clear();
-    app.clear_visible_queued_messages();
-    app.held_restored_queue = 0;
-    app.queued_draft = None;
-    app.session.total_tokens = 0;
-    app.session.total_conversation_tokens = 0;
-    app.last_billed_input_tokens = None;
-    app.session.reset_token_breakdown();
-    app.session.session_cost = 0.0;
-    app.session.session_cost_cny = 0.0;
-    app.session.subagent_cost = 0.0;
-    app.session.subagent_cost_cny = 0.0;
-    app.session.subagent_usage_sources.clear();
-    app.session.displayed_cost_high_water = 0.0;
-    app.session.displayed_cost_high_water_cny = 0.0;
-    app.reset_cost_coverage();
-    app.tool_log.clear();
-    app.tool_cells.clear();
-    app.tool_details_by_cell.clear();
-    app.exploring_entries.clear();
-    app.ignored_tool_calls.clear();
-    app.pending_tool_uses.clear();
-    app.last_exec_wait_command = None;
-    app.session.last_prompt_tokens = None;
-    app.session.last_completion_tokens = None;
-    app.session.last_prompt_cache_hit_tokens = None;
-    app.session.last_prompt_cache_miss_tokens = None;
-    app.session.last_reasoning_replay_tokens = None;
-    app.session.turn_cache_history.clear();
-    app.session.last_cache_inspection = None;
-    app.session.last_warmup_key = None;
-    app.session.last_tool_catalog = None;
-    app.session.last_base_url = None;
-    // A fresh conversation inherits neither this one's denials nor its
-    // "approve for session" grants (UX-8).
-    app.approval_session_denied.clear();
-    app.approval_session_approved.clear();
-    app.auto_review_blocked_receipts.clear();
-    app.pending_auto_review_retry = None;
-    // Nor this one's child-agent approval cards, footer rows, or web-mirror
-    // copies: the reset finalizes those children engine-side.
-    crate::tui::pending_requests::clear_all(app);
-    true
-}
 
 #[cfg(test)]
 mod tests {
@@ -265,6 +122,20 @@ mod tests {
     }
 
     #[test]
+    fn effort_alias_rejects_unknown_input_without_committing_an_effort() {
+        let mut app = create_test_app();
+        let before = app.reasoning_effort;
+        let invalid = crate::commands::execute("/thinking imaginary-tier", &mut app);
+        assert!(invalid.is_error);
+        assert!(invalid.message.unwrap().contains("Usage: /effort"));
+        assert_eq!(app.reasoning_effort, before);
+        let receipt = crate::commands::execute("/effort high", &mut app);
+        assert!(!receipt.is_error);
+        assert_eq!(receipt.message.as_deref(), Some("Effort set to high"));
+        assert_eq!(app.reasoning_effort, ReasoningEffort::High);
+    }
+
+    #[test]
     fn test_clear_resets_all_state() {
         let mut app = create_test_app();
         // Set up some state
@@ -291,7 +162,7 @@ mod tests {
                 storage_path: PathBuf::from("/tmp/tool_outputs/call-big.txt"),
             });
 
-        let result = clear(&mut app);
+        let result = crate::commands::execute("/clear", &mut app);
         assert!(result.message.is_some());
         assert!(app.history.is_empty());
         assert!(app.api_messages.is_empty());
@@ -335,7 +206,7 @@ mod tests {
         let plan_state = app.plan_state.clone();
         let _held = plan_state.try_lock().expect("hold plan lock");
 
-        let result = clear(&mut app);
+        let result = crate::commands::execute("/clear", &mut app);
 
         assert!(result.is_error);
         assert!(result.action.is_none());
@@ -361,7 +232,7 @@ mod tests {
         app.is_loading = true;
         app.runtime_turn_status = Some("in_progress".to_string());
 
-        let result = clear(&mut app);
+        let result = crate::commands::execute("/clear", &mut app);
 
         assert!(result.is_error);
         assert!(result.action.is_none());
@@ -413,7 +284,7 @@ mod tests {
             recorded_at: Instant::now(),
         });
 
-        clear(&mut app);
+        crate::commands::execute("/clear", &mut app);
 
         assert_eq!(app.session.total_tokens, 0);
         assert_eq!(app.session.total_conversation_tokens, 0);

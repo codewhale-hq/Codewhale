@@ -122,6 +122,7 @@ mod debug_group;
 #[cfg(test)]
 mod debug_mutation_host_tests;
 mod session_group;
+mod session_reset;
 
 use crate::tui::app::{App, AppAction};
 use codewhale_config::AppMode;
@@ -2605,6 +2606,10 @@ mod tests {
             ("model", Some(Caps::MODEL_SELECTION)),
             ("provider", Some(Caps::PROVIDER_ROUTES)),
             ("setup", None),
+            ("clear", Some(Caps::CLEAR.union(Caps::PRESENTATION))),
+            ("effort", Some(Caps::EFFORT.union(Caps::PRESENTATION))),
+            ("feedback", Some(Caps::FEEDBACK.union(Caps::PRESENTATION))),
+            ("router", None),
         ] {
             let handler = registry().get(name).unwrap().contextual_handler().unwrap();
             let actual = match handler {
@@ -2623,14 +2628,10 @@ mod tests {
             legacy,
             [
                 "auto",
-                "clear",
                 "constitution",
-                "effort",
-                "feedback",
                 "fleet",
                 "hooks",
                 "lane",
-                "router",
                 "workflow",
                 "workflows",
             ],

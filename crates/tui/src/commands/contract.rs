@@ -35,6 +35,7 @@ use std::rc::Rc;
 mod composer;
 mod config_main;
 mod core_navigation;
+mod core_policy;
 mod model_reference;
 mod model_setup;
 use core_navigation::{NavigationAdapter, VoiceInputAdapter};
@@ -228,6 +229,7 @@ pub(crate) fn key_to_message_id(key: &'static str) -> Option<MessageId> {
         "cmd_memory_description" => MessageId::CmdMemoryDescription,
         "cmd_mode_description" => MessageId::CmdModeDescription,
         "cmd_model_db_description" => MessageId::CmdModelDbDescription,
+        "cmd_router_description" => MessageId::CmdRouterDescription,
         "cmd_model_description" => MessageId::CmdModelDescription,
         "cmd_models_description" => MessageId::CmdModelsDescription,
         "cmd_network_description" => MessageId::CmdNetworkDescription,
@@ -2598,6 +2600,7 @@ pub(crate) fn resolve_message_id(key: &str) -> Option<MessageId> {
         .or_else(|| config_policy_messages::resolve(key))
         .or_else(|| config_messages::resolve(key))
         .or_else(|| core_navigation::resolve_message(key))
+        .or_else(|| core_policy::resolve_message(key))
 }
 
 impl CommandPresentationContext for PresentationAdapter<'_> {
@@ -5517,6 +5520,9 @@ pub(crate) struct CommandContextBundle<'a> {
     session: SessionAdapter<'a>,
     composer: composer::ComposerAdapter<'a>,
     model: ModelAdapter<'a>,
+    feedback: core_policy::PolicyAdapter<'a>,
+    effort: core_policy::PolicyAdapter<'a>,
+    clear: core_policy::PolicyAdapter<'a>,
     provider_routes: ModelAdapter<'a>,
     model_selection: ModelAdapter<'a>,
     cost: CostAdapter<'a>,
@@ -5561,6 +5567,15 @@ impl<'a> CommandContextBundle<'a> {
         }
         if capabilities.contains(CommandCapabilities::PROVIDER_ROUTES) {
             contexts = contexts.with_provider_routes(&mut self.provider_routes);
+        }
+        if capabilities.contains(CommandCapabilities::FEEDBACK) {
+            contexts = contexts.with_feedback(&mut self.feedback);
+        }
+        if capabilities.contains(CommandCapabilities::EFFORT) {
+            contexts = contexts.with_effort(&mut self.effort);
+        }
+        if capabilities.contains(CommandCapabilities::CLEAR) {
+            contexts = contexts.with_clear(&mut self.clear);
         }
         if capabilities.contains(CommandCapabilities::MODEL_SELECTION) {
             contexts = contexts.with_model_selection(&mut self.model_selection);
@@ -5726,6 +5741,9 @@ impl App {
             session: SessionAdapter { host: host.clone() },
             composer: composer::ComposerAdapter { host: host.clone() },
             model: ModelAdapter { host: host.clone() },
+            feedback: core_policy::PolicyAdapter { host: host.clone() },
+            effort: core_policy::PolicyAdapter { host: host.clone() },
+            clear: core_policy::PolicyAdapter { host: host.clone() },
             provider_routes: ModelAdapter { host: host.clone() },
             model_selection: ModelAdapter { host: host.clone() },
             cost: CostAdapter { host: host.clone() },

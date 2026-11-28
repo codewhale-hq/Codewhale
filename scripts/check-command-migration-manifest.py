@@ -1191,8 +1191,14 @@ def scan_leaf_handlers(leaf_scope: list[str], root: Path) -> tuple[list[RustItem
 UNLISTED_SLICE_ASSIGNMENT: dict[str, dict[str, list[str]]] = {
     "core": {
         "core::navigation": ["crates/tui/src/commands/groups/core/copy.rs"],
-        "core::coordination": ["crates/tui/src/commands/groups/core/router.rs"],
+        "core::coordination": ["crates/commands/src/router.rs"],
     },
+}
+
+
+CORE_MOVED_SOURCES = {
+    "crates/tui/src/commands/groups/core/clear.rs": "crates/commands/src/core_policy.rs",
+    "crates/tui/src/commands/groups/core/effort.rs": "crates/commands/src/core_policy.rs",
 }
 
 
@@ -1203,7 +1209,7 @@ def slice_source_scope(group_name: str, slice_node: dict) -> list[str]:
         return sorted(path.replace("crates/tui/src/commands/groups/core/", "crates/commands/src/model_setup/", 1)
                       for path in slice_node.get("scope", []))
     extra = UNLISTED_SLICE_ASSIGNMENT.get(group_name, {}).get(slice_node["name"], [])
-    return sorted(set(slice_node.get("scope", [])) | set(extra))
+    return sorted({CORE_MOVED_SOURCES.get(path, path) for path in slice_node.get("scope", [])} | set(extra))
 
 
 def group_source_scope(group_name: str, node: dict, root: Path) -> list[str]:
@@ -1221,6 +1227,8 @@ def group_source_scope(group_name: str, node: dict, root: Path) -> list[str]:
                               "crates/commands/src/debug/", 1) for path in scope}
         directories.append(root / "crates/commands/src/debug")
     if group_name == "core":
+        scope.add("crates/commands/src/router.rs")
+        scope = {CORE_MOVED_SOURCES.get(path, path) for path in scope}
         for slice_node in node.get("slices", []):
             if slice_node["name"] == "core::model-and-setup":
                 scope.difference_update(slice_node["scope"])

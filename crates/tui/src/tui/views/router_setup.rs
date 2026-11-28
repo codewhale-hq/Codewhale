@@ -57,77 +57,21 @@ pub(crate) const JEV_TYPESAFE_MODEL: &str = "jev-latest";
 /// Router timeout the Jev preset writes; Jev's p50 is ~0.1–0.2 s.
 const JEV_TIMEOUT_SECS: u64 = 2;
 
-/// A Router setup preset.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RouterPreset {
-    /// Jev; `None` picks whichever route has a key (OpenRouter first).
-    Jev(Option<DecisionRouterRoute>),
-    Fast,
-    Off,
-    Custom,
-}
+pub(crate) type RouterPreset = codewhale_commands::router::RouterPreset<DecisionRouterRoute>;
+pub(crate) type RouterRequest = codewhale_commands::router::RouterRequest<DecisionRouterRoute>;
 
-impl RouterPreset {
-    /// Parse `jev [openrouter|typesafe]`, `fast`, `off` or `custom`.
-    #[must_use]
-    pub(crate) fn parse(args: &str) -> Option<Self> {
-        let mut words = args.split_whitespace();
-        let preset = match words.next()?.to_ascii_lowercase().as_str() {
-            "jev" => Self::Jev(match words.next() {
-                None => None,
-                Some(route) => Some(DecisionRouterRoute::parse(route)?),
-            }),
-            "fast" => Self::Fast,
-            "off" | "none" => Self::Off,
-            "custom" => Self::Custom,
-            _ => return None,
-        };
-        words.next().is_none().then_some(preset)
-    }
-
-    /// The `/router` arguments that select this preset.
-    #[must_use]
-    pub(crate) fn command_args(self) -> String {
-        match self {
-            Self::Jev(None) => "jev".to_string(),
-            Self::Jev(Some(route)) => format!("jev {}", route.as_str()),
-            Self::Fast => "fast".to_string(),
-            Self::Off => "off".to_string(),
-            Self::Custom => "custom".to_string(),
-        }
-    }
-}
-
-/// What `/router` asked the app to do.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RouterRequest {
-    /// Open the Router setup view.
-    Open,
-    /// Make one test call with this preset and show the result.
-    Test(RouterPreset),
-    /// Persist this preset to `config.toml` and the live config.
-    Save(RouterPreset),
-}
-
-/// Parse `/router` (or `/model router`) arguments.
 pub(crate) fn parse_router_args(args: Option<&str>) -> Result<RouterRequest, String> {
-    let args = args.map(str::trim).unwrap_or_default();
-    if args.is_empty() {
-        return Ok(RouterRequest::Open);
+    codewhale_commands::router::parse_router_args(args, DecisionRouterRoute::parse)
+}
+
+impl codewhale_commands::router::RouterHost for crate::tui::app::AppAction {
+    type Route = DecisionRouterRoute;
+    fn parse_route(name: &str) -> Option<Self::Route> {
+        DecisionRouterRoute::parse(name)
     }
-    let (save, rest) = match args.split_once(char::is_whitespace) {
-        Some((head, rest)) if head.eq_ignore_ascii_case("save") => (true, rest.trim()),
-        _ => (false, args),
-    };
-    let preset = RouterPreset::parse(rest).ok_or_else(|| {
-        "Usage: /router [jev [openrouter|typesafe]|fast|off|custom] · /router save <preset>"
-            .to_string()
-    })?;
-    Ok(if save {
-        RouterRequest::Save(preset)
-    } else {
-        RouterRequest::Test(preset)
-    })
+    fn router_action(request: RouterRequest) -> Self {
+        Self::RouterSetup { request }
+    }
 }
 
 /// The `[auto.router]` table a preset writes for this config, `Ok(None)` for
@@ -355,7 +299,8 @@ async fn test_preset(app: &mut App, config: &Config, preset: RouterPreset) {
     app.add_message(HistoryCell::System {
         content: format!(
             "{}\n{}",
-            tr(locale, MessageId::RouterTestHeader).replace("{args}", &preset.command_args()),
+            tr(locale, MessageId::RouterTestHeader)
+                .replace("{args}", &preset.command_args(DecisionRouterRoute::as_str)),
             lines.join("\n")
         ),
     });
@@ -657,13 +602,15 @@ impl RouterSetupView {
 
     fn select(&self) -> ViewAction {
         match &self.mode {
-            Mode::Confirm { preset, .. } => {
-                Self::run(format!("/router save {}", preset.command_args()))
-            }
+            Mode::Confirm { preset, .. } => Self::run(format!(
+                "/router save {}",
+                preset.command_args(DecisionRouterRoute::as_str)
+            )),
             Mode::Pick => match self.rows.get(self.cursor) {
-                Some(row) if row.available => {
-                    Self::run(format!("/router {}", row.preset.command_args()))
-                }
+                Some(row) if row.available => Self::run(format!(
+                    "/router {}",
+                    row.preset.command_args(DecisionRouterRoute::as_str)
+                )),
                 _ => ViewAction::None,
             },
         }

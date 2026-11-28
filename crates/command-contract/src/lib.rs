@@ -27,3 +27,5 @@ pub mod tool_outputs;
 pub mod whale_identity;
 
 pub mod model_setup;
+
+pub mod core_policy;

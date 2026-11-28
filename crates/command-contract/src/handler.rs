@@ -108,6 +108,9 @@ impl CommandCapabilities {
     pub const COMPOSER: Self = Self(1 << 33);
     pub const RESPONSE_COPY: Self = Self(1 << 34);
     pub const PROVIDER_ROUTES: Self = Self(1 << 35);
+    pub const FEEDBACK: Self = Self(1 << 44);
+    pub const EFFORT: Self = Self(1 << 45);
+    pub const CLEAR: Self = Self(1 << 46);
     pub const MODEL_SELECTION: Self = Self(1 << 36);
 
     /// Raw bit pattern, for tests that pin the capability-space capacity.
@@ -184,6 +187,9 @@ pub struct CommandContexts<'a> {
     work_surface: Option<&'a mut dyn crate::config::CommandWorkSurfaceContext>,
     navigation: Option<&'a mut dyn crate::navigation::CommandNavigationContext>,
     voice_input: Option<&'a mut dyn crate::navigation::CommandVoiceInputContext>,
+    feedback: Option<&'a mut dyn crate::core_policy::FeedbackContext>,
+    effort: Option<&'a mut dyn crate::core_policy::EffortContext>,
+    clear: Option<&'a mut dyn crate::core_policy::ClearContext>,
     provider_routes: Option<&'a mut dyn crate::model_setup::CommandProviderRoutesContext>,
     model_selection: Option<&'a mut dyn crate::model_setup::CommandModelSelectionContext>,
     response_copy: Option<&'a mut dyn crate::navigation::CommandResponseCopyContext>,
@@ -263,6 +269,9 @@ impl<'a> CommandContexts<'a> {
             navigation: None,
             voice_input: None,
             background: None,
+            feedback: None,
+            effort: None,
+            clear: None,
             provider_routes: None,
             model_selection: None,
             response_copy: None,
@@ -384,6 +393,42 @@ impl<'a> CommandContexts<'a> {
         &mut self,
     ) -> Option<&'a mut dyn crate::model_setup::CommandProviderRoutesContext> {
         self.provider_routes.take()
+    }
+
+    pub fn with_clear(mut self, value: &'a mut dyn crate::core_policy::ClearContext) -> Self {
+        assert!(
+            self.clear.replace(value).is_none(),
+            "clear facet already set"
+        );
+        self
+    }
+
+    pub fn take_clear(&mut self) -> Option<&'a mut dyn crate::core_policy::ClearContext> {
+        self.clear.take()
+    }
+
+    pub fn with_effort(mut self, value: &'a mut dyn crate::core_policy::EffortContext) -> Self {
+        assert!(
+            self.effort.replace(value).is_none(),
+            "effort facet already set"
+        );
+        self
+    }
+
+    pub fn take_effort(&mut self) -> Option<&'a mut dyn crate::core_policy::EffortContext> {
+        self.effort.take()
+    }
+
+    pub fn with_feedback(mut self, value: &'a mut dyn crate::core_policy::FeedbackContext) -> Self {
+        assert!(
+            self.feedback.replace(value).is_none(),
+            "feedback facet already set"
+        );
+        self
+    }
+
+    pub fn take_feedback(&mut self) -> Option<&'a mut dyn crate::core_policy::FeedbackContext> {
+        self.feedback.take()
     }
 
     pub fn with_model_selection(

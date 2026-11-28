@@ -5,15 +5,12 @@
 mod acceptance;
 mod advisor;
 mod agent;
-mod clear;
 mod constitution;
-// This group dir intentionally has a `core.rs` child module with the same
-// name. The module_inception allow is a permanent structure rationale, not
-// migration scaffolding; see docs/architecture/command-dispatch.md.
+#[cfg(test)]
 #[allow(clippy::module_inception)]
 mod core;
-mod effort;
 mod exit;
+#[cfg(test)]
 mod feedback;
 pub(in crate::commands) mod fleet;
 mod hooks;
@@ -22,13 +19,12 @@ pub(in crate::commands) mod navigation;
 mod pin;
 mod queue;
 mod rlm;
-pub(in crate::commands) mod router;
 mod stash;
 mod subagents;
 pub mod util;
 mod workflow;
 
-pub(crate) use self::core::reset_conversation_state;
+pub(crate) use crate::commands::session_reset::reset_conversation_state;
 pub(crate) use constitution::open_manager as open_constitution_manager;
 
 use crate::commands::CommandResult;
@@ -50,19 +46,19 @@ impl CommandGroup for CoreCommands {
                     .expect("advisor registration")
             ),
             crate::commands::core_navigation_host::registration::<1>(),
-            Box::new(FunctionCommand::new(
-                clear::ClearCmd::info(),
-                clear::ClearCmd::execute,
-            )),
+            Box::new(
+                ContextualCommand::from_contract::<codewhale_commands::core_policy::ClearCmd>()
+                    .expect("clear registration")
+            ),
             crate::commands::core_navigation_host::registration::<2>(),
             Box::new(
                 ContextualCommand::from_contract::<exit::ExitCmd>().expect("exit registration")
             ),
             Box::new(ContextualCommand::from_contract::<ModelCmd>().expect("model registration")),
-            Box::new(FunctionCommand::new(
-                router::RouterCmd::info(),
-                router::RouterCmd::execute,
-            )),
+            Box::new(
+                ContextualCommand::from_contract::<codewhale_commands::router::RouterCmd>()
+                    .expect("router registration")
+            ),
             Box::new(ContextualCommand::from_contract::<ModelsCmd>().expect("models registration")),
             Box::new(
                 ContextualCommand::from_contract::<ModelDbCmd>().expect("modeldb registration")
@@ -116,10 +112,10 @@ impl CommandGroup for CoreCommands {
             crate::commands::core_navigation_host::registration::<4>(),
             crate::commands::core_navigation_host::registration::<5>(),
             crate::commands::core_navigation_host::registration::<6>(),
-            Box::new(FunctionCommand::new(
-                feedback::FeedbackCmd::info(),
-                feedback::FeedbackCmd::execute,
-            )),
+            Box::new(
+                ContextualCommand::from_contract::<codewhale_commands::core_policy::FeedbackCmd>()
+                    .expect("feedback registration")
+            ),
             Box::new(ContextualCommand::from_contract::<HfCmd>().expect("hf registration")),
             crate::commands::core_navigation_host::registration::<7>(),
             crate::commands::core_navigation_host::registration::<8>(),
@@ -130,7 +126,10 @@ impl CommandGroup for CoreCommands {
             Box::new(ContextualCommand::from_contract::<rlm::RlmCmd>().expect("rlm registration")),
             crate::commands::core_navigation_host::registration::<10>(),
             crate::commands::core_navigation_host::registration::<11>(),
-            Box::new(FunctionCommand::new(&effort::EFFORT_INFO, effort::effort,)),
+            Box::new(
+                ContextualCommand::from_contract::<codewhale_commands::core_policy::EffortCmd>()
+                    .expect("effort registration")
+            ),
             crate::commands::core_navigation_host::registration::<12>(),
             crate::commands::core_navigation_host::registration::<13>(),
             Box::new(ContextualCommand::from_contract::<pin::PinCmd>().expect("pin registration")),
