@@ -14090,10 +14090,8 @@ printf '%s\n' '{"text":"off-loop replacement"}'
         .expect("hook result timed out")
         .expect("hook result channel closed");
     apply_hook(&mut app, &engine.handle, &config).expect("apply hook result");
-    assert!(matches!(
-        &app.api_messages[0].content[0],
-        ContentBlock::Text { text, .. } if text == "off-loop replacement"
-    ));
+    assert!(app.dispatch_in_flight);
+    assert!(app.api_messages.is_empty());
 
     let apply_dispatch =
         tokio::time::timeout(std::time::Duration::from_secs(15), completion_rx.recv())
@@ -14102,6 +14100,10 @@ printf '%s\n' '{"text":"off-loop replacement"}'
             .expect("dispatch result channel closed");
     apply_dispatch(&mut app, &engine.handle, &config).expect("apply dispatch result");
     assert!(!app.dispatch_in_flight);
+    assert!(matches!(
+        &app.api_messages[0].content[0],
+        ContentBlock::Text { text, .. } if text == "off-loop replacement"
+    ));
 }
 
 #[cfg(not(windows))]
