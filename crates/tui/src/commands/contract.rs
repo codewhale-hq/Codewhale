@@ -36,6 +36,7 @@ mod composer;
 mod config_main;
 mod core_navigation;
 mod model_reference;
+mod model_setup;
 use core_navigation::{NavigationAdapter, VoiceInputAdapter};
 pub(in crate::commands) mod config_policy;
 #[cfg(test)]
@@ -5516,6 +5517,8 @@ pub(crate) struct CommandContextBundle<'a> {
     session: SessionAdapter<'a>,
     composer: composer::ComposerAdapter<'a>,
     model: ModelAdapter<'a>,
+    provider_routes: ModelAdapter<'a>,
+    model_selection: ModelAdapter<'a>,
     cost: CostAdapter<'a>,
     mode_policy: ModePolicyAdapter<'a>,
     system_prompt: SystemPromptAdapter<'a>,
@@ -5555,6 +5558,12 @@ impl<'a> CommandContextBundle<'a> {
         let mut contexts = CommandContexts::empty();
         if capabilities.contains(CommandCapabilities::SESSION) {
             contexts = contexts.with_session(&mut self.session);
+        }
+        if capabilities.contains(CommandCapabilities::PROVIDER_ROUTES) {
+            contexts = contexts.with_provider_routes(&mut self.provider_routes);
+        }
+        if capabilities.contains(CommandCapabilities::MODEL_SELECTION) {
+            contexts = contexts.with_model_selection(&mut self.model_selection);
         }
         if capabilities.contains(CommandCapabilities::MODEL) {
             contexts = contexts.with_model(&mut self.model);
@@ -5717,6 +5726,8 @@ impl App {
             session: SessionAdapter { host: host.clone() },
             composer: composer::ComposerAdapter { host: host.clone() },
             model: ModelAdapter { host: host.clone() },
+            provider_routes: ModelAdapter { host: host.clone() },
+            model_selection: ModelAdapter { host: host.clone() },
             cost: CostAdapter { host: host.clone() },
             mode_policy: ModePolicyAdapter { host: host.clone() },
             system_prompt: SystemPromptAdapter { host: host.clone() },

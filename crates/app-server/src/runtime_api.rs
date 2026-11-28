@@ -14222,7 +14222,7 @@ struct SwitchProviderResponse {
 /// cannot disagree with `GET /v1/providers` about what an entry's `id` means.
 ///
 /// This is the GUI-facing counterpart of the TUI's `/provider` slash command
-/// (`commands/groups/core/provider.rs`) and `AppAction::SwitchProvider`
+/// (`crates/commands/src/model_setup/provider.rs`) and `AppAction::SwitchProvider`
 /// (`tui/ui.rs::switch_provider`). It exists so the GUI does not have to
 /// simulate the switch with multiple `POST /v1/config` calls + a reload,
 /// which historically led to two bugs:

@@ -16,20 +16,13 @@ mod effort;
 mod exit;
 mod feedback;
 pub(in crate::commands) mod fleet;
-mod hf;
 mod hooks;
 mod lane;
-mod model;
-mod modeldb;
-mod models;
 pub(in crate::commands) mod navigation;
 mod pin;
-mod profile;
-mod provider;
 mod queue;
 mod rlm;
 pub(in crate::commands) mod router;
-mod setup;
 mod stash;
 mod subagents;
 pub mod util;
@@ -41,6 +34,9 @@ pub(crate) use constitution::open_manager as open_constitution_manager;
 use crate::commands::CommandResult;
 use crate::commands::traits::{
     Command, CommandGroup, ContextualCommand, FunctionCommand, RegisterCommand,
+};
+use codewhale_commands::model_setup::{
+    HfCmd, ModelCmd, ModelDbCmd, ModelsCmd, ProfileCmd, ProviderCmd, SetupCmd,
 };
 
 pub struct CoreCommands;
@@ -62,26 +58,18 @@ impl CommandGroup for CoreCommands {
             Box::new(
                 ContextualCommand::from_contract::<exit::ExitCmd>().expect("exit registration")
             ),
-            Box::new(FunctionCommand::new(
-                model::ModelCmd::info(),
-                model::ModelCmd::execute,
-            )),
+            Box::new(ContextualCommand::from_contract::<ModelCmd>().expect("model registration")),
             Box::new(FunctionCommand::new(
                 router::RouterCmd::info(),
                 router::RouterCmd::execute,
             )),
+            Box::new(ContextualCommand::from_contract::<ModelsCmd>().expect("models registration")),
             Box::new(
-                ContextualCommand::from_contract::<models::ModelsCmd>()
-                    .expect("models registration")
+                ContextualCommand::from_contract::<ModelDbCmd>().expect("modeldb registration")
             ),
             Box::new(
-                ContextualCommand::from_contract::<modeldb::ModelDbCmd>()
-                    .expect("modeldb registration")
+                ContextualCommand::from_contract::<ProviderCmd>().expect("provider registration")
             ),
-            Box::new(FunctionCommand::new(
-                provider::ProviderCmd::info(),
-                provider::ProviderCmd::execute,
-            )),
             Box::new(
                 ContextualCommand::from_contract::<queue::QueueCmd>().expect("queue registration")
             ),
@@ -117,10 +105,7 @@ impl CommandGroup for CoreCommands {
                 workflow::AutoCmd::execute,
             )),
             crate::commands::core_navigation_host::registration::<3>(),
-            Box::new(FunctionCommand::new(
-                setup::SetupCmd::info(),
-                setup::SetupCmd::execute,
-            )),
+            Box::new(ContextualCommand::from_contract::<SetupCmd>().expect("setup registration")),
             Box::new(FunctionCommand::new(
                 constitution::ConstitutionCmd::info(),
                 constitution::ConstitutionCmd::execute,
@@ -135,13 +120,12 @@ impl CommandGroup for CoreCommands {
                 feedback::FeedbackCmd::info(),
                 feedback::FeedbackCmd::execute,
             )),
-            Box::new(ContextualCommand::from_contract::<hf::HfCmd>().expect("hf registration")),
+            Box::new(ContextualCommand::from_contract::<HfCmd>().expect("hf registration")),
             crate::commands::core_navigation_host::registration::<7>(),
             crate::commands::core_navigation_host::registration::<8>(),
             crate::commands::core_navigation_host::registration::<9>(),
             Box::new(
-                ContextualCommand::from_contract::<profile::ProfileCmd>()
-                    .expect("profile registration")
+                ContextualCommand::from_contract::<ProfileCmd>().expect("profile registration")
             ),
             Box::new(ContextualCommand::from_contract::<rlm::RlmCmd>().expect("rlm registration")),
             crate::commands::core_navigation_host::registration::<10>(),

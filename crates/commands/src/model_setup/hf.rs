@@ -12,7 +12,7 @@ const COMMAND_INFO: CommandInfo = CommandInfo {
     description_key: "cmd_hf_description",
 };
 
-pub(super) struct HfCmd;
+pub struct HfCmd;
 
 impl<A> RegisterCommand<CommandResult<A>> for HfCmd {
     fn info() -> &'static CommandInfo {

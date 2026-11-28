@@ -16398,7 +16398,7 @@ async fn switch_provider_without_model_arg_preserves_user_per_provider_model() -
     // = "glm-2"`. The new /v1/providers/{id}/switch endpoint MUST NOT
     // touch the model key when no model arg is provided — mirroring the
     // TUI's `/provider volcengine` (model: None) flow in
-    // `commands/groups/core/provider.rs` + `tui/ui.rs::switch_provider`.
+    // `crates/commands/src/model_setup/provider.rs` + `tui/ui.rs::switch_provider`.
     let root = std::env::temp_dir().join(format!("codewhale-switch-no-model-{}", Uuid::new_v4()));
     fs::create_dir_all(&root)?;
     let config_file = root.join("custom-config.toml");

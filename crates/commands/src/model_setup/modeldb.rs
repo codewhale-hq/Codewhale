@@ -17,7 +17,7 @@ const COMMAND_INFO: CommandInfo = CommandInfo {
     description_key: "cmd_model_db_description",
 };
 
-pub(super) struct ModelDbCmd;
+pub struct ModelDbCmd;
 
 impl<A> RegisterCommand<CommandResult<A>> for ModelDbCmd {
     fn info() -> &'static CommandInfo {
