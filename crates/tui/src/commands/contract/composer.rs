@@ -1,5 +1,6 @@
 use super::SharedCommandHost;
 use crate::composer_stash;
+use crate::tui::app::StatusToastLevel;
 use codewhale_command_contract::facets::{CommandComposerContext, ParkedDraft, QueuedDrafts};
 
 pub(super) struct ComposerAdapter<'a> {
@@ -34,7 +35,7 @@ impl CommandComposerContext for ComposerAdapter<'_> {
         app.input = entry.display.clone();
         app.cursor_position = app.input.len();
         app.queued_draft = Some(entry);
-        app.status_message = Some(status);
+        app.show_command_result(status, StatusToastLevel::Info);
         true
     }
 

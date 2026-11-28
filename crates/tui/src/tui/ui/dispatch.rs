@@ -360,15 +360,9 @@ pub(crate) async fn send_taken_queued_message_now(
     }
     if app.is_loading {
         attempt_steer_with_queue_fallback(app, config, engine_handle, message, recovery);
-    } else if let Err(_err) =
-        dispatch_user_message_with_recovery(app, config, engine_handle, message, recovery).await
-    {
-        // The completion closure re-queued the message and set the status.
     } else {
-        app.show_command_result(
-            app.tr(MessageId::ToastSentIntoTurn).into_owned(),
-            StatusToastLevel::Success,
-        );
+        let _ = dispatch_user_message_with_recovery(app, config, engine_handle, message, recovery)
+            .await;
     }
     Ok(())
 }
@@ -1161,7 +1155,7 @@ pub(crate) async fn spawned_dispatch_inner(
                 config,
             );
         }
-        build_dispatch_success_closure(prepare, outcome)(app, &engine_handle, config)?;
+        build_dispatch_success_closure(prepare, outcome, recovery)(app, &engine_handle, config)?;
         // Existing Engine admission binds cancellation controls and the Op in
         // one FIFO. No await separates the UI checkpoint from this handoff.
         engine_handle.send_reserved_op(permit, op);
@@ -1173,6 +1167,7 @@ pub(crate) async fn spawned_dispatch_inner(
 pub(crate) fn build_dispatch_success_closure(
     prepare: UserDispatchPrepare,
     outcome: UserDispatchOutcome,
+    recovery: DispatchRecovery,
 ) -> crate::tui::app::DispatchApplyFn {
     Box::new(
         move |app: &mut App, engine_handle: &EngineHandle, config: &Config| -> anyhow::Result<()> {
@@ -1282,6 +1277,15 @@ pub(crate) fn build_dispatch_success_closure(
             app.session.last_prompt_cache_miss_tokens = None;
             app.session.last_reasoning_replay_tokens = None;
 
+            if matches!(
+                recovery,
+                DispatchRecovery::Queued { .. } | DispatchRecovery::Draft
+            ) {
+                app.show_command_result(
+                    app.tr(MessageId::ToastSentIntoTurn).into_owned(),
+                    StatusToastLevel::Success,
+                );
+            }
             if let Ok(manager) = SessionManager::default_location()
                 && let Ok(session) = build_session_snapshot(app, &manager)
             {

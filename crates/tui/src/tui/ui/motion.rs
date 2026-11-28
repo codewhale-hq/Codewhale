@@ -15,7 +15,7 @@ pub(crate) fn rail_panel_shortcut(app: &mut App, panel: crate::tui::work_surface
     if app.work_surface.placement == crate::tui::work_surface::WorkSurfacePlacement::Off {
         message.push_str(" (workbar is off — /workbar top to show)");
     }
-    app.status_message = Some(message);
+    app.show_command_result(message, StatusToastLevel::Info);
 }
 
 /// #3033: gate progress-driven repaints to at most one per 100ms.

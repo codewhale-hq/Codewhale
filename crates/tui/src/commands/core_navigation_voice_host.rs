@@ -2,7 +2,7 @@
 
 use crate::commands::CommandResult;
 use crate::commands::groups::core::navigation::voice::VOICE_INFO;
-use crate::tui::app::App;
+use crate::tui::app::{App, StatusToastKind};
 use codewhale_engine::voice::{
     is_available, record_audio, resolve_asr_choice, split_send_suffix, transcribe_selected,
 };
@@ -74,7 +74,10 @@ pub async fn capture_and_transcribe(
     // Show the localized recording status plus the live interim in the composer.
     let original_input = app.composer.input.clone();
     let original_cursor = app.composer.cursor_position;
-    app.status_message = Some(recording_status(locale, None));
+    app.replace_progress_notice(
+        StatusToastKind::VoiceCapture,
+        recording_status(locale, None),
+    );
 
     // Streaming interim: poll every 700ms and show partial transcript like Grok Build's
     // VoiceEvent::Interim → VoiceState::Recording{interim}. We re-transcribe the
@@ -137,7 +140,10 @@ pub async fn capture_and_transcribe(
             };
             app.composer.input = display;
             app.composer.cursor_position = original_cursor;
-            app.status_message = Some(recording_status(locale, Some(trimmed)));
+            app.replace_progress_notice(
+                StatusToastKind::VoiceCapture,
+                recording_status(locale, Some(trimmed)),
+            );
         }
         if ticks > 40 {
             break; // safety: ~28s max interim polling
@@ -153,7 +159,10 @@ pub async fn capture_and_transcribe(
     // Restore composer to original before final insert (interim was preview only)
     app.composer.input = original_input.clone();
     app.composer.cursor_position = original_cursor;
-    app.status_message = Some(tr(locale, MessageId::VoiceProcessing).to_string());
+    app.replace_progress_notice(
+        StatusToastKind::VoiceCapture,
+        tr(locale, MessageId::VoiceProcessing).to_string(),
+    );
 
     let text = transcribe_selected(
         config,

@@ -1506,8 +1506,8 @@ mod tests {
                     StatusToast::new(payload.headline(), StatusToastLevel::Warning, Some(12_000))
                         .for_action(format!("request-{index}")),
                 );
-                app.status_message = Some(payload.headline().into());
-                app.sync_status_message_to_toasts();
+                app.report_engine_status(payload.headline().into());
+
                 assert_eq!(app.status_toasts.len(), index + 1);
                 let toast = app.status_toasts.back().unwrap();
                 assert_eq!(toast.level, StatusToastLevel::Warning);

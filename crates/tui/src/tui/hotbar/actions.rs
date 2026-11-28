@@ -1,3 +1,4 @@
+use crate::tui::app::StatusToastLevel;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -828,7 +829,16 @@ impl HotbarActionRegistry {
 }
 
 fn dispatch_command_result(app: &mut App, result: CommandResult) -> HotbarDispatch {
-    app.status_message = result.message;
+    if let Some(message) = result.message {
+        app.show_command_result(
+            message,
+            if result.is_error {
+                StatusToastLevel::Error
+            } else {
+                StatusToastLevel::Info
+            },
+        );
+    }
     result
         .action
         .map_or(HotbarDispatch::Handled, HotbarDispatch::AppAction)
@@ -1018,11 +1028,14 @@ impl HotbarAction for AppHotbarAction {
                 {
                     app.work_surface.placement =
                         crate::tui::work_surface::WorkSurfacePlacement::Bottom;
-                    app.status_message = Some("Workbar: bottom placement".to_string());
+                    app.show_command_result(
+                        "Workbar: bottom placement".to_string(),
+                        StatusToastLevel::Info,
+                    );
                 } else {
                     app.work_surface.placement =
                         crate::tui::work_surface::WorkSurfacePlacement::Off;
-                    app.status_message = Some("Workbar is off".to_string());
+                    app.show_command_result("Workbar is off".to_string(), StatusToastLevel::Info);
                 }
                 app.needs_redraw = true;
                 Ok(HotbarDispatch::Handled)
@@ -1048,11 +1061,14 @@ impl HotbarAction for AppHotbarAction {
             }
             AppHotbarKind::TrustToggle => {
                 app.trust_mode = !app.trust_mode;
-                app.status_message = Some(if app.trust_mode {
-                    "Workspace trust mode enabled.".to_string()
-                } else {
-                    "Workspace trust mode disabled.".to_string()
-                });
+                app.show_command_result(
+                    if app.trust_mode {
+                        "Workspace trust mode enabled.".to_string()
+                    } else {
+                        "Workspace trust mode disabled.".to_string()
+                    },
+                    StatusToastLevel::Info,
+                );
                 Ok(HotbarDispatch::Handled)
             }
         }
@@ -1084,10 +1100,10 @@ impl SlashHotbarAction {
         app.cursor_position = app.input.chars().count();
         app.slash_menu_hidden = false;
         app.needs_redraw = true;
-        app.status_message = Some(format!(
-            "Command needs arguments; complete {}",
-            app.input.trim_end()
-        ));
+        app.show_command_result(
+            format!("Command needs arguments; complete {}", app.input.trim_end()),
+            StatusToastLevel::Info,
+        );
     }
 }
 
@@ -1327,10 +1343,13 @@ impl McpToolHotbarAction {
         app.input = format!("{} ", self.model_name);
         app.cursor_position = app.input.chars().count();
         app.needs_redraw = true;
-        app.status_message = Some(format!(
-            "MCP tool needs a request; complete {}",
-            app.input.trim_end()
-        ));
+        app.show_command_result(
+            format!(
+                "MCP tool needs a request; complete {}",
+                app.input.trim_end()
+            ),
+            StatusToastLevel::Info,
+        );
     }
 }
 
@@ -2224,7 +2243,7 @@ mod tests {
         assert_eq!(app.cursor_position, app.input.chars().count());
         assert_eq!(app.clear_undo_buffer.as_deref(), Some("draft"));
         assert_eq!(
-            app.status_message.as_deref(),
+            app.visible_notice_text().as_deref(),
             Some("Command needs arguments; complete /rename")
         );
     }
@@ -2318,7 +2337,7 @@ mod tests {
         assert!(app.active_skill.is_some());
         assert!(action.is_active(&app));
         assert!(
-            app.status_message
+            app.visible_notice_text()
                 .as_deref()
                 .is_some_and(|message| message.contains("activated"))
         );
@@ -2350,7 +2369,7 @@ mod tests {
         );
         assert!(app.active_skill.is_none());
         assert!(
-            app.status_message
+            app.visible_notice_text()
                 .as_deref()
                 .is_some_and(|message| message.contains("Unknown skill"))
         );
@@ -2403,7 +2422,7 @@ mod tests {
         assert_eq!(app.cursor_position, app.input.chars().count());
         assert_eq!(app.clear_undo_buffer.as_deref(), Some("draft"));
         assert!(
-            app.status_message
+            app.visible_notice_text()
                 .as_deref()
                 .is_some_and(|message| message.contains("mcp_search_web_search"))
         );
@@ -2697,10 +2716,10 @@ mod tests {
         let result = voice
             .dispatch(&mut app, &Config::default())
             .expect("dispatch voice");
-        assert!(app.status_message.is_some());
+        assert!(app.visible_notice_text().is_some());
         // The old placeholder message must be gone — voice is implemented.
         assert_ne!(
-            app.status_message.as_deref(),
+            app.visible_notice_text().as_deref(),
             Some("Voice input is not available in this terminal session yet.")
         );
         if app.voice_enabled {

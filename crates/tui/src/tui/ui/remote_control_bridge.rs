@@ -26,9 +26,8 @@ pub(crate) async fn drain_remote_control_events(
                 app.add_message(HistoryCell::System {
                     content: message.clone(),
                 });
-                app.status_message = Some(message.clone());
-                app.sticky_status =
-                    Some(StatusToast::new(message, StatusToastLevel::Warning, None));
+
+                show_remote_control_banner(app, message);
             }
             codewhale_app_server::remote_control::RemoteEvent::Connected {
                 account_ref,
@@ -62,8 +61,8 @@ pub(crate) async fn drain_remote_control_events(
                         ),
                     });
                 }
-                app.status_message = Some(status.clone());
-                app.sticky_status = Some(StatusToast::new(status, StatusToastLevel::Warning, None));
+
+                show_remote_control_banner(app, status);
             }
             codewhale_app_server::remote_control::RemoteEvent::Attachment {
                 attachment, ..
@@ -98,14 +97,15 @@ pub(crate) async fn drain_remote_control_events(
                 report_remote_control_failure(app, status);
             }
             codewhale_app_server::remote_control::RemoteEvent::Stopped => {
-                app.sticky_status = None;
-                app.status_message = Some("Web mirror stopped.".to_string());
+                app.retire_progress_notice(StatusToastKind::RemoteMirror);
+                app.show_command_result("Web mirror stopped.".to_string(), StatusToastLevel::Info);
             }
             codewhale_app_server::remote_control::RemoteEvent::OwnershipRestored { approvals } => {
-                app.sticky_status = None;
-                app.status_message = Some(
+                app.retire_progress_notice(StatusToastKind::RemoteMirror);
+                app.show_command_result(
                     "The web mirror lease expired; pending approvals stay actionable here."
                         .to_string(),
+                    StatusToastLevel::Warning,
                 );
                 // Mirror semantics: approval cards were never hidden from
                 // this terminal, so there is nothing to re-show. The drained
@@ -152,8 +152,8 @@ pub(crate) async fn drain_remote_control_events(
                             Some(error.clone()),
                         );
                         app.remote_control.stop_async().await;
-                        app.sticky_status = None;
-                        app.status_message = Some(error);
+                        app.retire_progress_notice(StatusToastKind::RemoteMirror);
+                        app.show_command_result(error, StatusToastLevel::Error);
                         continue;
                     }
                 }
@@ -428,14 +428,24 @@ async fn try_attach_active_local_turn_to_remote(app: &mut App) -> bool {
         .await
 }
 
+pub(crate) fn show_remote_control_banner(app: &mut App, status: String) {
+    app.retire_progress_notice(StatusToastKind::RemoteMirror);
+    let mut banner = StatusToast::new(status, StatusToastLevel::Warning, None);
+    banner.kind = StatusToastKind::RemoteMirror;
+    app.push_status_toast_record(banner);
+}
+
 fn report_remote_control_failure(app: &mut App, error: String) {
     let error = codewhale_config::persistence::redact_secrets(&error);
     tracing::warn!(%error, "remote-control failure");
     app.add_message(HistoryCell::System {
         content: error.clone(),
     });
-    app.status_message = None;
-    app.set_sticky_status(error, StatusToastLevel::Error, None);
+    app.show_owned_command_result(
+        StatusToastKind::RemoteMirror,
+        error,
+        StatusToastLevel::Error,
+    );
 }
 
 fn report_remote_control_start_failure(app: &mut App, error: String) {
@@ -521,8 +531,8 @@ pub(crate) async fn start_remote_control_session(app: &mut App, config: &Config)
     {
         Ok(()) => {
             let status = app.remote_control.status_line();
-            app.status_message = Some(status.clone());
-            app.sticky_status = Some(StatusToast::new(status, StatusToastLevel::Warning, None));
+
+            show_remote_control_banner(app, status);
         }
         Err(error) => {
             report_remote_control_start_failure(app, error);

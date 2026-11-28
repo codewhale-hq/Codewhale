@@ -244,7 +244,8 @@ impl UserInputView {
             };
             if let Err(error) = self.request.validate_response(&response) {
                 self.answered.pop();
-                return ViewAction::Emit(ViewEvent::StatusMessage {
+                return ViewAction::Emit(ViewEvent::StatusToast {
+                    level: crate::tui::app::StatusToastLevel::Warning,
                     message: tr(self.locale, MessageId::NotificationInputSubmitFailed)
                         .replace("{error}", &error.to_string()),
                 });
@@ -1475,7 +1476,7 @@ mod tests {
         let draft = view.other_input.clone();
         let action = view.handle_key(KeyEvent::from(KeyCode::Enter));
         assert!(
-            matches!(action, ViewAction::Emit(ViewEvent::StatusMessage { message }) if message.contains("transport limits"))
+            matches!(action, ViewAction::Emit(ViewEvent::StatusToast { message, level: crate::tui::app::StatusToastLevel::Warning }) if message.contains("transport limits"))
         );
         assert_eq!(view.answered, prior);
         assert_eq!(view.question_index, 1);

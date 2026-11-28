@@ -261,7 +261,8 @@ impl WorktreeManagerView {
                         self.status = Some("Already in this worktree".into());
                         ViewAction::None
                     } else {
-                        ViewAction::Emit(ViewEvent::StatusMessage {
+                        ViewAction::Emit(ViewEvent::StatusToast {
+                            level: crate::tui::app::StatusToastLevel::Info,
                             message: format!(
                                 "Switch: open a new session in {path} (cwd switch is session-scoped)"
                             ),
@@ -352,7 +353,8 @@ impl WorktreeManagerView {
                 };
                 // Emit a status that dogfood can follow; full diff_render
                 // integration uses existing /diff tooling against the path.
-                ViewAction::Emit(ViewEvent::StatusMessage {
+                ViewAction::Emit(ViewEvent::StatusToast {
+                    level: crate::tui::app::StatusToastLevel::Info,
                     message: format!(
                         "Diff against {}: use /diff or context-menu Diff on a file",
                         path.display()

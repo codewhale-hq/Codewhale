@@ -162,7 +162,7 @@ fn feature_intro_shows_once_persists_then_is_idempotent() {
     app.maybe_show_feature_intro();
     assert_eq!(app.history.len(), before, "intro must not hide empty state");
     assert!(
-        app.status_message
+        app.visible_notice_text()
             .as_deref()
             .is_some_and(|message| message.contains("fleet") && message.contains("/fleet setup"))
     );
@@ -794,7 +794,7 @@ fn glm_5_turbo_records_enabled_with_granularity_unavailable() {
 
     assert_eq!(app.reasoning_effort, ReasoningEffort::Max);
     assert_eq!(
-        app.status_message.as_deref(),
+        app.visible_notice_text().as_deref(),
         Some("Reasoning effort: max→thinking enabled; granularity unavailable")
     );
     assert_eq!(
@@ -928,7 +928,7 @@ fn compatible_zai_gateway_records_effective_unavailable() {
 
     assert_eq!(app.reasoning_effort, ReasoningEffort::Max);
     assert_eq!(
-        app.status_message.as_deref(),
+        app.visible_notice_text().as_deref(),
         Some("Reasoning effort: max→effective unavailable")
     );
     assert_eq!(
@@ -3942,23 +3942,21 @@ fn test_mode_scenario() {
         let second_mode = AppMode::Agent;
 
         app.set_mode(first_mode);
-        app.sync_status_message_to_toasts();
+
         assert!(app.status_toasts.is_empty());
 
         app.set_mode(second_mode);
-        app.sync_status_message_to_toasts();
+
         assert!(app.status_toasts.is_empty());
     }
     // from test_mode_switch_toasts_do_not_disrupt_non_mode_toasts
     {
         let mut app = App::new(test_options(false), &Config::default());
-        app.status_message = Some("Task queued".to_string());
-        app.sync_status_message_to_toasts();
+        app.show_event_notice("Task queued", crate::tui::app::StatusToastLevel::Success);
 
         app.set_mode(AppMode::Plan);
-        app.sync_status_message_to_toasts();
+
         app.set_mode(AppMode::Agent);
-        app.sync_status_message_to_toasts();
 
         assert_eq!(app.status_toasts.len(), 1);
         assert!(
@@ -4433,7 +4431,7 @@ fn busy_permission_cycle_moves_the_live_posture() {
     assert!(app.step_permission_dial(false).changed());
     assert_ne!((app.mode, app.mode_prefs.agent_approval_mode), before);
     assert!(
-        !app.status_message
+        !app.visible_notice_text()
             .as_deref()
             .is_some_and(|message| message.contains("locked"))
     );
@@ -6989,23 +6987,23 @@ fn status_classifier_does_not_paint_negated_success_green() {
     use super::StatusToastLevel;
     // Failures that happen to contain a success keyword ("saved", "found")
     // must not toast green (#3757 UX review).
-    let (level, _, _) = App::classify_status_text("Custom provider was not saved.");
+    let (level, _, _) = App::classify_engine_status("Custom provider was not saved.");
     assert_ne!(level, StatusToastLevel::Success);
-    let (level, _, _) = App::classify_status_text("Queued message not found");
+    let (level, _, _) = App::classify_engine_status("Queued message not found");
     assert_ne!(level, StatusToastLevel::Success);
-    let (level, _, _) = App::classify_status_text("Could not enable subagents");
+    let (level, _, _) = App::classify_engine_status("Could not enable subagents");
     assert_ne!(level, StatusToastLevel::Success);
-    let (level, _, _) = App::classify_status_text("No sessions found");
+    let (level, _, _) = App::classify_engine_status("No sessions found");
     assert_ne!(level, StatusToastLevel::Success);
 
     // Genuine successes still classify green.
-    let (level, _, _) = App::classify_status_text("Team profile saved: reviewer.toml");
+    let (level, _, _) = App::classify_engine_status("Team profile saved: reviewer.toml");
     assert_eq!(level, StatusToastLevel::Success);
 
     // Both cancel spellings classify as Warning.
-    let (level, _, _) = App::classify_status_text("Turn canceled");
+    let (level, _, _) = App::classify_engine_status("Turn canceled");
     assert_eq!(level, StatusToastLevel::Warning);
-    let (level, _, _) = App::classify_status_text("Turn cancelled");
+    let (level, _, _) = App::classify_engine_status("Turn cancelled");
     assert_eq!(level, StatusToastLevel::Warning);
 }
 

@@ -1,6 +1,7 @@
 //! Config commands: config, settings, mode switches, trust, logout
 
 use crate::commands::CommandResult;
+use crate::tui::app::StatusToastLevel;
 use crate::tui::app::{App, AppAction, AppModeUi, SettingSelection, VimMode};
 use anyhow::Result;
 use codewhale_command_contract::config::{CommandWorkflowSummary, ConfigMessage, ConfigReply};
@@ -2493,9 +2494,10 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
     let mut settings = match Settings::load_persisted() {
         Ok(s) => s,
         Err(e) if !persist => {
-            app.status_message = Some(format!(
-                "Settings unavailable; applying session-only override ({e})"
-            ));
+            app.show_command_result(
+                format!("Settings unavailable; applying session-only override ({e})"),
+                StatusToastLevel::Warning,
+            );
             Settings::default()
         }
         Err(e) => return ConfigReply::error(format!("Failed to load settings: {e}")),

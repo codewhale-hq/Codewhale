@@ -1747,8 +1747,6 @@ pub struct App {
     /// this text, so resume shows what the live transcript showed.
     pub(crate) turn_error_notice: Option<String>,
     pub(crate) turn_error_cause: Option<codewhale_engine::llm_error_envelope::ProviderFailureCause>,
-    /// Legacy status text sink retained for compatibility with existing call sites.
-    pub status_message: Option<String>,
     /// Recent status toasts (ephemeral, newest at back).
     pub status_toasts: VecDeque<StatusToast>,
     /// Metrics-line label (e.g. `↑ v0.9.5`) set once by the fire-and-forget
@@ -1758,8 +1756,6 @@ pub struct App {
     pub update_available: Option<String>,
     /// Sticky status toast used for important warnings/errors.
     pub sticky_status: Option<StatusToast>,
-    /// Last status text already promoted from `status_message` into toast state.
-    pub last_status_message_seen: Option<String>,
     /// Prevents the same pressure condition from immediately re-arming after
     /// the operator explicitly dismisses its sticky warning. Reset when the
     /// pressure falls below the warning threshold or compaction starts.
@@ -3531,10 +3527,14 @@ impl App {
                 let message = self
                     .tr(MessageId::FeatureIntroFlagSaveFailed)
                     .replace("{error}", &err.to_string());
-                self.push_status_toast(message, StatusToastLevel::Error, None);
+                self.show_command_result(message, StatusToastLevel::Error);
+                return;
             }
         }
-        self.status_message = Some(self.tr(MessageId::FleetReadyNotice).into_owned());
+        self.show_command_result(
+            self.tr(MessageId::FleetReadyNotice).into_owned(),
+            StatusToastLevel::Success,
+        );
         self.needs_redraw = true;
     }
 
@@ -4750,7 +4750,7 @@ impl App {
     }
 
     /// Preserve a lost observer event independently of the ordinary status
-    /// line. Agent lifecycle handlers immediately replace `status_message`
+    /// line. Agent lifecycle handlers immediately post a separate notice
     /// with their normal progress text, so a submission failure belongs in
     /// the toast queue instead of that transient slot.
     pub fn surface_observer_hook_submission_failure(&mut self, error: String) {
@@ -6387,10 +6387,10 @@ impl App {
             return false;
         };
         if self.expanded_tool_runs.remove(&start) {
-            self.status_message = Some("Tool group collapsed".to_string());
+            self.show_command_result("Tool group collapsed".to_string(), StatusToastLevel::Info);
         } else {
             self.expanded_tool_runs.insert(start);
-            self.status_message = Some("Tool group expanded".to_string());
+            self.show_command_result("Tool group expanded".to_string(), StatusToastLevel::Info);
         }
         self.mark_history_updated();
         true

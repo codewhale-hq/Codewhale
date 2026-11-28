@@ -1,11 +1,3 @@
-//! Status surface state: toast queue, sticky status, and the
-//! `status_message` -> toast synchronization helpers.
-//!
-//! `StatusToast` / `StatusToastLevel` live here with the `impl App`
-//! extension block that owns toast/status/message behavior; state fields
-//! (`status_toasts`, `sticky_status`, `status_message`,
-//! `last_status_message_seen`) remain on `App` in `app.rs`.
-
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,7 +45,13 @@ pub(crate) enum StatusToastKind {
     Ordinary,
     InputHint,
     CopyReceipt,
-    LegacyTransient,
+    ExternalAgent,
+    VoiceCapture,
+    ExtensionCommand,
+    SessionResume,
+    HotbarSettings,
+    PermissionRule,
+    RemoteMirror,
     Onboarding,
     ProviderRoute,
     DeferredInitialPrompt,
@@ -161,14 +159,29 @@ impl StatusToast {
 }
 
 impl App {
+    pub(crate) fn show_owned_command_result(
+        &mut self,
+        kind: StatusToastKind,
+        text: impl Into<String>,
+        level: StatusToastLevel,
+    ) {
+        self.retire_progress_notice(kind);
+        let mut notice = StatusToast::new(text, level, Some(level.feedback_ttl_ms()));
+        notice.kind = kind;
+        self.push_status_toast_record(notice);
+    }
+
     pub(crate) fn show_command_result(&mut self, text: impl Into<String>, level: StatusToastLevel) {
-        self.prepare_interactive_notice();
-        let mut receipt =
+        let receipt =
             StatusToast::new(text, level, Some(level.feedback_ttl_ms())).for_command_receipt();
+        self.publish_recent_notice(receipt);
+    }
+
+    fn publish_recent_notice(&mut self, mut receipt: StatusToast) {
         if let Some(previous) = self.status_toasts.iter().position(|notice| {
             notice.kind == receipt.kind
                 && notice.event_id.is_none()
-                && notice.level == level
+                && notice.level == receipt.level
                 && notice.text == receipt.text
         }) && let Some(previous) = self.status_toasts.remove(previous)
             && !previous.is_expired(receipt.created_at)
@@ -256,26 +269,36 @@ impl App {
         level: StatusToastLevel,
         kind: StatusToastKind,
     ) {
-        self.prepare_interactive_notice();
         self.clear_setup_notice();
         let mut notice = StatusToast::new(text, level, Some(level.feedback_ttl_ms()));
         notice.kind = kind;
         self.push_status_toast_record(notice);
     }
 
-    fn prepare_interactive_notice(&mut self) {
-        self.sync_status_message_to_toasts();
-        if self.onboarding == OnboardingState::None
-            && !self.redaction_gate
-            && !self.auto_submit_initial_input
-        {
-            if let Some(displaced) = self.status_message.take() {
-                self.status_toasts.retain(|toast| {
-                    toast.kind != StatusToastKind::LegacyTransient || toast.text != displaced
-                });
-            }
-            self.last_status_message_seen = None;
+    pub(crate) fn show_event_notice(&mut self, text: impl Into<String>, level: StatusToastLevel) {
+        self.publish_recent_notice(StatusToast::new(text, level, Some(level.feedback_ttl_ms())));
+    }
+
+    pub(crate) fn replace_progress_notice(
+        &mut self,
+        kind: StatusToastKind,
+        text: impl Into<String>,
+    ) {
+        let mut notice = StatusToast::new(text, StatusToastLevel::Info, Some(4_000));
+        notice.kind = kind;
+        if let Some(previous) = self.status_toasts.iter().find(|prior| {
+            prior.kind == kind && prior.text == notice.text && !prior.is_expired(notice.created_at)
+        }) {
+            notice.created_at = previous.created_at;
         }
+        self.retire_progress_notice(kind);
+        self.push_status_toast_record(notice);
+    }
+
+    pub(crate) fn retire_progress_notice(&mut self, kind: StatusToastKind) {
+        let before = self.status_toasts.len();
+        self.status_toasts.retain(|notice| notice.kind != kind);
+        self.needs_redraw |= self.status_toasts.len() != before;
     }
 
     pub(crate) fn show_input_hint(&mut self, text: impl Into<String>) {
@@ -288,7 +311,6 @@ impl App {
         level: StatusToastLevel,
         ttl_ms: u64,
     ) {
-        self.prepare_interactive_notice();
         let mut hint = StatusToast::new(text, level, Some(ttl_ms));
         hint.kind = StatusToastKind::InputHint;
         if let Some(previous) = self.status_toasts.iter().find(|notice| {
@@ -309,7 +331,6 @@ impl App {
         level: StatusToastLevel,
         ttl_ms: u64,
     ) {
-        self.prepare_interactive_notice();
         let mut receipt = StatusToast::new(text, level, Some(ttl_ms));
         receipt.kind = StatusToastKind::CopyReceipt;
         self.status_toasts
@@ -352,7 +373,8 @@ impl App {
                 .status_toasts
                 .iter()
                 .position(|toast| {
-                    toast.kind != StatusToastKind::Standing
+                    !(toast.kind == StatusToastKind::Standing
+                        || (toast.kind == StatusToastKind::RemoteMirror && toast.ttl_ms.is_none()))
                         && !(self.onboarding != OnboardingState::None && toast.is_setup_notice())
                 })
                 .unwrap_or(0);
@@ -452,7 +474,13 @@ impl App {
     pub fn acknowledge_sticky_on_composer_activity(&mut self) {
         let before = self.status_toasts.len();
         self.status_toasts.retain(|notice| {
-            notice.kind != StatusToastKind::CopyReceipt || notice.level != StatusToastLevel::Error
+            !matches!(
+                notice.kind,
+                StatusToastKind::CopyReceipt
+                    | StatusToastKind::CommandReceipt
+                    | StatusToastKind::HotbarSettings
+                    | StatusToastKind::PermissionRule
+            ) || notice.level != StatusToastLevel::Error
         });
         self.needs_redraw |= self.status_toasts.len() != before;
         if self
@@ -464,7 +492,7 @@ impl App {
         }
     }
 
-    pub(super) fn classify_status_text(text: &str) -> (StatusToastLevel, Option<u64>, bool) {
+    pub(super) fn classify_engine_status(text: &str) -> (StatusToastLevel, Option<u64>, bool) {
         let lower = text.to_ascii_lowercase();
         let has = |needle: &str| lower.contains(needle);
 
@@ -512,63 +540,30 @@ impl App {
         (StatusToastLevel::Info, Some(4_000), false)
     }
 
-    fn is_mode_switch_status_message(message: &str) -> bool {
-        message.starts_with("Switched to ") && message.ends_with(" mode")
-    }
-
-    pub fn sync_status_message_to_toasts(&mut self) {
-        let current = self.status_message.clone();
-        if self.last_status_message_seen == current {
-            return;
-        }
-        self.last_status_message_seen = current.clone();
-
-        let Some(message) = current else {
-            return;
-        };
-        if message.trim().is_empty() {
-            return;
-        }
-        if Self::is_mode_switch_status_message(&message) {
+    pub(crate) fn report_engine_status(&mut self, message: String) {
+        if message.trim().is_empty()
+            || (message.starts_with("Switched to ") && message.ends_with(" mode"))
+        {
             return;
         }
         let now = Instant::now();
-        // A typed producer already owns this notice. The legacy adapter must
-        // not reclassify tool text or create a second sticky/queued copy.
         if self
             .status_toasts
             .iter()
             .chain(self.sticky_status.iter())
-            .any(|toast| toast.text == message && !toast.is_expired(now))
+            .any(|notice| notice.text == message && !notice.is_expired(now))
         {
             return;
         }
-
-        let (level, ttl_ms, sticky) = Self::classify_status_text(&message);
+        let (level, ttl_ms, sticky) = Self::classify_engine_status(&message);
         if sticky {
             self.set_sticky_status(message, level, ttl_ms);
         } else {
-            // A routine success ("Auto-compaction enabled") must not clear
-            // the one error that says no model is connected: nothing but
-            // connecting a provider resolves it (U1).
-            if matches!(level, StatusToastLevel::Success)
-                && !self.onboarding_needs_api_key
-                && self
-                    .sticky_status
-                    .as_ref()
-                    .is_some_and(|toast| matches!(toast.level, StatusToastLevel::Error))
-            {
-                self.clear_sticky_status();
-            }
-            let mut notice = StatusToast::new(message, level, ttl_ms);
-            if matches!(level, StatusToastLevel::Info | StatusToastLevel::Success) {
-                notice.kind = StatusToastKind::LegacyTransient;
-            }
-            self.push_status_toast_record(notice);
+            self.push_status_toast(message, level, ttl_ms);
         }
     }
 
-    fn prune_expired_status_toasts(&mut self, now: Instant) {
+    pub(crate) fn prune_expired_status_toasts(&mut self, now: Instant) {
         let queued_before = self.status_toasts.len();
         self.status_toasts.retain(|toast| {
             !toast.is_expired(now)
@@ -587,11 +582,16 @@ impl App {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn visible_notice_text(&mut self) -> Option<String> {
+        self.active_status_toast(crate::tui::underwater::ShellPhase::Typing)
+            .map(|notice| notice.text)
+    }
+
     pub fn active_status_toast(
         &mut self,
         phase: crate::tui::underwater::ShellPhase,
     ) -> Option<StatusToast> {
-        self.sync_status_message_to_toasts();
         let now = Instant::now();
         self.prune_expired_status_toasts(now);
 
@@ -603,6 +603,9 @@ impl App {
                 || matches!(
                     toast.kind,
                     StatusToastKind::CommandReceipt
+                        | StatusToastKind::HotbarSettings
+                        | StatusToastKind::VoiceCapture
+                        | StatusToastKind::PermissionRule
                         | StatusToastKind::CopyReceipt
                         | StatusToastKind::ProviderRoute
                 )
@@ -741,7 +744,7 @@ mod tests {
         app.push_status_toast_record(
             StatusToast::new("Decision", StatusToastLevel::Warning, None).for_action("input-hint"),
         );
-        app.status_message = Some("Older progress".into());
+        app.show_event_notice("Older progress", StatusToastLevel::Info);
         app.show_input_hint("Attached @failed-error.log");
         let hint = app.active_status_toast(ShellPhase::Typing).unwrap();
         assert_eq!(hint.text, "Attached @failed-error.log");
@@ -766,13 +769,13 @@ mod tests {
             app.active_status_toast(ShellPhase::Typing).unwrap().text,
             "Decision"
         );
-        app.status_message = Some("Older progress".into());
+        app.show_event_notice("Older progress", StatusToastLevel::Info);
         assert_eq!(
             app.active_status_toast(ShellPhase::Typing).unwrap().text,
             "Older progress"
         );
         app.show_input_hint("Composer focused");
-        app.status_message = Some("Older progress".into());
+        app.show_event_notice("Older progress", StatusToastLevel::Info);
         assert_eq!(
             app.active_status_toast(ShellPhase::Typing).unwrap().text,
             "Older progress"
@@ -780,14 +783,13 @@ mod tests {
     }
 
     #[test]
-    fn legacy_status_does_not_reclassify_a_typed_notice_or_repeat_a_live_notice() {
+    fn engine_status_does_not_reclassify_a_typed_notice_or_repeat_a_live_notice() {
         let mut app = app();
         let text = "承認してください · failed-tool";
         app.push_status_toast(text, StatusToastLevel::Warning, Some(12_000));
         let first = app.status_toasts[0].created_at;
         for message in [text, "another status", text] {
-            app.status_message = Some(message.into());
-            app.sync_status_message_to_toasts();
+            app.report_engine_status(message.into());
         }
         assert_eq!(app.status_toasts.len(), 2);
         assert_eq!(app.status_toasts[0].level, StatusToastLevel::Warning);

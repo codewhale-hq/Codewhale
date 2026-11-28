@@ -256,7 +256,10 @@ pub(super) fn apply_engine_session_projection(
                     .and_then(|state| state.graph.as_ref()),
             ) {
                 Ok(false) if work.has_pending_publish() => {
-                    app.status_message = Some("A newer Work update remains pending".to_string());
+                    app.show_event_notice(
+                        "A newer Work update remains pending".to_string(),
+                        StatusToastLevel::Warning,
+                    );
                 }
                 Ok(_) => {}
                 Err(error) => {
@@ -299,9 +302,10 @@ pub(super) fn apply_engine_session_projection(
                 PersistRequest::SaveCheckpoint { session },
                 &projection,
             ) {
-                app.status_message = Some(format!(
-                    "To-do list update pending while saving checkpoint ({err})"
-                ));
+                app.show_event_notice(
+                    format!("To-do list update pending while saving checkpoint ({err})"),
+                    StatusToastLevel::Warning,
+                );
             }
         }
     } else if app.session_title.is_none() {
@@ -1218,7 +1222,7 @@ pub async fn run_tui(
         app.add_message(HistoryCell::System {
             content: notice.clone(),
         });
-        app.status_message = Some(notice);
+        app.show_event_notice(notice, StatusToastLevel::Info);
     }
     app.apply_cli_permission_mode(permission_mode);
     let _cursor_accent_guard = codewhale_tui_kit::cursor_accent::CursorAccentGuard::install(
@@ -1289,10 +1293,13 @@ pub async fn run_tui(
                         // uses is read from the same metadata below (#6207).
                         Ok(_) => {
                             lease.commit();
-                            app.status_message = Some(format!(
-                                "Resumed session: {}",
-                                codewhale_engine::session_manager::truncate_id(&saved_id)
-                            ));
+                            app.replace_progress_notice(
+                                StatusToastKind::SessionResume,
+                                format!(
+                                    "Resumed session: {}",
+                                    codewhale_engine::session_manager::truncate_id(&saved_id)
+                                ),
+                            );
                         }
                         Err(err) => {
                             crate::tui::ui::session_state::surface_session_load_failure(
@@ -1330,13 +1337,7 @@ pub async fn run_tui(
     // until the first turn starts or a session is opened, so later status
     // updates cannot hide it.
     if let Some(notice) = options.startup_notice.clone() {
-        if app
-            .status_message
-            .as_deref()
-            .is_some_and(|current| !current.starts_with("Failed to"))
-        {
-            app.status_message = None;
-        }
+        app.retire_progress_notice(StatusToastKind::SessionResume);
         app.push_status_toast_record(StatusToast::standing(
             notice,
             StatusToastLevel::Info,
@@ -1485,7 +1486,10 @@ pub async fn run_tui(
                 .await
         {
             tracing::error!(target: "hooks", %error, "session_start executor task was lost");
-            app.status_message = Some("session_start hook executor did not run".to_string());
+            app.show_event_notice(
+                "session_start hook executor did not run".to_string(),
+                StatusToastLevel::Warning,
+            );
         }
         // Lifecycle outbox (`[lifecycle_outbox]`): fires alongside the
         // session_start hook, with the same session identity. No-op when
@@ -2019,8 +2023,9 @@ async fn submit_decided_composer_input(
             let input = app.input.clone();
             return execute_command_input(terminal, app, engine_handle, config, &input).await;
         }
-        app.status_message = Some(
+        app.show_event_notice(
             "A new session is awaiting Engine confirmation; the draft is preserved.".to_string(),
+            StatusToastLevel::Warning,
         );
         return Ok(false);
     }
@@ -2367,7 +2372,7 @@ pub(crate) async fn run_event_loop(
             // ever gated by `pause_terminal_input_for_child` /
             // `resume_after_child_terminal`, and calling the latter here would
             // falsely clear a child's gate.
-            app.status_message = Some("Resumed after suspend".to_string());
+            app.show_event_notice("Resumed after suspend".to_string(), StatusToastLevel::Info);
             app.needs_redraw = true;
             terminal_repaint = FrameRepaint::Clear;
         }
@@ -2613,24 +2618,28 @@ pub(crate) async fn run_event_loop(
                     }
                     let text = match translated {
                         Ok(text) => {
-                            app.status_message = Some(
+                            app.show_event_notice(
                                 codewhale_localization::tr(
                                     app.ui_locale,
                                     codewhale_localization::MessageId::TranslationComplete,
                                 )
                                 .to_string(),
+                                StatusToastLevel::Success,
                             );
                             text
                         }
                         Err(err) => {
                             tracing::warn!("assistant translation failed: {err}");
-                            app.status_message = Some(format!(
-                                "{}: {err}",
-                                codewhale_localization::tr(
-                                    app.ui_locale,
-                                    codewhale_localization::MessageId::TranslationFailed,
-                                )
-                            ));
+                            app.show_event_notice(
+                                format!(
+                                    "{}: {err}",
+                                    codewhale_localization::tr(
+                                        app.ui_locale,
+                                        codewhale_localization::MessageId::TranslationFailed,
+                                    )
+                                ),
+                                StatusToastLevel::Error,
+                            );
                             codewhale_localization::hidden_translation_failed(app.ui_locale)
                                 .to_string()
                         }
@@ -2683,20 +2692,26 @@ pub(crate) async fn run_event_loop(
                     }
                     let text = match translated {
                         Ok(text) => {
-                            app.status_message = Some(
+                            app.show_event_notice(
                                 codewhale_localization::thinking_translation_complete(
                                     app.ui_locale,
                                 )
                                 .to_string(),
+                                StatusToastLevel::Success,
                             );
                             text
                         }
                         Err(err) => {
                             tracing::warn!("thinking translation failed: {err}");
-                            app.status_message = Some(format!(
-                                "{}: {err}",
-                                codewhale_localization::thinking_translation_failed(app.ui_locale)
-                            ));
+                            app.show_event_notice(
+                                format!(
+                                    "{}: {err}",
+                                    codewhale_localization::thinking_translation_failed(
+                                        app.ui_locale
+                                    )
+                                ),
+                                StatusToastLevel::Error,
+                            );
                             codewhale_localization::hidden_translation_failed(app.ui_locale)
                                 .to_string()
                         }
@@ -3121,12 +3136,13 @@ pub(crate) async fn run_event_loop(
                             )
                             && let Some(translation_client) = active_translation_client.as_ref()
                         {
-                            app.status_message = Some(
+                            app.show_event_notice(
                                 codewhale_localization::tr(
                                     app.ui_locale,
                                     codewhale_localization::MessageId::TranslationInProgress,
                                 )
                                 .to_string(),
+                                StatusToastLevel::Info,
                             );
                             app.is_loading = true;
                             pending_translations = pending_translations.saturating_add(1);
@@ -3241,11 +3257,12 @@ pub(crate) async fn run_event_loop(
                                 && let Some(translation_client) = active_translation_client.as_ref()
                                 && let Some(cell_index) = cell_index
                             {
-                                app.status_message = Some(
+                                app.show_event_notice(
                                     codewhale_localization::thinking_translation_in_progress(
                                         app.ui_locale,
                                     )
                                     .to_string(),
+                                    StatusToastLevel::Info,
                                 );
                                 app.is_loading = true;
                                 pending_translations = pending_translations.saturating_add(1);
@@ -3515,13 +3532,19 @@ pub(crate) async fn run_event_loop(
                         app.provider_wait_incident_logged = false;
                         // Discoverability hint for users who don't know how
                         // to interrupt a long-running turn (#1367). Only
-                        // surface when the status_message slot is empty so
+                        // surface when no notice is active so
                         // we don't trample over a real transient message
                         // (e.g. "/queue saved"); the
                         // hint then auto-clears as soon as anything else
                         // updates the slot.
-                        if app.status_message.is_none() {
-                            app.status_message = Some("Press Esc or Ctrl+C to cancel".to_string());
+                        if app
+                            .active_status_toast(crate::tui::underwater::ShellPhase::Typing)
+                            .is_none()
+                        {
+                            app.show_event_notice(
+                                "Press Esc or Ctrl+C to cancel",
+                                StatusToastLevel::Info,
+                            );
                         }
                         active_translation_client = match route.as_ref() {
                             Some(route) => match exact_translation_client(config, route).await {
@@ -4167,9 +4190,9 @@ pub(crate) async fn run_event_loop(
                                         error = %err,
                                         "completed-turn Work projections remain unpublished"
                                     );
-                                    app.status_message = Some(format!(
+                                    app.show_event_notice(format!(
                                         "Session queued, but Work views could not publish ({err})"
-                                    ));
+                                    ), StatusToastLevel::Warning);
                                 }
                             } else if app
                                 .runtime_services
@@ -4177,10 +4200,8 @@ pub(crate) async fn run_event_loop(
                                 .as_ref()
                                 .is_some_and(|work| work.has_pending_publish())
                             {
-                                app.status_message = Some(
-                                    "To-do list update pending: session snapshot could not be queued"
-                                        .to_string(),
-                                );
+                                app.show_event_notice("To-do list update pending: session snapshot could not be queued"
+                                        .to_string(), StatusToastLevel::Warning);
                             }
                         }
                         // The checkpoint clear is owned by the compound
@@ -4409,9 +4430,10 @@ pub(crate) async fn run_event_loop(
                         app.goal_continuation_waiting = true;
                         let delay =
                             codewhale_command_contract::elapsed::format_elapsed_secs(delay_seconds);
-                        app.status_message = Some(
+                        app.show_event_notice(
                             app.tr(MessageId::GoalContinuationWaiting)
                                 .replace("{delay}", &delay),
+                            StatusToastLevel::Info,
                         );
                     }
                     EngineEvent::GoalContinuationWaitEnded { interrupted } => {
@@ -4421,7 +4443,10 @@ pub(crate) async fn run_event_loop(
                         } else {
                             MessageId::GoalContinuationReady
                         };
-                        app.status_message = Some(app.tr(message_id).to_string());
+                        app.show_event_notice(
+                            app.tr(message_id).to_string(),
+                            StatusToastLevel::Info,
+                        );
                     }
                     event @ EngineEvent::SessionUpdated { .. } => {
                         apply_engine_session_projection(app, config, event);
@@ -4456,15 +4481,15 @@ pub(crate) async fn run_event_loop(
                     }
                     EngineEvent::PurgeStarted { message } => {
                         app.is_purging = true;
-                        app.status_message = Some(message);
+                        app.show_event_notice(message, StatusToastLevel::Info);
                     }
                     EngineEvent::PurgeCompleted { message, .. } => {
                         app.is_purging = false;
-                        app.status_message = Some(message);
+                        app.show_event_notice(message, StatusToastLevel::Success);
                     }
                     EngineEvent::PurgeFailed { message } => {
                         app.is_purging = false;
-                        app.status_message = Some(message);
+                        app.show_event_notice(message, StatusToastLevel::Error);
                     }
                     EngineEvent::PrefixCacheChange {
                         description,
@@ -4875,9 +4900,12 @@ pub(crate) async fn run_event_loop(
                             );
                         } else {
                             let label = app.ensure_agent_label(&id);
-                            app.status_message = Some(format!(
-                                "{label} settled; outcome unconfirmed. Refreshing worker state."
-                            ));
+                            app.show_event_notice(
+                                format!(
+                                    "{label} settled; outcome unconfirmed. Refreshing worker state."
+                                ),
+                                StatusToastLevel::Warning,
+                            );
                         }
                         let should_recapture_terminal =
                             !has_other_running_subagents && app.use_alt_screen();
@@ -4952,10 +4980,13 @@ pub(crate) async fn run_event_loop(
                         reconcile_subagent_activity_state(app);
                         let view_agents = subagent_view_agents(app, &app.subagent_cache);
                         if app.view_stack.update_subagents(&view_agents) {
-                            app.status_message = Some(current_session_fleet_workers_status(
-                                app.ui_locale,
-                                view_agents.len(),
-                            ));
+                            app.show_event_notice(
+                                current_session_fleet_workers_status(
+                                    app.ui_locale,
+                                    view_agents.len(),
+                                ),
+                                StatusToastLevel::Info,
+                            );
                         }
                         // Individual spawn/complete events already log to history;
                         // full list available via /agents command.
@@ -5223,9 +5254,10 @@ pub(crate) async fn run_event_loop(
                             }
                             if let Some(error) = receipt["accounting_error"].as_str() {
                                 app.mark_usage_uncertain("usage_settlement_unacknowledged");
-                                app.status_message = Some(format!(
-                                    "Provider usage settlement is uncertain: {error}"
-                                ));
+                                app.show_event_notice(
+                                    format!("Provider usage settlement is uncertain: {error}"),
+                                    StatusToastLevel::Warning,
+                                );
                             }
                             let leaf = app.session_journal.leaf_id.clone();
                             app.session_journal.append(
@@ -5535,7 +5567,7 @@ pub(crate) async fn run_event_loop(
                     config: app.compaction_config(),
                 })
                 .await;
-            app.status_message = Some(rollback_warning);
+            app.show_event_notice(rollback_warning, StatusToastLevel::Warning);
         }
         let current_skill_epoch = codewhale_engine::extension_host::command::epoch();
         if skill_cache_refresh
@@ -5875,7 +5907,10 @@ pub(crate) async fn run_event_loop(
             event_broker.resume_events();
             terminal_input.resume_after_child_terminal();
             terminal_paused_at = None;
-            app.status_message = Some("Terminal controls restored".to_string());
+            app.show_event_notice(
+                "Terminal controls restored".to_string(),
+                StatusToastLevel::Info,
+            );
             app.needs_redraw = true;
             terminal_repaint = FrameRepaint::Clear;
         }
@@ -5890,7 +5925,7 @@ pub(crate) async fn run_event_loop(
             super::apply::apply_approve_auto_review_retry(app, &engine_handle, &target);
         }
         crate::tui::work_surface::poll_terminal(app);
-        app.sync_status_message_to_toasts();
+        app.prune_expired_status_toasts(Instant::now());
         // Drain background-LLM cost (compaction summaries, seam
         // recompaction, cycle briefings) accumulated since the last
         // tick and fold it into the session-cost counter (#526).
@@ -6327,9 +6362,9 @@ pub(crate) async fn run_event_loop(
                                 return Ok(());
                             }
                             if let Err(err) = persist_pending_work_checkpoint(app).await {
-                                app.status_message = Some(format!(
+                                app.show_event_notice(format!(
                                     "Hotbar change applied, but its Work receipt is pending ({err})"
-                                ));
+                                ), StatusToastLevel::Warning);
                             }
                             app.needs_redraw = true;
                         }
@@ -6545,7 +6580,10 @@ pub(crate) async fn run_event_loop(
                             }
                         }
                         crate::tui::app::SidebarRowAction::CancelAgent { agent_id } => {
-                            app.status_message = Some(format!("Cancelling {agent_id}..."));
+                            app.show_event_notice(
+                                format!("Cancelling {agent_id}..."),
+                                StatusToastLevel::Info,
+                            );
                             if engine_handle
                                 .send(Op::CancelSubAgent {
                                     agent_id: agent_id.clone(),
@@ -6553,7 +6591,10 @@ pub(crate) async fn run_event_loop(
                                 .await
                                 .is_err()
                             {
-                                app.status_message = Some(format!("Could not cancel {agent_id}"));
+                                app.show_event_notice(
+                                    format!("Could not cancel {agent_id}"),
+                                    StatusToastLevel::Error,
+                                );
                             }
                         }
                         other => {
@@ -7075,9 +7116,9 @@ pub(crate) async fn run_event_loop(
                                 return Ok(());
                             }
                             if let Err(err) = persist_pending_work_checkpoint(app).await {
-                                app.status_message = Some(format!(
+                                app.show_event_notice(format!(
                                     "Hotbar change applied, but its Work receipt is pending ({err})"
-                                ));
+                                ), StatusToastLevel::Warning);
                             }
                             app.needs_redraw = true;
                         }
@@ -7134,7 +7175,10 @@ pub(crate) async fn run_event_loop(
                 // worker's bounded Agent Details projection.
                 if let Some(agent_id) = app.agent_focus.as_ref().map(|f| f.agent_id.clone()) {
                     if !crate::tui::agent_details::open_agent_details(app, &agent_id) {
-                        app.status_message = Some("Agent details are unavailable".to_string());
+                        app.show_event_notice(
+                            "Agent details are unavailable".to_string(),
+                            StatusToastLevel::Warning,
+                        );
                     }
                     app.needs_redraw = true;
                     continue;
@@ -7183,9 +7227,12 @@ pub(crate) async fn run_event_loop(
 
             if handle_reasoning_effort_key(app, &key) {
                 if let Err(err) = persist_pending_work_checkpoint(app).await {
-                    app.status_message = Some(format!(
-                        "Reasoning effort changed, but its Work receipt is pending ({err})"
-                    ));
+                    app.show_event_notice(
+                        format!(
+                            "Reasoning effort changed, but its Work receipt is pending ({err})"
+                        ),
+                        StatusToastLevel::Warning,
+                    );
                 }
                 continue;
             }
@@ -7450,8 +7497,10 @@ pub(crate) async fn run_event_loop(
                             }
                             if was_waiting {
                                 app.goal_continuation_waiting = false;
-                                app.status_message =
-                                    Some(app.tr(MessageId::GoalContinuationStopped).to_string());
+                                app.show_event_notice(
+                                    app.tr(MessageId::GoalContinuationStopped).to_string(),
+                                    StatusToastLevel::Info,
+                                );
                                 app.disarm_quit();
                                 continue;
                             }
@@ -7465,7 +7514,10 @@ pub(crate) async fn run_event_loop(
                             } else {
                                 "Request cancelled"
                             };
-                            app.status_message = Some(parent_stop_status(app, base));
+                            app.show_event_notice(
+                                parent_stop_status(app, base),
+                                StatusToastLevel::Warning,
+                            );
                             app.disarm_quit();
                         }
                         CtrlCDisposition::ClearInput => {
@@ -8412,7 +8464,7 @@ pub(super) async fn adopt_live_local_ollama_catalog(
     let adopted = app
         .tr(MessageId::LocalModelAdopted)
         .replace("{model}", &tag);
-    app.status_message = Some(adopted);
+    app.show_event_notice(adopted, StatusToastLevel::Success);
     app.needs_redraw = true;
 }
 
@@ -8475,7 +8527,7 @@ pub(crate) async fn run_xai_device_login_from_tui(
             app.add_message(HistoryCell::System {
                 content: message.clone(),
             });
-            app.status_message = Some(message);
+            app.show_event_notice(message, StatusToastLevel::Error);
             false
         }
     };
@@ -8641,7 +8693,7 @@ pub(crate) async fn run_chatgpt_pkce_login_from_tui(
             app.add_message(HistoryCell::System {
                 content: message.clone(),
             });
-            app.status_message = Some(message);
+            app.show_event_notice(message, StatusToastLevel::Error);
             false
         }
     };
@@ -8712,7 +8764,7 @@ pub(crate) async fn run_orcarouter_pkce_login_from_tui(
                     app.add_message(HistoryCell::System {
                         content: message.clone(),
                     });
-                    app.status_message = Some(message);
+                    app.show_event_notice(message, StatusToastLevel::Error);
                     false
                 }
             }
@@ -8722,7 +8774,7 @@ pub(crate) async fn run_orcarouter_pkce_login_from_tui(
             app.add_message(HistoryCell::System {
                 content: message.clone(),
             });
-            app.status_message = Some(message);
+            app.show_event_notice(message, StatusToastLevel::Error);
             false
         }
     };
@@ -9391,7 +9443,7 @@ pub(crate) fn cancel_background_commands(app: &mut App) -> bool {
         .iter()
         .map(|command| background::line(app.ui_locale, MessageId::CmdBackgroundCancelled, command))
         .collect();
-    app.status_message = Some(lines.join(" "));
+    app.show_event_notice(lines.join(" "), StatusToastLevel::Warning);
     app.needs_redraw = true;
     true
 }
@@ -9962,7 +10014,10 @@ pub(super) async fn handle_approval_required_event(
                 )
                 .await
             {
-                app.status_message = Some(format!("Approval was not accepted: {error}"));
+                app.show_event_notice(
+                    format!("Approval was not accepted: {error}"),
+                    StatusToastLevel::Error,
+                );
                 return;
             }
             let notice = app
@@ -9982,7 +10037,10 @@ pub(super) async fn handle_approval_required_event(
             );
             let by = auto_approval_decider(app, approval_force_prompt);
             if let Err(error) = engine_handle.approve_tool_call_by(id.clone(), by).await {
-                app.status_message = Some(format!("Approval was not accepted: {error}"));
+                app.show_event_notice(
+                    format!("Approval was not accepted: {error}"),
+                    StatusToastLevel::Error,
+                );
             }
         }
         ApprovalRequestDisposition::AutoDenyAutoReview => {
@@ -10001,7 +10059,10 @@ pub(super) async fn handle_approval_required_event(
                 )
                 .await
             {
-                app.status_message = Some(format!("Approval was not accepted: {error}"));
+                app.show_event_notice(
+                    format!("Approval was not accepted: {error}"),
+                    StatusToastLevel::Error,
+                );
                 return;
             }
             let held =
@@ -10030,7 +10091,10 @@ pub(super) async fn handle_approval_required_event(
                 )
                 .await
             {
-                app.status_message = Some(format!("Approval was not accepted: {error}"));
+                app.show_event_notice(
+                    format!("Approval was not accepted: {error}"),
+                    StatusToastLevel::Error,
+                );
                 return;
             }
             app.push_status_toast_record(
@@ -10142,7 +10206,7 @@ pub(super) fn apply_engine_status(app: &mut App, message: String) -> bool {
         app.notify_account_preferences_not_loaded();
         return false;
     }
-    app.status_message = Some(message);
+    app.report_engine_status(message);
     false
 }
 
@@ -10171,7 +10235,7 @@ pub(super) fn sanitize_server_ui_text(raw: &str, single_line: bool) -> String {
 
 pub(super) fn apply_conversation_title(app: &mut App, title: &str) {
     let sanitized = sanitize_server_ui_text(title, true);
-    app.status_message = Some(format!("Title: {sanitized}"));
+    app.show_event_notice(format!("Title: {sanitized}"), StatusToastLevel::Info);
 }
 
 pub(super) fn apply_content_filter_refusal(app: &mut App, reason: &str, refusal: Option<&str>) {

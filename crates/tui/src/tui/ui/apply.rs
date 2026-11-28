@@ -24,7 +24,7 @@ pub(super) fn apply_approve_auto_review_retry(
             app.add_message(HistoryCell::System {
                 content: msg.clone(),
             });
-            app.status_message = Some(msg);
+            app.show_command_result(msg, StatusToastLevel::Success);
             app.needs_redraw = true;
         }
         Err(error) => {
@@ -170,10 +170,13 @@ pub(crate) fn apply_alt_0_shortcut(app: &mut App, modifiers: KeyModifiers) {
     if modifiers.contains(KeyModifiers::CONTROL) {
         if app.work_surface.placement == crate::tui::work_surface::WorkSurfacePlacement::Off {
             app.work_surface.placement = crate::tui::work_surface::WorkSurfacePlacement::Bottom;
-            app.status_message = Some("Workbar: bottom placement".to_string());
+            app.show_command_result(
+                "Workbar: bottom placement".to_string(),
+                StatusToastLevel::Info,
+            );
         } else {
             app.work_surface.placement = crate::tui::work_surface::WorkSurfacePlacement::Off;
-            app.status_message = Some("Workbar is off".to_string());
+            app.show_command_result("Workbar is off".to_string(), StatusToastLevel::Info);
         }
         app.needs_redraw = true;
     }
@@ -348,7 +351,7 @@ pub(crate) fn apply_engine_error_to_app(
         );
     }
     // Error is already in the transcript as HistoryCell::Error above;
-    // don't emit a redundant status_message that would become a sticky
+    // don't emit a redundant notice that would become a sticky
     // toast in the footer — that duplicates the transcript entry.
 }
 
@@ -1550,7 +1553,7 @@ pub(super) async fn apply_range_undo(
         app.view_stack.pop();
     }
     let progress = format!("Checking restore points for {} requests…", depth + 1);
-    app.status_message = Some(progress.clone());
+
     app.push_status_toast_record(
         StatusToast::new(progress, StatusToastLevel::Info, Some(4_000)).for_command_receipt(),
     );
@@ -1570,7 +1573,7 @@ pub(super) async fn apply_range_undo(
         "The conversation changed during undo preparation; nothing was undone."
     );
     let progress = format!("Restoring workspace files for {} requests…", depth + 1);
-    app.status_message = Some(progress.clone());
+
     app.push_status_toast_record(
         StatusToast::new(progress, StatusToastLevel::Info, Some(4_000)).for_command_receipt(),
     );
@@ -1597,7 +1600,7 @@ pub(super) async fn apply_range_undo(
             Vec::new()
         };
     let progress = format!("Saving conversation rewind for {} requests…", depth + 1);
-    app.status_message = Some(progress.clone());
+
     app.push_status_toast_record(
         StatusToast::new(progress, StatusToastLevel::Info, Some(4_000)).for_command_receipt(),
     );
@@ -1608,7 +1611,7 @@ pub(super) async fn apply_range_undo(
             app.add_message(HistoryCell::System {
                 content: message.clone(),
             });
-            app.status_message = Some(message.clone());
+
             app.push_status_toast_record(
                 StatusToast::new(message, StatusToastLevel::Success, Some(4_000))
                     .for_command_receipt(),
@@ -1687,7 +1690,7 @@ async fn apply_command_result_inner(
             )
         )
     {
-        app.status_message = Some("A new session is awaiting Engine confirmation; the current draft and transcript are preserved.".to_string());
+        app.show_command_result("A new session is awaiting Engine confirmation; the current draft and transcript are preserved.".to_string(), StatusToastLevel::Warning);
         return Ok(false);
     }
     // These two actions await participant inference inline on the UI event
@@ -1851,10 +1854,6 @@ async fn apply_command_result_inner(
                     })
                     .await;
                 let _ = engine_handle.try_send(Op::ListSubAgents);
-                // Restore may have queued a legacy configuration notice.
-                // Admit it first so the confirmed resume remains the latest
-                // toast instead of being immediately covered on the next draw.
-                app.sync_status_message_to_toasts();
                 app.push_status_toast_record(
                     StatusToast::new(
                         app.tr(MessageId::SessionsResumed)
@@ -1919,9 +1918,10 @@ async fn apply_command_result_inner(
                         }) {
                         Ok(identity) => identity,
                         Err(reason) => {
-                            app.status_message = Some(format!(
-                                "Failed to restore saved session provider: {reason}"
-                            ));
+                            app.show_command_result(
+                                format!("Failed to restore saved session provider: {reason}"),
+                                StatusToastLevel::Error,
+                            );
                             return Ok(false);
                         }
                     };
@@ -2039,9 +2039,10 @@ async fn apply_command_result_inner(
                         config.exec_policy_engine.set_ruleset(ruleset);
                     }
                     Err(error) => {
-                        app.status_message = Some(
+                        app.show_command_result(
                             tr(app.ui_locale, MessageId::PermissionsOperationFailed)
                                 .replace("{error}", &format!("{error:#}")),
+                            StatusToastLevel::Error,
                         );
                     }
                 }
@@ -2184,7 +2185,10 @@ async fn apply_command_result_inner(
                 // The origin labels the output: it is the plugin's text, not
                 // Codewhale's.
                 let origin = command.origin.clone();
-                app.status_message = Some(format!("Running /{name} ({origin})..."));
+                app.replace_progress_notice(
+                    StatusToastKind::ExtensionCommand,
+                    format!("Running /{name} ({origin})..."),
+                );
                 // Awaited here like `/balance`; the call is bounded by its
                 // deadline and cancelled in the host when it expires.
                 match codewhale_engine::extension_host::run_command_for_plugins(
@@ -2196,17 +2200,20 @@ async fn apply_command_result_inner(
                 .await
                 {
                     Ok(CommandOutcome::Show { text }) => {
+                        app.retire_progress_notice(StatusToastKind::ExtensionCommand);
                         if text.trim().is_empty() {
-                            app.status_message = Some(format!("/{name} completed"));
+                            app.show_command_result(
+                                format!("/{name} completed"),
+                                StatusToastLevel::Success,
+                            );
                         } else {
-                            app.status_message = None;
                             app.add_message(HistoryCell::System {
                                 content: format!("/{name} ({origin})\n{text}"),
                             });
                         }
                     }
                     Ok(CommandOutcome::Submit { prompt, note }) => {
-                        app.status_message = None;
+                        app.retire_progress_notice(StatusToastKind::ExtensionCommand);
                         let mut content = format!("/{name} ({origin}) submitted a prompt");
                         if let Some(note) = note {
                             content.push_str(&format!("\n{note}"));
@@ -2233,7 +2240,7 @@ async fn apply_command_result_inner(
                         .await?;
                     }
                     Err(error) => {
-                        app.status_message = None;
+                        app.retire_progress_notice(StatusToastKind::ExtensionCommand);
                         app.add_message(HistoryCell::System {
                             content: format!("Error: /{name} ({origin}): {error}"),
                         });
@@ -2315,17 +2322,21 @@ async fn apply_command_result_inner(
             }
             AppAction::VoiceCapture => {
                 use commands::voice::VoiceCaptureOutcome;
-                match commands::voice::capture_and_transcribe(app, config).await {
+                let result = commands::voice::capture_and_transcribe(app, config).await;
+                app.retire_progress_notice(StatusToastKind::VoiceCapture);
+                match result {
                     Ok(VoiceCaptureOutcome::Insert(text)) => {
                         app.insert_str(&text);
-                        app.status_message = Some(format!(
-                            "{}: {text}",
-                            tr(app.ui_locale, MessageId::VoiceTranscribed)
-                        ));
+                        app.show_command_result(
+                            format!("{}: {text}", tr(app.ui_locale, MessageId::VoiceTranscribed)),
+                            StatusToastLevel::Info,
+                        );
                     }
                     Ok(VoiceCaptureOutcome::Send(content)) => {
-                        app.status_message =
-                            Some(tr(app.ui_locale, MessageId::VoiceTranscribed).to_string());
+                        app.show_command_result(
+                            tr(app.ui_locale, MessageId::VoiceTranscribed).to_string(),
+                            StatusToastLevel::Success,
+                        );
                         let queued = build_queued_message(app, content);
                         dispatch_composer_message(
                             app,
@@ -2339,7 +2350,7 @@ async fn apply_command_result_inner(
                     }
                     Err(err) => {
                         app.voice_enabled = false;
-                        app.status_message = Some(err);
+                        app.show_command_result(err, StatusToastLevel::Error);
                     }
                 }
             }
@@ -2362,14 +2373,20 @@ async fn apply_command_result_inner(
                 );
             }
             AppAction::CancelSubAgent { agent_id } => {
-                app.status_message = Some(format!("Cancelling {agent_id}..."));
+                app.show_command_result(
+                    format!("Cancelling {agent_id}..."),
+                    StatusToastLevel::Info,
+                );
                 if engine_handle
                     .try_send(Op::CancelSubAgent {
                         agent_id: agent_id.clone(),
                     })
                     .is_err()
                 {
-                    app.status_message = Some(format!("Could not cancel {agent_id}"));
+                    app.show_command_result(
+                        format!("Could not cancel {agent_id}"),
+                        StatusToastLevel::Error,
+                    );
                 }
             }
             AppAction::RouterSetup { request } => {
@@ -2436,7 +2453,7 @@ async fn apply_command_result_inner(
                 }
             }
             AppAction::FetchModels => {
-                app.status_message = Some("Fetching models...".to_string());
+                app.show_command_result("Fetching models...".to_string(), StatusToastLevel::Info);
                 match fetch_available_models(config).await {
                     Ok(models) => {
                         app.add_message(HistoryCell::System {
@@ -2448,7 +2465,10 @@ async fn apply_command_result_inner(
                                 &codewhale_engine::fleet::members::fleet_models(&app.workspace),
                             ),
                         });
-                        app.status_message = Some(format!("Found {} model(s)", models.len()));
+                        app.show_command_result(
+                            format!("Found {} model(s)", models.len()),
+                            StatusToastLevel::Success,
+                        );
                     }
                     Err(error) => {
                         app.add_message(HistoryCell::System {
@@ -2469,8 +2489,17 @@ async fn apply_command_result_inner(
                 }
             }
             AppAction::RefreshModelsDevCatalog => {
-                app.status_message = Some("Refreshing Models.dev catalog...".to_string());
-                let message = match codewhale_engine::models_dev_live::refresh(true).await {
+                app.show_command_result(
+                    "Refreshing Models.dev catalog...".to_string(),
+                    StatusToastLevel::Info,
+                );
+                let refresh = codewhale_engine::models_dev_live::refresh(true).await;
+                let level = if refresh.is_ok() {
+                    StatusToastLevel::Success
+                } else {
+                    StatusToastLevel::Warning
+                };
+                let message = match refresh {
                     Ok(count) => {
                         let status = codewhale_engine::models_dev_live::status();
                         let source = if status.source_label.is_empty() {
@@ -2494,7 +2523,7 @@ async fn apply_command_result_inner(
                 app.add_message(HistoryCell::System {
                     content: message.clone(),
                 });
-                app.status_message = Some(message);
+                app.show_command_result(message, level);
                 // `/model refresh` also forces the cloud facts overlay when the
                 // (off-by-default) channel is enabled.
                 let cloud_settings = config.cloud_facts_config().settings();
@@ -2517,7 +2546,10 @@ async fn apply_command_result_inner(
                 }
             }
             AppAction::CacheWarmup => {
-                app.status_message = Some("Warming prompt cache...".to_string());
+                app.show_command_result(
+                    "Warming prompt cache...".to_string(),
+                    StatusToastLevel::Info,
+                );
                 match run_cache_warmup(app, config).await {
                     Ok(outcome) => {
                         app.session.last_base_url = Some(outcome.base_url.clone());
@@ -2549,13 +2581,19 @@ async fn apply_command_result_inner(
                             }
                         }
                         app.add_message(HistoryCell::System { content: message });
-                        app.status_message = Some("Cache warmup complete".to_string());
+                        app.show_command_result(
+                            "Cache warmup complete".to_string(),
+                            StatusToastLevel::Success,
+                        );
                     }
                     Err(error) => {
                         app.add_message(HistoryCell::System {
                             content: format!("Cache warmup failed: {error}"),
                         });
-                        app.status_message = Some("Cache warmup failed".to_string());
+                        app.show_command_result(
+                            "Cache warmup failed".to_string(),
+                            StatusToastLevel::Error,
+                        );
                     }
                 }
             }
@@ -2624,11 +2662,18 @@ async fn apply_command_result_inner(
                         app.mode,
                         app.active_route_limits,
                     );
-                    app.status_message = Some(if queued {
-                        "Config change queued; the active turn remains responsive.".to_string()
-                    } else {
-                        "Config change deferred; it will apply to the next turn.".to_string()
-                    });
+                    app.show_command_result(
+                        if queued {
+                            "Config change queued; the active turn remains responsive.".to_string()
+                        } else {
+                            "Config change deferred; it will apply to the next turn.".to_string()
+                        },
+                        if queued {
+                            StatusToastLevel::Success
+                        } else {
+                            StatusToastLevel::Warning
+                        },
+                    );
                 } else {
                     apply_model_and_compaction_update(
                         engine_handle,
@@ -2645,8 +2690,10 @@ async fn apply_command_result_inner(
                     .try_send(Op::SetStreamChunkTimeout { timeout_secs })
                     .is_err()
                 {
-                    app.status_message =
-                        Some("Engine busy — setting not applied; try again".to_string());
+                    app.show_command_result(
+                        "Engine busy — setting not applied; try again".to_string(),
+                        StatusToastLevel::Warning,
+                    );
                 }
             }
             AppAction::UpdateSubagentRuntimeConfig {
@@ -2668,8 +2715,10 @@ async fn apply_command_result_inner(
                     })
                     .is_err()
                 {
-                    app.status_message =
-                        Some("Engine busy — setting not applied; try again".to_string());
+                    app.show_command_result(
+                        "Engine busy — setting not applied; try again".to_string(),
+                        StatusToastLevel::Warning,
+                    );
                 }
             }
             AppAction::UpdateSearchProvider { provider } => {
@@ -2686,8 +2735,10 @@ async fn apply_command_result_inner(
                         );
                     }
                     Err(_) => {
-                        app.status_message =
-                            Some("Engine busy — provider not applied; try again".to_string());
+                        app.show_command_result(
+                            "Engine busy — provider not applied; try again".to_string(),
+                            StatusToastLevel::Warning,
+                        );
                     }
                 }
             }
@@ -2704,8 +2755,10 @@ async fn apply_command_result_inner(
                     .try_send(Op::SetAutoReviewReviewerModel { reviewer_model })
                     .is_err()
                 {
-                    app.status_message =
-                        Some("Engine busy — setting not applied; try again".to_string());
+                    app.show_command_result(
+                        "Engine busy — setting not applied; try again".to_string(),
+                        StatusToastLevel::Warning,
+                    );
                 }
             }
             AppAction::UpdateNotification { update } => {
@@ -2718,8 +2771,10 @@ async fn apply_command_result_inner(
                     .try_send(Op::SetAdvisorEnabled { enabled })
                     .is_err()
                 {
-                    app.status_message =
-                        Some("Engine busy — setting not applied; try again".to_string());
+                    app.show_command_result(
+                        "Engine busy — setting not applied; try again".to_string(),
+                        StatusToastLevel::Warning,
+                    );
                 }
             }
             AppAction::OpenConfigView => {
@@ -2743,7 +2798,7 @@ async fn apply_command_result_inner(
                     .iter()
                     .any(|cell| matches!(cell, HistoryCell::User { .. }))
                 {
-                    app.status_message = Some("Nothing to undo".to_string());
+                    app.show_command_result("Nothing to undo".to_string(), StatusToastLevel::Info);
                     app.push_status_toast_record(
                         StatusToast::new("Nothing to undo", StatusToastLevel::Info, Some(4_000))
                             .for_command_receipt(),
@@ -2773,7 +2828,7 @@ async fn apply_command_result_inner(
                     .filter(|cell| matches!(cell, HistoryCell::User { .. }))
                     .count();
                 if total == 0 {
-                    app.status_message = Some("Nothing to undo".to_string());
+                    app.show_command_result("Nothing to undo".to_string(), StatusToastLevel::Info);
                     app.push_status_toast_record(
                         StatusToast::new("Nothing to undo", StatusToastLevel::Info, Some(4_000))
                             .for_command_receipt(),
@@ -2821,7 +2876,10 @@ async fn apply_command_result_inner(
                         .with_locale(app.ui_locale)
                         .with_provider_health(&app.provider_health),
                     );
-                    app.status_message = Some("Provider setup catalog opened.".to_string());
+                    app.show_command_result(
+                        "Provider setup catalog opened.".to_string(),
+                        StatusToastLevel::Info,
+                    );
                 }
             }
             AppAction::OpenDs4Setup => {
@@ -3129,7 +3187,10 @@ async fn apply_command_result_inner(
             AppAction::RestoreHotbarDefaults => restore_hotbar_defaults(app, config),
             AppAction::OpenExternalUrl { url, label } => match open_external_url(&url) {
                 Ok(()) => {
-                    app.status_message = Some(format!("Opened {label} in your browser"));
+                    app.show_command_result(
+                        format!("Opened {label} in your browser"),
+                        StatusToastLevel::Success,
+                    );
                 }
                 Err(err) => {
                     app.add_message(HistoryCell::System {
@@ -3153,10 +3214,15 @@ async fn apply_command_result_inner(
             }
             AppAction::PurgeContext => {
                 if engine_handle.try_send(Op::PurgeContext).is_err() {
-                    app.status_message =
-                        Some("Engine busy — purge not sent; try again".to_string());
+                    app.show_command_result(
+                        "Engine busy — purge not sent; try again".to_string(),
+                        StatusToastLevel::Warning,
+                    );
                 } else {
-                    app.status_message = Some("Agent purging context...".to_string());
+                    app.show_command_result(
+                        "Agent purging context...".to_string(),
+                        StatusToastLevel::Info,
+                    );
                 }
             }
             AppAction::TaskAdd { prompt } => {
@@ -3206,7 +3272,10 @@ async fn apply_command_result_inner(
                                 summarize_tool_output(&task.prompt)
                             ),
                         });
-                        app.status_message = Some(format!("Queued {}", task.id));
+                        app.show_command_result(
+                            format!("Queued {}", task.id),
+                            StatusToastLevel::Success,
+                        );
                     }
                     Err(err) => {
                         app.add_message(HistoryCell::System {
@@ -3247,8 +3316,8 @@ async fn apply_command_result_inner(
                 codewhale_app_server::remote_control::RemoteControlAction::Stop => {
                     app.remote_control.stop_async().await;
                     let status = app.remote_control.status_line();
-                    app.sticky_status = None;
-                    app.status_message = Some(status);
+                    app.retire_progress_notice(StatusToastKind::RemoteMirror);
+                    app.show_command_result(status, StatusToastLevel::Info);
                 }
             },
             AppAction::TaskShow { id } => {
@@ -3362,15 +3431,18 @@ async fn apply_command_result_inner(
                             .replace("{provider}", provider)
                             .replace("{name}", &profile);
                         app.add_message(HistoryCell::System { content });
-                        app.status_message =
-                            Some(app.tr(MessageId::ProfileStatus).replace("{name}", &profile));
+                        app.show_command_result(
+                            app.tr(MessageId::ProfileStatus).replace("{name}", &profile),
+                            StatusToastLevel::Success,
+                        );
                     }
                     Err(err) => {
                         app.config_profile = previous_profile;
-                        app.status_message = Some(
+                        app.show_command_result(
                             app.tr(MessageId::ProfileSwitchFailed)
                                 .replace("{name}", &profile)
                                 .replace("{error}", &err.to_string()),
+                            StatusToastLevel::Error,
                         );
                     }
                 }
@@ -3378,7 +3450,13 @@ async fn apply_command_result_inner(
             AppAction::ShareSession { html } => {
                 // The page was rendered and redacted by `/share confirm`
                 // through the `/export` projection; only upload happens here.
-                let status = match crate::commands::share::perform_share(html).await {
+                let share = crate::commands::share::perform_share(html).await;
+                let level = if share.is_ok() {
+                    StatusToastLevel::Success
+                } else {
+                    StatusToastLevel::Error
+                };
+                let status = match share {
                     Ok(url) => {
                         format!("Session shared as a secret gist (unlisted, not private): {url}")
                     }
@@ -3387,7 +3465,7 @@ async fn apply_command_result_inner(
                 app.add_message(HistoryCell::System {
                     content: status.clone(),
                 });
-                app.status_message = Some(status);
+                app.show_command_result(status, level);
             }
         }
     }
@@ -3559,11 +3637,14 @@ pub(crate) fn apply_workspace_runtime_state(app: &mut App, config: &Config, work
         })
         .count();
     if plugin_load_errors > 0 {
-        app.status_message = Some(if plugin_load_errors == 1 {
-            "1 plugin failed to load — /plugin for details".to_string()
-        } else {
-            format!("{plugin_load_errors} plugins failed to load — /plugin for details")
-        });
+        app.show_command_result(
+            if plugin_load_errors == 1 {
+                "1 plugin failed to load — /plugin for details".to_string()
+            } else {
+                format!("{plugin_load_errors} plugins failed to load — /plugin for details")
+            },
+            StatusToastLevel::Warning,
+        );
     }
     app.active_skill = None;
     app.active_skill_provenance = None;
@@ -3605,10 +3686,18 @@ pub(crate) fn apply_hotbar_setup_saved(
     ) {
         Ok(path) => {
             config.hotbar = Some(bindings);
-            app.status_message = Some(format!("Hotbar bindings saved to {}", path.display()));
+            app.show_owned_command_result(
+                StatusToastKind::HotbarSettings,
+                format!("Hotbar bindings saved to {}", path.display()),
+                StatusToastLevel::Success,
+            );
         }
         Err(err) => {
-            app.status_message = Some(format!("Failed to save Hotbar bindings: {err}"));
+            app.show_owned_command_result(
+                StatusToastKind::HotbarSettings,
+                format!("Failed to save Hotbar bindings: {err}"),
+                StatusToastLevel::Error,
+            );
             app.add_message(HistoryCell::System {
                 content: format!("Failed to save Hotbar bindings: {err}"),
             });
@@ -3738,7 +3827,10 @@ pub(crate) async fn apply_approval_decision(
         ReviewDecision::Abort => {
             engine_handle.cancel();
             mark_active_turn_cancelled_locally(app);
-            app.status_message = Some(parent_stop_status(app, "Request cancelled"));
+            app.show_command_result(
+                parent_stop_status(app, "Request cancelled"),
+                StatusToastLevel::Warning,
+            );
             return false;
         }
         ReviewDecision::Approved | ReviewDecision::ApprovedForSession => {
@@ -3752,7 +3844,10 @@ pub(crate) async fn apply_approval_decision(
         ReviewDecision::Denied => engine_handle.deny_tool_call(event.tool_id.clone()).await,
     };
     if let Err(error) = result {
-        app.status_message = Some(format!("Approval was not accepted: {error}"));
+        app.show_command_result(
+            format!("Approval was not accepted: {error}"),
+            StatusToastLevel::Error,
+        );
         return false;
     }
     if event.decision == ReviewDecision::ApprovedForSession {
@@ -3976,7 +4071,10 @@ pub(crate) fn apply_setup_runtime_preset(
 
 pub(crate) fn apply_backtrack(app: &mut App, depth: usize) {
     let Some(history_idx) = find_user_cell_index_from_tail(app, depth) else {
-        app.status_message = Some("Backtrack target no longer present".to_string());
+        app.show_command_result(
+            "Backtrack target no longer present".to_string(),
+            StatusToastLevel::Warning,
+        );
         return;
     };
 
@@ -4002,7 +4100,10 @@ pub(crate) fn apply_backtrack(app: &mut App, depth: usize) {
     }
     // Backtrack rewinds the conversation only. State the file fact first,
     // and name the command that rolls the files back.
-    app.status_message = Some("Files not changed. Use /restore. Conversation rewound.".to_string());
+    app.show_command_result(
+        "Files not changed. Use /restore. Conversation rewound.".to_string(),
+        StatusToastLevel::Info,
+    );
     app.scroll_to_bottom();
     app.mark_history_updated();
     app.needs_redraw = true;
@@ -4725,6 +4826,13 @@ pub(crate) async fn run_chatgpt_revoke_from_tui(app: &mut App, config: &mut Conf
     // Clear the live route even when remote revocation could not be confirmed;
     // local credential removal may already have succeeded in that outcome.
     let live_clear = config.clear_codewhale_owned_chatgpt_oauth();
+    let level = if outcome.is_err() {
+        StatusToastLevel::Error
+    } else if live_clear.is_err() {
+        StatusToastLevel::Warning
+    } else {
+        StatusToastLevel::Success
+    };
     let message = match (outcome, live_clear) {
         (Ok(()), Ok(())) => {
             "Revoked Codewhale-owned ChatGPT tokens. Codex CLI consent is unchanged.".to_string()
@@ -4740,7 +4848,7 @@ pub(crate) async fn run_chatgpt_revoke_from_tui(app: &mut App, config: &mut Conf
     app.add_message(HistoryCell::System {
         content: message.clone(),
     });
-    app.status_message = Some(message);
+    app.show_command_result(message, level);
     app.needs_redraw = true;
 }
 
@@ -4763,6 +4871,13 @@ pub(crate) async fn run_orcarouter_revoke_from_tui(app: &mut App, config: &mut C
             .map_err(|error| anyhow::anyhow!(error.to_string())),
         Err(err) => Err(anyhow::anyhow!(err)),
     };
+    let level = if outcome.is_err() {
+        StatusToastLevel::Error
+    } else if live_clear.is_err() {
+        StatusToastLevel::Warning
+    } else {
+        StatusToastLevel::Success
+    };
     let message = match (outcome, live_clear) {
         (Ok(()), Ok(())) => "Removed Codewhale's saved OrcaRouter credential.".to_string(),
         (Ok(()), Err(err)) => {
@@ -4776,7 +4891,7 @@ pub(crate) async fn run_orcarouter_revoke_from_tui(app: &mut App, config: &mut C
     app.add_message(HistoryCell::System {
         content: message.clone(),
     });
-    app.status_message = Some(message);
+    app.show_command_result(message, level);
     app.needs_redraw = true;
 }
 

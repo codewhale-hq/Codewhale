@@ -374,7 +374,10 @@ mod tests {
             crate::tui::app::StatusToastLevel::Error,
             None,
         );
-        app.status_message = Some("Unrelated runtime status".to_string());
+        app.show_event_notice(
+            "Unrelated runtime status",
+            crate::tui::app::StatusToastLevel::Info,
+        );
         let lines = screen_lines(&app, 38, 6)
             .into_iter()
             .map(|line| line.to_string())
@@ -406,8 +409,13 @@ mod tests {
             .join(" ");
         assert!(!remaining.contains(&notice));
         assert!(!remaining.contains("Unrelated runtime error"));
-        assert_eq!(app.status_toasts.len(), 1);
-        assert_eq!(app.status_toasts[0].text, "Unrelated runtime error");
+        assert_eq!(
+            app.status_toasts
+                .iter()
+                .map(|notice| notice.text.as_str())
+                .collect::<Vec<_>>(),
+            ["Unrelated runtime error", "Unrelated runtime status"]
+        );
     }
 
     /// The red warning is part of both stages, and the second stage swaps the

@@ -1,3 +1,4 @@
+use crate::tui::app::StatusToastLevel;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use crate::tui::app::{App, SidebarRowAction};
@@ -349,8 +350,10 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) -> MouseOutcome {
                 settings.work_surface_side_width = side_width;
                 Ok(())
             }) {
-                app.status_message =
-                    Some(format!("Failed to save To-do/Sub-agent bar size: {error}"));
+                app.show_command_result(
+                    format!("Failed to save To-do/Sub-agent bar size: {error}"),
+                    StatusToastLevel::Error,
+                );
             }
             app.needs_redraw = true;
             return MouseOutcome {

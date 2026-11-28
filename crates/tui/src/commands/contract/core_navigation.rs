@@ -1,5 +1,6 @@
 use super::{SharedCommandHost, to_command_mode};
 use crate::tui::app::AppModeUi;
+use crate::tui::app::StatusToastLevel;
 use crate::tui::views::{HelpView, ModalKind};
 use codewhale_command_contract::navigation::{
     CommandNavigationContext, NavigationBuiltinHelp, NavigationHelpTopic, NavigationLinks,
@@ -39,7 +40,8 @@ impl CommandNavigationContext for NavigationAdapter<'_> {
             SubagentRosterDisplay::Modal => {}
             SubagentRosterDisplay::Transcript => app.agent_roster_print_requested = true,
         }
-        app.status_message = Some(app.tr(MessageId::SubagentsFetching).into_owned());
+        let message = app.tr(MessageId::SubagentsFetching).into_owned();
+        app.show_command_result(message, StatusToastLevel::Info);
     }
 
     fn help_topic(&self, topic: &str) -> NavigationHelpTopic {

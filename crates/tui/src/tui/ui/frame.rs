@@ -862,7 +862,10 @@ pub(crate) fn start_request_preview(
     let permit = match dispatch_completion_permit(app) {
         Ok(permit) => permit,
         Err(err) => {
-            app.status_message = Some(format!("Cannot preview request: {err}"));
+            app.show_command_result(
+                format!("Cannot preview request: {err}"),
+                StatusToastLevel::Error,
+            );
             return;
         }
     };
@@ -900,7 +903,7 @@ pub(crate) fn start_request_preview(
                 && (inputs.allow_shell != app.allow_shell || inputs.trust_mode != app.trust_mode
                     || inputs.approval_mode != app.approval_mode || inputs.auto_approve != app_auto_approve_enabled(app)
                     || inputs.allowed_tools != app.active_allowed_tools) {
-                app.status_message = Some("Request preview expired because tool permissions changed. Run it again to inspect the current settings.".into());
+                app.show_command_result("Request preview expired because tool permissions changed. Run it again to inspect the current settings.", StatusToastLevel::Warning);
                 return Ok(());
             }
             let sent = result.map_err(anyhow::Error::from).and_then(|inputs| {
@@ -911,7 +914,7 @@ pub(crate) fn start_request_preview(
                 })
             });
             if let Err(err) = sent {
-                app.status_message = Some(format!("Cannot preview request: {err}"));
+                app.show_command_result(format!("Cannot preview request: {err}"), StatusToastLevel::Error);
             }
             Ok(())
         }));

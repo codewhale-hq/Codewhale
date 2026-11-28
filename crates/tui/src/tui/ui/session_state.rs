@@ -1049,11 +1049,6 @@ pub(crate) fn recover_unstarted_external_message(
             );
         }
     }
-    app.push_status_toast(
-        error.to_string(),
-        StatusToastLevel::Error,
-        Some(App::STICKY_ERROR_TTL_MS),
-    );
     app.needs_redraw = true;
 }
 
@@ -1336,7 +1331,8 @@ pub(crate) fn restore_hotbar_defaults(app: &mut App, config: &mut Config) {
     ) {
         Ok(path) => {
             config.hotbar = Some(defaults);
-            app.show_command_result(
+            app.show_owned_command_result(
+                StatusToastKind::HotbarSettings,
                 format!(
                     "Hotbar enabled with the default slots ({}). Customize with `/hotbar`.",
                     path.display()
@@ -1345,7 +1341,8 @@ pub(crate) fn restore_hotbar_defaults(app: &mut App, config: &mut Config) {
             );
         }
         Err(err) => {
-            app.show_command_result(
+            app.show_owned_command_result(
+                StatusToastKind::HotbarSettings,
                 format!("Failed to enable the Hotbar: {err}"),
                 StatusToastLevel::Error,
             );
@@ -1385,7 +1382,8 @@ pub(crate) fn persist_rules_from_approval(
                 Some(codewhale_execpolicy::PermissionAction::Allow) => "allow",
                 _ => "ask",
             };
-            app.show_command_result(
+            app.show_owned_command_result(
+                StatusToastKind::PermissionRule,
                 format!(
                     "Saved {added} {action} permission rule(s) to {}",
                     path.display()
@@ -1399,7 +1397,8 @@ pub(crate) fn persist_rules_from_approval(
                 Some(codewhale_execpolicy::PermissionAction::Allow) => "Allow",
                 _ => "Ask",
             };
-            app.show_command_result(
+            app.show_owned_command_result(
+                StatusToastKind::PermissionRule,
                 format!(
                     "{action} permission rule already saved in {}",
                     path.display()
@@ -1409,7 +1408,8 @@ pub(crate) fn persist_rules_from_approval(
             true
         }
         Err(err) => {
-            app.show_command_result(
+            app.show_owned_command_result(
+                StatusToastKind::PermissionRule,
                 format!("Failed to save permission rule: {err:#}"),
                 StatusToastLevel::Error,
             );

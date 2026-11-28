@@ -2066,7 +2066,7 @@ mod tests {
             .unwrap();
         assert_eq!(toast.kind, crate::tui::app::StatusToastKind::CopyReceipt);
         assert_eq!(toast.ttl_ms, Some(4_000));
-        assert!(app.status_message.is_none());
+        assert_eq!(app.visible_notice_text(), Some(toast.text));
         app.clipboard = crate::tui::clipboard::ClipboardHandler::unavailable_for_test(false);
         assert!(!copy_cell_to_clipboard(&mut app, 0));
         let failure = app

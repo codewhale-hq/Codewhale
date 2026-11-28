@@ -657,8 +657,9 @@ async fn runtime_chat_queues_local_composer_input_without_starting_a_second_turn
         mock.rx_op.try_recv().is_err(),
         "the interactive engine must not receive a second provider turn"
     );
-    assert!(app.status_message.is_none());
-    let toast = app.status_toasts.back().expect("Runtime Chat queue toast");
+    let toast = app
+        .active_status_toast(crate::tui::underwater::ShellPhase::Typing)
+        .expect("Runtime Chat queue toast");
     assert_eq!(toast.level, StatusToastLevel::Info);
     assert!(toast.text.contains("Runtime Chat"));
     assert_eq!(toast.ttl_ms, Some(4_000));
@@ -708,13 +709,10 @@ async fn remote_control_events_preserve_current_turn_and_surface_failures() {
         let mut app = create_test_app();
         app.ui_locale = codewhale_localization::Locale::En;
         app.launch.visible = true;
-        app.status_message = Some(previous_status.to_string());
-        app.status_toasts.clear();
-        app.sticky_status = Some(StatusToast::new(
-            previous_status,
-            StatusToastLevel::Warning,
-            None,
-        ));
+        super::remote_control_bridge::show_remote_control_banner(
+            &mut app,
+            previous_status.to_string(),
+        );
         if matches!(
             &event,
             codewhale_app_server::remote_control::RemoteEvent::Failed(_)
@@ -740,7 +738,6 @@ async fn remote_control_events_preserve_current_turn_and_surface_failures() {
             codewhale_app_server::remote_control::Status::Failed
         );
         assert!(app.remote_control.status_line().contains(reason));
-        assert!(app.status_message.is_none());
         let phase = crate::tui::underwater::ShellPhase::from_app(&app);
         let toast = app
             .active_status_toast(phase)
@@ -760,9 +757,10 @@ async fn remote_control_events_preserve_current_turn_and_surface_failures() {
                 if content.contains(reason) && !content.contains("fixture_remote_secret")
         )));
 
-        app.sticky_status
-            .as_mut()
-            .expect("remote failure sticky")
+        app.status_toasts
+            .iter_mut()
+            .find(|notice| notice.kind == StatusToastKind::RemoteMirror)
+            .expect("remote failure receipt")
             .created_at = Instant::now() - Duration::from_secs(20);
         assert!(app.active_status_toast(phase).is_none());
         for locale in [
@@ -790,9 +788,23 @@ async fn remote_control_events_preserve_current_turn_and_surface_failures() {
     }
 
     let mut app = create_test_app();
+    app.set_sticky_status("Disk failure", StatusToastLevel::Error, None);
+    super::remote_control_bridge::show_remote_control_banner(&mut app, "Mirror active".into());
+    app.remote_control
+        .queue_remote_event_for_tests(codewhale_app_server::remote_control::RemoteEvent::Stopped);
+    drain_remote_control_events(&mut app, &Config::default(), &mock.handle)
+        .await
+        .unwrap();
+    assert_eq!(app.visible_notice_text().as_deref(), Some("Disk failure"));
+    assert!(
+        !app.status_toasts
+            .iter()
+            .any(|notice| notice.kind == StatusToastKind::RemoteMirror)
+    );
+
+    let mut app = create_test_app();
     app.ui_locale = codewhale_localization::Locale::En;
     app.launch.visible = true;
-    app.status_message = None;
     app.status_toasts.clear();
     app.sticky_status = None;
     app.remote_control
@@ -3808,7 +3820,7 @@ fn session_load_failure_is_durable_in_the_transcript() {
             if message.contains("No session found with prefix")
     ));
     assert_eq!(
-        app.status_message.as_deref(),
+        app.visible_notice_text().as_deref(),
         Some("Failed to load session: No session found with prefix: abc")
     );
 }
@@ -4759,12 +4771,11 @@ fn mouse_selection_autocopies_on_release_without_ctrl_c() {
         Instant::now(),
     );
 
-    // Drag-release autocopy now takes the Markdown-source path (#6156): the
-    // clipboard holds canonical cell content and the receipt is a toast
-    // naming the projected cell count, not the legacy status sink.
-    assert!(
-        app.status_message.is_none(),
-        "markdown copy must not touch the legacy status sink"
+    assert_eq!(
+        app.active_status_toast(crate::tui::underwater::ShellPhase::Done)
+            .unwrap()
+            .kind,
+        StatusToastKind::CopyReceipt
     );
     let toast = app.status_toasts.back().expect("markdown copy toast");
     assert!(
@@ -6078,8 +6089,9 @@ fn runtime_chat_short_circuits_inline_voice_and_cache_actions_before_ui_mutation
         history_len,
         "the optimistic command message must not be appended"
     );
-    assert!(app.status_message.is_none());
-    let toast = app.status_toasts.back().expect("blocked action toast");
+    let toast = app
+        .active_status_toast(crate::tui::underwater::ShellPhase::Typing)
+        .expect("blocked action toast");
     assert_eq!(toast.level, crate::tui::app::StatusToastLevel::Info);
     assert!(toast.text.contains("Codewhale Runtime"));
     assert_eq!(toast.ttl_ms, Some(6_000));
@@ -6246,7 +6258,7 @@ fn credential_paste_content_never_enters_traces_or_rendered_status() {
         }
         assert_sensitive_paste_absent(&logs, &secret, &format!("{label} paste trace"));
         assert_sensitive_paste_absent(
-            app.status_message.as_deref().unwrap_or_default(),
+            app.visible_notice_text().as_deref().unwrap_or_default(),
             &secret,
             &format!("{label} status"),
         );
@@ -6450,7 +6462,7 @@ api_key = "test-key"
     assert_eq!(config.hotbar, Some(bindings.clone()));
     assert!(app.needs_redraw);
     assert!(
-        app.status_message
+        app.visible_notice_text()
             .as_deref()
             .is_some_and(|message| message.contains("Hotbar bindings saved to"))
     );
@@ -6501,7 +6513,7 @@ fn hotbar_setup_save_error_leaves_live_config_and_file_unchanged() {
         invalid_body
     );
     assert!(
-        app.status_message
+        app.visible_notice_text()
             .as_deref()
             .is_some_and(|message| message.contains("Failed to save Hotbar bindings"))
     );
@@ -6516,6 +6528,18 @@ fn hotbar_setup_save_error_leaves_live_config_and_file_unchanged() {
         })
         .expect("failed save should add a system message");
     assert!(last_system_message.contains("Failed to save Hotbar bindings"));
+    app.push_status_toast("Other error", StatusToastLevel::Error, None);
+    std::fs::write(&config_path, "").unwrap();
+    disable_hotbar(&mut app, &mut config);
+    assert!(app.visible_notice_text().unwrap().contains("Hotbar hidden"));
+    let published = app.status_toasts.back().unwrap().created_at;
+    app.prune_expired_status_toasts(published + std::time::Duration::from_secs(5));
+    assert_eq!(app.visible_notice_text().as_deref(), Some("Other error"));
+    assert!(
+        !app.status_toasts
+            .iter()
+            .any(|notice| notice.text.contains("Failed to save Hotbar"))
+    );
 }
 
 #[test]
@@ -8629,8 +8653,7 @@ async fn cached_denial_explanation_survives_tool_completion_and_done_render() {
 
     app.is_loading = false;
     app.runtime_turn_status = Some("completed".to_string());
-    app.status_message = Some("Tool 'exec_shell' denied by user".to_string());
-    app.sync_status_message_to_toasts();
+    app.report_engine_status("Tool 'exec_shell' denied by user".to_string());
 
     let config = Config::default();
     let backend = TestBackend::new(89, 24);
@@ -10418,7 +10441,7 @@ fn backtrack_prefill_rehydrates_attachment_rows() {
     assert_eq!(app.composer_attachment_count(), 1);
     // The rewind leaves files alone: the footer says so and names `/restore`.
     assert_eq!(
-        app.status_message.as_deref(),
+        app.visible_notice_text().as_deref(),
         Some("Files not changed. Use /restore. Conversation rewound.")
     );
 }
@@ -11356,7 +11379,7 @@ async fn adopting_a_local_model_closes_the_connect_picker_and_names_it() {
         app.view_stack.top_kind(),
         Some(crate::tui::views::ModalKind::ProviderPicker)
     );
-    let status = app.status_message.clone().unwrap_or_default();
+    let status = app.visible_notice_text().unwrap_or_default();
     assert!(
         status.contains("fixture-local:tag") && status.contains("F3"),
         "{status}"
@@ -13843,7 +13866,7 @@ fn automatic_compaction_stays_quiet_until_a_real_failure() {
 
     apply_compaction_started(&mut app, "compact-new".to_string(), true);
     assert!(app.is_compacting);
-    assert!(app.status_message.is_none());
+    assert!(app.visible_notice_text().is_none());
     assert_eq!(
         app.active_compaction
             .as_ref()
@@ -13861,7 +13884,7 @@ fn automatic_compaction_stays_quiet_until_a_real_failure() {
         None,
     );
     assert!(app.is_compacting, "stale id must not clear newer activity");
-    assert!(app.status_message.is_none());
+    assert!(app.visible_notice_text().is_none());
 
     apply_compaction_completed(
         &mut app,
@@ -13875,7 +13898,7 @@ fn automatic_compaction_stays_quiet_until_a_real_failure() {
     assert!(!app.is_compacting);
     assert!(app.active_compaction.is_none());
     assert!(app.status_toasts.is_empty());
-    assert!(app.status_message.is_none());
+    assert!(app.visible_notice_text().is_none());
     assert!(
         app.last_compaction
             .as_ref()
@@ -13897,7 +13920,7 @@ fn automatic_compaction_stays_quiet_until_a_real_failure() {
     ));
     assert!(app.sticky_status.is_none());
     assert!(app.status_toasts.is_empty());
-    assert!(app.status_message.is_none());
+    assert!(app.visible_notice_text().is_none());
 }
 
 #[test]
@@ -13911,7 +13934,7 @@ fn manual_compaction_label_and_failure_are_typed() {
         app.status_toasts.back().map(|toast| toast.text.as_str()),
         Some("Compacting context…")
     );
-    app.status_message = Some("Settings saved".into());
+    app.show_event_notice("Settings saved", crate::tui::app::StatusToastLevel::Success);
 
     apply_compaction_failed(
         &mut app,
@@ -13920,7 +13943,11 @@ fn manual_compaction_label_and_failure_are_typed() {
         "Manual context compaction failed: provider timeout".to_string(),
     );
     assert!(!app.is_compacting);
-    assert_eq!(app.status_message.as_deref(), Some("Settings saved"));
+    assert!(
+        app.status_toasts
+            .iter()
+            .any(|notice| notice.text == "Settings saved")
+    );
     assert_eq!(
         app.active_status_toast(crate::tui::underwater::ShellPhase::Working)
             .unwrap()
@@ -14339,6 +14366,30 @@ async fn steer_rollback_and_durable_projection_replay_indexed_removals() {
     assert_eq!(offline_queue_projection(&app), expected);
     assert_eq!(app.input, "newer composer");
     assert_eq!(app.held_restored_queue, 2);
+}
+
+#[tokio::test]
+async fn refused_explicit_queue_send_reports_only_its_restoration() {
+    let mut app = create_test_app();
+    app.redaction_gate = true;
+    app.queue_message(QueuedMessage::new("review me".into(), None));
+    let mut engine = mock_engine_handle();
+    send_queued_message_at_index_now(&mut app, &Config::default(), &engine.handle, 0)
+        .await
+        .unwrap();
+    assert!(engine.rx_op.try_recv().is_err());
+    assert_eq!(app.queued_message_count(), 1);
+    assert_eq!(
+        app.visible_notice_text(),
+        Some(format!(
+            "{INITIAL_PROMPT_DEFERRED_STATUS}; 1 queued follow-up(s) restored"
+        ))
+    );
+    assert!(
+        !app.status_toasts
+            .iter()
+            .any(|notice| notice.text == app.tr(MessageId::ToastSentIntoTurn))
+    );
 }
 
 #[tokio::test]
@@ -15470,9 +15521,12 @@ async fn full_dispatch_completion_mailbox_restores_message_without_stuck_dispatc
     assert!(app.api_messages.is_empty());
     assert!(app.history.is_empty());
     assert_eq!(app.input, "recover from full mailbox");
-    assert!(app.status_toasts.back().is_some_and(|toast| {
-        toast.level == StatusToastLevel::Error && toast.text.contains("mailbox is full")
-    }));
+    assert!(
+        app.active_status_toast(crate::tui::underwater::ShellPhase::Typing)
+            .is_some_and(|toast| {
+                toast.level == StatusToastLevel::Error && toast.text.contains("mailbox is full")
+            })
+    );
 }
 
 #[tokio::test]
@@ -15499,9 +15553,12 @@ async fn closed_dispatch_completion_mailbox_restores_message_without_stuck_dispa
     assert!(app.api_messages.is_empty());
     assert!(app.history.is_empty());
     assert_eq!(app.input, "recover from closed mailbox");
-    assert!(app.status_toasts.back().is_some_and(|toast| {
-        toast.level == StatusToastLevel::Error && toast.text.contains("mailbox is closed")
-    }));
+    assert!(
+        app.active_status_toast(crate::tui::underwater::ShellPhase::Typing)
+            .is_some_and(|toast| {
+                toast.level == StatusToastLevel::Error && toast.text.contains("mailbox is closed")
+            })
+    );
 }
 
 #[test]
@@ -16637,7 +16694,7 @@ fn turn_liveness_keeps_max_duration_exec_shell_wait_alive_with_heartbeat() {
     assert!(app.is_loading);
     assert_eq!(app.runtime_turn_status.as_deref(), Some("in_progress"));
     assert_eq!(app.runtime_turn_id.as_deref(), Some("max-shell-wait-turn"));
-    assert!(app.status_message.is_none());
+    assert!(app.visible_notice_text().is_none());
     assert!(app.status_toasts.is_empty());
 }
 
@@ -17564,7 +17621,10 @@ fn ctrl_alt_4_selects_pinned_rail_panel_without_switching_modes() {
         app.work_surface.panel,
         crate::tui::work_surface::RailPanel::Files
     );
-    assert_eq!(app.status_message.as_deref(), Some("Workbar panel: files"));
+    assert_eq!(
+        app.visible_notice_text().as_deref(),
+        Some("Workbar panel: files")
+    );
 }
 
 #[test]
@@ -17835,7 +17895,7 @@ fn alt_0_without_ctrl_is_unbound_after_auto_mode_retired() {
         app.work_surface.placement,
         crate::tui::work_surface::WorkSurfacePlacement::Left
     );
-    assert!(app.status_message.is_none());
+    assert!(app.visible_notice_text().is_none());
 }
 
 #[test]
@@ -17849,7 +17909,7 @@ fn ctrl_alt_0_turns_rail_off() {
         app.work_surface.placement,
         crate::tui::work_surface::WorkSurfacePlacement::Off
     );
-    assert_eq!(app.status_message.as_deref(), Some("Workbar is off"));
+    assert_eq!(app.visible_notice_text().as_deref(), Some("Workbar is off"));
 }
 
 #[test]
@@ -17864,7 +17924,7 @@ fn ctrl_alt_0_restores_bottom_rail_when_already_off() {
         crate::tui::work_surface::WorkSurfacePlacement::Bottom
     );
     assert_eq!(
-        app.status_message.as_deref(),
+        app.visible_notice_text().as_deref(),
         Some("Workbar: bottom placement")
     );
 }
@@ -18900,7 +18960,7 @@ async fn bang_shell_input_dispatches_shell_op_instead_of_model_message() {
 
     assert!(handled);
     assert_eq!(
-        app.status_message.as_deref(),
+        app.visible_notice_text().as_deref(),
         Some("Shell command submitted: pwd")
     );
 
@@ -18994,7 +19054,7 @@ async fn empty_bang_shell_input_is_consumed_with_usage_error() {
 
     assert!(handled);
     assert_eq!(
-        app.status_message.as_deref(),
+        app.visible_notice_text().as_deref(),
         Some("Error: Usage: ! <shell command>")
     );
 }
@@ -19626,7 +19686,7 @@ fn automatic_compaction_does_not_warn_at_its_threshold() {
 
     maybe_warn_context_pressure(&mut app);
 
-    assert!(app.status_message.is_none());
+    assert!(app.visible_notice_text().is_none());
     assert!(app.sticky_status.is_none());
 }
 
@@ -19655,7 +19715,10 @@ fn context_pressure_warning_survives_later_status_and_can_be_dismissed() {
         .text
         .clone();
 
-    app.status_message = Some("A later transcript status".to_string());
+    app.show_event_notice(
+        "A later transcript status",
+        crate::tui::app::StatusToastLevel::Info,
+    );
     let visible = app
         .active_status_toast(crate::tui::underwater::ShellPhase::Working)
         .expect("a later transient status is visible");
@@ -19668,7 +19731,7 @@ fn context_pressure_warning_survives_later_status_and_can_be_dismissed() {
     assert!(app.dismiss_context_pressure_warning());
     assert!(app.sticky_status.is_none());
     assert_eq!(
-        app.status_message.as_deref(),
+        app.visible_notice_text().as_deref(),
         Some("A later transcript status")
     );
     maybe_warn_context_pressure(&mut app);
@@ -19720,7 +19783,7 @@ fn context_pressure_warning_stays_absent_below_threshold() {
 
     assert!(app.sticky_status.is_none());
     assert!(
-        app.status_message.is_none(),
+        app.visible_notice_text().is_none(),
         "low-pressure sessions should not create warning chrome"
     );
 }
@@ -19739,10 +19802,16 @@ fn test_esc_cancels_streaming_sets_is_loading_false() {
     // engine_handle.cancel() is called (can't test directly - private)
     // Then these state changes occur:
     app.is_loading = false;
-    app.status_message = Some("Request cancelled".to_string());
+    app.show_event_notice(
+        "Request cancelled",
+        crate::tui::app::StatusToastLevel::Warning,
+    );
 
     assert!(!app.is_loading);
-    assert_eq!(app.status_message, Some("Request cancelled".to_string()));
+    assert_eq!(
+        app.visible_notice_text(),
+        Some("Request cancelled".to_string())
+    );
 }
 
 #[test]
@@ -19843,10 +19912,16 @@ fn test_ctrl_c_cancels_streaming_sets_status() {
     // Simulate Ctrl+C during loading state
     // engine_handle.cancel() is called (can't test directly - private)
     app.is_loading = false;
-    app.status_message = Some("Request cancelled".to_string());
+    app.show_event_notice(
+        "Request cancelled",
+        crate::tui::app::StatusToastLevel::Warning,
+    );
 
     assert!(!app.is_loading);
-    assert_eq!(app.status_message, Some("Request cancelled".to_string()));
+    assert_eq!(
+        app.visible_notice_text(),
+        Some("Request cancelled".to_string())
+    );
 }
 
 #[test]
@@ -20615,10 +20690,6 @@ fn ctrl_c_disposition_launch_screen_arms_exit_prompt() {
 
 #[test]
 fn arm_quit_shows_press_again_hint() {
-    // The armed state must be visible: the first Ctrl+C surfaces the
-    // localized "Press Ctrl+C again to quit" hint as a typed toast (not the
-    // legacy status_message sink, not a silent redraw), living exactly as
-    // long as the confirmation window.
     let mut app = create_test_app();
     app.arm_quit();
     let hint = app.tr(MessageId::FooterPressCtrlCAgain).into_owned();
@@ -20629,10 +20700,7 @@ fn arm_quit_shows_press_again_hint() {
         "arming the quit prompt must toast the press-again hint: {:?}",
         app.status_toasts
     );
-    assert!(
-        app.status_message.is_none(),
-        "the quit hint must not write the legacy status sink"
-    );
+    assert_eq!(app.visible_notice_text(), Some(hint));
 }
 
 #[test]
@@ -23421,10 +23489,8 @@ fn tool_details_pager_keeps_exact_file_change_when_inline_diffs_are_off() {
 #[test]
 fn tool_details_empty_state_points_to_turn_inspector() {
     let mut app = create_test_app();
-    // A selection index with no raw detail record and no backing cell: the
-    // empty state should route the user to Ctrl+O for turn-level context.
-    assert!(!open_details_pager_for_cell(&mut app, 999));
-    let msg = app.status_message.clone().unwrap_or_default();
+    assert!(!open_tool_details_pager(&mut app));
+    let msg = app.visible_notice_text().unwrap_or_default();
     assert!(
         msg.contains("Ctrl+Alt+O"),
         "empty state should point to Ctrl+Alt+O for the turn overview: {msg}"
@@ -25700,7 +25766,7 @@ async fn missing_named_custom_provider_resume_leaves_current_session_wholly_unch
     app.add_message(HistoryCell::System {
         content: "existing receipt".to_string(),
     });
-    app.status_message = Some("existing status".to_string());
+    app.show_event_notice("existing status", crate::tui::app::StatusToastLevel::Info);
     let mut config = {
         let __cw_config_init_41_0 = Some("deepseek".to_string());
         let mut __cw_config_init_41_value: Config = Config::default();
@@ -25736,7 +25802,10 @@ async fn missing_named_custom_provider_resume_leaves_current_session_wholly_unch
         &app.history[0],
         HistoryCell::System { content } if content == "existing receipt"
     ));
-    assert_eq!(app.status_message.as_deref(), Some("existing status"));
+    assert_eq!(
+        app.visible_notice_text().as_deref(),
+        Some("existing status")
+    );
 }
 
 #[test]
@@ -25751,7 +25820,7 @@ fn custom_session_resume_requires_structural_route_not_client_construction() {
     app.add_message(HistoryCell::System {
         content: "existing receipt".to_string(),
     });
-    app.status_message = Some("existing status".to_string());
+    app.show_event_notice("existing status", crate::tui::app::StatusToastLevel::Info);
     let mut config =
         named_custom_session_config("lm-studio", "http://127.0.0.1:1234/v1", "local-code-model");
     config
@@ -29262,8 +29331,8 @@ fn recoverable_engine_error_does_not_enter_offline_mode() {
     ));
     assert!(app.turn_error_posted, "turn_error_posted must be set");
     assert!(
-        app.status_message.is_none(),
-        "recoverable error should NOT set status_message — already in transcript as HistoryCell::Error"
+        app.visible_notice_text().is_none(),
+        "recoverable error should appear once in the transcript"
     );
 
     // Sanity: the rendered cell is the categorized Error variant, not a plain System note.
@@ -29613,7 +29682,7 @@ async fn provider_switch_auth_error_restores_previous_provider_and_model() {
     assert!(app.pending_provider_switch.is_none());
     assert!(rollback_status.contains("Provider switch failed"));
     assert!(
-        app.status_message
+        app.visible_notice_text()
             .as_deref()
             .is_none_or(|status| !status.contains("Provider switch failed")),
         "status message is set by the async event loop after engine respawn"
@@ -30597,7 +30666,7 @@ async fn web_decision_dismisses_buried_child_card() {
             }
         ),
         "status: {:?}",
-        app.status_message
+        app.visible_notice_text()
     );
     assert!(app.pending_child_requests.is_empty());
     assert!(!app.view_stack.contains_approval_id(child_id));
@@ -30680,8 +30749,8 @@ fn non_recoverable_engine_error_stays_online() {
     assert!(app.dispatch_started_at.is_none());
     assert!(app.turn_error_posted, "turn_error_posted must be set");
     assert!(
-        app.status_message.is_none(),
-        "non-recoverable error should NOT set status_message — already in transcript as HistoryCell::Error"
+        app.visible_notice_text().is_none(),
+        "non-recoverable error should appear once in the transcript"
     );
     assert!(app.pending_provider_switch.is_none());
 }
@@ -30807,7 +30876,7 @@ async fn keyless_engine_error_stays_visible_after_a_config_ack() {
         if let EngineEvent::Status { message } = event {
             assert_eq!(message, "Make room automatically: off");
             // Same projection as the event loop's Status arm.
-            app.status_message = Some(message);
+            app.report_engine_status(message);
             break;
         }
     }
@@ -35302,11 +35371,11 @@ fn startup_that_cannot_account_for_its_bytes_keeps_the_line_in_the_composer() {
         "the first fresh Enter explains the hold"
     );
     assert!(
-        app.status_message
+        app.visible_notice_text()
             .as_deref()
             .is_some_and(|message| !message.trim().is_empty()),
         "the hold explains itself: {:?}",
-        app.status_message
+        app.visible_notice_text()
     );
 
     // The user has now seen it; a deliberate second Enter sends what is shown.
@@ -36044,7 +36113,7 @@ fn notification_input_failure_keeps_the_request_and_success_retires_only_its_act
             .replace("{error}", "injected transport failure")
     );
     let error_text = error.text.clone();
-    app.sync_status_message_to_toasts();
+
     assert_eq!(
         app.status_toasts.len(),
         2,
@@ -37254,13 +37323,16 @@ fn account_profile_fallback_notice_is_a_standing_notice_outside_the_transcript()
         .tr(MessageId::ProfileConstitutionUnavailableLocal)
         .to_string();
     let before = app.history.len();
-    let status_before = app.status_message.clone();
     assert!(!super::event_loop::apply_engine_status(
         &mut app,
         engine_notice
     ));
     assert_eq!(app.history.len(), before);
-    assert_eq!(app.status_message, status_before);
+    assert!(
+        app.visible_notice_text()
+            .unwrap()
+            .contains("codewhale login")
+    );
     assert!(!super::event_loop::apply_engine_status(
         &mut app,
         "Executing tools sequentially".into()
@@ -37275,7 +37347,7 @@ fn account_profile_fallback_notice_is_a_standing_notice_outside_the_transcript()
             .find(|toast| toast.text == notice)
             .cloned()
     };
-    app.sync_status_message_to_toasts();
+
     let shown = standing(&app).expect("a later routine status does not erase the notice");
     assert_eq!(shown.level, StatusToastLevel::Warning);
     assert_eq!(shown.ttl_ms, None);
@@ -37307,7 +37379,7 @@ fn engine_retry_status_receipts_survive_footer_overwrite_in_the_existing_transcr
     assert!(matches!(&app.history[before], HistoryCell::System { content } if content == first));
     assert!(matches!(&app.history[before + 1], HistoryCell::System { content } if content == last));
     assert_eq!(
-        app.status_message.as_deref(),
+        app.visible_notice_text().as_deref(),
         Some("Executing tools sequentially")
     );
 }
@@ -37720,7 +37792,7 @@ fn server_title_and_refusal_strip_ansi_and_control_sequences() {
         "\x1b]0;spoofed\x07\x1b[31mSafe\r\nTitle\t\x08Here",
     );
     assert_eq!(
-        app.status_message.as_deref(),
+        app.visible_notice_text().as_deref(),
         Some("Title: Safe Title Here")
     );
 
@@ -38549,10 +38621,7 @@ fn status_toast_event_pushes_typed_error_toast_visible_when_done() {
 
     super::handlers::apply_status_toast_event(&mut app, message.clone(), StatusToastLevel::Error);
 
-    assert!(
-        app.status_message.is_none(),
-        "typed StatusToast events must not write to the legacy status_message sink"
-    );
+    assert_eq!(app.status_toasts.len(), 1);
     let toast = app
         .active_status_toast(crate::tui::underwater::ShellPhase::Done)
         .expect("error toast must stay visible when ShellPhase::Done");

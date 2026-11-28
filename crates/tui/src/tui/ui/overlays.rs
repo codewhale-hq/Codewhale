@@ -407,11 +407,11 @@ fn open_history_rewind_overlay(app: &mut App, undo: bool) {
         overlay.set_undo_selection();
     }
     app.view_stack.push(overlay);
-    app.status_message = Some(if undo {
+    app.show_command_result(if undo {
         "Undo selection: ←/→ choose first request to undo  Enter restore files and conversation  Esc cancel".to_string()
     } else {
         "Backtrack: ←/→ step  Enter rewind  Esc cancel".to_string()
-    });
+    }, StatusToastLevel::Info);
     app.needs_redraw = true;
 }
 
@@ -423,7 +423,10 @@ pub(crate) fn open_live_transcript_overlay(app: &mut App) {
     let mut overlay = LiveTranscriptOverlay::new();
     overlay.refresh_from_app(app);
     app.view_stack.push(overlay);
-    app.status_message = Some("Live transcript: tailing (Esc to close)".to_string());
+    app.show_command_result(
+        "Live transcript: tailing (Esc to close)".to_string(),
+        StatusToastLevel::Info,
+    );
     app.needs_redraw = true;
 }
 
@@ -478,13 +481,21 @@ pub(crate) fn disable_hotbar(app: &mut App, config: &mut Config) {
     ) {
         Ok(path) => {
             config.hotbar = Some(Vec::new());
-            app.status_message = Some(format!(
-                "Hotbar hidden (hotbar = [] in {}). Bring it back with `/hotbar on`.",
-                path.display()
-            ));
+            app.show_owned_command_result(
+                StatusToastKind::HotbarSettings,
+                format!(
+                    "Hotbar hidden (hotbar = [] in {}). Bring it back with `/hotbar on`.",
+                    path.display()
+                ),
+                StatusToastLevel::Success,
+            );
         }
         Err(err) => {
-            app.status_message = Some(format!("Failed to hide Hotbar: {err}"));
+            app.show_owned_command_result(
+                StatusToastKind::HotbarSettings,
+                format!("Failed to hide Hotbar: {err}"),
+                StatusToastLevel::Error,
+            );
             app.add_message(HistoryCell::System {
                 content: format!("Failed to hide Hotbar: {err}"),
             });

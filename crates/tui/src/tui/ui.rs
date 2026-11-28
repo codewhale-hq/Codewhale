@@ -149,8 +149,8 @@ use super::app::{
     ActiveCompaction, ActiveTurnMetadata, AgentCurrentActivity, App, AppAction,
     ComposerSubmitAction, ComposerSubmitChord, GoalControlIntent, OnboardingState,
     PendingGoalControl, PendingProviderSwitch, QueuedMessage, RedactionGateNotice, ScreenMode,
-    StatusToast, StatusToastLevel, SubmitDisposition, TaskPanelEntry, TaskPanelEntryKind,
-    ToolEvidence, TuiOptions, bound_agent_activity_text, is_stop_word,
+    StatusToast, StatusToastKind, StatusToastLevel, SubmitDisposition, TaskPanelEntry,
+    TaskPanelEntryKind, ToolEvidence, TuiOptions, bound_agent_activity_text, is_stop_word,
     looks_like_slash_command_input, shell_command_from_bang_input,
 };
 use super::approval::{
@@ -685,19 +685,18 @@ fn deliver_constitution_draft_result(
                 app.view_stack.push_boxed(boxed);
                 if let Some((title, content)) = preview {
                     open_text_pager(app, title, content);
-                    app.status_message = Some(crate::tui::setup::model_draft_ready_message(
-                        locale,
-                        &model_label,
-                    ));
+                    app.show_command_result(
+                        crate::tui::setup::model_draft_ready_message(locale, &model_label),
+                        StatusToastLevel::Success,
+                    );
                 }
             }
         }
         Err(reason) => {
-            app.status_message = Some(crate::tui::setup::model_draft_failed_message(
-                locale,
-                &model_label,
-                &reason,
-            ));
+            app.show_command_result(
+                crate::tui::setup::model_draft_failed_message(locale, &model_label, &reason),
+                StatusToastLevel::Error,
+            );
         }
     }
     app.needs_redraw = true;
@@ -739,26 +738,26 @@ fn deliver_fleet_draft_result(
                     .is_some();
                 app.view_stack.push_boxed(boxed);
                 if installed {
-                    app.status_message = Some(match locale {
+                    app.show_command_result(match locale {
                         codewhale_localization::Locale::ZhHans => {
                             format!("{model_label} 已起草配置。请查看下方 TOML，然后按 g 保存。")
                         }
                         _ => format!(
                             "{model_label} drafted the profile. Review the TOML below, then press g to save."
                         ),
-                    });
+                    }, StatusToastLevel::Success);
                 }
             }
         }
         Err(reason) => {
-            app.status_message = Some(match locale {
+            app.show_command_result(match locale {
                 codewhale_localization::Locale::ZhHans => {
                     format!("{model_label} 未能起草配置（{reason}）。按 Enter 仍会插入编写提示。")
                 }
                 _ => format!(
                     "{model_label} could not draft the profile ({reason}). Enter still inserts the authoring prompt."
                 ),
-            });
+            }, StatusToastLevel::Error);
         }
     }
     app.needs_redraw = true;
@@ -903,10 +902,10 @@ fn open_fleet_setup_target(app: &mut App, config: &Config, member_id: Option<&st
             if let Some(picker) = picker {
                 app.view_stack.push(picker);
             }
-            app.status_message = Some(format!(
+            app.show_command_result(format!(
                 "Editing selected team `{fleet_name}` ({}) — legacy profiles will not be changed.",
                 scope.label()
-            ));
+            ), StatusToastLevel::Info);
         }
         Ok(FleetSetupEditTarget::LegacyProfiles) => {
             if app.view_stack.top_kind() == Some(ModalKind::FleetSetup) {
@@ -1040,7 +1039,7 @@ async fn execute_command_input(
     input: &str,
 ) -> Result<bool> {
     if app.pending_fresh_session.is_some() && !commands::pending_session_control_command(input) {
-        app.status_message = Some("A new session is awaiting Engine confirmation; the current draft and transcript are preserved.".to_string());
+        app.show_command_result("A new session is awaiting Engine confirmation; the current draft and transcript are preserved.".to_string(), StatusToastLevel::Warning);
         return Ok(false);
     }
     let _ = app.note_manual_command_for_tip(input);
@@ -1050,7 +1049,7 @@ async fn execute_command_input(
                 send_queued_message_at_index_now(app, config, engine_handle, index).await?;
             }
             Err(message) => {
-                app.status_message = Some(message);
+                app.show_command_result(message, StatusToastLevel::Error);
             }
         }
         return Ok(false);
@@ -1104,13 +1103,17 @@ fn use_bundled_constitution(app: &mut App, config: &Config) {
 
     match state.save() {
         Ok(()) => {
-            app.status_message = Some(
+            app.show_command_result(
                 "Using the bundled/default constitution; custom user-global law is inactive."
                     .to_string(),
+                StatusToastLevel::Info,
             );
         }
         Err(err) => {
-            app.status_message = Some(format!("Failed to save constitution choice: {err}"));
+            app.show_command_result(
+                format!("Failed to save constitution choice: {err}"),
+                StatusToastLevel::Error,
+            );
             app.add_message(HistoryCell::System {
                 content: format!("Failed to save constitution choice: {err}"),
             });
@@ -1203,20 +1206,29 @@ pub(crate) fn escape_cancel_request(
         app.goal.tokens_used = 0;
         app.goal.time_used_seconds = 0;
         app.goal.continuation_count = 0;
-        app.status_message = Some(parent_stop_status(app, "Paused command cancelled"));
+        app.show_command_result(
+            parent_stop_status(app, "Paused command cancelled"),
+            StatusToastLevel::Warning,
+        );
         false
     } else {
         let was_waiting = app.goal_continuation_waiting;
         engine_handle.cancel();
         if was_waiting {
             app.goal_continuation_waiting = false;
-            app.status_message = Some(app.tr(MessageId::GoalContinuationStopped).to_string());
+            app.show_command_result(
+                app.tr(MessageId::GoalContinuationStopped).to_string(),
+                StatusToastLevel::Info,
+            );
             return true;
         }
         mark_active_turn_cancelled_locally(app);
         current_streaming_text.clear();
         stream_display_clock.reset();
-        app.status_message = Some(parent_stop_status(app, "Request cancelled"));
+        app.show_command_result(
+            parent_stop_status(app, "Request cancelled"),
+            StatusToastLevel::Warning,
+        );
         false
     }
 }

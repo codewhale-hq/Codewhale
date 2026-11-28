@@ -415,7 +415,7 @@ mod tests {
 
         assert!(crate::tui::ui::cancel_background_commands(&mut app));
         assert_eq!(
-            app.status_message,
+            app.visible_notice_text(),
             Some(super::line(
                 app.ui_locale,
                 MessageId::CmdBackgroundCancelled,

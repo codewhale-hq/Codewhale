@@ -122,7 +122,7 @@ pub(super) fn toggle_model_picker_pin(
     if let Ok(settings) = codewhale_runtime::settings::Settings::load_persisted() {
         app.pinned_models = settings.pinned_models;
     }
-    app.status_message = Some(receipt.clone());
+    app.show_command_result(receipt.clone(), level);
     refresh_open_model_picker(app, config, Some((receipt, level)));
     app.needs_redraw = true;
 }
@@ -220,14 +220,16 @@ pub(crate) fn handle_memory_quick_add(app: &mut App, input: &str, config: &Confi
         });
     match result {
         Ok(source) => {
-            app.status_message = Some(format!("memory: appended to {}", source.display()));
+            app.show_command_result(
+                format!("memory: appended to {}", source.display()),
+                StatusToastLevel::Success,
+            );
         }
         Err(err) => {
-            app.status_message = Some(format!(
-                "memory: failed to write {}: {}",
-                path.display(),
-                err
-            ));
+            app.show_command_result(
+                format!("memory: failed to write {}: {}", path.display(), err),
+                StatusToastLevel::Error,
+            );
         }
     }
 }
@@ -317,18 +319,21 @@ pub(crate) async fn handle_setup_constitution_model_draft(
     let cell = app.constitution_draft_cell.clone();
     let spawn_label = model_label.clone();
     let request_gen = app.next_draft_gen();
-    app.status_message = Some(match locale {
-        codewhale_localization::Locale::ZhHans => {
-            format!(
-                "{model_label} 正在生成宪章草案……（最多 {}s）",
+    app.show_command_result(
+        match locale {
+            codewhale_localization::Locale::ZhHans => {
+                format!(
+                    "{model_label} 正在生成宪章草案……（最多 {}s）",
+                    DRAFT_TIMEOUT.as_secs()
+                )
+            }
+            _ => format!(
+                "{model_label} is drafting your constitution… (up to {}s)",
                 DRAFT_TIMEOUT.as_secs()
-            )
-        }
-        _ => format!(
-            "{model_label} is drafting your constitution… (up to {}s)",
-            DRAFT_TIMEOUT.as_secs()
-        ),
-    });
+            ),
+        },
+        StatusToastLevel::Info,
+    );
     app.needs_redraw = true;
     tokio::spawn(async move {
         let outcome = match tokio::time::timeout(
@@ -396,18 +401,21 @@ pub(crate) async fn handle_fleet_profile_model_draft(
     let spawn_label = model_label.clone();
     let request_gen = app.next_draft_gen();
     let workspace = app.workspace.clone();
-    app.status_message = Some(match locale {
-        codewhale_localization::Locale::ZhHans => {
-            format!(
-                "{model_label} 正在起草配置……（最多 {}s）",
+    app.show_command_result(
+        match locale {
+            codewhale_localization::Locale::ZhHans => {
+                format!(
+                    "{model_label} 正在起草配置……（最多 {}s）",
+                    DRAFT_TIMEOUT.as_secs()
+                )
+            }
+            _ => format!(
+                "{model_label} is drafting the profile… (up to {}s)",
                 DRAFT_TIMEOUT.as_secs()
-            )
-        }
-        _ => format!(
-            "{model_label} is drafting the profile… (up to {}s)",
-            DRAFT_TIMEOUT.as_secs()
-        ),
-    });
+            ),
+        },
+        StatusToastLevel::Info,
+    );
     app.needs_redraw = true;
     tokio::spawn(async move {
         // Redacted, bounded workspace fingerprint (manifest names, test
@@ -456,7 +464,7 @@ pub(crate) async fn handle_bang_shell_input(
         Ok(Some(command)) => command,
         Ok(None) => return Ok(false),
         Err(message) => {
-            app.status_message = Some(format!("Error: {message}"));
+            app.show_command_result(format!("Error: {message}"), StatusToastLevel::Error);
             return Ok(true);
         }
     };
@@ -476,11 +484,16 @@ pub(crate) async fn handle_bang_shell_input(
                     approval_mode: app.approval_mode,
                 },
             );
-            app.status_message = Some(format!("Shell command submitted: {command}"));
+            app.show_command_result(
+                format!("Shell command submitted: {command}"),
+                StatusToastLevel::Info,
+            );
         }
         Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-            app.status_message =
-                Some("Engine busy — shell command not sent; try again".to_string());
+            app.show_command_result(
+                "Engine busy — shell command not sent; try again".to_string(),
+                StatusToastLevel::Warning,
+            );
         }
         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
             return Err(anyhow::anyhow!("engine channel closed"));
@@ -1434,7 +1447,7 @@ pub(crate) async fn handle_skill_mutation_requested(
         codewhale_skills::mutation::execute(request, &ctx).await
     };
 
-    let (status, refresh_skills) = match result {
+    let (status, level) = match result {
         Ok(receipt) => {
             let msg = match &receipt.outcome {
                 SkillMutationOutcome::Installed => {
@@ -1462,17 +1475,21 @@ pub(crate) async fn handle_skill_mutation_requested(
                     format!("Network denied for {host}")
                 }
             };
-            let refresh = !matches!(
-                receipt.outcome,
-                SkillMutationOutcome::NeedsApproval(_) | SkillMutationOutcome::NetworkDenied(_)
-            );
-            (msg, refresh)
+            let level = match receipt.outcome {
+                SkillMutationOutcome::NeedsApproval(_) => StatusToastLevel::Warning,
+                SkillMutationOutcome::NetworkDenied(_) => StatusToastLevel::Error,
+                _ => StatusToastLevel::Success,
+            };
+            (msg, level)
         }
-        Err(err) => (format!("Skill mutation failed: {err:#}"), false),
+        Err(err) => (
+            format!("Skill mutation failed: {err:#}"),
+            StatusToastLevel::Error,
+        ),
     };
 
-    app.status_message = Some(status.clone());
-    if refresh_skills {
+    app.show_command_result(status.clone(), level);
+    if level == StatusToastLevel::Success {
         app.refresh_skill_cache();
     }
     refresh_skills_manager_if_open(app, Some(status), focus.as_ref());
@@ -1868,8 +1885,9 @@ pub(crate) async fn handle_view_events(
                     app.line_began_with_slash = text.starts_with('/');
                     app.input = text;
                     app.cursor_position = app.input.chars().count();
-                    app.status_message = Some(
+                    app.show_command_result(
                         "Inserted into composer. Finish the input or press Enter.".to_string(),
+                        StatusToastLevel::Info,
                     );
                 }
                 crate::tui::views::CommandPaletteAction::OpenTextPager { title, content } => {
@@ -2193,7 +2211,10 @@ pub(crate) async fn handle_view_events(
                     note_human_decision_delivered(app, &tool_id);
                     app.retire_action_notices(Some(&tool_id));
                 } else if let Err(error) = result {
-                    app.status_message = Some(format!("Approval was not accepted: {error}"));
+                    app.show_command_result(
+                        format!("Approval was not accepted: {error}"),
+                        StatusToastLevel::Error,
+                    );
                 }
             }
             ViewEvent::UserInputSubmitted { tool_id, response }
@@ -2246,8 +2267,10 @@ pub(crate) async fn handle_view_events(
                 let manager = match SessionManager::default_location() {
                     Ok(manager) => manager,
                     Err(err) => {
-                        app.status_message =
-                            Some(format!("Failed to open sessions directory: {err}"));
+                        app.show_command_result(
+                            format!("Failed to open sessions directory: {err}"),
+                            StatusToastLevel::Error,
+                        );
                         continue;
                     }
                 };
@@ -2339,7 +2362,7 @@ pub(crate) async fn handle_view_events(
                         app.add_message(HistoryCell::System {
                             content: loaded_message.clone(),
                         });
-                        app.status_message = Some(loaded_message);
+                        app.show_command_result(loaded_message, StatusToastLevel::Success);
                         app.launch.dismiss();
                         app.launch.status = None;
                     }
@@ -2388,13 +2411,21 @@ pub(crate) async fn handle_view_events(
                         }
                     }
                 }
-                app.status_message = Some(work_snapshot_warning.unwrap_or_else(|| {
-                    format!(
-                        "Renamed session {} to \"{}\"",
-                        codewhale_engine::session_manager::truncate_id(&session_id),
-                        title
-                    )
-                }));
+                let level = if work_snapshot_warning.is_some() {
+                    StatusToastLevel::Warning
+                } else {
+                    StatusToastLevel::Success
+                };
+                app.show_command_result(
+                    work_snapshot_warning.unwrap_or_else(|| {
+                        format!(
+                            "Renamed session {} to \"{}\"",
+                            codewhale_engine::session_manager::truncate_id(&session_id),
+                            title
+                        )
+                    }),
+                    level,
+                );
             }
             ViewEvent::SessionArchived { metadata } => {
                 app.adopt_session_mutation(&metadata);
@@ -2407,23 +2438,29 @@ pub(crate) async fn handle_view_events(
                 {
                     cached.archived = metadata.archived;
                 }
-                app.status_message = Some(format!(
-                    "{} session {} ({})",
-                    if metadata.archived {
-                        "Archived"
-                    } else {
-                        "Restored"
-                    },
-                    codewhale_engine::session_manager::truncate_id(&metadata.id),
-                    metadata.title
-                ));
+                app.show_command_result(
+                    format!(
+                        "{} session {} ({})",
+                        if metadata.archived {
+                            "Archived"
+                        } else {
+                            "Restored"
+                        },
+                        codewhale_engine::session_manager::truncate_id(&metadata.id),
+                        metadata.title
+                    ),
+                    StatusToastLevel::Success,
+                );
             }
             ViewEvent::SessionDeleted { session_id, title } => {
-                app.status_message = Some(format!(
-                    "Deleted session {} ({})",
-                    codewhale_engine::session_manager::truncate_id(&session_id),
-                    title
-                ));
+                app.show_command_result(
+                    format!(
+                        "Deleted session {} ({})",
+                        codewhale_engine::session_manager::truncate_id(&session_id),
+                        title
+                    ),
+                    StatusToastLevel::Success,
+                );
             }
             ViewEvent::ConfigUpdated {
                 key,
@@ -2458,8 +2495,10 @@ pub(crate) async fn handle_view_events(
                 if final_save {
                     match codewhale_runtime::config_persistence::persist_status_items(&items) {
                         Ok(path) => {
-                            app.status_message =
-                                Some(format!("Status line saved to {}", path.display()));
+                            app.show_command_result(
+                                format!("Status line saved to {}", path.display()),
+                                StatusToastLevel::Success,
+                            );
                         }
                         Err(err) => {
                             app.add_message(HistoryCell::System {
@@ -2474,10 +2513,13 @@ pub(crate) async fn handle_view_events(
             }
             ViewEvent::SetupStateCommitRequested { state, message } => match state.save() {
                 Ok(()) => {
-                    app.status_message = Some(message);
+                    app.show_command_result(message, StatusToastLevel::Success);
                 }
                 Err(err) => {
-                    app.status_message = Some(format!("Setup state could not be saved: {err}"));
+                    app.show_command_result(
+                        format!("Setup state could not be saved: {err}"),
+                        StatusToastLevel::Error,
+                    );
                 }
             },
             ViewEvent::SetupConstitutionCommitRequested {
@@ -2486,11 +2528,13 @@ pub(crate) async fn handle_view_events(
                 message,
             } => match crate::tui::setup::persist_user_constitution_choice(&constitution, &state) {
                 Ok(()) => {
-                    app.status_message = Some(message);
+                    app.show_command_result(message, StatusToastLevel::Success);
                 }
                 Err(err) => {
-                    app.status_message =
-                        Some(format!("User constitution could not be saved: {err}"));
+                    app.show_command_result(
+                        format!("User constitution could not be saved: {err}"),
+                        StatusToastLevel::Error,
+                    );
                 }
             },
             ViewEvent::SetupConstitutionModelDraftRequested {
@@ -2696,7 +2740,7 @@ pub(crate) async fn handle_view_events(
                 app.needs_redraw = true;
             }
             ViewEvent::FleetStoreChanged { message } => {
-                app.status_message = Some(message);
+                app.show_command_result(message, StatusToastLevel::Info);
                 sync_fleet_roster(app, config, engine_handle);
                 refresh_parked_fleet_list(app, config);
                 refresh_parked_fleet_roster(app, config);
@@ -2725,8 +2769,10 @@ pub(crate) async fn handle_view_events(
                     }
                     app.view_stack.push(view);
                 }
-                app.status_message =
-                    Some(tr(app.ui_locale, MessageId::SubagentsFetching).to_string());
+                app.show_command_result(
+                    tr(app.ui_locale, MessageId::SubagentsFetching).to_string(),
+                    StatusToastLevel::Info,
+                );
                 let _ = engine_handle.try_send(Op::ListSubAgents);
             }
             ViewEvent::FleetSetupExternalConsentActivationRequested { provider_id, model } => {
@@ -2944,7 +2990,9 @@ pub(crate) async fn handle_view_events(
                             format!("Team {} profile saved: {}", scope.label(), target.display())
                         },
                     });
-                    app.status_message = Some(if zh {
+                    app.show_command_result(if zh && roster_refresh_failed {
+                        format!("团队配置已保存，但无法刷新当前团队名单。请在派发 {} 前重启。", draft.id)
+                    } else if zh {
                         format!("已保存团队配置：{}", draft.file_name())
                     } else if roster_refresh_failed {
                         format!(
@@ -2958,7 +3006,7 @@ pub(crate) async fn handle_view_events(
                             scope.label(),
                             draft.file_name()
                         )
-                    });
+                    }, if roster_refresh_failed { StatusToastLevel::Warning } else { StatusToastLevel::Success });
                     Ok(())
                 })();
                 if let Err(reason) = result {
@@ -3022,17 +3070,26 @@ pub(crate) async fn handle_view_events(
                         .with_locale(app.ui_locale)
                         .with_provider_health(&app.provider_health),
                     );
-                    app.status_message =
-                        Some("Provider setup opened from /setup readiness.".to_string());
+                    app.show_command_result(
+                        "Provider setup opened from /setup readiness.".to_string(),
+                        StatusToastLevel::Info,
+                    );
                 }
             }
             ViewEvent::SetupOpenModelRequested => {
                 if app.view_stack.top_kind() != Some(ModalKind::ModelPicker) {
-                    if let Ok(identity) = app.admitted_provider_identity().cloned() {
-                        open_model_picker_for_provider(app, config, &identity);
+                    match app.admitted_provider_identity().cloned() {
+                        Ok(identity) => {
+                            open_model_picker_for_provider(app, config, &identity);
+                            if app.view_stack.top_kind() == Some(ModalKind::ModelPicker) {
+                                app.show_command_result(
+                                    "Model route picker opened from /setup readiness.",
+                                    StatusToastLevel::Info,
+                                );
+                            }
+                        }
+                        Err(reason) => app.show_command_result(reason, StatusToastLevel::Error),
                     }
-                    app.status_message =
-                        Some("Model route picker opened from /setup readiness.".to_string());
                 }
             }
             ViewEvent::SetupOpenFleetRequested => {
@@ -3042,8 +3099,10 @@ pub(crate) async fn handle_view_events(
                 if app.view_stack.top_kind() != Some(ModalKind::HotbarSetup) {
                     app.view_stack
                         .push(crate::tui::hotbar::setup::HotbarSetupView::new(app, config));
-                    app.status_message =
-                        Some("Hotbar setup opened from /setup Hotbar readiness.".to_string());
+                    app.show_command_result(
+                        "Hotbar setup opened from /setup Hotbar readiness.".to_string(),
+                        StatusToastLevel::Info,
+                    );
                 }
             }
             ViewEvent::SetupOpenModeRequested => {
@@ -3051,15 +3110,19 @@ pub(crate) async fn handle_view_events(
                     let view =
                         crate::tui::views::mode_picker::ModePickerView::for_app(app, config).await;
                     app.view_stack.push(view);
-                    app.status_message =
-                        Some("Work mode picker opened from /setup runtime posture.".to_string());
+                    app.show_command_result(
+                        "Work mode picker opened from /setup runtime posture.".to_string(),
+                        StatusToastLevel::Info,
+                    );
                 }
             }
             ViewEvent::SetupOpenConfigRequested => {
                 if app.view_stack.top_kind() != Some(ModalKind::Config) {
                     app.view_stack.push(ConfigView::new_for_app(app));
-                    app.status_message =
-                        Some("Config view opened from /setup runtime posture.".to_string());
+                    app.show_command_result(
+                        "Config view opened from /setup runtime posture.".to_string(),
+                        StatusToastLevel::Info,
+                    );
                 }
             }
             ViewEvent::SetupOpenRemoteControlRequested => {
@@ -3069,12 +3132,18 @@ pub(crate) async fn handle_view_events(
                 disable_hotbar(app, config);
             }
             ViewEvent::SubAgentsRefresh => {
-                app.status_message = Some("Refreshing sub-agents...".to_string());
+                app.show_command_result(
+                    "Refreshing sub-agents...".to_string(),
+                    StatusToastLevel::Info,
+                );
                 // #3802: non-blocking send — refresh op, safe to drop.
                 let _ = engine_handle.try_send(Op::ListSubAgents);
             }
             ViewEvent::SidebarAgentCancel { agent_id } => {
-                app.status_message = Some(format!("Cancelling {agent_id}..."));
+                app.show_command_result(
+                    format!("Cancelling {agent_id}..."),
+                    StatusToastLevel::Info,
+                );
                 // #6150: the input path never awaits a full op channel. The
                 // cancel is retryable; a rejected send surfaces immediately.
                 if engine_handle
@@ -3083,7 +3152,10 @@ pub(crate) async fn handle_view_events(
                     })
                     .is_err()
                 {
-                    app.status_message = Some(format!("Could not cancel {agent_id}"));
+                    app.show_command_result(
+                        format!("Could not cancel {agent_id}"),
+                        StatusToastLevel::Error,
+                    );
                 }
             }
             ViewEvent::OpenAgentTranscript { agent_id } => {
@@ -3192,11 +3264,12 @@ pub(crate) async fn handle_view_events(
                 let refreshed =
                     tr(app.ui_locale, MessageId::ModelPickerReadinessRefreshed).into_owned();
                 let notice = Some((refreshed.clone(), StatusToastLevel::Info));
-                app.status_message = Some(if refresh_open_model_picker(app, config, notice) {
+                let refreshed_message = if refresh_open_model_picker(app, config, notice) {
                     refreshed
                 } else {
                     tr(app.ui_locale, MessageId::ModelPickerOpenToRefresh).into_owned()
-                });
+                };
+                app.show_command_result(refreshed_message, StatusToastLevel::Info);
                 app.needs_redraw = true;
             }
             ViewEvent::ModelPickerToggleFleet {
@@ -3234,7 +3307,7 @@ pub(crate) async fn handle_view_events(
                         app.pinned_models = pinned_models;
                         let receipt =
                             tr(app.ui_locale, MessageId::ModelPickerPinOrderUpdated).into_owned();
-                        app.status_message = Some(receipt.clone());
+                        app.show_command_result(receipt.clone(), StatusToastLevel::Success);
                         refresh_open_model_picker(
                             app,
                             config,
@@ -3244,7 +3317,7 @@ pub(crate) async fn handle_view_events(
                     Err(error) => {
                         let receipt = tr(app.ui_locale, MessageId::ModelPickerPinReorderFailed)
                             .replace("{error}", &error.to_string());
-                        app.status_message = Some(receipt.clone());
+                        app.show_command_result(receipt.clone(), StatusToastLevel::Error);
                         refresh_open_model_picker(
                             app,
                             config,
@@ -3259,7 +3332,7 @@ pub(crate) async fn handle_view_events(
                 model,
                 reason,
             } => {
-                app.status_message = Some(reason);
+                app.show_command_result(reason, StatusToastLevel::Warning);
                 // Close the model picker if it is still open, then hand off to
                 // the provider auth flow for the locked model's provider.
                 while app.view_stack.top_kind() == Some(ModalKind::ModelPicker) {
@@ -3275,15 +3348,14 @@ pub(crate) async fn handle_view_events(
                 {
                     app.view_stack.push(picker);
                 } else {
-                    app.status_message = Some(format!(
-                        "🔒 {model} needs {} credentials — open /provider to authenticate.",
-                        identity.key
-                    ));
+                    app.show_command_result(
+                        format!(
+                            "🔒 {model} needs {} credentials — open /provider to authenticate.",
+                            identity.key
+                        ),
+                        StatusToastLevel::Warning,
+                    );
                 }
-                app.needs_redraw = true;
-            }
-            ViewEvent::StatusMessage { message } => {
-                app.status_message = Some(message);
                 app.needs_redraw = true;
             }
             ViewEvent::StatusToast { message, level } => {

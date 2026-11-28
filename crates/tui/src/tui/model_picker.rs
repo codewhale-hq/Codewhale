@@ -1137,7 +1137,10 @@ impl ModelPickerView {
             .replace("{reason}", &detail);
             drop(rows);
             self.notice = Some((message.clone(), StatusToastLevel::Warning));
-            return ViewAction::Emit(ViewEvent::StatusMessage { message });
+            return ViewAction::Emit(ViewEvent::StatusToast {
+                message,
+                level: StatusToastLevel::Warning,
+            });
         }
         let reason = if row.hint.trim().is_empty() {
             "This model is not available with the current provider credentials.".to_string()
@@ -7611,7 +7614,10 @@ api_key = "fixture-xai-key"
         assert!(!picker.selected_model_is_selectable());
         let blocked = picker.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         match blocked {
-            ViewAction::Emit(ViewEvent::StatusMessage { message }) => {
+            ViewAction::Emit(ViewEvent::StatusToast {
+                message,
+                level: StatusToastLevel::Warning,
+            }) => {
                 assert!(message.contains("Claude Agent"), "{message}");
                 assert!(
                     message.contains("@agentclientprotocol/claude-agent-acp"),
@@ -7619,7 +7625,7 @@ api_key = "fixture-xai-key"
                 );
                 assert!(!message.contains("claude auth login"), "{message}");
             }
-            other => panic!("expected StatusMessage for blocked external agent, got {other:?}"),
+            other => panic!("expected an error notice for blocked external agent, got {other:?}"),
         }
 
         picker.update_query("copilot".to_string());

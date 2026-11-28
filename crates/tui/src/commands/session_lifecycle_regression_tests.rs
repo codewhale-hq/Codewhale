@@ -391,7 +391,7 @@ async fn new_session_from_resumed_state_creates_distinct_empty_session() {
     assert_eq!(app.session.total_tokens, 0);
     assert_eq!(app.session.session_cost, 0.0);
     assert!(
-        app.status_message
+        app.visible_notice_text()
             .as_deref()
             .unwrap_or_default()
             .contains("/resume")

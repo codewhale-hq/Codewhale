@@ -15,6 +15,7 @@
 //! is an immutable receipt), and focus follows the fork. Failed and cancelled
 //! children answer with the exact reason they cannot continue.
 
+use crate::tui::app::StatusToastLevel;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -365,7 +366,7 @@ pub(crate) fn focus_agent(app: &mut App, agent_id: &str) {
     let status = app
         .tr(MessageId::AgentFocusOpened)
         .replace("{agent}", &label);
-    app.status_message = Some(status.clone());
+
     app.push_status_toast(status, crate::tui::app::StatusToastLevel::Info, Some(4_000));
     app.needs_redraw = true;
 }
@@ -380,7 +381,7 @@ pub(crate) fn exit_focus(app: &mut App) -> bool {
     crate::tui::work_surface::agent_details_closed(app, &focus.agent_id);
     app.scroll_to_bottom();
     let status = app.tr(MessageId::AgentFocusClosed).into_owned();
-    app.status_message = Some(status);
+    app.show_command_result(status, StatusToastLevel::Info);
     app.needs_redraw = true;
     true
 }
@@ -550,7 +551,7 @@ pub(crate) fn apply_follow_up_receipt(
         focus.wrapped = None;
         focus.scroll_top = None;
     }
-    app.status_message = Some(note.clone());
+
     app.push_status_toast(note, level, Some(5_000));
     app.needs_redraw = true;
 }
@@ -1328,7 +1329,7 @@ mod tests {
             Err("status is cancelled".to_string());
         apply_follow_up_receipt(&mut app, "agent_fork", &failed);
         assert!(
-            app.status_message
+            app.visible_notice_text()
                 .as_deref()
                 .is_some_and(|status| status.contains("status is cancelled"))
         );
@@ -1356,7 +1357,10 @@ mod tests {
             "another agent's receipt leaked into this transcript: {:?}",
             focus.local_cells
         );
-        assert!(app.status_message.is_some(), "the toast still reports it");
+        assert!(
+            app.visible_notice_text().is_some(),
+            "the toast still reports it"
+        );
     }
 
     #[test]
@@ -1381,7 +1385,10 @@ mod tests {
         let expected = app
             .tr(MessageId::AgentFocusFollowUpDelivered)
             .replace("{agent}", &agent_display_label(&app, "agent_existing"));
-        assert_eq!(app.status_message.as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            app.visible_notice_text().as_deref(),
+            Some(expected.as_str())
+        );
     }
 
     #[test]
@@ -1399,7 +1406,7 @@ mod tests {
         apply_follow_up_receipt(&mut app, "agent_original", &outcome);
         assert_eq!(app.agent_focus.as_ref().unwrap().agent_id, "agent_original");
         assert!(
-            app.status_message
+            app.visible_notice_text()
                 .as_deref()
                 .unwrap()
                 .contains("queued; live input channel closed")

@@ -754,6 +754,14 @@ impl App {
             && config
                 .features()
                 .enabled(codewhale_runtime::features::Feature::Mcp);
+        let startup_notice = admission_error
+            .map(|message| (message, StatusToastLevel::Error))
+            .or_else(|| {
+                xai_dangling_repair_message.map(|message| (message, StatusToastLevel::Warning))
+            })
+            .or_else(|| settings_parse_warning.map(|message| (message, StatusToastLevel::Warning)))
+            .or_else(|| tui_prefs_migration_notice.map(|message| (message, StatusToastLevel::Info)))
+            .or_else(|| theme_warning.map(|message| (message, StatusToastLevel::Warning)));
         let mut app = Self {
             mode: initial_mode,
             hotbar_actions,
@@ -851,17 +859,9 @@ impl App {
             turn_error_posted: false,
             turn_error_notice: None,
             turn_error_cause: None,
-            // Surface parse warnings so the user knows their config file is
-            // broken instead of silently losing all settings.
-            status_message: admission_error
-                .or(xai_dangling_repair_message)
-                .or(settings_parse_warning)
-                .or(tui_prefs_migration_notice)
-                .or(theme_warning),
             status_toasts: VecDeque::new(),
             update_available: None,
             sticky_status: None,
-            last_status_message_seen: None,
             context_pressure_warning_dismissed: None,
             plugin_reload_nudge_stamp: None,
             last_plugin_catalog_poll: None,
@@ -1277,6 +1277,13 @@ impl App {
         };
         // Restore presentation only; the visible-frame tick owns companion startup.
         app.pet_watch.enabled = settings.pet_mode;
+        if let Some((message, level)) = startup_notice {
+            if level == StatusToastLevel::Error {
+                app.set_sticky_status(message, level, None);
+            } else {
+                app.show_event_notice(message, level);
+            }
+        }
         app.pet_watch.apply_identity(
             settings.whale_name.as_deref(),
             settings.whale_color.as_deref(),

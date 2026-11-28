@@ -1142,10 +1142,6 @@ pub enum ViewEvent {
         model: String,
         reason: String,
     },
-    /// Legacy status message from a modal; new notices should emit `StatusToast`.
-    StatusMessage {
-        message: String,
-    },
     /// Typed status toast from a modal (e.g. locked-model explanation).
     StatusToast {
         message: String,

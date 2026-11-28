@@ -5,6 +5,7 @@
 
 use super::SharedCommandHost;
 use crate::tui::app::App;
+use crate::tui::app::StatusToastLevel;
 use crate::tui::history::HistoryCell;
 use codewhale_command_contract::facets::*;
 use codewhale_dependencies::{ExternalTool, Git};
@@ -83,7 +84,10 @@ impl CommandDebugHistoryContext for DebugOperationsAdapter<'_> {
         // to the composer and be overwritten, or sent in place of this edit.
         // Return it to the queue first — the same hand-back as Esc.
         if app.cancel_queued_draft_edit() {
-            app.status_message = Some("Queued edit canceled; follow-up restored".to_string());
+            app.show_command_result(
+                "Queued edit canceled; follow-up restored".to_string(),
+                StatusToastLevel::Warning,
+            );
         }
         app.input = input;
         app.cursor_position = app.input.chars().count();

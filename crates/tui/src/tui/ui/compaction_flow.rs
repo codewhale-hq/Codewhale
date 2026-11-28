@@ -46,7 +46,6 @@ pub(crate) fn set_explicit_compaction_status(
     level: StatusToastLevel,
     sticky: bool,
 ) {
-    app.sync_status_message_to_toasts();
     if sticky {
         app.set_sticky_status(text, level, Some(App::STICKY_ERROR_TTL_MS));
     } else {
@@ -509,7 +508,6 @@ fn set_context_pressure_status(
     text: String,
     pressure_level: codewhale_runtime::context_budget::PressureLevel,
 ) {
-    app.sync_status_message_to_toasts();
     let can_replace = app.sticky_status.as_ref().is_none_or(|status| {
         matches!(
             status.kind,

@@ -575,7 +575,7 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
             prompts(&app.api_messages),
             ["keep this"],
             "undo status: {:?}; toasts: {:?}; system history: {:?}",
-            app.status_message,
+            app.visible_notice_text(),
             app.status_toasts.iter().map(|toast| toast.text.as_str()).collect::<Vec<_>>(),
             app.history.iter().filter_map(|cell| match cell {
                 HistoryCell::System { content } => Some(content.as_str()),

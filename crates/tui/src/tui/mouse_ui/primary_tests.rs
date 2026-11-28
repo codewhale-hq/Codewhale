@@ -40,7 +40,7 @@ fn composer_selection_publishes_primary_quietly_even_when_released_outside() {
         event(MouseEventKind::Drag(MouseButton::Left), text.x + 5, text.y),
         Instant::now(),
     );
-    let status = app.status_message.clone();
+    let status = app.visible_notice_text();
     handle_mouse_event(
         &mut app,
         event(MouseEventKind::Up(MouseButton::Left), 90, 25),
@@ -49,7 +49,7 @@ fn composer_selection_publishes_primary_quietly_even_when_released_outside() {
     assert_eq!(app.clipboard.read_primary_text().as_deref(), Some("alpha"));
     assert_eq!(app.selected_text(), "alpha");
     assert_eq!(app.clipboard.last_written_text(), Some("REGULAR_CLIPBOARD"));
-    assert_eq!(app.status_message, status);
+    assert_eq!(app.visible_notice_text(), status);
     copy_active_selection(&mut app);
     assert_eq!(app.clipboard.last_written_text(), Some("alpha"));
     assert_eq!(app.clipboard.read_primary_text().as_deref(), Some("alpha"));
@@ -84,7 +84,7 @@ fn transcript_selection_uses_clean_text_and_preserves_regular_clipboard() {
     });
     app.viewport.transcript_selection.dragging = true;
     let expected = selection_to_text(&app).unwrap();
-    let status = app.status_message.clone();
+    let status = app.visible_notice_text();
     handle_mouse_event(
         &mut app,
         event(MouseEventKind::Up(MouseButton::Left), 90, 10),
@@ -92,7 +92,7 @@ fn transcript_selection_uses_clean_text_and_preserves_regular_clipboard() {
     );
     assert_eq!(app.clipboard.read_primary_text(), Some(expected));
     assert_eq!(app.clipboard.last_written_text(), Some("REGULAR_CLIPBOARD"));
-    assert_eq!(app.status_message, status);
+    assert_eq!(app.visible_notice_text(), status);
     assert!(!app.viewport.transcript_selection.dragging);
 }
 
@@ -153,7 +153,7 @@ fn middle_click_respects_overlays_missing_composer_and_remote_clipboard() {
             }
             _ => app.clipboard = ClipboardHandler::for_test(false, false),
         }
-        let status = app.status_message.clone();
+        let status = app.visible_notice_text();
         handle_mouse_event(
             &mut app,
             event(
@@ -167,7 +167,7 @@ fn middle_click_respects_overlays_missing_composer_and_remote_clipboard() {
         assert_eq!(app.cursor_position, 4, "{mode}");
         assert_eq!(app.selection_anchor, Some(1), "{mode}");
         assert!(app.pending_composer_submit.is_none(), "{mode}");
-        assert_eq!(app.status_message, status, "{mode}");
+        assert_eq!(app.visible_notice_text(), status, "{mode}");
     }
 }
 
@@ -270,10 +270,8 @@ fn transcript_copy_defaults_to_markdown_source_and_names_cell_count() {
         "toast names the projected cell count, got {:?}",
         toast.text
     );
-    assert!(
-        app.status_message.is_none(),
-        "toast path must not touch the legacy status sink"
-    );
+    let expected = toast.text.clone();
+    assert_eq!(app.visible_notice_text(), Some(expected));
 }
 
 #[test]

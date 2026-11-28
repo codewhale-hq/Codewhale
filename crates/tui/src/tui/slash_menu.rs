@@ -141,7 +141,7 @@ pub fn apply_slash_menu_selection(
         let trigger = app.input[byte_start..].chars().next().unwrap_or('/');
         replace_inline_skill_mention(app, byte_start, trigger, &partial, &skill_name);
         app.slash_menu_hidden = false;
-        app.status_message = Some(format!("Skill selected: {trigger}{skill_name}"));
+        app.show_input_hint(format!("Skill selected: {trigger}{skill_name}"));
         return true;
     }
 
@@ -169,7 +169,7 @@ pub fn apply_slash_menu_selection(
     app.input = command;
     app.cursor_position = app.input.chars().count();
     app.slash_menu_hidden = false;
-    app.status_message = Some(format!("Command selected: {}", app.input.trim_end()));
+    app.show_input_hint(format!("Command selected: {}", app.input.trim_end()));
     true
 }
 
@@ -343,7 +343,7 @@ pub fn try_autocomplete_slash_command(app: &mut App) -> bool {
         app.input = format!("/{shared}");
         app.cursor_position = app.input.chars().count();
         app.slash_menu_hidden = false;
-        app.status_message = Some(format!("Autocomplete: /{shared}"));
+        app.show_input_hint(format!("Autocomplete: /{shared}"));
         return true;
     }
 
@@ -355,7 +355,7 @@ pub fn try_autocomplete_slash_command(app: &mut App) -> bool {
         app.input = completed.clone();
         app.cursor_position = completed.chars().count();
         app.slash_menu_hidden = false;
-        app.status_message = Some(format!("Command completed: {}", completed.trim_end()));
+        app.show_input_hint(format!("Command completed: {}", completed.trim_end()));
         return true;
     }
 
@@ -365,6 +365,6 @@ pub fn try_autocomplete_slash_command(app: &mut App) -> bool {
         .map(String::as_str)
         .collect::<Vec<_>>()
         .join(", ");
-    app.status_message = Some(format!("Suggestions: {preview}"));
+    app.show_input_hint(format!("Suggestions: {preview}"));
     true
 }

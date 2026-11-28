@@ -220,7 +220,7 @@ pub(crate) async fn switch_to_external_agent(
     app.add_message(HistoryCell::System {
         content: notice.clone(),
     });
-    app.status_message = Some(notice);
+    app.show_event_notice(notice, StatusToastLevel::Info);
     app.needs_redraw = true;
     true
 }
@@ -464,7 +464,8 @@ fn apply_external_event(
             if kind == "agent_message" {
                 append_assistant_delta(app, delta);
             } else if kind == "agent_reasoning" && !delta.is_empty() {
-                app.status_message = Some(
+                app.replace_progress_notice(
+                    crate::tui::app::StatusToastKind::ExternalAgent,
                     app.tr(MessageId::ExternalAgentThinkingStatus)
                         .replace("{agent}", agent_name),
                 );
@@ -483,7 +484,10 @@ fn apply_external_event(
                 if matches!(kind, "command_execution" | "file_change" | "tool_call")
                     && !summary.is_empty()
                 {
-                    app.status_message = Some(format!("{agent_name}: {summary}"));
+                    app.replace_progress_notice(
+                        crate::tui::app::StatusToastKind::ExternalAgent,
+                        format!("{agent_name}: {summary}"),
+                    );
                 }
             }
         }
@@ -575,6 +579,7 @@ fn apply_external_event(
                 let _ = app.view_stack.pop();
             }
             app.is_loading = false;
+            app.retire_progress_notice(crate::tui::app::StatusToastKind::ExternalAgent);
             match status {
                 "failed" => {
                     finish_streaming_assistant(app);
@@ -593,14 +598,14 @@ fn apply_external_event(
                 }
                 "interrupted" => {
                     app.finalize_streaming_assistant_as_interrupted();
-                    app.status_message = Some(
+                    app.show_event_notice(
                         app.tr(MessageId::ExternalAgentTurnInterruptedStatus)
                             .replace("{agent}", agent_name),
+                        StatusToastLevel::Warning,
                     );
                 }
                 _ => {
                     finish_streaming_assistant(app);
-                    app.status_message = None;
                 }
             }
         }
@@ -822,7 +827,7 @@ mod tests {
         );
         assert!(!app.is_loading);
         assert!(
-            app.status_message
+            app.visible_notice_text()
                 .as_deref()
                 .is_some_and(|msg| msg.contains("OpenCode"))
         );
