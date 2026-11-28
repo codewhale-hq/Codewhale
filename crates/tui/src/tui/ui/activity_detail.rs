@@ -43,7 +43,7 @@ pub(super) fn open_reasoning_detail_pager(app: &mut App) -> bool {
         .map(|area| area.width)
         .unwrap_or(80);
     let Some(text) = reasoning_detail_text(app) else {
-        app.status_message = Some("No reasoning detail available".to_string());
+        app.show_input_hint("No reasoning detail available");
         return true;
     };
     app.view_stack.push(PagerView::from_text(
@@ -267,11 +267,12 @@ const RAW_DETAIL_PAGER_INTRO: &str =
     "Raw detail for the selected item — press Ctrl+Alt+O for the whole-turn overview.";
 
 pub(super) fn open_tool_details_pager(app: &mut App) -> bool {
-    let Some(cell_index) = detail_target_cell_index(app) else {
-        app.status_message = Some(NO_RAW_DETAIL_HINT.to_string());
-        return false;
-    };
-    open_details_pager_for_cell(app, cell_index)
+    let opened =
+        detail_target_cell_index(app).is_some_and(|index| open_details_pager_for_cell(app, index));
+    if !opened {
+        app.show_input_hint(NO_RAW_DETAIL_HINT);
+    }
+    opened
 }
 
 pub(super) fn spillover_pager_reference(app: &App, cell_index: usize) -> Option<(String, String)> {
@@ -374,7 +375,6 @@ pub(crate) fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> b
     }
 
     let Some(cell) = app.cell_at_virtual_index(cell_index) else {
-        app.status_message = Some(NO_RAW_DETAIL_HINT.to_string());
         return false;
     };
     let title = match cell {
@@ -468,6 +468,11 @@ pub(crate) fn open_focused_cell_pager(app: &mut App) -> bool {
 pub(super) fn copy_focused_cell(app: &mut App) -> bool {
     let cell_index = detail_target_cell_index(app);
     let Some(index) = cell_index else {
+        app.show_copy_notice(
+            "No transcript cell to copy",
+            crate::tui::app::StatusToastLevel::Info,
+            4_000,
+        );
         return false;
     };
     copy_cell_to_clipboard(app, index)
@@ -475,7 +480,11 @@ pub(super) fn copy_focused_cell(app: &mut App) -> bool {
 
 pub(crate) fn copy_cell_to_clipboard(app: &mut App, cell_index: usize) -> bool {
     let Some(cell) = app.cell_at_virtual_index(cell_index) else {
-        app.status_message = Some("No message at that line".to_string());
+        app.show_copy_notice(
+            "No message at that line",
+            crate::tui::app::StatusToastLevel::Info,
+            4_000,
+        );
         return false;
     };
     let width = app
@@ -485,20 +494,15 @@ pub(crate) fn copy_cell_to_clipboard(app: &mut App, cell_index: usize) -> bool {
         .unwrap_or(80);
     let text = history_cell_to_clipboard_text(cell, width);
     if text.trim().is_empty() {
-        app.status_message = Some("Message is empty".to_string());
+        app.show_copy_notice(
+            "Message is empty",
+            crate::tui::app::StatusToastLevel::Info,
+            4_000,
+        );
         return false;
     }
-    if let Ok(transport) = app.clipboard.write_text_status(&text) {
-        app.status_message = Some(crate::tui::mouse_ui::copy_receipt(
-            app,
-            transport,
-            "Message copied",
-        ));
-        true
-    } else {
-        app.status_message = Some("Copy failed".to_string());
-        false
-    }
+    let result = app.clipboard.write_text_status(&text);
+    crate::tui::mouse_ui::report_copy_result(app, result, "Message copied", "Copy failed")
 }
 
 /// Clean clipboard payload for a completed assistant answer cell.
@@ -1753,7 +1757,7 @@ fn turn_result_lines(app: &App, start: usize, end: usize, detail: ResultDetail) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::app::{App, LspRepairState, TuiOptions};
+    use crate::tui::app::{App, LspRepairState, StatusToastLevel, TuiOptions};
     use codewhale_runtime::config::Config;
     use std::path::PathBuf;
 
@@ -2057,6 +2061,50 @@ mod tests {
 
         assert!(copy_cell_to_clipboard(&mut app, 0));
         assert_eq!(app.clipboard.last_written_text(), Some(content));
+        let toast = app
+            .active_status_toast(crate::tui::underwater::ShellPhase::Done)
+            .unwrap();
+        assert_eq!(toast.kind, crate::tui::app::StatusToastKind::CopyReceipt);
+        assert_eq!(toast.ttl_ms, Some(4_000));
+        assert!(app.status_message.is_none());
+        app.clipboard = crate::tui::clipboard::ClipboardHandler::unavailable_for_test(false);
+        assert!(!copy_cell_to_clipboard(&mut app, 0));
+        let failure = app
+            .active_status_toast(crate::tui::underwater::ShellPhase::Done)
+            .unwrap();
+        assert_eq!(failure.level, StatusToastLevel::Error);
+        assert_eq!(failure.ttl_ms, Some(App::STICKY_ERROR_TTL_MS));
+        let done = crate::tui::underwater::ShellPhase::Done;
+        app.push_status_toast_record(crate::tui::app::StatusToast::standing(
+            "Save failed",
+            StatusToastLevel::Error,
+            "session-save",
+        ));
+        assert_eq!(app.active_status_toast(done).unwrap().text, "Save failed");
+        app.retire_event_notices("session-save");
+        app.acknowledge_sticky_on_composer_activity();
+        assert!(app.active_status_toast(done).is_none());
+        assert!(!copy_cell_to_clipboard(&mut app, 0));
+        app.clipboard = crate::tui::clipboard::ClipboardHandler::for_test(false, false);
+        assert!(copy_cell_to_clipboard(&mut app, 0));
+        assert_eq!(
+            app.active_status_toast(done).unwrap().text,
+            "Message copied"
+        );
+        app.history[0] = HistoryCell::User {
+            content: String::new(),
+        };
+        assert!(!copy_cell_to_clipboard(&mut app, 0));
+        assert_eq!(
+            app.active_status_toast(done).unwrap().text,
+            "Message is empty"
+        );
+        app.set_sticky_status("Unrelated failure", StatusToastLevel::Error, None);
+        assert!(!copy_cell_to_clipboard(&mut app, 1));
+        assert_eq!(
+            app.active_status_toast(done).unwrap().text,
+            "Unrelated failure"
+        );
     }
 
     #[test]

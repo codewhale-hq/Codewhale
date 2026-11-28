@@ -9,6 +9,16 @@ use super::app::App;
 
 // ── File-tree key handling ───────────────────────────────────────
 
+pub(crate) fn toggle_file_tree(app: &mut App) {
+    if app.file_tree.take().is_some() {
+        app.show_input_hint("File tree closed");
+    } else {
+        app.file_tree = Some(super::file_tree::FileTreeState::new(&app.workspace));
+        app.show_input_hint("File tree: ↑/↓ navigate  Enter select  Esc close");
+    }
+    app.needs_redraw = true;
+}
+
 /// Handle keyboard input when the file-tree pane is visible.
 ///
 /// Returns `true` when the key was consumed (caller should `continue`).
@@ -20,9 +30,7 @@ pub fn handle_file_tree_key(app: &mut App, key: &KeyEvent) -> bool {
 
     // Esc closes the tree even when entries are still loading.
     if key.code == KeyCode::Esc && app.file_tree.is_some() {
-        app.file_tree = None;
-        app.status_message = Some("File tree closed".to_string());
-        app.needs_redraw = true;
+        toggle_file_tree(app);
         return true;
     }
 
@@ -44,7 +52,7 @@ pub fn handle_file_tree_key(app: &mut App, key: &KeyEvent) -> bool {
         KeyCode::Enter => {
             if let Some(rel_path) = file_tree.activate() {
                 let path_str = rel_path.to_string_lossy().to_string();
-                app.status_message = Some(format!("Attached @{path_str}"));
+                app.show_input_hint(format!("Attached @{path_str}"));
                 app.insert_str(&format!(
                     "@{} ",
                     crate::tui::file_mention::file_mention_body(&path_str)
