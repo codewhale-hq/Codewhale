@@ -1711,6 +1711,9 @@ pub struct App {
     /// cancel or stall recovery so the dispatch fails back to the composer
     /// instead of holding `dispatch_in_flight` for its whole bound.
     pub dispatch_cancel: Option<tokio_util::sync::CancellationToken>,
+    pub(crate) preparing_steers: VecDeque<crate::tui::ui::PreparingSteer>,
+    pub(crate) steer_cancel: tokio_util::sync::CancellationToken,
+    pub(crate) preview_cancel: tokio_util::sync::CancellationToken,
     /// Timestamp of the most recent Enter while the engine was busy.
     /// Used by `enter_with_double_tap()` / `double_tap_window_open()` to
     /// detect a second Enter inside [`Self::DOUBLE_TAP_WINDOW`].
@@ -4715,6 +4718,7 @@ impl App {
     /// `dispatch_in_flight` and restores the unsent message through the normal
     /// dispatch-error path. A no-op when no dispatch is outstanding.
     pub fn cancel_in_flight_dispatch(&mut self) {
+        crate::tui::ui::restore_preparing_steers(self);
         if let Some(cancel) = self.dispatch_cancel.take() {
             cancel.cancel();
         }
@@ -7451,12 +7455,16 @@ impl App {
             })
     }
 
+    pub(crate) fn follow_up_queue_full(&self) -> bool {
+        self.queued_messages.len() + self.preparing_steers.len() >= MAX_QUEUED_MESSAGES
+    }
+
     pub fn queue_message(&mut self, message: QueuedMessage) {
         if message.extension_command.is_some() {
             self.restore_unsent_message(message);
             return;
         }
-        if self.queued_messages.len() >= MAX_QUEUED_MESSAGES {
+        if self.follow_up_queue_full() {
             self.restore_unsent_message(message);
             let notice = self
                 .tr(MessageId::QueueFullNotice)
@@ -7468,10 +7476,28 @@ impl App {
     }
 
     pub fn pop_queued_message(&mut self) -> Option<QueuedMessage> {
-        self.queued_messages.remove(self.held_restored_queue)
+        self.remove_queued_message(self.held_restored_queue)
     }
 
     pub fn remove_queued_message(&mut self, index: usize) -> Option<QueuedMessage> {
+        let message = self.take_queued_message_for_dispatch(index)?;
+        let mut removed_index = index;
+        for pending in self.preparing_steers.iter_mut().rev() {
+            removed_index = pending.forget_queue_position(removed_index);
+        }
+        Some(message)
+    }
+
+    pub(crate) fn clear_visible_queued_messages(&mut self) {
+        while let Some(index) = self.queued_messages.len().checked_sub(1) {
+            self.remove_queued_message(index);
+        }
+    }
+
+    pub(crate) fn take_queued_message_for_dispatch(
+        &mut self,
+        index: usize,
+    ) -> Option<QueuedMessage> {
         let message = self.queued_messages.remove(index)?;
         if index < self.held_restored_queue {
             self.held_restored_queue -= 1;

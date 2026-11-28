@@ -57,6 +57,7 @@ pub(crate) fn install_offline_queue_transition(
     let Some(transition) = transition else {
         return false;
     };
+    restore_preparing_steers(app);
     // The request retains the old Arc until the actor finishes its write.
     // Acquiring the next lease does not release the previous editor early.
     persist_offline_queue_state(app);
@@ -72,6 +73,10 @@ pub(crate) fn install_offline_queue_transition(
         .is_some_and(|state| restore_matching_offline_queue_state(app, state))
 }
 
+pub(crate) fn offline_queue_is_empty(app: &App) -> bool {
+    app.preparing_steers.is_empty() && app.queued_messages.is_empty() && app.queued_draft.is_none()
+}
+
 /// The editable composer is the durable draft. Keep `queued_draft` itself as
 /// the original message so Escape can still cancel the edit in this window.
 pub(crate) fn offline_queue_projection(
@@ -82,7 +87,8 @@ pub(crate) fn offline_queue_projection(
         edited.display.clone_from(&app.input);
         edited
     });
-    (app.queued_messages.clone(), draft)
+    let (messages, _, unsent_draft) = recovered_steer_queue(app);
+    (messages, draft.or(unsent_draft))
 }
 
 #[derive(Clone)]
@@ -716,6 +722,7 @@ pub(crate) fn recover_stalled_runtime_turn(app: &mut App, message: &str, level: 
 }
 
 pub(crate) fn recover_engine_event_disconnect(app: &mut App) -> bool {
+    restore_preparing_steers(app);
     let had_live_work = app.is_loading
         || app.is_compacting
         || app.manual_compaction_queued
@@ -911,7 +918,7 @@ pub(crate) fn persist_offline_queue_state(app: &App) {
             .offline_queue_lease
             .as_ref()
             .map(|lease| lease.session_id());
-        if lease_owner.is_some() || !app.queued_messages.is_empty() || app.queued_draft.is_some() {
+        if lease_owner.is_some() || !offline_queue_is_empty(app) {
             tracing::warn!(
                 target: "persistence",
                 what = "offline-queue",
@@ -924,7 +931,7 @@ pub(crate) fn persist_offline_queue_state(app: &App) {
         }
         return;
     };
-    if app.queued_messages.is_empty() && app.queued_draft.is_none() {
+    if offline_queue_is_empty(app) {
         persistence_actor::persist(PersistRequest::ClearOfflineQueue {
             lease: Arc::clone(lease),
         });
@@ -956,15 +963,20 @@ pub(crate) fn persist_offline_queue_state(app: &App) {
     });
 }
 
-pub(crate) fn restore_queued_message(app: &mut App, index: Option<usize>, message: QueuedMessage) {
+pub(crate) fn restore_queued_message(
+    app: &mut App,
+    index: Option<usize>,
+    was_held: bool,
+    message: QueuedMessage,
+) {
     if message.extension_command.is_some() {
         app.restore_unsent_message(message);
         return;
     }
-    if let Some(index) = index
+    if let Some(index) = index.or_else(|| was_held.then_some(app.held_restored_queue))
         && index <= app.queued_messages.len()
     {
-        if index < app.held_restored_queue {
+        if was_held || index < app.held_restored_queue {
             app.held_restored_queue += 1;
         }
         app.queued_messages.insert(index, message);
@@ -992,8 +1004,11 @@ pub(crate) fn restore_queued_or_draft_message(
             app.queued_draft = Some(message);
             app.needs_redraw = true;
         }
-        DispatchRecovery::Queued { restore_index } => {
-            restore_queued_message(app, restore_index, message);
+        DispatchRecovery::Queued {
+            restore_index,
+            was_held,
+        } => {
+            restore_queued_message(app, restore_index, was_held, message);
         }
         DispatchRecovery::Immediate | DispatchRecovery::Initial => app.queue_message(message),
     }
@@ -1014,8 +1029,11 @@ pub(crate) fn recover_unstarted_external_message(
             restore_queued_or_draft_message(app, recovery, message);
             app.status_message = Some(format!("{error}; queued draft restored"));
         }
-        DispatchRecovery::Queued { restore_index } => {
-            restore_queued_message(app, restore_index, message);
+        DispatchRecovery::Queued {
+            restore_index,
+            was_held,
+        } => {
+            restore_queued_message(app, restore_index, was_held, message);
             app.status_message = Some(format!(
                 "{error}; {} queued follow-up(s) restored",
                 app.queued_message_count()
@@ -1047,8 +1065,11 @@ pub(crate) fn restore_message_submit_denial(
         DispatchRecovery::Draft => {
             restore_queued_or_draft_message(app, recovery, message);
         }
-        DispatchRecovery::Queued { restore_index } => {
-            restore_queued_message(app, restore_index, message);
+        DispatchRecovery::Queued {
+            restore_index,
+            was_held,
+        } => {
+            restore_queued_message(app, restore_index, was_held, message);
         }
     }
     app.status_message = Some(denial.clone());

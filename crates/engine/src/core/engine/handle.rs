@@ -687,6 +687,30 @@ impl EngineHandle {
     /// without a cancellation point between those two operations.
     pub async fn reserve_steer(&self) -> Result<SteerPermit> {
         let permit = self.tx_steer.clone().reserve_owned().await?;
+        let (turn_id, owner_steer) = self.steer_target();
+        Ok(SteerPermit {
+            permit,
+            turn_id,
+            owner_steer,
+        })
+    }
+
+    pub fn reserve_current_steer(
+        &self,
+    ) -> impl Future<Output = Result<SteerPermit>> + Send + 'static {
+        let sender = self.tx_steer.clone();
+        let (turn_id, owner_steer) = self.steer_target();
+        async move {
+            let permit = sender.reserve_owned().await?;
+            Ok(SteerPermit {
+                permit,
+                turn_id,
+                owner_steer,
+            })
+        }
+    }
+
+    fn steer_target(&self) -> (Option<u64>, bool) {
         let controls = self
             .turn_controls
             .lock()
@@ -702,11 +726,7 @@ impl EngineHandle {
                 super::host_profile::EngineHostProfile::Normal
             )
             && !target_acp;
-        Ok(SteerPermit {
-            permit,
-            turn_id,
-            owner_steer,
-        })
+        (turn_id, owner_steer)
     }
 
     /// Cancel the current request (user-initiated path — keeps the

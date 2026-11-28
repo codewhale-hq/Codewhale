@@ -213,7 +213,10 @@ pub(crate) enum DispatchRecovery {
     /// A queued follow-up that was being edited in the composer.
     Draft,
     /// A queued follow-up pulled from the queue; re-insert at the prior index.
-    Queued { restore_index: Option<usize> },
+    Queued {
+        restore_index: Option<usize>,
+        was_held: bool,
+    },
     /// Initial `--prompt` / startup input.
     Initial,
 }

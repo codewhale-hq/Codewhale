@@ -848,6 +848,76 @@ pub(crate) fn session_shell_area(area: Rect) -> Rect {
     area
 }
 
+pub(crate) fn start_request_preview(
+    app: &mut App,
+    config: &Config,
+    engine: &EngineHandle,
+    prompt: Option<String>,
+    json: bool,
+    base_prompt_only: bool,
+) {
+    app.preview_cancel.cancel();
+    app.preview_cancel = Default::default();
+    let cancel = app.preview_cancel.clone();
+    let permit = match dispatch_completion_permit(app) {
+        Ok(permit) => permit,
+        Err(err) => {
+            app.status_message = Some(format!("Cannot preview request: {err}"));
+            return;
+        }
+    };
+    let inputs = build_preview_request_inputs(app, config, engine, prompt);
+    let origin = engine.clone();
+    let session = app.current_session_id.clone();
+    let workspace = app.workspace.clone();
+    let turn = app.turn_counter;
+    let model = app.model.clone();
+    let provider = app.provider_identity.clone();
+    let mode = app.mode;
+    let auto = app.auto_model;
+    let reasoning = app.reasoning_effort;
+    tokio::spawn(async move {
+        let result = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return,
+            result = tokio::time::timeout(DISPATCH_TASK_BOUND, inputs) => result,
+        };
+        permit.send(Box::new(move |app, engine, _| {
+            if cancel.is_cancelled()
+                || !origin.tx_op.same_channel(&engine.tx_op)
+                || workspace != app.workspace
+                || session != app.current_session_id
+                || turn != app.turn_counter
+                || model != app.model
+                || provider != app.provider_identity
+                || mode != app.mode
+                || auto != app.auto_model
+                || reasoning != app.reasoning_effort
+            {
+                return Ok(());
+            }
+            if let Ok(inputs) = &result
+                && (inputs.allow_shell != app.allow_shell || inputs.trust_mode != app.trust_mode
+                    || inputs.approval_mode != app.approval_mode || inputs.auto_approve != app_auto_approve_enabled(app)
+                    || inputs.allowed_tools != app.active_allowed_tools) {
+                app.status_message = Some("Request preview expired because tool permissions changed. Run it again to inspect the current settings.".into());
+                return Ok(());
+            }
+            let sent = result.map_err(anyhow::Error::from).and_then(|inputs| {
+                engine.try_send(Op::PreviewOutboundRequest {
+                    inputs: Box::new(inputs),
+                    json,
+                    base_prompt_only,
+                })
+            });
+            if let Err(err) = sent {
+                app.status_message = Some(format!("Cannot preview request: {err}"));
+            }
+            Ok(())
+        }));
+    });
+}
+
 /// Snapshot the posture a real `Op::SendMessage` would carry, and — when the
 /// user supplied a hypothetical prompt — resolve the next turn's route with
 /// the **same shared planner** dispatch uses (#1004).
@@ -880,12 +950,15 @@ pub(crate) fn session_shell_area(area: Rect) -> Rect {
 /// Without a prompt there is no next-turn route to resolve under auto model
 /// routing and no next-turn body under any routing, so this reports a typed
 /// unresolved state instead of recycling the installed route.
-pub(crate) async fn build_preview_request_inputs(
+pub(crate) fn build_preview_request_inputs(
     app: &App,
     config: &Config,
     engine_handle: &EngineHandle,
     hypothetical_prompt: Option<String>,
-) -> codewhale_engine::core::engine::preview::PreviewRequestInputs {
+) -> futures_util::future::BoxFuture<
+    'static,
+    codewhale_engine::core::engine::preview::PreviewRequestInputs,
+> {
     use codewhale_engine::core::engine::preview::{
         PreviewNextTurn, PreviewRequestInputs, PreviewUnresolved,
     };
@@ -896,7 +969,7 @@ pub(crate) async fn build_preview_request_inputs(
         app.model.clone()
     };
     let prompt_supplied = hypothetical_prompt.is_some();
-    let posture = |next_turn, unresolved| PreviewRequestInputs {
+    let mut inputs = PreviewRequestInputs {
         mode: app.mode,
         allow_shell: app.allow_shell,
         trust_mode: app.trust_mode,
@@ -905,39 +978,30 @@ pub(crate) async fn build_preview_request_inputs(
         allowed_tools: app.active_allowed_tools.clone(),
         dynamic_tools: Vec::new(),
         provenance: codewhale_engine::core::ops::UserInputProvenance::ExternalUser,
-        requested_model: requested_model.clone(),
+        requested_model,
         requested_reasoning: app.reasoning_effort.as_setting().to_string(),
         auto_model: app.auto_model,
         hypothetical_prompt_supplied: prompt_supplied,
-        next_turn,
-        unresolved,
+        next_turn: None,
+        unresolved: PreviewUnresolved::NoPrompt,
     };
 
     let Some(prompt) = hypothetical_prompt else {
-        // Never clear the unresolved flag just because a session has a route:
-        // under auto routing the next prompt is what decides it.
-        return posture(
-            None,
-            if app.auto_model {
-                PreviewUnresolved::AutoRouteNeedsPrompt
-            } else {
-                PreviewUnresolved::NoPrompt
-            },
-        );
+        if app.auto_model {
+            inputs.unresolved = PreviewUnresolved::AutoRouteNeedsPrompt;
+        }
+        return Box::pin(std::future::ready(inputs));
     };
-
-    // Auto routing runs a model classifier. `/preview-request` is an offline
-    // inspection command, so it stops before prompt resolution or the shared
-    // planner can reach that call. Production remains responsible for Auto.
     if auto_router::should_resolve_auto_model_selection(app) {
-        return posture(None, PreviewUnresolved::AutoRouteClassificationNotExecuted);
+        inputs.unresolved = PreviewUnresolved::AutoRouteClassificationNotExecuted;
+        return Box::pin(std::future::ready(inputs));
     }
-
     if app
         .hooks
         .has_hooks_for_event(codewhale_config::hooks::HookEvent::MessageSubmit)
     {
-        return posture(None, PreviewUnresolved::MessageSubmitHooksConfigured);
+        inputs.unresolved = PreviewUnresolved::MessageSubmitHooksConfigured;
+        return Box::pin(std::future::ready(inputs));
     }
 
     // Clone, never `take`: an inspection may not consume the pending skill.
@@ -950,74 +1014,85 @@ pub(crate) async fn build_preview_request_inputs(
         owner_input: false,
         history_echoed: false,
     };
-    let mut git_cache = crate::tui::git_mention::GitMentionCache::default();
-    // Same failure surface as a real submit: a plugin-skill authority mismatch
-    // aborts the turn there and must not be papered over with the raw prompt
-    // here — that would describe a request the user could not send.
-    let mut content = match queued_message_content_for_app(
-        app,
-        &message,
-        std::env::current_dir().ok(),
-        &mut git_cache,
-    ) {
-        Ok(content) => content,
-        Err(error) => {
-            return posture(
-                None,
-                PreviewUnresolved::PromptResolutionFailed(error.to_string()),
-            );
-        }
-    };
-    // A real submit appends the paused-command note before planning the route.
-    // `plan_paused_command_message` is pure — it decides, it does not resume or
-    // discard anything — so the preview can use the same value.
+    let context =
+        super::dispatch::MentionContext::capture(app, &message, std::env::current_dir().ok());
     let paused_dispatch = plan_paused_command_message(app, &prompt);
-    if let Some(note) = paused_dispatch.note() {
-        content.push_str(note);
-    }
+    let objective = paused_dispatch.goal_objective(app);
+    let goal_status = app.goal.status;
+    let goal_budget = app.goal.token_budget;
+    let translation = app.translation_enabled;
+    let verbosity = app.verbosity.clone();
+    let route = app_scoped_runtime_config(app, config);
+    let provider = app.api_provider;
+    let app_model = app.model.clone();
+    let reasoning_effort = app.reasoning_effort;
+    let auto_router_context = auto_router::recent_auto_router_context(&app.api_messages);
+    let preflight_required = engine_handle.client_preflight_required();
+    let auto_compact_user_configured = app.auto_compact_user_configured;
+    let auto_compact = app.auto_compact;
+    let auto_compact_threshold_percent = app.auto_compact_threshold_percent;
 
-    let (app_route_identity, route_config) = match app_scoped_runtime_config(app, config) {
-        Ok(route) => route,
-        Err(error) => return posture(None, PreviewUnresolved::PlanFailed(error)),
-    };
-    let planned = plan_turn_route(TurnRoutePlanRequest {
-        accounting_origin: None,
-        route_config: &route_config,
-        app_route_identity: &app_route_identity,
-        api_provider: app.api_provider,
-        app_model: &app.model,
-        auto_model: app.auto_model,
-        reasoning_effort: app.reasoning_effort,
-        mode: app.mode,
-        content: &content,
-        auto_router_context: &auto_router::recent_auto_router_context(&app.api_messages),
-        should_auto_resolve: false,
-        allow_auto_router_response_cache: false,
-        preflight_required: engine_handle.client_preflight_required(),
-        auto_compact_user_configured: app.auto_compact_user_configured,
-        auto_compact: app.auto_compact,
-        auto_compact_threshold_percent: app.auto_compact_threshold_percent,
-    })
-    .await;
+    Box::pin(async move {
+        let resolved =
+            tokio::task::spawn_blocking(move || context.content(&message, &mut Default::default()))
+                .await;
+        let mut content = match resolved
+            .map_err(anyhow::Error::from)
+            .and_then(|value| value)
+        {
+            Ok(content) => content,
+            Err(error) => {
+                inputs.unresolved = PreviewUnresolved::PromptResolutionFailed(error.to_string());
+                return inputs;
+            }
+        };
+        if let Some(note) = paused_dispatch.note() {
+            content.push_str(note);
+        }
+        let (app_route_identity, route_config) = match route {
+            Ok(route) => route,
+            Err(error) => {
+                inputs.unresolved = PreviewUnresolved::PlanFailed(error);
+                return inputs;
+            }
+        };
+        let planned = plan_turn_route(TurnRoutePlanRequest {
+            accounting_origin: None,
+            route_config: &route_config,
+            app_route_identity: &app_route_identity,
+            api_provider: provider,
+            app_model: &app_model,
+            auto_model: inputs.auto_model,
+            reasoning_effort,
+            mode: inputs.mode,
+            content: &content,
+            auto_router_context: &auto_router_context,
+            should_auto_resolve: false,
+            allow_auto_router_response_cache: false,
+            preflight_required,
+            auto_compact_user_configured,
+            auto_compact,
+            auto_compact_threshold_percent,
+        })
+        .await;
 
-    match planned {
-        Ok(planned) => {
-            let prompt_context =
-                codewhale_engine::core::engine::NextTurnPromptContext::for_planned_turn(
-                    planned.route.identity.provider,
-                    planned.route.model.clone(),
-                    codewhale_engine::route_budget::known_route_limits(
-                        planned.route.candidate.limits(),
-                    ),
-                    app.mode,
-                    paused_dispatch.goal_objective(app),
-                    app.goal.status,
-                    app.goal.token_budget,
-                    app.translation_enabled,
-                    app.verbosity.clone(),
-                );
-            posture(
-                Some(Box::new(PreviewNextTurn {
+        match planned {
+            Ok(planned) => {
+                let prompt_context =
+                    codewhale_engine::core::engine::NextTurnPromptContext::for_planned_turn(
+                        planned.route.identity.provider,
+                        planned.route.model.clone(),
+                        codewhale_engine::route_budget::known_route_limits(
+                            planned.route.candidate.limits(),
+                        ),
+                        inputs.mode,
+                        objective,
+                        goal_status,
+                        goal_budget,
+                        translation,
+                        verbosity,
+                    );
+                inputs.next_turn = Some(Box::new(PreviewNextTurn {
                     content,
                     route: Box::new(planned.route),
                     prompt_context,
@@ -1029,12 +1104,12 @@ pub(crate) async fn build_preview_request_inputs(
                         .map(|selection| selection.source.label().to_string()),
                     routing_source: planned.routing_source,
                     compaction: planned.compaction,
-                })),
-                PreviewUnresolved::NoPrompt,
-            )
+                }));
+            }
+            Err(error) => inputs.unresolved = PreviewUnresolved::PlanFailed(error),
         }
-        Err(error) => posture(None, PreviewUnresolved::PlanFailed(error)),
-    }
+        inputs
+    })
 }
 
 pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
@@ -1625,6 +1700,7 @@ pub(crate) fn build_pending_input_preview(app: &App) -> PendingInputPreview {
         .pending_steers
         .iter()
         .chain(app.inflight_steers.iter().map(|steer| &steer.message))
+        .chain(app.preparing_steers.iter().map(|steer| &steer.message))
         .map(|m| m.display.clone())
         .collect();
     preview.queued_messages = app

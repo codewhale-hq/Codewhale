@@ -2228,7 +2228,7 @@ pub(crate) async fn run_event_loop(
     let mut runtime_event_rx = task_manager.subscribe_runtime_events();
     let mut pending_thinking_translations = 0usize;
     let mut last_queue_state = offline_queue_projection(app);
-    let mut last_queue_was_empty = app.queued_messages.is_empty() && app.queued_draft.is_none();
+    let mut last_queue_was_empty = offline_queue_is_empty(app);
     let mut last_task_refresh = Instant::now()
         .checked_sub(Duration::from_secs(2))
         .unwrap_or_else(Instant::now);
@@ -5636,6 +5636,7 @@ pub(crate) async fn run_event_loop(
                 next,
                 DispatchRecovery::Queued {
                     restore_index: None,
+                    was_held: false,
                 },
             )
             .await;
@@ -5648,7 +5649,7 @@ pub(crate) async fn run_event_loop(
         // was empty last time — the overwhelmingly common case — there is
         // nothing to compare, so skip the clone entirely. A multi-KB queued
         // draft is only cloned while one is actually pending.
-        let queue_now_empty = app.queued_messages.is_empty() && app.queued_draft.is_none();
+        let queue_now_empty = offline_queue_is_empty(app);
         if !(queue_now_empty && last_queue_was_empty) {
             let queue_state = offline_queue_projection(app);
             if queue_state != last_queue_state {
@@ -7209,10 +7210,11 @@ pub(crate) async fn run_event_loop(
                 && !slash_menu_open
                 && !mention_menu_open
             {
+                let held = app.held_restored_queue;
                 let steers = app.take_queued_for_double_tap_steer();
                 if !steers.is_empty() {
-                    let mut pending = steers.into_iter();
-                    for message in pending.by_ref() {
+                    let mut pending = steers.into_iter().enumerate();
+                    for (index, message) in pending.by_ref() {
                         let steered = attempt_steer_with_queue_fallback(
                             app,
                             config,
@@ -7220,15 +7222,15 @@ pub(crate) async fn run_event_loop(
                             message,
                             DispatchRecovery::Queued {
                                 restore_index: None,
+                                was_held: index < held,
                             },
-                        )
-                        .await;
+                        );
                         if !steered {
                             // The failed message is already restored; the
                             // queue holds exactly it, so the unattempted
                             // remainder appends behind it in order.
-                            for message in pending.by_ref() {
-                                app.queue_message(message);
+                            for (index, message) in pending.by_ref() {
+                                restore_queued_message(app, None, index < held, message);
                             }
                             break;
                         }

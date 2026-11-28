@@ -123,7 +123,7 @@ pub(crate) fn echoed_user_turn_cell(app: &App, display: &str) -> Option<usize> {
 }
 
 fn reject_if_queue_full(app: &mut App, message: QueuedMessage) -> Option<QueuedMessage> {
-    if app.queued_messages.len() >= crate::tui::app::MAX_QUEUED_MESSAGES {
+    if app.follow_up_queue_full() {
         app.queue_message(message);
         return None;
     }
@@ -269,11 +269,13 @@ pub(crate) fn message_from_submitted_input(
 
 pub(crate) fn take_next_queued_message(app: &mut App) -> Option<(QueuedMessage, DispatchRecovery)> {
     if app.input.is_empty() {
-        return app.remove_queued_message(0).map(|message| {
+        let was_held = app.held_restored_queue > 0;
+        return app.take_queued_message_for_dispatch(0).map(|message| {
             (
                 message,
                 DispatchRecovery::Queued {
                     restore_index: Some(0),
+                    was_held,
                 },
             )
         });
@@ -299,7 +301,8 @@ pub(crate) async fn send_queued_message_at_index_now(
     engine_handle: &EngineHandle,
     index: usize,
 ) -> Result<bool> {
-    let Some(message) = app.remove_queued_message(index) else {
+    let was_held = index < app.held_restored_queue;
+    let Some(message) = app.take_queued_message_for_dispatch(index) else {
         app.status_message = Some("Queued message not found".to_string());
         return Ok(true);
     };
@@ -310,6 +313,7 @@ pub(crate) async fn send_queued_message_at_index_now(
         message,
         DispatchRecovery::Queued {
             restore_index: Some(index),
+            was_held,
         },
     )
     .await?;
@@ -341,28 +345,7 @@ pub(crate) async fn send_taken_queued_message_now(
         return Ok(());
     }
     if app.is_loading {
-        match steer_user_message(app, config, engine_handle, message.clone()).await {
-            Ok(true) => app.push_status_toast(
-                app.tr(MessageId::ToastSentIntoTurn).into_owned(),
-                StatusToastLevel::Info,
-                Some(1_500),
-            ),
-            Ok(false) => {
-                restore_queued_or_draft_message(app, recovery, message);
-                app.push_status_toast(
-                    app.tr(MessageId::ToastHookBlockedFollowUp).into_owned(),
-                    StatusToastLevel::Warning,
-                    Some(4_000),
-                );
-            }
-            Err(err) => {
-                restore_queued_or_draft_message(app, recovery, message);
-                app.status_message = Some(format!(
-                    "{} ({err})",
-                    app.tr(MessageId::ToastCouldNotSendIntoTurn)
-                ));
-            }
-        }
+        attempt_steer_with_queue_fallback(app, config, engine_handle, message, recovery);
     } else if let Err(_err) =
         dispatch_user_message_with_recovery(app, config, engine_handle, message, recovery).await
     {
@@ -394,6 +377,7 @@ pub(crate) fn validate_extension_command_context(app: &App, message: &QueuedMess
         .map_err(anyhow::Error::msg)
 }
 
+#[cfg(test)]
 pub(crate) fn queued_message_content_for_app(
     app: &App,
     message: &QueuedMessage,
@@ -416,7 +400,7 @@ pub(super) struct MentionContext {
 }
 
 impl MentionContext {
-    fn capture(app: &App, message: &QueuedMessage, cwd: Option<PathBuf>) -> Self {
+    pub(super) fn capture(app: &App, message: &QueuedMessage, cwd: Option<PathBuf>) -> Self {
         Self {
             workspace: app.workspace.clone(),
             cwd,
@@ -445,7 +429,7 @@ impl MentionContext {
         Ok((self.content(message, &mut git_cache)?, references))
     }
 
-    fn content(
+    pub(super) fn content(
         &self,
         message: &QueuedMessage,
         git_cache: &mut crate::tui::git_mention::GitMentionCache,
@@ -1368,8 +1352,11 @@ pub(crate) fn build_dispatch_error_closure(
                         );
                     }
                 }
-                DispatchRecovery::Queued { restore_index } => {
-                    restore_queued_message(app, restore_index, prepare.message);
+                DispatchRecovery::Queued {
+                    restore_index,
+                    was_held,
+                } => {
+                    restore_queued_message(app, restore_index, was_held, prepare.message);
                     app.status_message = Some(
                         app.tr(MessageId::DispatchFailedQueued)
                             .replace("{error}", &error)
@@ -1436,61 +1423,288 @@ pub(crate) fn strip_queue_command_prefix(input: &str) -> Option<&str> {
     None
 }
 
-pub(crate) async fn steer_user_message(
+type SteerPermit = codewhale_engine::core::engine::handle::SteerPermit;
+type SteerPreparation = (
+    codewhale_engine::hooks::MessageSubmitOutcome,
+    Option<(String, Vec<ContextReference>, SteerPermit)>,
+);
+
+pub(crate) struct PreparingSteer {
+    pub(super) message: QueuedMessage,
+    recovery: DispatchRecovery,
+    queue_index: usize,
+    deadline: tokio::time::Instant,
+    work: Option<futures_util::future::BoxFuture<'static, Result<SteerPreparation>>>,
+}
+
+impl PreparingSteer {
+    pub(crate) fn forget_queue_position(&mut self, index: usize) -> usize {
+        if index < self.queue_index {
+            self.queue_index -= 1;
+            index
+        } else if matches!(self.recovery, DispatchRecovery::Queued { .. }) {
+            index + 1
+        } else {
+            index
+        }
+    }
+}
+
+pub(super) fn recovered_steer_queue(
+    app: &App,
+) -> (VecDeque<QueuedMessage>, usize, Option<QueuedMessage>) {
+    let mut queue = app.queued_messages.clone();
+    let mut held = app.held_restored_queue;
+    let draft_index = if app.input.is_empty() && app.queued_draft.is_none() {
+        app.preparing_steers
+            .iter()
+            .position(|p| matches!(p.recovery, DispatchRecovery::Draft))
+    } else {
+        None
+    };
+    let mut draft = None;
+    for (offset, pending) in app.preparing_steers.iter().enumerate().rev() {
+        if Some(offset) == draft_index {
+            draft = Some(pending.message.clone());
+            continue;
+        }
+        let was_held = matches!(
+            pending.recovery,
+            DispatchRecovery::Queued { was_held: true, .. }
+        );
+        let index = pending.queue_index.min(queue.len());
+        queue.insert(index, pending.message.clone());
+        if was_held || index < held {
+            held += 1;
+        }
+    }
+    (queue, held, draft)
+}
+
+pub(crate) fn restore_preparing_steers(app: &mut App) {
+    if app.preparing_steers.is_empty() {
+        return;
+    }
+    app.steer_cancel.cancel();
+    app.steer_cancel = Default::default();
+    let (queue, held, draft) = recovered_steer_queue(app);
+    app.preparing_steers.clear();
+    app.queued_messages = queue;
+    app.held_restored_queue = held;
+    if let Some(draft) = draft {
+        restore_queued_or_draft_message(app, DispatchRecovery::Draft, draft);
+    }
+}
+
+fn start_next_steer(app: &mut App, engine_handle: &EngineHandle) -> bool {
+    let Some((deadline, work)) = app
+        .preparing_steers
+        .front_mut()
+        .and_then(|p| Some((p.deadline, p.work.take()?)))
+    else {
+        return true;
+    };
+    let completion = match dispatch_completion_permit(app) {
+        Ok(permit) => permit,
+        Err(err) => {
+            restore_preparing_steers(app);
+            app.status_message = Some(format!("Could not steer: {err}"));
+            return false;
+        }
+    };
+    let cancel = app.steer_cancel.clone();
+    let origin = engine_handle.clone();
+    let session = app.current_session_id.clone();
+    let workspace = app.workspace.clone();
+    let turn = app.turn_counter;
+    tokio::spawn(async move {
+        let result = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return,
+            result = tokio::time::timeout_at(deadline, work) => result.map_err(anyhow::Error::from).and_then(|r| r),
+        };
+        completion.send(Box::new(move |app, engine, _| {
+            if cancel.is_cancelled() {
+                return Ok(());
+            }
+            if !origin.tx_op.same_channel(&engine.tx_op) || workspace != app.workspace || session != app.current_session_id {
+                restore_preparing_steers(app);
+                app.held_restored_queue = app.queued_messages.len();
+                app.status_message = Some("Steering was interrupted by a workspace or session change. Recovered input is held for review.".into());
+                return Ok(());
+            }
+            let result = if app.is_loading
+                && !app.stopped_turn
+                && !app.suppress_stream_events_until_turn_complete
+                && turn == app.turn_counter
+            {
+                result
+            } else {
+                Err(anyhow::anyhow!(
+                    "the original turn ended or was interrupted"
+                ))
+            };
+            let result = if tokio::time::Instant::now() >= deadline {
+                Err(anyhow::anyhow!("steering timed out before engine admission"))
+            } else if matches!(result, Ok((_, Some(_)))) {
+                match request_active_shell_wait_detach(app) {
+                    Ok(None) => {
+                        if let Some(pending) = app.preparing_steers.front_mut() {
+                            pending.work = Some(Box::pin(async move {
+                                tokio::time::sleep(Duration::from_millis(UI_STATUS_ANIMATION_MS)).await;
+                                result
+                            }));
+                            start_next_steer(app, engine);
+                        }
+                        return Ok(());
+                    }
+                    Ok(Some(_)) => result,
+                    Err(err) => Err(err.context("could not release shell wait before steering")),
+                }
+            } else { result };
+            let result = result.and_then(|(outcome, payload)| {
+                let Some(pending) = app.preparing_steers.front() else {
+                    anyhow::bail!("steering preparation was retired");
+                };
+                let mut message = pending.message.clone();
+                if !apply_message_submit_outcome(app, &mut message, outcome) {
+                    return Ok(false);
+                }
+                let (content, references, permit) =
+                    payload.ok_or_else(|| anyhow::anyhow!("missing steering input"))?;
+                commit_prepared_steer(app, engine, message, content, references, permit);
+                Ok(true)
+            });
+            match result {
+                Ok(true) => {
+                    app.preparing_steers.pop_front();
+                    app.push_status_toast(
+                        app.tr(MessageId::ToastSentIntoTurn).into_owned(),
+                        StatusToastLevel::Info,
+                        Some(1_500),
+                    );
+                    start_next_steer(app, engine);
+                }
+                failure => {
+                    restore_preparing_steers(app);
+                    let text = match failure {
+                        Err(err) => {
+                            let text = format!("{} ({err})", app.tr(MessageId::ToastCouldNotSendIntoTurn));
+                            app.status_message = Some(text.clone());
+                            text
+                        }
+                        _ => app.tr(MessageId::ToastHookBlockedFollowUp).into_owned(),
+                    };
+                    app.push_status_toast(text, StatusToastLevel::Warning, Some(4_000));
+                }
+            }
+            persist_offline_queue_state(app);
+            Ok(())
+        }));
+    });
+    true
+}
+
+pub(crate) fn attempt_steer_with_queue_fallback(
     app: &mut App,
     config: &Config,
     engine_handle: &EngineHandle,
-    mut message: QueuedMessage,
-) -> Result<bool> {
-    anyhow::ensure!(
-        message.extension_command.is_none(),
-        "Extension command prompts cannot steer an active turn"
-    );
-    let stop_words = config.stop_words();
-    if is_stop_word(&message.display, &stop_words).is_some() {
-        engine_handle.cancel();
-        app.stopped_turn = true;
-        app.status_message = Some("Turn stopped. Tool calls blocked for this turn.".to_string());
-        return Ok(false);
+    message: QueuedMessage,
+    recovery: DispatchRecovery,
+) -> bool {
+    if message.extension_command.is_some()
+        || is_stop_word(&message.display, &config.stop_words()).is_some()
+    {
+        if message.extension_command.is_none() {
+            engine_handle.cancel();
+            app.stopped_turn = true;
+            restore_preparing_steers(app);
+            app.status_message = Some("Turn stopped. Tool calls blocked for this turn.".into());
+        }
+        restore_queued_or_draft_message(app, recovery, message);
+        return false;
     }
-    app.stopped_turn = false;
-    // Same-turn steering is an engine-bound external-user path just like a
-    // fresh dispatch. Run the mutable gate exactly once on the blocking pool
-    // before pause state, history, references, or engine input are touched.
-    if app
+    let Some(message) = reject_if_queue_full(app, message) else {
+        return false;
+    };
+    let mentions = MentionContext::capture(app, &message, std::env::current_dir().ok());
+    let hook = app
         .hooks
         .has_hooks_for_event(codewhale_config::hooks::HookEvent::MessageSubmit)
-    {
-        let context = app.base_hook_context().with_message(&message.display);
-        let strict_gates = app.hooks.matched_strict_gate_labels(
-            codewhale_config::hooks::HookEvent::MessageSubmit,
-            &context,
-        );
-        let hooks = app.hooks.clone();
-        let original_text = message.display.clone();
-        let outcome = match tokio::task::spawn_blocking(move || {
-            hooks.execute_message_submit_transform_for_dispatch(&context, &original_text)
-        })
-        .await
-        {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                tracing::error!(target: "hooks", %error, "steer message_submit executor task was lost");
-                lost_message_submit_outcome(&strict_gates)
+        .then(|| {
+            (
+                app.hooks.clone(),
+                app.base_hook_context().with_message(&message.display),
+            )
+        });
+    let reserve = engine_handle.reserve_current_steer();
+    let mut input = message.clone();
+    let work = Box::pin(async move {
+        use codewhale_engine::hooks::MessageSubmitOutcome;
+        let (outcome, resolved) = tokio::task::spawn_blocking(move || {
+            let outcome = match hook {
+                Some((hooks, context)) => {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        hooks
+                            .execute_message_submit_transform_for_dispatch(&context, &input.display)
+                    }))
+                    .unwrap_or_else(|_| {
+                        let gates = hooks.matched_strict_gate_labels(
+                            codewhale_config::hooks::HookEvent::MessageSubmit,
+                            &context,
+                        );
+                        lost_message_submit_outcome(&gates)
+                    })
+                }
+                None => MessageSubmitOutcome::unchanged(),
+            };
+            match &outcome {
+                MessageSubmitOutcome::Blocked { .. } => return Ok((outcome, None)),
+                MessageSubmitOutcome::Replaced { text, .. } => input.display.clone_from(text),
+                MessageSubmitOutcome::Unchanged { .. } => {}
             }
+            let resolved = mentions.resolve(&input)?;
+            Ok::<_, anyhow::Error>((outcome, Some(resolved)))
+        })
+        .await??;
+        let payload = match resolved {
+            Some((content, references)) => Some((content, references, reserve.await?)),
+            None => None,
         };
-        if !apply_message_submit_outcome(app, &mut message, outcome) {
-            return Ok(false);
+        Ok((outcome, payload))
+    });
+    app.preparing_steers.push_back(PreparingSteer {
+        message,
+        recovery,
+        queue_index: match recovery {
+            DispatchRecovery::Queued { restore_index, .. } => restore_index.unwrap_or(0),
+            _ => app.queued_messages.len(),
+        },
+        deadline: tokio::time::Instant::now() + DISPATCH_TASK_BOUND,
+        work: Some(work),
+    });
+    if !matches!(
+        recovery,
+        DispatchRecovery::Queued {
+            restore_index: None,
+            ..
         }
+    ) {
+        persist_offline_queue_state(app);
     }
+    start_next_steer(app, engine_handle)
+}
 
-    let paused_snapshot = snapshot_steer_paused_state(app);
+fn commit_prepared_steer(
+    app: &mut App,
+    engine_handle: &EngineHandle,
+    message: QueuedMessage,
+    mut content: String,
+    references: Vec<ContextReference>,
+    permit: SteerPermit,
+) {
     let paused_dispatch = plan_paused_command_message(app, &message.display);
-    let paused_note = paused_dispatch.note().map(str::to_string);
-    paused_dispatch.apply(app, engine_handle);
-    let context = MentionContext::capture(app, &message, std::env::current_dir().ok());
-    let (mut content, references) = context.resolve(&message)?;
-    if let Some(note) = paused_note.as_deref() {
+    if let Some(note) = paused_dispatch.note() {
         content.push_str(note);
     }
     // Send exactly what the engine will store. `turn_loop` commits a steer as
@@ -1503,13 +1717,7 @@ pub(crate) async fn steer_user_message(
     let content = content.trim().to_string();
     let message_index = app.api_messages.len();
 
-    // A shell wait blocks the turn boundary that consumes steer input. Release
-    // only this session's live waits; the owned commands keep running (#6909).
-    if let Err(err) = request_active_shell_wait_detach(app) {
-        restore_steer_paused_state(app, &paused_snapshot);
-        engine_handle.set_paused(paused_snapshot.paused);
-        return Err(err.context("could not release shell wait before steering"));
-    }
+    paused_dispatch.apply(app, engine_handle);
 
     let person_text = if message.extension_command.is_none()
         && message.approved_plan.is_none()
@@ -1520,14 +1728,7 @@ pub(crate) async fn steer_user_message(
         None
     };
 
-    if let Err(err) = engine_handle
-        .steer_with_person_text(content.clone(), person_text)
-        .await
-    {
-        restore_steer_paused_state(app, &paused_snapshot);
-        engine_handle.set_paused(paused_snapshot.paused);
-        return Err(err);
-    }
+    permit.send_with_person_text(content.clone(), person_text);
     app.last_submitted_prompt = Some(message.display.clone());
 
     // #6190: the steer channel accepting the text is not the turn accepting
@@ -1549,7 +1750,6 @@ pub(crate) async fn steer_user_message(
     app.needs_redraw = true;
 
     app.status_message = Some("Steering current turn...".to_string());
-    Ok(true)
 }
 
 /// Promote every in-flight steer the engine's record now contains.
@@ -1611,70 +1811,21 @@ fn accepted_steer_index(
 /// sees it like any other send — instead of a display-only "rejected" string
 /// that nothing ever dispatches.
 pub(crate) fn settle_unaccepted_steers_at_turn_end(app: &mut App) {
+    let preparing = !app.preparing_steers.is_empty();
+    restore_preparing_steers(app);
     if app.inflight_steers.is_empty() {
         return;
     }
     let deferred = std::mem::take(&mut app.inflight_steers);
-    app.queued_messages
-        .extend(deferred.into_iter().map(|steer| steer.message));
+    if preparing {
+        for steer in deferred.into_iter().rev() {
+            restore_queued_message(app, Some(0), false, steer.message);
+        }
+    } else {
+        app.queued_messages
+            .extend(deferred.into_iter().map(|steer| steer.message));
+    }
     app.needs_redraw = true;
-}
-
-pub(crate) fn snapshot_steer_paused_state(app: &App) -> SteerPausedSnapshot {
-    SteerPausedSnapshot {
-        paused: app.paused,
-        pausable: app.pausable,
-        paused_goal_objective: app.paused_goal_objective.clone(),
-        objective: app.goal.objective.clone(),
-        tokens_used: app.goal.tokens_used,
-        time_used_seconds: app.goal.time_used_seconds,
-        continuation_count: app.goal.continuation_count,
-    }
-}
-
-pub(crate) fn restore_steer_paused_state(app: &mut App, snapshot: &SteerPausedSnapshot) {
-    app.paused = snapshot.paused;
-    app.pausable = snapshot.pausable;
-    app.paused_goal_objective = snapshot.paused_goal_objective.clone();
-    app.goal.objective = snapshot.objective.clone();
-    app.goal.tokens_used = snapshot.tokens_used;
-    app.goal.time_used_seconds = snapshot.time_used_seconds;
-    app.goal.continuation_count = snapshot.continuation_count;
-}
-
-pub(crate) async fn attempt_steer_with_queue_fallback(
-    app: &mut App,
-    config: &Config,
-    engine_handle: &EngineHandle,
-    message: QueuedMessage,
-    recovery: DispatchRecovery,
-) -> bool {
-    match steer_user_message(app, config, engine_handle, message.clone()).await {
-        Ok(true) => {
-            app.push_status_toast(
-                app.tr(MessageId::ToastSentIntoTurn).into_owned(),
-                StatusToastLevel::Info,
-                Some(1_500),
-            );
-            true
-        }
-        Ok(false) => {
-            restore_queued_or_draft_message(app, recovery, message);
-            app.push_status_toast(
-                app.tr(MessageId::ToastHookBlockedFollowUp).into_owned(),
-                StatusToastLevel::Warning,
-                Some(4_000),
-            );
-            false
-        }
-        Err(err) => {
-            restore_queued_or_draft_message(app, recovery, message);
-            let status = format!("{} ({err})", app.tr(MessageId::ToastCouldNotSendIntoTurn));
-            app.status_message = Some(status.clone());
-            app.push_status_toast(status, StatusToastLevel::Warning, Some(4_000));
-            false
-        }
-    }
 }
 
 fn queued_follow_up_toast(app: &App) -> String {
@@ -1799,7 +1950,7 @@ pub(crate) async fn dispatch_composer_message(
             Ok(())
         }
         SubmitDisposition::Steer => {
-            attempt_steer_with_queue_fallback(app, config, engine_handle, message, recovery).await;
+            attempt_steer_with_queue_fallback(app, config, engine_handle, message, recovery);
             Ok(())
         }
     }

@@ -2335,23 +2335,14 @@ async fn apply_command_result_inner(
                 base_prompt_only,
                 hypothetical_prompt,
             } => {
-                // Split of authority: the host resolves the next turn's route
-                // with the same planner it would use to send one, and the
-                // engine — the only place that can rebuild the tool catalog,
-                // MCP state, gates, system prompt, and prepared body — turns
-                // that plan into a manifest.
-                let inputs =
-                    build_preview_request_inputs(app, config, engine_handle, hypothetical_prompt)
-                        .await;
-                // #6150: the input path never awaits a full op channel; a
-                // rejected preview is reported and retryable.
-                if let Err(err) = engine_handle.try_send(Op::PreviewOutboundRequest {
-                    inputs: Box::new(inputs),
+                start_request_preview(
+                    app,
+                    config,
+                    engine_handle,
+                    hypothetical_prompt,
                     json,
                     base_prompt_only,
-                }) {
-                    app.status_message = Some(format!("Cannot preview request: {err}"));
-                }
+                );
             }
             AppAction::CancelSubAgent { agent_id } => {
                 app.status_message = Some(format!("Cancelling {agent_id}..."));

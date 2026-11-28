@@ -1083,17 +1083,6 @@ async fn execute_command_input(
     apply_command_result(terminal, app, engine_handle, config, result).await
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct SteerPausedSnapshot {
-    paused: bool,
-    pausable: bool,
-    paused_goal_objective: Option<String>,
-    objective: Option<String>,
-    tokens_used: u64,
-    time_used_seconds: u64,
-    continuation_count: u32,
-}
-
 fn use_bundled_constitution(app: &mut App, config: &Config) {
     let mut state = crate::tui::setup::load_setup_state_for_app(app, config);
     state.complete_constitution_checkpoint(
@@ -1279,12 +1268,12 @@ type ProviderKeyVerification<'a> = Pin<
 
 pub(crate) fn request_shell_wait_detach(app: &mut App) {
     let (notice, level) = match request_active_shell_wait_detach(app) {
-        Ok(true) => (
+        Ok(Some(true)) => (
             app.tr(MessageId::ShellWaitReleased)
                 .replace("{jobs}", "/jobs"),
             StatusToastLevel::Info,
         ),
-        Ok(false) => {
+        Ok(Some(false)) => {
             let message = if terminal_pause_has_live_owner(app) {
                 MessageId::ShellWaitInteractive
             } else if app.is_loading {
@@ -1294,22 +1283,29 @@ pub(crate) fn request_shell_wait_detach(app: &mut App) {
             };
             (app.tr(message).to_string(), StatusToastLevel::Info)
         }
+        Ok(None) => (
+            "Shell tracking is busy. Try releasing the wait again.".into(),
+            StatusToastLevel::Warning,
+        ),
         Err(err) => (err.to_string(), StatusToastLevel::Error),
     };
     app.push_status_toast(notice, level, Some(6_000));
 }
 
-fn request_active_shell_wait_detach(app: &App) -> Result<bool> {
+fn request_active_shell_wait_detach(app: &App) -> Result<Option<bool>> {
     let Some(session_id) = app.current_session_id.as_deref() else {
-        return Ok(false);
+        return Ok(Some(false));
     };
     let Some(shell_manager) = app.runtime_services.shell_manager.as_ref() else {
-        return Ok(false);
+        return Ok(Some(false));
     };
-    let mut manager = shell_manager.lock().map_err(|_| {
-        anyhow::anyhow!("Shell tracking hit an internal error — restart Codewhale to recover.")
-    })?;
-    Ok(manager.request_shell_wait_detach(session_id))
+    match shell_manager.try_lock() {
+        Ok(mut manager) => Ok(Some(manager.request_shell_wait_detach(session_id))),
+        Err(std::sync::TryLockError::WouldBlock) => Ok(None),
+        Err(std::sync::TryLockError::Poisoned(_)) => {
+            anyhow::bail!("Shell tracking hit an internal error — restart Codewhale to recover.")
+        }
+    }
 }
 
 pub(crate) fn prefill_jobs_cancel_all_if_tasks_sidebar(app: &mut App) -> bool {

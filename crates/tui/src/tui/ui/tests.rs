@@ -14123,6 +14123,278 @@ printf '%s\n' '{"text":"off-loop replacement"}'
     ));
 }
 
+fn steer_completion_channel(
+    app: &mut App,
+) -> tokio::sync::mpsc::Receiver<crate::tui::app::DispatchApplyFn> {
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    app.dispatch_completion_tx = Some(tx);
+    rx
+}
+
+async fn apply_steer_completion(
+    rx: &mut tokio::sync::mpsc::Receiver<crate::tui::app::DispatchApplyFn>,
+    app: &mut App,
+    engine: &EngineHandle,
+) {
+    tokio::time::timeout(Duration::from_secs(15), rx.recv())
+        .await
+        .expect("steer timed out")
+        .expect("steer mailbox closed")(app, engine, &Config::default())
+    .expect("apply steer");
+}
+
+#[tokio::test]
+async fn steer_mentions_wait_in_order_and_cancel_back_to_queue() {
+    let dir = TempDir::new().unwrap();
+    let mut app = create_test_app();
+    app.workspace = dir.path().to_owned();
+    app.is_loading = true;
+    let mut engine = mock_engine_handle();
+    let config = Config::default();
+    let mut rx = steer_completion_channel(&mut app);
+    for text in ["first", "@later.txt", "unsent"] {
+        assert!(attempt_steer_with_queue_fallback(
+            &mut app,
+            &config,
+            &engine.handle,
+            QueuedMessage::new(text.into(), None),
+            if text == "unsent" {
+                DispatchRecovery::Draft
+            } else {
+                DispatchRecovery::Immediate
+            }
+        ));
+    }
+    assert!(engine.rx_steer.try_recv().is_err());
+    std::fs::write(
+        dir.path().join("later.txt"),
+        "visible only after key handling",
+    )
+    .unwrap();
+    app.input = "another draft".into();
+    apply_steer_completion(&mut rx, &mut app, &engine.handle).await;
+    apply_steer_completion(&mut rx, &mut app, &engine.handle).await;
+    assert_eq!(engine.rx_steer.try_recv().unwrap().to_string(), "first");
+    assert!(
+        engine
+            .rx_steer
+            .try_recv()
+            .unwrap()
+            .contains("visible only after key handling")
+    );
+    let stale = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    app.cancel_in_flight_dispatch();
+    stale(&mut app, &engine.handle, &config).unwrap();
+    assert!(engine.rx_steer.try_recv().is_err());
+    assert_eq!(app.queued_messages.front().unwrap().display, "unsent");
+    assert_eq!(app.input, "another draft");
+}
+
+#[tokio::test]
+async fn steer_mailbox_full_stops_the_batch_before_preparation() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+    let engine = mock_engine_handle();
+    let config = Config::default();
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    let _permit = tx.clone().try_reserve_owned().unwrap();
+    app.dispatch_completion_tx = Some(tx);
+    let first = QueuedMessage::new("original queued input".into(), None);
+    assert!(!attempt_steer_with_queue_fallback(
+        &mut app,
+        &config,
+        &engine.handle,
+        first.clone(),
+        DispatchRecovery::Queued {
+            restore_index: None,
+            was_held: false
+        }
+    ));
+    assert!(app.preparing_steers.is_empty());
+    assert_eq!(app.queued_messages.front(), Some(&first));
+}
+
+#[tokio::test]
+async fn steer_rollback_and_durable_projection_replay_indexed_removals() {
+    let config = Config::default();
+    let engine = mock_engine_handle();
+    let mut app = create_test_app();
+    app.is_loading = true;
+    let _rx = steer_completion_channel(&mut app);
+    for text in ["a", "b", "c", "d"] {
+        app.queue_message(QueuedMessage::new(text.into(), None));
+    }
+    app.held_restored_queue = 2;
+    for index in [0, 0, 1] {
+        send_queued_message_at_index_now(&mut app, &config, &engine.handle, index)
+            .await
+            .unwrap();
+    }
+    app.arm_double_tap_window();
+    for msg in app.take_queued_for_double_tap_steer() {
+        assert!(attempt_steer_with_queue_fallback(
+            &mut app,
+            &config,
+            &engine.handle,
+            msg,
+            DispatchRecovery::Queued {
+                restore_index: None,
+                was_held: false
+            }
+        ));
+    }
+    for (text, recovery) in [
+        ("e", DispatchRecovery::Immediate),
+        ("f", DispatchRecovery::Draft),
+    ] {
+        assert!(attempt_steer_with_queue_fallback(
+            &mut app,
+            &config,
+            &engine.handle,
+            QueuedMessage::new(text.into(), None),
+            recovery
+        ));
+    }
+    assert!(app.queued_messages.is_empty() && app.queued_draft.is_none());
+    assert!(!offline_queue_is_empty(&app));
+    app.queue_message(QueuedMessage::new("g".into(), None));
+    let (messages, draft) = offline_queue_projection(&app);
+    assert_eq!(
+        messages
+            .iter()
+            .map(|m| m.display.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "b", "c", "d", "e", "g"]
+    );
+    assert_eq!(draft.unwrap().display, "f");
+    app.input = "newer composer".into();
+    let expected = offline_queue_projection(&app);
+    assert!(expected.1.is_none());
+    assert_eq!(
+        expected
+            .0
+            .iter()
+            .map(|m| m.display.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "b", "c", "d", "e", "f", "g"]
+    );
+    app.cancel_in_flight_dispatch();
+    assert_eq!(offline_queue_projection(&app), expected);
+    assert_eq!(app.input, "newer composer");
+    assert_eq!(app.held_restored_queue, 2);
+}
+
+#[tokio::test]
+async fn steer_recovery_tracks_visible_queue_edits() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+    let _rx = steer_completion_channel(&mut app);
+    let engine = mock_engine_handle();
+    let config = Config::default();
+    for text in ["x", "y", "z"] {
+        app.queue_message(QueuedMessage::new(text.into(), None));
+    }
+    send_queued_message_at_index_now(&mut app, &config, &engine.handle, 1)
+        .await
+        .unwrap();
+    assert!(attempt_steer_with_queue_fallback(
+        &mut app,
+        &config,
+        &engine.handle,
+        QueuedMessage::new("a".into(), None),
+        DispatchRecovery::Immediate
+    ));
+    assert_eq!(app.remove_queued_message(0).unwrap().display, "x");
+    app.clear_visible_queued_messages();
+    app.queue_message(QueuedMessage::new("b".into(), None));
+    let projected = offline_queue_projection(&app).0;
+    assert_eq!(
+        projected
+            .iter()
+            .map(|m| m.display.as_str())
+            .collect::<Vec<_>>(),
+        ["y", "a", "b"]
+    );
+    app.cancel_in_flight_dispatch();
+    assert_eq!(app.queued_messages, projected);
+}
+
+#[tokio::test]
+async fn newer_request_preview_retires_the_ready_callback() {
+    let mut app = create_test_app();
+    let config = Config::default();
+    let mut engine = mock_engine_handle();
+    let dir = TempDir::new().unwrap();
+    app.workspace = dir.path().into();
+    app.auto_model = false;
+    app.active_skill = Some("preview skill".into());
+    let pending =
+        build_preview_request_inputs(&app, &config, &engine.handle, Some("@preview.txt".into()));
+    std::fs::write(
+        dir.path().join("preview.txt"),
+        "written after preview capture",
+    )
+    .unwrap();
+    let inputs = pending.await;
+    let preview = inputs
+        .next_turn
+        .as_ref()
+        .unwrap_or_else(|| panic!("unresolved preview: {:?}", inputs.unresolved));
+    assert!(preview.content.contains("written after preview capture"));
+    assert!(preview.content.contains("preview skill"));
+    assert_eq!(app.active_skill.as_deref(), Some("preview skill"));
+    let mut rx = steer_completion_channel(&mut app);
+    for changed in ["approval", "trust", "shell", "tools"] {
+        start_request_preview(
+            &mut app,
+            &config,
+            &engine.handle,
+            Some("@preview.txt".into()),
+            false,
+            false,
+        );
+        match changed {
+            "approval" => {
+                app.approval_mode = if app.approval_mode == ApprovalMode::Never {
+                    ApprovalMode::Suggest
+                } else {
+                    ApprovalMode::Never
+                }
+            }
+            "trust" => app.trust_mode = !app.trust_mode,
+            "shell" => app.allow_shell = !app.allow_shell,
+            _ => app.active_allowed_tools = Some(vec!["read_file".into()]),
+        }
+        apply_steer_completion(&mut rx, &mut app, &engine.handle).await;
+        assert!(
+            engine.rx_op.try_recv().is_err(),
+            "stale preview after {changed} changed"
+        );
+    }
+    start_request_preview(
+        &mut app,
+        &config,
+        &engine.handle,
+        Some("@unused".into()),
+        false,
+        false,
+    );
+    let stale = tokio::time::timeout(Duration::from_secs(15), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    start_request_preview(&mut app, &config, &engine.handle, None, true, true);
+    stale(&mut app, &engine.handle, &config).unwrap();
+    assert!(engine.rx_op.try_recv().is_err());
+    apply_steer_completion(&mut rx, &mut app, &engine.handle).await;
+    assert!(
+        matches!(engine.rx_op.try_recv(), Ok(Op::PreviewOutboundRequest {json:true, base_prompt_only:true, inputs}) if !inputs.hypothetical_prompt_supplied)
+    );
+}
+
 #[cfg(not(windows))]
 #[tokio::test]
 async fn live_steer_crosses_message_submit_transform_exactly_once() {
@@ -14141,14 +14413,15 @@ async fn live_steer_crosses_message_submit_transform_exactly_once() {
     configure_single_message_submit_hook(&mut app, &dir, replace);
     let mut engine = codewhale_engine::core::engine::mock_engine_handle();
 
+    let mut rx = steer_completion_channel(&mut app);
     attempt_steer_with_queue_fallback(
         &mut app,
         &Config::default(),
         &engine.handle,
         QueuedMessage::new("original steer".to_string(), None),
         DispatchRecovery::Immediate,
-    )
-    .await;
+    );
+    apply_steer_completion(&mut rx, &mut app, &engine.handle).await;
 
     assert_eq!(
         engine.rx_steer.recv().await.as_deref(),
@@ -14190,14 +14463,15 @@ async fn a_steer_settles_even_though_the_engine_stored_it_trimmed() {
     app.is_loading = true;
     let mut engine = codewhale_engine::core::engine::mock_engine_handle();
 
+    let mut rx = steer_completion_channel(&mut app);
     attempt_steer_with_queue_fallback(
         &mut app,
         &Config::default(),
         &engine.handle,
         QueuedMessage::new("check the job status\n".to_string(), None),
         DispatchRecovery::Immediate,
-    )
-    .await;
+    );
+    apply_steer_completion(&mut rx, &mut app, &engine.handle).await;
     // The UI now sends exactly what the engine will store, so the held copy
     // and the record cannot differ by whitespace alone.
     assert_eq!(
@@ -14261,14 +14535,15 @@ async fn steer_becomes_the_newest_transcript_entry_only_when_the_engine_records_
     app.is_loading = true;
     let mut engine = codewhale_engine::core::engine::mock_engine_handle();
 
+    let mut rx = steer_completion_channel(&mut app);
     attempt_steer_with_queue_fallback(
         &mut app,
         &Config::default(),
         &engine.handle,
         QueuedMessage::new("actually use the other file".to_string(), None),
         DispatchRecovery::Immediate,
-    )
-    .await;
+    );
+    apply_steer_completion(&mut rx, &mut app, &engine.handle).await;
     assert_eq!(
         engine.rx_steer.recv().await.as_deref(),
         Some("actually use the other file")
@@ -14339,14 +14614,15 @@ async fn steer_the_turn_never_accepted_is_reported_not_left_in_the_transcript() 
     app.is_loading = true;
     let mut engine = codewhale_engine::core::engine::mock_engine_handle();
 
+    let mut rx = steer_completion_channel(&mut app);
     attempt_steer_with_queue_fallback(
         &mut app,
         &Config::default(),
         &engine.handle,
         QueuedMessage::new("too late to matter".to_string(), None),
         DispatchRecovery::Immediate,
-    )
-    .await;
+    );
+    apply_steer_completion(&mut rx, &mut app, &engine.handle).await;
     assert_eq!(
         engine.rx_steer.recv().await.as_deref(),
         Some("too late to matter")
@@ -14394,14 +14670,15 @@ async fn denied_steer_restores_queued_draft_and_keeps_active_turn() {
     let mut engine = codewhale_engine::core::engine::mock_engine_handle();
     let message = QueuedMessage::new("preserve edited draft".to_string(), None);
 
+    let mut rx = steer_completion_channel(&mut app);
     attempt_steer_with_queue_fallback(
         &mut app,
         &Config::default(),
         &engine.handle,
         message.clone(),
         DispatchRecovery::Draft,
-    )
-    .await;
+    );
+    apply_steer_completion(&mut rx, &mut app, &engine.handle).await;
 
     assert!(engine.rx_steer.try_recv().is_err());
     assert!(app.is_loading, "denial must not stop the active turn");
@@ -21632,9 +21909,16 @@ async fn steer_user_message_records_prompt_for_cancel_restore() {
         None,
     );
 
-    steer_user_message(&mut app, &Config::default(), &engine.handle, queued)
-        .await
-        .expect("steer user message");
+    app.is_loading = true;
+    let mut rx = steer_completion_channel(&mut app);
+    attempt_steer_with_queue_fallback(
+        &mut app,
+        &Config::default(),
+        &engine.handle,
+        queued,
+        DispatchRecovery::Immediate,
+    );
+    apply_steer_completion(&mut rx, &mut app, &engine.handle).await;
 
     assert_eq!(
         app.last_submitted_prompt.as_deref(),
@@ -21660,14 +21944,30 @@ async fn steer_user_message_detaches_session_shell_waits_before_dispatch() {
         )
     };
     let mut engine = codewhale_engine::core::engine::mock_engine_handle();
-    steer_user_message(
+    app.is_loading = true;
+    let mut rx = steer_completion_channel(&mut app);
+    attempt_steer_with_queue_fallback(
         &mut app,
         &Config::default(),
         &engine.handle,
         QueuedMessage::new("use the partial results".to_string(), None),
-    )
-    .await
-    .expect("steer user message");
+        DispatchRecovery::Immediate,
+    );
+    let ready = rx.recv().await.unwrap();
+    let (locked, wait) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        let _guard = shell_manager.lock().unwrap();
+        locked.send(()).unwrap();
+        let _ = released.recv_timeout(Duration::from_secs(3));
+    });
+    wait.recv_timeout(Duration::from_secs(3)).unwrap();
+    ready(&mut app, &engine.handle, &Config::default()).unwrap();
+    assert!(engine.rx_steer.try_recv().is_err());
+    assert!(!waiting.load(std::sync::atomic::Ordering::Acquire));
+    release.send(()).unwrap();
+    holder.join().unwrap();
+    apply_steer_completion(&mut rx, &mut app, &engine.handle).await;
     assert!(waiting.load(std::sync::atomic::Ordering::Acquire));
     assert!(!foreign.load(std::sync::atomic::Ordering::Acquire));
     assert_eq!(
@@ -21687,11 +21987,13 @@ async fn empty_enter_sends_next_queued_message_into_running_turn() {
     let config = Config::default();
     let mut engine = codewhale_engine::core::engine::mock_engine_handle();
 
+    let mut rx = steer_completion_channel(&mut app);
     assert!(
         send_next_queued_message_now(&mut app, &config, &engine.handle)
             .await
             .expect("empty Enter succeeds")
     );
+    apply_steer_completion(&mut rx, &mut app, &engine.handle).await;
 
     assert_eq!(app.queued_message_count(), 0);
     assert_eq!(
@@ -21753,11 +22055,13 @@ async fn queue_send_index_sends_selected_message_into_running_turn() {
     let config = Config::default();
     let mut engine = codewhale_engine::core::engine::mock_engine_handle();
 
+    let mut rx = steer_completion_channel(&mut app);
     assert!(
         send_queued_message_at_index_now(&mut app, &config, &engine.handle, 1)
             .await
             .expect("indexed send succeeds")
     );
+    apply_steer_completion(&mut rx, &mut app, &engine.handle).await;
 
     assert_eq!(app.queued_message_count(), 1);
     assert_eq!(
@@ -22250,14 +22554,15 @@ async fn steer_failure_queues_message_and_surfaces_toast() {
     drop(engine.rx_steer);
     let queued = crate::tui::app::QueuedMessage::new("follow up while busy".to_string(), None);
 
+    let mut rx = steer_completion_channel(&mut app);
     attempt_steer_with_queue_fallback(
         &mut app,
         &Config::default(),
         &engine.handle,
         queued,
         DispatchRecovery::Immediate,
-    )
-    .await;
+    );
+    apply_steer_completion(&mut rx, &mut app, &engine.handle).await;
 
     assert_eq!(app.queued_message_count(), 1);
     let toast = app.status_toasts.back().expect("steer failure toast");
@@ -22353,11 +22658,13 @@ async fn empty_enter_promotes_the_oldest_queued_message() {
     assert_eq!(app.queued_message_count(), 1);
     assert!(app.input.is_empty());
 
+    let mut rx = steer_completion_channel(&mut app);
     assert!(
         send_next_queued_message_now(&mut app, &config, &engine.handle)
             .await
             .expect("empty Enter promotes queue")
     );
+    apply_steer_completion(&mut rx, &mut app, &engine.handle).await;
     assert_eq!(app.queued_message_count(), 0);
     assert_eq!(
         engine.rx_steer.recv().await.as_deref(),
@@ -27434,14 +27741,16 @@ async fn steer_send_keeps_local_scroll_context() {
     app.viewport.transcript_scroll = TranscriptScroll::at_line(7);
     app.user_scrolled_during_stream = true;
 
-    steer_user_message(
+    app.is_loading = true;
+    let mut rx = steer_completion_channel(&mut app);
+    attempt_steer_with_queue_fallback(
         &mut app,
         &Config::default(),
         &engine.handle,
         QueuedMessage::new("steer into the current turn".to_string(), None),
-    )
-    .await
-    .expect("steer user message");
+        DispatchRecovery::Immediate,
+    );
+    apply_steer_completion(&mut rx, &mut app, &engine.handle).await;
 
     assert!(
         !app.viewport.transcript_scroll.is_at_tail(),
@@ -35073,6 +35382,29 @@ async fn offline_queue_lifecycle_preserves_edits_and_explicit_reset() {
         SessionManager::default_location().expect("actor store"),
     );
     persistence_actor::init_actor(handle.clone());
+    {
+        let mut app = create_test_app();
+        let transition = prepare_offline_queue_transition(&app, "steering").unwrap();
+        install_offline_queue_transition(&mut app, transition);
+        app.is_loading = true;
+        let engine = mock_engine_handle();
+        let _rx = steer_completion_channel(&mut app);
+        attempt_steer_with_queue_fallback(
+            &mut app,
+            &Config::default(),
+            &engine.handle,
+            QueuedMessage::new("@pending.md".into(), None),
+            DispatchRecovery::Immediate,
+        );
+        assert!(app.queued_messages.is_empty() && app.queued_draft.is_none());
+        flush_offline_queue_test_actor(&handle).await;
+        let saved = manager
+            .load_offline_queue_state("steering")
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.messages[0].display, "@pending.md");
+        app.cancel_in_flight_dispatch();
+    }
     let mut app = create_test_app();
     let transition = prepare_offline_queue_transition(&app, "queue-A").expect("claim A");
     assert!(install_offline_queue_transition(&mut app, transition));

@@ -104,7 +104,7 @@ pub(crate) fn reset_conversation_state(app: &mut App) -> bool {
     app.paused = false;
     app.pausable = false;
     app.viewport.transcript_selection.clear();
-    app.queued_messages.clear();
+    app.clear_visible_queued_messages();
     app.held_restored_queue = 0;
     app.queued_draft = None;
     app.session.total_tokens = 0;
