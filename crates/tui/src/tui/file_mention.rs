@@ -335,8 +335,9 @@ pub fn apply_mention_menu_selection(app: &mut App, entries: &[String]) -> bool {
     super::file_frecency::record_mention(&app.workspace, replacement);
     replace_file_mention(app, byte_start, &partial, &file_mention_body(replacement));
     app.mention_menu_hidden = false;
-    app.status_message =
-        Some(tr(app.ui_locale, MessageId::MentionAttached).replace("{path}", replacement));
+    app.show_input_hint(
+        tr(app.ui_locale, MessageId::MentionAttached).replace("{path}", replacement),
+    );
     true
 }
 
@@ -356,7 +357,7 @@ pub fn try_autocomplete_file_mention(app: &mut App) -> bool {
         return true;
     }
     if candidates.is_empty() {
-        app.status_message = Some(no_file_mention_matches_status(
+        app.show_input_hint(no_file_mention_matches_status(
             app.ui_locale,
             &partial,
             app.mention_walk_depth,
@@ -372,8 +373,9 @@ pub fn try_autocomplete_file_mention(app: &mut App) -> bool {
             &partial,
             &file_mention_body(&candidates[0]),
         );
-        app.status_message =
-            Some(tr(app.ui_locale, MessageId::MentionAttached).replace("{path}", &candidates[0]));
+        app.show_input_hint(
+            tr(app.ui_locale, MessageId::MentionAttached).replace("{path}", &candidates[0]),
+        );
         return true;
     }
     let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
@@ -387,7 +389,7 @@ pub fn try_autocomplete_file_mention(app: &mut App) -> bool {
         .map_or(shared, |idx| &shared[..idx]);
     if shared.len() > partial.len() {
         replace_file_mention(app, byte_start, &partial, shared);
-        app.status_message = Some(format!("@{shared}…"));
+        app.show_input_hint(format!("@{shared}…"));
         return true;
     }
     let preview = candidates
@@ -396,8 +398,9 @@ pub fn try_autocomplete_file_mention(app: &mut App) -> bool {
         .map(|c| format!("@{c}"))
         .collect::<Vec<_>>()
         .join(", ");
-    app.status_message =
-        Some(tr(app.ui_locale, MessageId::MentionMatches).replace("{preview}", &preview));
+    app.show_input_hint(
+        tr(app.ui_locale, MessageId::MentionMatches).replace("{preview}", &preview),
+    );
     true
 }
 

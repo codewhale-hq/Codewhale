@@ -5622,8 +5622,9 @@ fn ssh_direct_clipboard_paste_points_to_terminal_owned_bracketed_paste() {
     crate::tui::paste::handle_paste(&mut app, crate::tui::paste::PasteSource::Shortcut);
     assert_eq!(app.input, "keep this draft");
     let hint = app
-        .status_message
-        .as_deref()
+        .status_toasts
+        .back()
+        .map(|notice| notice.text.as_str())
         .expect("remote paste hint")
         .to_string();
     assert!(hint.contains("SSH paste uses your local terminal"));
@@ -5652,7 +5653,11 @@ fn clipboard_image_paste_keeps_adjacent_text_and_concise_status() {
             .contains("before\n[Attached image: 8x4 PNG (2KB) at /tmp/pasted.png]")
     );
     assert!(app.input.contains("] after"));
-    let status = app.status_message.as_deref().expect("status message");
+    let status = app
+        .status_toasts
+        .back()
+        .map(|notice| notice.text.as_str())
+        .expect("status message");
     assert_eq!(status, "Attached image: 8x4 PNG (2KB)");
 }
 
@@ -8413,7 +8418,7 @@ fn dropped_screenshot_path_becomes_an_image_attachment() {
     assert!(!app.input.contains("\\ "), "{}", app.input);
     assert_eq!(app.composer_attachment_count(), 1);
     assert_eq!(
-        app.status_message.as_deref(),
+        app.status_toasts.back().map(|notice| notice.text.as_str()),
         Some(format!("Attached image: {}", shot.display()).as_str())
     );
     let expanded = codewhale_engine::image_attach::expand_attachment_blocks(&app.input);

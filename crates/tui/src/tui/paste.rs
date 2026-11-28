@@ -304,7 +304,7 @@ fn request_clipboard(app: &mut App, target: PasteTarget, image_only: bool, quiet
     // `Event::Paste` stays the data path.
     if app.clipboard.requires_terminal_paste() {
         if !quiet {
-            app.status_message = Some(app.tr(MessageId::ClipboardSshPasteHint).into_owned());
+            app.show_input_hint(app.tr(MessageId::ClipboardSshPasteHint).into_owned());
             app.note_clipboard_paste();
         }
         return;
@@ -377,13 +377,13 @@ fn finish_paste(
             crate::tui::work_surface::release_focus(app);
             let description = format!("{} ({})", pasted.short_label(), pasted.size_label());
             app.insert_media_attachment("image", &pasted.path, Some(&description));
-            app.status_message = Some(format!("Attached image: {description}"));
+            app.show_input_hint(format!("Attached image: {description}"));
         }
         Some(ClipboardContent::Text(text)) if !image_only => deliver_text(app, target, &text),
         // The read cannot tell an empty clipboard from an unreadable one;
         // either way the person asked to paste and nothing happened.
         None if !image_only && target == PasteTarget::Composer => {
-            app.status_message = Some(app.tr(MessageId::ClipboardNothingToPaste).into_owned());
+            app.show_input_hint(app.tr(MessageId::ClipboardNothingToPaste).into_owned());
         }
         _ => {}
     }

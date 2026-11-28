@@ -1080,7 +1080,7 @@ fn empty_bracketed_paste_attaches_the_clipboard_image() {
         app.input
     );
     assert_eq!(
-        app.status_message.as_deref(),
+        app.status_toasts.back().map(|notice| notice.text.as_str()),
         Some("Attached image: 8x4 PNG (2KB)")
     );
 }
@@ -5931,6 +5931,28 @@ fn control_like_modifier_accepts_super_only_on_macos() {
 }
 
 #[test]
+fn file_tree_open_escape_reopen_shows_current_hint() {
+    let mut app = create_test_app();
+    app.file_tree_visible = true;
+    let typing = crate::tui::underwater::ShellPhase::Typing;
+    crate::tui::key_actions::toggle_file_tree(&mut app);
+    let opened = app.active_status_toast(typing).unwrap().text;
+    assert!(opened.contains("navigate"));
+    assert!(crate::tui::key_actions::handle_file_tree_key(
+        &mut app,
+        &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+    ));
+    assert!(app.file_tree.is_none());
+    assert_eq!(
+        app.active_status_toast(typing).unwrap().text,
+        "File tree closed"
+    );
+    crate::tui::key_actions::toggle_file_tree(&mut app);
+    assert!(app.file_tree.is_some());
+    assert_eq!(app.active_status_toast(typing).unwrap().text, opened);
+}
+
+#[test]
 fn file_tree_shortcut_does_not_steal_plain_ctrl_e() {
     assert!(!crate::tui::key_shortcuts::is_file_tree_toggle_shortcut(
         &KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL,)
@@ -6223,6 +6245,9 @@ fn credential_paste_content_never_enters_traces_or_rendered_status() {
             &secret,
             &format!("{label} status"),
         );
+        for notice in app.status_toasts.iter().chain(app.sticky_status.iter()) {
+            assert_sensitive_paste_absent(&notice.text, &secret, &format!("{label} notice"));
+        }
     }
 }
 
@@ -23809,8 +23834,9 @@ fn try_autocomplete_file_mention_extends_to_common_prefix() {
     // unchanged here, with the status surfacing both candidates.
     assert!(app.input.starts_with("@crates/tui/"));
     let preview = app
-        .status_message
-        .as_deref()
+        .status_toasts
+        .back()
+        .map(|notice| notice.text.as_str())
         .expect("status message should describe candidates");
     assert!(preview.contains("@crates/tui/lib.rs"));
     assert!(preview.contains("@crates/tui/main.rs"));
@@ -23835,11 +23861,12 @@ fn try_autocomplete_file_mention_common_prefix_stops_at_whitespace() {
     // Tab with no partial to complete.
     assert_eq!(app.input, "@My");
     assert!(
-        app.status_message
-            .as_deref()
+        app.status_toasts
+            .back()
+            .map(|notice| notice.text.as_str())
             .is_some_and(|status| status.starts_with("Matches:")),
         "{:?}",
-        app.status_message
+        app.status_toasts
     );
 }
 
@@ -23937,7 +23964,7 @@ fn try_autocomplete_file_mention_no_match_reports_status() {
     assert!(try_autocomplete_file_mention(&mut app));
     assert_eq!(app.input, "@nonexistent_xyz");
     assert_eq!(
-        app.status_message.as_deref(),
+        app.status_toasts.back().map(|notice| notice.text.as_str()),
         Some("No files match @nonexistent_xyz")
     );
 }
@@ -23955,7 +23982,7 @@ fn try_autocomplete_file_mention_no_match_mentions_depth_cap_for_path_like_parti
     let _ = await_visible_mention_entries(&mut app, 64);
     assert!(try_autocomplete_file_mention(&mut app));
     assert_eq!(
-        app.status_message.as_deref(),
+        app.status_toasts.back().map(|notice| notice.text.as_str()),
         Some(
             "No files match @a/b/c/d/e/f/g/target (mention_walk_depth=6; use /config set mention_walk_depth 0 to search deeper)"
         )
@@ -23975,7 +24002,7 @@ fn try_autocomplete_file_mention_no_match_skips_depth_hint_for_shallow_path() {
     let _ = await_visible_mention_entries(&mut app, 64);
     assert!(try_autocomplete_file_mention(&mut app));
     assert_eq!(
-        app.status_message.as_deref(),
+        app.status_toasts.back().map(|notice| notice.text.as_str()),
         Some("No files match @shallow_missing/main.rs")
     );
 }
@@ -23993,7 +24020,7 @@ fn try_autocomplete_file_mention_no_match_skips_depth_hint_when_unlimited() {
     let _ = await_visible_mention_entries(&mut app, 64);
     assert!(try_autocomplete_file_mention(&mut app));
     assert_eq!(
-        app.status_message.as_deref(),
+        app.status_toasts.back().map(|notice| notice.text.as_str()),
         Some("No files match @a/b/c/d/e/f/g/target")
     );
 }

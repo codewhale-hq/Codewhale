@@ -1028,15 +1028,7 @@ impl HotbarAction for AppHotbarAction {
                 Ok(HotbarDispatch::Handled)
             }
             AppHotbarKind::FileTreeToggle => {
-                if app.file_tree.is_some() {
-                    app.file_tree = None;
-                    app.status_message = Some("File tree closed".to_string());
-                } else {
-                    app.file_tree = Some(crate::tui::file_tree::FileTreeState::new(&app.workspace));
-                    app.status_message =
-                        Some("File tree: ↑/↓ navigate  Enter select  Esc close".to_string());
-                }
-                app.needs_redraw = true;
+                crate::tui::key_actions::toggle_file_tree(app);
                 Ok(HotbarDispatch::Handled)
             }
             AppHotbarKind::PaletteOpen => {

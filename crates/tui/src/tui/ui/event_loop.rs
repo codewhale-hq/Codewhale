@@ -6983,20 +6983,7 @@ pub(crate) async fn run_event_loop(
             // Shifted shortcuts toggle the file-tree pane. Keep plain Ctrl+E
             // reserved for the composer end-of-line binding used by shells.
             if key_shortcuts::is_file_tree_toggle_shortcut(&key) {
-                if let Some(_state) = app.file_tree.as_mut() {
-                    // File tree visible → hide it.
-                    app.file_tree = None;
-                    app.status_message = Some("File tree closed".to_string());
-                } else {
-                    // Build the file tree from the current workspace.
-                    let state = crate::tui::file_tree::FileTreeState::new(&app.workspace);
-                    app.file_tree = Some(state);
-                    app.status_message = Some(
-                        "File tree: \u{2191}/\u{2193} navigate  Enter select  Esc close"
-                            .to_string(),
-                    );
-                }
-                app.needs_redraw = true;
+                key_actions::toggle_file_tree(app);
                 continue;
             }
 
@@ -7569,8 +7556,11 @@ pub(crate) async fn run_event_loop(
                         EscapeAction::DiscardQueuedDraft => {
                             app.backtrack.reset();
                             if app.cancel_queued_draft_edit() {
-                                app.status_message =
-                                    Some("Queued edit canceled; follow-up restored".to_string());
+                                app.show_input_feedback(
+                                    "Queued edit canceled; follow-up restored",
+                                    StatusToastLevel::Warning,
+                                    5_000,
+                                );
                             }
                         }
                         EscapeAction::DismissPluginCta => {
@@ -7598,12 +7588,15 @@ pub(crate) async fn run_event_loop(
                             match app.backtrack.handle_esc(total) {
                                 crate::tui::backtrack::EscEffect::None => {}
                                 crate::tui::backtrack::EscEffect::Prime => {
-                                    app.status_message =
-                                        Some("Press Esc again to backtrack".to_string());
+                                    app.show_input_hint("Press Esc again to backtrack");
                                     app.needs_redraw = true;
                                 }
                                 crate::tui::backtrack::EscEffect::Cancel => {
-                                    app.status_message = Some("Backtrack canceled".to_string());
+                                    app.show_input_feedback(
+                                        "Backtrack canceled",
+                                        StatusToastLevel::Warning,
+                                        5_000,
+                                    );
                                     app.needs_redraw = true;
                                 }
                                 crate::tui::backtrack::EscEffect::OpenOverlay => {
@@ -7756,14 +7749,14 @@ pub(crate) async fn run_event_loop(
                         && !slash_menu_open
                         && !jump_to_adjacent_tool_cell(app, SearchDirection::Backward) =>
                 {
-                    app.status_message = Some("No previous tool output".to_string());
+                    app.show_input_hint("No previous tool output");
                 }
                 KeyCode::Char(']')
                     if key_shortcuts::alt_nav_modifiers(key.modifiers)
                         && !slash_menu_open
                         && !jump_to_adjacent_tool_cell(app, SearchDirection::Forward) =>
                 {
-                    app.status_message = Some("No next tool output".to_string());
+                    app.show_input_hint("No next tool output");
                 }
                 // Help chords (Alt+?, F1, Ctrl+/) are handled above via
                 // shell_key_routing::is_help_shortcut so printable layout
@@ -8073,16 +8066,24 @@ pub(crate) async fn run_event_loop(
                                         .filter(|s| !s.trim().is_empty())
                                 })
                                 .unwrap_or_else(|| "vi".to_string());
-                            app.status_message = Some(format!("Edited in {editor}"));
+                            app.show_input_hint(format!("Edited in {editor}"));
                         }
                         Ok(crate::tui::external_editor::EditorOutcome::Unchanged) => {
-                            app.status_message = Some("Editor closed (no changes)".to_string());
+                            app.show_input_hint("Editor closed (no changes)");
                         }
                         Ok(crate::tui::external_editor::EditorOutcome::Cancelled) => {
-                            app.status_message = Some("Editor cancelled".to_string());
+                            app.show_input_feedback(
+                                "Editor cancelled",
+                                StatusToastLevel::Warning,
+                                5_000,
+                            );
                         }
                         Err(err) => {
-                            app.status_message = Some(format!("Editor error: {err}"));
+                            app.set_sticky_status(
+                                format!("Editor error: {err}"),
+                                StatusToastLevel::Error,
+                                None,
+                            );
                         }
                     }
                     app.needs_redraw = true;
@@ -8125,7 +8126,7 @@ pub(crate) async fn run_event_loop(
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && app.restore_last_cleared_input_if_empty() =>
                 {
-                    app.status_message = Some("Restored cleared draft".to_string());
+                    app.show_input_hint("Restored cleared draft");
                 }
                 KeyCode::Char('w') | KeyCode::Char('W')
                     if key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -8167,13 +8168,7 @@ pub(crate) async fn run_event_loop(
                     // When the composer is empty (transcript focus) →
                     // copy the focused cell text to the system clipboard.
                     if app.input.is_empty() && app.view_stack.is_empty() {
-                        // `copy_focused_cell` leaves its own receipt, which
-                        // names the transport; a toast here said "Copied"
-                        // even when only the terminal was asked to copy.
-                        app.status_message = None;
-                        if !copy_focused_cell(app) && app.status_message.is_none() {
-                            app.status_message = Some("No transcript cell to copy".to_string());
-                        }
+                        copy_focused_cell(app);
                     } else {
                         app.yank();
                     }

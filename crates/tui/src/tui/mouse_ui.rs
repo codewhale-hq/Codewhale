@@ -909,15 +909,16 @@ pub(crate) fn apply_sidebar_row_action(app: &mut App, action: SidebarRowAction) 
                 RailPanel::Agents => MessageId::SidebarShowingSubagents,
                 _ => MessageId::SidebarShowingTasks,
             };
-            app.status_message = Some(tr(app.ui_locale, message).into_owned());
+            app.show_input_hint(tr(app.ui_locale, message).into_owned());
             app.needs_redraw = true;
             Vec::new()
         }
         SidebarRowAction::OpenAgentDetail { agent_id } => {
             if !crate::tui::agent_details::open_agent_details(app, &agent_id) {
                 crate::tui::work_surface::agent_details_closed(app, &agent_id);
-                app.status_message =
-                    Some(tr(app.ui_locale, MessageId::SidebarAgentDetailsUnavailable).into_owned());
+                app.show_input_hint(
+                    tr(app.ui_locale, MessageId::SidebarAgentDetailsUnavailable).into_owned(),
+                );
             }
             app.needs_redraw = true;
             Vec::new()
@@ -1729,8 +1730,9 @@ pub(crate) fn apply_context_menu_action(
         }
         ContextMenuAction::OpenSelection => {
             if !open_active_selection(app) {
-                app.status_message =
-                    Some(tr(app.ui_locale, MessageId::CtxMenuNoSelectionToOpen).into_owned());
+                app.show_input_hint(
+                    tr(app.ui_locale, MessageId::CtxMenuNoSelectionToOpen).into_owned(),
+                );
             }
         }
         ContextMenuAction::ClearSelection => {
@@ -1739,15 +1741,16 @@ pub(crate) fn apply_context_menu_action(
             } else {
                 MessageId::CtxMenuNoSelectionToClear
             };
-            app.status_message = Some(tr(app.ui_locale, message).into_owned());
+            app.show_input_hint(tr(app.ui_locale, message).into_owned());
         }
         ContextMenuAction::CopyCell { cell_index } => {
             copy_cell_to_clipboard(app, cell_index);
         }
         ContextMenuAction::OpenDetails { cell_index } => {
             if !open_details_pager_for_cell(app, cell_index) {
-                app.status_message =
-                    Some(tr(app.ui_locale, MessageId::CtxMenuNoDetailsForLine).into_owned());
+                app.show_input_hint(
+                    tr(app.ui_locale, MessageId::CtxMenuNoDetailsForLine).into_owned(),
+                );
             }
         }
         ContextMenuAction::Paste => {
@@ -1760,19 +1763,20 @@ pub(crate) fn apply_context_menu_action(
             match app.view_stack.extensions_menu_action(&item_id, verb) {
                 Some(events) => outcome = ContextMenuOutcome::Events(events),
                 None => {
-                    app.status_message =
-                        Some(tr(app.ui_locale, MessageId::CtxMenuExtensionUnlisted).into_owned());
+                    app.show_input_hint(
+                        tr(app.ui_locale, MessageId::CtxMenuExtensionUnlisted).into_owned(),
+                    );
                 }
             }
         }
         ContextMenuAction::CopyText { text } => match app.clipboard.write_text_status(&text) {
             Ok(transport) => {
                 let receipt = copy_receipt(app, transport, app.tr(MessageId::ClipboardCopied));
-                app.push_status_toast(receipt, StatusToastLevel::Info, None);
+                app.show_copy_notice(receipt, StatusToastLevel::Info, 8_000);
             }
             Err(error) => {
                 let receipt = copy_failed_receipt(app, error);
-                app.push_status_toast(receipt, StatusToastLevel::Error, None);
+                app.show_copy_notice(receipt, StatusToastLevel::Error, App::STICKY_ERROR_TTL_MS);
             }
         },
         ContextMenuAction::ToggleWindowPin => {
@@ -1807,16 +1811,16 @@ pub(crate) fn apply_context_menu_action(
         }
         ContextMenuAction::HideCell { cell_index } => {
             app.collapsed_cells.insert(cell_index);
-            app.status_message = Some(tr(app.ui_locale, MessageId::CtxMenuCellHidden).into_owned());
+            app.show_input_hint(tr(app.ui_locale, MessageId::CtxMenuCellHidden).into_owned());
         }
         ContextMenuAction::ShowCell { cell_index } => {
             app.collapsed_cells.remove(&cell_index);
-            app.status_message = Some(tr(app.ui_locale, MessageId::CtxMenuCellShown).into_owned());
+            app.show_input_hint(tr(app.ui_locale, MessageId::CtxMenuCellShown).into_owned());
         }
         ContextMenuAction::ShowAllHidden => {
             let count = app.collapsed_cells.len();
             app.collapsed_cells.clear();
-            app.status_message = Some(
+            app.show_input_hint(
                 tr(app.ui_locale, MessageId::CtxMenuHiddenCellsRestored)
                     .replace("{count}", &count.to_string()),
             );
@@ -1850,9 +1854,11 @@ pub(crate) fn open_file_in_editor(
     // The menu checked this path when it was built; a link can be swapped in
     // before the click, so check again right before the editor gets it.
     let Some(path) = editor_target(&app.workspace, path) else {
-        app.status_message = Some(
+        app.push_status_toast(
             app.tr(MessageId::CtxMenuEditorRefused)
                 .replace("{path}", &path.display().to_string()),
+            StatusToastLevel::Warning,
+            Some(5_000),
         );
         return;
     };
@@ -1866,13 +1872,17 @@ pub(crate) fn open_file_in_editor(
         Some(line),
     );
     app.needs_redraw = true;
-    app.status_message = Some(match outcome {
+    match outcome {
         Ok(crate::tui::external_editor::EditorOutcome::Cancelled) => {
-            format!("Editor exited without opening {}", path.display())
+            app.show_input_hint(format!("Editor exited without opening {}", path.display()));
         }
-        Ok(_) => format!("Closed editor for {}:{line}", path.display()),
-        Err(error) => format!("Could not open the editor: {error}"),
-    });
+        Ok(_) => app.show_input_hint(format!("Closed editor for {}:{line}", path.display())),
+        Err(error) => app.set_sticky_status(
+            format!("Could not open the editor: {error}"),
+            StatusToastLevel::Error,
+            None,
+        ),
+    }
 }
 
 pub(crate) fn selection_point_from_mouse(
@@ -1968,6 +1978,25 @@ pub(crate) fn copy_receipt(
     }
 }
 
+pub(crate) fn report_copy_result(
+    app: &mut App,
+    result: anyhow::Result<crate::tui::clipboard::CopyTransport>,
+    native: impl Into<String>,
+    failure: impl Into<String>,
+) -> bool {
+    match result {
+        Ok(transport) => {
+            let text = copy_receipt(app, transport, native);
+            app.show_copy_notice(text, StatusToastLevel::Info, 4_000);
+            true
+        }
+        Err(_) => {
+            app.show_copy_notice(failure, StatusToastLevel::Error, App::STICKY_ERROR_TTL_MS);
+            false
+        }
+    }
+}
+
 pub(crate) fn copy_failed_receipt(app: &App, error: impl std::fmt::Display) -> String {
     app.tr(MessageId::ClipboardCopyFailed)
         .replace("{error}", &error.to_string())
@@ -1983,20 +2012,20 @@ pub(crate) fn cut_selection(app: &mut App) {
     }
     match app.clipboard.write_text_status(&sel) {
         Ok(crate::tui::clipboard::CopyTransport::Native) => {
-            app.push_status_toast(
+            app.show_copy_notice(
                 app.tr(MessageId::ClipboardCopied),
                 StatusToastLevel::Info,
-                None,
+                8_000,
             );
             app.delete_selection();
         }
         Ok(crate::tui::clipboard::CopyTransport::Terminal) => {
             let receipt = app.tr(MessageId::ClipboardCutKeptText).into_owned();
-            app.push_status_toast(receipt, StatusToastLevel::Info, None);
+            app.show_copy_notice(receipt, StatusToastLevel::Info, 8_000);
         }
         Err(error) => {
             let receipt = copy_failed_receipt(app, error);
-            app.push_status_toast(receipt, StatusToastLevel::Error, None);
+            app.show_copy_notice(receipt, StatusToastLevel::Error, App::STICKY_ERROR_TTL_MS);
         }
     }
 }
@@ -2092,17 +2121,22 @@ pub(crate) fn copy_active_selection(app: &mut App) {
         match app.clipboard.write_text_status(&sel) {
             Ok(transport) => {
                 let receipt = copy_receipt(app, transport, app.tr(MessageId::ClipboardCopied));
-                app.push_status_toast(receipt, StatusToastLevel::Info, None);
+                app.show_copy_notice(receipt, StatusToastLevel::Info, 8_000);
                 app.clear_selection();
             }
             Err(error) => {
                 let receipt = copy_failed_receipt(app, error);
-                app.push_status_toast(receipt, StatusToastLevel::Error, None);
+                app.show_copy_notice(receipt, StatusToastLevel::Error, App::STICKY_ERROR_TTL_MS);
             }
         }
         return;
     }
     if !app.viewport.transcript_selection.is_active() {
+        app.show_copy_notice(
+            app.tr(MessageId::CtxMenuNoSelectionToCopy).into_owned(),
+            StatusToastLevel::Info,
+            4_000,
+        );
         return;
     }
     // Markdown source first (#6156): project every intersected cell through
@@ -2130,17 +2164,20 @@ pub(crate) fn copy_active_selection(app: &mut App) {
                         copy_receipt(app, transport, app.tr(MessageId::ClipboardCopied))
                     }
                 };
-                app.push_status_toast(receipt, StatusToastLevel::Info, None);
+                app.show_copy_notice(receipt, StatusToastLevel::Info, 8_000);
             }
             Err(error) => {
                 let receipt = copy_failed_receipt(app, error);
-                app.push_status_toast(receipt, StatusToastLevel::Error, None);
+                app.show_copy_notice(receipt, StatusToastLevel::Error, App::STICKY_ERROR_TTL_MS);
             }
         }
     } else {
         clear_transcript_selection(app);
-        app.status_message =
-            Some(tr(app.ui_locale, MessageId::CtxMenuNoSelectionToCopy).into_owned());
+        app.show_copy_notice(
+            tr(app.ui_locale, MessageId::CtxMenuNoSelectionToCopy).into_owned(),
+            StatusToastLevel::Info,
+            4_000,
+        );
     }
 }
 
@@ -2394,6 +2431,10 @@ mod tests {
     use serde_json::json;
     use std::path::PathBuf;
     use tempfile::tempdir;
+
+    fn last_toast(app: &App) -> Option<&str> {
+        app.status_toasts.back().map(|toast| toast.text.as_str())
+    }
 
     pub(super) fn create_test_app() -> App {
         let options = TuiOptions {
@@ -3213,13 +3254,10 @@ mod tests {
         let mut app = create_test_app();
         super::apply_context_menu_action(&mut app, ContextMenuAction::HideCell { cell_index: 3 });
         assert!(app.collapsed_cells.contains(&3));
-        assert_eq!(app.status_message.as_deref(), Some("Cell hidden"));
+        assert_eq!(last_toast(&app), Some("Cell hidden"));
         super::apply_context_menu_action(&mut app, ContextMenuAction::ShowAllHidden);
         assert!(app.collapsed_cells.is_empty());
-        assert_eq!(
-            app.status_message.as_deref(),
-            Some("1 hidden cell(s) restored")
-        );
+        assert_eq!(last_toast(&app), Some("1 hidden cell(s) restored"));
     }
 
     #[test]
@@ -3233,10 +3271,7 @@ mod tests {
             },
         );
         assert!(matches!(outcome, super::ContextMenuOutcome::Done));
-        assert_eq!(
-            app.status_message.as_deref(),
-            Some("That extension is no longer listed")
-        );
+        assert_eq!(last_toast(&app), Some("That extension is no longer listed"));
     }
 
     fn app_with_answer(workspace: &std::path::Path, content: &str) -> App {
@@ -3379,7 +3414,7 @@ mod tests {
             app.selected_text().is_empty(),
             "the composer selection cleared"
         );
-        assert_eq!(app.status_message.as_deref(), Some("Selection cleared"));
+        assert_eq!(last_toast(&app), Some("Selection cleared"));
         assert!(
             app.viewport.transcript_selection.is_active(),
             "Clear acts on the selection Copy would take, not both"
@@ -3388,7 +3423,7 @@ mod tests {
         super::clear_transcript_selection(&mut app);
         super::apply_context_menu_action(&mut app, ContextMenuAction::ClearSelection);
         assert_eq!(
-            app.status_message.as_deref(),
+            last_toast(&app),
             Some("No selection to clear"),
             "nothing cleared is not reported as cleared"
         );
@@ -3451,9 +3486,6 @@ mod tests {
             app.input = text.to_string();
             app.selection_anchor = Some(0);
             app.cursor_position = text.chars().count();
-        }
-        fn last_toast(app: &App) -> Option<&str> {
-            app.status_toasts.back().map(|toast| toast.text.as_str())
         }
 
         let mut app = create_test_app();
@@ -3527,10 +3559,6 @@ mod tests {
     /// the text was sent to the terminal, not that it was copied.
     #[test]
     fn copy_receipts_name_the_transport() {
-        fn last_toast(app: &App) -> Option<&str> {
-            app.status_toasts.back().map(|toast| toast.text.as_str())
-        }
-
         let mut app = create_test_app();
         super::apply_context_menu_action(
             &mut app,
@@ -3594,7 +3622,7 @@ mod tests {
         super::apply_context_menu_action(&mut app, ContextMenuAction::Paste);
         assert_eq!(app.input, "draft");
         assert_eq!(
-            app.status_message.as_deref(),
+            last_toast(&app),
             Some("Nothing to paste: the clipboard is empty or could not be read")
         );
     }
@@ -3646,19 +3674,19 @@ mod tests {
 
         super::apply_sidebar_row_action(&mut app, SidebarRowAction::ShowSubagentsPanel);
         assert_eq!(
-            app.status_message.as_deref(),
+            last_toast(&app),
             Some(tr(Locale::Fr, MessageId::SidebarShowingSubagents).as_ref())
         );
 
         super::apply_context_menu_action(&mut app, ContextMenuAction::OpenSelection);
         assert_eq!(
-            app.status_message.as_deref(),
+            last_toast(&app),
             Some(tr(Locale::Fr, MessageId::CtxMenuNoSelectionToOpen).as_ref())
         );
 
         super::apply_context_menu_action(&mut app, ContextMenuAction::ClearSelection);
         assert_eq!(
-            app.status_message.as_deref(),
+            last_toast(&app),
             Some(tr(Locale::Fr, MessageId::CtxMenuNoSelectionToClear).as_ref())
         );
 
@@ -3667,26 +3695,26 @@ mod tests {
             ContextMenuAction::OpenDetails { cell_index: 99 },
         );
         assert_eq!(
-            app.status_message.as_deref(),
+            last_toast(&app),
             Some(tr(Locale::Fr, MessageId::CtxMenuNoDetailsForLine).as_ref())
         );
 
         super::apply_context_menu_action(&mut app, ContextMenuAction::HideCell { cell_index: 0 });
         assert_eq!(
-            app.status_message.as_deref(),
+            last_toast(&app),
             Some(tr(Locale::Fr, MessageId::CtxMenuCellHidden).as_ref())
         );
 
         super::apply_context_menu_action(&mut app, ContextMenuAction::ShowCell { cell_index: 0 });
         assert_eq!(
-            app.status_message.as_deref(),
+            last_toast(&app),
             Some(tr(Locale::Fr, MessageId::CtxMenuCellShown).as_ref())
         );
 
         app.collapsed_cells.insert(0);
         super::apply_context_menu_action(&mut app, ContextMenuAction::ShowAllHidden);
         assert_eq!(
-            app.status_message.as_deref(),
+            last_toast(&app),
             Some(
                 tr(Locale::Fr, MessageId::CtxMenuHiddenCellsRestored)
                     .replace("{count}", "1")
@@ -3706,7 +3734,7 @@ mod tests {
             });
         super::apply_context_menu_action(&mut app, ContextMenuAction::CopySelection);
         assert_eq!(
-            app.status_message.as_deref(),
+            last_toast(&app),
             Some(tr(Locale::Fr, MessageId::CtxMenuNoSelectionToCopy).as_ref())
         );
     }

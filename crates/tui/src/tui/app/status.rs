@@ -43,6 +43,9 @@ pub struct StatusToast {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StatusToastKind {
     Ordinary,
+    InputHint,
+    CopyReceipt,
+    LegacyTransient,
     /// An explicit command result stays visible over a completed turn.
     CommandReceipt,
     ActionRequired,
@@ -140,6 +143,60 @@ impl StatusToast {
 }
 
 impl App {
+    fn prepare_interactive_notice(&mut self) {
+        self.sync_status_message_to_toasts();
+        if self.onboarding == OnboardingState::None
+            && !self.redaction_gate
+            && !self.auto_submit_initial_input
+        {
+            if let Some(displaced) = self.status_message.take() {
+                self.status_toasts.retain(|toast| {
+                    toast.kind != StatusToastKind::LegacyTransient || toast.text != displaced
+                });
+            }
+            self.last_status_message_seen = None;
+        }
+    }
+
+    pub(crate) fn show_input_hint(&mut self, text: impl Into<String>) {
+        self.show_input_feedback(text, StatusToastLevel::Info, 4_000);
+    }
+
+    pub(crate) fn show_input_feedback(
+        &mut self,
+        text: impl Into<String>,
+        level: StatusToastLevel,
+        ttl_ms: u64,
+    ) {
+        self.prepare_interactive_notice();
+        let mut hint = StatusToast::new(text, level, Some(ttl_ms));
+        hint.kind = StatusToastKind::InputHint;
+        if let Some(previous) = self.status_toasts.iter().find(|notice| {
+            notice.kind == hint.kind
+                && !notice.is_expired(hint.created_at)
+                && notice.text == hint.text
+                && notice.level == level
+        }) {
+            hint.created_at = previous.created_at;
+        }
+        self.status_toasts.retain(|notice| notice.kind != hint.kind);
+        self.push_status_toast_record(hint);
+    }
+
+    pub(crate) fn show_copy_notice(
+        &mut self,
+        text: impl Into<String>,
+        level: StatusToastLevel,
+        ttl_ms: u64,
+    ) {
+        self.prepare_interactive_notice();
+        let mut receipt = StatusToast::new(text, level, Some(ttl_ms));
+        receipt.kind = StatusToastKind::CopyReceipt;
+        self.status_toasts
+            .retain(|notice| notice.kind != receipt.kind);
+        self.push_status_toast_record(receipt);
+    }
+
     pub fn push_status_toast(
         &mut self,
         text: impl Into<String>,
@@ -270,6 +327,11 @@ impl App {
     /// Drop sticky error chrome when the user resumes typing so a prior
     /// workflow/provider failure does not linger over the next draft.
     pub fn acknowledge_sticky_on_composer_activity(&mut self) {
+        let before = self.status_toasts.len();
+        self.status_toasts.retain(|notice| {
+            notice.kind != StatusToastKind::CopyReceipt || notice.level != StatusToastLevel::Error
+        });
+        self.needs_redraw |= self.status_toasts.len() != before;
         if self
             .sticky_status
             .as_ref()
@@ -375,7 +437,11 @@ impl App {
             {
                 self.clear_sticky_status();
             }
-            self.push_status_toast(message, level, ttl_ms);
+            let mut notice = StatusToast::new(message, level, ttl_ms);
+            if matches!(level, StatusToastLevel::Info | StatusToastLevel::Success) {
+                notice.kind = StatusToastKind::LegacyTransient;
+            }
+            self.push_status_toast_record(notice);
         }
     }
 
@@ -405,7 +471,10 @@ impl App {
 
         let eligible = |toast: &&StatusToast| {
             phase != crate::tui::underwater::ShellPhase::Done
-                || toast.kind == StatusToastKind::CommandReceipt
+                || matches!(
+                    toast.kind,
+                    StatusToastKind::CommandReceipt | StatusToastKind::CopyReceipt
+                )
                 || matches!(
                     toast.level,
                     StatusToastLevel::Warning | StatusToastLevel::Error
@@ -498,6 +567,52 @@ mod tests {
         assert_eq!(
             app.status_toasts[1].kind,
             StatusToastKind::RedactionGate(RedactionGateNotice::WriteFailure)
+        );
+    }
+
+    #[test]
+    fn input_hint_preserves_pending_notice_order_and_ignores_error_words_in_filenames() {
+        use crate::tui::underwater::ShellPhase;
+        let mut app = app();
+        app.onboarding = OnboardingState::None;
+        app.push_status_toast_record(
+            StatusToast::new("Decision", StatusToastLevel::Warning, None).for_action("input-hint"),
+        );
+        app.status_message = Some("Older progress".into());
+        app.show_input_hint("Attached @failed-error.log");
+        let hint = app.active_status_toast(ShellPhase::Typing).unwrap();
+        assert_eq!(hint.text, "Attached @failed-error.log");
+        assert_eq!(hint.level, StatusToastLevel::Info);
+        assert_eq!(hint.kind, StatusToastKind::InputHint);
+        assert_eq!(hint.ttl_ms, Some(4_000));
+        assert!(app.sticky_status.is_none());
+        app.show_input_hint("Attached @failed-error.log");
+        assert_eq!(
+            app.status_toasts.back().unwrap().created_at,
+            hint.created_at
+        );
+        app.show_input_hint("Composer focused");
+        assert!(
+            app.status_toasts
+                .iter()
+                .all(|notice| notice.text != hint.text)
+        );
+        let latest = app.status_toasts.back().unwrap().created_at;
+        app.prune_expired_status_toasts(latest + Duration::from_secs(4));
+        assert_eq!(
+            app.active_status_toast(ShellPhase::Typing).unwrap().text,
+            "Decision"
+        );
+        app.status_message = Some("Older progress".into());
+        assert_eq!(
+            app.active_status_toast(ShellPhase::Typing).unwrap().text,
+            "Older progress"
+        );
+        app.show_input_hint("Composer focused");
+        app.status_message = Some("Older progress".into());
+        assert_eq!(
+            app.active_status_toast(ShellPhase::Typing).unwrap().text,
+            "Older progress"
         );
     }
 

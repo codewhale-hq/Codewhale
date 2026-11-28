@@ -2101,12 +2101,19 @@ pub(crate) async fn handle_view_events(
             }
             ViewEvent::CopyToClipboard { text, label } => {
                 if text.is_empty() {
-                    app.status_message = Some(format!("{label} is empty"));
+                    app.show_copy_notice(
+                        format!("{label} is empty"),
+                        crate::tui::app::StatusToastLevel::Info,
+                        4_000,
+                    );
                 } else {
-                    app.status_message = Some(match app.clipboard.write_text_status(&text) {
-                        Ok(transport) => copy_receipt(app, transport, format!("{label} copied")),
-                        Err(_) => format!("Copy failed ({label})"),
-                    });
+                    let result = app.clipboard.write_text_status(&text);
+                    crate::tui::mouse_ui::report_copy_result(
+                        app,
+                        result,
+                        format!("{label} copied"),
+                        format!("Copy failed ({label})"),
+                    );
                 }
             }
             ViewEvent::ApprovalDecision {
@@ -3103,7 +3110,7 @@ pub(crate) async fn handle_view_events(
                 insertion.push_str(&crate::tui::file_mention::file_mention_body(&path));
                 insertion.push(' ');
                 app.insert_str(&insertion);
-                app.status_message = Some(format!("Attached @{path}"));
+                app.show_input_hint(format!("Attached @{path}"));
             }
             ViewEvent::ModelPickerApplied {
                 route_selection,
@@ -3599,7 +3606,7 @@ pub(crate) async fn handle_view_events(
             ViewEvent::BacktrackCancel => {
                 app.undo_selection = false;
                 app.backtrack.reset();
-                app.status_message = Some("Backtrack canceled".to_string());
+                app.push_status_toast("Backtrack canceled", StatusToastLevel::Warning, Some(5_000));
                 app.needs_redraw = true;
             }
             ViewEvent::ContextMenuSelected { action } => {

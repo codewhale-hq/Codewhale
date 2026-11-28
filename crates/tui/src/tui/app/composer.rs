@@ -779,7 +779,7 @@ impl App {
         for path in &paths {
             self.insert_media_attachment("image", path, None);
         }
-        self.status_message = Some(match paths.as_slice() {
+        self.show_input_hint(match paths.as_slice() {
             [path] => format!("Attached image: {}", path.display()),
             paths => format!("Attached {} images", paths.len()),
         });
@@ -829,7 +829,7 @@ impl App {
             .map_or(count.saturating_sub(1), |index| index.saturating_sub(1));
         self.selected_attachment_index = Some(next);
         self.cursor_position = 0;
-        self.status_message = Some("Attachment selected - Backspace/Delete removes it".to_string());
+        self.show_input_hint("Attachment selected - Backspace/Delete removes it");
         self.needs_redraw = true;
         true
     }
@@ -841,11 +841,10 @@ impl App {
         };
         if index + 1 < count {
             self.selected_attachment_index = Some(index + 1);
-            self.status_message =
-                Some("Attachment selected - Backspace/Delete removes it".to_string());
+            self.show_input_hint("Attachment selected - Backspace/Delete removes it");
         } else {
             self.selected_attachment_index = None;
-            self.status_message = Some("Composer focused".to_string());
+            self.show_input_hint("Composer focused");
         }
         self.needs_redraw = true;
         true
@@ -853,7 +852,7 @@ impl App {
 
     pub fn clear_composer_attachment_selection(&mut self) -> bool {
         if self.selected_attachment_index.take().is_some() {
-            self.status_message = Some("Composer focused".to_string());
+            self.show_input_hint("Composer focused");
             self.needs_redraw = true;
             true
         } else {
@@ -895,7 +894,7 @@ impl App {
         self.slash_menu_hidden = false;
         self.mention_menu_hidden = false;
         self.mention_menu_selected = 0;
-        self.status_message = Some(format!("Removed attachment: {}", reference.path));
+        self.show_input_hint(format!("Removed attachment: {}", reference.path));
         self.needs_redraw = true;
         true
     }
@@ -1619,7 +1618,7 @@ impl App {
         self.slash_menu_hidden = true;
         self.mention_menu_hidden = true;
         self.paste_burst.clear_after_explicit_paste();
-        self.status_message = Some("History search: type to filter, Enter accepts".to_string());
+        self.show_input_hint("History search: type to filter, Enter accepts");
         self.needs_redraw = true;
     }
 
@@ -1627,7 +1626,7 @@ impl App {
         if let Some(search) = self.composer_history_search.as_mut() {
             search.query.push(ch);
             search.selected = 0;
-            self.status_message = Some("History search: Enter accepts, Esc restores".to_string());
+            self.show_input_hint("History search: Enter accepts, Esc restores");
             self.needs_redraw = true;
         }
     }
@@ -1639,7 +1638,7 @@ impl App {
         if let Some(search) = self.composer_history_search.as_mut() {
             search.query.push_str(&normalize_paste_text(text));
             search.selected = 0;
-            self.status_message = Some("History search: Enter accepts, Esc restores".to_string());
+            self.show_input_hint("History search: Enter accepts, Esc restores");
             self.needs_redraw = true;
         }
     }
@@ -1688,12 +1687,12 @@ impl App {
             self.resync_command_line_claim();
             self.cursor_position = char_count(&self.input);
             self.history_index = None;
-            self.status_message = Some("History match inserted into composer".to_string());
+            self.show_input_hint("History match inserted into composer");
             self.needs_redraw = true;
             true
         } else {
             self.composer_history_search = Some(search);
-            self.status_message = Some("No history matches".to_string());
+            self.show_input_hint("No history matches");
             self.needs_redraw = true;
             false
         }
@@ -1706,7 +1705,7 @@ impl App {
         self.input = search.pre_search_input;
         self.resync_command_line_claim();
         self.cursor_position = search.pre_search_cursor.min(char_count(&self.input));
-        self.status_message = Some("History search canceled".to_string());
+        self.show_input_feedback("History search canceled", StatusToastLevel::Warning, 5_000);
         self.needs_redraw = true;
     }
 
@@ -1717,7 +1716,6 @@ impl App {
     /// sends it. The hold exists so a line whose first bytes may be missing
     /// is read by a human before it is read by a model.
     fn hold_unproven_submit(&mut self, reason: &str) {
-        self.status_message = Some(reason.to_string());
         self.push_status_toast(reason, StatusToastLevel::Warning, Some(8_000));
         self.needs_redraw = true;
     }
