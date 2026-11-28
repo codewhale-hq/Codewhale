@@ -2499,6 +2499,7 @@
   "NotificationWebApproved": "已在网页上批准。",
   "NotificationWebDenied": "已在网页上拒绝。",
   "NotificationInputSubmitFailed": "无法提交你的回答：{error}。请重试。",
+  "StaleRequestResolutionFailed": "无法关闭已失效的请求：{error}",
   "PagerActionConfirm": "确认",
   "SelectionCopiedAsMarkdown": "已将所选内容复制为 Markdown（{count}）",
   "McpShowCachedWhileTurnRuns": "有回合正在运行；显示最近已知的 MCP 快照。回合结束后重新运行 /mcp 可实时刷新。",

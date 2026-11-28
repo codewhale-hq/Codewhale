@@ -13650,7 +13650,7 @@ fn manual_compaction_queues_once_after_active_turn_without_blocking() {
         "a queued old-session compaction must block load/new until its lifecycle starts"
     );
     assert_eq!(
-        app.status_message.as_deref(),
+        app.status_toasts.back().map(|toast| toast.text.as_str()),
         Some("Making room is queued — it runs after this turn.")
     );
     match engine.rx_op.try_recv().expect("one queued compact op") {
@@ -13668,7 +13668,10 @@ fn manual_compaction_queues_once_after_active_turn_without_blocking() {
         engine.rx_op.try_recv().is_err(),
         "duplicate op must not queue"
     );
-    assert_eq!(app.status_message.as_deref(), Some("Already making room."));
+    assert_eq!(
+        app.status_toasts.back().map(|toast| toast.text.as_str()),
+        Some("Already making room.")
+    );
 }
 
 #[test]
@@ -13693,13 +13696,16 @@ fn full_engine_mailbox_defers_manual_compaction_and_flushes_once_drained() {
     assert!(app.manual_compaction_queued);
     assert!(app.deferred_manual_compaction.is_some());
     assert_eq!(
-        app.status_message.as_deref(),
+        app.status_toasts.back().map(|toast| toast.text.as_str()),
         Some("Making room is queued — it runs after this turn.")
     );
 
     // A repeat during deferral is the single queued pass, not a second one.
     try_queue_manual_compaction(&mut app, &config, &engine.handle, None);
-    assert_eq!(app.status_message.as_deref(), Some("Already making room."));
+    assert_eq!(
+        app.status_toasts.back().map(|toast| toast.text.as_str()),
+        Some("Already making room.")
+    );
 
     // The mailbox is still full: the flush waits without dropping the request.
     flush_deferred_manual_compaction(&mut app, &config, &engine.handle);
@@ -13847,7 +13853,11 @@ fn manual_compaction_label_and_failure_are_typed() {
 
     apply_compaction_started(&mut app, "compact-manual".to_string(), false);
     assert!(!app.manual_compaction_queued);
-    assert_eq!(app.status_message.as_deref(), Some("Compacting context…"));
+    assert_eq!(
+        app.status_toasts.back().map(|toast| toast.text.as_str()),
+        Some("Compacting context…")
+    );
+    app.status_message = Some("Settings saved".into());
 
     apply_compaction_failed(
         &mut app,
@@ -13856,6 +13866,13 @@ fn manual_compaction_label_and_failure_are_typed() {
         "Manual context compaction failed: provider timeout".to_string(),
     );
     assert!(!app.is_compacting);
+    assert_eq!(app.status_message.as_deref(), Some("Settings saved"));
+    assert_eq!(
+        app.active_status_toast(crate::tui::underwater::ShellPhase::Working)
+            .unwrap()
+            .level,
+        StatusToastLevel::Error
+    );
     assert!(app.sticky_status.as_ref().is_some_and(|toast| {
         toast.level == StatusToastLevel::Error && toast.text.contains("compaction failed")
     }));
@@ -14005,7 +14022,7 @@ fn compaction_trigger_meter_and_ladder_share_the_resolved_window() {
     app.auto_compact = false;
     app.compact_threshold = usize::try_from(used).expect("non-negative context estimate");
     maybe_warn_context_pressure(&mut app);
-    let pressure = app.status_message.as_deref().expect("pressure message");
+    let pressure = &app.sticky_status.as_ref().expect("pressure message").text;
     assert!(
         pressure.contains("unverified window"),
         "pressure message must mark the guess: {pressure}"
@@ -19320,7 +19337,10 @@ fn context_pressure_warning_survives_later_status_and_can_be_dismissed() {
     );
     assert!(app.dismiss_context_pressure_warning());
     assert!(app.sticky_status.is_none());
-    app.status_message = None;
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("A later transcript status")
+    );
     maybe_warn_context_pressure(&mut app);
     assert!(
         app.sticky_status.is_none(),
@@ -19356,9 +19376,9 @@ fn context_pressure_warning_clears_when_compaction_starts() {
         "pressure warning should be cleared"
     );
     assert!(
-        app.status_message
-            .as_deref()
-            .is_some_and(|text| text.to_ascii_lowercase().contains("compacting")),
+        app.status_toasts
+            .back()
+            .is_some_and(|toast| toast.text.to_ascii_lowercase().contains("compacting")),
         "compaction status should replace the pressure warning"
     );
 }
@@ -29331,7 +29351,7 @@ async fn recoverable_stream_error_keeps_active_turn_for_pending_approval() {
     );
     let mock = mock_engine_handle();
     assert!(
-        !resolve_stale_parent_request(&app, &mock.handle, &stream_drop_approval_event()).await,
+        !resolve_stale_parent_request(&mut app, &mock.handle, &stream_drop_approval_event()).await,
         "an active turn's approval is not stale"
     );
     // Delivery must preserve the user's existing permission posture. In
@@ -29432,7 +29452,9 @@ async fn recoverable_stream_error_after_local_cancel_resolves_stale_approval() {
     // The cancelled turn's approval is answered with an explicit deny, never
     // silently dropped, and no card opens.
     let mut mock = mock_engine_handle();
-    assert!(resolve_stale_parent_request(&app, &mock.handle, &stream_drop_approval_event()).await);
+    assert!(
+        resolve_stale_parent_request(&mut app, &mock.handle, &stream_drop_approval_event()).await
+    );
     assert_eq!(
         mock.recv_approval_event().await,
         Some(
@@ -29444,7 +29466,28 @@ async fn recoverable_stream_error_after_local_cancel_resolves_stale_approval() {
     assert!(app.view_stack.is_empty());
     // A child agent's request in the same state is delivered.
     let child = child_approval_event("agent:agent_a:approval:boot:7");
-    assert!(!resolve_stale_parent_request(&app, &mock.handle, &child).await);
+    assert!(!resolve_stale_parent_request(&mut app, &mock.handle, &child).await);
+}
+
+#[tokio::test]
+async fn rejected_stale_approval_remains_unresolved_in_the_terminal_receipt() {
+    let mut app = ask_posture_app();
+    app.is_loading = false;
+    let mock = mock_engine_handle();
+    let handle = mock.handle.clone();
+    drop(mock);
+    let before = app.history.len();
+
+    assert!(resolve_stale_parent_request(&mut app, &handle, &stream_drop_approval_event()).await);
+
+    let toast = app.status_toasts.back().expect("failed response notice");
+    assert_eq!(toast.level, StatusToastLevel::Error);
+    assert!(toast.text.contains("Could not dismiss an inactive request"));
+    assert!(
+        matches!(&app.history[before..], [HistoryCell::Error { message, .. }] if message == &toast.text)
+    );
+    assert!(app.view_stack.is_empty());
+    assert!(app.approval_session_denied.is_empty());
 }
 
 fn child_approval_event(id: &str) -> EngineEvent {
@@ -29632,6 +29675,7 @@ async fn child_approval_survives_local_cancel_suppression() {
 async fn stale_parent_approval_is_resolved_unavailable_not_dropped() {
     let mut app = ask_posture_app();
     app.is_loading = false;
+    let before = (app.history.len(), app.status_toasts.len());
     let mut mock = mock_engine_handle();
     drain_approval_event(&mut app, &mock.handle, stream_drop_approval_event()).await;
     // Answered explicitly, and never recorded as the person's denial.
@@ -29659,10 +29703,11 @@ async fn stale_parent_approval_is_resolved_unavailable_not_dropped() {
     };
     let handle = mock.handle.clone();
     let (resolved, canceled) = tokio::join!(
-        resolve_stale_parent_request(&app, &handle, &question),
+        resolve_stale_parent_request(&mut app, &handle, &question),
         mock.recv_user_input_cancellation(),
     );
     assert!(resolved);
+    assert_eq!((app.history.len(), app.status_toasts.len()), before);
     assert_eq!(canceled.as_deref(), Some("stale-question"));
 }
 
@@ -30063,7 +30108,7 @@ async fn stale_elevation_is_resolved_unavailable_not_dropped() {
         app.is_loading = false;
         app.suppress_stream_events_until_turn_complete = cancelled_locally;
         let mut mock = mock_engine_handle();
-        assert!(resolve_stale_parent_request(&app, &mock.handle, &elevation).await);
+        assert!(resolve_stale_parent_request(&mut app, &mock.handle, &elevation).await);
         assert_eq!(
             mock.recv_approval_event().await,
             Some(
@@ -30078,7 +30123,7 @@ async fn stale_elevation_is_resolved_unavailable_not_dropped() {
     let mut app = ask_posture_app();
     app.is_loading = true;
     let mock = mock_engine_handle();
-    assert!(!resolve_stale_parent_request(&app, &mock.handle, &elevation).await);
+    assert!(!resolve_stale_parent_request(&mut app, &mock.handle, &elevation).await);
 }
 
 #[tokio::test]

@@ -46,11 +46,7 @@ pub(crate) fn set_explicit_compaction_status(
     level: StatusToastLevel,
     sticky: bool,
 ) {
-    app.status_message = Some(text.clone());
-    // This lifecycle reducer assigns the semantic level explicitly. Mark the
-    // legacy status bridge as synchronized so it cannot add a second,
-    // keyword-classified toast with a different level on the next frame.
-    app.last_status_message_seen = Some(text.clone());
+    app.sync_status_message_to_toasts();
     if sticky {
         app.set_sticky_status(text, level, Some(App::STICKY_ERROR_TTL_MS));
     } else {
@@ -513,6 +509,7 @@ fn set_context_pressure_status(
     text: String,
     pressure_level: codewhale_runtime::context_budget::PressureLevel,
 ) {
+    app.sync_status_message_to_toasts();
     let can_replace = app.sticky_status.as_ref().is_none_or(|status| {
         matches!(
             status.kind,
@@ -522,8 +519,6 @@ fn set_context_pressure_status(
     if !can_replace {
         return;
     }
-    app.status_message = Some(text.clone());
-    app.last_status_message_seen = Some(text.clone());
     // No TTL: this warning stays visible until compaction or explicit Esc
     // dismissal instead of being pushed out by later transcript activity.
     app.sticky_status = Some(crate::tui::app::StatusToast::context_pressure(

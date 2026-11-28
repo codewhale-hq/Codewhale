@@ -2499,6 +2499,7 @@
   "NotificationWebApproved": "Disetujui di web.",
   "NotificationWebDenied": "Ditolak di web.",
   "NotificationInputSubmitFailed": "Jawaban Anda tidak dapat dikirim: {error}. Coba lagi.",
+  "StaleRequestResolutionFailed": "Permintaan yang tidak aktif tidak dapat ditutup: {error}",
   "PagerActionConfirm": "Konfirmasi",
   "SelectionCopiedAsMarkdown": "Pilihan disalin sebagai Markdown ({count})",
   "McpShowCachedWhileTurnRuns": "Satu turn sedang berjalan; menampilkan snapshot MCP terakhir yang diketahui. Jalankan /mcp lagi setelah turn selesai untuk penyegaran langsung.",

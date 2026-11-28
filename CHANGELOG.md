@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Context estimates count Chinese, Japanese and Korean text by character, including in mixed-language prompts and tool output. Compaction uses the same estimate when fitting older user messages within the retention budget. (Refs #6561)
+- The terminal records an error when the Engine cannot dismiss an inactive approval or question. Compaction notices use their assigned severity and leave other status messages intact. (#7464)
 
 - The terminal saved-team picker now shows its selection, team scopes, migration prompt, delete confirmation and keyboard hints in the chosen UI language. (#7469)
 

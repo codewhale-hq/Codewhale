@@ -2499,6 +2499,7 @@
   "NotificationWebApproved": "Approved on the web.",
   "NotificationWebDenied": "Denied on the web.",
   "NotificationInputSubmitFailed": "Could not submit your answer: {error}. Try again.",
+  "StaleRequestResolutionFailed": "Could not dismiss an inactive request: {error}",
   "PagerActionConfirm": "Confirm",
   "SelectionCopiedAsMarkdown": "Selection copied as Markdown ({count})",
   "McpShowCachedWhileTurnRuns": "A turn is running; showing the last known MCP snapshot. Run /mcp again after the turn finishes for a live refresh.",

@@ -2499,6 +2499,7 @@
   "NotificationWebApproved": "Одобрено в веб-интерфейсе.",
   "NotificationWebDenied": "Отклонено в веб-интерфейсе.",
   "NotificationInputSubmitFailed": "Не удалось отправить ответ: {error}. Попробуйте ещё раз.",
+  "StaleRequestResolutionFailed": "Не удалось закрыть неактивный запрос: {error}",
   "PagerActionConfirm": "Подтвердить",
   "SelectionCopiedAsMarkdown": "Выделение скопировано как Markdown ({count})",
   "McpShowCachedWhileTurnRuns": "Идёт ход; показан последний известный снимок MCP. Запустите /mcp снова после завершения хода, чтобы обновить его вживую.",

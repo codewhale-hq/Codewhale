@@ -2499,6 +2499,7 @@
   "NotificationWebApproved": "Approuvé sur le Web.",
   "NotificationWebDenied": "Refusé sur le Web.",
   "NotificationInputSubmitFailed": "Impossible d'envoyer votre réponse : {error}. Réessayez.",
+  "StaleRequestResolutionFailed": "Impossible de fermer une demande inactive : {error}",
   "PagerActionConfirm": "Confirmer",
   "SelectionCopiedAsMarkdown": "Sélection copiée en Markdown ({count})",
   "McpShowCachedWhileTurnRuns": "Un tour est en cours ; affichage du dernier instantané MCP connu. Relancez /mcp une fois le tour terminé pour un rafraîchissement en direct.",

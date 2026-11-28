@@ -256,11 +256,6 @@ impl App {
             .as_ref()
             .is_some_and(|status| matches!(status.kind, StatusToastKind::ContextPressure(_)));
         if is_context_pressure {
-            if self.status_message.as_ref() == self.sticky_status.as_ref().map(|toast| &toast.text)
-            {
-                self.status_message = None;
-                self.last_status_message_seen = None;
-            }
             if let Some(StatusToastKind::ContextPressure(level)) =
                 self.sticky_status.as_ref().map(|status| status.kind)
             {

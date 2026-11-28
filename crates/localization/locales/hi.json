@@ -2499,6 +2499,7 @@
   "NotificationWebApproved": "वेब पर मंज़ूरी दी गई।",
   "NotificationWebDenied": "वेब पर अस्वीकार किया गया।",
   "NotificationInputSubmitFailed": "आपका जवाब भेजा नहीं जा सका: {error}। फिर से कोशिश करें।",
+  "StaleRequestResolutionFailed": "निष्क्रिय अनुरोध बंद नहीं किया जा सका: {error}",
   "PagerActionConfirm": "पुष्टि करें",
   "SelectionCopiedAsMarkdown": "चयन Markdown के रूप में कॉपी किया गया ({count})",
   "McpShowCachedWhileTurnRuns": "एक टर्न चल रहा है; अंतिम ज्ञात MCP स्नैपशॉट दिखाया जा रहा है। लाइव रीफ़्रेश के लिए टर्न पूरा होने पर /mcp फिर चलाएँ।",

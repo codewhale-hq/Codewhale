@@ -2499,6 +2499,7 @@
   "NotificationWebApproved": "ウェブで承認されました。",
   "NotificationWebDenied": "ウェブで拒否されました。",
   "NotificationInputSubmitFailed": "回答を送信できませんでした：{error}。もう一度お試しください。",
+  "StaleRequestResolutionFailed": "非アクティブなリクエストを閉じられませんでした：{error}",
   "PagerActionConfirm": "確認",
   "SelectionCopiedAsMarkdown": "選択範囲をMarkdownとしてコピーしました（{count}）",
   "McpShowCachedWhileTurnRuns": "ターン実行中は最後に確認された MCP スナップショットを表示します。ライブ更新にはターン終了後に /mcp を再実行してください。",

@@ -2499,6 +2499,7 @@
   "NotificationWebApproved": "Aprovat al web.",
   "NotificationWebDenied": "Denegat al web.",
   "NotificationInputSubmitFailed": "No s'ha pogut enviar la resposta: {error}. Torna-ho a provar.",
+  "StaleRequestResolutionFailed": "No s’ha pogut descartar una sol·licitud inactiva: {error}",
   "PagerActionConfirm": "Confirma",
   "SelectionCopiedAsMarkdown": "Selecció copiada com a Markdown ({count})",
   "McpShowCachedWhileTurnRuns": "Hi ha un torn en curs; es mostra l'última instantània MCP coneguda. Torna a executar /mcp quan acabi el torn per a una actualització en directe.",

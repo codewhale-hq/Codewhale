@@ -1,6 +1,6 @@
 //! UI-side approval disposition and durable denial receipts.
 
-use crate::tui::app::{App, StatusToastLevel};
+use crate::tui::app::{App, StatusToast, StatusToastLevel};
 use crate::tui::history::HistoryCell;
 use codewhale_engine::core::engine::EngineHandle;
 use codewhale_execpolicy::ApprovalMode;
@@ -172,18 +172,32 @@ pub(super) fn resolve_ui_approval_disposition(
     disposition
 }
 
-fn log_stale_resolution<E: std::fmt::Display>(
+fn report_stale_resolution<E: std::fmt::Display>(
     event_prefix: &str,
     mut details: serde_json::Value,
     tool_id: &str,
     outcome: Result<(), E>,
+    app: &mut App,
 ) {
     match outcome {
         Ok(()) => log_sensitive_event(&format!("{event_prefix}_resolved"), details),
         Err(error) => {
             tracing::warn!(%error, tool_id = %tool_id, "stale-request resolution op rejected");
-            details["error"] = serde_json::Value::String(error.to_string());
+            let error = error.to_string();
+            let message = app
+                .tr(MessageId::StaleRequestResolutionFailed)
+                .replace("{error}", &error);
+            details["error"] = serde_json::Value::String(error);
             log_sensitive_event(&format!("{event_prefix}_resolution_failed"), details);
+            app.add_message(HistoryCell::Error {
+                message: message.clone(),
+                severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+                code: None,
+            });
+            app.push_status_toast_record(
+                StatusToast::new(message, StatusToastLevel::Error, Some(12_000))
+                    .for_event(format!("stale-resolution:{tool_id}")),
+            );
         }
     }
 }
@@ -203,7 +217,7 @@ fn log_stale_resolution<E: std::fmt::Display>(
 /// so it falls through to the normal handler. Returns `true` when the event
 /// was consumed here.
 pub(super) async fn resolve_stale_parent_request(
-    app: &App,
+    app: &mut App,
     engine_handle: &EngineHandle,
     event: &codewhale_engine::core::events::Event,
 ) -> bool {
@@ -212,7 +226,7 @@ pub(super) async fn resolve_stale_parent_request(
         && crate::tui::pending_requests::is_foreign_child_request(app, id)
     {
         let outcome = engine_handle.deny_tool_call_unavailable(id.clone()).await;
-        log_stale_resolution(
+        report_stale_resolution(
             "tool.approval.foreign_session_child",
             serde_json::json!({
                 "tool_name": tool_name,
@@ -220,6 +234,7 @@ pub(super) async fn resolve_stale_parent_request(
             }),
             id,
             outcome,
+            app,
         );
         return true;
     }
@@ -231,7 +246,7 @@ pub(super) async fn resolve_stale_parent_request(
             if !codewhale_engine::tools::subagent::SubAgentManager::is_child_approval_id(id) =>
         {
             let outcome = engine_handle.deny_tool_call_unavailable(id.clone()).await;
-            log_stale_resolution(
+            report_stale_resolution(
                 "tool.approval.stale_parent",
                 serde_json::json!({
                     "tool_name": tool_name,
@@ -239,6 +254,7 @@ pub(super) async fn resolve_stale_parent_request(
                 }),
                 id,
                 outcome,
+                app,
             );
             true
         }
@@ -248,7 +264,7 @@ pub(super) async fn resolve_stale_parent_request(
             let outcome = engine_handle
                 .deny_tool_call_unavailable(tool_id.clone())
                 .await;
-            log_stale_resolution(
+            report_stale_resolution(
                 "tool.sandbox.stale_elevation",
                 serde_json::json!({
                     "tool_name": tool_name,
@@ -256,6 +272,7 @@ pub(super) async fn resolve_stale_parent_request(
                 }),
                 tool_id,
                 outcome,
+                app,
             );
             true
         }
@@ -263,7 +280,7 @@ pub(super) async fn resolve_stale_parent_request(
             if !codewhale_engine::tools::subagent::SubAgentManager::is_child_approval_id(id) =>
         {
             let outcome = engine_handle.cancel_user_input(id.clone()).await;
-            log_stale_resolution(
+            report_stale_resolution(
                 "tool.user_input.stale_parent",
                 serde_json::json!({
                     "tool_id": id,
@@ -271,6 +288,7 @@ pub(super) async fn resolve_stale_parent_request(
                 }),
                 id,
                 outcome,
+                app,
             );
             true
         }

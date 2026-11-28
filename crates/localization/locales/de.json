@@ -2499,6 +2499,7 @@
   "NotificationWebApproved": "Im Web genehmigt.",
   "NotificationWebDenied": "Im Web abgelehnt.",
   "NotificationInputSubmitFailed": "Deine Antwort konnte nicht gesendet werden: {error}. Versuche es erneut.",
+  "StaleRequestResolutionFailed": "Eine inaktive Anfrage konnte nicht geschlossen werden: {error}",
   "PagerActionConfirm": "Bestätigen",
   "SelectionCopiedAsMarkdown": "Auswahl als Markdown kopiert ({count})",
   "McpShowCachedWhileTurnRuns": "Ein Turn läuft; angezeigt wird der zuletzt bekannte MCP-Snapshot. Führe /mcp nach dem Turn erneut aus, um live zu aktualisieren.",

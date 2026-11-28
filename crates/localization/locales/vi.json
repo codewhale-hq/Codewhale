@@ -2499,6 +2499,7 @@
   "NotificationWebApproved": "Đã chấp thuận trên web.",
   "NotificationWebDenied": "Đã từ chối trên web.",
   "NotificationInputSubmitFailed": "Không thể gửi câu trả lời của bạn: {error}. Hãy thử lại.",
+  "StaleRequestResolutionFailed": "Không thể đóng yêu cầu không còn hoạt động: {error}",
   "PagerActionConfirm": "Xác nhận",
   "SelectionCopiedAsMarkdown": "Đã sao chép vùng chọn dưới dạng Markdown ({count})",
   "McpShowCachedWhileTurnRuns": "Đang có một lượt chạy; hiển thị ảnh chụp MCP đã biết gần nhất. Chạy lại /mcp sau khi lượt kết thúc để làm mới trực tiếp.",

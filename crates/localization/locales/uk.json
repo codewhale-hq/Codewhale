@@ -2499,6 +2499,7 @@
   "NotificationWebApproved": "Схвалено у вебінтерфейсі.",
   "NotificationWebDenied": "Відхилено у вебінтерфейсі.",
   "NotificationInputSubmitFailed": "Не вдалося надіслати відповідь: {error}. Спробуйте ще раз.",
+  "StaleRequestResolutionFailed": "Не вдалося закрити неактивний запит: {error}",
   "PagerActionConfirm": "Підтвердити",
   "SelectionCopiedAsMarkdown": "Виділення скопійовано як Markdown ({count})",
   "McpShowCachedWhileTurnRuns": "Триває хід; показано останній відомий знімок MCP. Запустіть /mcp знову після завершення ходу, щоб оновити його наживо.",

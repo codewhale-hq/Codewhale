@@ -2499,6 +2499,7 @@
   "NotificationWebApproved": "웹에서 승인되었습니다.",
   "NotificationWebDenied": "웹에서 거부되었습니다.",
   "NotificationInputSubmitFailed": "답변을 제출하지 못했습니다: {error}. 다시 시도하세요.",
+  "StaleRequestResolutionFailed": "비활성 요청을 닫지 못했습니다: {error}",
   "PagerActionConfirm": "확인",
   "SelectionCopiedAsMarkdown": "선택 영역을 Markdown으로 복사했습니다 ({count})",
   "McpShowCachedWhileTurnRuns": "턴이 실행 중이라 마지막으로 알려진 MCP 스냅샷을 표시합니다. 실시간 갱신은 턴이 끝난 뒤 /mcp를 다시 실행하세요.",
